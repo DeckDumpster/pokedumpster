@@ -15,7 +15,7 @@ const COLUMNS: &str = "id, printing_id, condition, language, purchase_price, \
      grade_value, grade_cert, status, order_id, binder_id, deck_id, batch_id";
 
 /// A row from the `collection` table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CollectionEntry {
     pub id: i64,
     pub printing_id: String,
@@ -40,7 +40,7 @@ pub struct CollectionEntry {
 
 /// Fields supplied when adding a copy to the collection. Optional fields
 /// fall back to schema defaults.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct NewCopy {
     pub printing_id: String,
     pub condition: Option<String>,
@@ -57,7 +57,7 @@ pub struct NewCopy {
 }
 
 /// Editable per-copy fields. A `None` field is left unchanged.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CopyEdit {
     pub condition: Option<String>,
     pub language: Option<String>,

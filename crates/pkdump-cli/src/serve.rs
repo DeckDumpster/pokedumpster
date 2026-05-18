@@ -5,7 +5,6 @@
 //! own runtime here.
 
 use std::net::IpAddr;
-use std::path::PathBuf;
 
 /// Arguments for `pkdump serve`.
 #[derive(clap::Args)]
@@ -18,18 +17,13 @@ pub struct ServeArgs {
     /// Port to listen on.
     #[arg(long, default_value_t = 8080)]
     port: u16,
-
-    /// Shared catalog database path (default: ~/.pkdump/shared.sqlite).
-    #[arg(long, value_name = "PATH")]
-    db: Option<PathBuf>,
 }
 
-/// Execute `pkdump serve`.
+/// Execute `pkdump serve`. Database paths come from `PKDUMP_HOME` /
+/// `PKDUMP_USER` (the shared catalog and the active user's collection).
 pub fn run(args: ServeArgs) -> anyhow::Result<()> {
-    let db_path = match args.db {
-        Some(p) => p,
-        None => pkdump_db::shared_db_path()?,
-    };
+    let shared_db = pkdump_db::shared_db_path()?;
+    let user_db = pkdump_db::user_db_path(&pkdump_db::current_user())?;
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(pkdump_server::serve(db_path, args.host, args.port))
+    runtime.block_on(pkdump_server::serve(user_db, shared_db, args.host, args.port))
 }

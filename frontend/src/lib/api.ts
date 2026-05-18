@@ -4,6 +4,8 @@
 import type { CollectionRow } from './types/CollectionRow';
 import type { CardDetail } from './types/CardDetail';
 import type { NewCopy } from './types/NewCopy';
+import type { SetSummary } from './types/SetSummary';
+import type { BinderPage } from './types/BinderPage';
 
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -23,6 +25,17 @@ export const api = {
 	/** Full card detail: the card, its printings, and owned copies. */
 	card: (setCode: string, number: string) =>
 		getJson<CardDetail>(`/api/card/${encodeURIComponent(setCode)}/${encodeURIComponent(number)}`),
+
+	/** Every set, with card and owned-card counts. */
+	sets: () => getJson<SetSummary[]>('/api/sets'),
+
+	/** A binder page for a set. */
+	binder: (setCode: string, params: Record<string, string | number | boolean>) => {
+		const q = new URLSearchParams(
+			Object.entries(params).map(([k, v]) => [k, String(v)])
+		);
+		return getJson<BinderPage>(`/api/sets/${encodeURIComponent(setCode)}/binder?${q}`);
+	},
 
 	/** Add a copy to the collection; returns the created display row. */
 	async addCopy(copy: NewCopyInput): Promise<CollectionRow> {

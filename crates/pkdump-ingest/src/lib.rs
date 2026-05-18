@@ -8,5 +8,6 @@
 mod error;
 pub mod pokemon_tcg_data;
 pub mod pokemontcg;
+pub mod tcgcsv;
 
 pub use error::{IngestError, Result};

@@ -28,7 +28,7 @@ pub struct AppState {
 }
 
 /// An error rendered as an HTTP response. `DbError::NotFound` → 404,
-/// `DbError::Conflict` → 409, everything else → 500.
+/// `DbError::Conflict` → 409, `DbError::Import` → 400, everything else → 500.
 pub struct AppError(StatusCode, String);
 
 impl AppError {
@@ -48,6 +48,7 @@ impl From<DbError> for AppError {
         let code = match e {
             DbError::NotFound(_) => StatusCode::NOT_FOUND,
             DbError::Conflict(_) => StatusCode::CONFLICT,
+            DbError::Import(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         AppError(code, e.to_string())

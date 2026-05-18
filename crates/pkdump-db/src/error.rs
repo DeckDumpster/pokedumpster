@@ -23,6 +23,17 @@ pub enum DbError {
     /// and a deck). Maps to HTTP 409 at the API boundary.
     #[error("conflict: {0}")]
     Conflict(String),
+
+    /// An import file could not be parsed. Maps to HTTP 400 at the API
+    /// boundary — the caller sent a malformed CSV.
+    #[error("import: {0}")]
+    Import(String),
+}
+
+impl From<pkdump_core::import::ImportError> for DbError {
+    fn from(e: pkdump_core::import::ImportError) -> Self {
+        DbError::Import(e.to_string())
+    }
 }
 
 /// Convenience alias for results in this crate.

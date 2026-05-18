@@ -2,7 +2,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,21 @@ pub fn routes() -> Router<AppState> {
         .route("/bulk", post(bulk_create))
         .route("/bulk-delete", post(bulk_delete))
         .route("/{id}", get(get_one).put(update_one).delete(delete_one))
+        .route("/{id}/move", put(move_copy))
+        .route("/{id}/status", put(set_status))
+}
+
+#[derive(Deserialize)]
+struct MoveBody {
+    binder_id: Option<i64>,
+    deck_id: Option<i64>,
+    note: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StatusBody {
+    status: String,
+    note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +134,34 @@ async fn bulk_create(
     })
     .await?;
     Ok(Json(BulkAdded { ids }))
+}
+
+/// Assign a copy to a binder, a deck, or neither (audited via movement_log).
+async fn move_copy(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(body): Json<MoveBody>,
+) -> Result<Json<CollectionRow>, AppError> {
+    let row = blocking(&state, move |c| {
+        collection::move_to(c, id, body.binder_id, body.deck_id, body.note.as_deref())?;
+        collection::get_row(c, id)?.ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
+    })
+    .await?;
+    Ok(Json(row))
+}
+
+/// Change a copy's lifecycle status (audited via status_log).
+async fn set_status(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(body): Json<StatusBody>,
+) -> Result<Json<CollectionRow>, AppError> {
+    let row = blocking(&state, move |c| {
+        collection::set_status(c, id, &body.status, body.note.as_deref())?;
+        collection::get_row(c, id)?.ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
+    })
+    .await?;
+    Ok(Json(row))
 }
 
 async fn bulk_delete(

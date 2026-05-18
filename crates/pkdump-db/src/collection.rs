@@ -259,6 +259,24 @@ pub fn get_row(conn: &Connection, id: i64) -> Result<Option<CollectionRow>> {
         .optional()?)
 }
 
+/// List the display rows assigned to a binder.
+pub fn list_by_binder(conn: &Connection, binder_id: i64) -> Result<Vec<CollectionRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ROW_COLUMNS} {ROW_FROM} WHERE c.binder_id = ?1 ORDER BY c.id"
+    ))?;
+    let rows = stmt.query_map([binder_id], collection_row_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// List the display rows assigned to a deck.
+pub fn list_by_deck(conn: &Connection, deck_id: i64) -> Result<Vec<CollectionRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ROW_COLUMNS} {ROW_FROM} WHERE c.deck_id = ?1 ORDER BY c.id"
+    ))?;
+    let rows = stmt.query_map([deck_id], collection_row_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// List every copy the user owns of any printing of a given card.
 pub fn list_for_card(conn: &Connection, card_id: &str) -> Result<Vec<CollectionEntry>> {
     let mut stmt = conn.prepare(&format!(

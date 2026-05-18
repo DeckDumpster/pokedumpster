@@ -6,9 +6,11 @@
 //! checks against the catalog.
 
 pub mod binder;
+pub mod binders;
 pub mod cards;
 pub mod catalog;
 pub mod collection;
+pub mod decks;
 pub mod sets;
 
 mod connection;

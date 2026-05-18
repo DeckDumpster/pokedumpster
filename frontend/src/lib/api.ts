@@ -14,6 +14,10 @@ import type { Deck } from './types/Deck';
 import type { DeckDetail } from './types/DeckDetail';
 import type { NewDeck } from './types/NewDeck';
 import type { DeckEdit } from './types/DeckEdit';
+import type { SealedEntry } from './types/SealedEntry';
+import type { SealedProduct } from './types/SealedProduct';
+import type { NewSealed } from './types/NewSealed';
+import type { SealedEdit } from './types/SealedEdit';
 
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -80,7 +84,17 @@ export const api = {
 	deckDetail: (id: number) => getJson<DeckDetail>(`/api/decks/${id}`),
 	createDeck: (d: Partial<NewDeck> & { name: string }) => send<Deck>('POST', '/api/decks', d),
 	updateDeck: (id: number, e: Partial<DeckEdit>) => send<Deck>('PUT', `/api/decks/${id}`, e),
-	deleteDeck: (id: number) => send<void>('DELETE', `/api/decks/${id}`)
+	deleteDeck: (id: number) => send<void>('DELETE', `/api/decks/${id}`),
+
+	// --- Sealed products ---
+	sealedCollection: () => getJson<SealedEntry[]>('/api/sealed/collection'),
+	sealedProducts: (q: string) =>
+		getJson<SealedProduct[]>(`/api/sealed/products?q=${encodeURIComponent(q)}`),
+	addSealed: (s: Partial<NewSealed> & { product_id: number }) =>
+		send<SealedEntry>('POST', '/api/sealed/collection', s),
+	updateSealed: (id: number, e: Partial<SealedEdit>) =>
+		send<SealedEntry>('PUT', `/api/sealed/collection/${id}`, e),
+	deleteSealed: (id: number) => send<void>('DELETE', `/api/sealed/collection/${id}`)
 };
 
 /** Turn a variant code (`reverse_holo`) into a label (`Reverse Holo`). */

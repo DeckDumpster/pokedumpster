@@ -28,6 +28,9 @@ import type { WishEdit } from './types/WishEdit';
 import type { Batch } from './types/Batch';
 import type { BatchDetail } from './types/BatchDetail';
 import type { NewBatch } from './types/NewBatch';
+import type { CollectionView } from './types/CollectionView';
+import type { NewView } from './types/NewView';
+import type { ViewEdit } from './types/ViewEdit';
 
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -135,7 +138,13 @@ export const api = {
 	batches: (limit = 0) => getJson<Batch[]>(`/api/batches${limit ? `?limit=${limit}` : ''}`),
 	batchDetail: (id: number) => getJson<BatchDetail>(`/api/batches/${id}`),
 	createBatch: (b: Partial<NewBatch> & { batch_type: string }) =>
-		send<number>('POST', '/api/batches', b)
+		send<number>('POST', '/api/batches', b),
+
+	// --- Saved collection views ---
+	views: () => getJson<CollectionView[]>('/api/views'),
+	createView: (v: NewView) => send<number>('POST', '/api/views', v),
+	updateView: (id: number, e: Partial<ViewEdit>) => send<void>('PUT', `/api/views/${id}`, e),
+	deleteView: (id: number) => send<void>('DELETE', `/api/views/${id}`)
 };
 
 /** Turn a variant code (`reverse_holo`) into a label (`Reverse Holo`). */

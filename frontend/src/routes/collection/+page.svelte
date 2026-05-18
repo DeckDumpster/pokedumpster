@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api, variantLabel } from '$lib/api';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
+	import type { CollectionView } from '$lib/types/CollectionView';
 
 	let rows = $state<CollectionRow[]>([]);
 	let loading = $state(true);
@@ -29,9 +30,64 @@
 		return next;
 	}
 
+	// --- Saved views: a named filter config (search + facet selections). ---
+	type ViewFilters = { search: string; rarity: string[]; set: string[]; variant: string[] };
+	let savedViews = $state<CollectionView[]>([]);
+	let activeViewId = $state<number | null>(null);
+
+	function currentFilters(): ViewFilters {
+		return {
+			search: searchRaw,
+			rarity: [...selRarity],
+			set: [...selSet],
+			variant: [...selVariant]
+		};
+	}
+
+	function applyView(id: number | null) {
+		activeViewId = id;
+		if (id == null) return;
+		const view = savedViews.find((v) => v.id === id);
+		if (!view) return;
+		const f = JSON.parse(view.filters_json) as Partial<ViewFilters>;
+		onSearch(f.search ?? '');
+		selRarity = new Set(f.rarity ?? []);
+		selSet = new Set(f.set ?? []);
+		selVariant = new Set(f.variant ?? []);
+	}
+
+	async function saveView() {
+		const name = prompt('Name this view:')?.trim();
+		if (!name) return;
+		try {
+			const id = await api.createView({
+				name,
+				description: null,
+				filters_json: JSON.stringify(currentFilters())
+			});
+			savedViews = await api.views();
+			activeViewId = id;
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		}
+	}
+
+	async function deleteView() {
+		if (activeViewId == null) return;
+		const view = savedViews.find((v) => v.id === activeViewId);
+		if (!view || !confirm(`Delete view "${view.name}"?`)) return;
+		try {
+			await api.deleteView(view.id);
+			savedViews = await api.views();
+			activeViewId = null;
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		}
+	}
+
 	onMount(async () => {
 		try {
-			rows = await api.collection();
+			[rows, savedViews] = await Promise.all([api.collection(), api.views()]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -72,6 +128,28 @@
 {:else}
 	<div class="layout">
 		<aside class="sidebar">
+			<section class="views">
+				<h3>Saved views</h3>
+				{#if savedViews.length}
+					<select
+						class="viewpick"
+						value={activeViewId ?? ''}
+						onchange={(e) =>
+							applyView(e.currentTarget.value ? Number(e.currentTarget.value) : null)}
+					>
+						<option value="">— none —</option>
+						{#each savedViews as v (v.id)}
+							<option value={v.id}>{v.name}</option>
+						{/each}
+					</select>
+				{/if}
+				<div class="viewbtns">
+					<button onclick={saveView}>Save current…</button>
+					{#if activeViewId != null}
+						<button onclick={deleteView}>Delete</button>
+					{/if}
+				</div>
+			</section>
 			<input
 				class="search"
 				type="text"
@@ -166,13 +244,35 @@
 		text-transform: uppercase;
 		color: #888;
 	}
-	.search {
+	.search,
+	.viewpick {
 		width: 100%;
 		padding: 0.5rem;
 		background: #1a1a2e;
 		border: 1px solid #0f3460;
 		border-radius: 6px;
 		color: #e0e0e0;
+	}
+	.viewpick {
+		margin-bottom: 0.5rem;
+	}
+	.viewbtns {
+		display: flex;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+	}
+	.viewbtns button {
+		flex: 1;
+		padding: 0.35rem;
+		font-size: 0.8rem;
+		background: #0f3460;
+		border: none;
+		border-radius: 6px;
+		color: #e0e0e0;
+		cursor: pointer;
+	}
+	.viewbtns button:hover {
+		background: #e94560;
 	}
 	.check {
 		display: block;

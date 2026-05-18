@@ -8,6 +8,7 @@ pub mod decks;
 pub mod orders;
 pub mod sealed;
 pub mod sets;
+pub mod views;
 pub mod wishlist;
 
 use axum::Router;
@@ -15,7 +16,8 @@ use axum::Router;
 use crate::AppState;
 
 /// The full `/api` router: collection CRUD, card lookups, set catalog,
-/// binders, decks, sealed products, orders, wishlist, and batches.
+/// binders, decks, sealed products, orders, wishlist, batches, and
+/// saved views.
 pub fn api_router() -> Router<AppState> {
     Router::new()
         .nest("/collection", collection::routes())
@@ -27,4 +29,5 @@ pub fn api_router() -> Router<AppState> {
         .merge(orders::routes())
         .merge(wishlist::routes())
         .merge(batches::routes())
+        .merge(views::routes())
 }

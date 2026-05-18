@@ -13,15 +13,18 @@ const CARD_COLS: &str = "card_id, set_code, number, number_sortable, name, \
 
 /// A catalog card. JSON-typed columns (`subtypes`, `attacks`, …) are passed
 /// through as raw JSON strings for the frontend to parse.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Card {
     pub card_id: String,
     pub set_code: String,
     pub number: String,
+    #[ts(type = "number")]
     pub number_sortable: i64,
     pub name: String,
     pub supertype: Option<String>,
     pub subtypes: Option<String>,
+    #[ts(type = "number | null")]
     pub hp: Option<i64>,
     pub types: Option<String>,
     pub rarity: Option<String>,
@@ -41,7 +44,8 @@ pub struct Card {
 
 /// One printing of a card, with how many copies the user owns and the
 /// latest TCGplayer market price (NULL until printing↔product linking lands).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct PrintingInfo {
     pub printing_id: String,
     pub variant: String,
@@ -49,12 +53,14 @@ pub struct PrintingInfo {
     pub badge_overlay: Option<String>,
     pub image_override: Option<String>,
     pub deprecated: bool,
+    #[ts(type = "number")]
     pub owned_count: i64,
     pub market_price: Option<f64>,
 }
 
 /// The full card-detail payload.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct CardDetail {
     pub card: Card,
     pub printings: Vec<PrintingInfo>,

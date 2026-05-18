@@ -26,13 +26,17 @@ struct ListParams {
     offset: Option<i64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 struct BulkAdded {
+    #[ts(type = "Array<number>")]
     ids: Vec<i64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 struct BulkDeleted {
+    #[ts(type = "number")]
     deleted: usize,
 }
 

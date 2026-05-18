@@ -15,8 +15,10 @@ const COLUMNS: &str = "id, printing_id, condition, language, purchase_price, \
      grade_value, grade_cert, status, order_id, binder_id, deck_id, batch_id";
 
 /// A row from the `collection` table.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct CollectionEntry {
+    #[ts(type = "number")]
     pub id: i64,
     pub printing_id: String,
     pub condition: String,
@@ -32,15 +34,20 @@ pub struct CollectionEntry {
     pub grade_value: Option<f64>,
     pub grade_cert: Option<String>,
     pub status: String,
+    #[ts(type = "number | null")]
     pub order_id: Option<i64>,
+    #[ts(type = "number | null")]
     pub binder_id: Option<i64>,
+    #[ts(type = "number | null")]
     pub deck_id: Option<i64>,
+    #[ts(type = "number | null")]
     pub batch_id: Option<i64>,
 }
 
 /// Fields supplied when adding a copy to the collection. Optional fields
 /// fall back to schema defaults.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct NewCopy {
     pub printing_id: String,
     pub condition: Option<String>,
@@ -50,14 +57,19 @@ pub struct NewCopy {
     pub source: String,
     pub status: Option<String>,
     pub notes: Option<String>,
+    #[ts(type = "number | null")]
     pub order_id: Option<i64>,
+    #[ts(type = "number | null")]
     pub binder_id: Option<i64>,
+    #[ts(type = "number | null")]
     pub deck_id: Option<i64>,
+    #[ts(type = "number | null")]
     pub batch_id: Option<i64>,
 }
 
 /// Editable per-copy fields. A `None` field is left unchanged.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct CopyEdit {
     pub condition: Option<String>,
     pub language: Option<String>,

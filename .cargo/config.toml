@@ -1,0 +1,8 @@
+# Workspace cargo configuration.
+#
+# TS_RS_EXPORT_DIR fixes the output directory for ts-rs type generation so
+# every `#[ts(export)]` struct lands in the SvelteKit project regardless of
+# which crate or module it lives in. `relative = true` resolves it against
+# the repo root. Regenerate the TypeScript types with `cargo test`.
+[env]
+TS_RS_EXPORT_DIR = { value = "frontend/src/lib/types", relative = true }

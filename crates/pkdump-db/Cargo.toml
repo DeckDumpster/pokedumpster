@@ -12,6 +12,7 @@ refinery.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 serde.workspace = true
+ts-rs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

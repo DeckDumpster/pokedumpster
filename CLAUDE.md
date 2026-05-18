@@ -66,7 +66,8 @@ the research it rests on. Living truth = beads + the code + this file.
 ```bash
 # Backend — Rust workspace
 cargo build                      # build all crates
-cargo test                       # run all tests
+cargo test                       # run all tests; also regenerates the TypeScript
+                                  #   types in frontend/src/lib/types/ via ts-rs
 cargo test -p pkdump-db          # test a single crate
 cargo clippy --all-targets       # lint (must be clean before commit)
 cargo fmt                        # format

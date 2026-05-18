@@ -4,6 +4,7 @@
 //! later M2 task (see PLAN.md §2.1).
 
 pub mod card;
+pub mod import;
 pub mod variant;
 
 pub use card::number_sortable;

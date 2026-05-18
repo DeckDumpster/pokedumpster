@@ -453,6 +453,8 @@ CREATE TABLE decks (
     description       TEXT,
     format            TEXT,                    -- free-text tag: 'standard'|'expanded'|'casual'|NULL
     owner             TEXT,                    -- free-text: "Ryan"|"Alice"
+    state             TEXT NOT NULL DEFAULT 'idea'
+        CHECK (state IN ('idea','ready','built')),  -- lifecycle, see S7
     sleeve_color      TEXT,
     storage_location  TEXT,
     notes             TEXT,
@@ -933,8 +935,9 @@ e.g. assign every card in the batch to a specific binder retroactively.
 ## 7. Decks (minimal)
 
 - Named, with description, free-text `format` tag, free-text `owner` tag (`"Ryan"`, `"Alice"`), sleeve color, storage location, notes.
+- **3-state lifecycle**: `idea` → `ready` → `built`. An `idea` deck is something you're planning; `ready` is a finalized list; `built` means it physically exists in a box. The lifecycle is the only deck-planning concept we keep — it's domain-generic, not MTG-specific. Once a deck is `built`, the variant-swap flow warns before letting you change a card (mirrors DeckDumpster's "constructed" guard).
 - Cards added from collection via picker-search modal (same UX as binders).
-- `decks_id` mutually exclusive with `binder_id` on a collection row — enforced via CHECK constraint AND repository layer; HTTP 409 on conflict.
+- `deck_id` mutually exclusive with `binder_id` on a collection row — enforced via CHECK constraint AND repository layer; HTTP 409 on conflict.
 - `/decks/:id` lists cards grouped by supertype (Pokémon / Trainer / Energy) — Pokémon's natural grouping rather than CMC.
 - Card detail page surfaces "This card lives in: [Binder name] / [Deck name]" per copy.
 - Multi-select on `/collection` includes "Move to deck" alongside "Move to binder".
@@ -1226,6 +1229,7 @@ Resolved through interactive review on 2026-05-17 → 2026-05-18.
 | 26 | pkmn.gg migration | Userscript v1 vs. deferred | Deferred post-v1 | Get the bones working with a test dataset first |
 | 27 | SQL access layer | sqlx (compile-time checked) vs. rusqlite | rusqlite | User preference; matches `pokedex`; query correctness covered by integration tests |
 | 28 | Cross-DB FK enforcement | App-layer validation vs. single DB | App-layer validation | Accepted; revisit ("andon cord") if it gets janky |
+| 29 | Deck lifecycle states | None (minimal) vs. 3-state idea/ready/built | 3-state lifecycle | Domain-generic, not MTG-specific; useful for kitchen-table "planning vs. built" distinction |
 
 ---
 
@@ -1243,14 +1247,8 @@ Genuinely open, not just deferred:
 
 5. **Backup story.** A nightly `sqlite3 .backup` on `<user>.sqlite` to a separate disk is the minimum. Anything fancier (encryption, off-host, etc.) is overkill for personal use. Confirm minimum is fine.
 
-6. **Deck lifecycle states.** DeckDumpster has a 3-state deck lifecycle
-   (idea → ready → constructed). The minimal deck model (§7) dropped it. It's
-   domain-generic, not MTG-specific, and genuinely useful for the
-   kitchen-table workflow ("this is a deck idea we're planning" vs. "this
-   deck physically exists in a box"). Cost: one `state` column + a lifecycle
-   enum + minor UI. If added, the `deck_builder_swap_unavailable_constructed`
-   intent returns. Leaning **add a minimal idea/ready/built lifecycle** —
-   awaiting confirmation.
+6. ~~Deck lifecycle states~~ — **RESOLVED: add a 3-state lifecycle**
+   (idea → ready → built). See §7 and decision #29.
 
 ---
 
@@ -1363,17 +1361,18 @@ decks (8 of 14):
   decks_manage_from_card_modal
 ```
 
-### Rename (port with semantic adjustment) (5)
+### Rename (port with semantic adjustment) (6)
 
 ```
-card_detail_change_printing_picker      → card_detail_change_variant_picker
-card_detail_change_printing_execute     → card_detail_change_variant_execute
-collection_modal_change_printing        → collection_modal_change_variant
-deck_builder_swap_printing_modal        → deck_builder_swap_variant_modal
-deck_builder_swap_printing_execution    → deck_builder_swap_variant_execution
+card_detail_change_printing_picker        → card_detail_change_variant_picker
+card_detail_change_printing_execute       → card_detail_change_variant_execute
+collection_modal_change_printing          → collection_modal_change_variant
+deck_builder_swap_printing_modal          → deck_builder_swap_variant_modal
+deck_builder_swap_printing_execution      → deck_builder_swap_variant_execution
+deck_builder_swap_unavailable_constructed → deck_builder_swap_unavailable_built
 ```
 
-### Drop (MTG-specific or cut feature) (36)
+### Drop (MTG-specific or cut feature) (35)
 
 ```
 corners:        all 5  (no image ingestion)
@@ -1387,10 +1386,9 @@ card_detail (2 of 19):
   card_detail_dfc_flip            (no DFC in Pokémon)
   card_detail_flip_non_dfc
 
-deck (5 of 26):
+deck (4 of 26):
   deck_builder_commander_autocomplete         (no commander)
   deck_detail_zone_tab_switching              (no zones)
-  deck_builder_swap_unavailable_constructed   (no deck lifecycle states — see note)
   deck_edit_change_commander
   deck_edit_clear_commander
   deck_edit_nominate_commander
@@ -1402,17 +1400,16 @@ decks (4 of 14):
   decks_reassemble_unassigned_cards       (precon-specific)
 ```
 
-**Notes on two borderline drops:**
+**Note on one borderline drop:**
 
-- `deck_builder_swap_unavailable_constructed` tests that you can't swap a
-  card in a deck whose lifecycle state is "constructed". The minimal deck
-  model (§7) has no state field. If we add a 3-state lifecycle
-  (idea / ready / built) this intent comes back — it's domain-generic, not
-  MTG-specific. Flagged as an open question (§14.6).
 - `decks_import_moxfield_decklist` is dropped because Moxfield is
   MTG-specific AND we have no decklist-import feature planned. The capability
   ("paste a decklist, create a deck") is generic and could return later
   sourced from a Pokémon decklist format (PTCGL / Limitless export).
+
+(`deck_builder_swap_unavailable_constructed` was a borderline drop in an
+earlier revision; with the 3-state deck lifecycle confirmed (§7, decision
+#29) it is kept, renamed to `deck_builder_swap_unavailable_built`.)
 
 ### New (PokeDumpster-specific) (~25)
 
@@ -1447,10 +1444,10 @@ browse_url_state_persists
 ### Tally
 
 - Kept verbatim: **143**
-- Renamed (semantic): **5**
-- Dropped: **36**
+- Renamed (semantic): **6**
+- Dropped: **35**
 - New (binder browse): **25**
-- **Corpus total: ~173** — no waves, no deferrals; grown to full coverage as features ship.
+- **Corpus total: ~174** — no waves, no deferrals; grown to full coverage as features ship.
 
 (Some "kept" intents will need fixture-data swaps to use Pokémon cards;
 mechanical. A handful that regression-test DeckDumpster-internal refactors —

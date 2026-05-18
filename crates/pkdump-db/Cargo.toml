@@ -9,3 +9,7 @@ authors.workspace = true
 pkdump-core.workspace = true
 rusqlite.workspace = true
 refinery.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

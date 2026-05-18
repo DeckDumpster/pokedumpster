@@ -39,6 +39,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 refinery = { version = "0.8", features = ["rusqlite"] }
 ts-rs = "10"
 chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
 
 [profile.release]
 strip = true

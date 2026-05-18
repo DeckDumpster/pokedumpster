@@ -1,10 +1,18 @@
 //! `pkdump-db` — SQLite persistence for PokeDumpster.
 //!
 //! Owns the shared/user database split (PLAN.md §3.1): a read-only shared
-//! catalog DB `ATTACH`ed to a mutable per-user collection DB. The connection
-//! orchestration and repository layer are added by later M1/M2 tasks; this
-//! crate currently provides the embedded schema migrations.
+//! catalog `ATTACH`ed to a mutable per-user collection database, plus the
+//! refinery-embedded schema migrations and application-layer foreign-key
+//! checks against the catalog.
 
+pub mod catalog;
+
+mod connection;
+mod error;
 mod migrations;
+mod paths;
 
+pub use connection::{attach_shared_readonly, connect_user, open_shared};
+pub use error::{DbError, Result};
 pub use migrations::run_shared_migrations;
+pub use paths::{current_user, pkdump_home, shared_db_path, user_db_path};

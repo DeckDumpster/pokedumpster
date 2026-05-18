@@ -15,13 +15,15 @@ use crate::error::{DbError, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportFormat {
     Manabox,
+    Tcgplayer,
 }
 
 impl ImportFormat {
-    /// Parse the wire name (e.g. `"manabox"`).
+    /// Parse the wire name (`"manabox"` or `"tcgplayer"`).
     pub fn parse(name: &str) -> Result<Self> {
         match name.trim().to_lowercase().as_str() {
             "manabox" => Ok(Self::Manabox),
+            "tcgplayer" => Ok(Self::Tcgplayer),
             other => Err(DbError::Import(format!("unknown import format '{other}'"))),
         }
     }
@@ -30,6 +32,7 @@ impl ImportFormat {
     fn source(self) -> &'static str {
         match self {
             Self::Manabox => "csv_manabox",
+            Self::Tcgplayer => "csv_tcgplayer",
         }
     }
 
@@ -37,6 +40,7 @@ impl ImportFormat {
     fn batch_type(self) -> &'static str {
         match self {
             Self::Manabox => "csv_manabox",
+            Self::Tcgplayer => "csv_tcgplayer",
         }
     }
 }
@@ -45,6 +49,7 @@ impl ImportFormat {
 fn parse(format: ImportFormat, content: &str) -> Result<Vec<ParsedRow>> {
     Ok(match format {
         ImportFormat::Manabox => import::manabox::parse(content)?,
+        ImportFormat::Tcgplayer => import::tcgplayer::parse(content)?,
     })
 }
 

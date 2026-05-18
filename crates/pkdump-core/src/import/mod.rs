@@ -3,6 +3,7 @@
 //! `pkdump-db` then matches against the card catalogue. Pure: no IO.
 
 pub mod manabox;
+pub mod tcgplayer;
 
 use serde::Serialize;
 
@@ -40,3 +41,43 @@ pub enum ImportError {
 }
 
 pub type Result<T> = std::result::Result<T, ImportError>;
+
+// --- Shared column-value mappings, used by every format parser. ---
+
+/// Map a grading condition to PokeDumpster's five-tier scale — the only
+/// values the `collection.condition` CHECK constraint accepts. Tolerant of
+/// ManaBox snake-case (`near_mint`), TCGplayer title-case (`Near Mint`),
+/// and a trailing ` Foil` suffix TCGplayer sometimes appends.
+pub(crate) fn map_condition(raw: &str) -> String {
+    let c = raw.trim().to_lowercase();
+    let c = c.strip_suffix(" foil").unwrap_or(&c);
+    match c.replace([' ', '-'], "_").as_str() {
+        "excellent" | "good" | "light_played" | "lightly_played" | "lp" => "Lightly Played",
+        "played" | "moderately_played" | "mp" => "Moderately Played",
+        "heavily_played" | "hp" => "Heavily Played",
+        "poor" | "damaged" | "dmg" => "Damaged",
+        // "mint", "near_mint", "nm", "" and anything unrecognised.
+        _ => "Near Mint",
+    }
+    .to_string()
+}
+
+/// Map a language value to a display language. English-only v1, but a
+/// non-English value is preserved so a re-export round-trips.
+pub(crate) fn map_language(raw: &str) -> String {
+    match raw.trim().to_lowercase().as_str() {
+        "" | "en" | "english" => "English".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+                None => "English".to_string(),
+            }
+        }
+    }
+}
+
+/// Whether a boolean-ish CSV cell reads as true.
+pub(crate) fn is_true(s: &str) -> bool {
+    matches!(s.trim().to_lowercase().as_str(), "true" | "1" | "yes")
+}

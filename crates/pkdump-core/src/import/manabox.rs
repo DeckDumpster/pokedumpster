@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use super::{ImportError, ParsedRow, Result};
+use super::{ImportError, ParsedRow, Result, is_true, map_condition, map_language};
 
 /// Parse a ManaBox collection-export CSV into one `ParsedRow` per copy.
 pub fn parse(input: &str) -> Result<Vec<ParsedRow>> {
@@ -121,39 +121,6 @@ fn map_variant(foil: &str) -> String {
         _ => "normal",
     }
     .to_string()
-}
-
-/// ManaBox `Condition` value → PokeDumpster's five-tier scale (the only
-/// values the `collection.condition` CHECK constraint accepts).
-fn map_condition(c: &str) -> String {
-    match c.trim().to_lowercase().replace([' ', '-'], "_").as_str() {
-        "excellent" | "good" | "light_played" | "lightly_played" | "lp" => "Lightly Played",
-        "played" | "moderately_played" | "mp" => "Moderately Played",
-        "heavily_played" | "hp" => "Heavily Played",
-        "poor" | "damaged" | "dmg" => "Damaged",
-        // "mint", "near_mint", "nm", "" and anything unrecognised.
-        _ => "Near Mint",
-    }
-    .to_string()
-}
-
-/// ManaBox `Language` value → a display language. English-only v1, but a
-/// non-English value is preserved so a re-export round-trips.
-fn map_language(l: &str) -> String {
-    match l.trim().to_lowercase().as_str() {
-        "" | "en" | "english" => "English".to_string(),
-        other => {
-            let mut chars = other.chars();
-            match chars.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
-                None => "English".to_string(),
-            }
-        }
-    }
-}
-
-fn is_true(s: &str) -> bool {
-    matches!(s.trim().to_lowercase().as_str(), "true" | "1" | "yes")
 }
 
 #[cfg(test)]

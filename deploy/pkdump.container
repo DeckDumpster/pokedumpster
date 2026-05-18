@@ -1,0 +1,19 @@
+[Unit]
+Description=PokeDumpster server ({{INSTANCE}})
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=localhost/pkdump:{{INSTANCE}}
+Environment=PKDUMP_HOME=/data
+PublishPort={{PORT}}:8080
+Volume=pkdump-{{INSTANCE}}-data:/data:Z
+AutoUpdate=local
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

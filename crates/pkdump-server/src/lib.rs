@@ -4,7 +4,7 @@
 //! `/api` and the SvelteKit static build are served from here as later
 //! tasks land (PLAN.md §5).
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -71,13 +71,14 @@ fn app(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Start the HTTP server on `127.0.0.1:port`, reading the catalog at
-/// `db_path`. Local-only by design — remote access goes through WireGuard.
-pub async fn serve(db_path: PathBuf, port: u16) -> anyhow::Result<()> {
+/// Start the HTTP server on `host:port`, reading the catalog at `db_path`.
+/// Defaults to `127.0.0.1` for local use (remote access goes through
+/// WireGuard); the container deployment binds `0.0.0.0`.
+pub async fn serve(db_path: PathBuf, host: IpAddr, port: u16) -> anyhow::Result<()> {
     let state = AppState {
         db_path: Arc::new(db_path),
     };
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::new(host, port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("pkdump serving on http://{addr}");
     axum::serve(listener, app(state)).await?;

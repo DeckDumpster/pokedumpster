@@ -4,11 +4,17 @@
 //! runtime, so the CLI's `main` stays synchronous and `serve` spins up its
 //! own runtime here.
 
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 /// Arguments for `pkdump serve`.
 #[derive(clap::Args)]
 pub struct ServeArgs {
+    /// Address to bind. Defaults to localhost; the container deployment
+    /// passes `0.0.0.0`.
+    #[arg(long, default_value = "127.0.0.1")]
+    host: IpAddr,
+
     /// Port to listen on.
     #[arg(long, default_value_t = 8080)]
     port: u16,
@@ -25,5 +31,5 @@ pub fn run(args: ServeArgs) -> anyhow::Result<()> {
         None => pkdump_db::shared_db_path()?,
     };
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(pkdump_server::serve(db_path, args.port))
+    runtime.block_on(pkdump_server::serve(db_path, args.host, args.port))
 }

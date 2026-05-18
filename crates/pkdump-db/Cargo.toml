@@ -10,6 +10,7 @@ pkdump-core.workspace = true
 rusqlite.workspace = true
 refinery.workspace = true
 thiserror.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

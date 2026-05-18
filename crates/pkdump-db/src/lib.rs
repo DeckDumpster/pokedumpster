@@ -6,6 +6,7 @@
 //! checks against the catalog.
 
 pub mod catalog;
+pub mod collection;
 
 mod connection;
 mod error;

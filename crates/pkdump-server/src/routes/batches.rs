@@ -6,15 +6,23 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 use pkdump_db::DbError;
-use pkdump_db::batches::{self, Batch, BatchDetail};
+use pkdump_db::batches::{self, Batch, BatchDetail, NewBatch};
 
 use crate::{AppError, AppState, blocking};
 
 /// Build the batch routes (mounted under `/api`).
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/batches", get(list))
+        .route("/batches", get(list).post(create))
         .route("/batches/{id}", get(detail))
+}
+
+/// Create a batch (e.g. a binder-browse session); returns its id.
+async fn create(
+    State(state): State<AppState>,
+    Json(new): Json<NewBatch>,
+) -> Result<Json<i64>, AppError> {
+    Ok(Json(blocking(&state, move |c| batches::create(c, &new)).await?))
 }
 
 #[derive(Deserialize)]

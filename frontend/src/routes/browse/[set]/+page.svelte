@@ -21,9 +21,19 @@
 	let toastTimer: ReturnType<typeof setTimeout>;
 	let viewportWidth = $state(0);
 
+	// One binder-browse session per set visit groups its adds under a batch
+	// (PLAN §6.7). The batch is created lazily on the first add so merely
+	// looking at a set never leaves an empty batch behind.
+	let sessionSet = $state<string | null>(null);
+	let sessionBatchId = $state<number | null>(null);
+
 	async function load() {
 		const set = page.params.set;
 		if (!set) return;
+		if (set !== sessionSet) {
+			sessionSet = set;
+			sessionBatchId = null;
+		}
 		loading = true;
 		error = null;
 		selectedSlot = null;
@@ -59,7 +69,17 @@
 		if (!printing) return;
 		printing.owned_count += 1; // optimistic — pip + modal update at once
 		try {
-			const row = await api.addCopy({ printing_id: printingId, source: 'binder_click' });
+			if (sessionBatchId === null) {
+				sessionBatchId = await api.createBatch({
+					batch_type: 'binder_browse',
+					name: binder?.set.name ?? null
+				});
+			}
+			const row = await api.addCopy({
+				printing_id: printingId,
+				source: 'binder_click',
+				batch_id: sessionBatchId
+			});
 			showToast(`Added ${slot.name} · ${variantLabel(variant)}`, row.id, printing);
 		} catch (e) {
 			printing.owned_count -= 1; // revert

@@ -1,11 +1,20 @@
 # PokeDumpster — Design & Implementation Plan
 
+> **STATUS: FROZEN v1 design record (2026-05-18).**
+> This document was the planning-review artifact. It is no longer maintained
+> per-task. The living truth now lives in three places:
+> - **beads** — remaining work, dependencies, and new decisions (`--type=decision`)
+> - **the code** — the authoritative schema/architecture (e.g. the migration
+>   SQL supersedes §3.2; the Rust types supersede §3)
+> - **CLAUDE.md** — conventions and how to work in the repo
+>
+> This file is kept for the design rationale and the **Decisions log (§13)**.
+> Where it disagrees with the code, the code wins.
+
 **Read first:** `RESEARCH.md`. This plan assumes the DeckDumpster architecture, the
 upstream data sources, the pkmn.gg gaps, and the resolved binder-view UX from
-RESEARCH are accepted as the foundation.
-
-This is the revision after the interactive review. All previously-debated
-decisions are now baked in; the `Decisions log` (§13) records what was
+RESEARCH as the foundation. It records the design as agreed during the
+interactive planning review; the `Decisions log` (§13) records what was
 considered and why.
 
 ---

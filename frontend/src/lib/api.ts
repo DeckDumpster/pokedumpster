@@ -6,6 +6,14 @@ import type { CardDetail } from './types/CardDetail';
 import type { NewCopy } from './types/NewCopy';
 import type { SetSummary } from './types/SetSummary';
 import type { BinderPage } from './types/BinderPage';
+import type { Binder } from './types/Binder';
+import type { BinderDetail } from './types/BinderDetail';
+import type { NewBinder } from './types/NewBinder';
+import type { BinderEdit } from './types/BinderEdit';
+import type { Deck } from './types/Deck';
+import type { DeckDetail } from './types/DeckDetail';
+import type { NewDeck } from './types/NewDeck';
+import type { DeckEdit } from './types/DeckEdit';
 
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -13,6 +21,19 @@ async function getJson<T>(url: string): Promise<T> {
 		throw new Error(`${res.status} ${res.statusText} — ${url}`);
 	}
 	return (await res.json()) as T;
+}
+
+/** POST/PUT/DELETE with an optional JSON body. 204 responses yield undefined. */
+async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
+	const res = await fetch(url, {
+		method,
+		headers: body !== undefined ? { 'content-type': 'application/json' } : {},
+		body: body !== undefined ? JSON.stringify(body) : undefined
+	});
+	if (!res.ok) {
+		throw new Error(`${res.status} ${res.statusText} — ${method} ${url}`);
+	}
+	return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
 /** A NewCopy with only the fields the caller cares to set. */
@@ -31,32 +52,35 @@ export const api = {
 
 	/** A binder page for a set. */
 	binder: (setCode: string, params: Record<string, string | number | boolean>) => {
-		const q = new URLSearchParams(
-			Object.entries(params).map(([k, v]) => [k, String(v)])
-		);
+		const q = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]));
 		return getJson<BinderPage>(`/api/sets/${encodeURIComponent(setCode)}/binder?${q}`);
 	},
 
 	/** Add a copy to the collection; returns the created display row. */
-	async addCopy(copy: NewCopyInput): Promise<CollectionRow> {
-		const res = await fetch('/api/collection', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify(copy)
-		});
-		if (!res.ok) {
-			throw new Error(`${res.status} ${res.statusText} — POST /api/collection`);
-		}
-		return (await res.json()) as CollectionRow;
-	},
+	addCopy: (copy: NewCopyInput) => send<CollectionRow>('POST', '/api/collection', copy),
 
 	/** Delete a collection entry (used to undo an add). */
-	async deleteCopy(id: number): Promise<void> {
-		const res = await fetch(`/api/collection/${id}`, { method: 'DELETE' });
-		if (!res.ok && res.status !== 404) {
-			throw new Error(`${res.status} ${res.statusText} — DELETE /api/collection/${id}`);
-		}
-	}
+	deleteCopy: (id: number) => send<void>('DELETE', `/api/collection/${id}`),
+
+	/** Assign a copy to a binder, a deck, or neither (pass empty object). */
+	moveCopy: (id: number, body: { binder_id?: number | null; deck_id?: number | null; note?: string }) =>
+		send<CollectionRow>('PUT', `/api/collection/${id}/move`, body),
+
+	// --- Binders ---
+	binders: () => getJson<Binder[]>('/api/binders'),
+	binderDetail: (id: number) => getJson<BinderDetail>(`/api/binders/${id}`),
+	createBinder: (b: Partial<NewBinder> & { name: string }) =>
+		send<Binder>('POST', '/api/binders', b),
+	updateBinder: (id: number, e: Partial<BinderEdit>) =>
+		send<Binder>('PUT', `/api/binders/${id}`, e),
+	deleteBinder: (id: number) => send<void>('DELETE', `/api/binders/${id}`),
+
+	// --- Decks ---
+	decks: () => getJson<Deck[]>('/api/decks'),
+	deckDetail: (id: number) => getJson<DeckDetail>(`/api/decks/${id}`),
+	createDeck: (d: Partial<NewDeck> & { name: string }) => send<Deck>('POST', '/api/decks', d),
+	updateDeck: (id: number, e: Partial<DeckEdit>) => send<Deck>('PUT', `/api/decks/${id}`, e),
+	deleteDeck: (id: number) => send<void>('DELETE', `/api/decks/${id}`)
 };
 
 /** Turn a variant code (`reverse_holo`) into a label (`Reverse Holo`). */

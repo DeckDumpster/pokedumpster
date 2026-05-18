@@ -1,8 +1,9 @@
 //! `pkdump` — PokeDumpster command-line entry point.
 //!
-//! The clap command tree grows as features land (PLAN.md §2, §5). `serve`
-//! and the `ingest`/`data` subcommands arrive with later tasks.
+//! The clap command tree grows as features land (PLAN.md §2, §5). The
+//! `ingest`/`data` subcommands arrive with later tasks.
 
+mod serve;
 mod setup;
 
 use clap::{Parser, Subcommand};
@@ -22,10 +23,13 @@ struct Cli {
 enum Command {
     /// Build the shared catalog database from upstream sources.
     Setup(setup::SetupArgs),
+    /// Start the HTTP server.
+    Serve(serve::ServeArgs),
 }
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Setup(args) => setup::run(args),
+        Command::Serve(args) => serve::run(args),
     }
 }

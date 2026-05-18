@@ -8,3 +8,11 @@ authors.workspace = true
 [dependencies]
 pkdump-core.workspace = true
 pkdump-db.workspace = true
+rusqlite.workspace = true
+axum.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower = { workspace = true, features = ["util"] }

@@ -48,6 +48,14 @@ export const api = {
 			throw new Error(`${res.status} ${res.statusText} — POST /api/collection`);
 		}
 		return (await res.json()) as CollectionRow;
+	},
+
+	/** Delete a collection entry (used to undo an add). */
+	async deleteCopy(id: number): Promise<void> {
+		const res = await fetch(`/api/collection/${id}`, { method: 'DELETE' });
+		if (!res.ok && res.status !== 404) {
+			throw new Error(`${res.status} ${res.statusText} — DELETE /api/collection/${id}`);
+		}
 	}
 };
 

@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api } from '$lib/api';
+	import { api, variantLabel } from '$lib/api';
+	import VariantModal from '$lib/components/VariantModal.svelte';
 	import type { BinderPage } from '$lib/types/BinderPage';
+	import type { BinderSlot } from '$lib/types/BinderSlot';
+	import type { SlotPrinting } from '$lib/types/SlotPrinting';
 
 	let binder = $state<BinderPage | null>(null);
 	let loading = $state(true);
@@ -13,11 +16,16 @@
 	let includeSubset = $state(true);
 	let includePromos = $state(false);
 
+	let selectedSlot = $state<BinderSlot | null>(null);
+	let toast = $state<{ message: string; copyId: number; printing: SlotPrinting } | null>(null);
+	let toastTimer: ReturnType<typeof setTimeout>;
+
 	async function load() {
 		const set = page.params.set;
 		if (!set) return;
 		loading = true;
 		error = null;
+		selectedSlot = null;
 		try {
 			binder = await api.binder(set, {
 				page: pageNum,
@@ -43,6 +51,40 @@
 		load();
 	});
 
+	async function addCopy(printingId: string, variant: string) {
+		const slot = selectedSlot;
+		if (!slot) return;
+		const printing = slot.printings.find((p) => p.printing_id === printingId);
+		if (!printing) return;
+		printing.owned_count += 1; // optimistic — pip + modal update at once
+		try {
+			const row = await api.addCopy({ printing_id: printingId, source: 'binder_click' });
+			showToast(`Added ${slot.name} · ${variantLabel(variant)}`, row.id, printing);
+		} catch (e) {
+			printing.owned_count -= 1; // revert
+			error = e instanceof Error ? e.message : String(e);
+		}
+	}
+
+	function showToast(message: string, copyId: number, printing: SlotPrinting) {
+		clearTimeout(toastTimer);
+		toast = { message, copyId, printing };
+		toastTimer = setTimeout(() => (toast = null), 6000);
+	}
+
+	async function undo() {
+		if (!toast) return;
+		const { copyId, printing } = toast;
+		toast = null;
+		clearTimeout(toastTimer);
+		try {
+			await api.deleteCopy(copyId);
+			printing.owned_count = Math.max(0, printing.owned_count - 1);
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		}
+	}
+
 	function columns(l: number): number {
 		if (l === 4) return 2;
 		if (l === 12) return 4;
@@ -60,7 +102,6 @@
 		return total > 0 ? Math.round((owned / total) * 100) : 0;
 	}
 
-	// Reset to page 1 whenever the filters change.
 	function resetPage() {
 		pageNum = 1;
 	}
@@ -114,6 +155,8 @@
 		</button>
 	</div>
 
+	{#if error}<p class="error">{error}</p>{/if}
+
 	{#if binder.slots.length === 0}
 		<p class="muted">No cards in this view.</p>
 	{:else}
@@ -123,7 +166,7 @@
 				{#if slot.section !== prevSection && slot.section !== 'base'}
 					<div class="divider">{sectionLabel[slot.section]}</div>
 				{/if}
-				<a class="slot" href="/card/{binder.set.set_code}/{slot.number}">
+				<button class="slot" onclick={() => (selectedSlot = slot)}>
 					{#if slot.image_large}
 						<img src={slot.image_large} alt={slot.name} loading="lazy" />
 					{:else}
@@ -137,10 +180,26 @@
 							{/each}
 						</div>
 					</div>
-				</a>
+				</button>
 			{/each}
 		</div>
 	{/if}
+{/if}
+
+{#if selectedSlot && binder}
+	<VariantModal
+		slot={selectedSlot}
+		setCode={binder.set.set_code}
+		onAdd={addCopy}
+		onClose={() => (selectedSlot = null)}
+	/>
+{/if}
+
+{#if toast}
+	<div class="toast">
+		<span>{toast.message}</span>
+		<button class="undo" onclick={undo}>Undo</button>
+	</div>
 {/if}
 
 <style>
@@ -205,6 +264,7 @@
 		padding: 0.3rem 0.7rem;
 		border-radius: 6px;
 		cursor: pointer;
+		font: inherit;
 	}
 	button:disabled {
 		opacity: 0.4;
@@ -233,13 +293,15 @@
 	}
 	.slot {
 		display: block;
+		width: 100%;
+		padding: 0;
 		background: #16213e;
 		border: 2px solid #0f3460;
 		border-radius: 8px;
 		overflow: hidden;
-		text-decoration: none;
 		color: #e0e0e0;
 		transition: border-color 0.15s;
+		text-align: left;
 	}
 	.slot:hover {
 		border-color: #e94560;
@@ -285,5 +347,26 @@
 	.pip.owned {
 		background: #e94560;
 		border-color: #e94560;
+	}
+	.toast {
+		position: fixed;
+		bottom: 1.5rem;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 110;
+		display: flex;
+		gap: 1rem;
+		align-items: center;
+		background: #0f3460;
+		border: 1px solid #e94560;
+		border-radius: 8px;
+		padding: 0.6rem 1rem;
+		font-size: 0.9rem;
+	}
+	.undo {
+		background: #e94560;
+		border: none;
+		color: #fff;
+		padding: 0.2rem 0.6rem;
 	}
 </style>

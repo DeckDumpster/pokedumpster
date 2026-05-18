@@ -11,6 +11,7 @@ pub mod cards;
 pub mod catalog;
 pub mod collection;
 pub mod decks;
+pub mod orders;
 pub mod sealed;
 pub mod sets;
 

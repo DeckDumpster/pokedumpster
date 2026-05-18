@@ -18,6 +18,10 @@ import type { SealedEntry } from './types/SealedEntry';
 import type { SealedProduct } from './types/SealedProduct';
 import type { NewSealed } from './types/NewSealed';
 import type { SealedEdit } from './types/SealedEdit';
+import type { Order } from './types/Order';
+import type { OrderDetail } from './types/OrderDetail';
+import type { NewOrder } from './types/NewOrder';
+import type { OrderLine } from './types/OrderLine';
 
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -94,7 +98,15 @@ export const api = {
 		send<SealedEntry>('POST', '/api/sealed/collection', s),
 	updateSealed: (id: number, e: Partial<SealedEdit>) =>
 		send<SealedEntry>('PUT', `/api/sealed/collection/${id}`, e),
-	deleteSealed: (id: number) => send<void>('DELETE', `/api/sealed/collection/${id}`)
+	deleteSealed: (id: number) => send<void>('DELETE', `/api/sealed/collection/${id}`),
+
+	// --- Orders ---
+	orders: () => getJson<Order[]>('/api/orders'),
+	orderDetail: (id: number) => getJson<OrderDetail>(`/api/orders/${id}`),
+	createOrder: (order: Partial<NewOrder> & { source: string }, lines: OrderLine[]) =>
+		send<OrderDetail>('POST', '/api/orders', { order, lines }),
+	receiveOrder: (id: number) =>
+		send<{ received: number }>('POST', `/api/orders/${id}/receive`)
 };
 
 /** Turn a variant code (`reverse_holo`) into a label (`Reverse Holo`). */

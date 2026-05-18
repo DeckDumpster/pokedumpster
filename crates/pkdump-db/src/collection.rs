@@ -277,6 +277,15 @@ pub fn list_by_deck(conn: &Connection, deck_id: i64) -> Result<Vec<CollectionRow
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// List the display rows belonging to an order.
+pub fn list_by_order(conn: &Connection, order_id: i64) -> Result<Vec<CollectionRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ROW_COLUMNS} {ROW_FROM} WHERE c.order_id = ?1 ORDER BY c.id"
+    ))?;
+    let rows = stmt.query_map([order_id], collection_row_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// List every copy the user owns of any printing of a given card.
 pub fn list_for_card(conn: &Connection, card_id: &str) -> Result<Vec<CollectionEntry>> {
     let mut stmt = conn.prepare(&format!(

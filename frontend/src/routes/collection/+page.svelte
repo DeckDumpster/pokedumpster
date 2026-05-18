@@ -275,6 +275,7 @@
 				<p class="muted">{filtered.length} of {rows.length} cards</p>
 				<span class="spacer"></span>
 				{#if rows.length > 0}
+					<a class="ghost" href="/api/export/csv" download>Export CSV</a>
 					<button class="ghost" onclick={toggleSelectMode}>
 						{selectMode ? 'Cancel' : 'Select'}
 					</button>
@@ -444,6 +445,8 @@
 		padding: 0.3rem 0.8rem;
 		font-size: 0.85rem;
 		cursor: pointer;
+		text-decoration: none;
+		display: inline-block;
 	}
 	.ghost:hover {
 		border-color: #e94560;

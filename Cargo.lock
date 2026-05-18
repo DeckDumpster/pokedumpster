@@ -1024,6 +1024,7 @@ name = "pkdump-db"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "csv",
  "pkdump-core",
  "refinery",
  "rusqlite",

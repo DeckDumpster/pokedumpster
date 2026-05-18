@@ -112,15 +112,17 @@ pub fn parse(input: &str) -> Result<Vec<ParsedRow>> {
     Ok(rows)
 }
 
-/// ManaBox `Foil` value → PokeDumpster variant code.
+/// ManaBox `Foil` value → PokeDumpster variant code. ManaBox's own
+/// vocabulary is translated; any other value passes through verbatim, so
+/// PokeDumpster's own CSV export (which writes variant codes directly)
+/// round-trips every variant, not just the three ManaBox knows.
 fn map_variant(foil: &str) -> String {
     match foil.trim().to_lowercase().as_str() {
-        "" | "normal" | "non-foil" | "nonfoil" => "normal",
-        "foil" | "holofoil" | "holo" | "etched" => "holo",
-        "reverseholofoil" | "reverse_holo" | "reverse" | "reverse holo" => "reverse_holo",
-        _ => "normal",
+        "" | "non-foil" | "nonfoil" => "normal".to_string(),
+        "foil" | "holofoil" | "etched" => "holo".to_string(),
+        "reverseholofoil" => "reverse_holo".to_string(),
+        other => other.to_string(),
     }
-    .to_string()
 }
 
 #[cfg(test)]

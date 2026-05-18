@@ -121,7 +121,7 @@ fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(homepage))
         .route("/health", get(|| async { "ok" }))
-        .nest("/api/collection", routes::collection::routes())
+        .nest("/api", routes::api_router())
         .with_state(state)
 }
 
@@ -282,5 +282,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn card_endpoint_returns_detail_and_404() {
+        let (_d, state) = test_state();
+        let router = app(state);
+
+        let found = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/card/sv3pt5/1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(found.status(), StatusCode::OK);
+        assert!(body_string(found).await.contains("Bulbasaur"));
+
+        let missing = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/card/sv3pt5/999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 }

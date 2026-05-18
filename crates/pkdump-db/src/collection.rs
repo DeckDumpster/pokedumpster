@@ -165,6 +165,17 @@ pub fn list(conn: &Connection, limit: i64, offset: i64) -> Result<Vec<Collection
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// List every copy the user owns of any printing of a given card.
+pub fn list_for_card(conn: &Connection, card_id: &str) -> Result<Vec<CollectionEntry>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM collection \
+         WHERE printing_id IN (SELECT printing_id FROM printings WHERE card_id = ?1) \
+         ORDER BY id"
+    ))?;
+    let rows = stmt.query_map([card_id], from_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Update editable per-copy fields. Returns whether a row was changed.
 /// (A `None` field is kept; this path cannot clear a field to NULL.)
 pub fn update(conn: &Connection, id: i64, edit: &CopyEdit) -> Result<bool> {

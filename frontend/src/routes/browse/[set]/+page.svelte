@@ -19,6 +19,7 @@
 	let selectedSlot = $state<BinderSlot | null>(null);
 	let toast = $state<{ message: string; copyId: number; printing: SlotPrinting } | null>(null);
 	let toastTimer: ReturnType<typeof setTimeout>;
+	let viewportWidth = $state(0);
 
 	async function load() {
 		const set = page.params.set;
@@ -91,6 +92,14 @@
 		return 3;
 	}
 
+	// Narrow viewports cap the pocket-layout column count (PLAN §6.9).
+	const cols = $derived.by(() => {
+		const base = columns(layout);
+		if (viewportWidth > 0 && viewportWidth < 480) return 1;
+		if (viewportWidth > 0 && viewportWidth < 768) return Math.min(2, base);
+		return base;
+	});
+
 	const sectionLabel: Record<string, string> = {
 		base: '',
 		secret: 'Secret Rares',
@@ -108,6 +117,7 @@
 </script>
 
 <svelte:head><title>{binder ? binder.set.name : 'Binder'} — PokeDumpster</title></svelte:head>
+<svelte:window bind:innerWidth={viewportWidth} />
 
 {#if loading && !binder}
 	<p class="muted">Loading…</p>
@@ -160,7 +170,7 @@
 	{#if binder.slots.length === 0}
 		<p class="muted">No cards in this view.</p>
 	{:else}
-		<div class="grid" style:grid-template-columns="repeat({columns(layout)}, 1fr)">
+		<div class="grid" style:grid-template-columns="repeat({cols}, 1fr)">
 			{#each binder.slots as slot, i (slot.card_id)}
 				{@const prevSection = i > 0 ? binder.slots[i - 1].section : 'base'}
 				{#if slot.section !== prevSection && slot.section !== 'base'}
@@ -368,5 +378,23 @@
 		border: none;
 		color: #fff;
 		padding: 0.2rem 0.6rem;
+	}
+
+	/* Larger tap targets on touch-sized viewports (PLAN §6.9). */
+	@media (max-width: 540px) {
+		.controls {
+			gap: 0.6rem 1rem;
+		}
+		.controls label,
+		.controls button {
+			font-size: 0.95rem;
+			padding: 0.45rem 0.6rem;
+		}
+		.stats {
+			gap: 1rem;
+		}
+		.bar {
+			width: 120px;
+		}
 	}
 </style>

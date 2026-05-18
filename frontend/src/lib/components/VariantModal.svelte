@@ -135,4 +135,21 @@
 	.full:hover {
 		color: #e94560;
 	}
+
+	/* On narrow screens the modal becomes a bottom sheet (PLAN §6.9). */
+	@media (max-width: 540px) {
+		.modal {
+			top: auto;
+			bottom: 0;
+			left: 0;
+			transform: none;
+			width: 100%;
+			max-width: 100%;
+			max-height: 78vh;
+			border-radius: 14px 14px 0 0;
+		}
+		.add {
+			padding: 0.45rem 1rem;
+		}
+	}
 </style>

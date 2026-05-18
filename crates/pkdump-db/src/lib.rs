@@ -14,6 +14,7 @@ pub mod decks;
 pub mod orders;
 pub mod sealed;
 pub mod sets;
+pub mod wishlist;
 
 mod connection;
 mod error;

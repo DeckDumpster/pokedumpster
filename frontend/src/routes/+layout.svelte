@@ -10,7 +10,8 @@
 		{ href: '/binders', label: 'Binders' },
 		{ href: '/decks', label: 'Decks' },
 		{ href: '/sealed', label: 'Sealed' },
-		{ href: '/sets', label: 'Sets' }
+		{ href: '/wishlist', label: 'Wishlist' },
+		{ href: '/orders', label: 'Orders' }
 	];
 </script>
 

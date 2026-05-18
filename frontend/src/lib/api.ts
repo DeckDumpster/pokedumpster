@@ -22,6 +22,9 @@ import type { Order } from './types/Order';
 import type { OrderDetail } from './types/OrderDetail';
 import type { NewOrder } from './types/NewOrder';
 import type { OrderLine } from './types/OrderLine';
+import type { WishlistEntry } from './types/WishlistEntry';
+import type { NewWish } from './types/NewWish';
+import type { WishEdit } from './types/WishEdit';
 
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -114,7 +117,16 @@ export const api = {
 	createOrder: (order: Partial<NewOrder> & { source: string }, lines: OrderLine[]) =>
 		send<OrderDetail>('POST', '/api/orders', { order, lines }),
 	receiveOrder: (id: number) =>
-		send<{ received: number }>('POST', `/api/orders/${id}/receive`)
+		send<{ received: number }>('POST', `/api/orders/${id}/receive`),
+
+	// --- Wishlist ---
+	wishlist: (includeFulfilled = false) =>
+		getJson<WishlistEntry[]>(`/api/wishlist?include_fulfilled=${includeFulfilled}`),
+	addWish: (w: Partial<NewWish> & { card_id: string }) => send<number>('POST', '/api/wishlist', w),
+	updateWish: (id: number, e: Partial<WishEdit>) => send<void>('PUT', `/api/wishlist/${id}`, e),
+	fulfillWish: (id: number, fulfilled: boolean) =>
+		send<void>('PUT', `/api/wishlist/${id}/fulfill`, { fulfilled }),
+	deleteWish: (id: number) => send<void>('DELETE', `/api/wishlist/${id}`)
 };
 
 /** Turn a variant code (`reverse_holo`) into a label (`Reverse Holo`). */

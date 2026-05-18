@@ -177,6 +177,88 @@ pub fn list(conn: &Connection, limit: i64, offset: i64) -> Result<Vec<Collection
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// A collection entry joined to its printing and card — the display-ready
+/// shape the `/collection` UI renders.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct CollectionRow {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub printing_id: String,
+    pub condition: String,
+    pub language: String,
+    pub purchase_price: Option<f64>,
+    pub sale_price: Option<f64>,
+    pub acquired_at: String,
+    pub source: String,
+    pub notes: Option<String>,
+    pub status: String,
+    pub graded: bool,
+    #[ts(type = "number | null")]
+    pub binder_id: Option<i64>,
+    #[ts(type = "number | null")]
+    pub deck_id: Option<i64>,
+    pub variant: String,
+    pub card_id: String,
+    pub set_code: String,
+    pub number: String,
+    pub name: String,
+    pub rarity: Option<String>,
+    pub image_small: Option<String>,
+}
+
+const ROW_COLUMNS: &str = "c.id, c.printing_id, c.condition, c.language, \
+     c.purchase_price, c.sale_price, c.acquired_at, c.source, c.notes, \
+     c.status, c.graded, c.binder_id, c.deck_id, p.variant, cd.card_id, \
+     cd.set_code, cd.number, cd.name, cd.rarity, cd.image_small";
+
+const ROW_FROM: &str = "FROM collection c \
+     JOIN printings p ON c.printing_id = p.printing_id \
+     JOIN cards cd ON p.card_id = cd.card_id";
+
+fn collection_row_from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionRow> {
+    Ok(CollectionRow {
+        id: r.get(0)?,
+        printing_id: r.get(1)?,
+        condition: r.get(2)?,
+        language: r.get(3)?,
+        purchase_price: r.get(4)?,
+        sale_price: r.get(5)?,
+        acquired_at: r.get(6)?,
+        source: r.get(7)?,
+        notes: r.get(8)?,
+        status: r.get(9)?,
+        graded: r.get(10)?,
+        binder_id: r.get(11)?,
+        deck_id: r.get(12)?,
+        variant: r.get(13)?,
+        card_id: r.get(14)?,
+        set_code: r.get(15)?,
+        number: r.get(16)?,
+        name: r.get(17)?,
+        rarity: r.get(18)?,
+        image_small: r.get(19)?,
+    })
+}
+
+/// List collection entries as display rows (joined to printing + card),
+/// newest first. Requires the catalog to be attached (a user connection).
+pub fn list_rows(conn: &Connection, limit: i64, offset: i64) -> Result<Vec<CollectionRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ROW_COLUMNS} {ROW_FROM} ORDER BY c.id DESC LIMIT ?1 OFFSET ?2"
+    ))?;
+    let rows = stmt.query_map([limit, offset], collection_row_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Fetch a single collection entry as a display row.
+pub fn get_row(conn: &Connection, id: i64) -> Result<Option<CollectionRow>> {
+    let mut stmt = conn.prepare(&format!("SELECT {ROW_COLUMNS} {ROW_FROM} WHERE c.id = ?1"))?;
+    Ok(stmt
+        .query_row([id], collection_row_from_row)
+        .optional()?)
+}
+
 /// List every copy the user owns of any printing of a given card.
 pub fn list_for_card(conn: &Connection, card_id: &str) -> Result<Vec<CollectionEntry>> {
     let mut stmt = conn.prepare(&format!(

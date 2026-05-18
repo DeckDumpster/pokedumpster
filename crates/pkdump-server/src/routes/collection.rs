@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use pkdump_db::DbError;
-use pkdump_db::collection::{self, CollectionEntry, CopyEdit, NewCopy};
+use pkdump_db::collection::{self, CollectionRow, CopyEdit, NewCopy};
 
 use crate::{AppError, AppState, blocking};
 
@@ -43,49 +43,52 @@ struct BulkDeleted {
 async fn list(
     State(state): State<AppState>,
     Query(p): Query<ListParams>,
-) -> Result<Json<Vec<CollectionEntry>>, AppError> {
-    let limit = p.limit.unwrap_or(100).clamp(1, 1000);
+) -> Result<Json<Vec<CollectionRow>>, AppError> {
+    let limit = p.limit.unwrap_or(1000).clamp(1, 5000);
     let offset = p.offset.unwrap_or(0).max(0);
-    let entries = blocking(&state, move |c| collection::list(c, limit, offset)).await?;
-    Ok(Json(entries))
+    let rows = blocking(&state, move |c| collection::list_rows(c, limit, offset)).await?;
+    Ok(Json(rows))
 }
 
 async fn create(
     State(state): State<AppState>,
     Json(new): Json<NewCopy>,
-) -> Result<(StatusCode, Json<CollectionEntry>), AppError> {
-    let entry = blocking(&state, move |c| {
+) -> Result<(StatusCode, Json<CollectionRow>), AppError> {
+    let row = blocking(&state, move |c| {
         let id = collection::add(c, &new)?;
-        collection::get(c, id)?.ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
+        collection::get_row(c, id)?
+            .ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
     })
     .await?;
-    Ok((StatusCode::CREATED, Json(entry)))
+    Ok((StatusCode::CREATED, Json(row)))
 }
 
 async fn get_one(
     State(state): State<AppState>,
     Path(id): Path<i64>,
-) -> Result<Json<CollectionEntry>, AppError> {
-    let entry = blocking(&state, move |c| {
-        collection::get(c, id)?.ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
+) -> Result<Json<CollectionRow>, AppError> {
+    let row = blocking(&state, move |c| {
+        collection::get_row(c, id)?
+            .ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
     })
     .await?;
-    Ok(Json(entry))
+    Ok(Json(row))
 }
 
 async fn update_one(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(edit): Json<CopyEdit>,
-) -> Result<Json<CollectionEntry>, AppError> {
-    let entry = blocking(&state, move |c| {
+) -> Result<Json<CollectionRow>, AppError> {
+    let row = blocking(&state, move |c| {
         if !collection::update(c, id, &edit)? {
             return Err(DbError::NotFound(format!("collection entry {id}")));
         }
-        collection::get(c, id)?.ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
+        collection::get_row(c, id)?
+            .ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
     })
     .await?;
-    Ok(Json(entry))
+    Ok(Json(row))
 }
 
 async fn delete_one(

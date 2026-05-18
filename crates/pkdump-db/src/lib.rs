@@ -8,6 +8,7 @@
 pub mod cards;
 pub mod catalog;
 pub mod collection;
+pub mod sets;
 
 mod connection;
 mod error;

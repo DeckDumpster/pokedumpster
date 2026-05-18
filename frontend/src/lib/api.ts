@@ -79,6 +79,10 @@ export const api = {
 	/** Delete a collection entry (used to undo an add). */
 	deleteCopy: (id: number) => send<void>('DELETE', `/api/collection/${id}`),
 
+	/** Delete many collection entries in one transaction; returns the count. */
+	bulkDelete: (ids: number[]) =>
+		send<{ deleted: number }>('POST', '/api/collection/bulk-delete', ids),
+
 	/** Assign a copy to a binder, a deck, or neither (pass empty object). */
 	moveCopy: (id: number, body: { binder_id?: number | null; deck_id?: number | null; note?: string }) =>
 		send<CollectionRow>('PUT', `/api/collection/${id}/move`, body),

@@ -3,6 +3,8 @@
 	import { api, variantLabel } from '$lib/api';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { CollectionView } from '$lib/types/CollectionView';
+	import type { Binder } from '$lib/types/Binder';
+	import type { Deck } from '$lib/types/Deck';
 
 	let rows = $state<CollectionRow[]>([]);
 	let loading = $state(true);
@@ -85,9 +87,21 @@
 		}
 	}
 
+	// --- Multi-select bulk operations. ---
+	let binders = $state<Binder[]>([]);
+	let decks = $state<Deck[]>([]);
+	let selectMode = $state(false);
+	let selected = $state(new Set<number>());
+	let busy = $state(false);
+
 	onMount(async () => {
 		try {
-			[rows, savedViews] = await Promise.all([api.collection(), api.views()]);
+			[rows, savedViews, binders, decks] = await Promise.all([
+				api.collection(),
+				api.views(),
+				api.binders(),
+				api.decks()
+			]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -114,6 +128,83 @@
 
 	function price(p: number | null): string {
 		return p == null ? '—' : `$${p.toFixed(2)}`;
+	}
+
+	function toggleSelectMode() {
+		selectMode = !selectMode;
+		if (!selectMode) selected = new Set();
+	}
+
+	function toggleRow(id: number) {
+		const next = new Set(selected);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		selected = next;
+	}
+
+	// The header checkbox selects/clears every currently-filtered row.
+	const allSelected = $derived(
+		filtered.length > 0 && filtered.every((r) => selected.has(r.id))
+	);
+	function toggleAll() {
+		selected = allSelected ? new Set() : new Set(filtered.map((r) => r.id));
+	}
+
+	/** Re-fetch the collection after a bulk mutation, then drop the selection. */
+	async function refresh() {
+		rows = await api.collection();
+		selected = new Set();
+	}
+
+	async function bulkDelete() {
+		const ids = [...selected];
+		if (!ids.length || !confirm(`Delete ${ids.length} selected ${ids.length === 1 ? 'copy' : 'copies'}?`))
+			return;
+		busy = true;
+		try {
+			await api.bulkDelete(ids);
+			await refresh();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function bulkAssign(field: 'binder_id' | 'deck_id', value: string) {
+		const id = Number(value);
+		if (!id) return;
+		const ids = [...selected];
+		busy = true;
+		try {
+			for (const copyId of ids) {
+				await api.moveCopy(copyId, { [field]: id });
+			}
+			await refresh();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function bulkWishlist() {
+		// One wish per distinct card — selecting two copies of a card wishes it once.
+		const seen = new Set<string>();
+		const wishes = rows
+			.filter((r) => selected.has(r.id))
+			.filter((r) => (seen.has(r.card_id) ? false : (seen.add(r.card_id), true)));
+		busy = true;
+		try {
+			for (const r of wishes) {
+				await api.addWish({ card_id: r.card_id, printing_id: r.printing_id });
+			}
+			selected = new Set();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = false;
+		}
 	}
 </script>
 
@@ -180,13 +271,55 @@
 		</aside>
 
 		<main class="content">
-			<p class="muted">{filtered.length} of {rows.length} cards</p>
+			<div class="toolbar">
+				<p class="muted">{filtered.length} of {rows.length} cards</p>
+				<span class="spacer"></span>
+				{#if rows.length > 0}
+					<button class="ghost" onclick={toggleSelectMode}>
+						{selectMode ? 'Cancel' : 'Select'}
+					</button>
+				{/if}
+			</div>
+
+			{#if selectMode && selected.size > 0}
+				<div class="bulkbar">
+					<span class="count">{selected.size} selected</span>
+					<button disabled={busy} onclick={bulkDelete}>Delete</button>
+					<select
+						disabled={busy || binders.length === 0}
+						onchange={(e) => {
+							bulkAssign('binder_id', e.currentTarget.value);
+							e.currentTarget.selectedIndex = 0;
+						}}
+					>
+						<option value="">Assign to binder…</option>
+						{#each binders as b (b.id)}<option value={b.id}>{b.name}</option>{/each}
+					</select>
+					<select
+						disabled={busy || decks.length === 0}
+						onchange={(e) => {
+							bulkAssign('deck_id', e.currentTarget.value);
+							e.currentTarget.selectedIndex = 0;
+						}}
+					>
+						<option value="">Assign to deck…</option>
+						{#each decks as d (d.id)}<option value={d.id}>{d.name}</option>{/each}
+					</select>
+					<button disabled={busy} onclick={bulkWishlist}>Add to wishlist</button>
+				</div>
+			{/if}
+
 			{#if rows.length === 0}
 				<p class="muted">Your collection is empty. Add cards from a set's binder view.</p>
 			{:else}
 				<table>
 					<thead>
 						<tr>
+							{#if selectMode}
+								<th class="cbcol">
+									<input type="checkbox" checked={allSelected} onchange={toggleAll} />
+								</th>
+							{/if}
 							<th>Name</th>
 							<th>Set</th>
 							<th>#</th>
@@ -199,7 +332,16 @@
 					</thead>
 					<tbody>
 						{#each filtered as row (row.id)}
-							<tr>
+							<tr class:picked={selectMode && selected.has(row.id)}>
+								{#if selectMode}
+									<td class="cbcol">
+										<input
+											type="checkbox"
+											checked={selected.has(row.id)}
+											onchange={() => toggleRow(row.id)}
+										/>
+									</td>
+								{/if}
 								<td><a href="/card/{row.set_code}/{row.number}">{row.name}</a></td>
 								<td>{row.set_code}</td>
 								<td>{row.number}</td>
@@ -282,6 +424,72 @@
 	.content {
 		flex: 1;
 		min-width: 0;
+	}
+	.toolbar {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+	}
+	.toolbar .muted {
+		margin: 0;
+	}
+	.spacer {
+		flex: 1;
+	}
+	.ghost {
+		background: none;
+		border: 1px solid #0f3460;
+		color: #e0e0e0;
+		border-radius: 6px;
+		padding: 0.3rem 0.8rem;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.ghost:hover {
+		border-color: #e94560;
+		color: #e94560;
+	}
+	.bulkbar {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+		margin: 0.6rem 0;
+		padding: 0.6rem 0.8rem;
+		background: #16213e;
+		border: 1px solid #0f3460;
+		border-radius: 8px;
+	}
+	.bulkbar .count {
+		font-size: 0.85rem;
+		color: #e94560;
+		font-weight: 600;
+	}
+	.bulkbar button,
+	.bulkbar select {
+		background: #0f3460;
+		border: none;
+		border-radius: 6px;
+		color: #e0e0e0;
+		padding: 0.35rem 0.7rem;
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.bulkbar button:hover:not(:disabled),
+	.bulkbar select:hover:not(:disabled) {
+		background: #e94560;
+	}
+	.bulkbar button:disabled,
+	.bulkbar select:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+	.cbcol {
+		width: 1.5rem;
+		text-align: center;
+	}
+	tbody tr.picked {
+		background: rgba(233, 69, 96, 0.12);
 	}
 	table {
 		width: 100%;

@@ -7,3 +7,5 @@ authors.workspace = true
 
 [dependencies]
 pkdump-core.workspace = true
+rusqlite.workspace = true
+refinery.workspace = true

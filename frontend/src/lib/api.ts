@@ -5,6 +5,7 @@ import type { CollectionRow } from './types/CollectionRow';
 import type { CardDetail } from './types/CardDetail';
 import type { NewCopy } from './types/NewCopy';
 import type { SetSummary } from './types/SetSummary';
+import type { SetAnalytics } from './types/SetAnalytics';
 import type { BinderPage } from './types/BinderPage';
 import type { Binder } from './types/Binder';
 import type { BinderDetail } from './types/BinderDetail';
@@ -66,6 +67,10 @@ export const api = {
 
 	/** Every set, with card and owned-card counts. */
 	sets: () => getJson<SetSummary[]>('/api/sets'),
+
+	/** Analytical breakdown for one set: completion, rarity split, value. */
+	setAnalytics: (code: string) =>
+		getJson<SetAnalytics>(`/api/sets/${encodeURIComponent(code)}/analytics`),
 
 	/** A binder page for a set. */
 	binder: (setCode: string, params: Record<string, string | number | boolean>) => {

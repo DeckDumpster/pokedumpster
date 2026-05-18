@@ -146,6 +146,7 @@
 {:else if binder}
 	<header>
 		<h1>{binder.set.name}</h1>
+		<a class="statslink" href="/browse/{binder.set.set_code}/stats">Set stats →</a>
 		<div class="stats">
 			<div class="stat">
 				<span>Base {binder.base_owned}/{binder.base_total}</span>
@@ -242,6 +243,13 @@
 	h1 {
 		color: #e94560;
 		margin: 0;
+	}
+	.statslink {
+		color: #e0e0e0;
+		font-size: 0.85rem;
+	}
+	.statslink:hover {
+		color: #e94560;
 	}
 	.muted {
 		color: #888;

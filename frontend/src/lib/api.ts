@@ -74,6 +74,14 @@ export const api = {
 	moveCopy: (id: number, body: { binder_id?: number | null; deck_id?: number | null; note?: string }) =>
 		send<CollectionRow>('PUT', `/api/collection/${id}/move`, body),
 
+	/** Change a copy's lifecycle status. */
+	setCopyStatus: (id: number, status: string, note?: string) =>
+		send<CollectionRow>('PUT', `/api/collection/${id}/status`, { status, note }),
+
+	/** Change a copy's printing (correct a mis-logged variant). */
+	changePrinting: (id: number, printingId: string) =>
+		send<CollectionRow>('PUT', `/api/collection/${id}/printing`, { printing_id: printingId }),
+
 	// --- Binders ---
 	binders: () => getJson<Binder[]>('/api/binders'),
 	binderDetail: (id: number) => getJson<BinderDetail>(`/api/binders/${id}`),

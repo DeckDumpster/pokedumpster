@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
         .route("/{id}", get(get_one).put(update_one).delete(delete_one))
         .route("/{id}/move", put(move_copy))
         .route("/{id}/status", put(set_status))
+        .route("/{id}/printing", put(change_printing))
 }
 
 #[derive(Deserialize)]
@@ -33,6 +34,11 @@ struct MoveBody {
 struct StatusBody {
     status: String,
     note: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PrintingBody {
+    printing_id: String,
 }
 
 #[derive(Deserialize)]
@@ -158,6 +164,20 @@ async fn set_status(
 ) -> Result<Json<CollectionRow>, AppError> {
     let row = blocking(&state, move |c| {
         collection::set_status(c, id, &body.status, body.note.as_deref())?;
+        collection::get_row(c, id)?.ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
+    })
+    .await?;
+    Ok(Json(row))
+}
+
+/// Change a copy's printing — correcting a mis-logged variant.
+async fn change_printing(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(body): Json<PrintingBody>,
+) -> Result<Json<CollectionRow>, AppError> {
+    let row = blocking(&state, move |c| {
+        collection::change_printing(c, id, &body.printing_id)?;
         collection::get_row(c, id)?.ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
     })
     .await?;

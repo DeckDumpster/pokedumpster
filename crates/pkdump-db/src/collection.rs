@@ -403,6 +403,42 @@ pub fn delete(conn: &Connection, id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM collection WHERE id = ?1", [id])? > 0)
 }
 
+/// Change which printing a copy is — for correcting a mis-logged variant.
+/// The new printing must belong to the *same card* (you can swap a copy
+/// between a card's variants, not to a different card).
+pub fn change_printing(conn: &Connection, id: i64, new_printing_id: &str) -> Result<()> {
+    let current: String = conn
+        .query_row("SELECT printing_id FROM collection WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()?
+        .ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))?;
+
+    let card_of = |printing_id: &str| -> Result<Option<String>> {
+        Ok(conn
+            .query_row(
+                "SELECT card_id FROM printings WHERE printing_id = ?1",
+                [printing_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    };
+    let new_card = card_of(new_printing_id)?.ok_or_else(|| {
+        DbError::NotFound(format!("printing '{new_printing_id}' is not in the catalog"))
+    })?;
+    if card_of(&current)?.as_deref() != Some(new_card.as_str()) {
+        return Err(DbError::Conflict(
+            "a copy can only be changed to another printing of the same card".into(),
+        ));
+    }
+
+    conn.execute(
+        "UPDATE collection SET printing_id = ?2 WHERE id = ?1",
+        params![id, new_printing_id],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,5 +615,59 @@ mod tests {
 
         let page2 = list(&conn, 1, 1).unwrap();
         assert_eq!(page2[0].id, first);
+    }
+
+    #[test]
+    fn change_printing_swaps_within_card_and_rejects_cross_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) VALUES ('sv3pt5', '151', 'SV')",
+                [],
+            )
+            .unwrap();
+            for n in ["1", "2"] {
+                c.execute(
+                    "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                     VALUES (?1, 'sv3pt5', ?2, ?3, 'Card')",
+                    rusqlite::params![format!("sv3pt5-{n}"), n, n.parse::<i64>().unwrap()],
+                )
+                .unwrap();
+            }
+            for (pid, card, variant) in [
+                ("sv3pt5-1-normal", "sv3pt5-1", "normal"),
+                ("sv3pt5-1-reverse_holo", "sv3pt5-1", "reverse_holo"),
+                ("sv3pt5-2-normal", "sv3pt5-2", "normal"),
+            ] {
+                c.execute(
+                    "INSERT INTO printings (printing_id, card_id, variant) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![pid, card, variant],
+                )
+                .unwrap();
+            }
+        }
+        let mut conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let id = add(
+            &mut conn,
+            &NewCopy {
+                printing_id: "sv3pt5-1-normal".into(),
+                source: "manual_id".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Swapping to another variant of the same card succeeds.
+        change_printing(&conn, id, "sv3pt5-1-reverse_holo").unwrap();
+        assert_eq!(
+            get(&conn, id).unwrap().unwrap().printing_id,
+            "sv3pt5-1-reverse_holo"
+        );
+
+        // Swapping to a printing of a different card is rejected.
+        let err = change_printing(&conn, id, "sv3pt5-2-normal").unwrap_err();
+        assert!(matches!(err, DbError::Conflict(_)));
     }
 }

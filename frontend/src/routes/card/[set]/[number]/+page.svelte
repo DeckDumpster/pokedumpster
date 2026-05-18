@@ -2,11 +2,17 @@
 	import { page } from '$app/state';
 	import { api, variantLabel } from '$lib/api';
 	import type { CardDetail } from '$lib/types/CardDetail';
+	import type { Binder } from '$lib/types/Binder';
+	import type { Deck } from '$lib/types/Deck';
 
 	let detail = $state<CardDetail | null>(null);
+	let binders = $state<Binder[]>([]);
+	let decks = $state<Deck[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let busy = $state(false);
+
+	const STATUSES = ['owned', 'ordered', 'listed', 'sold', 'removed', 'traded', 'gifted', 'lost'];
 
 	async function load() {
 		const set = page.params.set;
@@ -15,7 +21,11 @@
 		loading = true;
 		error = null;
 		try {
-			detail = await api.card(set, number);
+			[detail, binders, decks] = await Promise.all([
+				api.card(set, number),
+				api.binders(),
+				api.decks()
+			]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -23,19 +33,17 @@
 		}
 	}
 
-	// Re-fetch whenever the route params change (client-side navigation
-	// between cards reuses this component).
 	$effect(() => {
 		void page.params.set;
 		void page.params.number;
 		load();
 	});
 
-	async function addCopy(printingId: string) {
+	async function withBusy(fn: () => Promise<unknown>) {
 		busy = true;
 		error = null;
 		try {
-			await api.addCopy({ printing_id: printingId, source: 'manual' });
+			await fn();
 			await load();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -44,12 +52,27 @@
 		}
 	}
 
-	function variantOf(printingId: string): string {
-		const p = detail?.printings.find((x) => x.printing_id === printingId);
-		return p ? variantLabel(p.variant) : printingId;
+	const addCopy = (printingId: string) =>
+		withBusy(() => api.addCopy({ printing_id: printingId, source: 'manual' }));
+	const changeVariant = (copyId: number, printingId: string) =>
+		withBusy(() => api.changePrinting(copyId, printingId));
+	const changeStatus = (copyId: number, status: string) =>
+		withBusy(() => api.setCopyStatus(copyId, status));
+
+	function assignValue(copy: { binder_id: number | null; deck_id: number | null }): string {
+		if (copy.binder_id != null) return `b:${copy.binder_id}`;
+		if (copy.deck_id != null) return `d:${copy.deck_id}`;
+		return '';
+	}
+	function assignCopy(copyId: number, value: string) {
+		const body = value.startsWith('b:')
+			? { binder_id: Number(value.slice(2)) }
+			: value.startsWith('d:')
+				? { deck_id: Number(value.slice(2)) }
+				: {};
+		return withBusy(() => api.moveCopy(copyId, body));
 	}
 
-	/** Parse a JSON-array string column (`types`, `subtypes`) into a list. */
 	function jsonList(raw: string | null): string[] {
 		if (!raw) return [];
 		try {
@@ -59,7 +82,6 @@
 			return [];
 		}
 	}
-
 	function price(p: number | null): string {
 		return p == null ? '—' : `$${p.toFixed(2)}`;
 	}
@@ -69,7 +91,7 @@
 	<title>{detail ? detail.card.name : 'Card'} — PokeDumpster</title>
 </svelte:head>
 
-{#if loading}
+{#if loading && !detail}
 	<p class="muted">Loading…</p>
 {:else if error && !detail}
 	<p class="error">Failed to load card: {error}</p>
@@ -83,21 +105,16 @@
 				<div class="noart">No image</div>
 			{/if}
 		</div>
-
 		<div class="info">
 			<h1>{card.name}</h1>
 			<p class="sub">
-				{card.set_code} · #{card.number}
-				{#if card.rarity}· {card.rarity}{/if}
+				{card.set_code} · #{card.number}{#if card.rarity} · {card.rarity}{/if}
 			</p>
 			<dl>
 				{#if card.supertype}<dt>Type</dt><dd>{card.supertype}</dd>{/if}
 				{#if card.hp != null}<dt>HP</dt><dd>{card.hp}</dd>{/if}
 				{#if jsonList(card.types).length}
 					<dt>Energy</dt><dd>{jsonList(card.types).join(', ')}</dd>
-				{/if}
-				{#if jsonList(card.subtypes).length}
-					<dt>Subtypes</dt><dd>{jsonList(card.subtypes).join(', ')}</dd>
 				{/if}
 				{#if card.artist}<dt>Artist</dt><dd>{card.artist}</dd>{/if}
 			</dl>
@@ -110,17 +127,17 @@
 	<section>
 		<h2>Printings</h2>
 		<table>
-			<thead>
-				<tr><th>Variant</th><th>Owned</th><th>Market</th><th></th></tr>
-			</thead>
+			<thead><tr><th>Variant</th><th>Owned</th><th>Market</th><th></th></tr></thead>
 			<tbody>
 				{#each detail.printings as p (p.printing_id)}
 					<tr class:dim={p.deprecated}>
-						<td>{variantLabel(p.variant)}{#if p.deprecated} (deprecated){/if}</td>
+						<td>{variantLabel(p.variant)}</td>
 						<td>{p.owned_count}</td>
 						<td>{price(p.market_price)}</td>
 						<td>
-							<button disabled={busy} onclick={() => addCopy(p.printing_id)}>+ Add</button>
+							<button disabled={busy || p.deprecated} onclick={() => addCopy(p.printing_id)}>
+								+ Add
+							</button>
 						</td>
 					</tr>
 				{/each}
@@ -135,16 +152,44 @@
 		{:else}
 			<table>
 				<thead>
-					<tr><th>Variant</th><th>Condition</th><th>Status</th><th>Paid</th><th>Acquired</th></tr>
+					<tr><th>Variant</th><th>Condition</th><th>Status</th><th>Location</th><th>Paid</th></tr>
 				</thead>
 				<tbody>
 					{#each detail.copies as copy (copy.id)}
 						<tr>
-							<td>{variantOf(copy.printing_id)}</td>
+							<td>
+								<select
+									value={copy.printing_id}
+									disabled={busy}
+									onchange={(e) => changeVariant(copy.id, e.currentTarget.value)}
+								>
+									{#each detail.printings as p (p.printing_id)}
+										<option value={p.printing_id}>{variantLabel(p.variant)}</option>
+									{/each}
+								</select>
+							</td>
 							<td>{copy.condition}</td>
-							<td>{copy.status}</td>
+							<td>
+								<select
+									value={copy.status}
+									disabled={busy}
+									onchange={(e) => changeStatus(copy.id, e.currentTarget.value)}
+								>
+									{#each STATUSES as s (s)}<option value={s}>{s}</option>{/each}
+								</select>
+							</td>
+							<td>
+								<select
+									value={assignValue(copy)}
+									disabled={busy}
+									onchange={(e) => assignCopy(copy.id, e.currentTarget.value)}
+								>
+									<option value="">Unassigned</option>
+									{#each binders as b (b.id)}<option value="b:{b.id}">Binder: {b.name}</option>{/each}
+									{#each decks as d (d.id)}<option value="d:{d.id}">Deck: {d.name}</option>{/each}
+								</select>
+							</td>
 							<td>{price(copy.purchase_price)}</td>
-							<td>{copy.acquired_at.slice(0, 10)}</td>
 						</tr>
 					{/each}
 				</tbody>
@@ -216,7 +261,7 @@
 	}
 	table {
 		width: 100%;
-		max-width: 560px;
+		max-width: 640px;
 		border-collapse: collapse;
 		font-size: 0.9rem;
 	}
@@ -234,6 +279,14 @@
 	}
 	tr.dim {
 		opacity: 0.5;
+	}
+	select {
+		background: #1a1a2e;
+		border: 1px solid #0f3460;
+		color: #e0e0e0;
+		border-radius: 6px;
+		padding: 0.15rem;
+		font: inherit;
 	}
 	button {
 		background: #e94560;

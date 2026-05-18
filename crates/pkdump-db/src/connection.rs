@@ -53,16 +53,16 @@ pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<(
     Ok(())
 }
 
-/// Open a per-user collection database with the shared catalog attached
-/// read-only. User-schema migrations are wired in by M2; for now this
-/// provides the connection plumbing the catalog rides on.
+/// Open a per-user collection database — applying any pending user-schema
+/// migrations — with the shared catalog attached read-only.
 pub fn connect_user(user_path: &Path, shared_path: &Path) -> Result<Connection> {
     if let Some(parent) = user_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let conn = Connection::open(user_path)?;
+    let mut conn = Connection::open(user_path)?;
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
     conn.busy_timeout(Duration::from_secs(5))?;
+    migrations::run_user_migrations(&mut conn)?;
     attach_shared_readonly(&conn, shared_path)?;
     Ok(conn)
 }
@@ -140,5 +140,42 @@ mod tests {
 
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared_path).unwrap();
         assert!(catalog::card_exists(&conn, "sv3pt5-1").unwrap());
+    }
+
+    #[test]
+    fn connect_user_has_user_schema_and_enforces_exclusivity() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared_path = dir.path().join("shared.sqlite");
+        seed_shared(&shared_path);
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared_path).unwrap();
+
+        conn.execute(
+            "INSERT INTO binders (name, created_at, updated_at) \
+             VALUES ('Trade Binder', '2026-05-18', '2026-05-18')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decks (name, created_at, updated_at) \
+             VALUES ('Alice''s deck', '2026-05-18', '2026-05-18')",
+            [],
+        )
+        .unwrap();
+
+        // A card may sit in a binder OR a deck.
+        conn.execute(
+            "INSERT INTO collection (printing_id, acquired_at, source, binder_id) \
+             VALUES ('sv3pt5-1-normal', '2026-05-18', 'manual_id', 1)",
+            [],
+        )
+        .unwrap();
+
+        // ...but not both — the exclusivity CHECK rejects it.
+        let both = conn.execute(
+            "INSERT INTO collection (printing_id, acquired_at, source, binder_id, deck_id) \
+             VALUES ('sv3pt5-1-reverse_holo', '2026-05-18', 'manual_id', 1, 1)",
+            [],
+        );
+        assert!(both.is_err(), "a card cannot be in a binder and a deck at once");
     }
 }

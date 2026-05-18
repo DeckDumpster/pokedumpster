@@ -14,5 +14,5 @@ mod paths;
 
 pub use connection::{attach_shared_readonly, connect_user, open_shared};
 pub use error::{DbError, Result};
-pub use migrations::run_shared_migrations;
+pub use migrations::{run_shared_migrations, run_user_migrations};
 pub use paths::{current_user, pkdump_home, shared_db_path, user_db_path};

@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use pkdump_db::DbError;
 use pkdump_db::binder::{self, BinderPage};
-use pkdump_db::sets::{self, SetSummary};
+use pkdump_db::sets::{self, SetAnalytics, SetSummary};
 
 use crate::{AppError, AppState, blocking};
 
@@ -16,11 +16,23 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/sets", get(list))
         .route("/sets/{code}/binder", get(binder_page))
+        .route("/sets/{code}/analytics", get(analytics))
 }
 
 async fn list(State(state): State<AppState>) -> Result<Json<Vec<SetSummary>>, AppError> {
     let summaries = blocking(&state, |c| sets::list_sets(c)).await?;
     Ok(Json(summaries))
+}
+
+async fn analytics(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+) -> Result<Json<SetAnalytics>, AppError> {
+    let stats = blocking(&state, move |c| {
+        sets::analytics(c, &code)?.ok_or_else(|| DbError::NotFound(format!("set {code}")))
+    })
+    .await?;
+    Ok(Json(stats))
 }
 
 #[derive(Deserialize)]

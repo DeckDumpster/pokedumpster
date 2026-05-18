@@ -91,10 +91,11 @@ pub fn parse_set_list(envelope: &Value) -> Result<Vec<PokemonTcgSet>> {
         .collect()
 }
 
-/// Parse a `/cards` response envelope into typed cards, preserving each
-/// card's original JSON in [`PokemonTcgCard::raw`].
-pub fn parse_card_list(envelope: &Value) -> Result<Vec<PokemonTcgCard>> {
-    data_array(envelope)?
+/// Build typed cards from raw card JSON values, preserving each card's
+/// original JSON in [`PokemonTcgCard::raw`]. Shared by the API client and
+/// the pokemon-tcg-data file importer.
+pub fn cards_from_values(values: &[Value]) -> Result<Vec<PokemonTcgCard>> {
+    values
         .iter()
         .map(|v| {
             let mut card: PokemonTcgCard = serde_json::from_value(v.clone())?;
@@ -102,6 +103,12 @@ pub fn parse_card_list(envelope: &Value) -> Result<Vec<PokemonTcgCard>> {
             Ok(card)
         })
         .collect()
+}
+
+/// Parse a `/cards` response envelope into typed cards, preserving each
+/// card's original JSON in [`PokemonTcgCard::raw`].
+pub fn parse_card_list(envelope: &Value) -> Result<Vec<PokemonTcgCard>> {
+    cards_from_values(data_array(envelope)?)
 }
 
 /// A rate-limited blocking client for pokemontcg.io.

@@ -11,10 +11,16 @@ pub enum IngestError {
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
     #[error("db: {0}")]
     Db(#[from] pkdump_db::DbError),
 
-    #[error("unexpected API response: {0}")]
+    #[error("unexpected upstream data: {0}")]
     BadResponse(String),
 }
 

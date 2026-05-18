@@ -2,16 +2,19 @@
 //!
 //! Holds one user-database connection (with the shared catalog attached)
 //! behind a mutex; requests are serialised, which is fine for a single-user
-//! local server. The JSON API lives under `/api` (PLAN.md §5).
+//! local server. The JSON API lives under `/api`; every other path is served
+//! from the SvelteKit static build, falling back to `index.html` so the SPA
+//! handles client-side routing.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
-use axum::{Router, extract::State, routing::get};
+use axum::response::{IntoResponse, Response};
+use axum::{Router, routing::get};
 use rusqlite::Connection;
+use tower_http::services::{ServeDir, ServeFile};
 
 use pkdump_db::DbError;
 
@@ -74,55 +77,29 @@ where
     Ok(result?)
 }
 
-/// Catalog row counts shown on the homepage.
-struct Counts {
-    sets: i64,
-    cards: i64,
-    printings: i64,
-}
-
-fn catalog_counts(conn: &Connection) -> rusqlite::Result<Counts> {
-    let count = |table: &str| -> rusqlite::Result<i64> {
-        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+/// Build the Axum router. `/health` and `/api/*` are handled by Rust; the
+/// SvelteKit bundle under `/_app` and `/robots.txt` are served as files;
+/// every other path returns the SPA's `index.html` so SvelteKit handles
+/// client-side routing.
+fn app(state: AppState, static_dir: PathBuf) -> Router {
+    let index_html = std::fs::read_to_string(static_dir.join("index.html"))
+        .unwrap_or_else(|_| {
+            "<!doctype html><title>PokeDumpster</title><body>\
+             Frontend not built — run <code>npm run build</code> in frontend/.\
+             </body>"
+                .to_string()
+        });
+    let spa = move || {
+        let html = index_html.clone();
+        async move { axum::response::Html(html) }
     };
-    Ok(Counts {
-        sets: count("sets")?,
-        cards: count("cards")?,
-        printings: count("printings")?,
-    })
-}
-
-fn render_homepage(counts: Option<Counts>) -> String {
-    let body = match counts {
-        Some(c) => format!(
-            "<p>Catalog loaded:</p>\
-             <ul><li>{} sets</li><li>{} cards</li><li>{} printings</li></ul>",
-            c.sets, c.cards, c.printings,
-        ),
-        None => "<p>Catalog not built yet — run <code>pkdump setup</code>.</p>".to_string(),
-    };
-    format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-         <title>PokeDumpster</title></head>\
-         <body><h1>PokeDumpster</h1>{body}</body></html>"
-    )
-}
-
-async fn homepage(State(state): State<AppState>) -> Html<String> {
-    let counts = blocking(&state, |conn| Ok(catalog_counts(conn).ok()))
-        .await
-        .ok()
-        .flatten();
-    Html(render_homepage(counts))
-}
-
-/// Build the Axum router.
-fn app(state: AppState) -> Router {
     Router::new()
-        .route("/", get(homepage))
         .route("/health", get(|| async { "ok" }))
         .nest("/api", routes::api_router())
+        .nest_service("/_app", ServeDir::new(static_dir.join("_app")))
+        .route_service("/robots.txt", ServeFile::new(static_dir.join("robots.txt")))
         .with_state(state)
+        .fallback(get(spa))
 }
 
 /// Start the HTTP server. Opens the user database (catalog attached) up
@@ -130,6 +107,7 @@ fn app(state: AppState) -> Router {
 pub async fn serve(
     user_db: PathBuf,
     shared_db: PathBuf,
+    static_dir: PathBuf,
     host: IpAddr,
     port: u16,
 ) -> anyhow::Result<()> {
@@ -140,7 +118,7 @@ pub async fn serve(
     let addr = SocketAddr::new(host, port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("pkdump serving on http://{addr}");
-    axum::serve(listener, app(state)).await?;
+    axum::serve(listener, app(state, static_dir)).await?;
     Ok(())
 }
 
@@ -151,8 +129,9 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
-    /// A test AppState whose catalog holds one printing, `sv3pt5-1-normal`.
-    fn test_state() -> (tempfile::TempDir, AppState) {
+    /// A test router whose catalog holds one printing (`sv3pt5-1-normal`) and
+    /// whose static dir holds a stub `index.html`.
+    fn test_app() -> (tempfile::TempDir, Router) {
         let dir = tempfile::tempdir().unwrap();
         let shared = dir.path().join("shared.sqlite");
         {
@@ -177,12 +156,17 @@ mod tests {
             .unwrap();
         }
         let conn = pkdump_db::connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
-        (
-            dir,
-            AppState {
-                conn: Arc::new(Mutex::new(conn)),
-            },
+        let static_dir = dir.path().join("static");
+        std::fs::create_dir_all(&static_dir).unwrap();
+        std::fs::write(
+            static_dir.join("index.html"),
+            "<!doctype html><title>PokeDumpster</title>",
         )
+        .unwrap();
+        let state = AppState {
+            conn: Arc::new(Mutex::new(conn)),
+        };
+        (dir, app(state, static_dir))
     }
 
     async fn body_string(resp: Response) -> String {
@@ -192,42 +176,47 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
-    #[test]
-    fn catalog_counts_reads_attached_catalog() {
-        let (_d, state) = test_state();
-        let conn = state.conn.lock().unwrap();
-        let c = catalog_counts(&conn).unwrap();
-        assert_eq!(c.sets, 1);
-        assert_eq!(c.cards, 1);
-        assert_eq!(c.printings, 1);
-    }
-
     #[tokio::test]
-    async fn health_and_homepage_respond() {
-        let (_d, state) = test_state();
-        let router = app(state);
-
-        let health = router
-            .clone()
+    async fn health_responds() {
+        let (_d, router) = test_app();
+        let resp = router
             .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 
-        let home = router
+    #[tokio::test]
+    async fn serves_spa_index_with_fallback() {
+        let (_d, router) = test_app();
+
+        // The index is served at the root.
+        let root = router
+            .clone()
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(home.status(), StatusCode::OK);
-        assert!(body_string(home).await.contains("1 sets"));
+        assert_eq!(root.status(), StatusCode::OK);
+        assert!(body_string(root).await.contains("PokeDumpster"));
+
+        // An unknown (client-side) route falls back to index.html.
+        let spa_route = router
+            .oneshot(
+                Request::builder()
+                    .uri("/collection")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spa_route.status(), StatusCode::OK);
+        assert!(body_string(spa_route).await.contains("PokeDumpster"));
     }
 
     #[tokio::test]
     async fn collection_endpoints_round_trip() {
-        let (_d, state) = test_state();
-        let router = app(state);
+        let (_d, router) = test_app();
 
-        // POST a copy.
         let created = router
             .clone()
             .oneshot(
@@ -244,7 +233,6 @@ mod tests {
             .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
 
-        // GET the list — the copy is there.
         let listed = router
             .clone()
             .oneshot(Request::builder().uri("/api/collection").body(Body::empty()).unwrap())
@@ -253,7 +241,6 @@ mod tests {
         assert_eq!(listed.status(), StatusCode::OK);
         assert!(body_string(listed).await.contains("sv3pt5-1-normal"));
 
-        // POST a copy with an unknown printing — 404.
         let bad = router
             .clone()
             .oneshot(
@@ -270,7 +257,6 @@ mod tests {
             .unwrap();
         assert_eq!(bad.status(), StatusCode::NOT_FOUND);
 
-        // DELETE entry 1.
         let deleted = router
             .oneshot(
                 Request::builder()
@@ -286,8 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn card_endpoint_returns_detail_and_404() {
-        let (_d, state) = test_state();
-        let router = app(state);
+        let (_d, router) = test_app();
 
         let found = router
             .clone()

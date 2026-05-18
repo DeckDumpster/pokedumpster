@@ -5,6 +5,7 @@
 //! own runtime here.
 
 use std::net::IpAddr;
+use std::path::PathBuf;
 
 /// Arguments for `pkdump serve`.
 #[derive(clap::Args)]
@@ -17,6 +18,11 @@ pub struct ServeArgs {
     /// Port to listen on.
     #[arg(long, default_value_t = 8080)]
     port: u16,
+
+    /// Directory holding the built SvelteKit SPA. Defaults to
+    /// `$PKDUMP_STATIC_DIR`, else `frontend/build`.
+    #[arg(long, value_name = "DIR")]
+    static_dir: Option<PathBuf>,
 }
 
 /// Execute `pkdump serve`. Database paths come from `PKDUMP_HOME` /
@@ -24,6 +30,13 @@ pub struct ServeArgs {
 pub fn run(args: ServeArgs) -> anyhow::Result<()> {
     let shared_db = pkdump_db::shared_db_path()?;
     let user_db = pkdump_db::user_db_path(&pkdump_db::current_user())?;
+    let static_dir = args.static_dir.unwrap_or_else(|| {
+        std::env::var("PKDUMP_STATIC_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("frontend/build"))
+    });
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(pkdump_server::serve(user_db, shared_db, args.host, args.port))
+    runtime.block_on(pkdump_server::serve(
+        user_db, shared_db, static_dir, args.host, args.port,
+    ))
 }

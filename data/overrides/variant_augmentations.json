@@ -1,0 +1,12 @@
+[
+  {
+    "comment": "151 (sv3pt5): Common/Uncommon/Rare cards also exist as Poke Ball and Master Ball pattern reverse holos, which are not modelled as TCGplayer price keys.",
+    "match": { "set": "sv3pt5", "rarity": ["Common", "Uncommon", "Rare"] },
+    "add": ["pokeball_rh", "masterball_rh"]
+  },
+  {
+    "comment": "Prismatic Evolutions (sv8pt5): same Poke Ball / Master Ball pattern gimmick as 151.",
+    "match": { "set": "sv8pt5", "rarity": ["Common", "Uncommon", "Rare"] },
+    "add": ["pokeball_rh", "masterball_rh"]
+  }
+]

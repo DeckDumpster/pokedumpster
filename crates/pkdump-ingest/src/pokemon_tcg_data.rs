@@ -86,7 +86,10 @@ pub fn download_and_import(conn: &mut Connection) -> Result<ImportStats> {
     import_from_dir(conn, &root)
 }
 
-fn upsert_set(conn: &Connection, set: &PokemonTcgSet, now: &str) -> Result<()> {
+/// Upsert a single set into the catalog. Shared by the file importer and
+/// the pokemontcg.io tail fetch (`pkdump setup`). `now` is the fetch
+/// timestamp recorded in `ptcgio_fetched_at`.
+pub fn upsert_set(conn: &Connection, set: &PokemonTcgSet, now: &str) -> Result<()> {
     let (logo, symbol) = match &set.images {
         Some(i) => (i.logo.clone(), i.symbol.clone()),
         None => (None, None),
@@ -122,7 +125,9 @@ fn upsert_set(conn: &Connection, set: &PokemonTcgSet, now: &str) -> Result<()> {
     Ok(())
 }
 
-fn upsert_card(conn: &Connection, card: &PokemonTcgCard) -> Result<()> {
+/// Upsert a single card into the catalog. Shared by the file importer and
+/// the pokemontcg.io tail fetch (`pkdump setup`).
+pub fn upsert_card(conn: &Connection, card: &PokemonTcgCard) -> Result<()> {
     let arr_s = |v: &Option<Vec<String>>| v.as_ref().map(|x| Value::from(x.clone()).to_string());
     let arr_i = |v: &Option<Vec<i64>>| v.as_ref().map(|x| Value::from(x.clone()).to_string());
     let val = |v: &Option<Value>| v.as_ref().map(Value::to_string);

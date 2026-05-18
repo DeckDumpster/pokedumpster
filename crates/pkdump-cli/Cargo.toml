@@ -14,3 +14,10 @@ pkdump-core.workspace = true
 pkdump-db.workspace = true
 pkdump-ingest.workspace = true
 pkdump-server.workspace = true
+rusqlite.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

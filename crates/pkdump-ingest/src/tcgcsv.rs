@@ -179,6 +179,44 @@ pub fn import_sealed_products(
     Ok(n)
 }
 
+/// Link single-card TCGplayer products to catalog printings. For each
+/// single-card product the card is resolved by its group's bridged set and
+/// the product's collector `Number`, and every printing of that card is
+/// tagged with the TCGplayer product id so prices can join (PLAN.md §3.2).
+/// Best-effort — products whose number doesn't match a catalog card are
+/// skipped. Returns the number of cards linked.
+pub fn link_card_printings(conn: &mut Connection, products: &[TcgProduct]) -> Result<usize> {
+    let tx = conn.transaction()?;
+    let mut linked = 0;
+    for product in products {
+        if !is_single_card(product) {
+            continue;
+        }
+        let number = product
+            .extended_data
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case("Number"))
+            .map(|e| e.value.trim().to_string())
+            .unwrap_or_default();
+        if number.is_empty() {
+            continue;
+        }
+        let updated = tx.execute(
+            "UPDATE printings SET tcgplayer_product_id = ?1 \
+             WHERE card_id = ( \
+               SELECT cd.card_id FROM cards cd \
+               JOIN tcgplayer_groups g ON cd.set_code = g.set_code \
+               WHERE g.group_id = ?2 AND cd.number = ?3)",
+            rusqlite::params![product.product_id, product.group_id, number],
+        )?;
+        if updated > 0 {
+            linked += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(linked)
+}
+
 /// Snapshot prices. Card-product prices land in the narrow `prices` time
 /// series (one row per non-null price type); sealed-product prices land in
 /// `sealed_prices`. Idempotent for a given `observed_at` via INSERT OR IGNORE.
@@ -470,5 +508,65 @@ mod tests {
             )
             .unwrap();
         assert_eq!(card_rows2, 4, "same-day re-snapshot must not duplicate");
+    }
+
+    #[test]
+    fn links_card_printings_to_products() {
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('sv3pt5', 'MEW', '151', 'Scarlet & Violet')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+             VALUES ('sv3pt5-6', 'sv3pt5', '6', 6, 'Charizard ex')",
+            [],
+        )
+        .unwrap();
+        for v in ["normal", "reverse_holo"] {
+            conn.execute(
+                "INSERT INTO printings (printing_id, card_id, variant) VALUES (?1, 'sv3pt5-6', ?2)",
+                rusqlite::params![format!("sv3pt5-6-{v}"), v],
+            )
+            .unwrap();
+        }
+        // Bridge a TCGCSV group to the set.
+        import_groups(
+            &mut conn,
+            &[TcgGroup {
+                group_id: 23237,
+                name: "151".into(),
+                abbreviation: Some("MEW".into()),
+                published_on: None,
+            }],
+            "2026-05-18",
+        )
+        .unwrap();
+
+        let products = vec![TcgProduct {
+            product_id: 5006,
+            group_id: 23237,
+            name: "Charizard ex".into(),
+            image_url: None,
+            url: None,
+            extended_data: vec![ExtendedDatum {
+                name: "Number".into(),
+                value: "6".into(),
+            }],
+        }];
+        let linked = link_card_printings(&mut conn, &products).unwrap();
+        assert_eq!(linked, 1);
+
+        // Every printing of the card now carries the product id.
+        let pid: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings WHERE printing_id = 'sv3pt5-6-reverse_holo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pid, 5006);
     }
 }

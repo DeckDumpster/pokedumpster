@@ -112,16 +112,18 @@ pub fn get_card_detail(
     };
 
     let printings: Vec<PrintingInfo> = {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT p.printing_id, p.variant, p.language, p.badge_overlay, \
                     p.image_override, p.deprecated_at, \
                     (SELECT count(*) FROM collection c \
                        WHERE c.printing_id = p.printing_id), \
                     (SELECT lp.price FROM latest_prices lp \
                        WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-                         AND lp.price_type = 'market' LIMIT 1) \
+                         AND lp.price_type = 'market' \
+                         AND lp.sub_type_name = ({subtype}) LIMIT 1) \
              FROM printings p WHERE p.card_id = ?1 ORDER BY p.variant",
-        )?;
+            subtype = crate::VARIANT_PRICE_SUBTYPE,
+        ))?;
         let rows = stmt.query_map([&card.card_id], |r| {
             Ok(PrintingInfo {
                 printing_id: r.get(0)?,
@@ -217,5 +219,56 @@ mod tests {
     fn missing_card_returns_none() {
         let (_d, conn) = user_conn();
         assert!(get_card_detail(&conn, "sv3pt5", "999").unwrap().is_none());
+    }
+
+    #[test]
+    fn card_detail_resolves_per_variant_market_price() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) \
+                 VALUES ('sv3pt5', '151', 'Scarlet & Violet')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('sv3pt5-6', 'sv3pt5', '6', 6, 'Charizard ex')",
+                [],
+            )
+            .unwrap();
+            // Printings linked to TCGplayer product 5006.
+            for v in ["normal", "reverse_holo"] {
+                c.execute(
+                    "INSERT INTO printings (printing_id, card_id, variant, tcgplayer_product_id) \
+                     VALUES (?1, 'sv3pt5-6', ?2, 5006)",
+                    rusqlite::params![format!("sv3pt5-6-{v}"), v],
+                )
+                .unwrap();
+            }
+            // Distinct market prices per sub-type.
+            for (sub, price) in [("Normal", 10.0_f64), ("Reverse Holofoil", 25.0)] {
+                c.execute(
+                    "INSERT INTO prices \
+                       (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+                     VALUES (5006, ?1, 'tcgplayer', 'market', ?2, '2026-05-18')",
+                    rusqlite::params![sub, price],
+                )
+                .unwrap();
+            }
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let detail = get_card_detail(&conn, "sv3pt5", "6").unwrap().unwrap();
+
+        let normal = detail.printings.iter().find(|p| p.variant == "normal").unwrap();
+        let rh = detail
+            .printings
+            .iter()
+            .find(|p| p.variant == "reverse_holo")
+            .unwrap();
+        assert_eq!(normal.market_price, Some(10.0));
+        assert_eq!(rh.market_price, Some(25.0));
     }
 }

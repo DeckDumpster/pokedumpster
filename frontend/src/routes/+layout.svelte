@@ -12,7 +12,8 @@
 		{ href: '/sealed', label: 'Sealed' },
 		{ href: '/wishlist', label: 'Wishlist' },
 		{ href: '/orders', label: 'Orders' },
-		{ href: '/recent', label: 'Recent' }
+		{ href: '/recent', label: 'Recent' },
+		{ href: '/ingest/csv', label: 'Import' }
 	];
 </script>
 

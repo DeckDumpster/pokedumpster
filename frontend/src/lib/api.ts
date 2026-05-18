@@ -32,6 +32,8 @@ import type { NewBatch } from './types/NewBatch';
 import type { CollectionView } from './types/CollectionView';
 import type { NewView } from './types/NewView';
 import type { ViewEdit } from './types/ViewEdit';
+import type { ResolutionReport } from './types/ResolutionReport';
+import type { CommitResult } from './types/CommitResult';
 
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -148,6 +150,12 @@ export const api = {
 	batchDetail: (id: number) => getJson<BatchDetail>(`/api/batches/${id}`),
 	createBatch: (b: Partial<NewBatch> & { batch_type: string }) =>
 		send<number>('POST', '/api/batches', b),
+
+	// --- CSV import ---
+	importPreview: (format: string, content: string) =>
+		send<ResolutionReport>('POST', '/api/import/csv/preview', { format, content }),
+	importCommit: (format: string, content: string, name?: string) =>
+		send<CommitResult>('POST', '/api/import/csv/commit', { format, content, name }),
 
 	// --- Saved collection views ---
 	views: () => getJson<CollectionView[]>('/api/views'),

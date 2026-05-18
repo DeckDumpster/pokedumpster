@@ -11,7 +11,8 @@
 		{ href: '/decks', label: 'Decks' },
 		{ href: '/sealed', label: 'Sealed' },
 		{ href: '/wishlist', label: 'Wishlist' },
-		{ href: '/orders', label: 'Orders' }
+		{ href: '/orders', label: 'Orders' },
+		{ href: '/recent', label: 'Recent' }
 	];
 </script>
 

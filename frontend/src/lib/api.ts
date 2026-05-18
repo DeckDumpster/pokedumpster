@@ -25,6 +25,8 @@ import type { OrderLine } from './types/OrderLine';
 import type { WishlistEntry } from './types/WishlistEntry';
 import type { NewWish } from './types/NewWish';
 import type { WishEdit } from './types/WishEdit';
+import type { Batch } from './types/Batch';
+import type { BatchDetail } from './types/BatchDetail';
 
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -126,7 +128,11 @@ export const api = {
 	updateWish: (id: number, e: Partial<WishEdit>) => send<void>('PUT', `/api/wishlist/${id}`, e),
 	fulfillWish: (id: number, fulfilled: boolean) =>
 		send<void>('PUT', `/api/wishlist/${id}/fulfill`, { fulfilled }),
-	deleteWish: (id: number) => send<void>('DELETE', `/api/wishlist/${id}`)
+	deleteWish: (id: number) => send<void>('DELETE', `/api/wishlist/${id}`),
+
+	// --- Batches ---
+	batches: (limit = 0) => getJson<Batch[]>(`/api/batches${limit ? `?limit=${limit}` : ''}`),
+	batchDetail: (id: number) => getJson<BatchDetail>(`/api/batches/${id}`)
 };
 
 /** Turn a variant code (`reverse_holo`) into a label (`Reverse Holo`). */

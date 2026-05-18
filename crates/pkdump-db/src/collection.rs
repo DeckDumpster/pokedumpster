@@ -286,6 +286,15 @@ pub fn list_by_order(conn: &Connection, order_id: i64) -> Result<Vec<CollectionR
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// List the display rows belonging to an ingest batch.
+pub fn list_by_batch(conn: &Connection, batch_id: i64) -> Result<Vec<CollectionRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ROW_COLUMNS} {ROW_FROM} WHERE c.batch_id = ?1 ORDER BY c.id"
+    ))?;
+    let rows = stmt.query_map([batch_id], collection_row_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// List every copy the user owns of any printing of a given card.
 pub fn list_for_card(conn: &Connection, card_id: &str) -> Result<Vec<CollectionEntry>> {
     let mut stmt = conn.prepare(&format!(

@@ -5,6 +5,7 @@
 //! refinery-embedded schema migrations and application-layer foreign-key
 //! checks against the catalog.
 
+pub mod batches;
 pub mod binder;
 pub mod binders;
 pub mod cards;

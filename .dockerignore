@@ -1,0 +1,6 @@
+# Build artifacts — regenerated inside the image, never copied in.
+target/
+frontend/node_modules/
+frontend/build/
+frontend/.svelte-kit/
+.git/

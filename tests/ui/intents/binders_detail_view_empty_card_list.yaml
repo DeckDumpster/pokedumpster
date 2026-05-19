@@ -1,0 +1,9 @@
+# Scenario: Newly created binder detail view shows an empty card list
+
+# Related: binders_create_with_all_fields, binders_add_cards_full_flow
+
+description: >
+  After creating a new binder from the binders list, I open its detail
+  view. Since it has no cards, the page shows the empty-state message
+  "No cards in this binder. Add some with 'Add cards'." The header
+  still shows the "+ Add cards" and "Delete binder" buttons.

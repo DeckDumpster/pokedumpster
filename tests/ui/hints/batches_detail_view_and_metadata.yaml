@@ -1,0 +1,15 @@
+start_page: /batches
+involves:
+  - "batches table on /batches with a Type link per row"
+  - "batch detail header <h1> with the batch name"
+  - ".sub metadata line '{type} · {timestamp} · {n} cards'"
+  - "card table with columns Name, Set, #, Variant, Condition, Status"
+fixture_data:
+  batch: "ManaBox export 2024-01 — batch_type csv_manabox, 4 sv8 copies"
+notes: >
+  1. Navigate to /batches. 2. Wait for the batches table to load.
+  3. Click the Type link for the "ManaBox export 2024-01" row. 4. Verify
+  the detail page heading shows "ManaBox export 2024-01". 5. Verify the
+  .sub line shows the batch type, a timestamp, and a "4 cards" count.
+  6. Verify the card table renders the four card rows with their names
+  and set codes.

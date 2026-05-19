@@ -1,0 +1,12 @@
+# Scenario: A binder-click batch detail lists every card it registered
+
+# Related: batches_detail_view_and_metadata, batches_homepage_nav_link
+
+description: >
+  When I open the batch "151 binder page-through" from the batches
+  list, the detail page shows the batch name as the heading and a
+  metadata line marking it as a binder-click batch with its timestamp
+  and an "8 cards" count. The card table lists all eight sv3pt5 copies
+  registered during that binder page-through, with Name, Set, #,
+  Variant, Condition, and Status columns. The Name cells link to the
+  card detail pages.

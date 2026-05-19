@@ -1,0 +1,14 @@
+start_page: /card/base1/4
+involves:
+  - "card detail page Copies table for a card with an unassigned owned copy"
+  - "per-row Location <select> offering Unassigned, binders (b:{id}), and decks (d:{id})"
+  - "selecting a binder option issues moveCopy and re-renders the row"
+fixture_data:
+  card: "Base Set Charizard (base1-4) — has a loose unassigned owned copy"
+  target_binder: "Trade Binder"
+notes: >
+  1. Navigate to /card/base1/4 (a card with a loose, unassigned owned
+  copy). 2. Locate that copy's row in the Copies table. 3. In the
+  row's Location <select>, choose "Trade Binder". 4. Wait for the
+  update to settle. 5. Verify the copy's Location now shows
+  "Trade Binder" rather than "Unassigned".

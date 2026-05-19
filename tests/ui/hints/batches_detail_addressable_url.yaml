@@ -1,0 +1,19 @@
+start_page: /batches/4
+involves:
+  - "batch detail page reached by direct URL /batches/{id}"
+  - "header <h1> with the batch name '151 binder page-through'"
+  - ".sub metadata line '{type} · {timestamp} · {n} cards'"
+  - "card table listing the batch's cards"
+fixture_data:
+  batch_id: 4
+  batch_name: "151 binder page-through"
+  batch_type: "binder_click"
+  card_count: 8
+notes: >
+  Start on /batches/4 directly — no prior navigation through the list.
+  Wait for the card table to appear, which happens only after the
+  route-param fetch resolves. 1. Assert the heading shows
+  "151 binder page-through". 2. Assert the .sub line shows the batch
+  type and an "8 cards" count. 3. Assert the card table renders the
+  eight rows. (Adjust the /batches/{id} path to the binder-click
+  batch's actual fixture id if it is not 4.)

@@ -1,0 +1,14 @@
+start_page: /batches
+involves:
+  - "page <h1> 'Batches'"
+  - "muted subtitle line 'Every ingestion run — manual entry, binder clicks, imports, orders.'"
+  - "batches table with columns Type, Name, Cards, When"
+fixture_data:
+  demo_batches: "5 batches — Vintage holo entry, 151 binder page-through, ManaBox export 2024-01, TCG-100001, EBAY-55012"
+notes: >
+  Note: PokeDumpster's homepage nav uses an "Import" link to
+  /ingest/csv; the Batches page is reached directly by URL.
+  1. Navigate to /batches. 2. Verify the "Batches" heading is visible.
+  3. Verify the muted subtitle mentioning ingestion runs is visible.
+  4. Verify the batches table is populated with batch names and card
+  counts.

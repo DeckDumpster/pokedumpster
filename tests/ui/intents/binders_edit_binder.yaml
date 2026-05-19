@@ -1,0 +1,10 @@
+# Scenario: Open a populated binder and review its detail header
+
+# Related: binders_list_view_populated, binders_add_cards_full_flow
+
+description: >
+  From the binders list I click the "Trade Binder" tile and land on its
+  detail view. The header shows the binder name "Trade Binder" as the
+  heading alongside a "+ Add cards" button and a red "Delete binder"
+  button. The card table below lists the binder's copies with their
+  Name, Set, #, Variant, and Condition columns.

@@ -1,0 +1,16 @@
+start_page: /batches
+involves:
+  - "Type <select> filter on /batches with one option per distinct batch_type"
+  - "batches table filtered live ($derived) when a type is chosen"
+  - "Type cell link to /batches/{id}"
+  - "browser Back navigation returns to /batches"
+fixture_data:
+  filter_type: "binder_click"
+  filtered_batch: "151 binder page-through"
+notes: >
+  1. Navigate to /batches. 2. In the Type <select>, choose the
+  "binder_click" option. 3. Verify the table is filtered to the
+  "151 binder page-through" row. 4. Click that row's Type link to open
+  the batch detail page. 5. Use the browser Back navigation. 6. Verify
+  the batches list reappears with the Type <select> still set to
+  "binder_click" and the same filtered row shown.

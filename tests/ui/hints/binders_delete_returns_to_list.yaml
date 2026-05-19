@@ -1,0 +1,15 @@
+start_page: /binders
+involves:
+  - "binder tile 'Vintage Vault' in the .grid on /binders"
+  - "binder detail header with a red 'Delete binder' button"
+  - "browser confirm() dialog, auto-accepted by the harness"
+  - "after delete, the app navigates to /binders and reloads the grid"
+fixture_data:
+  target_binder: "Vintage Vault (pocket size 9, type showcase, location Safe)"
+  remaining_binder: "Trade Binder"
+notes: >
+  1. Navigate to /binders. 2. Click the "Vintage Vault" tile to open
+  its detail view. 3. Click "Delete binder". 4. The confirm() dialog is
+  auto-accepted. 5. Verify the binders list view is shown again.
+  6. Verify "Vintage Vault" is absent from the grid. 7. Verify
+  "Trade Binder" is still present.

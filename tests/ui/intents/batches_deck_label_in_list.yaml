@@ -1,0 +1,10 @@
+# Scenario: The batches list shows each batch's type, name, and card count
+
+# Related: batches_type_filter_bar, batches_detail_view_and_metadata
+
+description: >
+  In the batches list view, each batch appears as a table row showing
+  its Type, Name, Cards count, and When timestamp. The "151 binder
+  page-through" row shows a binder-click type and an "8" card count;
+  the "ManaBox export 2024-01" row shows a CSV import type and a "4"
+  card count. Every batch the user has ever ingested is listed here.

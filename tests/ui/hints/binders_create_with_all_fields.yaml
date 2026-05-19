@@ -1,0 +1,13 @@
+start_page: /binders
+involves:
+  - "create form (.newform) with the 'New binder name…' text input"
+  - "'Create' submit button (disabled while a create is in flight)"
+  - "on success the input clears and load() re-fetches the binder list"
+  - "binder grid (.grid) with .tile anchors showing name and '{n} cards'"
+fixture_data:
+  new_binder_name: "Rare Binder"
+notes: >
+  1. Navigate to /binders. 2. Type "Rare Binder" into the
+  "New binder name…" input. 3. Click "Create". 4. Verify the input is
+  cleared. 5. Verify a "Rare Binder" tile appears in the grid.
+  6. Verify the new tile shows a "0 cards" count.

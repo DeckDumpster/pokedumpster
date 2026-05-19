@@ -1,0 +1,10 @@
+# Scenario: View a batch detail with its cards and metadata
+
+# Related: batches_detail_addressable_url, batches_homepage_nav_link
+
+description: >
+  I can click a batch's Type link in the list to open its detail view.
+  The detail page shows the batch name as the heading and a metadata
+  line with the batch type, creation timestamp, and card count. It also
+  lists the individual cards in a table with their Name, Set, #,
+  Variant, Condition, and Status columns.

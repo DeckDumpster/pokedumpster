@@ -1,0 +1,10 @@
+# Scenario: Reach the Batches page and see the list of ingestion runs
+
+# Related: batches_type_filter_bar, batches_detail_view_and_metadata
+
+description: >
+  When I navigate to /batches, I land on the Batches page showing the
+  "Batches" heading and a muted line describing it as every ingestion
+  run — manual entry, binder clicks, imports, and orders. The table
+  below lists each import batch with its type, name, card count, and
+  timestamp.

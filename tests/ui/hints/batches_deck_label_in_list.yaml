@@ -1,0 +1,15 @@
+start_page: /batches
+involves:
+  - "batches table with columns Type, Name, Cards, When"
+  - "one row per batch; the Type cell links to /batches/{id}"
+  - "all five fixture batches are listed (no recency cap on this page)"
+fixture_data:
+  batch_1: "151 binder page-through — binder_click, 8 cards"
+  batch_2: "ManaBox export 2024-01 — csv_manabox, 4 cards"
+  batch_3: "Vintage holo entry — manual_id"
+notes: >
+  1. Navigate to /batches. 2. Verify the batches table renders rows
+  for "151 binder page-through" and "ManaBox export 2024-01".
+  3. Verify the "151 binder page-through" row shows an "8" Cards count.
+  4. Verify the "ManaBox export 2024-01" row shows a "4" Cards count.
+  5. Verify each row exposes a Type and When value.

@@ -1,0 +1,9 @@
+# Scenario: Assign a card to a binder from the card detail copies table
+
+# Related: binders_add_cards_full_flow, binders_remove_cards
+
+description: >
+  From the card detail page for a card with an unassigned copy, I use
+  the Location dropdown in that copy's row in the Copies table and
+  choose a binder ("Trade Binder"). After the assignment, the copy's
+  Location reflects "Trade Binder" instead of "Unassigned".

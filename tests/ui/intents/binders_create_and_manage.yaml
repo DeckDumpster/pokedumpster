@@ -1,0 +1,8 @@
+# Scenario: Create a binder and manage cards in it
+
+# Related: binders_create_with_all_fields, binders_add_cards_full_flow
+
+description: >
+  I can create a new binder from the binders list, see it appear in the
+  binder grid, open it, and add cards to it from my collection. The
+  added cards then appear in the binder's card table.

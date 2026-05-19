@@ -1,0 +1,9 @@
+# Scenario: Create a new binder by name
+
+# Related: binders_create_and_manage, binders_detail_view_empty_card_list
+
+description: >
+  From the binders list view, I type a name ("Rare Binder") into the
+  "New binder name…" input and click "Create". The input clears, the
+  list reloads, and the new "Rare Binder" tile appears in the binder
+  grid with a "0 cards" count.

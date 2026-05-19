@@ -1,0 +1,10 @@
+# Scenario: Navigating to a batch detail and back preserves the type filter
+
+# Related: batches_type_filter_bar, batches_detail_view_and_metadata
+
+description: >
+  On the batches list I choose "binder_click" from the Type filter and
+  see the list narrow to just the binder-click batch. I click into that
+  batch's detail page, then use the browser Back navigation to return.
+  The batches list reappears still showing the "binder_click" filter
+  applied and the same filtered row.

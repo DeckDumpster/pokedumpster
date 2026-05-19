@@ -1,0 +1,16 @@
+start_page: /batches
+involves:
+  - "batches table on /batches with a Type link per row"
+  - "batch detail header <h1> showing 'TCG-100001'"
+  - ".sub metadata line '{type} · {timestamp} · {n} cards'"
+  - "card table with columns Name, Set, #, Variant, Condition, Status"
+  - "no inputs, buttons, or mutations on the batch detail page"
+fixture_data:
+  batch: "TCG-100001 — batch_type order_tcgplayer, auto-created by the received TCG order, 3 cards"
+notes: >
+  1. Navigate to /batches. 2. Click the Type link for the "TCG-100001"
+  row. 3. Wait for the batch detail page to load. 4. Verify the heading
+  shows "TCG-100001". 5. Verify the .sub metadata line shows the batch
+  type and a "3 cards" count. 6. Verify the card table renders three
+  rows including the Status column. 7. Verify the page has no
+  assignment inputs or buttons.

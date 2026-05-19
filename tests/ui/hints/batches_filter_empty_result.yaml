@@ -1,0 +1,14 @@
+start_page: /batches
+involves:
+  - "Type <select> filter with an 'All' option plus one option per distinct batch_type"
+  - "live $derived filtering — choosing a type re-filters the table with no request"
+  - "the table body has no rows when no batch matches the chosen type"
+fixture_data:
+  manual_batch: "Vintage holo entry — batch_type manual_id (the only manual_id batch)"
+  full_count: "5 batches total in the fixture"
+notes: >
+  1. Navigate to /batches. 2. Verify the batches table is populated
+  with all five fixture batches. 3. In the Type <select>, choose
+  "manual_id". 4. Verify only the "Vintage holo entry" row is shown.
+  5. Choose "All" in the <select>. 6. Verify all five batch rows
+  reappear.

@@ -1,0 +1,14 @@
+start_page: /binders
+involves:
+  - "binder tile 'Master Set: 151' in the .grid on /binders"
+  - "card table with a per-row action cell containing a 'Remove' link button"
+  - "Remove calls moveCopy(id, {}) to un-assign the copy, then load() refreshes"
+  - "the copy stays in the collection; only the binder assignment is cleared"
+fixture_data:
+  binder: "Master Set: 151 — 8 sv3pt5 copies registered via binder_click"
+  card_to_remove: "the first card row in the binder table"
+notes: >
+  1. Navigate to /binders. 2. Click the "Master Set: 151" tile.
+  3. Wait for the card table to load and note the row count. 4. Click
+  the "Remove" link in the first card row. 5. Verify that row is gone
+  from the table and the table now has one fewer row.

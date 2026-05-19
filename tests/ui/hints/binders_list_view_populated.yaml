@@ -1,0 +1,14 @@
+start_page: /binders
+involves:
+  - "binder grid (.grid) of .tile anchors"
+  - "each .tile shows the binder name and an '{n} cards' count"
+  - "each .tile is an <a href='/binders/{id}'> to the detail view"
+fixture_data:
+  binder_1: "Trade Binder — type trade, 4 cards"
+  binder_2: "Master Set: 151 — type set, 8 cards"
+  binder_3: "Vintage Vault — type showcase, 5 cards"
+notes: >
+  1. Navigate to /binders. 2. Verify "Trade Binder", "Master Set: 151",
+  and "Vintage Vault" tiles are all visible. 3. Verify each tile shows
+  a card count ("{n} cards"). 4. Click the "Trade Binder" tile.
+  5. Verify the binder detail view loads showing the binder name.

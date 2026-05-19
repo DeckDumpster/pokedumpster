@@ -1,0 +1,21 @@
+start_page: /binders
+involves:
+  - "binder tile 'Trade Binder' in the .grid on /binders"
+  - "binder detail header with '+ Add cards' button"
+  - "CollectionPicker modal titled 'Add cards to Trade Binder'"
+  - "'Search your collection…' text box inside the picker"
+  - "checkbox label rows showing card name and '{set_code} · {variant}'"
+  - "footer '{n} selected' counter and 'Add {n} to Trade Binder' button"
+  - "after add, the binder detail reloads with the card in the table"
+fixture_data:
+  binder: "Trade Binder (pocket size 9, type trade) — 4 sv8 copies via ManaBox CSV"
+  search_term: "char"
+  available_card: "an owned, unassigned copy matching 'char' (e.g. a loose Charmander or Charizard ex copy)"
+notes: >
+  1. Navigate to /binders. 2. Click the "Trade Binder" tile. 3. Click
+  "+ Add cards". 4. Wait for the picker modal "Add cards to Trade
+  Binder" and its collection list to load. 5. Type "char" in the
+  "Search your collection…" box. 6. Wait for the filtered rows.
+  7. Check one matching card row. 8. Verify the footer shows "1
+  selected". 9. Click "Add 1 to Trade Binder". 10. Verify the modal
+  closes and the card now appears in the binder card table.

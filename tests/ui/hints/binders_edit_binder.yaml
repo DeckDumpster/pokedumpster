@@ -1,0 +1,14 @@
+start_page: /binders
+involves:
+  - "binder tile 'Trade Binder' in the .grid on /binders"
+  - "binder detail header <h1> showing 'Trade Binder'"
+  - ".actions group with '+ Add cards' and red 'Delete binder' buttons"
+  - "card table with columns Name, Set, #, Variant, Condition, and a Remove action cell"
+fixture_data:
+  existing_binder: "Trade Binder — pocket size 9, type trade, location Shelf A, 4 sv8 copies"
+notes: >
+  1. Navigate to /binders. 2. Click the "Trade Binder" tile to open its
+  detail view. 3. Verify the heading shows "Trade Binder". 4. Verify the
+  "+ Add cards" and "Delete binder" buttons are present in the header.
+  5. Verify the card table renders the binder's copies with the
+  Name / Set / # / Variant / Condition columns.

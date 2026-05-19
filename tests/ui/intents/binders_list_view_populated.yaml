@@ -1,0 +1,9 @@
+# Scenario: Binders list view shows the populated binder grid
+
+# Related: binders_edit_binder, binders_create_with_all_fields
+
+description: >
+  When I navigate to /binders, I see the three existing binders
+  ("Trade Binder", "Master Set: 151", and "Vintage Vault") rendered as
+  tiles in the binder grid. Each tile shows the binder name and an
+  "{n} cards" count. Clicking a binder tile takes me to its detail view.

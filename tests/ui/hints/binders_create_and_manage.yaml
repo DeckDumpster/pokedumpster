@@ -1,0 +1,18 @@
+start_page: /binders
+involves:
+  - "create form (.newform) with a 'New binder name…' input and a 'Create' button"
+  - "binder grid (.grid) shows the new binder as a clickable .tile"
+  - "binder detail header with '+ Add cards' button"
+  - "CollectionPicker modal with a 'Search your collection…' box and checkbox rows"
+  - "footer 'Add {n} to {binder name}' button confirms the selection"
+fixture_data:
+  binder_name: "Showcase Picks"
+  search_term: "Pikachu"
+notes: >
+  1. Navigate to /binders. 2. Type "Showcase Picks" into the
+  "New binder name…" input. 3. Click "Create". 4. The new binder tile
+  appears in the grid — click it to open the detail view. 5. Click
+  "+ Add cards". 6. In the picker's "Search your collection…" box, type
+  "Pikachu" and wait for results. 7. Check a result row to select it.
+  8. Click "Add 1 to Showcase Picks". 9. Verify the binder detail view
+  now shows the card in its table.

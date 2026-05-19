@@ -1,0 +1,15 @@
+start_page: /batches
+involves:
+  - "batches table on /batches with a Type link per row"
+  - "batch detail header <h1> showing '151 binder page-through'"
+  - ".sub metadata line showing the binder-click type, timestamp, and '8 cards'"
+  - "card table rows with card-name links to /card/{set}/{number}"
+fixture_data:
+  batch: "151 binder page-through — batch_type binder_click, 8 sv3pt5 copies"
+notes: >
+  1. Navigate to /batches. 2. Click the Type link for the
+  "151 binder page-through" row. 3. Wait for the batch detail page to
+  load. 4. Verify the heading shows "151 binder page-through".
+  5. Verify the .sub metadata line shows an "8 cards" count.
+  6. Verify the card table renders eight rows. 7. Verify a card-name
+  cell is a link to a /card/{set}/{number} page.

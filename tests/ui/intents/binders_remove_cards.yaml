@@ -1,0 +1,10 @@
+# Scenario: Remove a card from a binder via the per-row Remove link
+
+# Related: binders_add_cards_full_flow, binders_edit_binder
+
+description: >
+  From a binder's detail view with cards present ("Master Set: 151"), I
+  click the "Remove" link in the action cell of the first card row.
+  That copy is un-assigned from the binder — it disappears from the
+  card table and the binder's card count decreases by 1 — but the copy
+  itself remains in my collection.

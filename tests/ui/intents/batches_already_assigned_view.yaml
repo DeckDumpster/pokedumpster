@@ -1,0 +1,11 @@
+# Scenario: An order-created batch shows its order origin in the detail view
+
+# Related: batches_detail_view_and_metadata, batches_type_filter_bar
+
+description: >
+  When I open the order-created batch "TCG-100001" from the batches
+  list, the detail page shows the batch name as the heading and a
+  metadata line identifying it as an order-tcgplayer batch with its
+  timestamp and card count. The card table lists the three copies the
+  order added, each with a Status column. The page is read-only — there
+  are no inputs, buttons, or assignment controls.

@@ -1,0 +1,13 @@
+# Scenario: Add cards to a binder via the collection picker
+
+# Related: binders_create_and_manage, binders_remove_cards
+
+description: >
+  From the "Trade Binder" detail view, I click "+ Add cards". The
+  collection picker modal opens titled "Add cards to Trade Binder",
+  loads my collection, and offers a "Search your collection…" box. I
+  type "char" into the search box and see matching copies from my
+  collection appear as checkbox rows. I check one card to select it,
+  the footer updates to show "1 selected", and I click "Add 1 to Trade
+  Binder". The modal closes, the binder reloads, and the newly added
+  card appears in the card table.

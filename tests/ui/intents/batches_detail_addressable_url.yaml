@@ -1,0 +1,11 @@
+# Scenario: Batch detail is reachable directly at its own URL
+
+# Related: batches_detail_view_and_metadata, batches_detail_back_preserves_filter
+
+description: >
+  When I navigate directly to /batches/{id} for a specific batch, I see
+  a standalone, bookmarkable detail page — not an in-app modal. The
+  page shows the batch name as the heading, a metadata line with its
+  type, timestamp, and card count, and a table of the cards the batch
+  added. It renders correctly with no prior navigation through the
+  batches list.

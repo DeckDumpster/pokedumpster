@@ -1,0 +1,15 @@
+start_page: /batches
+involves:
+  - "labelled Type <select> with an 'All' option plus distinct batch_type options"
+  - "options derived from the distinct batch_type values across loaded batches, sorted"
+  - "batches table with columns Type, Name, Cards, When"
+  - "live $derived filtering — no request fired on filter change"
+fixture_data:
+  batch_types: "order_tcgplayer, order_ebay, manual_id, binder_click, csv_manabox"
+  filter_choice: "binder_click → 151 binder page-through"
+notes: >
+  1. Navigate to /batches. 2. Verify the Type <select> is present with
+  an "All" option and per-type options. 3. Verify the batches table is
+  populated. 4. Choose "binder_click" in the <select>. 5. Verify the
+  table shows only the "151 binder page-through" row. 6. Choose "All".
+  7. Verify all five batch rows reappear.

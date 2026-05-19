@@ -1,0 +1,8 @@
+# Scenario: Delete a binder and return to the list
+
+# Related: binders_list_view_populated, binders_create_with_all_fields
+
+description: >
+  From a binder's detail view, I click "Delete binder". After accepting
+  the confirmation dialog, I am navigated back to /binders. The deleted
+  binder no longer appears in the binder grid.

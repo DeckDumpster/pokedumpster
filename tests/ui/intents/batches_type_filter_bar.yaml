@@ -1,0 +1,11 @@
+# Scenario: Filter batches by type using the Type select
+
+# Related: batches_filter_empty_result, batches_homepage_nav_link
+
+description: >
+  I can navigate to the Batches page and see a labelled "Type" select
+  with an "All" option plus one option per distinct batch type present
+  in the data (order_tcgplayer, order_ebay, manual_id, binder_click,
+  csv_manabox). When I choose "binder_click", the table filters to show
+  only binder-click batches. Choosing "All" resets the filter and the
+  full list returns.

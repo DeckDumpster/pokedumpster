@@ -1,0 +1,13 @@
+# Scenario: Load and view the order detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I open the detail page for the received TCG-100001 order, I see a
+  header with the title "{source} · {seller}" and a sub-line showing the
+  order number, date, card count, and money-formatted total. Below it is
+  a card table with columns Name, Set, #, Variant, Paid, and Status, one
+  row per card in the order, and each Name cell links to that card's
+  detail page.

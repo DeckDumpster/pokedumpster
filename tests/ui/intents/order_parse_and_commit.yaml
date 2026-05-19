@@ -1,0 +1,11 @@
+# Scenario: Parse a valid order, resolve a line, and commit
+#
+# Related:
+#   issues: []
+
+description: >
+  I paste valid order text into the Import order page and click Parse,
+  which appends the card lines. For one line I enter the set and number,
+  click "Look up" to resolve it to a card and its variants, and the line
+  gets a green border and counts as ready. I click "Commit order" and
+  the app creates the order and navigates to its detail page.

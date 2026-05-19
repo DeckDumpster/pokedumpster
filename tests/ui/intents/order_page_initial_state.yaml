@@ -1,0 +1,13 @@
+# Scenario: Order Import page initial state verification
+#
+# Related:
+#   issues: []
+
+description: >
+  When I navigate to the Import order page, I see the correct initial
+  state: an "Import order" heading, an order-metadata section with a
+  Source select (tcgplayer, ebay, pokemoncenter, lgs, other) and Seller,
+  Order date, Total, and Notes inputs, a paste textarea with a Parse
+  button, a "Cards (0/0 ready)" header with a "+ Add line" button, the
+  "Add a line, or paste order text above." empty message, and a disabled
+  "Commit order" button.

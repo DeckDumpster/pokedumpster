@@ -1,0 +1,12 @@
+start_page: /ingest/order
+involves:
+  - '"+ Add line" button'
+  - '"Commit order" button'
+  - 'commit-validation message in the inline error line'
+fixture_data:
+  none: "no card lines are resolved"
+notes: >
+  Navigate to /ingest/order. Add a blank line with "+ Add line" but do
+  not look up a card. Click "Commit order". Verify the validation
+  message "Resolve at least one line (look up its card) before
+  committing." appears and the page stays on /ingest/order.

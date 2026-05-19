@@ -1,0 +1,19 @@
+start_page: /orders
+involves:
+  - 'EBAY-55012 Source link on /orders → navigates to /orders/{id}'
+  - '"Receive 1 card(s)" button in the order detail header'
+  - 'POST /api/orders/:id/receive on click'
+  - 'load() re-runs — button replaced by static "All received" label'
+  - 'the Base Set Charizard card row status flips ordered → owned'
+fixture_data:
+  order_number: "EBAY-55012"
+  card: "Charizard (Base Set #4, holo)"
+  pending_before: 1
+  pending_after: 0
+notes: >
+  Start on /orders. Click the EBAY-55012 Source link to reach its
+  detail page. Wait for the card table. Assert the header shows a
+  "Receive 1 card(s)" button (one card is still status ordered). Click
+  it. Wait for the busy state to clear and load() to refresh. After the
+  reload assert the Receive button is gone and an "All received" label
+  is shown, and the card row's Status column reads owned.

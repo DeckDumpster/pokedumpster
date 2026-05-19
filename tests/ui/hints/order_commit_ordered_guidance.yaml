@@ -1,0 +1,19 @@
+start_page: /ingest/order
+involves:
+  - 'Source <select> and Seller input in the .meta section'
+  - 'per-line "Look up" button to resolve a card'
+  - '"Commit order" button'
+  - 'navigation to /orders/{id} after commit'
+  - 'order detail header with "Receive {n} card(s)" button'
+fixture_data:
+  source: "tcgplayer"
+  seller: "Test Seller"
+  resolve_set: "sv3pt5"
+  resolve_number: "4"
+notes: >
+  Navigate to /ingest/order. Set Source tcgplayer and Seller "Test
+  Seller". Add a line, enter set sv3pt5 number 4, click "Look up" to
+  resolve it. Click "Commit order". Verify the page navigates to
+  /orders/{id}, the detail header shows the source and seller, and a
+  "Receive 1 card(s)" button is present because the committed card
+  starts with status ordered.

@@ -1,0 +1,15 @@
+start_page: /ingest/order
+involves:
+  - 'paste textarea'
+  - '"Parse" button'
+  - 'parsed .line rows appended to the Cards section'
+  - 'each line carries a quantity and a name hint'
+  - 'paste textarea clears after Parse'
+fixture_data:
+  order_text: "2x Charmander\n1x Charizard ex"
+notes: >
+  Navigate to /ingest/order. Paste two-line order text into the paste
+  textarea. Click "Parse". Verify two .line rows are appended to the
+  Cards section, the quantity inputs reflect the parsed quantities, the
+  name hints show the parsed names, and the paste textarea is now empty.
+  The lines are not yet ready (no printing resolved).

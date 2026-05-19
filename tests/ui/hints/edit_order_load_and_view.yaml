@@ -1,0 +1,19 @@
+start_page: /orders
+involves:
+  - 'TCG-100001 Source link on /orders → /orders/{id}'
+  - 'header — <h1> "{source} · {seller}" and a .sub metadata line'
+  - '.sub line shows "#{order_number} · {date} · {n} cards · {total}"'
+  - 'card table columns: Name, Set, #, Variant, Paid, Status'
+  - 'each Name cell links to /card/{set}/{number}'
+fixture_data:
+  order_number: "TCG-100001"
+  source: "tcgplayer"
+  card_count: 3
+  cards: ["Charizard ex (151 #6, holo)", "Charmander (151 #4)", "Charmander (151 #4)"]
+notes: >
+  Navigate to /orders, click the TCG-100001 Source link. Wait for the
+  detail to load past "Loading…". Assert the header h1 shows the source
+  and seller. Assert the .sub line contains "#TCG-100001" and "3 cards".
+  Assert the card table has columns Name, Set, #, Variant, Paid, Status
+  and three card rows. Assert a Name cell is an anchor to
+  /card/{set}/{number}.

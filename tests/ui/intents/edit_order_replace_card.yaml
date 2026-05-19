@@ -1,0 +1,11 @@
+# Scenario: An order-detail card name links to the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the TCG-100001 order detail page, each card row's Name cell is a
+  link. When I click the name of a card in the order, I navigate to that
+  card's detail page at /card/{set}/{number}, where the matching card is
+  shown.

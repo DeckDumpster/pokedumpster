@@ -1,0 +1,12 @@
+# Scenario: Receiving an open order flips its ordered cards to owned
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I open the EBAY-55012 order detail and click its "Receive 1
+  card(s)" button, the one still-pending card is bulk-flipped from
+  ordered to owned. After the non-optimistic reload the Receive button
+  is gone, replaced by a static "All received" badge, and the card row
+  now shows status owned.

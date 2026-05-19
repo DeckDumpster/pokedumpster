@@ -1,0 +1,15 @@
+start_page: /orders
+involves:
+  - 'TCG-100001 Source link on /orders → /orders/{id}'
+  - 'card row Name cell is an <a href="/card/{set}/{number}">'
+  - 'clicking the Name link navigates to the card detail page'
+fixture_data:
+  order_number: "TCG-100001"
+  card_name: "Charizard ex"
+  card_set: "sv3pt5"
+  card_number: "6"
+notes: >
+  Navigate to /orders and open the TCG-100001 order detail. Wait for the
+  card table. Note a card's name. Click that card's Name link. Verify
+  the page navigates to /card/sv3pt5/6 and the card detail for that card
+  loads.

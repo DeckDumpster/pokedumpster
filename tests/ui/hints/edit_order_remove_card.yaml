@@ -1,0 +1,15 @@
+start_page: /orders
+involves:
+  - 'EBAY-55012 Source link on /orders → /orders/{id}'
+  - 'derived pendingCount drives the header — Receive button vs "All received"'
+  - '"Receive 1 card(s)" button before receive'
+  - 'static "All received" label after receive'
+fixture_data:
+  order_number: "EBAY-55012"
+  pending_before: 1
+  pending_after: 0
+notes: >
+  Navigate to /orders and open the EBAY-55012 order detail. Wait for the
+  card table. Assert the header shows "Receive 1 card(s)" (pendingCount
+  is 1). Click it. Wait for load() to refresh. Assert the Receive button
+  is no longer present and the static "All received" label is shown.

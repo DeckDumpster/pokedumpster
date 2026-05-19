@@ -1,0 +1,15 @@
+start_page: /ingest/order
+involves:
+  - '"+ Add line" button'
+  - 'per-line Set and # inputs'
+  - 'per-line "Look up" button'
+  - 'red per-line error message on a failed lookup'
+  - 'Cards header "ready" count stays unchanged'
+fixture_data:
+  bad_set: "zzz999"
+  bad_number: "999"
+notes: >
+  Navigate to /ingest/order. Click "+ Add line". In the new line enter a
+  nonexistent set code and number. Click that line's "Look up" button.
+  Verify a red per-line error message appears under the line, the line
+  has no green left border, and the Cards header still shows 0 ready.

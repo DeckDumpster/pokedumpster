@@ -1,0 +1,12 @@
+# Scenario: Orders list surfaces both received and in-transit orders
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I navigate to /orders I can see every imported order in the table.
+  The TCG-100001 tcgplayer order and the EBAY-55012 ebay order both appear
+  as rows, each Source cell linking to its detail page. Each row shows the
+  seller, date, card count, and a money-formatted total, so I can tell at a
+  glance what I have bought.

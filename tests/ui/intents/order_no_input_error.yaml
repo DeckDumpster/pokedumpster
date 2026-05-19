@@ -1,0 +1,9 @@
+# Scenario: Committing an order with no resolved line shows validation error
+#
+# Related:
+#   issues: []
+
+description: >
+  When I click "Commit order" on the Import order page without resolving
+  any card line, a validation message "Resolve at least one line (look
+  up its card) before committing." appears and no order is created.

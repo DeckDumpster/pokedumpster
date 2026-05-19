@@ -1,0 +1,18 @@
+start_page: /ingest/order
+involves:
+  - '<h1> "Import order"'
+  - '.meta section — Source <select>, Seller / Order date / Total / Notes inputs'
+  - '.paste section — raw-text textarea and a "Parse" button'
+  - 'Lines header "Cards (0/0 ready)" with a "+ Add line" button'
+  - 'empty message "Add a line, or paste order text above."'
+  - 'disabled "Commit order" button'
+fixture_data:
+  none: "the page opens with no lines and no data"
+notes: >
+  Navigate to /ingest/order. Assert the "Import order" heading is
+  visible. Assert the Source select has options tcgplayer, ebay,
+  pokemoncenter, lgs, other. Assert the Seller, Order date, Total, and
+  Notes inputs are present. Assert the paste textarea and "Parse" button
+  exist. Assert the lines header reads "Cards (0/0 ready)" and the empty
+  message "Add a line, or paste order text above." is shown. Assert the
+  "Commit order" button is disabled. Screenshot.

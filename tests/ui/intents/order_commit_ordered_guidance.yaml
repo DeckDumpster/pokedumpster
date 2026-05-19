@@ -1,0 +1,11 @@
+# Scenario: Committing an order lands on its detail page with receive guidance
+#
+# Related:
+#   issues: []
+
+description: >
+  When I resolve a card line and click "Commit order", the app creates
+  the order and navigates to /orders/{id}. The order detail header shows
+  the source and seller, the metadata sub-line, and a "Receive 1
+  card(s)" button — the committed cards start as ordered and the detail
+  page is where I mark them received.

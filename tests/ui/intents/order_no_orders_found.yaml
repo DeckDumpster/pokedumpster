@@ -1,0 +1,10 @@
+# Scenario: Pasting garbage order text yields no parsed lines
+#
+# Related:
+#   issues: []
+
+description: >
+  When I paste random text that is not a recognized order format into
+  the paste textarea and click Parse, the regex matches nothing, no card
+  lines are appended, and the "Add a line, or paste order text above."
+  empty message still shows.

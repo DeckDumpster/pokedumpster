@@ -1,0 +1,18 @@
+start_page: /orders
+involves:
+  - 'EBAY-55012 Source link on /orders → /orders/{id}'
+  - 'card row Status column reads ordered before receive'
+  - '"Receive 1 card(s)" button in the header'
+  - 'POST /api/orders/:id/receive then load() reload'
+  - 'card row Status reads owned after receive and after a page reload'
+fixture_data:
+  order_number: "EBAY-55012"
+  card: "Charizard (Base Set #4, holo)"
+  status_before: "ordered"
+  status_after: "owned"
+notes: >
+  Navigate to /orders and open the EBAY-55012 order detail. Wait for the
+  card table. Assert the card row Status reads ordered. Click "Receive 1
+  card(s)". Wait for the busy state to clear and load() to refresh.
+  Assert the card row Status now reads owned. Reload the page and assert
+  the Status is still owned and the "All received" label is shown.

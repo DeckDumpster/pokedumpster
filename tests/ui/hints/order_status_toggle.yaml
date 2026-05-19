@@ -1,0 +1,10 @@
+start_page: /ingest/order
+involves:
+  - 'Source <select> in the .meta section'
+  - 'options: tcgplayer, ebay, pokemoncenter, lgs, other'
+fixture_data:
+  default_source: "tcgplayer"
+notes: >
+  Navigate to /ingest/order. Assert the Source select's value is
+  tcgplayer. Select ebay and assert the select value is now ebay.
+  Select pokemoncenter and assert the value is now pokemoncenter.

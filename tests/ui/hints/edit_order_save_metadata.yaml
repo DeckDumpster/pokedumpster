@@ -1,0 +1,14 @@
+start_page: /orders
+involves:
+  - 'TCG-100001 Source link on /orders → /orders/{id}'
+  - 'header right side — static "All received" badge (no Receive button)'
+  - 'every card row Status column reads owned'
+fixture_data:
+  order_number: "TCG-100001"
+  card_count: 3
+  pending: 0
+notes: >
+  Navigate to /orders and open the TCG-100001 order detail. Wait for the
+  card table. Because the order's pendingCount is 0, assert there is no
+  "Receive" button and the static "All received" label is shown. Assert
+  each of the three card rows shows Status owned.

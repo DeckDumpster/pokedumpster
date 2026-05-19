@@ -1,0 +1,12 @@
+# Scenario: The Receive button reflects the pending card count
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the EBAY-55012 order detail page the header shows a "Receive 1
+  card(s)" button because exactly one of the order's cards still has
+  status ordered. After I click Receive and the page reloads, the
+  pending count is zero, so the Receive button is gone and the static
+  "All received" label takes its place.

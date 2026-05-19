@@ -1,0 +1,11 @@
+# Scenario: Receiving an order flips its pending card status in place
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the EBAY-55012 order detail page, the one card row shows Status
+  ordered and the header offers a "Receive 1 card(s)" button. I click
+  Receive; after the non-optimistic reload the card row's Status now
+  reads owned. The change persists when I reload the page.

@@ -1,0 +1,20 @@
+start_page: /orders
+involves:
+  - 'orders table with columns Source, Seller, Date, Cards, Total'
+  - 'TCG-100001 row — Source cell is a link to /orders/{id}'
+  - 'EBAY-55012 row — Source cell is a link to /orders/{id}'
+  - 'money() formats each Total as $X.XX (or "—" when null)'
+fixture_data:
+  order_1_number: "TCG-100001"
+  order_1_source: "tcgplayer"
+  order_1_cards: 3
+  order_2_number: "EBAY-55012"
+  order_2_source: "ebay"
+  order_2_cards: 1
+notes: >
+  Start on /orders. Wait for the orders table to render past the
+  "Loading…" state. Assert two order rows are present. Assert the
+  tcgplayer order and the ebay order are both visible. Assert each
+  Source cell is an anchor pointing at /orders/{id}. Assert the Cards
+  column shows 3 for the tcgplayer order and 1 for the ebay order.
+  Assert the Total cells are money-formatted ($X.XX). Screenshot.

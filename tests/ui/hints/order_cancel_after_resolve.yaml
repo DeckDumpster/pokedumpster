@@ -1,0 +1,17 @@
+start_page: /ingest/order
+involves:
+  - 'per-line "Look up" button to resolve a card'
+  - 'per-line "✕" remove button'
+  - 'Cards header ready count and empty message'
+  - '"Commit order" button disabled when no lines remain'
+fixture_data:
+  resolve_set: "sv3pt5"
+  resolve_number: "4"
+  resolved_card: "Charmander"
+notes: >
+  Navigate to /ingest/order. Add a line, enter set sv3pt5 and number 4,
+  click "Look up" so the line resolves to Charmander and is ready. Click
+  the line's "✕" remove button. Verify the line is gone, the Cards
+  header reads "Cards (0/0 ready)", the "Add a line, or paste order text
+  above." message is shown again, and the "Commit order" button is
+  disabled.

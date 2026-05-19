@@ -1,0 +1,10 @@
+# Scenario: Parse and review an order import
+#
+# Related:
+#   issues: []
+
+description: >
+  I can paste order text into the Import order page, click Parse, and
+  see the recognized lines appended to the Cards section. Each parsed
+  line is pre-filled with its quantity and a name hint from the pasted
+  text, and the paste textarea clears after parsing.

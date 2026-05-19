@@ -1,0 +1,10 @@
+# Scenario: Pick a specific variant for a resolved order line
+#
+# Related:
+#   issues: []
+
+description: >
+  After I look up a card line on the Import order page, the line shows a
+  variant dropdown defaulted to the card's first printing. I can open
+  that dropdown and pick a different variant, and the line stays ready
+  with the variant I chose. I then commit and land on the order detail.

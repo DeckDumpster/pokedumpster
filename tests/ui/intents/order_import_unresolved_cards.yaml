@@ -1,0 +1,10 @@
+# Scenario: A line whose set+number cannot be found shows a per-line error
+#
+# Related:
+#   issues: []
+
+description: >
+  When I add a card line, enter a set and number that do not exist in
+  the catalog, and click that line's "Look up" button, the lookup fails:
+  a red per-line error message appears under the line, the line gets no
+  green border, and it does not count toward the ready total.

@@ -1,0 +1,20 @@
+start_page: /ingest/order
+involves:
+  - 'paste textarea and "Parse" button'
+  - 'per-line Set / # inputs and "Look up" button'
+  - 'resolved line gets a green left border and a variant <select>'
+  - 'Cards header "(1/1 ready)" updates'
+  - '"Commit order" button enabled once a line is ready'
+  - 'commit navigates to /orders/{id}'
+fixture_data:
+  order_text: "1x Charmander"
+  resolve_set: "sv3pt5"
+  resolve_number: "4"
+  resolved_card: "Charmander"
+notes: >
+  Navigate to /ingest/order. Paste "1x Charmander" and click "Parse".
+  In the appended line enter set sv3pt5 and number 4, then click
+  "Look up". Verify the line resolves to Charmander, shows a variant
+  select, gets a green border, and the Cards header shows 1 ready.
+  Click "Commit order". Verify the page navigates to /orders/{id} and
+  the new order detail loads.

@@ -1,0 +1,11 @@
+# Scenario: A fully received order shows the "All received" badge
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I open the TCG-100001 order detail — an order whose three cards
+  are all already owned — the header shows no "Receive" button. Instead
+  a static "All received" badge is displayed, and every card row's
+  Status column reads owned.

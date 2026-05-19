@@ -44,8 +44,10 @@ CREATE TABLE cards (
     legalities                TEXT,                -- JSON
     image_small               TEXT,
     image_large               TEXT,
-    raw_json                  TEXT,                -- full API response
-    UNIQUE(set_code, number)
+    raw_json                  TEXT                 -- full API response
+    -- No UNIQUE(set_code, number): real Pokémon data shares a collector
+    -- number across distinct cards (e.g. Celebrations Classic Collection
+    -- #15 has four artwork variants). card_id is the only key.
 );
 CREATE INDEX idx_cards_set    ON cards(set_code, number_sortable);
 CREATE INDEX idx_cards_name   ON cards(name);

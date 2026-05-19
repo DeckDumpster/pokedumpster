@@ -4,13 +4,26 @@
 # Run from within the repo clone.
 #
 # Usage:
-#   bash deploy/setup.sh <instance> [port]
+#   bash deploy/setup.sh <instance> [port] [--init] [--test]
 #
 # Examples:
-#   bash deploy/setup.sh prod 8080     # explicit host port
-#   bash deploy/setup.sh feature-xyz   # auto-assigned host port
+#   bash deploy/setup.sh prod 8080         # explicit host port
+#   bash deploy/setup.sh feature-xyz       # auto-assigned host port
+#   bash deploy/setup.sh ci --test         # seed data volume from committed
+#                                          #   fixture (no network, ~seconds)
+#   bash deploy/setup.sh demo --init       # clone the pre-built seed volume
 #
-# After setup, populate the catalog with deploy/seed.sh and start the
+# Modes:
+#   (plain)  Build the image + install the Quadlet. Catalog stays empty —
+#            populate it later with deploy/seed.sh.
+#   --test   Same, plus seed the new data volume from the committed fixture
+#            tests/ui/fixtures/{shared.sqlite,collection.sqlite}. Fully
+#            offline — copies the files in via a one-off container.
+#   --init   Same, plus clone the reusable `pkdump-seed-data` volume (built
+#            once with `deploy/seed.sh --volume`). Falls back to a full
+#            `pkdump setup` if no seed volume exists.
+#
+# After plain setup, populate the catalog with deploy/seed.sh and start the
 # service with: systemctl --user start pkdump-<instance>
 #
 set -euo pipefail
@@ -18,17 +31,34 @@ set -euo pipefail
 # systemctl --user needs XDG_RUNTIME_DIR; non-interactive shells often lack it.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-if [ $# -lt 1 ]; then
-    echo "Usage: bash deploy/setup.sh <instance> [port]"
+# --- Parse arguments --------------------------------------------------------
+
+INIT=false
+TEST=false
+POSITIONAL=()
+for arg in "$@"; do
+    case $arg in
+        --init) INIT=true ;;
+        --test) TEST=true ;;
+        *) POSITIONAL+=("$arg") ;;
+    esac
+done
+
+if [ ${#POSITIONAL[@]} -lt 1 ]; then
+    echo "Usage: bash deploy/setup.sh <instance> [port] [--init] [--test]"
     exit 1
 fi
 
-INSTANCE="$1"
-PORT="${2:-0}"
+INSTANCE="${POSITIONAL[0]}"
+PORT="${POSITIONAL[1]:-0}"
 SERVICE_NAME="pkdump-${INSTANCE}"
+VOLUME="pkdump-${INSTANCE}-data"
+IMAGE="localhost/pkdump:${INSTANCE}"
+SEED_VOLUME="pkdump-seed-data"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 QUADLET_DIR="$HOME/.config/containers/systemd"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 
 if ! command -v podman >/dev/null 2>&1; then
     echo "ERROR: podman not found. Install it: sudo apt install podman"
@@ -40,9 +70,13 @@ if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q "Linger=yes"; th
     echo "  Fix: loginctl enable-linger $USER"
 fi
 
+# --- Build the image --------------------------------------------------------
+
 echo "==> Building image pkdump:${INSTANCE}..."
 podman build -t pkdump:latest -f "$REPO_DIR/Containerfile" "$REPO_DIR"
 podman tag pkdump:latest "pkdump:${INSTANCE}"
+
+# --- Install the Quadlet unit ----------------------------------------------
 
 echo "==> Installing Quadlet unit..."
 mkdir -p "$QUADLET_DIR"
@@ -58,12 +92,86 @@ sed \
     "$REPO_DIR/deploy/pkdump.container" \
     > "${QUADLET_DIR}/${SERVICE_NAME}.container"
 
+# --- Install per-instance timer units --------------------------------------
+# %i-templated units installed under a concrete instance name so several
+# instances can run side by side. Enable them after setup if desired.
+
+mkdir -p "$SYSTEMD_USER_DIR"
+for PREFIX in pkdump-backup pkdump-refresh; do
+    for EXT in service timer; do
+        cp "$REPO_DIR/deploy/${PREFIX}.${EXT}" \
+           "${SYSTEMD_USER_DIR}/${PREFIX}@.${EXT}"
+    done
+done
+
 systemctl --user daemon-reload
+
+# --- Optional data volume seeding ------------------------------------------
+
+seed_from_fixture() {
+    # Copy the committed fixture sqlite files onto the instance's data volume
+    # via a one-off container. No network — purely a local file copy.
+    local fixture_dir="$REPO_DIR/tests/ui/fixtures"
+    local shared="${fixture_dir}/shared.sqlite"
+    local collection="${fixture_dir}/collection.sqlite"
+
+    if [ ! -f "$shared" ] || [ ! -f "$collection" ]; then
+        echo "ERROR: fixture files not found under ${fixture_dir}"
+        echo "    Expected shared.sqlite and collection.sqlite."
+        exit 1
+    fi
+
+    echo "==> Seeding ${VOLUME} from committed fixture (offline)..."
+    podman volume exists "$VOLUME" 2>/dev/null || podman volume create "$VOLUME" >/dev/null
+
+    local temp="pkdump-fixture-$$"
+    podman run -d --name "$temp" \
+        -v "${VOLUME}:/data:Z" \
+        --entrypoint sleep \
+        "$IMAGE" infinity >/dev/null
+    # shellcheck disable=SC2064
+    trap "podman rm -f '$temp' >/dev/null 2>&1 || true" RETURN
+
+    podman cp "$shared"     "${temp}:/data/shared.sqlite"
+    podman cp "$collection" "${temp}:/data/collection.sqlite"
+    podman rm -f "$temp" >/dev/null
+    trap - RETURN
+    echo "    Fixture data installed."
+}
+
+seed_from_volume() {
+    # Clone the reusable pkdump-seed-data volume, or fall back to a full
+    # `pkdump setup` if it has not been built yet.
+    if podman volume exists "$SEED_VOLUME" 2>/dev/null; then
+        echo "==> Cloning seed volume into ${VOLUME}..."
+        podman volume exists "$VOLUME" 2>/dev/null || podman volume create "$VOLUME" >/dev/null
+        podman volume export "$SEED_VOLUME" | podman volume import "$VOLUME" -
+        echo "    Done (cloned from ${SEED_VOLUME})."
+    else
+        echo "==> No seed volume found — running full 'pkdump setup' (slow)..."
+        echo "    TIP: build a reusable seed volume once: bash deploy/seed.sh --volume"
+        bash "$SCRIPT_DIR/seed.sh" "$INSTANCE"
+    fi
+}
+
+if [ "$TEST" = true ]; then
+    seed_from_fixture
+elif [ "$INIT" = true ]; then
+    seed_from_volume
+fi
+
+# --- Done -------------------------------------------------------------------
 
 echo ""
 echo "==> Setup complete."
-echo "    Populate catalog:  bash deploy/seed.sh ${INSTANCE}"
+if [ "$TEST" = true ] || [ "$INIT" = true ]; then
+    echo "    Data volume seeded."
+else
+    echo "    Populate catalog:  bash deploy/seed.sh ${INSTANCE}"
+fi
 echo "    Start:             systemctl --user start ${SERVICE_NAME}"
 echo "    Port:              podman port systemd-${SERVICE_NAME}"
 echo "    Logs:              journalctl --user -u ${SERVICE_NAME} -f"
+echo "    Backup timer:      systemctl --user enable --now pkdump-backup@${INSTANCE}.timer"
+echo "    Refresh timer:     systemctl --user enable --now pkdump-refresh@${INSTANCE}.timer"
 echo "    Teardown:          bash deploy/teardown.sh ${INSTANCE}"

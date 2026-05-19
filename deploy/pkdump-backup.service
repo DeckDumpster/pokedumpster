@@ -1,0 +1,10 @@
+[Unit]
+Description=PokeDumpster backup (%i)
+
+[Service]
+Type=oneshot
+# %i is the instance name (e.g. prod). WorkingDirectory points at the
+# instance's repo clone so backup.sh resolves alongside this unit.
+WorkingDirectory=%h/pokedumpster-%i
+ExecStart=%h/pokedumpster-%i/deploy/backup.sh %i
+TimeoutStartSec=900

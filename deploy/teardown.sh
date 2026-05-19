@@ -31,6 +31,11 @@ QUADLET_FILE="$HOME/.config/containers/systemd/${SERVICE_NAME}.container"
 echo "==> Stopping ${SERVICE_NAME}..."
 systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
 
+# Stop and disable the per-instance backup/refresh timers.
+for PREFIX in pkdump-backup pkdump-refresh; do
+    systemctl --user disable --now "${PREFIX}@${INSTANCE}.timer" 2>/dev/null || true
+done
+
 rm -f "$QUADLET_FILE"
 systemctl --user daemon-reload
 

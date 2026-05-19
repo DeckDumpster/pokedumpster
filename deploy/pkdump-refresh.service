@@ -1,0 +1,11 @@
+[Unit]
+Description=PokeDumpster catalog refresh (%i)
+
+[Service]
+Type=oneshot
+# DeckDumpster split this into prices / sealed / edhrec timers; PokeDumpster
+# collapses them to a single `pkdump data refresh` run inside the instance's
+# already-running container. The command is being added in parallel — it need
+# not exist yet for this unit to install cleanly.
+ExecStart=/bin/sh -c 'exec podman exec systemd-pkdump-%i pkdump data refresh'
+TimeoutStartSec=1800

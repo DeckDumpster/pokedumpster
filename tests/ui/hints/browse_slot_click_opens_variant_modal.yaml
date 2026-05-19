@@ -1,0 +1,15 @@
+start_page: /browse/sv3pt5
+involves:
+  - "button.slot onclick sets selectedSlot — renders VariantModal.svelte"
+  - "div.modal[role=dialog] with header h3 '#{number} · {name}'"
+  - "button.x (aria-label 'Close') and a.full 'Full card details →'"
+  - "svelte:window onkeydown Escape calls onClose"
+fixture_data:
+  set: "151 (sv3pt5)"
+  card: "Bulbasaur #1, Common"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Click the
+  Bulbasaur #1 slot button. 3. Wait for div.modal[role=dialog]; assert its
+  heading reads "#1 · Bulbasaur". 4. Assert the "Full card details →" link
+  and the "×" close button are present. 5. Press Escape. 6. Assert the modal
+  is hidden and the binder grid is shown again. 7. Screenshot.

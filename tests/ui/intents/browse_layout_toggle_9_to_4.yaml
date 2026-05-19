@@ -1,0 +1,10 @@
+# Scenario: Switching the pocket layout from 9-pocket to 4-pocket
+
+# Related: browse_pagination_next_prev, browse_url_state_persists, browse_mobile_breakpoints
+
+description: >
+  On the "151" binder browse page the Layout selector defaults to "9-pocket"
+  and the slot grid shows three columns. I change the selector to "4-pocket".
+  The grid re-renders with two columns, the pagination resets to "Page 1 of
+  N", and the per-page total of pages changes because fewer slots fit per
+  page. Switching back to "9-pocket" restores the three-column grid.

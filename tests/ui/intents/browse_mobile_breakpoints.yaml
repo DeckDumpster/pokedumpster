@@ -1,0 +1,11 @@
+# Scenario: The slot grid column count adapts to viewport width
+
+# Related: browse_layout_toggle_9_to_4, browse_mobile_bottom_sheet
+
+description: >
+  On the "151" binder browse page with the default 9-pocket layout, a wide
+  desktop viewport shows the slot grid in three columns. When I narrow the
+  viewport below 768px the grid drops to two columns, and below 480px it drops
+  to a single column — the pocket layout's column count is capped so slots
+  stay legible on small screens. Widening the viewport restores the
+  three-column grid.

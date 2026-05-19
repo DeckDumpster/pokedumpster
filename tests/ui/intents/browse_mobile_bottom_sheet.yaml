@@ -1,0 +1,10 @@
+# Scenario: The variant modal becomes a bottom sheet on a narrow viewport
+
+# Related: browse_slot_click_opens_variant_modal, browse_mobile_breakpoints
+
+description: >
+  On a narrow phone-width viewport I open the variant modal from a binder
+  slot. Instead of a centered dialog, it presents as a bottom sheet — pinned
+  to the bottom edge of the screen, spanning the full width, with rounded top
+  corners and taking up roughly the lower three-quarters of the viewport. It
+  still lists every printing, and still closes via the "×" button or Escape.

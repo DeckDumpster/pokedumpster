@@ -1,0 +1,11 @@
+# Scenario: Switching the binder sort mode between set-number and rarity-grouped
+
+# Related: browse_secret_rares_appended_after_numbered, browse_loads_set_first_page
+
+description: >
+  On the "151" binder browse page the slots are ordered by set number by
+  default — Bulbasaur #1, then Charmander #4, then Charizard ex #6, and so on
+  in ascending numeric order. A sort-mode control lets me switch to
+  "rarity-grouped" order, which re-groups the slots by rarity (Commons,
+  Uncommons, Rares, and so on) instead of by number. Switching back to
+  "set number" restores the numeric ordering.

@@ -1,0 +1,14 @@
+start_page: /browse/sv3pt5
+involves:
+  - "div.pips with one span.pip per non-deprecated printing"
+  - "span.pip gets class 'owned' when that printing's owned_count > 0"
+  - "owned_count comes from the binder API: COUNT(*) over collection rows for each printing_id"
+fixture_data:
+  set: "151 (sv3pt5)"
+  collection: "8 sv3pt5 copies registered to Master Set: 151 via binder_click (incl. Mew ex hyper rare) — those cards show filled pips; uncollected sv3pt5 cards show empty pips"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Assert at
+  least one slot has a span.pip with class 'owned' (a card present in the
+  fixture collection). 3. Assert at least one slot has a pip row with no
+  'owned' pip (an uncollected card). 4. Do not hard-code which slots — derive
+  from owned vs. not-owned. 5. Screenshot.

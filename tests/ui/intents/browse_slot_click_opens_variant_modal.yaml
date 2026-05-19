@@ -1,0 +1,10 @@
+# Scenario: Clicking a slot body opens the variant modal for that card
+
+# Related: browse_variant_modal_lists_all_variants, browse_slot_renders_image_number_pips
+
+description: >
+  On the "151" binder browse page I click the body of the Bulbasaur #1 slot.
+  The variant modal opens, titled "#1 · Bulbasaur", listing every printing of
+  that card. The modal has a close "×" button and a "Full card details →"
+  link. I press the Escape key and the modal closes, returning me to the
+  binder grid.

@@ -1,0 +1,19 @@
+start_page: /browse/base1
+involves:
+  - "inline quick-toggle checkboxes 'Holo' and 'RH' for Holo Rare slots (PLAN §6.2)"
+  - "Ultra Rare / IR / SIR / Hyper Rare / promo slots have NO inline checkboxes — modal only"
+  - "clicking the 'Holo' checkbox fires an optimistic add and shows an undo toast"
+fixture_data:
+  set: "Base Set (set_code base1)"
+  card: "Charizard #4, Rare Holo — carries a single holo printing per the fixture README"
+notes: >
+  1. Navigate to /browse/base1 and wait for the slot grid. 2. On the
+  Charizard #4 slot, locate the inline "Holo" and "RH" checkboxes. 3. Click
+  "Holo". 4. Assert the checkbox checks, the matching pip fills, and an undo
+  toast appears. 5. IMPORTANT: PLAN §6.2 specifies these inline Holo/RH
+  checkboxes, but the current +page.svelte renders no inline checkboxes — the
+  slot footer is just the number plus the pip row. Also note the fixture's
+  Base Set holo rares carry only a single `holo` printing (no separate
+  reverse-holo), so an "RH" toggle would have no printing to bind to. This
+  intent describes intended behavior; mark the test pending until the inline
+  checkboxes ship. 6. Screenshot.

@@ -1,0 +1,19 @@
+start_page: /browse/sv3pt5
+involves:
+  - "label > input[type=checkbox] bound to `includeSubset`, checked by default"
+  - "onchange resetPage()"
+  - "div.divider 'Subset' before the first slot whose section === 'subset'"
+  - "the binder fetch passes subset: includeSubset to /api/binder"
+fixture_data:
+  set: "151 (sv3pt5)"
+  caveat: "The fixture catalog (README) lists no cards flagged is_subset = 1 for any of the 3 sets, so the 'Subset' section may not appear with current fixture data"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Assert the
+  "Subset" checkbox exists and is checked by default. 3. Uncheck it; assert
+  the page indicator resets to "Page 1 of N" and no "Subset" divider is
+  present. 4. Re-check it. 5. IMPORTANT: this intent describes the intended
+  behavior per PLAN §6.1/§6.5. The current fixture has no is_subset cards, so
+  the "Subset" divider will not render either way — the test should focus on
+  the checkbox toggling and the page reset, and skip the divider assertion
+  (or extend the fixture with a subset card) until subset fixture data exists.
+  6. Screenshot.

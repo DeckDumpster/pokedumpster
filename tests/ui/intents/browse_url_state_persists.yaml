@@ -1,0 +1,10 @@
+# Scenario: The set in the URL determines which binder is shown
+
+# Related: browse_loads_set_first_page, browse_pagination_next_prev
+
+description: >
+  The binder browse page is addressable by set: navigating directly to
+  /browse/sv3pt5 loads the "151" binder, while /browse/base1 loads the "Base
+  Set" binder. The page reacts to the set route parameter — changing the set
+  in the URL re-fetches and re-renders the correct binder, with its own
+  completion stats and slot grid, and resets the browse session.

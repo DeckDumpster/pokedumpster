@@ -1,0 +1,11 @@
+# Scenario: Opening a set from the browse picker loads its first binder page
+
+# Related: browse_pagination_next_prev, browse_slot_renders_image_number_pips, browse_url_state_persists
+
+description: >
+  From the "Browse sets" page I click the tile for the "151" set. The binder
+  browse page loads at /browse/sv3pt5: I see the set name "151" as the page
+  heading, a "Set stats →" link, the two completion progress bars (a "Base"
+  bar and a "Master" bar), the controls bar with the Secret/Subset/Promos
+  checkboxes and the Layout selector, a "Page 1 of N" indicator, and a grid
+  of card slots for the first page of the set.

@@ -1,0 +1,18 @@
+start_page: /browse/sv3pt5
+involves:
+  - "sessionSet / sessionBatchId state — lazy batch creation (PLAN §6.7)"
+  - "addCopy(): if sessionBatchId === null, api.createBatch({ batch_type: 'binder_browse', name: binder.set.name }) first"
+  - "every subsequent add reuses sessionBatchId; changing set resets sessionSet and clears sessionBatchId"
+  - "the batch is visible on /recent"
+fixture_data:
+  set: "151 (sv3pt5)"
+  card: "Charmander #4, Common — used to trigger the first add"
+  existing_batches: "fixture already has 5 batches incl. a binder_click 'csv' batch — the new session batch is created on top"
+notes: >
+  1. Navigate to /browse/sv3pt5; page once and toggle a section — assert no
+  new batch yet (no add fired). 2. Open the Charmander #4 modal and click
+  "+ Add". 3. Navigate to /recent. 4. Assert a new batch appears named after
+  the set ("151" — PLAN §6.7 example "Binder: 151 — <date>"). 5. Screenshot.
+  NOTE: the code passes batch_type 'binder_browse' and name = set name; PLAN
+  §6.7 describes type 'binder_click' and a dated name — assert on the set name
+  substring rather than the exact format.

@@ -1,0 +1,18 @@
+start_page: /browse/sv3pt5
+involves:
+  - "inline quick-toggle checkboxes in the slot footer: 'Reg' (normal) and 'RH' (reverse_holo) for C/U/R rarities (PLAN §6.2)"
+  - "clicking a checkbox fires an optimistic add (POST /api/collection, source binder_click) without opening the modal"
+  - "the matching span.pip fills and an undo toast appears"
+fixture_data:
+  set: "151 (sv3pt5)"
+  card: "Bulbasaur #1, Common — has normal + reverse_holo printings"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. On the
+  Bulbasaur #1 slot, locate the inline "Reg" and "RH" checkboxes. 3. Click
+  "Reg". 4. Assert the checkbox becomes checked, the corresponding pip fills,
+  and an undo toast appears. 5. IMPORTANT: PLAN §6.2 specifies these inline
+  Reg/RH checkboxes, but the current frontend/src/routes/browse/[set]/+page.svelte
+  renders only the pip row in the slot footer — there are NO inline
+  checkboxes; variants are added only via the VariantModal. This intent
+  describes the intended behavior; mark the test pending until the inline
+  checkboxes ship. 6. Screenshot.

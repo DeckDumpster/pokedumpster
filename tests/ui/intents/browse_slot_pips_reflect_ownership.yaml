@@ -1,0 +1,10 @@
+# Scenario: Slot pips are filled for printings I already own
+
+# Related: browse_slot_renders_image_number_pips, browse_variant_modal_add_increments_count
+
+description: >
+  On the "151" binder browse page each slot's pip row shows my ownership at a
+  glance. For a card whose printings I own at least one copy of, the matching
+  pips render filled; for printings I do not own, the pips render empty. The
+  8 sv3pt5 copies in the fixture's Master Set: 151 binder mean some slots
+  already show filled pips, while uncollected cards show an all-empty row.

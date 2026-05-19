@@ -1,0 +1,10 @@
+# Scenario: The Subset checkbox includes or excludes appended subset sections
+
+# Related: browse_subset_section_appended, browse_include_secret_rares_toggle, browse_include_promos_toggle
+
+description: >
+  On a binder browse page the "Subset" checkbox is checked by default. When a
+  set has subset cards (e.g. Galaxy/Trainer Gallery printings marked as a
+  subset), they render in a trailing "Subset" section under a "Subset"
+  divider. I uncheck "Subset"; the page resets to "Page 1 of N" and the
+  "Subset" section disappears from the grid. Re-checking "Subset" restores it.

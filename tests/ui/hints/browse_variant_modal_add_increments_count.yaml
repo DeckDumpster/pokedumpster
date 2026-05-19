@@ -1,0 +1,17 @@
+start_page: /browse/sv3pt5
+involves:
+  - "VariantModal button.add '+ Add' calls onAdd(printing_id, variant)"
+  - "addCopy() optimistically does printing.owned_count += 1, then POST /api/collection (source binder_click, batch_id sessionBatchId)"
+  - "span.owned text updates to '{n} owned' and gains class 'has'; the slot pip fills"
+  - "modal stays open after an add (selectedSlot unchanged)"
+fixture_data:
+  set: "151 (sv3pt5)"
+  card: "Charmander #4, Common — not in the fixture collection, so its Normal printing starts at '0 owned'"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Click the
+  Charmander #4 slot. 3. In the modal, find the "Normal" printing row; assert
+  it reads "0 owned". 4. Click its "+ Add". 5. Assert the row updates to
+  "1 owned" (green) and the modal stays open. 6. Click "+ Add" again; assert
+  "2 owned". 7. Screenshot. NOTE: each add hits /api/collection — conftest
+  snapshots/restores collection.sqlite before each test, so the writes do not
+  leak.

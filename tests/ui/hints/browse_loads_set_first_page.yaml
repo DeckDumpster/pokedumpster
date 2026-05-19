@@ -1,0 +1,19 @@
+start_page: /browse
+involves:
+  - "set tile a.tile with href '/browse/sv3pt5' and title '151'"
+  - "binder browse page at /browse/[set] — frontend/src/routes/browse/[set]/+page.svelte"
+  - "page heading h1 with the set name"
+  - "a.statslink 'Set stats →'"
+  - "div.stats with two div.stat blocks: 'Base {owned}/{total}' and 'Master {owned}/{total}', each with a div.bar"
+  - "div.controls with Secret/Subset/Promos checkboxes, Layout select, span.pageno"
+  - "div.grid of button.slot elements"
+fixture_data:
+  set: "151 (set_code sv3pt5), 13 catalogued cards, printed_total 165, total 207"
+  collection: "8 sv3pt5 copies registered to Master Set: 151 via binder_click, so the Base and Master bars are partially filled"
+notes: >
+  1. Navigate to /browse. 2. Wait for the set grid; click the "151" tile.
+  3. Wait for the /browse/sv3pt5 page and the h1 "151". 4. Assert the
+  "Set stats →" link is visible. 5. Assert both progress bars (Base, Master)
+  are visible. 6. Assert the controls bar (checkboxes + Layout select) and
+  the "Page 1 of N" indicator are visible. 7. Assert at least one button.slot
+  is rendered in the grid. 8. Screenshot.

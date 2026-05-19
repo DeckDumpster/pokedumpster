@@ -1,0 +1,14 @@
+start_page: /browse/sv3pt5
+involves:
+  - "VariantModal ul with one li per printing in slot.printings"
+  - "li > span.variant (variantLabel(p.variant)), span.owned '{count} owned' (class 'has' when count > 0), span.price '${market_price}', button.add '+ Add'"
+  - "li.dim and button.add[disabled] for deprecated printings"
+fixture_data:
+  set: "151 (sv3pt5)"
+  card: "Bulbasaur #1, Common — printings: normal + reverse_holo, each with a single market price observed 2024-01-15"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Click the
+  Bulbasaur #1 slot. 3. Wait for the variant modal. 4. Assert the printing
+  list has one li per printing (2 for Bulbasaur #1). 5. Assert each li shows a
+  variant label, an "{n} owned" span, a "$" price, and a "+ Add" button.
+  6. Screenshot.

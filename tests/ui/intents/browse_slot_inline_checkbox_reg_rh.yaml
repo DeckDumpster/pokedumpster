@@ -1,0 +1,12 @@
+# Scenario: A common/uncommon/rare slot has inline Reg and RH quick-toggles
+
+# Related: browse_slot_inline_checkbox_holo_rh, browse_optimistic_ui_undo_toast, browse_slot_pips_reflect_ownership
+
+description: >
+  On the "151" binder browse page the slot for a Common card such as
+  Bulbasaur #1 carries two inline quick-toggle checkboxes in its footer,
+  labelled "Reg" and "RH" — the two most common variants for that rarity. I
+  click the "Reg" checkbox without opening the modal; the checkbox fills, the
+  matching pip fills, and a copy of the normal printing is registered with an
+  undo toast. The checkboxes are independent of the slot-body click that
+  opens the variant modal.

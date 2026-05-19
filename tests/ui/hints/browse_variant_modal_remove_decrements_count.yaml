@@ -1,0 +1,19 @@
+start_page: /browse/sv3pt5
+involves:
+  - "a per-variant remove control ('-' button) on each VariantModal printing row (PLAN §6.3)"
+  - "removing decrements owned_count (clamped at 0) and DELETEs a collection row"
+  - "span.owned loses class 'has' at 0; the slot pip empties"
+fixture_data:
+  set: "151 (sv3pt5)"
+  collection: "8 sv3pt5 copies registered to Master Set: 151 — pick a card whose printing has owned_count >= 1, e.g. one of the registered 151 cards"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Open the
+  variant modal for a card you already own (a registered Master Set: 151
+  card). 3. Note the "{n} owned" count on the owned printing row. 4. Click
+  the row's remove ('-') control. 5. Assert the count decreases by one and,
+  if it hits 0, loses the green styling and the slot pip empties.
+  6. IMPORTANT: PLAN §6.3 specifies "+/- buttons" per variant, but the
+  current VariantModal.svelte renders only a "+ Add" button — there is NO '-'
+  / remove control. (Removal exists only via the undo toast.) This intent
+  describes intended behavior; mark the test pending until the '-' button
+  ships, or retarget it at the undo toast. 7. Screenshot.

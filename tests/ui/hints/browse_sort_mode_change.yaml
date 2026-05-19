@@ -1,0 +1,18 @@
+start_page: /browse/sv3pt5
+involves:
+  - "a sort-mode control in the controls bar with two modes: set-number (default) and rarity-grouped"
+  - "set-number mode orders slots by number_sortable ASC (PLAN §6.1)"
+  - "rarity-grouped mode re-groups slots by rarity"
+  - "div.grid re-orders / re-sections when the mode changes"
+fixture_data:
+  set: "151 (sv3pt5) — Bulbasaur #1, Charmander #4, Charizard ex #6, Squirtle #7, Pikachu #25, Alakazam ex #65, Ditto #105, Mew #131, Snorlax #151, Professor's Research #165"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Assert the
+  first slots appear in ascending set-number order (#1, #4, #6, ...).
+  3. Switch the sort-mode control to "rarity-grouped"; assert the slot
+  ordering changes and rarity group headings/labels appear. 4. Switch back to
+  "set number"; assert numeric order is restored. 5. IMPORTANT: the
+  rarity-grouped sort mode is named in PLAN §15 but is NOT implemented in the
+  current +page.svelte (the page only ever requests set-number order). This
+  intent describes the intended behavior; mark the test pending until the
+  sort-mode control is built. 6. Screenshot.

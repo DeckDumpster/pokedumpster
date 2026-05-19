@@ -1,0 +1,11 @@
+# Scenario: Adding a variant from the modal increments its owned count
+
+# Related: browse_variant_modal_lists_all_variants, browse_optimistic_ui_undo_toast, browse_slot_pips_reflect_ownership
+
+description: >
+  I open the variant modal for Charmander #4 in the "151" set. The "Normal"
+  printing row shows "0 owned". I click its "+ Add" button. The count
+  immediately updates to "1 owned" and turns green, the slot's matching pip
+  fills behind the modal, and an undo toast appears. The modal stays open so
+  I can add more copies; clicking "+ Add" again advances the count to
+  "2 owned".

@@ -1,0 +1,11 @@
+# Scenario: The first add in a binder-browse visit creates a session batch
+
+# Related: browse_optimistic_ui_undo_toast, browse_variant_modal_add_increments_count
+
+description: >
+  When I open the "151" binder browse page and merely look around — paging,
+  toggling sections — no batch is created. The moment I make my first add
+  (clicking "+ Add" in the variant modal), a single ingestion batch is
+  created for this session, and every further add during the visit is grouped
+  under it. I can later see that batch on the Recent page, named after the
+  set. Navigating to a different set starts a fresh session.

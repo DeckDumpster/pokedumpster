@@ -1,0 +1,9 @@
+# Scenario: Removing a copy from the modal decrements its owned count
+
+# Related: browse_variant_modal_add_increments_count, browse_optimistic_ui_undo_toast
+
+description: >
+  I open the variant modal for a printing I already own and use the modal's
+  per-variant remove control to take one copy off. The "{n} owned" count
+  decreases by one, and when it reaches zero it loses its green styling and
+  the slot's pip empties. The count never drops below "0 owned".

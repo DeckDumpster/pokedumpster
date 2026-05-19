@@ -1,0 +1,16 @@
+start_page: /browse/sv3pt5
+involves:
+  - "is_subset = 1 cards render as a separate appended section (PLAN §6.1)"
+  - "div.divider 'Subset' before the first slot whose section === 'subset' (sectionLabel.subset)"
+  - "section ordering: base, then secret, then subset, then promo"
+fixture_data:
+  set: "151 (sv3pt5)"
+  caveat: "The fixture catalog (README) lists NO cards flagged is_subset = 1 for any of the 3 sets — there is no subset fixture data"
+notes: >
+  1. Navigate to /browse/sv3pt5 with "Subset" left checked (default). 2. Page
+  to the end of the set. 3. Intended: assert a "Subset" divider appears
+  followed by subset slots, placed after the numbered set and secret rares.
+  4. IMPORTANT: this intent describes the intended behavior per PLAN §6.1.
+  The current fixture has no is_subset cards, so the "Subset" divider will not
+  render with current data — mark the test pending until the fixture is
+  extended with a subset card (or a set that has one is added). 5. Screenshot.

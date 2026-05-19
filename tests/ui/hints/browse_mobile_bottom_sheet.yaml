@@ -1,0 +1,17 @@
+start_page: /browse/sv3pt5
+involves:
+  - "VariantModal div.modal — the @media (max-width: 540px) rule makes it a bottom sheet (PLAN §6.9)"
+  - "bottom-sheet styling: top auto, bottom 0, left 0, width 100%, transform none, border-radius 14px 14px 0 0, max-height 78vh"
+fixture_data:
+  set: "151 (sv3pt5)"
+  card: "Bulbasaur #1, Common"
+  viewport: "set the browser viewport to a narrow width below 540px, e.g. 390x844"
+notes: >
+  1. Set the viewport to ~390px wide (below the 540px bottom-sheet
+  breakpoint). 2. Navigate to /browse/sv3pt5 and wait for the slot grid.
+  3. Click the Bulbasaur #1 slot. 4. Wait for div.modal[role=dialog].
+  5. Assert it is anchored to the bottom of the viewport — its bounding box
+  bottom is flush with the viewport bottom and its width spans the full
+  viewport width (bottom-sheet layout, not the centered dialog). 6. Assert
+  the printing list is still visible. 7. Close via "×" or Escape; assert it
+  hides. 8. Screenshot.

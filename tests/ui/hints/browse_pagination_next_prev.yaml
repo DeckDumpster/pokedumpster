@@ -1,0 +1,16 @@
+start_page: /browse/sv3pt5
+involves:
+  - "span.pageno text 'Page {binder.page} of {binder.total_pages}'"
+  - "button '← Prev' — disabled when binder.page <= 1"
+  - "button 'Next →' — disabled when binder.page >= binder.total_pages"
+  - "div.grid of button.slot — re-fetched by the load() $effect when pageNum changes"
+fixture_data:
+  set: "151 (sv3pt5), 13 catalogued cards; with the default 9-pocket layout this spans more than one page"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Assert the
+  page indicator reads "Page 1 of N" and "← Prev" is disabled. 3. Click
+  "Next →". 4. Wait for the indicator to read "Page 2 of N" and a fresh slot
+  grid to load; assert "← Prev" is now enabled. 5. Click "← Prev". 6. Assert
+  the indicator returns to "Page 1 of N" and "← Prev" is disabled. 7. The
+  fixture is small (13 cards); total_pages depends on layout + active section
+  toggles — derive expected pages rather than hard-coding. 8. Screenshot.

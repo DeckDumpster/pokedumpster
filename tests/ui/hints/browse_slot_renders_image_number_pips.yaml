@@ -1,0 +1,15 @@
+start_page: /browse/sv3pt5
+involves:
+  - "button.slot per card in div.grid"
+  - "slot img (src = slot.image_large, loading='lazy') OR div.noart with the card name when image_large is null"
+  - "div.foot with span.num (slot.number) and div.pips"
+  - "div.pips contains one span.pip per non-deprecated printing"
+fixture_data:
+  set: "151 (sv3pt5)"
+  cards: "Bulbasaur #1 (Common — normal + reverse_holo printings), Charizard ex #6 (Double Rare)"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Pick the first
+  slot button. 3. Assert it contains either an img or a div.noart. 4. Assert
+  its footer shows a span.num with the card number. 5. Assert div.pips holds
+  at least one span.pip, with one pip per non-deprecated printing of that
+  card. 6. Screenshot.

@@ -1,0 +1,17 @@
+start_page: /browse/sv3pt5
+involves:
+  - "addCopy() -> showToast() sets toast { message, copyId, printing }"
+  - "div.toast (fixed bottom-center) with the message span and button.undo 'Undo'"
+  - "message format 'Added {slot.name} · {variantLabel(variant)}'"
+  - "undo() calls api.deleteCopy(copyId), decrements printing.owned_count, clears the toast"
+  - "toastTimer auto-clears the toast after 6000ms; a new add resets the timer"
+fixture_data:
+  set: "151 (sv3pt5)"
+  card: "Charmander #4, Common — Normal printing starts at '0 owned'"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Open the
+  Charmander #4 modal and click "+ Add" on the Normal row. 3. Assert the count
+  reads "1 owned" and a div.toast appears with text "Added Charmander ·
+  Normal" and an "Undo" button. 4. Click "Undo". 5. Assert the toast
+  disappears and the count returns to "0 owned". 6. Screenshot. NOTE: do not
+  rely on the 6s auto-dismiss in the test — exercise the explicit Undo path.

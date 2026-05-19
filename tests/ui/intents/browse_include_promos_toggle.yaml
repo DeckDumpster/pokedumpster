@@ -1,0 +1,10 @@
+# Scenario: The Promos checkbox is off by default and reveals promo cards
+
+# Related: browse_include_secret_rares_toggle, browse_include_subset_toggle
+
+description: >
+  On a binder browse page the "Promos" checkbox is unchecked by default, so
+  promo cards are excluded from the binder and no "Promos" section is shown.
+  I check "Promos"; the page resets to "Page 1 of N" and, for a set with
+  promo printings, a trailing "Promos" section appears under a "Promos"
+  divider. Unchecking "Promos" removes that section again.

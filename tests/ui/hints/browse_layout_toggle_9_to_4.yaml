@@ -1,0 +1,16 @@
+start_page: /browse/sv3pt5
+involves:
+  - "select bound to `layout` with options 4-pocket (value 4), 9-pocket (value 9), 12-pocket (value 12), default 9"
+  - "onchange resetPage() — sets pageNum back to 1"
+  - "div.grid style grid-template-columns repeat(cols, 1fr); columns() maps 4->2, 9->3, 12->4"
+  - "span.pageno 'Page 1 of N' after a layout change"
+fixture_data:
+  set: "151 (sv3pt5), 13 catalogued cards"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Assert the
+  Layout select shows "9-pocket". 3. Select "4-pocket" by label. 4. Wait for
+  the grid to re-fetch; assert the page indicator reads "Page 1 of N" and the
+  grid's grid-template-columns is a 2-column repeat. 5. Select "9-pocket"
+  again; assert the grid returns to a 3-column repeat. 6. Use a wide viewport
+  so the responsive cap (cols clamped below 768px) does not interfere.
+  7. Screenshot.

@@ -1,0 +1,12 @@
+# Scenario: The Base and Master completion stats render in the header
+
+# Related: browse_loads_set_first_page, browse_slot_pips_reflect_ownership
+
+description: >
+  On the "151" binder browse page the header shows two completion stats side
+  by side. The first reads "Base {owned}/{total}" with a progress bar — the
+  count of card numbers I own at least one variant of, over the total
+  numbered cards. The second reads "Master {owned}/{total}" with its own
+  progress bar — the count of variants I own over the total known variants
+  (including secret rares and subsets). Both bars are partially filled because
+  the fixture has copies registered to the 151 master set.

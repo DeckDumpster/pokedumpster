@@ -1,0 +1,18 @@
+start_page: /browse/sv3pt5
+involves:
+  - "the [set] route param drives load(); the load() $effect watches page.params.set"
+  - "h1 shows binder.set.name; div.grid is the set's slots"
+  - "changing set resets the browse session (sessionSet/sessionBatchId)"
+fixture_data:
+  sets: "sv3pt5 -> '151'; base1 -> 'Base Set'"
+notes: >
+  1. Navigate directly to /browse/sv3pt5; wait for the slot grid and assert
+  the h1 reads "151". 2. Navigate directly to /browse/base1; wait for the
+  grid and assert the h1 reads "Base Set" and the slot set has changed.
+  3. NOTE: per the current +page.svelte, the page state (page number, layout,
+  the three section toggles) lives only in component state — it is NOT
+  reflected into the URL query string, despite PLAN §6.8 keying the cache by
+  (set, page, layout, include). So a full reload resets page/layout/toggles
+  to defaults. This intent verifies the set segment of the URL is
+  load-bearing and addressable; it does NOT assert query-param round-tripping
+  — that is intended behavior not yet built. 4. Screenshot.

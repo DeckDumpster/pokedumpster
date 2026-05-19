@@ -1,0 +1,12 @@
+# Scenario: Adding a copy shows an undo toast that reverses the add
+
+# Related: browse_variant_modal_add_increments_count, browse_session_creates_batch
+
+description: >
+  On the "151" binder browse page I open the variant modal for Charmander #4
+  and click "+ Add" on the "Normal" printing. The count optimistically jumps
+  to "1 owned" and a toast appears bottom-center reading "Added Charmander ·
+  Normal" with an "Undo" button. I click "Undo"; the just-added copy is
+  deleted, the count drops back to "0 owned", the toast disappears, and the
+  slot pip empties. If I do not click Undo, the toast clears itself after a
+  few seconds.

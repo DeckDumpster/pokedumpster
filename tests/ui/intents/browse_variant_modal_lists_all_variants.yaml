@@ -1,0 +1,10 @@
+# Scenario: The variant modal lists every printing with label, count, and price
+
+# Related: browse_slot_click_opens_variant_modal, browse_variant_modal_add_increments_count
+
+description: >
+  I open the variant modal for Bulbasaur #1 in the "151" set. The modal lists
+  one row per printing of the card: each row shows the variant label (e.g.
+  "Normal", "Reverse Holo"), an "{n} owned" count that turns green when I own
+  at least one, the market price, and a "+ Add" button. Deprecated printings
+  are dimmed and their "+ Add" button is disabled.

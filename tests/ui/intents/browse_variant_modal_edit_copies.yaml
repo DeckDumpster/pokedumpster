@@ -1,0 +1,10 @@
+# Scenario: "Edit copies…" expands per-copy controls in the variant modal
+
+# Related: browse_variant_modal_lists_all_variants, browse_variant_modal_add_increments_count
+
+description: >
+  In the variant modal for a card I own, each printing row offers an "Edit
+  copies…" affordance. When I expand it, per-copy controls appear — one set
+  per physical copy — letting me change a copy's condition, language, notes,
+  and status without leaving the binder browse page. Collapsing it hides the
+  per-copy controls again.

@@ -1,0 +1,10 @@
+# Scenario: Each binder slot renders a card image, number, and pip row
+
+# Related: browse_slot_pips_reflect_ownership, browse_slot_click_opens_variant_modal
+
+description: >
+  On the "151" binder browse page each slot in the grid is a clickable button
+  that shows the card's image at the top, and a footer row with the card
+  number on the left and a row of pips on the right. There is one pip per
+  non-deprecated printing of that card. When a card has no image, a text
+  placeholder with the card name is shown in place of the picture.

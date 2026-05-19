@@ -1,0 +1,11 @@
+# Scenario: A holo-rare slot has inline Holo and RH quick-toggles
+
+# Related: browse_slot_inline_checkbox_reg_rh, browse_optimistic_ui_undo_toast
+
+description: >
+  On the Base Set binder browse page the slot for a Rare Holo card such as
+  Charizard #4 carries two inline quick-toggle checkboxes labelled "Holo" and
+  "RH" — the two common variants for a holo rare. I click the "Holo" checkbox
+  directly on the slot; it fills, the matching pip fills, and a copy of the
+  holo printing is registered with an undo toast. Ultra rares, illustration
+  rares and similar high rarities have no inline checkboxes and are modal-only.

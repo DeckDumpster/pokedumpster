@@ -1,0 +1,18 @@
+start_page: /browse/sv3pt5
+involves:
+  - "an 'Incomplete only' filter pill in/near the controls bar (PLAN §6.4)"
+  - "a slot is 'complete' when every non-deprecated printing has owned_count > 0 (its pip row is fully .owned)"
+  - "with the filter active, complete slots are removed from div.grid"
+fixture_data:
+  set: "151 (sv3pt5)"
+  collection: "8 sv3pt5 copies registered to Master Set: 151 — some card numbers have full pip rows, most do not"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid; count visible
+  slots. 2. Activate the "Incomplete only" pill. 3. Assert the visible slot
+  count drops (slots with a full pip row are hidden) and every remaining slot
+  has at least one unfilled pip. 4. Deactivate the pill; assert the full grid
+  returns. 5. IMPORTANT: PLAN §6.4 specifies this "Incomplete only" filter
+  pill, but it is NOT present in the current frontend/src/routes/browse/[set]/+page.svelte
+  (no such control exists yet). This intent describes the intended behavior;
+  the implementation/assertions depend on that pill being built — mark the
+  test pending until the control ships. 6. Screenshot.

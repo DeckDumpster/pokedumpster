@@ -1,0 +1,10 @@
+# Scenario: The "Incomplete only" filter hides slots whose pip row is full
+
+# Related: browse_slot_pips_reflect_ownership, browse_master_set_completion_stats_visible
+
+description: >
+  On the "151" binder browse page there is an "Incomplete only" filter pill.
+  By default it is off and every slot on the page is shown. When I activate
+  "Incomplete only", slots whose pip row is completely filled — every variant
+  of that card owned — are hidden, leaving only the slots I still have
+  variants to collect. Deactivating the pill restores the full slot grid.

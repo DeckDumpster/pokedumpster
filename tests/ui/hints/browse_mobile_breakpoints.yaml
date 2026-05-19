@@ -1,0 +1,14 @@
+start_page: /browse/sv3pt5
+involves:
+  - "div.grid style grid-template-columns repeat(cols, 1fr)"
+  - "cols = $derived: base from columns(layout); capped to 1 below 480px viewport, to min(2, base) below 768px (PLAN §6.9)"
+  - "viewportWidth bound via svelte:window bind:innerWidth"
+fixture_data:
+  set: "151 (sv3pt5)"
+  layout: "default 9-pocket -> base column count 3"
+notes: >
+  1. Set a wide viewport (e.g. 1280px). Navigate to /browse/sv3pt5 and wait
+  for the slot grid; assert grid-template-columns is a 3-column repeat.
+  2. Resize the viewport to ~700px (below 768px); assert the grid becomes a
+  2-column repeat. 3. Resize to ~400px (below 480px); assert a 1-column
+  repeat. 4. Resize back wide; assert 3 columns again. 5. Screenshot.

@@ -1,0 +1,18 @@
+start_page: /browse/sv3pt5
+involves:
+  - "label > input[type=checkbox] bound to `includePromos`, UNCHECKED by default"
+  - "onchange resetPage()"
+  - "div.divider 'Promos' before the first slot whose section === 'promo'"
+  - "the binder fetch passes promos: includePromos to /api/binder"
+fixture_data:
+  set: "151 (sv3pt5)"
+  caveat: "The fixture catalog (README) lists no promo cards for any set, so the 'Promos' section will not appear even when the checkbox is checked"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Assert the
+  "Promos" checkbox exists and is UNCHECKED by default. 3. Check it; assert
+  the page indicator resets to "Page 1 of N". 4. Uncheck it. 5. IMPORTANT:
+  this intent describes intended behavior per PLAN §6.1/§6.5. The fixture
+  carries no promo cards, so the "Promos" divider does not render either way
+  — the test should assert the default-off state and the checkbox/page-reset
+  behavior, and skip the divider assertion until promo fixture data exists.
+  6. Screenshot.

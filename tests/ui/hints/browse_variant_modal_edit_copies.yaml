@@ -1,0 +1,17 @@
+start_page: /browse/sv3pt5
+involves:
+  - "an 'Edit copies…' expander on each VariantModal printing row (PLAN §6.3)"
+  - "expanded: per-copy controls — condition, language, notes, status — one row per physical copy"
+fixture_data:
+  set: "151 (sv3pt5)"
+  collection: "8 sv3pt5 copies registered to Master Set: 151 — open the modal for one of those owned cards so there are copies to edit"
+notes: >
+  1. Navigate to /browse/sv3pt5 and wait for the slot grid. 2. Open the
+  variant modal for an owned Master Set: 151 card. 3. Click "Edit copies…" on
+  an owned printing row. 4. Assert per-copy controls (condition / language /
+  notes / status) appear. 5. Collapse it; assert they hide. 6. IMPORTANT:
+  PLAN §6.3 specifies the "Edit copies…" expander, but the current
+  VariantModal.svelte has NO such control — it lists variants with a "+ Add"
+  button and a "Full card details →" link only. Per-copy editing currently
+  lives on the card detail page. This intent describes intended behavior;
+  mark the test pending until the expander ships. 7. Screenshot.

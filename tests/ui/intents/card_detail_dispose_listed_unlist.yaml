@@ -1,0 +1,11 @@
+# Scenario: List a copy for trade then return it to owned on the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, I can set an owned copy's Status `<select>` to
+  "listed". After the page reloads, the Status cell shows "listed".
+  Selecting "owned" again on that same `<select>` returns the copy to the
+  owned status.

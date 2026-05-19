@@ -1,0 +1,16 @@
+start_page: /card/sv8/160
+involves:
+  - 'a copy row in the "Your copies" table with a Status <select>'
+  - 'Status <select> includes the "listed" and "owned" options'
+  - 'selecting "listed" then "owned" each calls changeStatus and reloads'
+  - 'the Status cell reflects the chosen status after each reload'
+fixture_data:
+  card_name: "Latias ex"
+  listed_variant: "holo"
+notes: >
+  sv8/160 (Latias ex, Illustration Rare) already has the holo copy
+  sv8-160-holo in the "listed" status in the fixture. 1. Navigate to
+  /card/sv8/160. 2. Wait for the copies table to load. 3. Confirm that
+  copy's Status <select> reads "listed". 4. Select "owned" from the Status
+  <select>. 5. After the non-optimistic reload, the copy's Status <select>
+  shows "owned" selected.

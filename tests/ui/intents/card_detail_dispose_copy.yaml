@@ -1,0 +1,11 @@
+# Scenario: Dispose of a copy from the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, a copy's Status `<select>` lets me dispose of
+  the copy by picking a disposition such as "sold", "traded", "gifted", or
+  "lost". After I select one, the copy's status changes and, once the page
+  reloads, the Status cell shows the new disposition.

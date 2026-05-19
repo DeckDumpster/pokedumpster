@@ -1,0 +1,14 @@
+start_page: /collection
+involves:
+  - 'a card row or grid tile on the collection page'
+  - 'the variant modal opens on card click'
+  - '"Full card details" link inside the variant modal'
+  - 'the card detail page at /card/:set/:number loads with the same card'
+fixture_data:
+  card_name: "Charizard ex"
+notes: >
+  1. Navigate to /collection and wait for the collection to load. 2. Open
+  a card's variant modal — use Charizard ex (sv3pt5/6), which is owned in
+  the fixture. 3. In the modal, click the "Full card details" link.
+  4. The browser navigates to /card/sv3pt5/6. 5. Verify the card detail
+  page shows the "Charizard ex" heading.

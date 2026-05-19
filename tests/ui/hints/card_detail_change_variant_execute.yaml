@@ -1,0 +1,15 @@
+start_page: /card/sv8/3
+involves:
+  - 'a copy row in the "Your copies" table with a Variant <select>'
+  - 'selecting a different variant calls changeVariant and triggers a reload'
+  - 'after the reload the copy Variant <select> shows the new variant'
+fixture_data:
+  card_name: "Exeggcute"
+  from_variant: "normal"
+  to_variant: "reverse_holo"
+notes: >
+  sv8/3 (Exeggcute, Common) carries the "normal" and "reverse_holo"
+  variants. 1. Navigate to /card/sv8/3 and wait for the copies table to
+  load. 2. On a copy whose Variant <select> currently reads "normal",
+  select "reverse_holo". 3. After the non-optimistic reload, that copy's
+  Variant <select> shows "reverse_holo" selected.

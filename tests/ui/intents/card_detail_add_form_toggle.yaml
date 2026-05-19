@@ -1,0 +1,11 @@
+# Scenario: Adding a copy from the card detail page does not require a form
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, adding a copy is a single click on a variant's
+  "+ Add" button — there is no expandable purchase form to toggle. The
+  button adds the copy directly, all controls are disabled while the
+  mutation runs, and the page reloads to show the new copy.

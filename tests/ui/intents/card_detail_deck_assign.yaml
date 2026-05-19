@@ -1,0 +1,11 @@
+# Scenario: Assign a copy to a deck from the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, an unassigned copy's Location `<select>` lists
+  every deck alongside the binders and "Unassigned". When I pick a deck,
+  the copy is assigned to it, and after the page reloads the Location cell
+  shows that deck selected.

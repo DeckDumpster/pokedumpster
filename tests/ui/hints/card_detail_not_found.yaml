@@ -1,0 +1,13 @@
+start_page: /card/zzz/999
+involves:
+  - 'card detail page loaded with an invalid set/number'
+  - 'the initial card detail fetch fails and detail stays null'
+  - '"Failed to load card: {message}" error text shown'
+  - 'no card art or info panel rendered'
+fixture_data:
+  none: "zzz/999 is a deliberately nonexistent set code and number"
+notes: >
+  Navigate to /card/zzz/999, a set code and number absent from the catalog.
+  The "Loading…" text is replaced by the "Failed to load card: …" error
+  message. No .art image or .info panel is shown. The global header nav bar
+  is still present.

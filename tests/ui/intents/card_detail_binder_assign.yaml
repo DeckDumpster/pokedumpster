@@ -1,0 +1,11 @@
+# Scenario: Assign an unassigned copy to a binder from the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, an unassigned copy's Location cell is a
+  `<select>` that lists every binder, every deck, and an "Unassigned"
+  option. When I pick a binder, the copy is assigned to it, and after the
+  page reloads the Location cell shows that binder selected.

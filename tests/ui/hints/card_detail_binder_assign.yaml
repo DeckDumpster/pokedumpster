@@ -1,0 +1,16 @@
+start_page: /card/base1/58
+involves:
+  - 'a copy row in the "Your copies" table for an unassigned owned copy'
+  - 'Location <select> in the copy row listing binders, decks, and "Unassigned"'
+  - 'selecting a binder encodes the value as b:{id} and calls assignCopy/moveCopy'
+  - 'the page reloads and the Location <select> shows the chosen binder'
+fixture_data:
+  card_name: "Pikachu"
+  target_binder: "Trade Binder"
+notes: >
+  base1/58 (Pikachu, Common) is a loose, unassigned owned copy in the
+  fixture. 1. Navigate to /card/base1/58. 2. Wait for the copies table to
+  load. 3. Confirm the copy's Location <select> currently reads
+  "Unassigned". 4. Select "Trade Binder" from the Location <select>.
+  5. After the non-optimistic reload, the Location <select> for that copy
+  shows "Trade Binder" selected.

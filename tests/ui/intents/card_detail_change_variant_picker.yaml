@@ -1,0 +1,11 @@
+# Scenario: Open the variant picker on the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page for a card with multiple variants, a copy's
+  Variant `<select>` lists every variant of that card. The copy's current
+  variant is the selected option, and the other variants are selectable
+  alternatives.

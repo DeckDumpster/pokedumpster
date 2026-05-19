@@ -1,0 +1,17 @@
+start_page: /card/base1/7
+involves:
+  - 'Printings table with a "+ Add" button per variant row'
+  - 'clicking "+ Add" calls the add-copy mutation with source "manual"'
+  - 'the page re-runs load() and the "Your copies" section shows the new copy'
+  - 'the variant row Owned count increments'
+fixture_data:
+  card_name: "Hitmonchan"
+  variant: "holo"
+notes: >
+  base1/7 (Hitmonchan, Rare Holo) carries a single "holo" variant and is
+  not owned in the fixture. 1. Navigate to /card/base1/7. 2. Wait for the
+  card detail to load. 3. Confirm the "Your copies (0)" header and the
+  "You don't own this card yet." empty text. 4. Click the "+ Add" button
+  on the holo variant row. 5. After the non-optimistic reload, the header
+  reads "Your copies (1)" and a copy row appears in the copies table.
+  6. The holo variant's Owned count shows 1.

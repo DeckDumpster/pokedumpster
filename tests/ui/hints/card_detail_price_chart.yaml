@@ -1,0 +1,13 @@
+start_page: /card/sv3pt5/6
+involves:
+  - 'Printings table with a Market column'
+  - 'each linked variant shows its latest market price'
+  - 'a variant with no price row shows an empty Market cell'
+fixture_data:
+  card_name: "Charizard ex"
+  price_observed: "2024-01-15"
+notes: >
+  In the fixture every linked variant carries one market price row observed
+  2024-01-15. 1. Navigate to /card/sv3pt5/6 (Charizard ex). 2. Wait for the
+  card detail to load. 3. Verify the Printings table has a Market column.
+  4. Verify the holo variant row shows a non-empty market price value.

@@ -1,0 +1,11 @@
+# Scenario: Receive an ordered copy on the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, an ordered copy's Status `<select>` shows
+  "ordered". When I change it to "owned", the copy transitions to the owned
+  status, and after the page reloads the Status cell shows "owned" with the
+  owned-copy controls available.

@@ -1,0 +1,15 @@
+start_page: /card/sv3pt5/6
+involves:
+  - 'Printings table with a "+ Add" button per variant row'
+  - 'no add-collection form and no toggle behavior on the card detail page'
+  - 'controls disable while the busy flag is set during the mutation'
+  - '"Your copies" section reloads after the add completes'
+fixture_data:
+  card_name: "Charizard ex"
+notes: >
+  sv3pt5/6 (Charizard ex, Double Rare) is owned in the fixture via the
+  received TCGplayer order. 1. Navigate to /card/sv3pt5/6. 2. Wait for
+  the card detail to load. 3. Confirm there is no expandable add form on
+  the page — the Printings table exposes only the per-variant "+ Add"
+  button. 4. Click "+ Add". 5. While busy, the page controls are disabled.
+  6. After the reload, the "Your copies" count has incremented by one.

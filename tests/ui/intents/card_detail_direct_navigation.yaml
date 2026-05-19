@@ -1,0 +1,12 @@
+# Scenario: Navigate directly to a card detail page via URL
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can navigate directly to a card's detail page at /card/:set/:number and
+  see the card image on the left and an info panel on the right showing the
+  card name, the "{set} · #{number} · {rarity}" subtitle, and the card's
+  optional metadata (Type, HP, Energy, Artist). The Printings section lists
+  the card's variants and the site header shows the navigation links.

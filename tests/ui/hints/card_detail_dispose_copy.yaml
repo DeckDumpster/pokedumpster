@@ -1,0 +1,15 @@
+start_page: /card/base1/58
+involves:
+  - 'a copy row in the "Your copies" table with a Status <select>'
+  - 'Status <select> options include sold, traded, gifted, lost'
+  - 'selecting a disposition calls changeStatus and triggers a reload'
+  - 'the copy row Status cell shows the new disposition after reload'
+fixture_data:
+  card_name: "Pikachu"
+  disposition: "sold"
+notes: >
+  base1/58 (Pikachu, Common) is a loose, unassigned owned copy in the
+  fixture. 1. Navigate to /card/base1/58. 2. Wait for the copies table to
+  load. 3. Select "sold" from the copy's Status <select>. 4. After the
+  non-optimistic reload, that copy's Status <select> shows "sold"
+  selected.

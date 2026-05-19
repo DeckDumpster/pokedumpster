@@ -1,0 +1,16 @@
+start_page: /card/base1/58
+involves:
+  - 'a copy row in the "Your copies" table for an unassigned owned copy'
+  - 'Location <select> listing decks, binders, and "Unassigned"'
+  - 'selecting a deck encodes the value as d:{id} and calls assignCopy/moveCopy'
+  - 'the page reloads and the Location <select> shows the chosen deck'
+fixture_data:
+  card_name: "Pikachu"
+  target_deck: "Pikachu ex Aggro"
+notes: >
+  base1/58 (Pikachu, Common) is a loose, unassigned owned copy in the
+  fixture. 1. Navigate to /card/base1/58. 2. Wait for the copies table to
+  load. 3. Confirm the copy's Location <select> currently reads
+  "Unassigned". 4. Select the deck "Pikachu ex Aggro" from the Location
+  <select>. 5. After the non-optimistic reload, the Location <select> for
+  that copy shows "Pikachu ex Aggro" selected.

@@ -1,0 +1,12 @@
+# Scenario: Add a copy to the collection from the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, the Printings table lists each variant of the
+  card with a "+ Add" button. When I click "+ Add" on a variant, a new copy
+  of that variant is added to my collection, and it appears in the "Your
+  copies" section with that variant's owned count incremented in the
+  Printings table.

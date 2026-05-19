@@ -1,0 +1,10 @@
+# Scenario: Card detail page shows an error for an invalid card
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I navigate to a card detail URL with an invalid set code or
+  collector number, the page shows an error message instead of card
+  details. The error text reports that the card could not be loaded.

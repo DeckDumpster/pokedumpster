@@ -1,0 +1,11 @@
+# Scenario: Move a copy from a deck to a binder on the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, when a copy is assigned to a deck its Location
+  `<select>` shows that deck selected. Picking a binder from the same
+  `<select>` moves the copy from the deck to the binder, and after the page
+  reloads the Location cell shows the binder selected.

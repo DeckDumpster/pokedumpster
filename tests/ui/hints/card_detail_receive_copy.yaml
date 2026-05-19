@@ -1,0 +1,16 @@
+start_page: /card/base1/4
+involves:
+  - 'a copy row in the "Your copies" table with a Status <select>'
+  - 'Status <select> showing "ordered" for the open-order copy'
+  - 'selecting "owned" calls changeStatus and triggers a reload'
+  - 'after reload the Status cell shows "owned" and the Location <select> is usable'
+fixture_data:
+  card_name: "Charizard"
+  order: "EBAY-55012"
+notes: >
+  base1/4 (Charizard, Rare Holo) has the copy base1-4-holo in the "ordered"
+  status from the open eBay order EBAY-55012. 1. Navigate to /card/base1/4
+  and wait for the copies table to load. 2. Confirm that copy's Status
+  <select> reads "ordered". 3. Select "owned" from the Status <select>.
+  4. After the non-optimistic reload, the copy's Status <select> shows
+  "owned" selected.

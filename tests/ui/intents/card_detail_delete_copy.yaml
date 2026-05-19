@@ -1,0 +1,10 @@
+# Scenario: Remove a copy via its status control on the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, a copy's Status `<select>` includes a "removed"
+  option. Selecting "removed" changes the copy's status, and after the page
+  reloads the copy is no longer counted among the owned copies.

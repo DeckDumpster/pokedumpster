@@ -1,0 +1,10 @@
+# Scenario: Navigate to the card detail page from the collection variant modal
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  From the collection page, I can open a card's variant modal and click its
+  "Full card details" link to navigate to the standalone card detail page.
+  The card detail page shows the same card with its full information.

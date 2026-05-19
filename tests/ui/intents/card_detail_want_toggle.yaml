@@ -1,0 +1,11 @@
+# Scenario: Toggle wishlist status from the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, I can click the "Want" control to add the card
+  to my wishlist. The control changes to a "Wanted" state. Clicking it
+  again removes the card from the wishlist and reverts the control to
+  "Want".

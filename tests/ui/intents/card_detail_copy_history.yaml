@@ -1,0 +1,11 @@
+# Scenario: View the movement and status history for an owned copy
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, a copy in the "Your copies" section exposes a
+  "History" toggle. Clicking it expands a timeline showing that copy's
+  status changes and binder/deck movements in chronological order. Clicking
+  the toggle again collapses the timeline.

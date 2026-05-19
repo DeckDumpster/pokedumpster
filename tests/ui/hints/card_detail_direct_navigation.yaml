@@ -1,0 +1,17 @@
+start_page: /card/sv3pt5/6
+involves:
+  - 'card image in the left .art column'
+  - 'card name as the h1 in the .info panel'
+  - 'subtitle line "{set_code} · #{number} · {rarity}"'
+  - 'definition list of optional metadata fields (Type, HP, Energy, Artist)'
+  - 'Printings section listing the card variants'
+  - 'global header with the PokeDumpster nav links'
+fixture_data:
+  card_name: "Charizard ex"
+  subtitle: "sv3pt5 · #6 · Double Rare"
+notes: >
+  Navigate directly to /card/sv3pt5/6. The page fetches card detail,
+  binders, and decks in parallel. Verify "Charizard ex" appears as the h1
+  heading. Verify the subtitle line shows "sv3pt5 · #6 · Double Rare".
+  Verify the Printings section is present. The global header shows the
+  PokeDumpster brand with the standard nav links.

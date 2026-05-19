@@ -1,0 +1,14 @@
+start_page: /card/base1/58
+involves:
+  - 'a copy row in the "Your copies" table with a Status <select>'
+  - 'Status <select> options include owned, ordered, listed, sold, removed, traded, gifted, lost'
+  - 'selecting "removed" calls changeStatus and triggers a reload'
+  - 'the removed copy drops out of the owned-copy count'
+fixture_data:
+  card_name: "Pikachu"
+notes: >
+  base1/58 (Pikachu, Common) is a loose, unassigned owned copy in the
+  fixture. 1. Navigate to /card/base1/58. 2. Wait for the copies table to
+  load. 3. Note the "Your copies (N)" count. 4. Select "removed" from the
+  copy's Status <select>. 5. After the non-optimistic reload, the copy is
+  no longer shown as an owned copy.

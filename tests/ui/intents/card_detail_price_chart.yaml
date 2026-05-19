@@ -1,0 +1,16 @@
+# Scenario: Market price on the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+#
+# Prerequisites:
+#   The card must have a price observation linked to one of its variants.
+#   The fixture catalog gives every linked variant a single market price
+#   row observed 2024-01-15.
+
+description: >
+  When I view a card's detail page, the Printings table shows a Market
+  column with the latest market price for each variant that has price data.
+  A variant with no price observation shows a blank or dash in its Market
+  cell.

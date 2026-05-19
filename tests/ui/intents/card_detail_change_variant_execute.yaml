@@ -1,0 +1,11 @@
+# Scenario: Change a copy's variant from the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the card detail page, picking a different variant from a copy's
+  Variant `<select>` re-points that copy at the new variant of the same
+  card. After the page reloads, the copy shows the updated variant
+  selected.

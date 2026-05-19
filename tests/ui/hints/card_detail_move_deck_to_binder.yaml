@@ -1,0 +1,17 @@
+start_page: /card/sv3pt5/6
+involves:
+  - 'a copy row in the "Your copies" table assigned to a deck'
+  - 'Location <select> showing the deck selected'
+  - 'selecting a binder re-encodes the value as b:{id} and calls moveCopy'
+  - 'after the reload the Location <select> shows the chosen binder'
+fixture_data:
+  card_name: "Charizard ex"
+  source_deck: "Charizard ex Control"
+  target_binder: "Trade Binder"
+notes: >
+  sv3pt5/6 (Charizard ex, Double Rare) has copies built into the
+  "Charizard ex Control" deck in the fixture. 1. Navigate to /card/sv3pt5/6
+  and wait for the copies table to load. 2. Find the copy whose Location
+  <select> shows "Charizard ex Control". 3. Select "Trade Binder" from that
+  Location <select>. 4. After the non-optimistic reload, the copy's
+  Location <select> shows "Trade Binder" selected.

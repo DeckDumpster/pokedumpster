@@ -1,0 +1,15 @@
+start_page: /card/sv3pt5/131
+involves:
+  - 'a copy row in the "Your copies" table with a "History" toggle button'
+  - 'history timeline listing status and movement events in chronological order'
+  - 'clicking the toggle again collapses the timeline'
+fixture_data:
+  card_name: "Mew"
+  binder: "Master Set: 151"
+notes: >
+  sv3pt5/131 (Mew, Rare) is one of the 8 sv3pt5 copies registered to the
+  "Master Set: 151" binder via the binder_click batch. 1. Navigate to
+  /card/sv3pt5/131. 2. Wait for the copies table to load. 3. Click the
+  "History" toggle on the copy row. 4. The timeline expands and shows at
+  least the initial owned status and the binder assignment. 5. Click the
+  toggle again and confirm the timeline collapses.

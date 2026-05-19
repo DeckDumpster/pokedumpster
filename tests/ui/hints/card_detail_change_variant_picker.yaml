@@ -1,0 +1,15 @@
+start_page: /card/sv8/3
+involves:
+  - 'a copy row in the "Your copies" table with a Variant <select>'
+  - 'the Variant <select> lists every variant of the card'
+  - 'the copy current variant is the selected option'
+  - 'the other variants appear as selectable options'
+fixture_data:
+  card_name: "Exeggcute"
+  variants_count: 2
+notes: >
+  sv8/3 (Exeggcute, Common) carries two variants — "normal" and
+  "reverse_holo". 1. Navigate to /card/sv8/3 and wait for the copies table
+  to load. 2. Locate a copy row's Variant <select>. 3. Confirm the
+  <select> exposes both the "normal" and "reverse_holo" options. 4. Confirm
+  the copy's current variant is the selected option.

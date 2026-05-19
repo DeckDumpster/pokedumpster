@@ -1,0 +1,10 @@
+# Scenario: Short search queries return no results in the add-sealed modal
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I type a single character into the add-sealed modal's search input,
+  no results are requested or shown. Only once I have typed at least two
+  characters does the modal search for and list matching sealed products.

@@ -1,0 +1,15 @@
+start_page: /sealed
+involves:
+  - '"+ Add sealed" button opening the add modal'
+  - "modal search input with a >= 2 character minimum"
+  - "result list staying empty for queries shorter than 2 characters"
+fixture_data:
+  short_query: "1"
+  valid_query: "151"
+notes: >
+  1. Navigate to /sealed. Click "+ Add sealed" to open the modal.
+  2. Type a single character ("1") into the search input.
+  3. Verify no request fires and the result list stays empty — queries
+     shorter than 2 characters clear the list without searching.
+  4. Type a second character so the query reads "151".
+  5. Verify matching sealed products now appear in the result list.

@@ -1,0 +1,11 @@
+# Scenario: Add-sealed modal search and navigation
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can open the add-sealed modal, search for a sealed product, see results
+  appear, select a product to advance to the confirm step, then click
+  "← Back" to return to the search results. I can also close the modal
+  entirely with the "×" button.

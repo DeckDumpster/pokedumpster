@@ -1,0 +1,11 @@
+# Scenario: Disposed sealed entries appear dimmed when shown
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I check the "Show opened / disposed" checkbox on the sealed
+  collection page, non-active entries appear in the table but are visually
+  dimmed compared to owned entries. This makes it clear which items are
+  still in my active inventory versus already disposed.

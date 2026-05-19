@@ -1,0 +1,11 @@
+# Scenario: Add a sealed product to the collection from the modal
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can add a sealed product by clicking "+ Add sealed", searching for a
+  product, selecting it to reach the confirm step, entering a purchase
+  price, and clicking "Add to collection". After confirming, the modal
+  closes and the new product appears as a row in the sealed table.

@@ -1,0 +1,11 @@
+# Scenario: Add a second sealed product without refreshing the page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  After adding one sealed product via the "+ Add sealed" modal on the
+  sealed collection page, I can click "+ Add sealed" again and the modal
+  reopens in search mode with an empty search input — so I can search for
+  and add a second product without needing a page refresh.

@@ -1,0 +1,9 @@
+# Scenario: Dispose of a sealed collection entry
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can change the Status select on an owned sealed product row to "sold"
+  and verify the row's status updates to "sold".

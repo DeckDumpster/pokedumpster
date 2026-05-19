@@ -1,0 +1,14 @@
+start_page: /sealed
+involves:
+  - "Sealed table row for the target product"
+  - "Status select in the row (owned, listed, sold, traded, gifted, opened)"
+fixture_data:
+  product_name: "151 Elite Trainer Box"
+  status_before: "owned"
+  dispose_to: "sold"
+notes: >
+  Navigate to /sealed. Locate the "151 Elite Trainer Box" row, which
+  loads with status "owned". Change its Status select to "sold". The
+  mutation runs and the table reloads. With "Show opened / disposed"
+  still unchecked the sold row drops out of the active view; check the
+  toggle to confirm the row now shows status "sold".

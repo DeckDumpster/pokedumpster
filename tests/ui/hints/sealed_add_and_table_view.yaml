@@ -1,0 +1,16 @@
+start_page: /sealed
+involves:
+  - '"+ Add sealed" button opens the add modal'
+  - search for sealed products by name (>= 2 characters)
+  - select a search result to reach the confirm step
+  - '"Add to collection" confirm button'
+  - sealed table showing the new row
+fixture_data:
+  product_name: "Base Set Booster Box"
+  search_term: "Base Set"
+notes: >
+  Navigate to /sealed. Click "+ Add sealed" to open the modal. Type
+  "Base Set" into the search input and wait for results. Click the
+  "Base Set Booster Box" result to advance to the confirm step. Click
+  "Add to collection". The modal closes and the sealed table now shows
+  a "Base Set Booster Box" row.

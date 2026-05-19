@@ -1,0 +1,22 @@
+start_page: /sealed
+involves:
+  - '"+ Add sealed" button in the header'
+  - "add modal in search sub-state with a text input and result list"
+  - "search result advancing the modal to the confirm sub-state"
+  - '"← Back" link returning to the search sub-state'
+  - '"×" close button'
+fixture_data:
+  search_term: "151 Elite"
+  product_name: "151 Elite Trainer Box"
+notes: >
+  1. Navigate to /sealed. Click "+ Add sealed" to open the modal.
+  2. Type "151 Elite" into the search input.
+  3. Wait for results to appear.
+  4. Click the "151 Elite Trainer Box" result; the modal advances to the
+     confirm sub-state showing the chosen product name and a purchase
+     price input.
+  5. Click the "← Back" link.
+  6. Verify the modal returns to the search sub-state with the result
+     list visible again.
+  7. Click the "×" button to dismiss the modal.
+  8. Verify the modal is closed.

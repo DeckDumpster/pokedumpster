@@ -1,0 +1,17 @@
+start_page: /sealed
+involves:
+  - "Sealed table row for a multi-quantity product"
+  - "Status select in the row"
+  - '"Show opened / disposed" checkbox'
+fixture_data:
+  product_name: "Surging Sparks Booster Pack"
+  quantity: "6"
+  dispose_to: "opened"
+notes: >
+  Navigate to /sealed. The fixture seeds one sealed entry for the
+  Surging Sparks Booster Pack with quantity 6. Change that row's Status
+  select to "opened". The status mutation applies to the whole entry —
+  PokeDumpster does not split an entry into a remainder plus a new row.
+  After the table reloads, the opened row is hidden from the active
+  view; check "Show opened / disposed" to see the qty 6 row again,
+  dimmed, with status "opened".

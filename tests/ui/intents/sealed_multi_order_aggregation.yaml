@@ -1,0 +1,10 @@
+# Scenario: Multiple purchases of the same sealed product show as separate rows
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I add the same sealed product twice with different purchase prices,
+  the sealed table shows both entries as separate rows for that product,
+  each with its own quantity and paid price.

@@ -1,0 +1,14 @@
+start_page: /sealed
+involves:
+  - "Sealed table listing active products"
+  - '"Show opened / disposed" checkbox (unchecked on load)'
+  - "Status select per row"
+fixture_data:
+  active_entries: "2"
+  owned_products: "151 Elite Trainer Box, Surging Sparks Booster Pack"
+notes: >
+  Navigate to /sealed. The page loads with the "Show opened / disposed"
+  checkbox unchecked. Verify only entries with status owned or listed
+  appear in the table. The fixture seeds two sealed entries (1x 151 Elite
+  Trainer Box, 6x Surging Sparks Booster Pack), both owned, so both rows
+  are visible. No opened/sold/traded/gifted rows appear by default.

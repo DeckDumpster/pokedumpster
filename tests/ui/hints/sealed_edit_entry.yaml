@@ -1,0 +1,13 @@
+start_page: /sealed
+involves:
+  - "Sealed table row for the target product"
+  - "Status select in the row"
+fixture_data:
+  product_name: "Surging Sparks Booster Pack"
+  status_before: "owned"
+  new_status: "listed"
+notes: >
+  Navigate to /sealed. Locate the "Surging Sparks Booster Pack" row,
+  which loads with status "owned". Change its Status select to "listed".
+  The mutation runs and the table reloads. The row remains visible
+  (listed is an active status) and now shows status "listed".

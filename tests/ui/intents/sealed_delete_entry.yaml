@@ -1,0 +1,10 @@
+# Scenario: Remove a sealed collection entry
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can click the "Remove" link on a sealed product row, confirm the
+  browser dialog, and the entry is removed. The row disappears from the
+  sealed table.

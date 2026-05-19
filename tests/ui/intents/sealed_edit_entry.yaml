@@ -1,0 +1,10 @@
+# Scenario: Edit a sealed collection entry's status
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can change the Status select on a sealed product row from "owned" to
+  "listed" and verify the updated status appears on the row after the
+  table reloads.

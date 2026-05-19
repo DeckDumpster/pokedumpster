@@ -1,0 +1,17 @@
+start_page: /sealed
+involves:
+  - '"+ Add sealed" button opening the add modal'
+  - "modal search input (>= 2 character minimum, live search)"
+  - "modal result list narrowing as the query is refined"
+fixture_data:
+  broad_term: "151"
+  broad_results: 2
+  narrow_term: "Booster Bundle"
+  narrow_results: 1
+notes: >
+  Navigate to /sealed. Click "+ Add sealed" to open the modal. Type
+  "151" into the search input; verify the result list shows the two 151
+  sealed products (151 Elite Trainer Box and 151 Booster Bundle). Refine
+  the query to "Booster Bundle"; verify the list narrows to just the
+  "151 Booster Bundle" result. Clear the input back below 2 characters;
+  verify the result list empties without firing a request.

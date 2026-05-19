@@ -1,0 +1,9 @@
+# Scenario: Add a sealed product and verify it appears in table view
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can add a Base Set Booster Box to my sealed collection and then see it
+  in the sealed table.

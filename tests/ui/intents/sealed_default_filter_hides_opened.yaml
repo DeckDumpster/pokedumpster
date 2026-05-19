@@ -1,0 +1,11 @@
+# Scenario: Default sealed view hides opened and disposed entries
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I load the sealed collection page, only entries with status "owned"
+  or "listed" are visible. Entries that have been opened, sold, traded, or
+  gifted are hidden by default. The "Show opened / disposed" checkbox is
+  unchecked when the page loads.

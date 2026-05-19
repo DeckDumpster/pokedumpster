@@ -1,0 +1,25 @@
+start_page: /sealed
+involves:
+  - '"+ Add sealed" button'
+  - "add modal search sub-state with a text input"
+  - "result list and confirm sub-state"
+  - "closing the modal after the first add and reopening for a second product"
+fixture_data:
+  first_search: "Base Set"
+  first_product_name: "Base Set Booster Box"
+  second_search: "Booster Bundle"
+  second_product_name: "151 Booster Bundle"
+notes: >
+  This tests that the add modal resets cleanly between uses: after a
+  successful add the modal closes and all of its fields reset, so the
+  next open starts fresh in search mode.
+
+  1. Navigate to /sealed. 2. Click "+ Add sealed" to open the modal.
+  3. Type "Base Set" into the search input. 4. Wait for results.
+  5. Click the "Base Set Booster Box" result to reach the confirm
+  sub-state. 6. Click "Add to collection". 7. Wait for the modal to
+  close and the table to reload. 8. Click "+ Add sealed" again.
+  9. Assert the modal reopens in the search sub-state with an empty
+  search input and no stale results — this is the regression check.
+  10. Type "Booster Bundle" and wait for results. 11. Click the
+  "151 Booster Bundle" result to confirm the full flow still works.

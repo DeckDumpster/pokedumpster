@@ -1,0 +1,14 @@
+# Scenario: Mark a multi-quantity sealed entry as opened
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+#
+# Prerequisites:
+#   A sealed collection entry with quantity greater than 1.
+
+description: >
+  When I change the Status select on the Surging Sparks Booster Pack row
+  (quantity 6) to "opened", the whole entry's status changes to "opened".
+  With "Show opened / disposed" unchecked the row disappears from the
+  active table; checking it brings the opened row back, dimmed.

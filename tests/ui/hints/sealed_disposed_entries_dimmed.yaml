@@ -1,0 +1,13 @@
+start_page: /sealed
+involves:
+  - '"Show opened / disposed" checkbox'
+  - "Sealed table rows, non-active rows rendered dimmed"
+fixture_data:
+  dispose_to: "opened"
+  product_name: "Surging Sparks Booster Pack"
+notes: >
+  Navigate to /sealed. First set the Surging Sparks Booster Pack row's
+  Status select to "opened" so a non-active row exists. Then check the
+  "Show opened / disposed" checkbox. The opened row reappears in the
+  table but is rendered dimmed, visually distinct from the still-owned
+  151 Elite Trainer Box row.

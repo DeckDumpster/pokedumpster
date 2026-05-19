@@ -1,0 +1,13 @@
+start_page: /sealed
+involves:
+  - "Sealed table row for the target product"
+  - '"Remove" link in the row action cell'
+  - "browser confirm dialog (auto-accepted by harness)"
+fixture_data:
+  product_name: "151 Elite Trainer Box"
+  quantity: 1
+notes: >
+  Navigate to /sealed. The fixture seeds a single 151 Elite Trainer Box
+  entry (qty 1). Click the "Remove" link on that row. The confirm dialog
+  is auto-accepted. The table reloads and the 151 Elite Trainer Box row
+  disappears from the sealed collection.

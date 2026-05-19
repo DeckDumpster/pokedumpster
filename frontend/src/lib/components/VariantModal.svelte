@@ -76,6 +76,7 @@
 		left: 50%;
 		transform: translate(-50%, -50%);
 		z-index: 101;
+		box-sizing: border-box;
 		width: 440px;
 		max-width: 92vw;
 		max-height: 85vh;

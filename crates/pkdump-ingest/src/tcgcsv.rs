@@ -81,6 +81,82 @@ pub fn is_single_card(product: &TcgProduct) -> bool {
         .any(|e| e.name.eq_ignore_ascii_case("Number"))
 }
 
+/// Normalize a collector number so the catalog and TCGCSV agree.
+///
+/// pokemontcg.io stores bare numbers (`"6"`, `"H1"`, `"SWSH001"`) while
+/// TCGCSV's `extendedData` "Number" carries the printed form, which for
+/// modern sets is zero-padded and suffixed with the set total
+/// (`"006/165"`, `"H01/H32"`). Linking by the raw strings matches almost
+/// nothing. Normalization drops the `/total` suffix and collapses every
+/// run of digits to its integer value, so both sides reduce to the same
+/// token: `"006/165"` → `"6"`, `"H01/H32"` → `"h1"`, `"SWSH001"` →
+/// `"swsh1"`. Applied identically to both sides it is order-preserving and
+/// idempotent.
+pub fn normalize_collector_number(raw: &str) -> String {
+    let first = raw
+        .split('/')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .to_ascii_lowercase();
+    let mut out = String::with_capacity(first.len());
+    let mut digits = String::new();
+    for ch in first.chars() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+        } else {
+            if !digits.is_empty() {
+                out.push_str(&digits.parse::<u64>().unwrap_or(0).to_string());
+                digits.clear();
+            }
+            out.push(ch);
+        }
+    }
+    if !digits.is_empty() {
+        out.push_str(&digits.parse::<u64>().unwrap_or(0).to_string());
+    }
+    out
+}
+
+/// Normalize a set name so pokemontcg.io sets and TCGCSV groups can be
+/// bridged on name when no `ptcgo_code`/`abbreviation` pair lines them up.
+///
+/// TCGCSV group names carry an era prefix the catalog name lacks
+/// (`"SWSH08: Fusion Strike"`, `"SM - Cosmic Eclipse"`,
+/// `"SWSH: Crown Zenith: Galarian Gallery"`); pokemontcg.io stores just
+/// `"Fusion Strike"`. The prefix is stripped (it can repeat once), `&` is
+/// unified with `and`, and everything reduces to lowercase alphanumeric
+/// words. `"SWSH08: Fusion Strike"` and `"Fusion Strike"` both become
+/// `"fusion strike"`.
+pub fn normalize_set_name(raw: &str) -> String {
+    let mut s = raw.to_ascii_lowercase();
+    // Strip a leading era code prefix like "swsh08:" / "sm -" / "sv:".
+    // It can appear twice ("swsh: crown zenith: galarian gallery").
+    for _ in 0..2 {
+        if let Some(pos) = s.find([':', '-']) {
+            let head = &s[..pos];
+            let head_ok = !head.is_empty()
+                && head.trim().len() <= 6
+                && head
+                    .trim()
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c.is_ascii_whitespace())
+                && head.trim().chars().any(|c| c.is_ascii_alphabetic());
+            if head_ok {
+                s = s[pos + 1..].to_string();
+                continue;
+            }
+        }
+        break;
+    }
+    s = s.replace('&', " and ");
+    let words: Vec<&str> = s
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.join(" ")
+}
+
 /// Classify a sealed product into a coarse category from its name.
 pub fn classify_sealed(name: &str) -> &'static str {
     let n = name.to_lowercase();
@@ -105,41 +181,117 @@ pub fn classify_sealed(name: &str) -> &'static str {
     }
 }
 
-/// Import groups into `tcgplayer_groups`, best-effort bridging each to a set
-/// via `abbreviation` ↔ `sets.ptcgo_code`. Returns the number of groups.
+/// Resolve which catalog set each TCGCSV group bridges to.
+///
+/// A group is bridged to a set in two tiers, the first that yields a
+/// not-yet-claimed set winning:
+///   1. `group.abbreviation` ↔ `sets.ptcgo_code` (case-insensitive),
+///   2. `normalize_set_name(group.name)` ↔ `normalize_set_name(set.name)`.
+///
+/// Each set is claimed by at most one group and each group bridges to at
+/// most one set, so `sets.tcgcsv_group_id` stays UNIQUE. `ptcgo_code` is
+/// not unique (promo codes recur, many are NULL) and TCGCSV reuses a name
+/// across the odd group, so any tier may offer the same set to several
+/// groups — the first group (by id, deterministic) takes it. Groups are
+/// processed in id order so the assignment is stable across re-runs.
+fn resolve_group_set_links(
+    conn: &Connection,
+    groups: &[TcgGroup],
+) -> Result<std::collections::HashMap<i64, String>> {
+    // ptcgo_code (lowercased) -> [set_code, ...] in release order.
+    let mut by_ptcgo: std::collections::HashMap<String, Vec<String>> = Default::default();
+    // normalized name -> [set_code, ...]; a normalized name maps to one set
+    // in real data, but a Vec keeps the claim logic uniform.
+    let mut by_name: std::collections::HashMap<String, Vec<String>> = Default::default();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT set_code, ptcgo_code, name FROM sets \
+             ORDER BY release_date, set_code",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (set_code, ptcgo, name) = row?;
+            if let Some(code) = ptcgo.filter(|c| !c.is_empty()) {
+                by_ptcgo
+                    .entry(code.to_ascii_lowercase())
+                    .or_default()
+                    .push(set_code.clone());
+            }
+            by_name
+                .entry(normalize_set_name(&name))
+                .or_default()
+                .push(set_code);
+        }
+    }
+
+    let mut sorted: Vec<&TcgGroup> = groups.iter().collect();
+    sorted.sort_by_key(|g| g.group_id);
+
+    let mut claimed: HashSet<String> = HashSet::new();
+    let mut links: std::collections::HashMap<i64, String> = Default::default();
+    for g in sorted {
+        // Tier 1: ptcgo_code / abbreviation.
+        let mut chosen: Option<String> = None;
+        if let Some(abbr) = g.abbreviation.as_deref().filter(|a| !a.is_empty())
+            && let Some(candidates) = by_ptcgo.get(&abbr.to_ascii_lowercase())
+        {
+            chosen = candidates.iter().find(|c| !claimed.contains(*c)).cloned();
+        }
+        // Tier 2: normalized set name.
+        if chosen.is_none()
+            && let Some(candidates) = by_name.get(&normalize_set_name(&g.name))
+        {
+            chosen = candidates.iter().find(|c| !claimed.contains(*c)).cloned();
+        }
+        if let Some(set_code) = chosen {
+            claimed.insert(set_code.clone());
+            links.insert(g.group_id, set_code);
+        }
+    }
+    Ok(links)
+}
+
+/// Import groups into `tcgplayer_groups`, bridging each to a catalog set via
+/// [`resolve_group_set_links`]. Both `tcgplayer_groups.set_code` and the
+/// reciprocal `sets.tcgcsv_group_id` are written from that single decision
+/// so the two links never disagree. Returns the number of groups.
 pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> Result<usize> {
+    let links = resolve_group_set_links(conn, groups)?;
     let tx = conn.transaction()?;
+    // Re-derive every link from scratch so `data refresh` re-runs converge
+    // on the same state regardless of prior contents.
+    tx.execute("UPDATE sets SET tcgcsv_group_id = NULL", [])?;
     for g in groups {
+        let set_code = links.get(&g.group_id);
         tx.execute(
             "INSERT INTO tcgplayer_groups
                (group_id, set_code, name, abbreviation, published_on, fetched_at)
-             VALUES (?1,
-                     (SELECT set_code FROM sets WHERE ptcgo_code = ?4 COLLATE NOCASE),
-                     ?2, ?4, ?3, ?5)
+             VALUES (?1, ?6, ?2, ?4, ?3, ?5)
              ON CONFLICT(group_id) DO UPDATE SET
                set_code     = excluded.set_code,
                name         = excluded.name,
                abbreviation = excluded.abbreviation,
                published_on = excluded.published_on,
                fetched_at   = excluded.fetched_at",
-            rusqlite::params![g.group_id, g.name, g.published_on, g.abbreviation, now],
+            rusqlite::params![
+                g.group_id,
+                g.name,
+                g.published_on,
+                g.abbreviation,
+                now,
+                set_code
+            ],
         )?;
-        // Reciprocal link so the set knows its TCGCSV group. `ptcgo_code`
-        // is not unique across sets (promo codes recur, many are NULL), so
-        // link a single not-yet-linked set, and only if this group is not
-        // already linked anywhere — keeping `sets.tcgcsv_group_id` UNIQUE
-        // and the import idempotent across `data refresh` re-runs.
-        if g.abbreviation.is_some() {
+        if let Some(set_code) = set_code {
             tx.execute(
-                "UPDATE sets SET tcgcsv_group_id = ?1 \
-                 WHERE set_code = ( \
-                     SELECT set_code FROM sets \
-                     WHERE ptcgo_code = ?2 COLLATE NOCASE \
-                       AND tcgcsv_group_id IS NULL \
-                     ORDER BY release_date, set_code LIMIT 1 \
-                 ) \
-                 AND NOT EXISTS (SELECT 1 FROM sets WHERE tcgcsv_group_id = ?1)",
-                rusqlite::params![g.group_id, g.abbreviation],
+                "UPDATE sets SET tcgcsv_group_id = ?1 WHERE set_code = ?2",
+                rusqlite::params![g.group_id, set_code],
             )?;
         }
     }
@@ -190,12 +342,46 @@ pub fn import_sealed_products(
 }
 
 /// Link single-card TCGplayer products to catalog printings. For each
-/// single-card product the card is resolved by its group's bridged set and
-/// the product's collector `Number`, and every printing of that card is
-/// tagged with the TCGplayer product id so prices can join (PLAN.md §3.2).
-/// Best-effort — products whose number doesn't match a catalog card are
-/// skipped. Returns the number of cards linked.
+/// single-card product the card is resolved by its group's bridged set
+/// (the authoritative `sets.tcgcsv_group_id`) and the product's collector
+/// `Number`, and every printing of that card is tagged with the TCGplayer
+/// product id so prices can join (PLAN.md §3.2).
+///
+/// The catalog and TCGCSV disagree on the printed form of a collector
+/// number, so the match runs on [`normalize_collector_number`] applied to
+/// both sides rather than a raw string compare. Best-effort — products
+/// whose normalized number doesn't match a catalog card are skipped.
+/// Returns the number of cards linked.
 pub fn link_card_printings(conn: &mut Connection, products: &[TcgProduct]) -> Result<usize> {
+    // group_id -> (normalized number -> card_id) for the bridged set.
+    // A normalized number can be shared by several cards (artwork variants
+    // reuse a printed number); each is linkable to its own product, so the
+    // table is keyed per group and the last card wins only on a true tie.
+    use std::collections::HashMap;
+    let mut by_group: HashMap<i64, HashMap<String, String>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT s.tcgcsv_group_id, c.number, c.card_id \
+             FROM cards c \
+             JOIN sets s ON c.set_code = s.set_code \
+             WHERE s.tcgcsv_group_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (group_id, number, card_id) = row?;
+            by_group
+                .entry(group_id)
+                .or_default()
+                .insert(normalize_collector_number(&number), card_id);
+        }
+    }
+
     let tx = conn.transaction()?;
     let mut linked = 0;
     for product in products {
@@ -206,18 +392,20 @@ pub fn link_card_printings(conn: &mut Connection, products: &[TcgProduct]) -> Re
             .extended_data
             .iter()
             .find(|e| e.name.eq_ignore_ascii_case("Number"))
-            .map(|e| e.value.trim().to_string())
+            .map(|e| e.value.as_str())
             .unwrap_or_default();
-        if number.is_empty() {
+        if number.trim().is_empty() {
             continue;
         }
+        let Some(card_id) = by_group
+            .get(&product.group_id)
+            .and_then(|m| m.get(&normalize_collector_number(number)))
+        else {
+            continue;
+        };
         let updated = tx.execute(
-            "UPDATE printings SET tcgplayer_product_id = ?1 \
-             WHERE card_id = ( \
-               SELECT cd.card_id FROM cards cd \
-               JOIN tcgplayer_groups g ON cd.set_code = g.set_code \
-               WHERE g.group_id = ?2 AND cd.number = ?3)",
-            rusqlite::params![product.product_id, product.group_id, number],
+            "UPDATE printings SET tcgplayer_product_id = ?1 WHERE card_id = ?2",
+            rusqlite::params![product.product_id, card_id],
         )?;
         if updated > 0 {
             linked += 1;
@@ -636,5 +824,221 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pid, 5006);
+    }
+
+    #[test]
+    fn normalize_collector_number_reduces_both_sides() {
+        // Modern sets: zero-padded, suffixed with the set total.
+        assert_eq!(normalize_collector_number("006/165"), "6");
+        assert_eq!(normalize_collector_number("170/165"), "170"); // secret rare
+        // Catalog bare form normalizes to the same token.
+        assert_eq!(normalize_collector_number("6"), "6");
+        // Holo subsets: "H01/H32" must reduce to the catalog's "H1".
+        assert_eq!(normalize_collector_number("H01/H32"), "h1");
+        assert_eq!(normalize_collector_number("H1"), "h1");
+        // Promo namespaces: padded digits inside an alpha prefix.
+        assert_eq!(normalize_collector_number("SWSH001"), "swsh1");
+        assert_eq!(
+            normalize_collector_number("SWSH001"),
+            normalize_collector_number("swsh1")
+        );
+        // Idempotent — re-normalizing changes nothing.
+        let once = normalize_collector_number("009/165");
+        assert_eq!(normalize_collector_number(&once), once);
+    }
+
+    #[test]
+    fn links_modern_zero_padded_product_numbers() {
+        // The real prod failure mode: pokemontcg.io stores bare "6" but
+        // TCGCSV reports the printed "006/165". A raw string compare links
+        // nothing; the normalized match must link the card.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('sv3pt5', 'MEW', '151', 'Scarlet & Violet')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+             VALUES ('sv3pt5-6', 'sv3pt5', '6', 6, 'Charizard ex')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO printings (printing_id, card_id, variant) \
+             VALUES ('sv3pt5-6-holo', 'sv3pt5-6', 'holo')",
+            [],
+        )
+        .unwrap();
+        import_groups(
+            &mut conn,
+            &[TcgGroup {
+                group_id: 23237,
+                name: "151".into(),
+                abbreviation: Some("MEW".into()),
+                published_on: None,
+            }],
+            "2026-05-18",
+        )
+        .unwrap();
+
+        let products = vec![TcgProduct {
+            product_id: 5006,
+            group_id: 23237,
+            name: "Charizard ex - 006/165".into(),
+            image_url: None,
+            url: None,
+            extended_data: vec![ExtendedDatum {
+                name: "Number".into(),
+                value: "006/165".into(),
+            }],
+        }];
+        let linked = link_card_printings(&mut conn, &products).unwrap();
+        assert_eq!(linked, 1, "zero-padded TCGCSV number must still link");
+        let pid: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings WHERE printing_id = 'sv3pt5-6-holo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pid, 5006);
+    }
+
+    #[test]
+    fn normalize_set_name_strips_tcgcsv_era_prefix() {
+        // TCGCSV group names carry an era prefix the catalog name lacks.
+        assert_eq!(normalize_set_name("SWSH08: Fusion Strike"), "fusion strike");
+        assert_eq!(normalize_set_name("Fusion Strike"), "fusion strike");
+        assert_eq!(normalize_set_name("SM - Cosmic Eclipse"), "cosmic eclipse");
+        assert_eq!(normalize_set_name("Cosmic Eclipse"), "cosmic eclipse");
+        // Only the leading era code is a prefix — a later "Crown Zenith:"
+        // is part of the real name and must be kept. The catalog set is
+        // named "Crown Zenith Galarian Gallery", so both reduce alike.
+        assert_eq!(
+            normalize_set_name("SWSH: Crown Zenith: Galarian Gallery"),
+            "crown zenith galarian gallery"
+        );
+        assert_eq!(
+            normalize_set_name("Crown Zenith Galarian Gallery"),
+            "crown zenith galarian gallery"
+        );
+        // `&` unifies with `and`.
+        assert_eq!(normalize_set_name("Sword & Shield"), "sword and shield");
+        // A real name that merely contains a hyphen is not mistaken for a
+        // prefix — the head before the separator is too long / non-code.
+        assert_eq!(
+            normalize_set_name("Black and White - Boundaries Crossed"),
+            "black and white boundaries crossed"
+        );
+    }
+
+    #[test]
+    fn import_groups_bridges_by_name_when_ptcgo_code_misses() {
+        // A set with a ptcgo_code that no group abbreviation matches must
+        // still bridge, via the normalized-name fallback.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
+             VALUES ('swsh8', 'FST', 'Fusion Strike', 'Sword & Shield', '2021/11/12')",
+            [],
+        )
+        .unwrap();
+        // The group's abbreviation does NOT equal the set's ptcgo_code.
+        let groups = vec![TcgGroup {
+            group_id: 2906,
+            name: "SWSH08: Fusion Strike".into(),
+            abbreviation: Some("FUST".into()),
+            published_on: None,
+        }];
+        import_groups(&mut conn, &groups, "2026-05-19").unwrap();
+
+        let gid: Option<i64> = conn
+            .query_row(
+                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'swsh8'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gid, Some(2906), "name fallback must bridge the set");
+        let set_code: Option<String> = conn
+            .query_row(
+                "SELECT set_code FROM tcgplayer_groups WHERE group_id = 2906",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            set_code.as_deref(),
+            Some("swsh8"),
+            "both link sides must agree"
+        );
+
+        // Idempotent across re-runs.
+        import_groups(&mut conn, &groups, "2026-05-19").unwrap();
+        let again: Option<i64> = conn
+            .query_row(
+                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'swsh8'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(again, Some(2906));
+    }
+
+    #[test]
+    fn import_groups_keeps_link_sides_consistent() {
+        // Many groups share the "PR" promo abbreviation. The group that
+        // claims a set must be the one whose `set_code` points back to it,
+        // so `link_card_printings` (which trusts `sets.tcgcsv_group_id`)
+        // and `import_sealed_products` (which reads `tcgplayer_groups
+        // .set_code`) never disagree.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
+             VALUES ('basep','PR','Wizards Black Star Promos','Promo','1999/07/01'), \
+                    ('dpp','PR','DP Black Star Promos','Promo','2007/05/01')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![
+            TcgGroup {
+                group_id: 1421,
+                name: "Diamond and Pearl Promos".into(),
+                abbreviation: Some("PR".into()),
+                published_on: None,
+            },
+            TcgGroup {
+                group_id: 1418,
+                name: "WoTC Promo".into(),
+                abbreviation: Some("PR".into()),
+                published_on: None,
+            },
+        ];
+        import_groups(&mut conn, &groups, "2026-05-19").unwrap();
+
+        // Every set with a group id has a group that points back to it.
+        let mismatched: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sets s \
+                 JOIN tcgplayer_groups g ON s.tcgcsv_group_id = g.group_id \
+                 WHERE g.set_code IS NOT s.set_code",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mismatched, 0, "the two link sides must never disagree");
+
+        // Two distinct sets, two distinct group ids — UNIQUE preserved.
+        let distinct: i64 = conn
+            .query_row(
+                "SELECT count(DISTINCT tcgcsv_group_id) FROM sets \
+                 WHERE tcgcsv_group_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(distinct, 2);
     }
 }

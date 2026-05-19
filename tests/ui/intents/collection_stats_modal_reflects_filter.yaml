@@ -1,0 +1,12 @@
+# Scenario: The toolbar count reflects the active filters
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I narrow the collection with a search term or a facet checkbox,
+  the toolbar "{filtered} of {total} cards" count updates so the first
+  number matches only the currently-visible rows while the second stays
+  at the full collection size. Clearing the filter restores the count to
+  "{total} of {total}".

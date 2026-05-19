@@ -1,0 +1,11 @@
+# Scenario: Add a copy to the collection from a card's detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  Starting from the Collection page, I can click a card's Name link to
+  open its card detail page, then add a new copy of that card by clicking
+  the "+ Add" button on a variant row. The new copy appears in the "Your
+  copies" section and that variant's Owned count increments.

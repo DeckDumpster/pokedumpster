@@ -1,0 +1,10 @@
+# Scenario: Filter the collection to a single set with the Set facet
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can tick a value in the sidebar "Set" facet to narrow the collection
+  table to only the copies from that set. The toolbar count updates to
+  the filtered subset, and unticking the facet restores the full table.

@@ -1,0 +1,12 @@
+# Scenario: Change a copy's variant from the card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  Starting from the Collection page, I can click a card's Name link to
+  open its card detail page. In the "Your copies" section each copy has
+  a Variant `<select>`. Choosing a different variant re-points that copy
+  at another variant of the same card; after the non-optimistic reload
+  the copy row shows the new variant.

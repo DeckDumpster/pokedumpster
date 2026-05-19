@@ -1,0 +1,12 @@
+start_page: /collection
+involves:
+  - "collection table with one row per physical copy"
+  - "scrolling the table down brings further-down rows into view"
+fixture_data:
+  total_copies: 26
+notes: >
+  Navigate to /collection. Wait for the table body rows. Screenshot the
+  initial state and note a card name visible near the top. Use
+  harness.scroll("down") to move down the table. Screenshot again and
+  confirm rows that were not visible before are now shown — the 26
+  copies are enough to require scrolling.

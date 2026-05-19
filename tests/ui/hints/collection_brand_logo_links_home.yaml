@@ -1,0 +1,10 @@
+start_page: /collection
+involves:
+  - "global header brand link to the homepage (/)"
+  - "homepage as the navigation target"
+fixture_data: {}
+notes: >
+  Start on /collection. Wait for the collection layout to render, then
+  click the PokeDumpster brand link in the global header. The browser
+  should navigate to the homepage (/); wait for a unique homepage
+  element to confirm we landed there.

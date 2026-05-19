@@ -1,0 +1,12 @@
+# Scenario: The bulk-action bar sits above the collection table when select mode is on
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I enter multi-select mode on the Collection page and check at
+  least one row, the bulk-action bar appears between the toolbar and the
+  table. The bar — with its Delete button and the "Assign to binder…",
+  "Assign to deck…", and "Add to wishlist" controls — is fully visible
+  and not clipped or hidden behind the toolbar.

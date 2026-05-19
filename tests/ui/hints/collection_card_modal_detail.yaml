@@ -1,0 +1,15 @@
+start_page: /collection
+involves:
+  - "collection table rows with a Name link per row"
+  - "card detail page at /card/{set}/{number}"
+  - "card detail header: image (.art), name h1, '{set} · #{number} · {rarity}' subtitle"
+  - "global header 'Collection' nav link back to /collection"
+fixture_data:
+  card_name: "Charizard"
+  card_route: /card/base1/4
+notes: >
+  Navigate to /collection and wait for the table. Click the "Charizard"
+  Name link (base1 #4). The browser navigates to /card/base1/4. Verify
+  the detail header shows the card name, the "base1 · #4 · Rare Holo"
+  subtitle, and the art region. Use the header "Collection" link to
+  navigate back to /collection.

@@ -1,0 +1,10 @@
+# Scenario: Export the collection to CSV
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  The Collection toolbar shows an "Export CSV" link when my collection is
+  non-empty. The link points at the /api/export/csv endpoint, so clicking
+  it downloads a CSV of every physical copy I own.

@@ -1,0 +1,11 @@
+# Scenario: Saved views can be re-applied from the sidebar
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  The Collection sidebar shows a Saved views `<select>` listing my saved
+  filter configurations. Choosing a view applies its stored search term
+  and facet selections to the table; choosing "— none —" clears the
+  active view marker.

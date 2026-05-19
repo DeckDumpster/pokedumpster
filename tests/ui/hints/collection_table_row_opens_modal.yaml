@@ -1,0 +1,12 @@
+start_page: /collection
+involves:
+  - "collection table rows with a Name cell that links to /card/{set}/{number}"
+  - "card detail page at /card/{set}/{number}"
+fixture_data:
+  card_name: "Blastoise"
+  card_route: /card/base1/2
+notes: >
+  Navigate to /collection. Wait for the table body rows. Click the
+  "Blastoise" Name link (base1 #2). The browser navigates to
+  /card/base1/2; verify the card detail page shows the Blastoise name
+  and metadata.

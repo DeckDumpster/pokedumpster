@@ -1,0 +1,10 @@
+# Scenario: Clicking a card's Name link in the table opens its detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I click a card's Name link in a Collection table row, the browser
+  navigates to that card's detail page at /card/{set}/{number}, showing
+  the card image, name, and metadata.

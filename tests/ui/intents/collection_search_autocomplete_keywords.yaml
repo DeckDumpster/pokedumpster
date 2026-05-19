@@ -1,0 +1,11 @@
+# Scenario: Facet checkboxes narrow the collection
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  The Collection sidebar shows facet sections — Rarity, Set, and Variant —
+  each built from the distinct values present in my collection. Ticking a
+  facet checkbox immediately narrows the table to rows matching that
+  value, and the toolbar count updates to the filtered subset.

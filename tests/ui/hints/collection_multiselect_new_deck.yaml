@@ -1,0 +1,18 @@
+start_page: /collection
+involves:
+  - "'Select' button toggles multi-select mode"
+  - "table header checkbox selects every currently-filtered row"
+  - "per-row checkboxes for selecting individual copies"
+  - "bulk 'Assign to deck…' <select> in the bulk-action bar"
+  - "the assign <select> resets selectedIndex to 0 after use; page calls refresh()"
+fixture_data:
+  card_name: "Exeggcute"
+  search_term: "Exeggcute"
+  target_deck: "Pikachu ex Aggro"
+notes: >
+  Navigate to /collection. Search for "Exeggcute" (sv8 #3) to narrow the
+  table. Click "Select" to enter multi-select mode. Check the Exeggcute
+  row. In the bulk-action bar choose "Pikachu ex Aggro" from the "Assign
+  to deck…" <select>. After the assignment the page re-fetches, the
+  selection clears, and the assign <select> reads as a placeholder
+  again.

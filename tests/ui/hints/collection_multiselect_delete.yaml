@@ -1,0 +1,16 @@
+start_page: /collection
+involves:
+  - "'Select' button toggles multi-select mode (toolbar button becomes 'Cancel')"
+  - "per-row checkboxes input in the table"
+  - "bulk-action bar with a 'Delete' button"
+  - "browser confirm() dialog (auto-accepted by the harness)"
+  - "page re-fetches via refresh() after the bulk delete"
+fixture_data:
+  card_name: "Magmar"
+  search_term: "Magmar"
+notes: >
+  Navigate to /collection. Search for "Magmar" (sv8 #32) to narrow the
+  table. Click "Select" to enter multi-select mode. Check the Magmar
+  row's checkbox. Click the bulk "Delete" button; the confirm() dialog
+  is auto-accepted. After the re-fetch the Magmar row is gone and the
+  toolbar count has dropped.

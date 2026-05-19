@@ -1,0 +1,12 @@
+# Scenario: Bulk-add selected copies to the wishlist
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  In multi-select mode on the Collection page I can check one or more
+  copy rows and click the bulk "Add to wishlist" button. One wish is
+  created per distinct card among the selection, so selecting two copies
+  of the same card adds only a single wish. After the operation the page
+  re-fetches and the selection is cleared.

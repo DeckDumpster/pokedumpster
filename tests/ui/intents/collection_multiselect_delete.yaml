@@ -1,0 +1,12 @@
+# Scenario: Bulk-delete copies via multi-select
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can click "Select" to enter multi-select mode, check one or more
+  copy rows, click the bulk "Delete" button, accept the browser confirm
+  dialog, and the selected copies are removed from the collection. The
+  page re-fetches and the deleted rows no longer appear, while the
+  toolbar count drops accordingly.

@@ -1,0 +1,12 @@
+start_page: /collection
+involves:
+  - "collection table in main.content"
+  - "column headers: Name, Set, #, Variant, Rarity, Condition, Status, Paid"
+  - "one body row per physical copy"
+fixture_data:
+  total_copies: 26
+notes: >
+  Navigate to /collection. Wait for the collection table to render
+  (up to a few seconds for the API response). Assert the column headers
+  Name, Set, #, Variant, Rarity, Condition, Status, and Paid are
+  visible. Assert body rows are rendered, one per physical copy.

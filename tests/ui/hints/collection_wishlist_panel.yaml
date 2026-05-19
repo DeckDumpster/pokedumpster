@@ -1,0 +1,18 @@
+start_page: /collection
+involves:
+  - "'Select' button toggles multi-select mode"
+  - "per-row checkboxes in the table"
+  - "bulk-action bar with an 'Add to wishlist' button"
+  - "bulk wishlist deduplicates by card_id — one wish per distinct card"
+  - "page re-fetches via refresh() and clears the selection afterward"
+fixture_data:
+  search_term: "Charmander"
+  card_name: "Charmander"
+  copies: 2
+notes: >
+  Navigate to /collection. Search for "Charmander" — two Charmander
+  copies exist (from order TCG-100001), so two rows appear. Click
+  "Select" to enter multi-select mode. Check both Charmander rows.
+  Click the bulk "Add to wishlist" button. Because wishlist adds
+  deduplicate by card_id, only one Charmander wish is created. The page
+  re-fetches and the selection clears.

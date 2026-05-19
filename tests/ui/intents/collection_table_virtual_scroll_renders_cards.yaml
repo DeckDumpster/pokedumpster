@@ -1,0 +1,10 @@
+# Scenario: The collection table renders its columns and copy rows
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I navigate to the Collection page, the content area shows the
+  collection table with its column headers — Name, Set, #, Variant,
+  Rarity, Condition, Status, Paid — and one row per physical copy I own.

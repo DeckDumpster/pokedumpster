@@ -1,0 +1,19 @@
+start_page: /collection
+involves:
+  - "collection table Name link to /card/{set}/{number}"
+  - "card detail 'Your copies' table with a Variant <select> per copy"
+  - "changing the Variant <select> re-points the copy at a different variant"
+  - "the mutation runs through withBusy() and re-runs load()"
+fixture_data:
+  card_name: "Pikachu"
+  search_term: "Pikachu"
+  card_route: /card/base1/58
+  from_variant: "normal"
+  to_variant: "reverse_holo"
+notes: >
+  1. Navigate to /collection. 2. Search for "Pikachu" to find the Base
+  Set Pikachu (base1 #58, a common with normal + reverse_holo variants).
+  3. Click its Name link to open /card/base1/58. 4. Wait for the "Your
+  copies" table. 5. In a copy row change the Variant <select> from
+  "normal" to "reverse_holo". 6. After the non-optimistic reload the
+  copy row shows the new variant.

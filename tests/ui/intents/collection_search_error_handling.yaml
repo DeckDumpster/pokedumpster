@@ -1,0 +1,11 @@
+# Scenario: A search term that matches no card yields an empty table
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I type a search term that matches no card name, the collection
+  table renders with no body rows and the toolbar count reads "0 of N
+  cards". Clearing the search input restores the full table without any
+  error state lingering.

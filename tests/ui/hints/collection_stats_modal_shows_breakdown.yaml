@@ -1,0 +1,11 @@
+start_page: /collection
+involves:
+  - "toolbar '{filtered} of {total} cards' count"
+  - "with no filters both numbers equal the full collection size"
+fixture_data:
+  total_copies: 26
+notes: >
+  Navigate to /collection and wait for the collection table to load.
+  With no search term and no facet checkboxes ticked, assert the toolbar
+  count reads "26 of 26 cards" — both numbers equal the full fixture
+  collection size of 26 physical copies.

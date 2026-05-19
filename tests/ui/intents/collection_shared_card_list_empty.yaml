@@ -1,0 +1,12 @@
+# Scenario: The empty-collection state hides the Export and Select controls
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When my collection has no copies, the Collection page still renders the
+  sidebar and toolbar, but the content area shows the empty message
+  "Your collection is empty. Add cards from a set's binder view." The
+  "Export CSV" link and the "Select" button are hidden because there are
+  no rows to act on.

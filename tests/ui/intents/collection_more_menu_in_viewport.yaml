@@ -1,0 +1,12 @@
+# Scenario: The sidebar facet sections are fully visible on the Collection page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I am on the Collection page, the sidebar renders within the
+  viewport with its stacked sections fully readable — Saved views, the
+  search input, and the "Rarity", "Set", and "Variant" facet sections.
+  None of the sidebar content is clipped off the left edge of the
+  screen.

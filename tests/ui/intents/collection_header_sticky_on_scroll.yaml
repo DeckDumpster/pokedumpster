@@ -1,0 +1,12 @@
+# Scenario: Global header stays reachable when the collection table is scrolled
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I am on the Collection page and I scroll the long card table down,
+  the global header bar stays pinned to the top of the viewport. The
+  navigation links remain visible and reachable without scrolling back
+  up, so long collections don't require constant jumping between the top
+  and the rows I'm browsing.

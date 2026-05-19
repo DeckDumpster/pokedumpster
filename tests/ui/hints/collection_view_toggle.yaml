@@ -1,0 +1,13 @@
+start_page: /collection
+involves:
+  - "'Select' / 'Cancel' toolbar button"
+  - "checkbox column added to the table in multi-select mode"
+  - "cancelling clears the selection and removes the checkbox column"
+fixture_data:
+  total_copies: 26
+notes: >
+  Navigate to /collection and wait for the table. Click "Select"; the
+  toolbar button becomes "Cancel" and a checkbox column appears in the
+  table. Screenshot. Click "Cancel"; the checkbox column disappears and
+  the toolbar button reads "Select" again. Both modes show the same 26
+  copies.

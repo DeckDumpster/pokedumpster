@@ -1,0 +1,15 @@
+start_page: /collection
+involves:
+  - "sidebar 'Saved views' section with a <select> of saved views (shown only if any exist)"
+  - "selecting a view applies its stored {search, rarity, set, variant}"
+  - "'— none —' option clears activeViewId but leaves the current filters"
+fixture_data:
+  saved_view: "Vintage Holos"
+  saved_view_filters: '{"set":"base1","rarity":"Rare Holo"}'
+notes: >
+  Navigate to /collection and wait for the table. The fixture has one
+  saved view, "Vintage Holos" (filters set=base1, rarity=Rare Holo), so
+  the Saved views <select> is present. Choose "Vintage Holos" — the
+  table narrows to the Base Set Rare Holo copies and the matching Set
+  and Rarity facet checkboxes are ticked. Choose "— none —" to clear the
+  active view marker; the filters stay applied.

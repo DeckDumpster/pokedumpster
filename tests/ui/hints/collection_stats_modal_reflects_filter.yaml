@@ -1,0 +1,15 @@
+start_page: /collection
+involves:
+  - "sidebar search input and facet checkboxes"
+  - "toolbar '{filtered} of {total} cards' count"
+fixture_data:
+  total_copies: 26
+  filter_facet: "Rarity"
+  filter_value: "Rare Holo"
+notes: >
+  Navigate to /collection and wait for the table. Confirm the toolbar
+  reads "26 of 26 cards". Tick the "Rare Holo" checkbox in the sidebar
+  "Rarity" facet. After the filter applies, the toolbar's first number
+  drops to only the visible Rare Holo rows while the second number
+  stays at 26. Untick the checkbox and confirm the count returns to
+  "26 of 26 cards".

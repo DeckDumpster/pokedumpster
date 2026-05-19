@@ -1,0 +1,13 @@
+# Scenario: Toggle multi-select mode and use the header select-all checkbox
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can click the "Select" button to enter multi-select mode: a checkbox
+  column appears in the table and the toolbar button switches to
+  "Cancel". The bulk-action bar appears once at least one row is checked.
+  Ticking the table's header checkbox selects every currently-filtered
+  row; unticking it clears them. Clicking "Cancel" leaves multi-select
+  mode and clears the selection.

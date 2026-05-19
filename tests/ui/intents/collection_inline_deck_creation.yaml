@@ -1,0 +1,12 @@
+# Scenario: Assign selected copies to a deck via the bulk "Assign to deck" control
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  In multi-select mode on the Collection page I can select one or more
+  copies and use the bulk "Assign to deck…" dropdown to move every
+  selected copy into an existing deck. After the assignment the page
+  re-fetches the collection and drops the selection, and the chosen
+  deck now contains those copies.

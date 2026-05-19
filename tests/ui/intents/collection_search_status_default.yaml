@@ -1,0 +1,11 @@
+# Scenario: Status column shows each copy's lifecycle status
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I load the Collection page with no filters, the table shows every
+  physical copy I own or have owned, and the Status column reflects each
+  copy's lifecycle status — owned, ordered, listed, or sold. Filtering by
+  a status-bearing facet narrows the visible rows accordingly.

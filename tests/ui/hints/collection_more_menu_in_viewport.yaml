@@ -1,0 +1,14 @@
+start_page: /collection
+involves:
+  - "aside.sidebar (~200px) stacked sections"
+  - "Saved views section, search input, and the Rarity / Set / Variant facet sections"
+  - "a facet section is hidden only when it has no values"
+fixture_data: {}
+notes: >
+  Navigate to /collection and wait for the layout. Verify the sidebar
+  renders within the viewport and is not clipped off the left edge.
+  Assert the search input is visible and that the "Rarity", "Set", and
+  "Variant" facet headings are visible (the fixture's 26 copies span
+  three sets and several rarities and variants, so all three facets have
+  values). The Saved views <select> is also visible because the fixture
+  has one saved view.

@@ -1,0 +1,12 @@
+# Scenario: Search the collection by card name with a debounced filter
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can type a card name into the sidebar search input and, after the
+  200 ms debounce idle, the table filters to rows whose card name
+  contains what I typed. The toolbar "{filtered} of {total} cards" count
+  updates to the filtered subset. Clearing the search input restores the
+  full table.

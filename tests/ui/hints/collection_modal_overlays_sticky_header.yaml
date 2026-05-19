@@ -1,0 +1,13 @@
+start_page: /collection
+involves:
+  - "'Select' button toggles multi-select mode"
+  - "per-row checkbox in the table"
+  - "bulk-action bar between the toolbar and the table, shown once a row is checked"
+  - "bulk-action bar holds Delete, 'Assign to binder…', 'Assign to deck…', 'Add to wishlist'"
+fixture_data: {}
+notes: >
+  Start on /collection. Wait for the table to render. Click "Select" to
+  enter multi-select mode, then check the first row's checkbox. Wait for
+  the bulk-action bar to appear. Assert the bar and its Delete button
+  and the assign controls are visible and not clipped or overlapped by
+  the toolbar above it.

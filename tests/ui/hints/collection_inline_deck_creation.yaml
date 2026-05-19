@@ -1,0 +1,17 @@
+start_page: /collection
+involves:
+  - "'Select' button toggles multi-select mode"
+  - "per-row checkboxes in the table while in select mode"
+  - "bulk-action bar appears once a row is checked"
+  - "bulk 'Assign to deck…' <select> lists existing decks"
+  - "after assignment the page re-fetches via refresh() and clears the selection"
+fixture_data:
+  card_name: "Snorlax"
+  search_term: "Snorlax"
+  target_deck: "Pikachu ex Aggro"
+notes: >
+  Navigate to /collection. Search for "Snorlax" (sv3pt5 #151) to narrow
+  the table. Click "Select" to enter multi-select mode. Check the
+  Snorlax row's checkbox. In the bulk-action bar choose "Pikachu ex
+  Aggro" from the "Assign to deck…" <select>. The page re-fetches the
+  collection and drops the selection; the copy is now in that deck.

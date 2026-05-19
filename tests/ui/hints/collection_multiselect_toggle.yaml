@@ -1,0 +1,16 @@
+start_page: /collection
+involves:
+  - "'Select' / 'Cancel' toolbar button toggling multi-select mode"
+  - "checkbox column added to the table in select mode"
+  - "table header checkbox selects/clears every currently-filtered row"
+  - "per-row checkboxes input"
+  - "bulk-action bar appears once at least one row is checked"
+fixture_data:
+  total_cards: 26
+notes: >
+  Navigate to /collection and wait for the table (26 collection copies).
+  Click "Select" — the toolbar button becomes "Cancel" and a checkbox
+  column appears. Tick the header checkbox to select every filtered row;
+  the bulk-action bar appears. Untick the header checkbox to clear the
+  selection. Click "Cancel" to leave multi-select mode; the checkbox
+  column and bulk-action bar disappear.

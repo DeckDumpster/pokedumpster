@@ -1,0 +1,16 @@
+start_page: /collection
+involves:
+  - "global header element pinned to the top of the viewport"
+  - "header nav links remain visible after scrolling"
+  - "window scrollY > 0 after scrolling the collection table down"
+  - "header bounding rect top stays at 0 after scrolling"
+fixture_data:
+  collection: "26 collection copies — enough rows to scroll"
+notes: >
+  Start on /collection. Wait for the collection table to finish
+  rendering. Use harness.scroll("down") several times to drive
+  window.scrollY meaningfully positive. Read window.scrollY and the
+  header's bounding rect via harness.page.evaluate. Assert scrollY is
+  > 100 (proving the page actually scrolled) and the header's top is
+  at 0 (proving it stayed pinned). Spot-check that a header nav link
+  is still visible so the intent is obvious from the assertion log.

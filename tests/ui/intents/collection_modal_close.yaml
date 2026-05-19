@@ -1,0 +1,10 @@
+# Scenario: Return to the collection from a card detail page
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I open a card's detail page by clicking its Name link in the
+  Collection table, I can use the global header's "Collection" nav link
+  to navigate back to the Collection page and see the table again.

@@ -1,0 +1,19 @@
+start_page: /collection
+involves:
+  - "'Select' button toggles multi-select mode"
+  - "one table row per physical copy (no quantity aggregation)"
+  - "per-row checkboxes for selecting a single copy"
+  - "bulk 'Delete' button with confirm() dialog (auto-accepted)"
+  - "page re-fetches after delete, leaving the other copy"
+fixture_data:
+  search_term: "Charmander"
+  card_name: "Charmander"
+  card_set_number: "sv3pt5 #4"
+  initial_copies: 2
+  remaining_after_delete: 1
+notes: >
+  Navigate to /collection. Search for "Charmander" — the received
+  TCGplayer order TCG-100001 added 2 Charmander copies, so two rows
+  appear. Click "Select" to enter multi-select mode. Check exactly one
+  Charmander row. Click the bulk "Delete" button; the confirm() dialog
+  is auto-accepted. After the re-fetch only one Charmander row remains.

@@ -1,0 +1,15 @@
+start_page: /collection
+involves:
+  - "sidebar search input, placeholder 'Search cards…'"
+  - "200 ms debounce before the effective search term updates"
+  - "toolbar '{filtered} of {total} cards' count"
+  - "collection table rows"
+fixture_data:
+  search_term: "Charizard"
+  total_cards: 26
+notes: >
+  Navigate to /collection and wait for the table. Type "Charizard" into
+  the search input. Wait past the 200 ms debounce. The table shows only
+  rows whose card name contains "Charizard" (Base Set Charizard plus the
+  151 Charizard ex printings) and the toolbar count updates. Clear the
+  search input and wait for the table to re-render with all 26 copies.

@@ -1,0 +1,13 @@
+# Scenario: Bulk-delete one specific copy when a card has several
+#
+# Prerequisites:
+#   The fixture owns multiple copies of "Charmander" (sv3pt5-4) — two
+#   copies from the received TCGplayer order TCG-100001.
+
+description: >
+  When I open the Collection page and enter multi-select mode, a card I
+  own more than once shows one row per physical copy because PokeDumpster
+  keeps strictly one row per card. I can check exactly one of the
+  Charmander rows, click the bulk "Delete" button, accept the confirm
+  dialog, and only that one copy is removed. The other Charmander copy
+  remains in the collection after the re-fetch.

@@ -1,0 +1,12 @@
+# Scenario: Multi-select mode operates on individual copies
+#
+# Prerequisites:
+#   The fixture owns multiple copies of "Charmander" (sv3pt5-4); each is
+#   its own physical row because PokeDumpster never aggregates quantity.
+
+description: >
+  When I enter multi-select mode on the Collection page, the table still
+  shows one row per physical copy, so a card I own twice appears as two
+  separate selectable rows. I can check just one Charmander row and use
+  the bulk "Assign to deck…" dropdown to move that single copy into a
+  deck. The other Charmander copy is left unchanged.

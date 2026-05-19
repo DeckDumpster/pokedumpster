@@ -1,0 +1,14 @@
+start_page: /collection
+involves:
+  - "collection table Name link to /card/{set}/{number}"
+  - "card detail Printings table with Variant, Owned, Market columns"
+  - "the Market column shows the latest market price per variant"
+fixture_data:
+  card_name: "Charizard"
+  card_route: /card/base1/4
+  price_note: "every linked variant carries one market price row observed 2024-01-15"
+notes: >
+  Navigate to /collection and wait for the table. Click the "Charizard"
+  Name link to open /card/base1/4. Wait for the Printings table. Verify
+  the table has a "Market" column and that the holo variant row shows a
+  non-empty market price value.

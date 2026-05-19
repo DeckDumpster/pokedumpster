@@ -1,0 +1,11 @@
+# Scenario: Scrolling the collection table reveals further-down rows
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I scroll the Collection table down, rows further down the list
+  come into view while the rows that were at the top scroll out of
+  sight. The table shows every physical copy I own, so scrolling lets me
+  reach copies that don't fit on the first screen.

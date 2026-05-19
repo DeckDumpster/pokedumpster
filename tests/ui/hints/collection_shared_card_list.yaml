@@ -1,0 +1,13 @@
+start_page: /collection
+involves:
+  - "toolbar 'Export CSV' link pointing at /api/export/csv"
+  - "the link is shown only when the collection is non-empty"
+fixture_data:
+  total_copies: 26
+  export_endpoint: /api/export/csv
+notes: >
+  Navigate to /collection and wait for the table (26 copies, so the
+  collection is non-empty). Verify the toolbar shows an "Export CSV"
+  link and that its href points at /api/export/csv. The link is a
+  download, not an in-app route — assert the href rather than following
+  it.

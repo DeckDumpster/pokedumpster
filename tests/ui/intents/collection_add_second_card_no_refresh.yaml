@@ -1,0 +1,13 @@
+# Scenario: Add copies from two different cards in succession without a refresh
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  After adding a copy from one card's detail page (reached from the
+  Collection page), I can navigate back to the Collection page, open a
+  different card's detail page, and successfully add a copy of that
+  second card with the same "+ Add" button workflow — without needing
+  a full browser refresh. The "+ Add" button stays functional across
+  consecutive card-detail visits.

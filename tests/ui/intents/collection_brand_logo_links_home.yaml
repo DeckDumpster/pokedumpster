@@ -1,0 +1,10 @@
+# Scenario: Global header brand link on the Collection page navigates home
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I am on the Collection page, the global header shows the
+  PokeDumpster brand link. Clicking it takes me back to the homepage,
+  giving me a consistent way out of the collection view.

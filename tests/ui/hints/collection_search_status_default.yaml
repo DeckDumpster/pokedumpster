@@ -1,0 +1,14 @@
+start_page: /collection
+involves:
+  - "collection table with a Status column"
+  - "copy statuses present in the fixture: owned, ordered, listed, sold"
+  - "toolbar '{filtered} of {total} cards' count"
+fixture_data:
+  total_copies: 26
+  status_breakdown: "23 owned, 1 ordered, 1 listed, 1 sold"
+notes: >
+  Navigate to /collection and wait for the table. With no filters the
+  table shows all 26 copies. Verify the Status column renders values:
+  most rows read "owned", with the open eBay order copy "ordered", the
+  Latias ex (sv8-160) copy "listed", and the Alakazam ex (sv3pt5-65)
+  copy "sold". The toolbar count reads "26 of 26 cards".

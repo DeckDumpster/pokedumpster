@@ -1,0 +1,12 @@
+# Scenario: Assign multi-selected copies to a deck
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can click "Select" to enter multi-select mode, check one or more
+  copy rows, and use the bulk "Assign to deck…" dropdown to assign every
+  selected copy to a deck. After the assignment the page re-fetches the
+  collection, clears the selection, and the bulk dropdown resets to its
+  placeholder.

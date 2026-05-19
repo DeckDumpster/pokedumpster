@@ -1,0 +1,15 @@
+# Scenario: Card detail page shows the variant's market price
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+#
+# Prerequisites:
+#   Every linked variant in the fixture carries one market price row
+#   observed 2024-01-15, so each Printings row has a Market value.
+
+description: >
+  When I open a card's detail page from the Collection table, the
+  Printings table shows a "Market" column with the latest market price
+  for each variant. This lets me see what a copy is worth without
+  leaving the card view.

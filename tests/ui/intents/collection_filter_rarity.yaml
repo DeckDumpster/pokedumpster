@@ -1,0 +1,14 @@
+# Scenario: Filter the collection by Pokémon rarity facet
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can narrow the collection table by Pokémon rarity. The sidebar's
+  Rarity facet lists every rarity present among my copies — Common,
+  Rare Holo, Double Rare, Illustration Rare and so on. When I tick a
+  rarity, the table filters to rows of that rarity and the toolbar
+  "{filtered} of {total} cards" count updates. Ticking a second rarity
+  widens the result to the union of both. Unticking all rarities
+  restores the full table.

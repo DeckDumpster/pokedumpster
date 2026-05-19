@@ -1,0 +1,12 @@
+# Scenario: The "Save current…" button is visible beside the saved views control
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I am on the Collection page, the sidebar's Saved views section
+  shows a "Save current…" button. The button is easy to find directly
+  under the saved views `<select>` so I can capture my current search
+  and facet selections as a named view without hunting for a hidden
+  control.

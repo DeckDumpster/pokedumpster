@@ -1,0 +1,13 @@
+start_page: /collection
+involves:
+  - "loading state: muted 'Loading…' text while the mount fetches run"
+  - "no layout shown during loading"
+  - "after the fetches resolve, the sidebar, toolbar, and table render"
+fixture_data: {}
+notes: >
+  The "Loading…" text appears briefly while the page's parallel mount
+  fetches run. To catch it, intercept the /api/collection request with a
+  delay, then navigate to /collection and assert the muted "Loading…"
+  text is visible and the .layout is not yet shown. After the API
+  responds, the loading text is replaced by the sidebar and the
+  collection table.

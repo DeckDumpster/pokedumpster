@@ -1,0 +1,15 @@
+start_page: /collection
+involves:
+  - "'Select' button toggles multi-select mode"
+  - "per-row checkboxes in the table"
+  - "bulk-action bar with an 'Add to wishlist' button"
+  - "bulk wishlist deduplicates by card_id — one wish per distinct card"
+  - "page re-fetches via refresh() after the operation"
+fixture_data:
+  card_name: "Mew"
+  search_term: "Mew"
+notes: >
+  Navigate to /collection. Search for "Mew" (sv3pt5 #131) to narrow the
+  table. Click "Select" to enter multi-select mode. Check the Mew row.
+  Click the bulk "Add to wishlist" button. One wish is created for the
+  Mew card; the page re-fetches and the selection clears.

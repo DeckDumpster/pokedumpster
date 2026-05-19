@@ -1,0 +1,14 @@
+start_page: /collection
+involves:
+  - "sidebar facet sections: 'Rarity', 'Set', 'Variant'"
+  - "each facet is a list of checkboxes built from distinct values in the loaded rows"
+  - "ticking a checkbox filters the table; toolbar count updates"
+fixture_data:
+  facet: "Rarity"
+  facet_value: "Rare Holo"
+notes: >
+  Navigate to /collection and wait for the table. In the sidebar's
+  "Rarity" facet section, tick the "Rare Holo" checkbox. The table
+  narrows to rows whose rarity is Rare Holo (the Base Set holo rares),
+  and the toolbar "{filtered} of {total} cards" count drops to the
+  filtered subset. Unticking the checkbox restores the full table.

@@ -1,0 +1,11 @@
+# Scenario: The toolbar count shows the collection total at rest
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I'm on the Collection page with no filters applied, the toolbar
+  shows a "{filtered} of {total} cards" count where both numbers equal
+  the full collection size. This gives me an at-a-glance total of every
+  physical copy I own without opening a separate view.

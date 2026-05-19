@@ -1,0 +1,11 @@
+# Scenario: Collection page shows a loading state before data arrives
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I first open the Collection page, I briefly see a muted "Loading…"
+  message while the page's parallel mount fetches run, with no layout
+  shown. Once the fetches resolve, the loading message is replaced by the
+  sidebar, toolbar, and the collection table.

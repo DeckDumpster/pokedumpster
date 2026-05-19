@@ -1,0 +1,11 @@
+# Scenario: Open a card's detail page from the collection table
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  From the Collection table I can click a card's Name link to open its
+  card detail page, which shows the card image, name, the
+  "{set_code} · #{number} · {rarity}" subtitle, and the card metadata.
+  The global header lets me navigate back to the Collection page.

@@ -1,0 +1,16 @@
+start_page: /collection
+involves:
+  - "empty-collection state: rows.length === 0"
+  - "content shows 'Your collection is empty. Add cards from a set's binder view.'"
+  - "the 'Export CSV' link and 'Select' button are hidden when there are no rows"
+  - "the sidebar and toolbar still render"
+fixture_data:
+  collection: "an empty user collection (no copies)"
+notes: >
+  This test needs an empty collection. Drive the page into the empty
+  state (e.g. via a fixture with zero copies, or by intercepting
+  /api/collection to return an empty list). Navigate to /collection.
+  The sidebar and toolbar still render, but the content shows the empty
+  message "Your collection is empty. Add cards from a set's binder
+  view." Assert the "Export CSV" link and the "Select" button are
+  absent.

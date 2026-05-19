@@ -1,0 +1,15 @@
+start_page: /collection
+involves:
+  - "sidebar 'Set' facet section with a checkbox per distinct set"
+  - "ticking a Set checkbox filters the table to that set"
+  - "toolbar '{filtered} of {total} cards' count"
+fixture_data:
+  facet: "Set"
+  facet_value: "151"
+  set_code: "sv3pt5"
+notes: >
+  Navigate to /collection and wait for the table. In the sidebar's "Set"
+  facet section tick the checkbox for the "151" set (set_code sv3pt5).
+  The table narrows to the sv3pt5 copies (the 8 registered to Master
+  Set: 151 plus any others) and the toolbar count updates. Unticking the
+  checkbox restores the full table.

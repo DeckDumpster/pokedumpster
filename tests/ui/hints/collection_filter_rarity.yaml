@@ -1,0 +1,16 @@
+start_page: /collection
+involves:
+  - "sidebar Rarity facet section, one checkbox per rarity in the collection"
+  - "collection table rows, Rarity column"
+  - "toolbar '{filtered} of {total} cards' count"
+fixture_data:
+  rarities_present: "Common, Rare, Rare Holo, Double Rare, Illustration Rare, and others across the 26 seeded copies"
+  total_cards: 26
+notes: >
+  Navigate to /collection and wait for the table. In the sidebar Rarity
+  facet, tick "Rare Holo" — the table filters to the vintage Base Set
+  holo copies and the toolbar count drops to that subset. Tick "Double
+  Rare" as well — the table now shows the union (Rare Holo plus Double
+  Rare copies). Untick both checkboxes and confirm all 26 copies return.
+  Pokémon rarities differ from MTG's; the facet is populated from the
+  distinct cards.rarity values actually present in the collection.

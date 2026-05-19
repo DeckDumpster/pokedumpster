@@ -1,0 +1,12 @@
+# Scenario: Toggle multi-select mode on and off
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On the Collection page I can click the "Select" button to switch into
+  multi-select mode, which adds a checkbox column to the table and
+  changes the toolbar button to "Cancel". Clicking "Cancel" switches back
+  to the normal table view and clears any selection. Both modes show the
+  same collection data.

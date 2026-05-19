@@ -1,0 +1,11 @@
+start_page: /collection
+involves:
+  - "sidebar 'Saved views' section"
+  - "'Save current…' button beneath the saved views <select>"
+fixture_data: {}
+notes: >
+  Start on /collection. Wait for the sidebar to render. Assert the
+  "Save current…" button is visible in the Saved views section,
+  directly under the saved views <select>. Do not click it — clicking
+  triggers a browser prompt(); coverage of saving a view itself is out
+  of scope for this visibility check.

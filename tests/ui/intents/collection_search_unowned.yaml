@@ -1,0 +1,11 @@
+# Scenario: Bulk "Add to wishlist" surfaces cards I want to acquire
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  In multi-select mode on the Collection page I can check one or more
+  copy rows and click the bulk "Add to wishlist" button. PokeDumpster
+  adds one wish per distinct card among the selection, so this lets me
+  flag cards I want more of straight from the collection view.

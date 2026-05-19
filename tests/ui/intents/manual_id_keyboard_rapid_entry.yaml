@@ -1,0 +1,10 @@
+# Scenario: Rapid keyboard entry flow on the Manual Entry page
+#
+# Related:
+#   issues: []
+
+description: >
+  I can rapidly look up cards using the keyboard: type a set code in the Set
+  code input, type a collector number in the Number input, and press Enter to
+  submit the lookup without clicking the button. After the card resolves I
+  repeat for the next card. The Condition select persists between lookups.

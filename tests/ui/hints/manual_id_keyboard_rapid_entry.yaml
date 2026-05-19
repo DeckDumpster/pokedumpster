@@ -1,0 +1,18 @@
+start_page: /ingest/manual
+involves:
+  - "Set code text input"
+  - "Number text input"
+  - "Condition select"
+  - "Look up submit button (form also submits on Enter)"
+  - "resolved-card section heading"
+fixture_data:
+  entries:
+    - { set_code: "sv3pt5", collector_number: "1", card_name: "Bulbasaur" }
+    - { set_code: "sv3pt5", collector_number: "4", card_name: "Charmander" }
+    - { set_code: "sv3pt5", collector_number: "7", card_name: "Squirtle" }
+notes: >
+  Navigate to /ingest/manual. Wait for the Set code input. For each entry:
+  fill the Set code and Number inputs, then press Enter to submit the lookup
+  without clicking "Look up". Wait for the resolved card name to appear
+  before moving to the next. Repeat 3 times. Confirm the Condition select
+  keeps its value across lookups.

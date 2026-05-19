@@ -1,0 +1,18 @@
+start_page: /ingest/manual
+involves:
+  - "lookup form .lookup with Set code, Number, and Condition controls"
+  - "Set code text input"
+  - "Number text input"
+  - "Look up submit button"
+  - "resolved-card section with thumbnail and heading"
+  - "variants table with Variant / Owned / action columns"
+fixture_data:
+  set_code: "base1"
+  collector_number: "7"
+  card_name: "Hitmonchan"
+  variant: "holo"
+notes: >
+  Navigate to /ingest/manual. Wait for the Set code input. Enter "base1" in
+  Set code and "7" in Number. Click "Look up". Wait for the resolved-card
+  section to appear with "Hitmonchan" in the heading and a variants table
+  listing the "holo" variant.

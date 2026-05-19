@@ -1,0 +1,10 @@
+# Scenario: CSV Import keeps Preview disabled with no content
+#
+# Related:
+#   issues: []
+
+description: >
+  When I navigate to the CSV Import page without supplying a file or pasting
+  any text, the "Preview" button stays disabled, so no preview request can be
+  made. The "Import" button is likewise disabled until a preview with matches
+  exists.

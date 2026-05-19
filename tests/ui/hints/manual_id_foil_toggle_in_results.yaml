@@ -1,0 +1,17 @@
+start_page: /ingest/manual
+involves:
+  - "Set code text input"
+  - "Number text input"
+  - "Look up submit button"
+  - "variants table with a '+ Add' button per variant row"
+  - "variant row Owned count"
+fixture_data:
+  set_code: "base1"
+  collector_number: "7"
+  card_name: "Hitmonchan"
+  variant: "holo"
+notes: >
+  base1/7 (Hitmonchan, Rare Holo) carries a single "holo" variant and is not
+  owned in the fixture. Navigate to /ingest/manual. Look up "base1" / "7".
+  Wait for the variants table. Click "+ Add" on the holo variant row. After
+  the post-add refetch, verify the holo row's Owned count shows 1.

@@ -1,0 +1,15 @@
+start_page: /ingest/manual
+involves:
+  - "h1 'Manual entry' and a muted instruction line"
+  - "lookup form .lookup"
+  - "Set code text input"
+  - "Number text input"
+  - "Condition select (Near Mint, Lightly Played, Moderately Played, Heavily Played, Damaged)"
+  - "Look up submit button"
+  - "no resolved-card section, no session log before first lookup"
+fixture_data: {}
+notes: >
+  Navigate to /ingest/manual. Wait for the lookup form. Assert the "Manual
+  entry" h1 is visible. Assert the Set code input, Number input, Condition
+  select, and "Look up" button are all visible. Assert no resolved-card
+  section and no "This session" log are present.

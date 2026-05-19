@@ -1,0 +1,16 @@
+start_page: /ingest/csv
+involves:
+  - "Format select (ManaBox / TCGplayer)"
+  - "…or paste CSV text textarea"
+  - "Preview button"
+  - "preview summary line with matched and unmatched counts"
+  - "Unmatched rows table (Line, Set, #, Variant, Reason)"
+  - "Matched rows table (Line, Card, Set, #, Variant, Condition)"
+fixture_data:
+  format: "ManaBox"
+  csv: "a ManaBox export mixing a bogus row (set zzz, #9999) with valid fixture rows"
+notes: >
+  Navigate to /ingest/csv. Select "ManaBox". Paste a ManaBox CSV that mixes
+  one unresolvable row with valid rows. Click "Preview". Verify the summary
+  shows "{n} matched · {n} unmatched". Verify the Unmatched rows table
+  renders above the Matched rows table and lists the failed row's reason.

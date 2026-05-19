@@ -1,0 +1,10 @@
+# Scenario: Add a holo variant from the resolved-card variants table
+#
+# Related:
+#   issues: []
+
+description: >
+  After looking up a card on the Manual Entry page, the variants table lists
+  each variant of the card with its own "+ Add" button. I click "+ Add" on the
+  holo variant and a copy of that holo variant is added to my collection; the
+  variant's Owned count increments without leaving the page.

@@ -1,0 +1,16 @@
+start_page: /ingest/manual
+involves:
+  - "Set code text input"
+  - "Number text input"
+  - "Look up submit button"
+  - "variants table with '+ Add' buttons"
+  - "session log section: h2 'This session (N)' and green 'Added ...' lines"
+fixture_data:
+  first_card: { set_code: "base1", collector_number: "7", card_name: "Hitmonchan", variant: "holo" }
+  second_card: { set_code: "base1", collector_number: "4", card_name: "Charizard", variant: "holo" }
+notes: >
+  Navigate to /ingest/manual. Look up "base1" / "7", click "+ Add" on the
+  holo variant. Verify the session log shows "This session (1)" with an
+  "Added Hitmonchan · holo · ..." line. Look up "base1" / "4", click "+ Add"
+  on the holo variant. Verify "This session (2)" and that the Charizard line
+  is newest-first above the Hitmonchan line.

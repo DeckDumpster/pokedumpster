@@ -1,0 +1,20 @@
+start_page: /ingest/manual
+involves:
+  - "Set code text input"
+  - "Number text input"
+  - "Condition select"
+  - "Look up submit button"
+  - "variants table with '+ Add' button per variant row"
+  - "variant row Owned count"
+  - "session log section with green 'Added ...' line"
+fixture_data:
+  set_code: "base1"
+  collector_number: "7"
+  card_name: "Hitmonchan"
+  variant: "holo"
+  condition: "Lightly Played"
+notes: >
+  Navigate to /ingest/manual. Select "Lightly Played" from the Condition
+  select. Look up "base1" / "7". Wait for the variants table. Click "+ Add"
+  on the holo variant. Verify the holo row's Owned count shows 1 and the
+  session log shows "Added Hitmonchan · holo · Lightly Played".

@@ -1,0 +1,10 @@
+# Scenario: Add cards by collector number and resolve
+#
+# Related:
+#   issues: []
+
+description: >
+  I can manually enter cards by set code and collector number on the Manual
+  Entry page. After filling the lookup form and clicking "Look up", the page
+  matches the card against the catalog. A successfully resolved card shows its
+  thumbnail and name along with a table of its variants.

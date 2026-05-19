@@ -1,0 +1,10 @@
+# Scenario: CSV import commits matched cards to a new batch
+#
+# Related:
+#   issues: []
+
+description: >
+  On the CSV Import page, I choose the ManaBox format, paste a valid CSV,
+  click "Preview" to see the resolution report, and click "Import" to commit.
+  The result banner confirms the cards were added and links to the new
+  ingestion batch they were grouped into.

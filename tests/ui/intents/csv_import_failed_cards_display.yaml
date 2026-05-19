@@ -1,0 +1,10 @@
+# Scenario: CSV preview shows unmatched and matched rows together
+#
+# Related:
+#   issues: []
+
+description: >
+  When I preview a ManaBox CSV that mixes valid cards with rows that cannot be
+  resolved, the preview summary shows both a matched count and an unmatched
+  count. An "Unmatched rows" table lists each failed row with its reason above
+  a "Matched rows" table that lists the resolved cards.

@@ -1,0 +1,15 @@
+start_page: /ingest/csv
+involves:
+  - "Format select (ManaBox / TCGplayer)"
+  - "…or paste CSV text textarea"
+  - "Preview button"
+  - "Import button"
+  - "preview section with Matched rows table"
+fixture_data:
+  format: "ManaBox"
+  csv: "a ManaBox export with rows resolving to fixture cards"
+notes: >
+  Navigate to /ingest/csv. Select "ManaBox". Paste a valid ManaBox CSV.
+  Click "Preview" and wait for the Matched rows table. Edit the textarea
+  (type an extra character). Verify the preview tables disappear and the
+  "Import" button returns to its disabled state.

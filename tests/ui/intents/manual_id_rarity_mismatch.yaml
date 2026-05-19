@@ -1,0 +1,9 @@
+# Scenario: Validation error when a lookup field is blank
+#
+# Related:
+#   issues: []
+
+description: >
+  When I click "Look up" with a blank set code or a blank collector number, an
+  inline error line reads "Enter a set code and collector number." and no
+  request is sent. No resolved-card section appears.

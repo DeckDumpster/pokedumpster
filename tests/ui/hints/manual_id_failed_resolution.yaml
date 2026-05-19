@@ -1,0 +1,15 @@
+start_page: /ingest/manual
+involves:
+  - "Set code text input"
+  - "Number text input"
+  - "Look up submit button"
+  - "inline error line (red text) on lookup failure"
+  - "no resolved-card section after a failed lookup"
+fixture_data:
+  invalid_set: "zzz"
+  invalid_number: "9999"
+notes: >
+  Navigate to /ingest/manual. Enter "zzz" in Set code and "9999" in Number.
+  Click "Look up". Wait for the red inline error line to appear. Verify no
+  resolved-card section is shown. Confirm the lookup form is still visible
+  for correction.

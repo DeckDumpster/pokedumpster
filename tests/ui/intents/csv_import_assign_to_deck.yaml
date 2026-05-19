@@ -1,0 +1,10 @@
+# Scenario: Import a CSV and view the created batch
+#
+# Related:
+#   issues: []
+
+description: >
+  After previewing a ManaBox CSV on the CSV Import page, I click "Import" to
+  commit. A result banner reports the added count and offers a "View batch →"
+  link. I click the link and land on the created batch's detail page, which
+  lists the imported cards.

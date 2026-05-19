@@ -1,0 +1,9 @@
+# Scenario: Editing the textarea clears a stale preview
+#
+# Related:
+#   issues: []
+
+description: >
+  After previewing a CSV on the CSV Import page, I edit the paste textarea.
+  The prior preview tables disappear and the "Import" button returns to its
+  disabled state, so I cannot commit against outdated content.

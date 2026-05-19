@@ -1,0 +1,14 @@
+start_page: /ingest/manual
+involves:
+  - "Set code text input"
+  - "Number text input"
+  - "Look up submit button"
+  - "resolved-card section heading (the card name links to /card/{set}/{number})"
+fixture_data:
+  first_card: { set_code: "base1", collector_number: "7", card_name: "Hitmonchan" }
+  second_card: { set_code: "base1", collector_number: "4", card_name: "Charizard" }
+notes: >
+  Navigate to /ingest/manual. Enter "base1" / "7", click "Look up", wait for
+  the resolved card "Hitmonchan". Clear the inputs and enter "base1" / "4",
+  click "Look up" again. Verify the resolved-card section now shows
+  "Charizard" instead of "Hitmonchan".

@@ -1,0 +1,15 @@
+start_page: /ingest/csv
+involves:
+  - "Format select (ManaBox / TCGplayer)"
+  - "…or paste CSV text textarea"
+  - "Preview button"
+  - "Import button"
+  - "result banner with added/skipped counts and 'View batch →' link"
+fixture_data:
+  format: "ManaBox"
+  csv: "a ManaBox export with multiple rows resolving to fixture cards"
+notes: >
+  Navigate to /ingest/csv. Select "ManaBox". Paste a valid ManaBox CSV.
+  Click "Preview" and wait for the Matched rows table. Click "Import". Wait
+  for the result banner reporting added/skipped counts. Verify the preview
+  tables have cleared and the banner shows a "View batch →" link.

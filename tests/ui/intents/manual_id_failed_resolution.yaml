@@ -1,0 +1,9 @@
+# Scenario: Failed card lookup with an invalid set or number
+#
+# Related:
+#   issues: []
+
+description: >
+  When I enter an invalid set code or collector number and click "Look up", a
+  red inline error line appears and no resolved-card section is shown. The
+  lookup form stays visible so I can correct the values and try again.

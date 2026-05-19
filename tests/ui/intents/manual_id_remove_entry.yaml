@@ -1,0 +1,11 @@
+# Scenario: Session log records each card added
+#
+# Related:
+#   issues: []
+
+description: >
+  After looking up a card and clicking "+ Add" on a variant, a "This session"
+  log appears listing the added card as "Added {name} · {variant} ·
+  {condition}". Adding a second card prepends another line, so the newest
+  addition is shown first and the count in the "This session (N)" heading
+  updates.

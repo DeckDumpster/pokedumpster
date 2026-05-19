@@ -1,0 +1,15 @@
+start_page: /ingest/csv
+involves:
+  - "Format select (ManaBox / TCGplayer)"
+  - "…or paste CSV text textarea"
+  - "Preview button"
+  - "Import button"
+  - "result banner with added count and 'View batch →' link"
+fixture_data:
+  format: "ManaBox"
+  csv: "a ManaBox export with rows resolving to fixture cards (e.g. sv8 Pikachu ex, Magmar)"
+notes: >
+  Navigate to /ingest/csv. Select "ManaBox" in the Format select. Paste a
+  valid ManaBox CSV into the textarea. Click "Preview" and wait for the
+  Matched rows table. Click "Import". Verify the result banner reports the
+  added count and offers a "View batch →" link to the created batch.

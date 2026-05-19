@@ -1,0 +1,10 @@
+# Scenario: Look up a card and add a copy at a chosen condition
+#
+# Related:
+#   issues: []
+
+description: >
+  I look up a known fixture card by set code and number, choose a condition
+  from the Condition select, and click "+ Add" on a variant. The copy is added
+  to my collection at the chosen condition with source "manual_id", the
+  variant's Owned count increments, and the session log records the addition.

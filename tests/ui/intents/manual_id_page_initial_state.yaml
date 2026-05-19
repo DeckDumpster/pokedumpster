@@ -1,0 +1,10 @@
+# Scenario: Manual Entry page initial state verification
+#
+# Related:
+#   issues: []
+
+description: >
+  When I navigate to the Manual Entry page, I see the correct initial state:
+  the "Manual entry" heading, a lookup form with a "Set code" input, a "Number"
+  input, and a "Condition" select, plus a "Look up" button. No resolved-card
+  section and no session log are shown before the first lookup.

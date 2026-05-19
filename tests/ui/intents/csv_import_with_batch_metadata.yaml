@@ -1,0 +1,10 @@
+# Scenario: CSV Import page offers a TCGplayer format option
+#
+# Related:
+#   issues: []
+
+description: >
+  When I visit the CSV Import page, the Format select offers both ManaBox and
+  TCGplayer parsers. I switch the select to TCGplayer, paste a TCGplayer CSV,
+  and click "Preview"; the resolution report classifies the rows as matched or
+  unmatched using the TCGplayer parser.

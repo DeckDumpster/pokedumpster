@@ -1,0 +1,13 @@
+start_page: /ingest/manual
+involves:
+  - "Set code text input"
+  - "Number text input"
+  - "Look up submit button"
+  - "inline error line (red text) on validation failure"
+fixture_data:
+  validation_message: "Enter a set code and collector number."
+notes: >
+  Navigate to /ingest/manual. Leave the Set code input blank, enter "7" in
+  Number. Click "Look up". Verify the inline error line reads "Enter a set
+  code and collector number." and no resolved-card section appears (no
+  request is sent).

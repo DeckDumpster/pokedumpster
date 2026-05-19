@@ -1,0 +1,14 @@
+start_page: /ingest/csv
+involves:
+  - "Format select with ManaBox and TCGplayer options"
+  - "…or paste CSV text textarea"
+  - "Preview button"
+  - "preview section with Matched / Unmatched rows tables"
+fixture_data:
+  format: "TCGplayer"
+  csv: "a TCGplayer export with rows resolving to fixture cards"
+notes: >
+  Navigate to /ingest/csv. Verify the Format select offers both "ManaBox"
+  and "TCGplayer" options. Select "TCGplayer". Paste a valid TCGplayer CSV
+  into the textarea. Click "Preview" and verify the resolution report
+  classifies rows as matched/unmatched using the TCGplayer parser.

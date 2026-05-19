@@ -1,0 +1,10 @@
+start_page: /ingest/csv
+involves:
+  - "…or paste CSV text textarea (empty)"
+  - "Preview button (disabled with no content)"
+  - "Import button (disabled with no preview)"
+fixture_data: {}
+notes: >
+  Navigate to /ingest/csv. Do not supply a file or paste any text. Verify
+  the "Preview" button is disabled (Preview needs content). Verify the
+  "Import" button is also disabled (Import needs a preview with matches).

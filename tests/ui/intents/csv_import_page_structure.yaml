@@ -1,0 +1,10 @@
+# Scenario: CSV Import page structure verification
+#
+# Related:
+#   issues: []
+
+description: >
+  When I navigate to the CSV Import page, I see the correct initial state:
+  the "Import CSV" heading, a Format select offering ManaBox and TCGplayer, a
+  "CSV file" file input, a "…or paste CSV text" textarea, and "Preview" and
+  "Import" buttons that are both disabled until content and a preview exist.

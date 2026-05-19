@@ -1,0 +1,10 @@
+# Scenario: Look up a different card after a successful resolve
+#
+# Related:
+#   issues: []
+
+description: >
+  After looking up a card on the Manual Entry page, I change the set code and
+  number and click "Look up" again. The resolved-card section replaces the
+  previous card with the newly looked-up one, and its variants table reflects
+  the new card.

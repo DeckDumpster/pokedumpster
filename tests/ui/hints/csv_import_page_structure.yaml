@@ -1,0 +1,15 @@
+start_page: /ingest/csv
+involves:
+  - "h1 'Import CSV' and a muted intro line with manual entry / paste an order links"
+  - "Format select with ManaBox and TCGplayer options"
+  - "'CSV file' file input"
+  - "'…or paste CSV text' textarea"
+  - "Preview button (disabled until content)"
+  - "Import button (disabled until a preview with matches)"
+fixture_data: {}
+notes: >
+  Navigate to /ingest/csv. Wait for the form. Assert the "Import CSV" h1 is
+  visible. Assert the Format select is visible and offers "ManaBox" and
+  "TCGplayer". Assert the "CSV file" file input and the paste textarea are
+  visible. Assert both "Preview" and "Import" buttons are present and
+  disabled in the initial state.

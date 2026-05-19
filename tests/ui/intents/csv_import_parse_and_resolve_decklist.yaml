@@ -1,0 +1,11 @@
+# Scenario: Preview a pasted ManaBox CSV
+#
+# Related:
+#   issues: []
+
+description: >
+  I paste a ManaBox CSV into the CSV Import textarea and click "Preview". A
+  resolution report appears: a summary line with the matched count and a
+  "Matched rows" table showing Line, Card, Set, #, Variant, and Condition for
+  each resolved row. The "Import" button becomes enabled and its label updates
+  to reflect the matched count.

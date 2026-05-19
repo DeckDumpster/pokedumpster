@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api, variantLabel } from '$lib/api';
+	import CardModal from '$lib/components/CardModal.svelte';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { CollectionView } from '$lib/types/CollectionView';
 	import type { Binder } from '$lib/types/Binder';
@@ -93,6 +94,29 @@
 	let selectMode = $state(false);
 	let selected = $state(new Set<number>());
 	let busy = $state(false);
+
+	// Grid (card images) vs. table view, and the card-detail modal.
+	let view = $state<'grid' | 'table'>('grid');
+	let selectedCard = $state<{ set: string; number: string } | null>(null);
+
+	/** Open a row's card in the detail modal — unless we're multi-selecting. */
+	function openCard(row: CollectionRow) {
+		if (selectMode) {
+			toggleRow(row.id);
+		} else {
+			selectedCard = { set: row.set_code, number: row.number };
+		}
+	}
+
+	/** Close the modal and re-fetch — the modal may have mutated copies. */
+	async function closeCard() {
+		selectedCard = null;
+		try {
+			rows = await api.collection();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		}
+	}
 
 	onMount(async () => {
 		try {
@@ -275,6 +299,10 @@
 				<p class="muted">{filtered.length} of {rows.length} cards</p>
 				<span class="spacer"></span>
 				{#if rows.length > 0}
+					<div class="viewtoggle">
+						<button class:on={view === 'grid'} onclick={() => (view = 'grid')}>Grid</button>
+						<button class:on={view === 'table'} onclick={() => (view = 'table')}>Table</button>
+					</div>
 					<a class="ghost" href="/api/export/csv" download>Export CSV</a>
 					<button class="ghost" onclick={toggleSelectMode}>
 						{selectMode ? 'Cancel' : 'Select'}
@@ -312,6 +340,24 @@
 
 			{#if rows.length === 0}
 				<p class="muted">Your collection is empty. Add cards from a set's binder view.</p>
+			{:else if view === 'grid'}
+				<div class="cardgrid">
+					{#each filtered as row (row.id)}
+						<button
+							class="cardtile"
+							class:picked={selectMode && selected.has(row.id)}
+							title="{row.name} · {variantLabel(row.variant)}"
+							onclick={() => openCard(row)}
+						>
+							{#if row.image_small}
+								<img src={row.image_small} alt={row.name} loading="lazy" />
+							{:else}
+								<div class="tilenoart">{row.name}</div>
+							{/if}
+							{#if selectMode && selected.has(row.id)}<span class="tick">✓</span>{/if}
+						</button>
+					{/each}
+				</div>
 			{:else}
 				<table>
 					<thead>
@@ -343,7 +389,9 @@
 										/>
 									</td>
 								{/if}
-								<td><a href="/card/{row.set_code}/{row.number}">{row.name}</a></td>
+								<td>
+									<button class="linkish" onclick={() => openCard(row)}>{row.name}</button>
+								</td>
 								<td>{row.set_code}</td>
 								<td>{row.number}</td>
 								<td>{variantLabel(row.variant)}</td>
@@ -358,6 +406,10 @@
 			{/if}
 		</main>
 	</div>
+{/if}
+
+{#if selectedCard}
+	<CardModal setCode={selectedCard.set} number={selectedCard.number} onClose={closeCard} />
 {/if}
 
 <style>
@@ -450,6 +502,90 @@
 	}
 	.ghost:hover {
 		border-color: #e94560;
+		color: #e94560;
+	}
+	.viewtoggle {
+		display: flex;
+	}
+	.viewtoggle button {
+		background: none;
+		border: 1px solid #0f3460;
+		color: #888;
+		padding: 0.3rem 0.7rem;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.viewtoggle button:first-child {
+		border-radius: 6px 0 0 6px;
+	}
+	.viewtoggle button:last-child {
+		border-radius: 0 6px 6px 0;
+		border-left: none;
+	}
+	.viewtoggle button.on {
+		background: #0f3460;
+		color: #e0e0e0;
+	}
+	.cardgrid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+		gap: 0.8rem;
+	}
+	.cardtile {
+		position: relative;
+		padding: 0;
+		background: none;
+		border: 2px solid transparent;
+		border-radius: 8px;
+		cursor: pointer;
+	}
+	.cardtile img {
+		width: 100%;
+		display: block;
+		aspect-ratio: 5 / 7;
+		object-fit: contain;
+		background: #0d1424;
+		border-radius: 6px;
+	}
+	.cardtile.picked {
+		border-color: #e94560;
+	}
+	.tilenoart {
+		aspect-ratio: 5 / 7;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: #16213e;
+		border-radius: 6px;
+		color: #888;
+		font-size: 0.8rem;
+		padding: 0.5rem;
+		text-align: center;
+	}
+	.tick {
+		position: absolute;
+		top: 5px;
+		right: 5px;
+		width: 22px;
+		height: 22px;
+		border-radius: 50%;
+		background: #e94560;
+		color: #fff;
+		font-size: 0.8rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.linkish {
+		background: none;
+		border: none;
+		color: #e0e0e0;
+		cursor: pointer;
+		font: inherit;
+		padding: 0;
+		text-align: left;
+	}
+	.linkish:hover {
 		color: #e94560;
 	}
 	.bulkbar {

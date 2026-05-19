@@ -124,11 +124,21 @@ pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> R
                fetched_at   = excluded.fetched_at",
             rusqlite::params![g.group_id, g.name, g.published_on, g.abbreviation, now],
         )?;
-        // Reciprocal link so the set knows its TCGCSV group.
+        // Reciprocal link so the set knows its TCGCSV group. `ptcgo_code`
+        // is not unique across sets (promo codes recur, many are NULL), so
+        // link a single not-yet-linked set, and only if this group is not
+        // already linked anywhere — keeping `sets.tcgcsv_group_id` UNIQUE
+        // and the import idempotent across `data refresh` re-runs.
         if g.abbreviation.is_some() {
             tx.execute(
                 "UPDATE sets SET tcgcsv_group_id = ?1 \
-                 WHERE ptcgo_code = ?2 COLLATE NOCASE",
+                 WHERE set_code = ( \
+                     SELECT set_code FROM sets \
+                     WHERE ptcgo_code = ?2 COLLATE NOCASE \
+                       AND tcgcsv_group_id IS NULL \
+                     ORDER BY release_date, set_code LIMIT 1 \
+                 ) \
+                 AND NOT EXISTS (SELECT 1 FROM sets WHERE tcgcsv_group_id = ?1)",
                 rusqlite::params![g.group_id, g.abbreviation],
             )?;
         }
@@ -407,6 +417,57 @@ mod tests {
             )
             .unwrap();
         assert_eq!(gid, Some(23237));
+    }
+
+    #[test]
+    fn import_groups_survives_shared_ptcgo_code() {
+        // Two sets share a ptcgo_code (real promo codes recur). Two groups
+        // carry that code. The import must not violate UNIQUE(tcgcsv_group_id)
+        // — each group links a single distinct set.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
+             VALUES ('promoA','PR','Promos A','Promo','2021/01/01'), \
+                    ('promoB','PR','Promos B','Promo','2022/01/01')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![
+            TcgGroup {
+                group_id: 1001,
+                name: "Promos A".into(),
+                abbreviation: Some("PR".into()),
+                published_on: None,
+            },
+            TcgGroup {
+                group_id: 1002,
+                name: "Promos B".into(),
+                abbreviation: Some("PR".into()),
+                published_on: None,
+            },
+        ];
+        // Must not panic on the UNIQUE constraint.
+        import_groups(&mut conn, &groups, "2026-05-19").unwrap();
+        // Re-running must stay idempotent (no second collision).
+        import_groups(&mut conn, &groups, "2026-05-19").unwrap();
+
+        let linked: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sets WHERE tcgcsv_group_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked, 2, "each group linked one distinct set");
+        let distinct: i64 = conn
+            .query_row(
+                "SELECT count(DISTINCT tcgcsv_group_id) FROM sets \
+                 WHERE tcgcsv_group_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(distinct, 2, "the two sets hold distinct group ids");
     }
 
     #[test]

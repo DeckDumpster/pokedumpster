@@ -2,7 +2,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -17,10 +17,30 @@ pub fn routes() -> Router<AppState> {
         .route("/", get(list).post(create))
         .route("/bulk", post(bulk_create))
         .route("/bulk-delete", post(bulk_delete))
+        .route("/by-printing/{printing_id}", delete(delete_by_printing))
         .route("/{id}", get(get_one).put(update_one).delete(delete_one))
         .route("/{id}/move", put(move_copy))
         .route("/{id}/status", put(set_status))
         .route("/{id}/printing", put(change_printing))
+}
+
+/// Delete the most recently added copy of a printing — the binder modal's
+/// "−" action, which works without knowing a specific copy id.
+async fn delete_by_printing(
+    State(state): State<AppState>,
+    Path(printing_id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    blocking(&state, move |c| {
+        if collection::delete_latest_for_printing(c, &printing_id)? {
+            Ok(())
+        } else {
+            Err(DbError::NotFound(format!(
+                "no copy of printing '{printing_id}'"
+            )))
+        }
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

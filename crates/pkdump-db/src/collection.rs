@@ -410,6 +410,22 @@ pub fn delete(conn: &Connection, id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM collection WHERE id = ?1", [id])? > 0)
 }
 
+/// Delete the most recently added copy of a printing — the binder modal's
+/// "−" action. Returns false when no copy of that printing exists.
+pub fn delete_latest_for_printing(conn: &Connection, printing_id: &str) -> Result<bool> {
+    let id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM collection WHERE printing_id = ?1 ORDER BY id DESC LIMIT 1",
+            [printing_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match id {
+        Some(id) => delete(conn, id),
+        None => Ok(false),
+    }
+}
+
 /// Change which printing a copy is — for correcting a mis-logged variant.
 /// The new printing must belong to the *same card* (you can swap a copy
 /// between a card's variants, not to a different card).

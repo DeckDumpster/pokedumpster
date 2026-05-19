@@ -6,11 +6,13 @@
 		slot,
 		setCode,
 		onAdd,
+		onRemove,
 		onClose
 	}: {
 		slot: BinderSlot;
 		setCode: string;
 		onAdd: (printingId: string, variant: string) => void;
+		onRemove: (printingId: string, variant: string) => void;
 		onClose: () => void;
 	} = $props();
 </script>
@@ -21,7 +23,7 @@
 	}}
 />
 
-<div class="backdrop"></div>
+<div class="backdrop" role="presentation" onclick={onClose}></div>
 <div class="modal" role="dialog" aria-modal="true" aria-label="{slot.name} printings">
 	<header>
 		<h3>#{slot.number} · {slot.name}</h3>
@@ -32,15 +34,28 @@
 		{#each slot.printings as p (p.printing_id)}
 			<li class:dim={p.deprecated}>
 				<span class="variant">{variantLabel(p.variant)}</span>
-				<span class="owned" class:has={p.owned_count > 0}>{p.owned_count} owned</span>
-				<span class="price">{p.market_price != null ? `$${p.market_price.toFixed(2)}` : ''}</span>
-				<button
-					class="add"
-					disabled={p.deprecated}
-					onclick={() => onAdd(p.printing_id, p.variant)}
-				>
-					+ Add
-				</button>
+				<span class="price">
+					{p.market_price != null ? `$${p.market_price.toFixed(2)}` : ''}
+				</span>
+				<div class="stepper">
+					<button
+						class="step"
+						disabled={p.deprecated || p.owned_count <= 0}
+						onclick={() => onRemove(p.printing_id, p.variant)}
+						aria-label="Remove one {variantLabel(p.variant)}"
+					>
+						−
+					</button>
+					<span class="count" class:has={p.owned_count > 0}>{p.owned_count}</span>
+					<button
+						class="step"
+						disabled={p.deprecated}
+						onclick={() => onAdd(p.printing_id, p.variant)}
+						aria-label="Add one {variantLabel(p.variant)}"
+					>
+						+
+					</button>
+				</div>
 			</li>
 		{/each}
 	</ul>
@@ -61,7 +76,7 @@
 		left: 50%;
 		transform: translate(-50%, -50%);
 		z-index: 101;
-		width: 420px;
+		width: 440px;
 		max-width: 92vw;
 		max-height: 85vh;
 		overflow-y: auto;
@@ -94,8 +109,8 @@
 	}
 	li {
 		display: grid;
-		grid-template-columns: 1fr auto auto auto;
-		gap: 0.6rem;
+		grid-template-columns: 1fr auto auto;
+		gap: 0.75rem;
 		align-items: center;
 		padding: 0.45rem 0;
 		border-bottom: 1px solid #0f3460;
@@ -103,29 +118,48 @@
 	li.dim {
 		opacity: 0.5;
 	}
-	.owned {
-		font-size: 0.8rem;
-		color: #888;
-	}
-	.owned.has {
-		color: #9fe7a0;
-	}
 	.price {
 		font-size: 0.8rem;
 		color: #888;
 	}
-	.add {
-		background: #e94560;
-		border: none;
-		color: #fff;
-		padding: 0.25rem 0.6rem;
-		border-radius: 6px;
-		cursor: pointer;
-		font-size: 0.8rem;
+	.stepper {
+		display: flex;
+		align-items: center;
 	}
-	.add:disabled {
-		opacity: 0.4;
+	.step {
+		background: #0f3460;
+		border: none;
+		color: #e0e0e0;
+		width: 30px;
+		height: 30px;
+		cursor: pointer;
+		font-size: 1.1rem;
+		line-height: 1;
+	}
+	.step:first-child {
+		border-radius: 6px 0 0 6px;
+	}
+	.step:last-child {
+		border-radius: 0 6px 6px 0;
+	}
+	.step:hover:not(:disabled) {
+		background: #e94560;
+	}
+	.step:disabled {
+		opacity: 0.35;
 		cursor: default;
+	}
+	.count {
+		min-width: 34px;
+		height: 30px;
+		line-height: 30px;
+		text-align: center;
+		font-size: 0.9rem;
+		color: #888;
+		background: #1a1a2e;
+	}
+	.count.has {
+		color: #9fe7a0;
 	}
 	.full {
 		color: #888;
@@ -148,8 +182,13 @@
 			max-height: 78vh;
 			border-radius: 14px 14px 0 0;
 		}
-		.add {
-			padding: 0.45rem 1rem;
+		.step {
+			width: 38px;
+			height: 38px;
+		}
+		.count {
+			height: 38px;
+			line-height: 38px;
 		}
 	}
 </style>

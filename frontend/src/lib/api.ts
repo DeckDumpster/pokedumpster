@@ -90,6 +90,10 @@ export const api = {
 	bulkDelete: (ids: number[]) =>
 		send<{ deleted: number }>('POST', '/api/collection/bulk-delete', ids),
 
+	/** Delete the most recently added copy of a printing (binder modal "−"). */
+	removeCopyByPrinting: (printingId: string) =>
+		send<void>('DELETE', `/api/collection/by-printing/${encodeURIComponent(printingId)}`),
+
 	/** Assign a copy to a binder, a deck, or neither (pass empty object). */
 	moveCopy: (id: number, body: { binder_id?: number | null; deck_id?: number | null; note?: string }) =>
 		send<CollectionRow>('PUT', `/api/collection/${id}/move`, body),

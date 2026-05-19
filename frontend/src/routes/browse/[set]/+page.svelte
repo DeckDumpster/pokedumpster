@@ -1,10 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, variantLabel } from '$lib/api';
+	import { api } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
 	import type { BinderPage } from '$lib/types/BinderPage';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
-	import type { SlotPrinting } from '$lib/types/SlotPrinting';
 
 	let binder = $state<BinderPage | null>(null);
 	let loading = $state(true);
@@ -32,8 +31,6 @@
 	];
 
 	let selectedSlot = $state<BinderSlot | null>(null);
-	let toast = $state<{ message: string; copyId: number; printing: SlotPrinting } | null>(null);
-	let toastTimer: ReturnType<typeof setTimeout>;
 	let viewportWidth = $state(0);
 
 	// One binder-browse session per set visit groups its adds under a batch
@@ -83,12 +80,14 @@
 		load();
 	});
 
-	async function addCopy(printingId: string, variant: string) {
+	// Add a copy of a printing — the binder modal's "+". Optimistic: the pip
+	// and the modal's count update at once; a failure reverts.
+	async function addCopy(printingId: string) {
 		const slot = selectedSlot;
 		if (!slot) return;
 		const printing = slot.printings.find((p) => p.printing_id === printingId);
 		if (!printing) return;
-		printing.owned_count += 1; // optimistic — pip + modal update at once
+		printing.owned_count += 1;
 		try {
 			if (sessionBatchId === null) {
 				sessionBatchId = await api.createBatch({
@@ -96,33 +95,28 @@
 					name: binder?.set.name ?? null
 				});
 			}
-			const row = await api.addCopy({
+			await api.addCopy({
 				printing_id: printingId,
 				source: 'binder_click',
 				batch_id: sessionBatchId
 			});
-			showToast(`Added ${slot.name} · ${variantLabel(variant)}`, row.id, printing);
 		} catch (e) {
 			printing.owned_count -= 1; // revert
 			error = e instanceof Error ? e.message : String(e);
 		}
 	}
 
-	function showToast(message: string, copyId: number, printing: SlotPrinting) {
-		clearTimeout(toastTimer);
-		toast = { message, copyId, printing };
-		toastTimer = setTimeout(() => (toast = null), 6000);
-	}
-
-	async function undo() {
-		if (!toast) return;
-		const { copyId, printing } = toast;
-		toast = null;
-		clearTimeout(toastTimer);
+	// Remove the most recent copy of a printing — the binder modal's "−".
+	async function removeCopy(printingId: string) {
+		const slot = selectedSlot;
+		if (!slot) return;
+		const printing = slot.printings.find((p) => p.printing_id === printingId);
+		if (!printing || printing.owned_count <= 0) return;
+		printing.owned_count -= 1;
 		try {
-			await api.deleteCopy(copyId);
-			printing.owned_count = Math.max(0, printing.owned_count - 1);
+			await api.removeCopyByPrinting(printingId);
 		} catch (e) {
+			printing.owned_count += 1; // revert
 			error = e instanceof Error ? e.message : String(e);
 		}
 	}
@@ -292,15 +286,9 @@
 		slot={selectedSlot}
 		setCode={binder.set.set_code}
 		onAdd={addCopy}
+		onRemove={removeCopy}
 		onClose={() => (selectedSlot = null)}
 	/>
-{/if}
-
-{#if toast}
-	<div class="toast">
-		<span>{toast.message}</span>
-		<button class="undo" onclick={undo}>Undo</button>
-	</div>
 {/if}
 
 <style>
@@ -488,27 +476,6 @@
 	.pip.owned {
 		background: #e94560;
 		border-color: #e94560;
-	}
-	.toast {
-		position: fixed;
-		bottom: 1.5rem;
-		left: 50%;
-		transform: translateX(-50%);
-		z-index: 110;
-		display: flex;
-		gap: 1rem;
-		align-items: center;
-		background: #0f3460;
-		border: 1px solid #e94560;
-		border-radius: 8px;
-		padding: 0.6rem 1rem;
-		font-size: 0.9rem;
-	}
-	.undo {
-		background: #e94560;
-		border: none;
-		color: #fff;
-		padding: 0.2rem 0.6rem;
 	}
 
 	/* Larger tap targets on touch-sized viewports (PLAN §6.9). */

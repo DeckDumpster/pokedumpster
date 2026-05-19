@@ -1,0 +1,12 @@
+# Scenario: Add-cards picker modal opens with its expected controls
+#
+# Prerequisites:
+#   A deck exists; the deck detail page loads with a "+ Add cards" button
+
+description: >
+  When I open a deck's detail page and click "+ Add cards", the
+  CollectionPicker modal opens titled "Add cards to {deck name}". The
+  modal contains a "Search your collection…" search box, a list of
+  collection copies rendered as checkbox rows, and a footer showing the
+  selected count with an "Add {n} to {deck name}" button. A "×" close
+  button is visible.

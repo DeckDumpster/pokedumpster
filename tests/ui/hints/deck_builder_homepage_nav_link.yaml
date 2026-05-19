@@ -1,0 +1,11 @@
+start_page: /
+involves:
+  - homepage navigation "Decks" link pointing to /decks
+  - decks page shows the "Decks" h1 heading
+  - decks page shows the inline create form and the deck grid
+fixture_data:
+  none: "No fixture data needed"
+notes: >
+  1. Navigate to /. 2. Verify the "Decks" navigation link is visible.
+  3. Click it. 4. Wait for the decks page to load. 5. Verify the "Decks"
+  heading and the inline create form appear. Take a screenshot.

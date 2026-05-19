@@ -1,0 +1,16 @@
+# Scenario: Clicking a card row in deck detail opens the card modal
+#
+# Related:
+#   issues: []
+#
+# Prerequisites:
+#   A deck with cards must exist (fixture provides the "Charizard ex
+#   Control" deck).
+
+description: >
+  When I view a deck's card table on the detail page and click on a card
+  row (not on the name link or the "Remove" link), a card detail modal
+  opens showing the card image and a details panel. The details panel
+  displays the card name, supertype, set with set code, collector
+  number, rarity, variant, and condition. I can close the modal with the
+  "×" button and return to the deck detail table.

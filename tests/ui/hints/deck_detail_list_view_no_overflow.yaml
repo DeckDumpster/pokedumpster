@@ -1,0 +1,12 @@
+start_page: /decks/1
+involves:
+  - deck detail card table grouped by supertype
+  - body should have no horizontal overflow (scrollWidth <= clientWidth)
+fixture_data:
+  deck_id: 1
+  deck_name: "Charizard ex Control"
+notes: >
+  Navigate to /decks/1 (Charizard ex Control). Wait for the card table
+  to render. Use page.evaluate to check that document.body.scrollWidth
+  <= document.body.clientWidth (no horizontal overflow). Take a
+  screenshot of the final state.

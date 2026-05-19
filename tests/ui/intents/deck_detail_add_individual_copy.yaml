@@ -1,0 +1,13 @@
+# Scenario: Add an individual copy to a deck from the picker
+#
+# Prerequisites:
+#   Deck 2 "Pikachu ex Aggro" exists. A card has multiple physical
+#   copies, only some of them unassigned.
+
+description: >
+  When I navigate to deck 2 (Pikachu ex Aggro) at /decks/2 and click
+  "+ Add cards", the picker modal opens. Each physical copy is listed as
+  its own individual checkbox row — there is no quantity aggregation,
+  one row per physical card. I select a single copy, click the "Add"
+  button, and that one copy is added to the deck. The modal closes and
+  the card appears in the deck's card table.

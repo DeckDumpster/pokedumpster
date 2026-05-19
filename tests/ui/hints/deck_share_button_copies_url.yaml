@@ -1,0 +1,18 @@
+start_page: /decks/2
+involves:
+  - '"Share" button in the deck header .actions group'
+  - button text changes to "Copied!" after the click
+fixture_data:
+  deck_id: 2
+  deck_name: "Pikachu ex Aggro"
+notes: >
+  Navigate to /decks/2 (Pikachu ex Aggro). Wait for the deck to load.
+  Click the "Share" button. Wait for the button text to change to
+  "Copied!". Verify the button text is "Copied!".
+
+  CAVEAT: PLAN.md §7 lists deck-share URLs among the deck features that
+  are NOT included in PokeDumpster v1, and the deck-detail.md
+  ux-description has no Share button — yet §15 keeps this intent in the
+  verbatim deck list. The intent is ported as named, but it will not
+  pass until/unless a Share button actually ships. Flag for resolution
+  during /qa-finish.

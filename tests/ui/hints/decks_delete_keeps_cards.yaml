@@ -1,0 +1,15 @@
+start_page: /decks/1
+involves:
+  - deck detail page for "Charizard ex Control"
+  - '"Delete deck" button with a confirm() dialog noting cards stay in the collection'
+  - delete navigates back to /decks
+  - collection page search to verify the cards remain
+fixture_data:
+  deck_name: "Charizard ex Control"
+  card_name: "Charizard ex"
+notes: >
+  Navigate to /decks/1 (Charizard ex Control). Click "Delete deck".
+  Accept the confirmation dialog. Wait for the redirect to /decks.
+  Navigate to /collection and search for "Charizard ex". Verify the
+  copies that had been built into the deck still appear in the
+  collection. Take a screenshot.

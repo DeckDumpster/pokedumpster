@@ -1,0 +1,10 @@
+# Scenario: Create a deck and add cards to it
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can create a new deck with a name and owner, see it in the deck
+  list, open it to see an empty card list, and add cards to it from my
+  collection. The added cards should appear in the deck's card table.

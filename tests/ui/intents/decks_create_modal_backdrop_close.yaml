@@ -1,0 +1,9 @@
+# Scenario: Closing the add-cards picker modal leaves the collection unchanged
+#
+# Prerequisites:
+#   A deck exists; the deck detail page loads with a "+ Add cards" button
+
+description: >
+  When I open the "+ Add cards" picker modal on a deck detail page and
+  dismiss it with the "×" button without selecting anything, the modal
+  closes and the deck's card table is unchanged.

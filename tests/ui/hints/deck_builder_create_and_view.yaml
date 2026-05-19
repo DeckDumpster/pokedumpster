@@ -1,0 +1,16 @@
+start_page: /decks
+involves:
+  - 'inline create form (.newform) with a "New deck name…" input'
+  - '"Create" button creates the deck and reloads the list'
+  - new deck tile in the .grid linking to /decks/:id
+  - deck detail page header (h1) showing the deck name
+  - '"+ Add cards" and "Delete deck" buttons in the .actions group'
+  - "empty card table with the 'No cards in this deck' message"
+fixture_data:
+  new_deck_name: "Fresh Deck"
+notes: >
+  1. Navigate to /decks. 2. Fill in the name "Fresh Deck" and click
+  "Create". 3. The new tile appears — click it to open the detail page.
+  4. Verify the deck name "Fresh Deck" shows as the header. 5. Verify
+  the "+ Add cards" and "Delete deck" buttons are present. 6. Verify the
+  "No cards in this deck" empty message is shown. Take a screenshot.

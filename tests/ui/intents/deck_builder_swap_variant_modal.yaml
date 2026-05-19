@@ -1,0 +1,16 @@
+# Scenario: Swap variant modal opens with all available variants
+#
+# Related:
+#   pull_requests: []
+#
+# Prerequisites:
+#   An idea or ready deck with at least one card that has multiple
+#   variants in the catalog.
+
+description: >
+  When viewing an idea deck's card table, I hover over a card row to
+  reveal the swap button (⇄). Clicking it opens a modal titled "Swap
+  Variant" showing all variants of that card. Each variant displays: set
+  name with code and collector number, owned count (or "Not owned"), and
+  a "Current" badge on the currently-selected variant. The current
+  variant row is visually distinguished and not clickable.

@@ -1,0 +1,14 @@
+# Scenario: Deck tiles display content (name, state badge, owner, count)
+#
+# Prerequisites:
+#   Three fixture decks exist: "Charizard ex Control" (built, Ryan),
+#   "Pikachu ex Aggro" (ready, Ryan), "Vintage Base Brawl" (idea, Alice)
+
+description: >
+  When I visit /decks with existing decks, each deck tile in the grid
+  displays the deck name as a heading, a lifecycle state badge (e.g.
+  "built", "ready", "idea"), the owner when one is set, and the card
+  count. The fixture has "Charizard ex Control" (built, owner Ryan),
+  "Pikachu ex Aggro" (ready, owner Ryan), and "Vintage Base Brawl"
+  (idea, owner Alice). All of these data points are visible on each
+  tile without clicking into it.

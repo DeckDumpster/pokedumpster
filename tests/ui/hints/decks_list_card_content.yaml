@@ -1,0 +1,22 @@
+start_page: /decks
+involves:
+  - "deck grid (.grid) with .tile elements"
+  - ".tile heading showing the deck name"
+  - ".tile .meta line with a state badge (state-built, state-ready, state-idea)"
+  - ".tile .meta line showing the owner when set"
+  - '.tile showing the "{n} cards" count'
+fixture_data:
+  deck_1_name: "Charizard ex Control"
+  deck_1_state: "built"
+  deck_1_owner: "Ryan"
+  deck_2_name: "Pikachu ex Aggro"
+  deck_2_state: "ready"
+  deck_2_owner: "Ryan"
+  deck_3_name: "Vintage Base Brawl"
+  deck_3_state: "idea"
+  deck_3_owner: "Alice"
+notes: >
+  Navigate to /decks. Wait for the deck grid to load (wait for "Charizard
+  ex Control" text). Verify each fixture deck tile shows its name, its
+  lifecycle state badge ("built", "ready", "idea"), its owner ("Ryan",
+  "Ryan", "Alice"), and a "{n} cards" count. Take a screenshot.

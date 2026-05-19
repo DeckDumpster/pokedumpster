@@ -1,0 +1,15 @@
+start_page: /decks/1
+involves:
+  - card rows in the deck detail card table
+  - absence of the swap button (⇄) on built-deck card rows
+  - presence of the swap button on idea/ready deck card rows
+fixture_data:
+  built_deck_id: 1
+  built_deck_name: "Charizard ex Control"
+  idea_deck_id: 3
+notes: >
+  Navigate to the built deck /decks/1 (Charizard ex Control). Verify no
+  swap buttons (⇄) appear on the card rows — only the "Remove" action.
+  Then navigate to the idea deck /decks/3 (Vintage Base Brawl). Verify
+  swap buttons do appear on its card rows, confirming the feature is
+  correctly limited to idea/ready state decks.

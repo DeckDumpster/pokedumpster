@@ -1,0 +1,10 @@
+# Scenario: Add a card to a deck using the card modal controls
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can assign an unassigned copy to a deck from the card detail modal's
+  Copies section. After assigning, the copy shows the deck name instead
+  of "Unassigned".

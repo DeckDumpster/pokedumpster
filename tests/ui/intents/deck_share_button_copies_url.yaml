@@ -1,0 +1,11 @@
+# Scenario: Share button on a deck page copies the deck URL
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I view a deck and click the "Share" button in the deck header
+  actions, the button text briefly changes to "Copied!" indicating the
+  deck's URL was copied to the clipboard. The Share button sits in the
+  deck header actions alongside the other deck action buttons.

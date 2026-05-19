@@ -1,0 +1,14 @@
+start_page: /decks
+involves:
+  - 'inline create form (.newform) with a "New deck name…" input'
+  - '"Create" button — an empty/whitespace name is silently ignored'
+  - no deck is created when the name is blank
+  - filling in a name then clicking "Create" succeeds
+fixture_data:
+  validation_deck_name: "Validated Deck"
+notes: >
+  Navigate to /decks. Note the current number of deck tiles. Click
+  "Create" without filling in the name. Verify no new tile appears (the
+  empty submit is silently ignored). Fill in the name "Validated Deck".
+  Click "Create". Wait for the list to reload. Verify a tile named
+  "Validated Deck" now appears in the grid. Take a screenshot.

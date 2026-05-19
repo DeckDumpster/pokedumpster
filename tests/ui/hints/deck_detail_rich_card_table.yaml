@@ -1,0 +1,18 @@
+start_page: /decks/1
+involves:
+  - deck detail card table with rows grouped by supertype
+  - 'th columns: Name, Set, #, Variant, Condition, action'
+  - Name cell links to the card detail page
+  - action cell has a "Remove" link button
+fixture_data:
+  deck_id: 1
+  card_name: "Charizard ex"
+  card_set: "151"
+  card_number: "6"
+  card_variant: "holo"
+notes: >
+  Navigate to /decks/1 (Charizard ex Control). Wait for the card table
+  to render. Verify the table header contains the columns Name, Set, #,
+  Variant, and Condition. Verify a card row shows the card name as a
+  link, the set, the collector number, the variant, and the condition.
+  Verify rows are grouped under supertype headings. Take a screenshot.

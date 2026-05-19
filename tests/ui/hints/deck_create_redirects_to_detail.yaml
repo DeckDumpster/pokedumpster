@@ -1,0 +1,16 @@
+start_page: /decks
+involves:
+  - 'inline create form (.newform) with "New deck name…" and "Owner (optional)" inputs'
+  - '"Create" button creates the deck and reloads the list'
+  - new deck tile in the .grid linking to /decks/:id
+  - deck detail page header (h1) showing the deck name
+  - empty card table on the detail page
+fixture_data:
+  new_deck_name: "Redirect Test Deck"
+  new_deck_owner: "Ryan"
+notes: >
+  Navigate to /decks. Fill in the name "Redirect Test Deck" and owner
+  "Ryan". Click "Create". Wait for the list to reload. Click the new
+  "Redirect Test Deck" tile. Verify the URL contains /decks/ followed by
+  a number. Verify the deck name shows "Redirect Test Deck". Verify an
+  empty card table is present. Take a screenshot.

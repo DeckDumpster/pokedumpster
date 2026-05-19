@@ -1,0 +1,16 @@
+start_page: /collection
+involves:
+  - card detail modal for Charizard ex
+  - '"Move to binder" control in the Copies section'
+  - a copy assigned to a deck can be reassigned to a binder
+  - deck_id and binder_id are mutually exclusive on a collection row
+fixture_data:
+  card_name: "Charizard ex"
+  source_deck: "Charizard ex Control"
+  target_binder: "Trade Binder"
+notes: >
+  Navigate to /collection. Open the card detail modal for Charizard ex.
+  In the Copies section, find the copy currently assigned to the
+  "Charizard ex Control" deck. Move it to the "Trade Binder" binder.
+  Verify the copy now shows the binder assignment and no longer shows
+  the deck assignment. Take a screenshot.

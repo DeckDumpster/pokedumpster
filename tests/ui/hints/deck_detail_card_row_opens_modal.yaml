@@ -1,0 +1,18 @@
+start_page: /decks/1
+involves:
+  - deck detail card table rows
+  - clicking a row (away from the name link / Remove link) opens the card modal
+  - card modal showing the card image and a details panel
+  - details panel with name, supertype, set, collector number, rarity, variant, condition
+  - '"×" close button to dismiss the modal'
+fixture_data:
+  deck_id: 1
+  card_name: "Charizard ex"
+  card_supertype: "Pokémon"
+notes: >
+  Navigate to /decks/1 (Charizard ex Control). Wait for the card table
+  to load. Click on a card row, away from the name link and the "Remove"
+  link. Wait for the card modal to appear. Verify the modal shows the
+  card name "Charizard ex". Verify the supertype "Pokémon" is shown.
+  Take a screenshot. Click the "×" close button. Verify the modal is
+  hidden. Take a final screenshot.

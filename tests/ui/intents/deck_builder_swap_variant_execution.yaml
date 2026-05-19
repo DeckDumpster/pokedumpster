@@ -1,0 +1,15 @@
+# Scenario: Clicking an alternate variant swaps it in the deck
+#
+# Related:
+#   pull_requests: []
+#
+# Prerequisites:
+#   An idea or ready deck with at least one card that has multiple
+#   variants in the catalog.
+
+description: >
+  In the swap variant modal, I click on a different variant of the same
+  card. The modal closes and the deck reloads with the new variant. The
+  card row in the card table now references the new variant. If I reopen
+  the swap modal for that card, the new variant shows the "Current"
+  badge.

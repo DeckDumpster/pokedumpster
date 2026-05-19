@@ -1,0 +1,13 @@
+# Scenario: Deck detail card table fits within the viewport
+#
+# Related:
+#   issues: []
+#
+# Prerequisites:
+#   A deck with cards must exist (fixture provides the "Charizard ex
+#   Control" deck).
+
+description: >
+  When I view a deck's detail page, the supertype-grouped card table
+  fits entirely within the viewport. No content overflows off the right
+  edge of the screen and no horizontal scrollbar appears.

@@ -1,0 +1,10 @@
+# Scenario: The create form requires a deck name
+#
+# Prerequisites:
+#   The /decks page loads with the inline create form visible
+
+description: >
+  When I click "Create" on the deck create form without entering a name,
+  nothing happens — the whitespace/empty name is silently ignored and no
+  deck is created. After I enter a name and click "Create", the deck is
+  successfully created and appears in the grid.

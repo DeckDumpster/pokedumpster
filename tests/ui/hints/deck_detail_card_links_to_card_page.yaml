@@ -1,0 +1,16 @@
+start_page: /decks/1
+involves:
+  - deck detail card table with card-name links
+  - 'each Name cell is an <a href="/card/{set}/{number}">'
+  - card detail page at /card/sv3pt5/6 for Charizard ex
+fixture_data:
+  deck_id: 1
+  card_name: "Charizard ex"
+  card_set: "sv3pt5"
+  card_number: "6"
+  card_url: "/card/sv3pt5/6"
+notes: >
+  Navigate to /decks/1 (Charizard ex Control). Wait for the card table
+  to load. Click the "Charizard ex" name link in a card row. Wait for
+  the card detail page to load. Verify the URL is /card/sv3pt5/6. Verify
+  the card name appears on the detail page. Take a screenshot.

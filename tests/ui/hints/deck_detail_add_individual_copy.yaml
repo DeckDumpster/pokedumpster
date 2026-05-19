@@ -1,0 +1,21 @@
+start_page: /decks/2
+involves:
+  - '"+ Add cards" button opens the CollectionPicker modal'
+  - 'picker search box with placeholder "Search your collection…"'
+  - picker shows individual copy rows — one row per physical card, no qty aggregation
+  - checking a row toggles its selection
+  - '"Add {n} to Pikachu ex Aggro" footer button assigns the selected copy'
+  - deck card table updates with the added card
+fixture_data:
+  deck_id: 2
+  deck_name: "Pikachu ex Aggro"
+  search_term: "Charmander"
+  card_name: "Charmander"
+notes: >
+  Navigate to /decks/2. Wait for the deck to load. Click "+ Add cards".
+  Wait for the picker. Type "Charmander" in the search box — the fixture
+  has two Charmander copies from the received TCGplayer order. Verify
+  each copy appears as its own row (no grouped qty=2 row). Check exactly
+  one copy row. Click "Add 1 to Pikachu ex Aggro". Wait for the modal to
+  close. Verify Charmander appears in the deck card table. Take a
+  screenshot.

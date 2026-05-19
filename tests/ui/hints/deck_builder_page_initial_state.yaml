@@ -1,0 +1,16 @@
+start_page: /decks
+involves:
+  - 'heading: h1 with text "Decks"'
+  - 'create form (.newform) with a "New deck name…" input'
+  - 'create form "Owner (optional)" input'
+  - '"Create" submit button'
+  - deck grid (.grid) listing existing deck tiles
+  - '"Decks" nav link in the site header'
+fixture_data:
+  none: "No fixture data needed for initial state"
+notes: >
+  1. Navigate to /decks. 2. Verify the "Decks" heading. 3. Verify the
+  "New deck name…" input and the "Owner (optional)" input. 4. Verify the
+  "Create" button exists. 5. Verify the deck grid is populated with the
+  fixture decks. 6. Verify the "Decks" nav link in the header. Take a
+  screenshot.

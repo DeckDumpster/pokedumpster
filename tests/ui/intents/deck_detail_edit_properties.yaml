@@ -1,0 +1,10 @@
+# Scenario: Change a deck's lifecycle state from the detail page
+#
+# Prerequisites:
+#   Deck 2 "Pikachu ex Aggro" exists in the "ready" state.
+
+description: >
+  When I navigate to deck 2 (Pikachu ex Aggro) and use the "Lifecycle"
+  select in the header to change the deck's state from "ready" to
+  "built", the change is saved and the deck reloads showing the new
+  state. The state badge reflects the updated lifecycle state.

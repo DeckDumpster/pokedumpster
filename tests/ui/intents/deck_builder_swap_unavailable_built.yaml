@@ -1,0 +1,11 @@
+# Scenario: Swap button does not appear on built decks
+#
+# Related:
+#   pull_requests: []
+
+description: >
+  When viewing a built deck (cards mapped to physical collection
+  entries), the swap button (⇄) does not appear on card rows. Only the
+  "Remove" action is shown. This is correct because built decks
+  reference owned physical copies, not virtual variant specs. The swap
+  button only appears on idea/ready state decks.

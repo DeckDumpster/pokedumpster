@@ -1,0 +1,14 @@
+# Scenario: Deck tiles link to the deck detail page
+#
+# Related:
+#   issues: []
+#
+# Prerequisites:
+#   At least one deck must exist (fixture provides three decks).
+
+description: >
+  When I visit the decks list page at /decks, each deck is rendered as a
+  clickable tile that links to /decks/:id. I can click a deck tile and
+  navigate to that deck's detail page, where I see the deck's full
+  information including its name, the owner and format sub line, the
+  "Lifecycle" select, and the card table.

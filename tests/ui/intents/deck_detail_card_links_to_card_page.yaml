@@ -1,0 +1,13 @@
+# Scenario: Card name in deck detail links to the card detail page
+#
+# Related:
+#   issues: []
+#
+# Prerequisites:
+#   A deck with cards must exist (fixture provides the "Charizard ex
+#   Control" deck).
+
+description: >
+  When I view a deck's detail page and click a card's name in the card
+  table, the browser navigates to that card's detail page at
+  /card/:set/:number, where I see that card's image and details.

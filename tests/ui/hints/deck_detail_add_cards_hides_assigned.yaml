@@ -1,0 +1,17 @@
+start_page: /decks/2
+involves:
+  - '"+ Add cards" button opens the CollectionPicker modal'
+  - 'picker search box with placeholder "Search your collection…"'
+  - picker rows carry a "where" tag for copies already assigned to a deck or binder
+fixture_data:
+  deck_id: 2
+  deck_name: "Pikachu ex Aggro"
+  deck_assigned_card: "Charizard ex"
+  binder_assigned_card: "Charmander"
+notes: >
+  Navigate to /decks/2. Wait for the deck to load. Click "+ Add cards".
+  Wait for the picker. Search for "Charizard ex" — its copies are built
+  into deck 1; verify those rows carry a "where" tag naming the
+  "Charizard ex Control" deck. Clear the search, search for "Charmander"
+  — copies assigned to a binder carry a "where" tag naming that binder,
+  while any unassigned copy has no tag. Take a screenshot.

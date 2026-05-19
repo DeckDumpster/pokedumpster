@@ -1,0 +1,14 @@
+start_page: /decks
+involves:
+  - inline create form to create a throwaway deck
+  - '"Delete deck" button on the deck detail page'
+  - browser confirm() dialog noting the cards stay in the collection
+  - navigation back to the /decks list page
+fixture_data:
+  throwaway_deck_name: "Deck To Delete"
+notes: >
+  Navigate to /decks. Create a new deck named "Deck To Delete" via the
+  inline create form. Click its tile to open the detail page. Click
+  "Delete deck". Accept the confirmation dialog. Wait for the navigation
+  back to /decks. Verify the URL is /decks. Verify "Deck To Delete" no
+  longer appears in the grid. Take a screenshot.

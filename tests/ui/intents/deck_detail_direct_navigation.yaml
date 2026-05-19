@@ -1,0 +1,15 @@
+# Scenario: Navigate directly to the deck detail page
+#
+# Related:
+#   issues: []
+#
+# Prerequisites:
+#   A deck with cards must exist (fixture provides the "Charizard ex
+#   Control" deck).
+
+description: >
+  I can navigate directly to a deck's detail page at /decks/:id. I see
+  the deck name, the sub line showing the owner and format, the
+  "Lifecycle" select, and a card table listing the deck's cards grouped
+  by supertype (Pokémon / Trainer / Energy) with Name, Set, #, Variant,
+  and Condition columns.

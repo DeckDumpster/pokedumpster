@@ -1,0 +1,10 @@
+# Scenario: Navigate to the Decks page from the homepage
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  I can see a "Decks" link in the homepage navigation. Clicking it takes
+  me to the decks list page, which shows the inline "New deck name…"
+  create form and the grid of existing decks.

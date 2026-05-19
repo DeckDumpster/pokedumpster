@@ -1,0 +1,13 @@
+# Scenario: Deleting a deck from its detail page redirects to the list
+#
+# Related:
+#   issues: []
+#
+# Prerequisites:
+#   A deck must exist to delete (the test creates one first).
+
+description: >
+  When I open a deck's detail page and click the "Delete deck" button, a
+  confirmation dialog appears noting the cards stay in the collection.
+  After confirming, the browser navigates back to the deck list at
+  /decks and the deleted deck no longer appears in the grid.

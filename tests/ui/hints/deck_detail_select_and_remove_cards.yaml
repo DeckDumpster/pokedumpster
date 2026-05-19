@@ -1,0 +1,16 @@
+start_page: /decks/1
+involves:
+  - deck detail card table with a "Remove" link on each row
+  - '"Remove" un-assigns the copy via moveCopy(id, {}) — the copy stays in the collection'
+  - each removal sets a busy flag, mutates, then reloads from the server
+  - "'No cards in this deck' message once the table is empty"
+fixture_data:
+  deck_id: 1
+  deck_name: "Charizard ex Control"
+  card_count: 3
+notes: >
+  Navigate to /decks/1 (Charizard ex Control). Wait for the deck to
+  load. The deck has 3 cards. Click "Remove" on each card row in turn,
+  waiting for the table to reload between removals. After all 3 are
+  removed, verify the "No cards in this deck" empty message appears.
+  Take a screenshot.

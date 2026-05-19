@@ -1,0 +1,13 @@
+# Scenario: Add and remove cards from a deck
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  On a deck's detail page, I can click "+ Add cards" to open the
+  collection picker modal. Searching for a card name shows matching
+  owned copies. Selecting a copy and confirming adds it to the deck's
+  card table, grouped by supertype. The card count increases. I can then
+  remove the card by clicking the "Remove" link on its row, which
+  decrements the count back down.

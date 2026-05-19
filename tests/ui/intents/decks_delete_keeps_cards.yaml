@@ -1,0 +1,10 @@
+# Scenario: Deleting a deck does not delete its cards from the collection
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I delete the deck Charizard ex Control, its cards remain in my
+  collection. After deletion, I can search for Charizard ex on the
+  Collection page and still find the copies that had been in the deck.

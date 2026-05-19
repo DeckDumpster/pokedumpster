@@ -1,0 +1,11 @@
+# Scenario: Creating a new deck makes it reachable at its detail page
+#
+# Related:
+#   issues: []
+
+description: >
+  When I create a new deck from the /decks page by filling in the name
+  and owner in the inline create form and clicking "Create", the deck
+  appears in the grid as a tile. Clicking the tile opens the new deck's
+  detail page at /decks/:id, where I see the deck name I entered and an
+  empty card table ready for cards to be added.

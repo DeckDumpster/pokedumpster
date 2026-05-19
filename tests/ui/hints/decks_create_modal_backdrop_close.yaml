@@ -1,0 +1,15 @@
+start_page: /decks/2
+involves:
+  - '"+ Add cards" button opens the CollectionPicker modal'
+  - 'modal "×" close button dismisses the modal'
+  - modal also closes on the Escape key
+  - deck card table unchanged after the modal closes
+fixture_data:
+  deck_id: 2
+  deck_name: "Pikachu ex Aggro"
+notes: >
+  Navigate to /decks/2 (Pikachu ex Aggro). Wait for the page to load.
+  Click "+ Add cards". Wait for the picker modal to appear. Click the "×"
+  button to dismiss it without selecting any copies. Verify the modal is
+  no longer visible. Verify the deck's card table is unchanged. Take a
+  screenshot.

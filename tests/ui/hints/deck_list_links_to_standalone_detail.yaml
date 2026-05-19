@@ -1,0 +1,15 @@
+start_page: /decks
+involves:
+  - 'deck tiles in the .grid are <a href="/decks/{id}"> links'
+  - deck detail page with the deck name header (h1)
+  - '.sub line and card table on the detail page'
+fixture_data:
+  deck_name: "Charizard ex Control"
+  deck_id: 1
+notes: >
+  Navigate to /decks. Wait for the deck grid to load (wait for
+  "Charizard ex Control" text). Click the "Charizard ex Control" deck
+  tile. Verify the browser navigates to /decks/1. Wait for the deck
+  detail page to load. Verify the deck name shows "Charizard ex
+  Control". Verify the sub line and card table are visible. Take a
+  screenshot.

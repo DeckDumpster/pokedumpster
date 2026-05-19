@@ -1,0 +1,21 @@
+start_page: /decks/3
+involves:
+  - card rows in the deck detail card table
+  - swap button (⇄) on a card row, revealed on hover
+  - swap modal titled "Swap Variant" listing variant options
+  - each variant option shows set name, code, collector number, owned count
+  - '"Current" badge on the currently-selected variant'
+  - cancel button to dismiss the modal
+fixture_data:
+  deck_id: 3
+  deck_name: "Vintage Base Brawl"
+  deck_state: "idea"
+  test_card: "Pikachu"
+  test_card_set: "base1"
+notes: >
+  Navigate to the idea deck /decks/3 (Vintage Base Brawl). Hover over a
+  card row (e.g. Pikachu, which carries normal + reverse_holo variants)
+  to reveal the swap button. Click the ⇄ button. Wait for the swap modal.
+  Verify the modal title says "Swap Variant". Verify multiple variant
+  options are shown with set names and owned counts. Verify the current
+  variant has a "Current" badge. Close the modal with the cancel button.

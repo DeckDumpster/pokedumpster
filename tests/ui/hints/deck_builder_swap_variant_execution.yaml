@@ -1,0 +1,18 @@
+start_page: /decks/3
+involves:
+  - swap button (⇄) on card rows
+  - swap modal titled "Swap Variant"
+  - variant option rows — click a non-current one to swap
+  - card row Variant column updating to the new variant
+fixture_data:
+  deck_id: 3
+  deck_name: "Vintage Base Brawl"
+  deck_state: "idea"
+  test_card: "Pikachu"
+notes: >
+  Navigate to the idea deck /decks/3. Click the swap button on the
+  Pikachu card row. In the modal, click a different variant (not the
+  current one — e.g. switch normal to reverse_holo). The modal closes
+  and the deck reloads. Verify the card row's Variant column now shows
+  the new variant. Reopen the swap modal to confirm the new variant has
+  the "Current" badge.

@@ -1,0 +1,18 @@
+start_page: /decks/1
+involves:
+  - deck detail header (h1) showing the deck name
+  - '.sub line showing the owner and format'
+  - '"Lifecycle" select with idea / ready / built options'
+  - card table with columns Name, Set, #, Variant, Condition, and an action cell
+  - card rows grouped by supertype (Pokémon / Trainer / Energy)
+fixture_data:
+  deck_name: "Charizard ex Control"
+  deck_owner: "Ryan"
+  deck_format: "standard"
+  deck_id: 1
+notes: >
+  Navigate directly to /decks/1. Wait for the deck name to appear.
+  Verify the header shows "Charizard ex Control". Verify the sub line
+  shows the owner "Ryan" and format "standard". Verify the "Lifecycle"
+  select is present. Verify the card table has rows with card names
+  grouped by supertype. Take a screenshot of the fully loaded page.

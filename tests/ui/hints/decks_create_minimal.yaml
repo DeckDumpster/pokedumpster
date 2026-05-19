@@ -1,0 +1,16 @@
+start_page: /decks
+involves:
+  - 'inline create form (.newform) with a "New deck name…" input'
+  - '"Owner (optional)" input left blank'
+  - '"Create" button creates the deck and reloads the list, clearing both inputs'
+  - new deck tile appears in the .grid
+  - deck detail page header showing the new deck name with no owner
+  - "empty card table with the 'No cards in this deck. Add some with Add cards.' message"
+fixture_data:
+  new_deck_name: "Minimal Deck"
+notes: >
+  Navigate to /decks. Wait for the create form to render. Fill in only the
+  name "Minimal Deck" — leave the owner input empty. Click "Create". Wait
+  for the list to reload and the inputs to clear. Verify a tile named
+  "Minimal Deck" appears in the grid. Click it. Verify the detail page
+  shows "Minimal Deck" and the empty-deck message. Take a screenshot.

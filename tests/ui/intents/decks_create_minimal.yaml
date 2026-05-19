@@ -1,0 +1,10 @@
+# Scenario: Create a deck with only a name (minimal input)
+#
+# Prerequisites:
+#   The /decks page loads with the inline create form visible
+
+description: >
+  When I enter only a deck name in the create form (the sole required
+  field), leave the owner field blank, and click "Create", the deck is
+  created and appears in the deck grid. Opening its tile shows the deck
+  detail page with the name I entered, no owner, and an empty card table.

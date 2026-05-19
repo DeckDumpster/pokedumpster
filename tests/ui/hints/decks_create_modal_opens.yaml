@@ -1,0 +1,18 @@
+start_page: /decks/2
+involves:
+  - '"+ Add cards" button in the deck detail .actions group'
+  - 'CollectionPicker modal titled "Add cards to Pikachu ex Aggro"'
+  - 'search box with placeholder "Search your collection…"'
+  - collection copies listed as checkbox rows
+  - 'footer with a selected count and an "Add {n} to Pikachu ex Aggro" button'
+  - '"×" close button'
+fixture_data:
+  deck_id: 2
+  deck_name: "Pikachu ex Aggro"
+notes: >
+  Navigate to /decks/2. Wait for the page to load. Click "+ Add cards".
+  Wait for the modal to appear. Verify the modal title contains "Add
+  cards to Pikachu ex Aggro". Verify the "Search your collection…" search
+  box is present. Verify checkbox rows for collection copies are listed.
+  Verify the footer "Add" button and the "×" close button are visible.
+  Take a screenshot.

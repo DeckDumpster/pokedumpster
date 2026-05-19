@@ -1,0 +1,11 @@
+# Scenario: Decks page renders its initial state correctly
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  When I navigate to /decks, I see a "Decks" heading, the inline create
+  form with a "New deck name…" text input and an "Owner (optional)" text
+  input, and a "Create" submit button. Below the form, the grid lists
+  the existing decks. The site header includes a "Decks" nav link.

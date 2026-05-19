@@ -1,0 +1,12 @@
+# Scenario: Deck picker tags copies already assigned to decks or binders
+#
+# Prerequisites:
+#   Deck 1 "Charizard ex Control" has copies assigned. Some collection
+#   copies are assigned to binders.
+
+description: >
+  When I navigate to deck 2 (Pikachu ex Aggro) at /decks/2 and open the
+  "+ Add cards" picker, the picker lists collection copies as checkbox
+  rows. Copies already assigned to another deck or to a binder are shown
+  with a "where" tag identifying their current deck or binder, so I can
+  tell which copies are free to add and which are already placed.

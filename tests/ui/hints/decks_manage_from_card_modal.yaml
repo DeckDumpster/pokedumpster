@@ -1,0 +1,13 @@
+start_page: /collection
+involves:
+  - card detail modal for a card with an unassigned copy
+  - '"Move to deck" control in the Copies section'
+fixture_data:
+  card_name: "Snorlax"
+  target_deck: "Pikachu ex Aggro"
+notes: >
+  Navigate to /collection. Open the card detail modal for Snorlax — a
+  card with a loose, unassigned owned copy. In the Copies section, use
+  the "Move to deck" control to assign that copy to the "Pikachu ex
+  Aggro" deck. Verify the copy now shows the deck name instead of
+  "Unassigned". Take a screenshot.

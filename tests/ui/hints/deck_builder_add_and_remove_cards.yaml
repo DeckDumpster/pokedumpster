@@ -1,0 +1,19 @@
+start_page: /decks/2
+involves:
+  - '"+ Add cards" button in the deck detail .actions group'
+  - CollectionPicker modal with a search box and checkbox result rows
+  - 'search box placeholder "Search your collection…"'
+  - '"Add {n} to {deck name}" footer button confirms the selection'
+  - card table rows grouped by supertype (Pokémon / Trainer / Energy)
+  - each row has a "Remove" link button that un-assigns the copy
+fixture_data:
+  deck_id: 2
+  deck_name: "Pikachu ex Aggro"
+  searchable_card: "Snorlax"
+notes: >
+  1. Navigate to /decks/2 (Pikachu ex Aggro). 2. Click "+ Add cards".
+  3. Wait for the picker modal. 4. Search for "Snorlax". 5. Check the
+  Snorlax copy row and click "Add 1 to Pikachu ex Aggro". 6. Verify
+  Snorlax appears in the deck card table and the card count increased.
+  7. Click "Remove" on the Snorlax row. 8. Verify the count returns to
+  its original value and Snorlax is gone. Take a screenshot.

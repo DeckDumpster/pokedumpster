@@ -1,0 +1,11 @@
+# Scenario: Move a card between deck and binder via the card modal
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  A copy of Charizard ex that is assigned to deck Charizard ex Control
+  can be moved to binder Trade Binder from the card detail modal. After
+  moving, the copy shows the binder assignment instead of the deck
+  assignment — a copy is never in both a deck and a binder at once.

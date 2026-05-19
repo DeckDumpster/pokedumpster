@@ -1,0 +1,12 @@
+# Scenario: Create a deck and view the deck detail layout
+#
+# Related:
+#   issues: []
+#   pull_requests: []
+
+description: >
+  After creating a deck from the /decks create form, I can open its
+  tile to reach the deck detail page. The detail page shows the deck
+  name as the header, a "+ Add cards" button, a "Delete deck" button,
+  and an empty card table with the "No cards in this deck" message
+  because the new deck has no cards yet.

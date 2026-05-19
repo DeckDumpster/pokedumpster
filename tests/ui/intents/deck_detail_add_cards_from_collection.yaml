@@ -1,0 +1,13 @@
+# Scenario: Add cards from collection to a deck
+#
+# Prerequisites:
+#   Deck 2 "Pikachu ex Aggro" exists. "Snorlax" has an unassigned copy
+#   in the collection.
+
+description: >
+  When I navigate to deck 2 (Pikachu ex Aggro) at /decks/2 and click
+  "+ Add cards", the collection picker modal opens with a search field.
+  I type "Snorlax" in the search field, see Snorlax in the results,
+  check it to select it, and click the "Add" button. The modal closes
+  and the card appears in the deck's card table. The card count
+  increases.

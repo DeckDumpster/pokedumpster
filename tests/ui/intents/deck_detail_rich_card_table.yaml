@@ -1,0 +1,16 @@
+# Scenario: Deck detail card table shows rich content
+#
+# Related:
+#   issues: []
+#
+# Prerequisites:
+#   A deck with cards must exist (fixture provides the "Charizard ex
+#   Control" deck).
+
+description: >
+  When I view a deck's detail page, the card table displays content in
+  each row: the card name (linking to the card detail page), the set,
+  the collector number, the variant, and the condition. The table
+  columns are Name, Set, #, Variant, Condition, and an action cell with
+  a "Remove" link. Rows are grouped by supertype (Pokémon / Trainer /
+  Energy).

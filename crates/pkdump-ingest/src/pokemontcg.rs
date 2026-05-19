@@ -67,7 +67,12 @@ pub struct PokemonTcgCard {
     pub retreat_cost: Option<Vec<String>>,
     pub legalities: Option<Value>,
     pub images: Option<CardImages>,
-    pub set: PokemonTcgSet,
+    /// The nested set object. Present on pokemontcg.io API responses;
+    /// absent from the `pokemon-tcg-data` repo's per-set card files, where
+    /// the set is implied by the filename. Importers pass the set code
+    /// explicitly to `upsert_card`, so this is kept only for the raw record.
+    #[serde(default)]
+    pub set: Option<PokemonTcgSet>,
     pub tcgplayer: Option<Value>,
     pub cardmarket: Option<Value>,
     /// The full original JSON object — not deserialized, filled by the parser.
@@ -241,7 +246,7 @@ mod tests {
         assert_eq!(c.name, "Charmander");
         assert_eq!(c.hp.as_deref(), Some("60"));
         assert_eq!(c.regulation_mark.as_deref(), Some("F"));
-        assert_eq!(c.set.id, "sv3pt5");
+        assert_eq!(c.set.as_ref().unwrap().id, "sv3pt5");
         assert!(c.tcgplayer.is_some());
         // raw JSON is preserved verbatim for the cards.raw_json column.
         assert_eq!(c.raw["id"], "sv3pt5-4");

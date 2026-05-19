@@ -107,7 +107,7 @@ fn import_tail(conn: &mut Connection) -> anyhow::Result<usize> {
         }
         pokemon_tcg_data::upsert_set(conn, &set, &now)?;
         for card in client.fetch_cards_for_set(&set.id)? {
-            pokemon_tcg_data::upsert_card(conn, &card)?;
+            pokemon_tcg_data::upsert_card(conn, &card, &set.id)?;
         }
         added += 1;
     }

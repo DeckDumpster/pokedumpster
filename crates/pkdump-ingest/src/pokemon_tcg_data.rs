@@ -53,7 +53,7 @@ pub fn import_from_dir(conn: &mut Connection, dir: &Path) -> Result<ImportStats>
             .map_err(|e| IngestError::BadResponse(format!("{}: {e}", card_path.display())))?;
         let values: Vec<Value> = serde_json::from_str(&card_text)?;
         for card in cards_from_values(&values)? {
-            upsert_card(&tx, &card)?;
+            upsert_card(&tx, &card, &set.id)?;
             stats.cards += 1;
         }
     }
@@ -126,8 +126,9 @@ pub fn upsert_set(conn: &Connection, set: &PokemonTcgSet, now: &str) -> Result<(
 }
 
 /// Upsert a single card into the catalog. Shared by the file importer and
-/// the pokemontcg.io tail fetch (`pkdump setup`).
-pub fn upsert_card(conn: &Connection, card: &PokemonTcgCard) -> Result<()> {
+/// the pokemontcg.io tail fetch (`pkdump setup`). `set_code` is supplied by
+/// the caller — the repo's per-set card files do not carry a `set` object.
+pub fn upsert_card(conn: &Connection, card: &PokemonTcgCard, set_code: &str) -> Result<()> {
     let arr_s = |v: &Option<Vec<String>>| v.as_ref().map(|x| Value::from(x.clone()).to_string());
     let arr_i = |v: &Option<Vec<i64>>| v.as_ref().map(|x| Value::from(x.clone()).to_string());
     let val = |v: &Option<Value>| v.as_ref().map(Value::to_string);
@@ -169,7 +170,7 @@ pub fn upsert_card(conn: &Connection, card: &PokemonTcgCard) -> Result<()> {
            raw_json                 = excluded.raw_json",
         rusqlite::params![
             card.id,
-            card.set.id,
+            set_code,
             card.number,
             pkdump_core::number_sortable(&card.number),
             card.name,
@@ -207,18 +208,19 @@ mod tests {
        "images":{"symbol":"https://x/sym.png","logo":"https://x/logo.png"}}
     ]"#;
 
+    // The repo's per-set card files carry no `set` object — the set is the
+    // filename. The fixture mirrors that, so this test would catch a card
+    // struct that wrongly requires `set`.
     const CARDS_FIXTURE: &str = r#"[
       {"id":"sv3pt5-1","name":"Bulbasaur","supertype":"Pokémon",
        "subtypes":["Basic"],"hp":"70","types":["Grass"],"number":"1",
        "rarity":"Common","artist":"Narumi Sato","regulationMark":"F",
        "nationalPokedexNumbers":[1],
-       "images":{"small":"https://x/1.png","large":"https://x/1_hires.png"},
-       "set":{"id":"sv3pt5","name":"151","series":"Scarlet & Violet"}},
+       "images":{"small":"https://x/1.png","large":"https://x/1_hires.png"}},
       {"id":"sv3pt5-199","name":"Charizard ex","supertype":"Pokémon",
        "subtypes":["Basic","ex"],"hp":"330","types":["Fire"],"number":"199",
        "rarity":"Special Illustration Rare","artist":"PLANETA Mochizuki",
-       "images":{"small":"https://x/199.png","large":"https://x/199_hires.png"},
-       "set":{"id":"sv3pt5","name":"151","series":"Scarlet & Violet"}}
+       "images":{"small":"https://x/199.png","large":"https://x/199_hires.png"}}
     ]"#;
 
     fn build_repo() -> tempfile::TempDir {

@@ -135,8 +135,7 @@ pub fn expand_variants(
     price_keys: &[String],
     overrides: &[VariantOverride],
 ) -> Vec<String> {
-    let mut variants: BTreeSet<String> =
-        variants_from_price_keys(price_keys).into_iter().collect();
+    let mut variants: BTreeSet<String> = variants_from_price_keys(price_keys).into_iter().collect();
     if variants.is_empty() {
         variants.extend(bootstrap_from_rarity(rarity));
     }
@@ -171,8 +170,14 @@ mod tests {
 
     #[test]
     fn layer2_bootstrap_by_rarity() {
-        assert_eq!(bootstrap_from_rarity(Some("Common")), s(&["normal", "reverse_holo"]));
-        assert_eq!(bootstrap_from_rarity(Some("Special Illustration Rare")), s(&["holo"]));
+        assert_eq!(
+            bootstrap_from_rarity(Some("Common")),
+            s(&["normal", "reverse_holo"])
+        );
+        assert_eq!(
+            bootstrap_from_rarity(Some("Special Illustration Rare")),
+            s(&["holo"])
+        );
         assert_eq!(bootstrap_from_rarity(None), s(&["normal"]));
     }
 

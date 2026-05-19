@@ -129,8 +129,9 @@ pub fn search_products(conn: &Connection, query: &str, limit: i64) -> Result<Vec
 
 /// List the user's sealed collection, newest first.
 pub fn list(conn: &Connection) -> Result<Vec<SealedEntry>> {
-    let mut stmt =
-        conn.prepare(&format!("SELECT {ENTRY_COLS} {ENTRY_FROM} ORDER BY sc.id DESC"))?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ENTRY_COLS} {ENTRY_FROM} ORDER BY sc.id DESC"
+    ))?;
     let rows = stmt.query_map([], entry_from_row)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -138,7 +139,9 @@ pub fn list(conn: &Connection) -> Result<Vec<SealedEntry>> {
 /// Fetch one sealed entry.
 pub fn get(conn: &Connection, id: i64) -> Result<Option<SealedEntry>> {
     Ok(conn
-        .prepare(&format!("SELECT {ENTRY_COLS} {ENTRY_FROM} WHERE sc.id = ?1"))?
+        .prepare(&format!(
+            "SELECT {ENTRY_COLS} {ENTRY_FROM} WHERE sc.id = ?1"
+        ))?
         .query_row([id], entry_from_row)
         .optional()?)
 }
@@ -254,15 +257,17 @@ mod tests {
         assert_eq!(entry.status, "owned");
 
         // Dispose by setting status + a sale price.
-        assert!(update(
-            &conn,
-            id,
-            &SealedEdit {
-                status: Some("opened".into()),
-                ..Default::default()
-            }
-        )
-        .unwrap());
+        assert!(
+            update(
+                &conn,
+                id,
+                &SealedEdit {
+                    status: Some("opened".into()),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        );
         assert_eq!(get(&conn, id).unwrap().unwrap().status, "opened");
 
         assert_eq!(list(&conn).unwrap().len(), 1);

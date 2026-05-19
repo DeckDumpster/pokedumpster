@@ -108,7 +108,9 @@ pub fn get_binder_page(
     include_promos: bool,
 ) -> Result<Option<BinderPage>> {
     let set: Option<BinderSetInfo> = conn
-        .prepare("SELECT set_code, name, series, total, printed_total FROM sets WHERE set_code = ?1")?
+        .prepare(
+            "SELECT set_code, name, series, total, printed_total FROM sets WHERE set_code = ?1",
+        )?
         .query_row([set_code], |r| {
             Ok(BinderSetInfo {
                 set_code: r.get(0)?,
@@ -342,8 +344,10 @@ mod tests {
     #[test]
     fn unknown_set_is_none() {
         let (_d, conn) = binder_conn();
-        assert!(get_binder_page(&conn, "nope", 1, 9, true, true, true)
-            .unwrap()
-            .is_none());
+        assert!(
+            get_binder_page(&conn, "nope", 1, 9, true, true, true)
+                .unwrap()
+                .is_none()
+        );
     }
 }

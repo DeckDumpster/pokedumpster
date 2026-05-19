@@ -72,7 +72,10 @@ async fn update(
     Ok(Json(binder))
 }
 
-async fn remove(State(state): State<AppState>, Path(id): Path<i64>) -> Result<StatusCode, AppError> {
+async fn remove(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, AppError> {
     blocking(&state, move |c| {
         if binders::delete(c, id)? {
             Ok(())

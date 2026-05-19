@@ -47,14 +47,24 @@ pub fn parse(input: &str) -> Result<Vec<ParsedRow>> {
 
         let number = get(Some(col_number)).to_string();
         if number.is_empty() {
-            return Err(ImportError::BadRow { line, message: "empty Card Number".into() });
+            return Err(ImportError::BadRow {
+                line,
+                message: "empty Card Number".into(),
+            });
         }
 
         let set_code = get(col_set_code);
         let set_name = get(col_set_name);
-        let set_hint = if set_code.is_empty() { set_name } else { set_code };
+        let set_hint = if set_code.is_empty() {
+            set_name
+        } else {
+            set_code
+        };
         if set_hint.is_empty() {
-            return Err(ImportError::BadRow { line, message: "empty Set".into() });
+            return Err(ImportError::BadRow {
+                line,
+                message: "empty Set".into(),
+            });
         }
 
         let quantity: u32 = {

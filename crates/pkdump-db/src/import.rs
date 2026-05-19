@@ -111,18 +111,30 @@ fn resolve_set(conn: &Connection, hint: &str, name: Option<&str>) -> Result<Opti
             .query_row([value], |r| r.get(0))
             .optional()?)
     };
-    if let Some(c) = by("SELECT set_code FROM sets WHERE set_code = ?1 COLLATE NOCASE", hint)? {
+    if let Some(c) = by(
+        "SELECT set_code FROM sets WHERE set_code = ?1 COLLATE NOCASE",
+        hint,
+    )? {
         return Ok(Some(c));
     }
-    if let Some(c) = by("SELECT set_code FROM sets WHERE ptcgo_code = ?1 COLLATE NOCASE", hint)? {
+    if let Some(c) = by(
+        "SELECT set_code FROM sets WHERE ptcgo_code = ?1 COLLATE NOCASE",
+        hint,
+    )? {
         return Ok(Some(c));
     }
     if let Some(n) = name
-        && let Some(c) = by("SELECT set_code FROM sets WHERE name = ?1 COLLATE NOCASE", n)?
+        && let Some(c) = by(
+            "SELECT set_code FROM sets WHERE name = ?1 COLLATE NOCASE",
+            n,
+        )?
     {
         return Ok(Some(c));
     }
-    by("SELECT set_code FROM sets WHERE name = ?1 COLLATE NOCASE", hint)
+    by(
+        "SELECT set_code FROM sets WHERE name = ?1 COLLATE NOCASE",
+        hint,
+    )
 }
 
 /// Resolve parsed rows against the catalog, partitioning them into matched
@@ -323,8 +335,18 @@ NOPE,Mystery,1,normal,1,near_mint,en,";
 
         // The 'foil' copy (no holo printing) and the unknown set both miss.
         assert_eq!(report.unmatched.len(), 2);
-        assert!(report.unmatched.iter().any(|u| u.reason.contains("variant 'holo'")));
-        assert!(report.unmatched.iter().any(|u| u.reason.contains("unknown set 'NOPE'")));
+        assert!(
+            report
+                .unmatched
+                .iter()
+                .any(|u| u.reason.contains("variant 'holo'"))
+        );
+        assert!(
+            report
+                .unmatched
+                .iter()
+                .any(|u| u.reason.contains("unknown set 'NOPE'"))
+        );
     }
 
     #[test]

@@ -22,7 +22,9 @@ async fn create(
     State(state): State<AppState>,
     Json(new): Json<NewBatch>,
 ) -> Result<Json<i64>, AppError> {
-    Ok(Json(blocking(&state, move |c| batches::create(c, &new)).await?))
+    Ok(Json(
+        blocking(&state, move |c| batches::create(c, &new)).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -35,7 +37,9 @@ async fn list(
     Query(p): Query<ListParams>,
 ) -> Result<Json<Vec<Batch>>, AppError> {
     let limit = p.limit.unwrap_or(0).max(0);
-    Ok(Json(blocking(&state, move |c| batches::list(c, limit)).await?))
+    Ok(Json(
+        blocking(&state, move |c| batches::list(c, limit)).await?,
+    ))
 }
 
 async fn detail(

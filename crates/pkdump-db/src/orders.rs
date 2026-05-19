@@ -147,7 +147,13 @@ pub fn create(conn: &mut Connection, order: &NewOrder, lines: &[OrderLine]) -> R
                     acquired_at, source, status, order_id, batch_id) \
                  VALUES (?1, 'Near Mint', 'English', ?2, ?3, 'order_import', \
                          'ordered', ?4, ?5)",
-                params![line.printing_id, line.purchase_price, now, order_id, batch_id],
+                params![
+                    line.printing_id,
+                    line.purchase_price,
+                    now,
+                    order_id,
+                    batch_id
+                ],
             )?;
             let copy_id = tx.last_insert_rowid();
             tx.execute(
@@ -163,7 +169,9 @@ pub fn create(conn: &mut Connection, order: &NewOrder, lines: &[OrderLine]) -> R
 
 /// List orders, newest first.
 pub fn list(conn: &Connection) -> Result<Vec<Order>> {
-    let mut stmt = conn.prepare(&format!("SELECT {ORDER_COLS} FROM orders o ORDER BY o.id DESC"))?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ORDER_COLS} FROM orders o ORDER BY o.id DESC"
+    ))?;
     let rows = stmt.query_map([], from_row)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -171,7 +179,9 @@ pub fn list(conn: &Connection) -> Result<Vec<Order>> {
 /// Fetch an order with the copies it brought in.
 pub fn get_detail(conn: &Connection, id: i64) -> Result<Option<OrderDetail>> {
     let order: Option<Order> = conn
-        .prepare(&format!("SELECT {ORDER_COLS} FROM orders o WHERE o.id = ?1"))?
+        .prepare(&format!(
+            "SELECT {ORDER_COLS} FROM orders o WHERE o.id = ?1"
+        ))?
         .query_row([id], from_row)
         .optional()?;
     let Some(order) = order else {

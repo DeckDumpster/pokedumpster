@@ -150,7 +150,8 @@ async fn move_copy(
 ) -> Result<Json<CollectionRow>, AppError> {
     let row = blocking(&state, move |c| {
         collection::move_to(c, id, body.binder_id, body.deck_id, body.note.as_deref())?;
-        collection::get_row(c, id)?.ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
+        collection::get_row(c, id)?
+            .ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
     })
     .await?;
     Ok(Json(row))
@@ -164,7 +165,8 @@ async fn set_status(
 ) -> Result<Json<CollectionRow>, AppError> {
     let row = blocking(&state, move |c| {
         collection::set_status(c, id, &body.status, body.note.as_deref())?;
-        collection::get_row(c, id)?.ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
+        collection::get_row(c, id)?
+            .ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
     })
     .await?;
     Ok(Json(row))
@@ -178,7 +180,8 @@ async fn change_printing(
 ) -> Result<Json<CollectionRow>, AppError> {
     let row = blocking(&state, move |c| {
         collection::change_printing(c, id, &body.printing_id)?;
-        collection::get_row(c, id)?.ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
+        collection::get_row(c, id)?
+            .ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))
     })
     .await?;
     Ok(Json(row))

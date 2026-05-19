@@ -24,8 +24,8 @@ pub fn parse(input: &str) -> Result<Vec<ParsedRow>> {
         .collect();
     let idx = |name: &str| headers.get(name).copied();
 
-    let col_number =
-        idx("collector number").ok_or_else(|| ImportError::MissingColumn("Collector number".into()))?;
+    let col_number = idx("collector number")
+        .ok_or_else(|| ImportError::MissingColumn("Collector number".into()))?;
     let col_set_code = idx("set code");
     let col_set_name = idx("set name");
     if col_set_code.is_none() && col_set_name.is_none() {
@@ -47,12 +47,19 @@ pub fn parse(input: &str) -> Result<Vec<ParsedRow>> {
 
         let number = get(Some(col_number)).to_string();
         if number.is_empty() {
-            return Err(ImportError::BadRow { line, message: "empty Collector number".into() });
+            return Err(ImportError::BadRow {
+                line,
+                message: "empty Collector number".into(),
+            });
         }
 
         let set_code = get(col_set_code);
         let set_name = get(col_set_name);
-        let set_hint = if set_code.is_empty() { set_name } else { set_code };
+        let set_hint = if set_code.is_empty() {
+            set_name
+        } else {
+            set_code
+        };
         if set_hint.is_empty() {
             return Err(ImportError::BadRow {
                 line,

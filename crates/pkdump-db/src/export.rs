@@ -54,7 +54,9 @@ pub fn manabox_csv(conn: &Connection) -> Result<String> {
         let tags: Option<String> = r.get(8)?;
 
         let tags = tags.unwrap_or_default();
-        let price = purchase_price.map(|p| format!("{p:.2}")).unwrap_or_default();
+        let price = purchase_price
+            .map(|p| format!("{p:.2}"))
+            .unwrap_or_default();
         let currency = if purchase_price.is_some() { "USD" } else { "" };
 
         writer

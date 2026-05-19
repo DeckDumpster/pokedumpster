@@ -180,15 +180,17 @@ mod tests {
         assert_eq!(d.state, "idea"); // default lifecycle state
         assert_eq!(d.card_count, 0);
 
-        assert!(update(
-            &conn,
-            id,
-            &DeckEdit {
-                state: Some("built".into()),
-                ..Default::default()
-            }
-        )
-        .unwrap());
+        assert!(
+            update(
+                &conn,
+                id,
+                &DeckEdit {
+                    state: Some("built".into()),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        );
         assert_eq!(get(&conn, id).unwrap().unwrap().state, "built");
 
         assert!(delete(&conn, id).unwrap());
@@ -206,6 +208,9 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(err.is_err(), "the state CHECK constraint should reject this");
+        assert!(
+            err.is_err(),
+            "the state CHECK constraint should reject this"
+        );
     }
 }

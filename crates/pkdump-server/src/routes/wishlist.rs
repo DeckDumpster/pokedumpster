@@ -29,7 +29,9 @@ async fn list(
     Query(p): Query<ListParams>,
 ) -> Result<Json<Vec<WishlistEntry>>, AppError> {
     let include = p.include_fulfilled.unwrap_or(false);
-    Ok(Json(blocking(&state, move |c| wishlist::list(c, include)).await?))
+    Ok(Json(
+        blocking(&state, move |c| wishlist::list(c, include)).await?,
+    ))
 }
 
 async fn create(
@@ -59,11 +61,17 @@ async fn fulfill(
     Path(id): Path<i64>,
     Json(body): Json<FulfillBody>,
 ) -> Result<StatusCode, AppError> {
-    let ok = blocking(&state, move |c| wishlist::set_fulfilled(c, id, body.fulfilled)).await?;
+    let ok = blocking(&state, move |c| {
+        wishlist::set_fulfilled(c, id, body.fulfilled)
+    })
+    .await?;
     not_found_unless(ok, id)
 }
 
-async fn remove(State(state): State<AppState>, Path(id): Path<i64>) -> Result<StatusCode, AppError> {
+async fn remove(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, AppError> {
     let ok = blocking(&state, move |c| wishlist::delete(c, id)).await?;
     not_found_unless(ok, id)
 }
@@ -72,6 +80,8 @@ fn not_found_unless(ok: bool, id: i64) -> Result<StatusCode, AppError> {
     if ok {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(AppError::from(DbError::NotFound(format!("wishlist entry {id}"))))
+        Err(AppError::from(DbError::NotFound(format!(
+            "wishlist entry {id}"
+        ))))
     }
 }

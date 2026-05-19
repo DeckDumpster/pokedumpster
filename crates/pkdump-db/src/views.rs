@@ -64,14 +64,18 @@ pub fn create(conn: &Connection, new: &NewView) -> Result<i64> {
 /// Fetch one view.
 pub fn get(conn: &Connection, id: i64) -> Result<Option<CollectionView>> {
     Ok(conn
-        .prepare(&format!("SELECT {COLS} FROM collection_views WHERE id = ?1"))?
+        .prepare(&format!(
+            "SELECT {COLS} FROM collection_views WHERE id = ?1"
+        ))?
         .query_row([id], from_row)
         .optional()?)
 }
 
 /// List views, alphabetically.
 pub fn list(conn: &Connection) -> Result<Vec<CollectionView>> {
-    let mut stmt = conn.prepare(&format!("SELECT {COLS} FROM collection_views ORDER BY name"))?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} FROM collection_views ORDER BY name"
+    ))?;
     let rows = stmt.query_map([], from_row)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -131,15 +135,17 @@ mod tests {
         assert_eq!(v.name, "Holos only");
         assert_eq!(v.filters_json, r#"{"variant":["holo"]}"#);
 
-        assert!(update(
-            &conn,
-            id,
-            &ViewEdit {
-                filters_json: Some(r#"{"variant":["holo","reverse_holo"]}"#.into()),
-                ..Default::default()
-            },
-        )
-        .unwrap());
+        assert!(
+            update(
+                &conn,
+                id,
+                &ViewEdit {
+                    filters_json: Some(r#"{"variant":["holo","reverse_holo"]}"#.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        );
         assert_eq!(
             get(&conn, id).unwrap().unwrap().filters_json,
             r#"{"variant":["holo","reverse_holo"]}"#

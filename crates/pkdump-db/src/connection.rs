@@ -176,6 +176,9 @@ mod tests {
              VALUES ('sv3pt5-1-reverse_holo', '2026-05-18', 'manual_id', 1, 1)",
             [],
         );
-        assert!(both.is_err(), "a card cannot be in a binder and a deck at once");
+        assert!(
+            both.is_err(),
+            "a card cannot be in a binder and a deck at once"
+        );
     }
 }

@@ -38,7 +38,10 @@ async fn update(
     not_found_unless(ok, id)
 }
 
-async fn remove(State(state): State<AppState>, Path(id): Path<i64>) -> Result<StatusCode, AppError> {
+async fn remove(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, AppError> {
     let ok = blocking(&state, move |c| views::delete(c, id)).await?;
     not_found_unless(ok, id)
 }
@@ -47,6 +50,8 @@ fn not_found_unless(ok: bool, id: i64) -> Result<StatusCode, AppError> {
     if ok {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(AppError::from(DbError::NotFound(format!("collection view {id}"))))
+        Err(AppError::from(DbError::NotFound(format!(
+            "collection view {id}"
+        ))))
     }
 }

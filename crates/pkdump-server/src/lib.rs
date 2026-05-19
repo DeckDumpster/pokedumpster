@@ -83,13 +83,12 @@ where
 /// every other path returns the SPA's `index.html` so SvelteKit handles
 /// client-side routing.
 fn app(state: AppState, static_dir: PathBuf) -> Router {
-    let index_html = std::fs::read_to_string(static_dir.join("index.html"))
-        .unwrap_or_else(|_| {
-            "<!doctype html><title>PokeDumpster</title><body>\
+    let index_html = std::fs::read_to_string(static_dir.join("index.html")).unwrap_or_else(|_| {
+        "<!doctype html><title>PokeDumpster</title><body>\
              Frontend not built — run <code>npm run build</code> in frontend/.\
              </body>"
-                .to_string()
-        });
+            .to_string()
+    });
     let spa = move || {
         let html = index_html.clone();
         async move { axum::response::Html(html) }
@@ -181,7 +180,12 @@ mod tests {
     async fn health_responds() {
         let (_d, router) = test_app();
         let resp = router
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -236,7 +240,12 @@ mod tests {
 
         let listed = router
             .clone()
-            .oneshot(Request::builder().uri("/api/collection").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/collection")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(listed.status(), StatusCode::OK);

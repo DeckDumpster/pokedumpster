@@ -17,7 +17,11 @@ pub fn routes() -> Router<AppState> {
         .route("/cards/by-set-cn", get(by_set_cn))
 }
 
-async fn lookup(state: &AppState, set: String, number: String) -> Result<Json<CardDetail>, AppError> {
+async fn lookup(
+    state: &AppState,
+    set: String,
+    number: String,
+) -> Result<Json<CardDetail>, AppError> {
     let detail = blocking(state, move |c| {
         cards::get_card_detail(c, &set, &number)?
             .ok_or_else(|| DbError::NotFound(format!("card {set}/{number}")))

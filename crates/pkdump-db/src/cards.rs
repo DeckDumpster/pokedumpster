@@ -262,7 +262,11 @@ mod tests {
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
         let detail = get_card_detail(&conn, "sv3pt5", "6").unwrap().unwrap();
 
-        let normal = detail.printings.iter().find(|p| p.variant == "normal").unwrap();
+        let normal = detail
+            .printings
+            .iter()
+            .find(|p| p.variant == "normal")
+            .unwrap();
         let rh = detail
             .printings
             .iter()

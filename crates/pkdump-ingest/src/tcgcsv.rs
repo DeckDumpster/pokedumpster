@@ -220,7 +220,11 @@ pub fn link_card_printings(conn: &mut Connection, products: &[TcgProduct]) -> Re
 /// Snapshot prices. Card-product prices land in the narrow `prices` time
 /// series (one row per non-null price type); sealed-product prices land in
 /// `sealed_prices`. Idempotent for a given `observed_at` via INSERT OR IGNORE.
-pub fn import_prices(conn: &mut Connection, prices: &[TcgPrice], observed_at: &str) -> Result<usize> {
+pub fn import_prices(
+    conn: &mut Connection,
+    prices: &[TcgPrice],
+    observed_at: &str,
+) -> Result<usize> {
     let sealed: HashSet<i64> = {
         let mut stmt = conn.prepare("SELECT product_id FROM sealed_products")?;
         let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
@@ -361,7 +365,10 @@ mod tests {
         };
         assert!(is_single_card(&card));
         assert!(!is_single_card(&sealed));
-        assert_eq!(classify_sealed("151 Elite Trainer Box"), "elite_trainer_box");
+        assert_eq!(
+            classify_sealed("151 Elite Trainer Box"),
+            "elite_trainer_box"
+        );
         assert_eq!(classify_sealed("Surging Sparks Booster Box"), "booster_box");
         assert_eq!(classify_sealed("Mystery Item"), "other");
     }

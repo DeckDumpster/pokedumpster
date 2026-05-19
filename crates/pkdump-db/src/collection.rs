@@ -254,9 +254,7 @@ pub fn list_rows(conn: &Connection, limit: i64, offset: i64) -> Result<Vec<Colle
 /// Fetch a single collection entry as a display row.
 pub fn get_row(conn: &Connection, id: i64) -> Result<Option<CollectionRow>> {
     let mut stmt = conn.prepare(&format!("SELECT {ROW_COLUMNS} {ROW_FROM} WHERE c.id = ?1"))?;
-    Ok(stmt
-        .query_row([id], collection_row_from_row)
-        .optional()?)
+    Ok(stmt.query_row([id], collection_row_from_row).optional()?)
 }
 
 /// List the display rows assigned to a binder.
@@ -417,9 +415,11 @@ pub fn delete(conn: &Connection, id: i64) -> Result<bool> {
 /// between a card's variants, not to a different card).
 pub fn change_printing(conn: &Connection, id: i64, new_printing_id: &str) -> Result<()> {
     let current: String = conn
-        .query_row("SELECT printing_id FROM collection WHERE id = ?1", [id], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT printing_id FROM collection WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
         .optional()?
         .ok_or_else(|| DbError::NotFound(format!("collection entry {id}")))?;
 
@@ -433,7 +433,9 @@ pub fn change_printing(conn: &Connection, id: i64, new_printing_id: &str) -> Res
             .optional()?)
     };
     let new_card = card_of(new_printing_id)?.ok_or_else(|| {
-        DbError::NotFound(format!("printing '{new_printing_id}' is not in the catalog"))
+        DbError::NotFound(format!(
+            "printing '{new_printing_id}' is not in the catalog"
+        ))
     })?;
     if card_of(&current)?.as_deref() != Some(new_card.as_str()) {
         return Err(DbError::Conflict(

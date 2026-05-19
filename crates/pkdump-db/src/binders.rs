@@ -167,15 +167,17 @@ mod tests {
         assert_eq!(b.pocket_size, 12);
         assert_eq!(b.card_count, 0);
 
-        assert!(update(
-            &conn,
-            id,
-            &BinderEdit {
-                name: Some("Showcase".into()),
-                ..Default::default()
-            }
-        )
-        .unwrap());
+        assert!(
+            update(
+                &conn,
+                id,
+                &BinderEdit {
+                    name: Some("Showcase".into()),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+        );
         assert_eq!(get(&conn, id).unwrap().unwrap().name, "Showcase");
 
         assert_eq!(list(&conn).unwrap().len(), 1);

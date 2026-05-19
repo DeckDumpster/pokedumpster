@@ -175,6 +175,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(normal.is_none(), "a still-live printing stays un-deprecated");
+        assert!(
+            normal.is_none(),
+            "a still-live printing stays un-deprecated"
+        );
     }
 }

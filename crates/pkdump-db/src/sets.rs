@@ -106,10 +106,11 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
         return Ok(None);
     };
 
-    let total_cards: i64 =
-        conn.query_row("SELECT count(*) FROM cards WHERE set_code = ?1", [set_code], |r| {
-            r.get(0)
-        })?;
+    let total_cards: i64 = conn.query_row(
+        "SELECT count(*) FROM cards WHERE set_code = ?1",
+        [set_code],
+        |r| r.get(0),
+    )?;
     let owned_cards: i64 = conn.query_row(
         "SELECT count(DISTINCT cd.card_id) FROM collection c \
            JOIN printings p ON c.printing_id = p.printing_id \

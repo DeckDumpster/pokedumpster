@@ -75,6 +75,40 @@ pub struct BinderPage {
     pub slots: Vec<BinderSlot>,
 }
 
+/// How to sort, filter, and paginate a binder page.
+#[derive(Debug, Clone)]
+pub struct BinderQuery {
+    pub page: i64,
+    pub layout: i64,
+    pub include_secret: bool,
+    pub include_subset: bool,
+    pub include_promos: bool,
+    /// `number` (asc) | `number_desc` | `price` (high→low) |
+    /// `name` (A→Z) | `rarity` (rare→common). Unknown values fall back
+    /// to `number`.
+    pub sort: String,
+    /// Case-insensitive card-name substring. Empty means no search.
+    pub search: String,
+    /// `all` | `have` (own ≥1 printing) | `need` (own none) |
+    /// `dupes` (own ≥2 of some printing).
+    pub filter: String,
+}
+
+impl Default for BinderQuery {
+    fn default() -> Self {
+        Self {
+            page: 1,
+            layout: 9,
+            include_secret: true,
+            include_subset: true,
+            include_promos: true,
+            sort: "number".to_string(),
+            search: String::new(),
+            filter: "all".to_string(),
+        }
+    }
+}
+
 /// A catalog card row read while assembling a binder.
 struct CardRow {
     card_id: String,
@@ -97,15 +131,43 @@ fn section_of(number_sortable: i64, printed_total: i64) -> &'static str {
     }
 }
 
+/// Rank a Pokémon rarity low (common) → high (chase). Unrecognised
+/// rarities sort just above the staple rares so they stay visible.
+fn rarity_rank(rarity: &Option<String>) -> i64 {
+    let Some(r) = rarity else { return 0 };
+    match r.to_ascii_lowercase().as_str() {
+        "common" => 1,
+        "uncommon" => 2,
+        "rare" => 3,
+        "promo" | "classic collection" => 4,
+        "rare holo" => 5,
+        "radiant rare" => 6,
+        "rare holo ex" | "rare holo gx" | "rare holo v" | "double rare" => 7,
+        "rare holo vmax" | "rare holo vstar" | "ultra rare" => 8,
+        "amazing rare" | "rare shiny" | "rare shiny gx" => 9,
+        "illustration rare" => 10,
+        "trainer gallery rare holo" => 11,
+        "rare secret" | "rare rainbow" => 12,
+        "special illustration rare" => 13,
+        "hyper rare" | "rare holo star" => 14,
+        _ => 6,
+    }
+}
+
+/// A slot's price for sorting — the dearest market price across its
+/// printings; slots with no priced printing sort as 0.
+fn slot_price(slot: &BinderSlot) -> f64 {
+    slot.printings
+        .iter()
+        .filter_map(|p| p.market_price)
+        .fold(0.0_f64, f64::max)
+}
+
 /// Assemble a binder page for `set_code`. `None` if the set is unknown.
 pub fn get_binder_page(
     conn: &Connection,
     set_code: &str,
-    page: i64,
-    layout: i64,
-    include_secret: bool,
-    include_subset: bool,
-    include_promos: bool,
+    q: &BinderQuery,
 ) -> Result<Option<BinderPage>> {
     let set: Option<BinderSetInfo> = conn
         .prepare(
@@ -179,14 +241,14 @@ pub fn get_binder_page(
     }
 
     // Build every visible slot (all sections the include flags allow).
-    let visible: Vec<BinderSlot> = cards
+    let mut visible: Vec<BinderSlot> = cards
         .into_iter()
         .filter_map(|card| {
             let section = section_of(card.number_sortable, printed_total);
             let keep = match section {
-                "secret" => include_secret,
-                "subset" => include_subset,
-                "promo" => include_promos,
+                "secret" => q.include_secret,
+                "subset" => q.include_subset,
+                "promo" => q.include_promos,
                 _ => true, // base
             };
             if !keep {
@@ -218,11 +280,41 @@ pub fn get_binder_page(
         .filter(|p| p.owned_count > 0)
         .count() as i64;
 
-    // Paginate.
-    let layout = layout.clamp(1, 60);
+    // Sort. Progress above is computed pre-sort/filter, so the bars always
+    // reflect the whole section-included set rather than the current view.
+    // `visible` arrives in collector-number order from the catalog query.
+    match q.sort.as_str() {
+        "number_desc" => visible.reverse(),
+        "name" => visible.sort_by(|a, b| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        }),
+        "price" => visible.sort_by(|a, b| slot_price(b).total_cmp(&slot_price(a))),
+        "rarity" => visible.sort_by(|a, b| rarity_rank(&b.rarity).cmp(&rarity_rank(&a.rarity))),
+        _ => {} // "number" — already collector-number ascending.
+    }
+
+    // Filter: in-set name search, then the ownership tab.
+    let search = q.search.trim().to_ascii_lowercase();
+    let owns_one = |s: &BinderSlot| s.printings.iter().any(|p| p.owned_count > 0);
+    visible.retain(|s| {
+        if !search.is_empty() && !s.name.to_ascii_lowercase().contains(&search) {
+            return false;
+        }
+        match q.filter.as_str() {
+            "have" => owns_one(s),
+            "need" => !owns_one(s),
+            "dupes" => s.printings.iter().any(|p| p.owned_count >= 2),
+            _ => true, // "all"
+        }
+    });
+
+    // Paginate the sorted, filtered view.
+    let layout = q.layout.clamp(1, 60);
     let visible_count = visible.len() as i64;
     let total_pages = ((visible_count + layout - 1) / layout).max(1);
-    let page = page.clamp(1, total_pages);
+    let page = q.page.clamp(1, total_pages);
     let start = ((page - 1) * layout) as usize;
     let slots: Vec<BinderSlot> = visible
         .into_iter()
@@ -299,7 +391,7 @@ mod tests {
         .unwrap();
 
         // All sections on.
-        let p = get_binder_page(&conn, "sv3pt5", 1, 9, true, true, true)
+        let p = get_binder_page(&conn, "sv3pt5", &BinderQuery::default())
             .unwrap()
             .unwrap();
         assert_eq!(p.slots.len(), 4);
@@ -311,9 +403,18 @@ mod tests {
         assert_eq!(p.slots[3].section, "subset");
 
         // Secret + subset off -> only the 2 base cards.
-        let base_only = get_binder_page(&conn, "sv3pt5", 1, 9, false, false, false)
-            .unwrap()
-            .unwrap();
+        let base_only = get_binder_page(
+            &conn,
+            "sv3pt5",
+            &BinderQuery {
+                include_secret: false,
+                include_subset: false,
+                include_promos: false,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(base_only.slots.len(), 2);
         assert!(base_only.slots.iter().all(|s| s.section == "base"));
     }
@@ -321,31 +422,96 @@ mod tests {
     #[test]
     fn paginates() {
         let (_d, conn) = binder_conn();
-        let p1 = get_binder_page(&conn, "sv3pt5", 1, 2, true, true, true)
-            .unwrap()
-            .unwrap();
+        let q = |page: i64| BinderQuery {
+            page,
+            layout: 2,
+            ..Default::default()
+        };
+        let p1 = get_binder_page(&conn, "sv3pt5", &q(1)).unwrap().unwrap();
         assert_eq!(p1.total_pages, 2);
         assert_eq!(p1.slots.len(), 2);
         assert_eq!(p1.slots[0].number, "1");
 
-        let p2 = get_binder_page(&conn, "sv3pt5", 2, 2, true, true, true)
-            .unwrap()
-            .unwrap();
+        let p2 = get_binder_page(&conn, "sv3pt5", &q(2)).unwrap().unwrap();
         assert_eq!(p2.slots.len(), 2);
         assert_eq!(p2.slots[0].number, "3");
 
         // Out-of-range page clamps.
-        let clamped = get_binder_page(&conn, "sv3pt5", 99, 2, true, true, true)
+        let clamped = get_binder_page(&conn, "sv3pt5", &q(99)).unwrap().unwrap();
+        assert_eq!(clamped.page, 2);
+    }
+
+    #[test]
+    fn sorts_searches_and_filters() {
+        let (_d, mut conn) = binder_conn();
+        // Own card #1 twice (a duplicate) and #2 once.
+        for pid in ["sv3pt5-1-normal", "sv3pt5-1-normal", "sv3pt5-2-normal"] {
+            collection::add(
+                &mut conn,
+                &NewCopy {
+                    printing_id: pid.into(),
+                    source: "manual_id".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let q = |sort: &str, filter: &str, search: &str| BinderQuery {
+            sort: sort.into(),
+            filter: filter.into(),
+            search: search.into(),
+            ..Default::default()
+        };
+
+        // number_desc reverses collector order: promo/subset last → first.
+        let desc = get_binder_page(&conn, "sv3pt5", &q("number_desc", "all", ""))
             .unwrap()
             .unwrap();
-        assert_eq!(clamped.page, 2);
+        assert_eq!(desc.slots[0].number, "GG01");
+        assert_eq!(desc.slots[3].number, "1");
+
+        // "need" → cards with no owned printing (#3 and GG01).
+        let need = get_binder_page(&conn, "sv3pt5", &q("number", "need", ""))
+            .unwrap()
+            .unwrap();
+        assert_eq!(need.slots.len(), 2);
+        assert!(
+            need.slots
+                .iter()
+                .all(|s| s.number == "3" || s.number == "GG01")
+        );
+
+        // "have" → #1 and #2; progress still reflects the whole set.
+        let have = get_binder_page(&conn, "sv3pt5", &q("number", "have", ""))
+            .unwrap()
+            .unwrap();
+        assert_eq!(have.slots.len(), 2);
+        assert_eq!(have.base_total, 2, "progress is pre-filter");
+
+        // "dupes" → only #1 (owned twice).
+        let dupes = get_binder_page(&conn, "sv3pt5", &q("number", "dupes", ""))
+            .unwrap()
+            .unwrap();
+        assert_eq!(dupes.slots.len(), 1);
+        assert_eq!(dupes.slots[0].number, "1");
+
+        // Search narrows by card name (every fixture card is named "Card").
+        let hit = get_binder_page(&conn, "sv3pt5", &q("number", "all", "car"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(hit.slots.len(), 4);
+        let miss = get_binder_page(&conn, "sv3pt5", &q("number", "all", "zzz"))
+            .unwrap()
+            .unwrap();
+        assert!(miss.slots.is_empty());
     }
 
     #[test]
     fn unknown_set_is_none() {
         let (_d, conn) = binder_conn();
         assert!(
-            get_binder_page(&conn, "nope", 1, 9, true, true, true)
+            get_binder_page(&conn, "nope", &BinderQuery::default())
                 .unwrap()
                 .is_none()
         );

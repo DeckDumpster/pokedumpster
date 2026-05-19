@@ -16,6 +16,21 @@
 	let includeSubset = $state(true);
 	let includePromos = $state(false);
 
+	// Sort, in-set search, and the ownership tab — all server-side, since
+	// the binder is paginated (a client-side sort would only touch one page).
+	let sort = $state('number');
+	let searchRaw = $state('');
+	let search = $state('');
+	let searchDebounce: ReturnType<typeof setTimeout>;
+	let tab = $state('all');
+
+	const tabs = [
+		{ key: 'all', label: 'All' },
+		{ key: 'have', label: 'Have' },
+		{ key: 'need', label: 'Need' },
+		{ key: 'dupes', label: 'Dupes' }
+	];
+
 	let selectedSlot = $state<BinderSlot | null>(null);
 	let toast = $state<{ message: string; copyId: number; printing: SlotPrinting } | null>(null);
 	let toastTimer: ReturnType<typeof setTimeout>;
@@ -43,7 +58,10 @@
 				layout,
 				secret: includeSecret,
 				subset: includeSubset,
-				promos: includePromos
+				promos: includePromos,
+				sort,
+				q: search,
+				filter: tab
 			});
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -59,6 +77,9 @@
 		void includeSecret;
 		void includeSubset;
 		void includePromos;
+		void sort;
+		void search;
+		void tab;
 		load();
 	});
 
@@ -134,6 +155,25 @@
 	function resetPage() {
 		pageNum = 1;
 	}
+
+	function onSearch(value: string) {
+		searchRaw = value;
+		clearTimeout(searchDebounce);
+		searchDebounce = setTimeout(() => {
+			search = value.trim();
+			pageNum = 1;
+		}, 250);
+	}
+
+	function setTab(key: string) {
+		tab = key;
+		pageNum = 1;
+	}
+
+	/** Whether the user owns at least one printing of this slot's card. */
+	function ownedAny(slot: BinderSlot): boolean {
+		return slot.printings.some((p) => p.owned_count > 0);
+	}
 </script>
 
 <svelte:head><title>{binder ? binder.set.name : 'Binder'} — PokeDumpster</title></svelte:head>
@@ -163,6 +203,23 @@
 		</div>
 	</header>
 
+	<div class="filterbar">
+		<div class="tabs">
+			{#each tabs as t (t.key)}
+				<button class="tab" class:active={tab === t.key} onclick={() => setTab(t.key)}>
+					{t.label}
+				</button>
+			{/each}
+		</div>
+		<input
+			class="search"
+			type="text"
+			placeholder="Search this set…"
+			value={searchRaw}
+			oninput={(e) => onSearch(e.currentTarget.value)}
+		/>
+	</div>
+
 	<div class="controls">
 		<label><input type="checkbox" bind:checked={includeSecret} onchange={resetPage} /> Secret</label>
 		<label><input type="checkbox" bind:checked={includeSubset} onchange={resetPage} /> Subset</label>
@@ -173,6 +230,16 @@
 				<option value={4}>4-pocket</option>
 				<option value={9}>9-pocket</option>
 				<option value={12}>12-pocket</option>
+			</select>
+		</label>
+		<label>
+			Sort
+			<select bind:value={sort} onchange={resetPage}>
+				<option value="number">Number ↑</option>
+				<option value="number_desc">Number ↓</option>
+				<option value="price">Price ↓</option>
+				<option value="name">Name A→Z</option>
+				<option value="rarity">Rarity ↓</option>
 			</select>
 		</label>
 		<span class="spacer"></span>
@@ -197,14 +264,17 @@
 				{#if slot.section !== prevSection && slot.section !== 'base'}
 					<div class="divider">{sectionLabel[slot.section]}</div>
 				{/if}
-				<button class="slot" onclick={() => (selectedSlot = slot)}>
+				<button
+					class="slot"
+					class:missing={!ownedAny(slot)}
+					onclick={() => (selectedSlot = slot)}
+				>
 					{#if slot.image_large}
 						<img src={slot.image_large} alt={slot.name} loading="lazy" />
 					{:else}
 						<div class="noart">{slot.name}</div>
 					{/if}
 					<div class="foot">
-						<span class="num">{slot.number}</span>
 						<div class="pips">
 							{#each slot.printings.filter((p) => !p.deprecated) as p (p.printing_id)}
 								<span class="pip" class:owned={p.owned_count > 0}></span>
@@ -289,6 +359,38 @@
 	.controls label {
 		color: #ccc;
 	}
+	.filterbar {
+		display: flex;
+		gap: 1rem;
+		align-items: center;
+		flex-wrap: wrap;
+		margin: 1rem 0 0.25rem;
+	}
+	.tabs {
+		display: flex;
+		gap: 0.25rem;
+	}
+	.tab {
+		color: #888;
+		padding: 0.35rem 0.9rem;
+		font-size: 0.85rem;
+	}
+	.tab.active {
+		background: #e94560;
+		border-color: #e94560;
+		color: #fff;
+	}
+	.search {
+		flex: 1;
+		min-width: 160px;
+		max-width: 320px;
+		background: #1a1a2e;
+		border: 1px solid #0f3460;
+		color: #e0e0e0;
+		border-radius: 6px;
+		padding: 0.4rem 0.6rem;
+		font: inherit;
+	}
 	.spacer {
 		flex: 1;
 	}
@@ -338,11 +440,16 @@
 		border-radius: 8px;
 		overflow: hidden;
 		color: #e0e0e0;
-		transition: border-color 0.15s;
 		text-align: left;
+		cursor: pointer;
 	}
-	.slot:hover {
-		border-color: #e94560;
+	/* Cards the user owns no printing of read as greyed-out. */
+	.slot.missing img,
+	.slot.missing .noart {
+		filter: grayscale(0.9) brightness(0.62);
+	}
+	.slot.missing {
+		opacity: 0.82;
 	}
 	.slot img {
 		width: 100%;
@@ -363,13 +470,9 @@
 	}
 	.foot {
 		display: flex;
-		justify-content: space-between;
+		justify-content: center;
 		align-items: center;
 		padding: 0.3rem 0.5rem;
-	}
-	.num {
-		font-size: 0.8rem;
-		color: #888;
 	}
 	.pips {
 		display: flex;

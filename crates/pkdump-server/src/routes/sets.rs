@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 use pkdump_db::DbError;
-use pkdump_db::binder::{self, BinderPage};
+use pkdump_db::binder::{self, BinderPage, BinderQuery};
 use pkdump_db::sets::{self, SetAnalytics, SetSummary};
 
 use crate::{AppError, AppState, blocking};
@@ -42,6 +42,12 @@ struct BinderParams {
     secret: Option<bool>,
     subset: Option<bool>,
     promos: Option<bool>,
+    /// `number` | `number_desc` | `price` | `name` | `rarity`.
+    sort: Option<String>,
+    /// In-set card-name search.
+    q: Option<String>,
+    /// `all` | `have` | `need` | `dupes`.
+    filter: Option<String>,
 }
 
 async fn binder_page(
@@ -49,17 +55,19 @@ async fn binder_page(
     Path(code): Path<String>,
     Query(p): Query<BinderParams>,
 ) -> Result<Json<BinderPage>, AppError> {
+    let query = BinderQuery {
+        page: p.page.unwrap_or(1),
+        layout: p.layout.unwrap_or(9),
+        include_secret: p.secret.unwrap_or(true),
+        include_subset: p.subset.unwrap_or(true),
+        include_promos: p.promos.unwrap_or(false),
+        sort: p.sort.unwrap_or_else(|| "number".into()),
+        search: p.q.unwrap_or_default(),
+        filter: p.filter.unwrap_or_else(|| "all".into()),
+    };
     let page = blocking(&state, move |c| {
-        binder::get_binder_page(
-            c,
-            &code,
-            p.page.unwrap_or(1),
-            p.layout.unwrap_or(9),
-            p.secret.unwrap_or(true),
-            p.subset.unwrap_or(true),
-            p.promos.unwrap_or(false),
-        )?
-        .ok_or_else(|| DbError::NotFound(format!("set {code}")))
+        binder::get_binder_page(c, &code, &query)?
+            .ok_or_else(|| DbError::NotFound(format!("set {code}")))
     })
     .await?;
     Ok(Json(page))

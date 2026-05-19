@@ -128,10 +128,10 @@
 			<tbody>
 				{#each detail.printings as p (p.printing_id)}
 					<tr class:dim={p.deprecated}>
-						<td>{variantLabel(p.variant)}</td>
-						<td>{p.owned_count}</td>
-						<td>{price(p.market_price)}</td>
-						<td>
+						<td data-label="Variant">{variantLabel(p.variant)}</td>
+						<td data-label="Owned">{p.owned_count}</td>
+						<td data-label="Market">{price(p.market_price)}</td>
+						<td data-label="">
 							<button disabled={busy || p.deprecated} onclick={() => addCopy(p.printing_id)}>
 								+ Add
 							</button>
@@ -154,7 +154,7 @@
 				<tbody>
 					{#each detail.copies as copy (copy.id)}
 						<tr>
-							<td>
+							<td data-label="Variant">
 								<select
 									value={copy.printing_id}
 									disabled={busy}
@@ -165,8 +165,8 @@
 									{/each}
 								</select>
 							</td>
-							<td>{copy.condition}</td>
-							<td>
+							<td data-label="Condition">{copy.condition}</td>
+							<td data-label="Status">
 								<select
 									value={copy.status}
 									disabled={busy}
@@ -175,7 +175,7 @@
 									{#each STATUSES as s (s)}<option value={s}>{s}</option>{/each}
 								</select>
 							</td>
-							<td>
+							<td data-label="Location">
 								<select
 									value={assignValue(copy)}
 									disabled={busy}
@@ -186,7 +186,7 @@
 									{#each decks as d (d.id)}<option value="d:{d.id}">Deck: {d.name}</option>{/each}
 								</select>
 							</td>
-							<td>{price(copy.purchase_price)}</td>
+							<td data-label="Paid">{price(copy.purchase_price)}</td>
 						</tr>
 					{/each}
 				</tbody>
@@ -297,5 +297,46 @@
 	button:disabled {
 		opacity: 0.5;
 		cursor: default;
+	}
+
+	/* On a phone the data tables reflow to stacked label:value blocks so
+	   they fit the modal instead of forcing it wider. */
+	@media (max-width: 540px) {
+		table {
+			max-width: 100%;
+		}
+		thead {
+			display: none;
+		}
+		tbody,
+		tr,
+		td {
+			display: block;
+		}
+		tr {
+			border: 1px solid #0f3460;
+			border-radius: 8px;
+			margin-bottom: 0.6rem;
+			padding: 0.1rem 0.6rem;
+		}
+		td {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			gap: 1rem;
+			padding: 0.35rem 0;
+			border-bottom: none;
+		}
+		td::before {
+			content: attr(data-label);
+			color: #888;
+			font-size: 0.72rem;
+			text-transform: uppercase;
+			flex-shrink: 0;
+		}
+		td select {
+			flex: 1;
+			min-width: 0;
+		}
 	}
 </style>

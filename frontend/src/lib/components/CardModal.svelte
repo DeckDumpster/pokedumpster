@@ -89,5 +89,8 @@
 			font-size: 2rem;
 			padding: 0.2rem 0.6rem;
 		}
+		.body {
+			padding: 1rem 0.85rem 1.25rem;
+		}
 	}
 </style>

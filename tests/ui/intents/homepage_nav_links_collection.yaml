@@ -1,0 +1,8 @@
+# Scenario: Collection-related nav links navigate to correct pages
+
+# Related: homepage_page_structure, homepage_nav_links_analysis_and_addcards
+
+description: >
+  When I click each collection-related link in the global header (Collection,
+  Binders, Decks, Sealed), the browser navigates to the correct destination
+  page.

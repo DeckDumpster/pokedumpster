@@ -1,0 +1,13 @@
+start_page: /
+involves:
+  - "header nav links: Browse (/browse), Wishlist (/wishlist), Orders (/orders), Recent (/recent), Import (/ingest/csv)"
+  - "each link navigates to a distinct page with its own content"
+fixture_data:
+  collection: "3 sets, 26 collection copies, 2 orders, 3 wishlist entries, 5 batches"
+notes: >
+  1. Navigate to /. 2. Click "Browse" link, wait for the page to load
+  (URL /browse), navigate back. 3. Click "Wishlist" link, wait for page
+  (URL /wishlist), navigate back. 4. Click "Orders" link, wait for page
+  (URL /orders), navigate back. 5. Click "Recent" link, wait for page
+  (URL /recent), navigate back. 6. Click "Import" link, wait for page
+  (URL /ingest/csv), navigate back. 7. Screenshot.

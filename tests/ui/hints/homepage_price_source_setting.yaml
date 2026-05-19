@@ -1,0 +1,14 @@
+start_page: /
+involves:
+  - "header nav link 'Home' with href '/'"
+  - "Browse nav link a (href '/browse')"
+  - "homepage h1 'PokeDumpster' and its description paragraph"
+fixture_data:
+  none: "homepage and the Home nav link carry no data"
+notes: >
+  1. Navigate to /. 2. Assert the h1 "PokeDumpster" is visible.
+  3. Click the "Browse" nav link and wait for the browse page (URL /browse).
+  4. Assert the homepage h1 is no longer the active page content.
+  5. Click the "Home" nav link in the header. 6. Wait for navigation;
+  assert the URL is / again. 7. Assert the homepage h1 "PokeDumpster" and the
+  description paragraph are visible again. 8. Screenshot.

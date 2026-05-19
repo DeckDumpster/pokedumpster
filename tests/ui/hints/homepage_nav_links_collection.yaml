@@ -1,0 +1,13 @@
+start_page: /
+involves:
+  - "header nav links: Collection (/collection), Binders (/binders), Decks (/decks), Sealed (/sealed)"
+  - "each link navigates to a distinct page with its own content"
+fixture_data:
+  collection: "3 binders, 3 decks, 26 collection copies, 2 sealed entries"
+notes: >
+  1. Navigate to /. 2. Click "Collection" link. 3. Wait for the collection
+  page to load (assert URL /collection or a unique element). 4. Navigate back
+  to /. 5. Click "Binders" link. 6. Wait for the Binders page (URL /binders).
+  7. Navigate back to /. 8. Click "Decks" link. 9. Wait for the Decks page
+  (URL /decks). 10. Navigate back to /. 11. Click "Sealed" link.
+  12. Wait for the Sealed page (URL /sealed). 13. Screenshot.

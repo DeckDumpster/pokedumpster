@@ -1,0 +1,14 @@
+start_page: /
+involves:
+  - "header brand link a.brand 'PokeDumpster' with href '/'"
+  - "Collection nav link a (href '/collection')"
+  - "homepage h1 'PokeDumpster' and its description paragraph"
+fixture_data:
+  none: "homepage and the brand link carry no data"
+notes: >
+  1. Navigate to /. 2. Assert the h1 "PokeDumpster" is visible.
+  3. Click the "Collection" nav link and wait for the collection page
+  (URL /collection). 4. Assert the homepage h1 is no longer the active page
+  content. 5. Click the "PokeDumpster" brand link in the header.
+  6. Wait for navigation; assert the URL is / again. 7. Assert the homepage
+  h1 "PokeDumpster" and the description paragraph are visible. 8. Screenshot.

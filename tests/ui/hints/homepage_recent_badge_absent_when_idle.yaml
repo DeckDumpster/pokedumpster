@@ -1,0 +1,12 @@
+start_page: /
+involves:
+  - "header nav link 'Recent' with href '/recent'"
+  - "the link is plain text with no badge, count, or status decoration"
+fixture_data:
+  collection: "5 batches, 2 orders; the homepage nav shows no badge regardless"
+notes: >
+  1. Navigate to /. 2. Assert the "Recent" nav link text is visible.
+  3. Assert the Recent link has no badge, count, or status decoration -- it
+  is plain text only. 4. Assert no "processing" text appears next to the
+  link. 5. Click the "Recent" link to confirm it is navigable.
+  6. Wait for the Recent page to load (URL /recent). 7. Screenshot.

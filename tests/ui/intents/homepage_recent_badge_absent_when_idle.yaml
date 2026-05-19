@@ -1,0 +1,8 @@
+# Scenario: Recent nav link is a plain link with no badge
+
+# Related: homepage_page_structure, homepage_nav_links_analysis_and_addcards
+
+description: >
+  When I visit the homepage, the "Recent" link in the global navigation is a
+  plain text link with no count or status badge next to it, and clicking it
+  navigates to the Recent page.

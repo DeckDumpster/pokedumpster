@@ -1,0 +1,8 @@
+# Scenario: Homepage displays the app title, description, and navigation
+
+# Related: homepage_nav_links_collection, homepage_nav_links_analysis_and_addcards
+
+description: >
+  When I visit the homepage, I can see the "PokeDumpster" title heading, a
+  one-line description telling me to choose a section from the navigation, and
+  the global header with its full set of navigation links.

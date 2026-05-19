@@ -1,0 +1,14 @@
+start_page: /
+involves:
+  - "page title h1 with text 'PokeDumpster'"
+  - "description paragraph p mentioning a Pokemon TCG collection tracker"
+  - "global header with brand link a.brand 'PokeDumpster' (href '/')"
+  - "nav with links: Home (/), Collection (/collection), Browse (/browse), Binders (/binders), Decks (/decks), Sealed (/sealed), Wishlist (/wishlist), Orders (/orders), Recent (/recent), Import (/ingest/csv)"
+fixture_data:
+  none: "homepage is fully static markup; it carries no data"
+notes: >
+  1. Navigate to /. 2. Assert h1 text "PokeDumpster" is visible.
+  3. Assert the description paragraph is visible and mentions a Pokemon TCG
+  collection tracker. 4. Assert the brand link "PokeDumpster" is present in
+  the header. 5. Assert each nav link text (Home, Collection, Browse, Binders,
+  Decks, Sealed, Wishlist, Orders, Recent, Import) is present. 6. Screenshot.

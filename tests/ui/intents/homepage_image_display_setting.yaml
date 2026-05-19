@@ -1,0 +1,8 @@
+# Scenario: Brand link in the header returns to the homepage
+
+# Related: homepage_page_structure, homepage_nav_links_collection
+
+description: >
+  When I navigate away from the homepage to another section and then click the
+  red "PokeDumpster" brand link in the header, the browser returns to the
+  homepage and the title heading and description are shown again.

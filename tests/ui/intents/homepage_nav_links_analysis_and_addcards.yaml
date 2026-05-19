@@ -1,0 +1,8 @@
+# Scenario: Browse and add-cards nav links navigate correctly
+
+# Related: homepage_page_structure, homepage_nav_links_collection
+
+description: >
+  When I click each of the remaining links in the global header (Browse,
+  Wishlist, Orders, Recent, Import), each navigates to the correct destination
+  page.

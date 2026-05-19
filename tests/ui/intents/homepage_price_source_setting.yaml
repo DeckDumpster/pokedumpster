@@ -1,0 +1,8 @@
+# Scenario: Home nav link returns to the homepage from another section
+
+# Related: homepage_page_structure, homepage_image_display_setting
+
+description: >
+  When I navigate away from the homepage to another section and then click the
+  "Home" link in the global navigation, the browser returns to the homepage
+  and the title heading and description are shown again.

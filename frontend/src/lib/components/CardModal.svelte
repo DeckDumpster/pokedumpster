@@ -16,8 +16,14 @@
 
 <div class="backdrop" role="presentation" onclick={onClose}></div>
 <div class="modal" role="dialog" aria-modal="true" aria-label="Card detail">
-	<button class="x" onclick={onClose} aria-label="Close">×</button>
-	<CardDetailView {setCode} {number} />
+	<!-- Sticky so the close control stays reachable however far the card
+	     detail is scrolled — important on the mobile bottom sheet. -->
+	<div class="closebar">
+		<button class="x" onclick={onClose} aria-label="Close">×</button>
+	</div>
+	<div class="body">
+		<CardDetailView {setCode} {number} />
+	</div>
 </div>
 
 <style>
@@ -40,21 +46,31 @@
 		background: #1a1a2e;
 		border: 2px solid #0f3460;
 		border-radius: 12px;
-		padding: 1.5rem;
+	}
+	.closebar {
+		position: sticky;
+		top: 0;
+		z-index: 2;
+		display: flex;
+		justify-content: flex-end;
+		background: #1a1a2e;
+		border-bottom: 1px solid #0f3460;
+		padding: 0.4rem 0.6rem;
 	}
 	.x {
-		position: absolute;
-		top: 0.6rem;
-		right: 0.8rem;
 		background: none;
 		border: none;
 		color: #888;
-		font-size: 1.6rem;
+		font-size: 1.7rem;
 		line-height: 1;
 		cursor: pointer;
+		padding: 0 0.4rem;
 	}
 	.x:hover {
 		color: #e94560;
+	}
+	.body {
+		padding: 1.25rem 1.5rem 1.5rem;
 	}
 
 	/* Bottom-sheet on narrow screens, matching VariantModal. */
@@ -68,6 +84,10 @@
 			max-width: 100%;
 			max-height: 90vh;
 			border-radius: 14px 14px 0 0;
+		}
+		.x {
+			font-size: 2rem;
+			padding: 0.2rem 0.6rem;
 		}
 	}
 </style>

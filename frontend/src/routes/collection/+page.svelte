@@ -265,13 +265,6 @@
 					{/if}
 				</div>
 			</section>
-			<input
-				class="search"
-				type="text"
-				placeholder="Search cards…"
-				value={searchRaw}
-				oninput={(e) => onSearch(e.currentTarget.value)}
-			/>
 			{#snippet facet(title: string, values: string[], selected: Set<string>, set: (s: Set<string>) => void, label: (v: string) => string)}
 				{#if values.length}
 					<section>
@@ -295,6 +288,13 @@
 		</aside>
 
 		<main class="content">
+			<input
+				class="search"
+				type="text"
+				placeholder="Search cards…"
+				value={searchRaw}
+				oninput={(e) => onSearch(e.currentTarget.value)}
+			/>
 			<div class="toolbar">
 				<p class="muted">{filtered.length} of {rows.length} cards</p>
 				<span class="spacer"></span>
@@ -367,6 +367,7 @@
 									<input type="checkbox" checked={allSelected} onchange={toggleAll} />
 								</th>
 							{/if}
+							<th class="thumbcol"></th>
 							<th>Name</th>
 							<th>Set</th>
 							<th>#</th>
@@ -389,6 +390,15 @@
 										/>
 									</td>
 								{/if}
+								<td class="thumbcol">
+									<button class="thumb" onclick={() => openCard(row)} aria-label={row.name}>
+										{#if row.image_small}
+											<img src={row.image_small} alt={row.name} loading="lazy" />
+										{:else}
+											<span class="thumbnoart">?</span>
+										{/if}
+									</button>
+								</td>
 								<td>
 									<button class="linkish" onclick={() => openCard(row)}>{row.name}</button>
 								</td>
@@ -450,6 +460,9 @@
 	}
 	.viewpick {
 		margin-bottom: 0.5rem;
+	}
+	.content > .search {
+		margin-bottom: 0.6rem;
 	}
 	.viewbtns {
 		display: flex;
@@ -587,6 +600,45 @@
 	}
 	.linkish:hover {
 		color: #e94560;
+	}
+	.thumbcol {
+		width: 46px;
+	}
+	.thumb {
+		background: none;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		display: block;
+	}
+	.thumb img {
+		width: 40px;
+		aspect-ratio: 5 / 7;
+		object-fit: contain;
+		background: #0d1424;
+		border-radius: 3px;
+		display: block;
+	}
+	.thumbnoart {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 40px;
+		aspect-ratio: 5 / 7;
+		background: #16213e;
+		border-radius: 3px;
+		color: #888;
+	}
+
+	/* Stack the facet sidebar above the content on narrow screens. */
+	@media (max-width: 640px) {
+		.layout {
+			flex-direction: column;
+		}
+		.sidebar {
+			flex: 0 0 auto;
+			width: 100%;
+		}
 	}
 	.bulkbar {
 		display: flex;

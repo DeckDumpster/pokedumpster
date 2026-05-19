@@ -1,0 +1,14 @@
+start_page: /browse/sv3pt5/stats
+involves:
+  - "'Rarity split' h2 and table"
+  - "table columns: Rarity, Owned, Total, Progress"
+  - "Progress cell with a small bar plus a percentage"
+fixture_data:
+  set: "sv3pt5"
+  rarities: "Common, Uncommon, Rare, Double Rare, Illustration Rare, Special Illustration Rare, Hyper Rare"
+notes: >
+  1. Navigate to /browse/sv3pt5/stats. 2. Wait for the analytics to
+  load. 3. Verify the "Rarity split" table renders with one row per
+  rarity present in 151. 4. Verify each row shows a Rarity name, an
+  Owned count, a Total count, and a Progress cell with a bar and a
+  percentage.

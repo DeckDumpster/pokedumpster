@@ -1,0 +1,9 @@
+# Scenario: Each batch row shows its card count
+
+# Related: recent_page_overview, recent_accordion_open_close
+
+description: >
+  On the Recent page, every batch row in the timeline shows how many
+  cards that batch added as an "{n} cards" count in the row header. The
+  count for each batch matches the number of collection copies that
+  batch ingested in the fixture data.

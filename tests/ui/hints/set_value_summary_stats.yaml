@@ -1,0 +1,16 @@
+start_page: /browse/sv3pt5/stats
+involves:
+  - "Completion card 'Numbered set' bar (owned_cards / total_cards)"
+  - "Completion card 'Master set' bar (owned_variants / total_variants)"
+  - "each bar shows '{owned} / {total} · {pct}%'"
+  - "Value card 'Owned', 'Full set', 'of set value' figures"
+fixture_data:
+  set: "sv3pt5"
+  owned_cards: "8 sv3pt5 copies registered via the 151 binder page-through"
+notes: >
+  1. Navigate to /browse/sv3pt5/stats. 2. Wait for the analytics to
+  load. 3. Verify the "Numbered set" progress bar shows a
+  "{owned} / {total} · {pct}%" string with a nonzero owned count.
+  4. Verify the "Master set" bar likewise. 5. Verify the Value card
+  shows "Owned", "Full set", and "of set value" figures, with "Owned"
+  reflecting the value of the owned sv3pt5 copies.

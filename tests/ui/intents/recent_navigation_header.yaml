@@ -1,0 +1,8 @@
+# Scenario: Recent page is reachable from the global header nav
+
+# Related: recent_page_overview, recent_assign_target_dropdown
+
+description: >
+  The global header includes a "Recent" navigation link. Clicking it
+  takes me to /recent, where the "Recent activity" page renders. The
+  global header stays present on the Recent page.

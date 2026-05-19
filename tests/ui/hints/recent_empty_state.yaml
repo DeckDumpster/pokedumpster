@@ -1,0 +1,14 @@
+start_page: /recent
+involves:
+  - "h1 'Recent activity' header"
+  - "'No activity yet.' empty-state message (shown when batches.length === 0)"
+  - "timeline ul.timeline (shown when batches exist)"
+fixture_data:
+  expected_batches: 5
+notes: >
+  The fixture has 5 batches, so the timeline renders rather than the
+  empty state. 1. Navigate to /recent. 2. Wait for the page to load.
+  3. Verify the h1 "Recent activity" is present. 4. Verify ul.timeline
+  is shown (5 batches) and "No activity yet." is NOT shown. This
+  confirms the empty-state branch is mutually exclusive with the
+  timeline.

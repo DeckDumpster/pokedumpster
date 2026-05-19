@@ -1,0 +1,15 @@
+start_page: /recent
+involves:
+  - "timeline ul.timeline batch rows"
+  - "the order_tcgplayer batch auto-created by the received order"
+  - "expanded card list ul.cards for that batch"
+fixture_data:
+  batch: "TCG-100001 (order_tcgplayer) — auto-created by the received order"
+  expected_cards: 3
+  cards: "1x Charizard ex holo, 2x Charmander"
+notes: >
+  1. Navigate to /recent. 2. Wait for ul.timeline. 3. Verify the
+  "TCG-100001" batch row is present with a "3 cards" count. 4. Expand
+  it and wait for ul.cards. 5. Verify it lists exactly the 3 copies the
+  received order ingested (1 Charizard ex holo, 2 Charmander) and no
+  others.

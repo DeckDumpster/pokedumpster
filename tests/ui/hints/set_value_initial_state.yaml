@@ -1,0 +1,18 @@
+start_page: /browse/sv3pt5/stats
+involves:
+  - "h1 set name '151' with series 'Scarlet & Violet' below"
+  - "'Binder view →' link -> /browse/sv3pt5"
+  - "Completion card with 'Numbered set' and 'Master set' progress bars"
+  - "Value card with 'Owned', 'Full set', 'of set value' figures"
+  - "'Rarity split' h2 and table"
+fixture_data:
+  set: "sv3pt5"
+  set_name: "151"
+  series: "Scarlet & Violet"
+notes: >
+  1. Navigate to /browse/sv3pt5/stats. 2. Wait for the analytics to
+  load (no more "Loading…"). 3. Verify the h1 reads "151" and the
+  series "Scarlet & Violet" is shown below it. 4. Verify the "Binder
+  view →" link is present. 5. Verify the Completion card, the Value
+  card, and the "Rarity split" table all render. 6. Verify there are no
+  inputs or buttons (read-only page).

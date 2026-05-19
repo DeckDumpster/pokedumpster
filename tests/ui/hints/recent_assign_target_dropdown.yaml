@@ -1,0 +1,11 @@
+start_page: /recent
+involves:
+  - "expanded card list ul.cards"
+  - "card name link inside a card row -> /card/{set}/{number}"
+fixture_data:
+  batch: "151 binder page-through (binder_click) — 8 sv3pt5 cards"
+notes: >
+  1. Navigate to /recent. 2. Wait for ul.timeline. 3. Click the "151
+  binder page-through" batch row to expand it. 4. Wait for ul.cards.
+  5. Click the first card's name link. 6. Verify the URL changes to a
+  /card/sv3pt5/{number} card detail page.

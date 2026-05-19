@@ -1,0 +1,15 @@
+start_page: /browse/sv3pt5/stats
+involves:
+  - "'Rarity split' table"
+  - "'Hyper Rare' rarity row with Owned, Total and Progress cells"
+fixture_data:
+  set: "sv3pt5"
+  rarity: "Hyper Rare"
+  owned: 1
+  total: 1
+  detail: "Mew ex #201 is the only Hyper Rare in 151 and is owned (151 binder page-through)"
+notes: >
+  1. Navigate to /browse/sv3pt5/stats. 2. Wait for the analytics to
+  load. 3. Find the "Hyper Rare" row in the Rarity split table.
+  4. Verify its Owned cell reads 1 and its Total cell reads 1.
+  5. Verify the Progress cell shows 100%.

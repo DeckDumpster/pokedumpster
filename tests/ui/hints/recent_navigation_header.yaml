@@ -1,0 +1,9 @@
+start_page: /
+involves:
+  - "global header 'Recent' nav link -> /recent"
+  - "h1 'Recent activity' on the destination page"
+fixture_data: {}
+notes: >
+  1. Navigate to /. 2. Click the "Recent" link in the global header.
+  3. Verify the URL is /recent. 4. Verify the h1 "Recent activity"
+  renders. 5. Verify the global header is still present on /recent.

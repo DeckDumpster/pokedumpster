@@ -1,0 +1,14 @@
+start_page: /recent
+involves:
+  - "batch rows .head buttons"
+  - "expanded card lists ul.cards"
+  - "expanded-batch set tracking independent per row"
+fixture_data:
+  batch_a: "151 binder page-through (binder_click)"
+  batch_b: "ManaBox export 2024-01 (csv_manabox)"
+notes: >
+  1. Navigate to /recent. 2. Wait for ul.timeline. 3. Expand the "151
+  binder page-through" batch; wait for its ul.cards. 4. Expand the
+  "ManaBox export 2024-01" batch; wait for its ul.cards. 5. Verify both
+  batches show an expanded card list at the same time. 6. Collapse the
+  first batch and verify the second batch stays expanded.

@@ -1,0 +1,11 @@
+# Scenario: A received order's auto-created batch appears on Recent
+
+# Related: recent_batch_ingest, recent_card_status_borders
+#   issues: [173]
+
+description: >
+  When an order is received, PokeDumpster auto-creates an ingestion
+  batch for it and registers one collection copy per card in the order.
+  On the Recent page that batch appears in the timeline, and expanding
+  it lists exactly the cards that order ingested — and only those, with
+  other batches untouched.

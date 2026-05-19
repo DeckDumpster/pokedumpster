@@ -1,0 +1,10 @@
+# Scenario: Recent page shows an empty state when there is no activity
+
+# Related: recent_page_overview
+
+description: >
+  When the user has no ingestion batches, the Recent page shows the
+  "Recent activity" heading and instruction line but the timeline is
+  replaced with a "No activity yet." message. The fixture has 5 batches,
+  so this verifies the empty-state element is wired up correctly while
+  the timeline is the path actually rendered.

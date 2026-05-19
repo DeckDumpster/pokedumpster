@@ -1,0 +1,9 @@
+# Scenario: Expanded card list shows each card's set, variant and status
+
+# Related: recent_accordion_open_close, recent_assign_target_dropdown
+
+description: >
+  On the Recent page, when I expand a batch the indented card list shows
+  each card with a name link and a meta line reading
+  "{set_code} · {variant} · {status}". The meta line reflects each
+  copy's actual variant and ownership status from the collection.

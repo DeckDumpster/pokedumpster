@@ -1,0 +1,10 @@
+# Scenario: Load a saved collection view from the sidebar
+#
+# Related:
+#   issues: [127]
+
+description: >
+  On the Collection page I can pick the saved view "Vintage Holos" from
+  the Saved views dropdown in the sidebar. Applying it rehydrates the
+  view's saved filters and the collection table narrows to only the
+  matching copies — the base1 Rare Holo cards.

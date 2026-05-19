@@ -1,0 +1,15 @@
+start_page: /collection
+involves:
+  - "Saved views <select> in the sidebar"
+  - "saved view 'Vintage Holos' (filters {set: base1, rarity: Rare Holo})"
+  - "collection table filtering to matching rows"
+  - "toolbar '{filtered} of {total} cards' count"
+fixture_data:
+  saved_view: "Vintage Holos — filters {\"set\":\"base1\",\"rarity\":\"Rare Holo\"}"
+  matching_rows: "base1 copies whose card rarity is Rare Holo"
+notes: >
+  1. Navigate to /collection. 2. Wait for the table and sidebar to
+  load. 3. In the Saved views <select>, choose "Vintage Holos".
+  4. Verify the Set facet selects base1 and the Rarity facet selects
+  "Rare Holo". 5. Verify the table now shows only base1 Rare Holo
+  copies and the toolbar count drops accordingly.

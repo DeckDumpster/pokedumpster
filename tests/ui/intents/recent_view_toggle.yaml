@@ -1,0 +1,9 @@
+# Scenario: Multiple batches expand independently as an accordion
+
+# Related: recent_accordion_open_close, recent_batch_ingest
+
+description: >
+  On the Recent page, expanding one batch row does not collapse another
+  already-expanded batch — each row's expansion is tracked
+  independently. I can have two batches expanded at once, each showing
+  its own card list, and collapse them one at a time.

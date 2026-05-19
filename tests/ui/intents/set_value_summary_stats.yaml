@@ -1,0 +1,11 @@
+# Scenario: Verify the Completion and Value stats on the Set Stats page
+#
+# Related:
+#   pages: [set-stats]
+
+description: >
+  On the Set Stats page, the Completion card shows two labelled
+  progress bars — "Numbered set" (owned cards / total cards) and
+  "Master set" (owned variants / total variants) — each reading
+  "{owned} / {total} · {pct}%". The Value card shows three figures:
+  "Owned", "Full set", and "of set value" as a percentage.

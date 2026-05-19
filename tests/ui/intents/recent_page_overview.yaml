@@ -1,0 +1,10 @@
+# Scenario: View the recent activity timeline
+
+# Related: recent_status_summary_counts, recent_accordion_open_close
+
+description: >
+  When I navigate to the Recent page, I see an "Recent activity" heading
+  and a muted instruction line telling me these are my most recent
+  ingestion batches. Below it a timeline lists my recent batches, one row
+  per batch. Each row shows a collapsed caret, the batch type, the batch
+  name, an "{n} cards" count, and a timestamp.

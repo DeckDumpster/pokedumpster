@@ -1,0 +1,16 @@
+start_page: /browse/base1/stats
+involves:
+  - "Completion card 'Numbered set' bar (owned_cards / total_cards)"
+  - "Completion card 'Master set' bar (owned_variants / total_variants)"
+fixture_data:
+  set: "base1"
+  detail: >
+    Base Set holo rares carry one 'holo' variant; commons carry
+    'normal' + 'reverse_holo', so the variant total exceeds the card
+    total.
+notes: >
+  1. Navigate to /browse/base1/stats. 2. Wait for the analytics to
+  load. 3. Read the total from the "Numbered set" bar (cards) and the
+  total from the "Master set" bar (variants). 4. Verify the master-set
+  variant total is strictly greater than the numbered-set card total,
+  since base1 commons each contribute two variants.

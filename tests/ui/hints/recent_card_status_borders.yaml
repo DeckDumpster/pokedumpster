@@ -1,0 +1,11 @@
+start_page: /recent
+involves:
+  - "expanded card list ul.cards"
+  - "each card row: name link plus meta line '{set_code} · {variant} · {status}'"
+fixture_data:
+  batch: "EBAY-55012 (order_ebay) — 1 copy, base1 Charizard holo, status ordered"
+notes: >
+  1. Navigate to /recent. 2. Wait for ul.timeline. 3. Click the
+  "EBAY-55012" batch row to expand it. 4. Wait for ul.cards. 5. Verify
+  the card row shows a name link and a meta line containing the set
+  code "base1", the variant "holo", and the status "ordered".

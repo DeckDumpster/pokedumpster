@@ -1,0 +1,16 @@
+start_page: /browse/sv3pt5/stats
+involves:
+  - "h1 set name (reactive to the set route param)"
+  - "$effect that re-fetches analytics when the set param changes"
+  - "Completion card and 'Rarity split' table"
+fixture_data:
+  set_a: "sv3pt5"
+  set_a_name: "151"
+  set_b: "sv8"
+  set_b_name: "Surging Sparks"
+notes: >
+  1. Navigate to /browse/sv3pt5/stats. 2. Wait for the analytics to
+  load and verify the h1 reads "151". 3. Navigate to /browse/sv8/stats.
+  4. Wait for the analytics to reload. 5. Verify the h1 now reads
+  "Surging Sparks" and the Completion card and Rarity split table have
+  updated to the new set.

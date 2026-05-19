@@ -1,0 +1,20 @@
+start_page: /recent
+involves:
+  - "h1 'Recent activity' header"
+  - "muted instruction line about recent ingestion batches"
+  - "timeline ul.timeline with one li per batch"
+  - "each batch row is a .head button: caret, batch type, name, '{n} cards', timestamp"
+fixture_data:
+  expected_batches: 5
+  batch_names:
+    - "TCG-100001 (order_tcgplayer)"
+    - "EBAY-55012 (order_ebay)"
+    - "Vintage holo entry (manual_id)"
+    - "151 binder page-through (binder_click)"
+    - "ManaBox export 2024-01 (csv_manabox)"
+notes: >
+  1. Navigate to /recent. 2. Wait for ul.timeline to render. 3. Verify
+  the h1 reads "Recent activity". 4. Verify the muted instruction line
+  is present. 5. Verify the timeline has one li per fixture batch (5).
+  6. Verify each row shows a batch type, a name, an "{n} cards" count,
+  and a timestamp.

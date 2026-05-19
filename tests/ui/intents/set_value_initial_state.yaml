@@ -1,0 +1,11 @@
+# Scenario: Verify the initial state of the Set Stats page
+#
+# Related:
+#   pages: [set-stats]
+
+description: >
+  When I load the Set Stats page for a set, I see the set name as the
+  page heading with its series below, and a "Binder view →" link. The
+  page shows a Completion card with two progress bars, a Value card with
+  three figures, and a "Rarity split" table. The page is entirely
+  read-only — there are no inputs, buttons, or toggles.

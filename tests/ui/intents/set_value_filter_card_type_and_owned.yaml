@@ -1,0 +1,11 @@
+# Scenario: Master-set completion counts variants, not just cards
+#
+# Related:
+#   pages: [set-stats]
+
+description: >
+  On the Set Stats page for Base Set, the Completion card's "Master
+  set" bar (owned variants / total variants) reads a different total
+  than the "Numbered set" bar (owned cards / total cards), because
+  commons carry both a normal and a reverse-holo variant. This proves
+  the two completion bars measure cards and variants separately.

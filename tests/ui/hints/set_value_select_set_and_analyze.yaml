@@ -1,0 +1,14 @@
+start_page: /browse/sv3pt5
+involves:
+  - "'Set stats →' link on the binder browse page"
+  - "Set Stats page at /browse/sv3pt5/stats"
+  - "Completion card, Value card, 'Rarity split' table"
+fixture_data:
+  set: "sv3pt5"
+  set_name: "151"
+notes: >
+  1. Navigate to /browse/sv3pt5. 2. Wait for the binder page to load.
+  3. Click the "Set stats →" link. 4. Verify the URL is
+  /browse/sv3pt5/stats. 5. Wait for the analytics to load. 6. Verify
+  the Completion card, the Value card, and the "Rarity split" table are
+  all visible.

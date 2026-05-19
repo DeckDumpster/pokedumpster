@@ -1,0 +1,9 @@
+# Scenario: Expand and collapse a batch row to reveal its cards
+
+# Related: recent_page_overview, recent_card_status_borders
+
+description: >
+  On the Recent page, I click a batch row to expand it. The caret flips
+  from collapsed (▸) to expanded (▾) and an indented card list opens
+  below the row showing every card that batch added. Clicking the same
+  row again collapses it and the card list disappears.

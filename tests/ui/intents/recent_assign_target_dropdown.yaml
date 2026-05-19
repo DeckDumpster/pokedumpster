@@ -1,0 +1,8 @@
+# Scenario: A card name link in an expanded batch navigates to card detail
+
+# Related: recent_card_status_borders, recent_navigation_header
+
+description: >
+  On the Recent page, when I expand a batch and click a card's name link
+  inside the indented card list, I navigate to that card's detail page
+  at /card/{set}/{number}.

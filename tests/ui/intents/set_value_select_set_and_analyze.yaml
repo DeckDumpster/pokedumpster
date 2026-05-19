@@ -1,0 +1,10 @@
+# Scenario: Reach the Set Stats page from the binder browse view
+#
+# Related:
+#   pages: [set-stats]
+
+description: >
+  From a set's binder browse page I click the "Set stats →" link and
+  land on that set's Set Stats page. The analytics load and the
+  Completion card, Value card, and Rarity split table all become
+  visible for that set.

@@ -1,0 +1,10 @@
+# Scenario: A rarity row's owned count matches the collection
+#
+# Related:
+#   pages: [set-stats]
+
+description: >
+  On the Set Stats page for 151, the "Rarity split" table's Hyper Rare
+  row shows an Owned count of 1 — the Mew ex secret rare is registered
+  in the collection — out of a Total of 1. The Progress cell for that
+  row reads 100%, proving owned/total counts are computed per rarity.

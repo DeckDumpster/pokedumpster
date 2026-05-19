@@ -1,0 +1,11 @@
+# Scenario: View the rarity split breakdown on the Set Stats page
+#
+# Related:
+#   pages: [set-stats]
+
+description: >
+  On the Set Stats page, the "Rarity split" card shows a table with one
+  row per rarity in the set. Each row has the rarity name, an Owned
+  count, a Total count, and a Progress cell with a small bar and a
+  percentage. The rarity rows reflect the actual rarities catalogued in
+  the set.

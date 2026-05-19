@@ -1,0 +1,8 @@
+# Scenario: An import batch's cards are listed when expanded
+
+# Related: recent_accordion_open_close, recent_status_summary_counts
+
+description: >
+  On the Recent page, the "ManaBox export 2024-01" CSV import batch
+  appears in the timeline with its "4 cards" count. Expanding it lazily
+  loads and lists the four sv8 cards that import added to the collection.

@@ -1,0 +1,9 @@
+# Scenario: Re-expanding a batch does not re-fetch its cards
+
+# Related: recent_accordion_open_close, recent_batch_ingest
+
+description: >
+  On the Recent page, the first time I expand a batch its cards are
+  fetched and shown. If I collapse it and expand it again, the same card
+  list reappears immediately from the cached detail without a second
+  fetch.

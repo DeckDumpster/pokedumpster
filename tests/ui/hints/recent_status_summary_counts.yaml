@@ -1,0 +1,15 @@
+start_page: /recent
+involves:
+  - "timeline ul.timeline batch rows"
+  - "'{n} cards' count text inside each .head button"
+fixture_data:
+  batch_card_counts:
+    "TCG-100001": 3
+    "EBAY-55012": 1
+    "151 binder page-through": 8
+    "ManaBox export 2024-01": 4
+notes: >
+  1. Navigate to /recent. 2. Wait for ul.timeline. 3. For each batch
+  row, read its "{n} cards" count. 4. Verify the "151 binder
+  page-through" batch reads "8 cards" and the "TCG-100001" batch reads
+  "3 cards", matching the fixture data.

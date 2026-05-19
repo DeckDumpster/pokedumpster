@@ -1,0 +1,13 @@
+start_page: /recent
+involves:
+  - "batch row for 'ManaBox export 2024-01' (csv_manabox)"
+  - "'4 cards' count in the row header"
+  - "expanded card list ul.cards lazily loaded on first expand"
+fixture_data:
+  batch: "ManaBox export 2024-01 (csv_manabox) — 4 sv8 copies, Trade Binder"
+  expected_cards: 4
+notes: >
+  1. Navigate to /recent. 2. Wait for ul.timeline. 3. Verify the
+  "ManaBox export 2024-01" row shows "4 cards". 4. Click the row to
+  expand it. 5. Wait for ul.cards to populate. 6. Verify it lists 4 sv8
+  card rows.

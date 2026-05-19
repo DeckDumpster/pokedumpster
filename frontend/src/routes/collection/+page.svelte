@@ -3,7 +3,6 @@
 	import { api, variantLabel } from '$lib/api';
 	import CardModal from '$lib/components/CardModal.svelte';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
-	import type { CollectionView } from '$lib/types/CollectionView';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
 
@@ -19,73 +18,6 @@
 		searchRaw = value;
 		clearTimeout(debounce);
 		debounce = setTimeout(() => (search = value.trim().toLowerCase()), 200);
-	}
-
-	// Facet selections.
-	let selRarity = $state(new Set<string>());
-	let selSet = $state(new Set<string>());
-	let selVariant = $state(new Set<string>());
-
-	function toggled(set: Set<string>, value: string): Set<string> {
-		const next = new Set(set);
-		if (next.has(value)) next.delete(value);
-		else next.add(value);
-		return next;
-	}
-
-	// --- Saved views: a named filter config (search + facet selections). ---
-	type ViewFilters = { search: string; rarity: string[]; set: string[]; variant: string[] };
-	let savedViews = $state<CollectionView[]>([]);
-	let activeViewId = $state<number | null>(null);
-
-	function currentFilters(): ViewFilters {
-		return {
-			search: searchRaw,
-			rarity: [...selRarity],
-			set: [...selSet],
-			variant: [...selVariant]
-		};
-	}
-
-	function applyView(id: number | null) {
-		activeViewId = id;
-		if (id == null) return;
-		const view = savedViews.find((v) => v.id === id);
-		if (!view) return;
-		const f = JSON.parse(view.filters_json) as Partial<ViewFilters>;
-		onSearch(f.search ?? '');
-		selRarity = new Set(f.rarity ?? []);
-		selSet = new Set(f.set ?? []);
-		selVariant = new Set(f.variant ?? []);
-	}
-
-	async function saveView() {
-		const name = prompt('Name this view:')?.trim();
-		if (!name) return;
-		try {
-			const id = await api.createView({
-				name,
-				description: null,
-				filters_json: JSON.stringify(currentFilters())
-			});
-			savedViews = await api.views();
-			activeViewId = id;
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		}
-	}
-
-	async function deleteView() {
-		if (activeViewId == null) return;
-		const view = savedViews.find((v) => v.id === activeViewId);
-		if (!view || !confirm(`Delete view "${view.name}"?`)) return;
-		try {
-			await api.deleteView(view.id);
-			savedViews = await api.views();
-			activeViewId = null;
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		}
 	}
 
 	// --- Multi-select bulk operations. ---
@@ -120,9 +52,8 @@
 
 	onMount(async () => {
 		try {
-			[rows, savedViews, binders, decks] = await Promise.all([
+			[rows, binders, decks] = await Promise.all([
 				api.collection(),
-				api.views(),
 				api.binders(),
 				api.decks()
 			]);
@@ -133,21 +64,8 @@
 		}
 	});
 
-	function facetValues(pick: (r: CollectionRow) => string | null | undefined): string[] {
-		return [...new Set(rows.map(pick).filter((v): v is string => !!v))].sort();
-	}
-	const rarities = $derived(facetValues((r) => r.rarity));
-	const sets = $derived(facetValues((r) => r.set_code));
-	const variants = $derived(facetValues((r) => r.variant));
-
 	const filtered = $derived(
-		rows.filter((r) => {
-			if (search && !r.name.toLowerCase().includes(search)) return false;
-			if (selRarity.size && !(r.rarity && selRarity.has(r.rarity))) return false;
-			if (selSet.size && !selSet.has(r.set_code)) return false;
-			if (selVariant.size && !selVariant.has(r.variant)) return false;
-			return true;
-		})
+		rows.filter((r) => !search || r.name.toLowerCase().includes(search))
 	);
 
 	function price(p: number | null): string {
@@ -241,181 +159,132 @@
 {:else if error}
 	<p class="error">Failed to load collection: {error}</p>
 {:else}
-	<div class="layout">
-		<aside class="sidebar">
-			<section class="views">
-				<h3>Saved views</h3>
-				{#if savedViews.length}
-					<select
-						class="viewpick"
-						value={activeViewId ?? ''}
-						onchange={(e) =>
-							applyView(e.currentTarget.value ? Number(e.currentTarget.value) : null)}
-					>
-						<option value="">— none —</option>
-						{#each savedViews as v (v.id)}
-							<option value={v.id}>{v.name}</option>
-						{/each}
-					</select>
-				{/if}
-				<div class="viewbtns">
-					<button onclick={saveView}>Save current…</button>
-					{#if activeViewId != null}
-						<button onclick={deleteView}>Delete</button>
+	<input
+		class="search"
+		type="text"
+		placeholder="Search cards…"
+		value={searchRaw}
+		oninput={(e) => onSearch(e.currentTarget.value)}
+	/>
+	<div class="toolbar">
+		<p class="muted">{filtered.length} of {rows.length} cards</p>
+		<span class="spacer"></span>
+		{#if rows.length > 0}
+			<div class="viewtoggle">
+				<button class:on={view === 'grid'} onclick={() => (view = 'grid')}>Grid</button>
+				<button class:on={view === 'table'} onclick={() => (view = 'table')}>Table</button>
+			</div>
+			<a class="ghost" href="/api/export/csv" download>Export CSV</a>
+			<button class="ghost" onclick={toggleSelectMode}>
+				{selectMode ? 'Cancel' : 'Select'}
+			</button>
+		{/if}
+	</div>
+
+	{#if selectMode && selected.size > 0}
+		<div class="bulkbar">
+			<span class="count">{selected.size} selected</span>
+			<button disabled={busy} onclick={bulkDelete}>Delete</button>
+			<select
+				disabled={busy || binders.length === 0}
+				onchange={(e) => {
+					bulkAssign('binder_id', e.currentTarget.value);
+					e.currentTarget.selectedIndex = 0;
+				}}
+			>
+				<option value="">Assign to binder…</option>
+				{#each binders as b (b.id)}<option value={b.id}>{b.name}</option>{/each}
+			</select>
+			<select
+				disabled={busy || decks.length === 0}
+				onchange={(e) => {
+					bulkAssign('deck_id', e.currentTarget.value);
+					e.currentTarget.selectedIndex = 0;
+				}}
+			>
+				<option value="">Assign to deck…</option>
+				{#each decks as d (d.id)}<option value={d.id}>{d.name}</option>{/each}
+			</select>
+			<button disabled={busy} onclick={bulkWishlist}>Add to wishlist</button>
+		</div>
+	{/if}
+
+	{#if rows.length === 0}
+		<p class="muted">Your collection is empty. Add cards from a set's binder view.</p>
+	{:else if view === 'grid'}
+		<div class="cardgrid">
+			{#each filtered as row (row.id)}
+				<button
+					class="cardtile"
+					class:picked={selectMode && selected.has(row.id)}
+					title="{row.name} · {variantLabel(row.variant)}"
+					onclick={() => openCard(row)}
+				>
+					{#if row.image_small}
+						<img src={row.image_small} alt={row.name} loading="lazy" />
+					{:else}
+						<div class="tilenoart">{row.name}</div>
 					{/if}
-				</div>
-			</section>
-			{#snippet facet(title: string, values: string[], selected: Set<string>, set: (s: Set<string>) => void, label: (v: string) => string)}
-				{#if values.length}
-					<section>
-						<h3>{title}</h3>
-						{#each values as value (value)}
-							<label class="check">
+					{#if selectMode && selected.has(row.id)}<span class="tick">✓</span>{/if}
+				</button>
+			{/each}
+		</div>
+	{:else}
+		<table>
+			<thead>
+				<tr>
+					{#if selectMode}
+						<th class="cbcol">
+							<input type="checkbox" checked={allSelected} onchange={toggleAll} />
+						</th>
+					{/if}
+					<th class="thumbcol"></th>
+					<th>Name</th>
+					<th>Set</th>
+					<th>#</th>
+					<th>Variant</th>
+					<th>Rarity</th>
+					<th>Condition</th>
+					<th>Status</th>
+					<th>Paid</th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each filtered as row (row.id)}
+					<tr class:picked={selectMode && selected.has(row.id)}>
+						{#if selectMode}
+							<td class="cbcol">
 								<input
 									type="checkbox"
-									checked={selected.has(value)}
-									onchange={() => set(toggled(selected, value))}
+									checked={selected.has(row.id)}
+									onchange={() => toggleRow(row.id)}
 								/>
-								{label(value)}
-							</label>
-						{/each}
-					</section>
-				{/if}
-			{/snippet}
-			{@render facet('Rarity', rarities, selRarity, (s) => (selRarity = s), (v) => v)}
-			{@render facet('Set', sets, selSet, (s) => (selSet = s), (v) => v)}
-			{@render facet('Variant', variants, selVariant, (s) => (selVariant = s), variantLabel)}
-		</aside>
-
-		<main class="content">
-			<input
-				class="search"
-				type="text"
-				placeholder="Search cards…"
-				value={searchRaw}
-				oninput={(e) => onSearch(e.currentTarget.value)}
-			/>
-			<div class="toolbar">
-				<p class="muted">{filtered.length} of {rows.length} cards</p>
-				<span class="spacer"></span>
-				{#if rows.length > 0}
-					<div class="viewtoggle">
-						<button class:on={view === 'grid'} onclick={() => (view = 'grid')}>Grid</button>
-						<button class:on={view === 'table'} onclick={() => (view = 'table')}>Table</button>
-					</div>
-					<a class="ghost" href="/api/export/csv" download>Export CSV</a>
-					<button class="ghost" onclick={toggleSelectMode}>
-						{selectMode ? 'Cancel' : 'Select'}
-					</button>
-				{/if}
-			</div>
-
-			{#if selectMode && selected.size > 0}
-				<div class="bulkbar">
-					<span class="count">{selected.size} selected</span>
-					<button disabled={busy} onclick={bulkDelete}>Delete</button>
-					<select
-						disabled={busy || binders.length === 0}
-						onchange={(e) => {
-							bulkAssign('binder_id', e.currentTarget.value);
-							e.currentTarget.selectedIndex = 0;
-						}}
-					>
-						<option value="">Assign to binder…</option>
-						{#each binders as b (b.id)}<option value={b.id}>{b.name}</option>{/each}
-					</select>
-					<select
-						disabled={busy || decks.length === 0}
-						onchange={(e) => {
-							bulkAssign('deck_id', e.currentTarget.value);
-							e.currentTarget.selectedIndex = 0;
-						}}
-					>
-						<option value="">Assign to deck…</option>
-						{#each decks as d (d.id)}<option value={d.id}>{d.name}</option>{/each}
-					</select>
-					<button disabled={busy} onclick={bulkWishlist}>Add to wishlist</button>
-				</div>
-			{/if}
-
-			{#if rows.length === 0}
-				<p class="muted">Your collection is empty. Add cards from a set's binder view.</p>
-			{:else if view === 'grid'}
-				<div class="cardgrid">
-					{#each filtered as row (row.id)}
-						<button
-							class="cardtile"
-							class:picked={selectMode && selected.has(row.id)}
-							title="{row.name} · {variantLabel(row.variant)}"
-							onclick={() => openCard(row)}
-						>
-							{#if row.image_small}
-								<img src={row.image_small} alt={row.name} loading="lazy" />
-							{:else}
-								<div class="tilenoart">{row.name}</div>
-							{/if}
-							{#if selectMode && selected.has(row.id)}<span class="tick">✓</span>{/if}
-						</button>
-					{/each}
-				</div>
-			{:else}
-				<table>
-					<thead>
-						<tr>
-							{#if selectMode}
-								<th class="cbcol">
-									<input type="checkbox" checked={allSelected} onchange={toggleAll} />
-								</th>
-							{/if}
-							<th class="thumbcol"></th>
-							<th>Name</th>
-							<th>Set</th>
-							<th>#</th>
-							<th>Variant</th>
-							<th>Rarity</th>
-							<th>Condition</th>
-							<th>Status</th>
-							<th>Paid</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each filtered as row (row.id)}
-							<tr class:picked={selectMode && selected.has(row.id)}>
-								{#if selectMode}
-									<td class="cbcol">
-										<input
-											type="checkbox"
-											checked={selected.has(row.id)}
-											onchange={() => toggleRow(row.id)}
-										/>
-									</td>
+							</td>
+						{/if}
+						<td class="thumbcol">
+							<button class="thumb" onclick={() => openCard(row)} aria-label={row.name}>
+								{#if row.image_small}
+									<img src={row.image_small} alt={row.name} loading="lazy" />
+								{:else}
+									<span class="thumbnoart">?</span>
 								{/if}
-								<td class="thumbcol">
-									<button class="thumb" onclick={() => openCard(row)} aria-label={row.name}>
-										{#if row.image_small}
-											<img src={row.image_small} alt={row.name} loading="lazy" />
-										{:else}
-											<span class="thumbnoart">?</span>
-										{/if}
-									</button>
-								</td>
-								<td>
-									<button class="linkish" onclick={() => openCard(row)}>{row.name}</button>
-								</td>
-								<td>{row.set_code}</td>
-								<td>{row.number}</td>
-								<td>{variantLabel(row.variant)}</td>
-								<td>{row.rarity ?? '—'}</td>
-								<td>{row.condition}</td>
-								<td>{row.status}</td>
-								<td>{price(row.purchase_price)}</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			{/if}
-		</main>
-	</div>
+							</button>
+						</td>
+						<td>
+							<button class="linkish" onclick={() => openCard(row)}>{row.name}</button>
+						</td>
+						<td>{row.set_code}</td>
+						<td>{row.number}</td>
+						<td>{variantLabel(row.variant)}</td>
+						<td>{row.rarity ?? '—'}</td>
+						<td>{row.condition}</td>
+						<td>{row.status}</td>
+						<td>{price(row.purchase_price)}</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	{/if}
 {/if}
 
 {#if selectedCard}
@@ -432,69 +301,21 @@
 	.error {
 		color: #e94560;
 	}
-	.layout {
-		display: flex;
-		gap: 1.5rem;
-		align-items: flex-start;
-	}
-	.sidebar {
-		flex: 0 0 200px;
-		display: flex;
-		flex-direction: column;
-		gap: 1rem;
-	}
-	.sidebar section h3 {
-		margin: 0 0 0.4rem;
-		font-size: 0.8rem;
-		text-transform: uppercase;
-		color: #888;
-	}
-	.search,
-	.viewpick {
+	.search {
 		width: 100%;
+		max-width: 480px;
 		padding: 0.5rem;
 		background: #1a1a2e;
 		border: 1px solid #0f3460;
 		border-radius: 6px;
 		color: #e0e0e0;
-	}
-	.viewpick {
-		margin-bottom: 0.5rem;
-	}
-	.content > .search {
 		margin-bottom: 0.6rem;
-	}
-	.viewbtns {
-		display: flex;
-		gap: 0.4rem;
-		flex-wrap: wrap;
-	}
-	.viewbtns button {
-		flex: 1;
-		padding: 0.35rem;
-		font-size: 0.8rem;
-		background: #0f3460;
-		border: none;
-		border-radius: 6px;
-		color: #e0e0e0;
-		cursor: pointer;
-	}
-	.viewbtns button:hover {
-		background: #e94560;
-	}
-	.check {
-		display: block;
-		font-size: 0.85rem;
-		padding: 0.1rem 0;
-	}
-	.content {
-		flex: 1;
-		min-width: 0;
 	}
 	.toolbar {
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
+		flex-wrap: wrap;
 	}
 	.toolbar .muted {
 		margin: 0;
@@ -543,6 +364,7 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
 		gap: 0.8rem;
+		margin-top: 0.8rem;
 	}
 	.cardtile {
 		position: relative;
@@ -629,17 +451,6 @@
 		border-radius: 3px;
 		color: #888;
 	}
-
-	/* Stack the facet sidebar above the content on narrow screens. */
-	@media (max-width: 640px) {
-		.layout {
-			flex-direction: column;
-		}
-		.sidebar {
-			flex: 0 0 auto;
-			width: 100%;
-		}
-	}
 	.bulkbar {
 		display: flex;
 		align-items: center;
@@ -679,13 +490,11 @@
 		width: 1.5rem;
 		text-align: center;
 	}
-	tbody tr.picked {
-		background: rgba(233, 69, 96, 0.12);
-	}
 	table {
 		width: 100%;
 		border-collapse: collapse;
 		font-size: 0.9rem;
+		margin-top: 0.8rem;
 	}
 	th {
 		text-align: left;
@@ -702,10 +511,7 @@
 	tbody tr:hover {
 		background: rgba(233, 69, 96, 0.06);
 	}
-	a {
-		color: #e0e0e0;
-	}
-	a:hover {
-		color: #e94560;
+	tbody tr.picked {
+		background: rgba(233, 69, 96, 0.12);
 	}
 </style>

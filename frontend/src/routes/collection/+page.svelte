@@ -254,6 +254,13 @@
 		return `/rarity/${slug}.svg`;
 	}
 
+	// The classic ●/◆/★ glyphs are pure shapes filling their viewBox, so
+	// they read much larger than the detailed illustration/hyper/secret
+	// icons at the same render size. Scale just those three down to match.
+	function isBasicRarity(rarity: string | null): boolean {
+		return rarity === 'Common' || rarity === 'Uncommon' || rarity === 'Rare';
+	}
+
 	const RARITY_RANK: Record<string, number> = {
 		Common: 1,
 		Uncommon: 2,
@@ -613,6 +620,7 @@
 								{#if src}
 									<img
 										class="rarityicon"
+										class:basic={isBasicRarity(a.rarity)}
 										{src}
 										alt={a.rarity}
 										title={a.rarity}
@@ -995,6 +1003,13 @@
 		height: 22px;
 		display: inline-block;
 		vertical-align: middle;
+	}
+	/* Common / Uncommon / Rare are simple filled shapes — at 22px they
+	   read much heavier than the detailed illustration/hyper/secret icons.
+	   Halve them so the column feels visually balanced. */
+	.rarityicon.basic {
+		width: 11px;
+		height: 11px;
 	}
 
 	/* On a phone the table is just a denser version of itself — no row

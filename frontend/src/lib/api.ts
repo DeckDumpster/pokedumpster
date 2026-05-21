@@ -67,6 +67,12 @@ export const api = {
 	card: (setCode: string, number: string) =>
 		getJson<CardDetail>(`/api/card/${encodeURIComponent(setCode)}/${encodeURIComponent(number)}`),
 
+	/** Resolve a card name to its newest printing — drives the evolution links. */
+	cardByName: (name: string) =>
+		getJson<{ set_code: string; number: string }>(
+			`/api/cards/by-name/${encodeURIComponent(name)}`
+		),
+
 	/** Every set, with card and owned-card counts. */
 	sets: () => getJson<SetSummary[]>('/api/sets'),
 

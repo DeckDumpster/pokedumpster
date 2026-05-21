@@ -4,8 +4,14 @@
 	let {
 		setCode,
 		number,
-		onClose
-	}: { setCode: string; number: string; onClose: () => void } = $props();
+		onClose,
+		onNavigate
+	}: {
+		setCode: string;
+		number: string;
+		onClose: () => void;
+		onNavigate?: (set: string, number: string) => void;
+	} = $props();
 </script>
 
 <svelte:window
@@ -22,7 +28,7 @@
 		<button class="x" onclick={onClose} aria-label="Close">×</button>
 	</div>
 	<div class="body">
-		<CardDetailView {setCode} {number} />
+		<CardDetailView {setCode} {number} {onNavigate} />
 	</div>
 </div>
 

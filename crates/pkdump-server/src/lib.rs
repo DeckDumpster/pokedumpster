@@ -97,6 +97,12 @@ fn app(state: AppState, static_dir: PathBuf) -> Router {
         .route("/health", get(|| async { "ok" }))
         .nest("/api", routes::api_router())
         .nest_service("/_app", ServeDir::new(static_dir.join("_app")))
+        // Static-asset directories carried in by adapter-static. Each needs
+        // an explicit nest_service so they don't fall through to the SPA
+        // fallback (which would return index.html and the browser would
+        // render the icon as a broken HTML "image").
+        .nest_service("/rarity", ServeDir::new(static_dir.join("rarity")))
+        .nest_service("/energy", ServeDir::new(static_dir.join("energy")))
         .route_service("/robots.txt", ServeFile::new(static_dir.join("robots.txt")))
         .with_state(state)
         .fallback(get(spa))

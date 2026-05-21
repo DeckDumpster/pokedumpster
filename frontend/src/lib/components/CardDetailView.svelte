@@ -6,7 +6,18 @@
 
 	// The card-detail body, shared by the /card/[set]/[number] route and the
 	// collection-page modal. Self-contained: it fetches its own data.
-	let { setCode, number }: { setCode: string; number: string } = $props();
+	let {
+		setCode,
+		number,
+		onNavigate
+	}: {
+		setCode: string;
+		number: string;
+		/** Switch this view to a different (set, number) — wired by the
+		 *  collection modal to support evolution-chain links without
+		 *  closing/reopening. Falls back to a full-page nav if absent. */
+		onNavigate?: (set: string, number: string) => void;
+	} = $props();
 
 	let detail = $state<CardDetail | null>(null);
 	let binders = $state<Binder[]>([]);
@@ -74,11 +85,20 @@
 		return withBusy(() => api.moveCopy(copyId, body));
 	}
 
-	function jsonList(raw: string | null): string[] {
+	function parseStrArr(raw: string | null): string[] {
 		if (!raw) return [];
 		try {
-			const parsed: unknown = JSON.parse(raw);
-			return Array.isArray(parsed) ? parsed.map(String) : [];
+			const v: unknown = JSON.parse(raw);
+			return Array.isArray(v) ? v.map(String) : [];
+		} catch {
+			return [];
+		}
+	}
+	function parseObjArr<T = Record<string, unknown>>(raw: string | null): T[] {
+		if (!raw) return [];
+		try {
+			const v: unknown = JSON.parse(raw);
+			return Array.isArray(v) ? (v as T[]) : [];
 		} catch {
 			return [];
 		}
@@ -86,7 +106,39 @@
 	function price(p: number | null): string {
 		return p == null ? '—' : `$${p.toFixed(2)}`;
 	}
+
+	// Pokémon energy-type icons, served from /static/energy. Lowercased name
+	// matches the file under static/energy/.
+	function energyIcon(type: string): string {
+		return `/energy/${type.toLowerCase()}.png`;
+	}
+
+	type AttackData = {
+		name?: string;
+		cost?: string[];
+		damage?: string;
+		text?: string;
+	};
+	type AbilityData = { name?: string; type?: string; text?: string };
+	type WrData = { type?: string; value?: string };
+
+	// Evolution-link navigation. Resolves a card name to its newest printing
+	// via /api/cards/by-name, then switches the modal (or navigates the
+	// route page) to that card.
+	async function gotoCard(name: string) {
+		try {
+			const ref = await api.cardByName(name);
+			if (onNavigate) onNavigate(ref.set_code, ref.number);
+			else window.location.assign(`/card/${ref.set_code}/${ref.number}`);
+		} catch (e) {
+			error = `No card named "${name}" in catalog`;
+		}
+	}
 </script>
+
+<svelte:head>
+	<title>{detail ? detail.card.name : 'Card'} — PokeDumpster</title>
+</svelte:head>
 
 {#if loading && !detail}
 	<p class="muted">Loading…</p>
@@ -94,6 +146,7 @@
 	<p class="error">Failed to load card: {error}</p>
 {:else if detail}
 	{@const card = detail.card}
+
 	<div class="detail">
 		<div class="art">
 			{#if card.image_large}
@@ -108,29 +161,151 @@
 				{card.set_code} · #{card.number}{#if card.rarity} · {card.rarity}{/if}
 			</p>
 			<dl>
-				{#if card.supertype}<dt>Type</dt><dd>{card.supertype}</dd>{/if}
+				{#if card.supertype}<dt>Type</dt><dd>
+						{card.supertype}{#if parseStrArr(card.subtypes).length}
+							· {parseStrArr(card.subtypes).join(' ')}
+						{/if}
+					</dd>{/if}
 				{#if card.hp != null}<dt>HP</dt><dd>{card.hp}</dd>{/if}
-				{#if jsonList(card.types).length}
-					<dt>Energy</dt><dd>{jsonList(card.types).join(', ')}</dd>
+				{#if parseStrArr(card.types).length}
+					<dt>Element</dt>
+					<dd class="enr">
+						{#each parseStrArr(card.types) as t (t)}
+							<img class="energy" src={energyIcon(t)} alt={t} title={t} />
+						{/each}
+					</dd>
 				{/if}
+				{#if card.regulation_mark}<dt>Regulation</dt><dd>{card.regulation_mark}</dd>{/if}
 				{#if card.artist}<dt>Artist</dt><dd>{card.artist}</dd>{/if}
+
+				{#if card.evolves_from}
+					<dt>Evolves from</dt>
+					<dd>
+						<button class="evolink" onclick={() => gotoCard(card.evolves_from!)}>
+							{card.evolves_from}
+						</button>
+					</dd>
+				{/if}
+				{#if parseStrArr(card.evolves_to).length}
+					<dt>Evolves to</dt>
+					<dd>
+						{#each parseStrArr(card.evolves_to) as name, i (name)}
+							{#if i > 0},
+							{/if}
+							<button class="evolink" onclick={() => gotoCard(name)}>{name}</button>
+						{/each}
+					</dd>
+				{/if}
 			</dl>
-			{#if card.flavor_text}<p class="flavor">{card.flavor_text}</p>{/if}
 		</div>
 	</div>
 
 	{#if error}<p class="error">{error}</p>{/if}
 
+	{#if parseObjArr<AbilityData>(card.abilities).length > 0}
+		<section>
+			<h2>Abilities</h2>
+			{#each parseObjArr<AbilityData>(card.abilities) as ab, i (i)}
+				<div class="abilityBlock">
+					<div class="abilityHead">
+						{#if ab.type}<span class="abilityType">{ab.type}</span>{/if}
+						<span class="abilityName">{ab.name ?? ''}</span>
+					</div>
+					{#if ab.text}<p class="cardText">{ab.text}</p>{/if}
+				</div>
+			{/each}
+		</section>
+	{/if}
+
+	{#if parseObjArr<AttackData>(card.attacks).length > 0}
+		<section>
+			<h2>Attacks</h2>
+			{#each parseObjArr<AttackData>(card.attacks) as att, i (i)}
+				<div class="attackBlock">
+					<div class="attackHead">
+						<span class="attackCost">
+							{#each att.cost ?? [] as c (c)}
+								<img class="energy" src={energyIcon(c)} alt={c} title={c} />
+							{/each}
+						</span>
+						<span class="attackName">{att.name ?? ''}</span>
+						{#if att.damage}<span class="attackDamage">{att.damage}</span>{/if}
+					</div>
+					{#if att.text}<p class="cardText">{att.text}</p>{/if}
+				</div>
+			{/each}
+		</section>
+	{/if}
+
+	{#if parseObjArr<WrData>(card.weaknesses).length > 0 || parseObjArr<WrData>(card.resistances).length > 0 || parseStrArr(card.retreat_cost).length > 0}
+		<section class="combat">
+			{#if parseObjArr<WrData>(card.weaknesses).length > 0}
+				<div class="combatCell">
+					<h3>Weakness</h3>
+					{#each parseObjArr<WrData>(card.weaknesses) as w (w.type)}
+						<span class="wr">
+							{#if w.type}<img class="energy" src={energyIcon(w.type)} alt={w.type} title={w.type} />{/if}
+							{w.value ?? ''}
+						</span>
+					{/each}
+				</div>
+			{/if}
+			{#if parseObjArr<WrData>(card.resistances).length > 0}
+				<div class="combatCell">
+					<h3>Resistance</h3>
+					{#each parseObjArr<WrData>(card.resistances) as r (r.type)}
+						<span class="wr">
+							{#if r.type}<img class="energy" src={energyIcon(r.type)} alt={r.type} title={r.type} />{/if}
+							{r.value ?? ''}
+						</span>
+					{/each}
+				</div>
+			{/if}
+			{#if parseStrArr(card.retreat_cost).length > 0}
+				<div class="combatCell">
+					<h3>Retreat</h3>
+					<span class="retreat">
+						{#each parseStrArr(card.retreat_cost) as c, i (i)}
+							<img class="energy" src={energyIcon(c)} alt={c} title={c} />
+						{/each}
+					</span>
+				</div>
+			{/if}
+		</section>
+	{/if}
+
+	{#if card.flavor_text}<p class="flavor">{card.flavor_text}</p>{/if}
+
 	<section>
 		<h2>Printings</h2>
 		<table>
-			<thead><tr><th>Variant</th><th>Owned</th><th>Market</th><th></th></tr></thead>
+			<thead>
+				<tr>
+					<th>Variant</th>
+					<th>Owned</th>
+					<th>Market</th>
+					<th>Links</th>
+					<th></th>
+				</tr>
+			</thead>
 			<tbody>
 				{#each detail.printings as p (p.printing_id)}
 					<tr class:dim={p.deprecated}>
 						<td data-label="Variant">{variantLabel(p.variant)}</td>
 						<td data-label="Owned">{p.owned_count}</td>
 						<td data-label="Market">{price(p.market_price)}</td>
+						<td data-label="Links">
+							{#if p.tcgplayer_product_id != null}
+								<a
+									class="tcgp"
+									href="https://www.tcgplayer.com/product/{p.tcgplayer_product_id}"
+									target="_blank"
+									rel="noopener"
+								>
+									TCGplayer →
+								</a>
+							{/if}
+						</td>
 						<td data-label="">
 							<button disabled={busy || p.deprecated} onclick={() => addCopy(p.printing_id)}>
 								+ Add
@@ -237,17 +412,42 @@
 	dl {
 		display: grid;
 		grid-template-columns: auto 1fr;
-		gap: 0.25rem 1rem;
+		gap: 0.3rem 1rem;
 		margin: 0;
 	}
 	dt {
 		color: #888;
 		font-size: 0.85rem;
 	}
+	dd {
+		margin: 0;
+	}
+	.enr {
+		display: inline-flex;
+		gap: 0.25rem;
+		align-items: center;
+	}
+	.energy {
+		width: 18px;
+		height: 18px;
+		vertical-align: middle;
+	}
+	.evolink {
+		background: none;
+		border: none;
+		color: #e94560;
+		cursor: pointer;
+		font: inherit;
+		padding: 0;
+		text-decoration: underline dotted;
+	}
+	.evolink:hover {
+		color: #ff6b85;
+	}
 	.flavor {
 		font-style: italic;
 		color: #aaa;
-		margin-top: 1rem;
+		margin: 1.5rem 0 0;
 	}
 	section {
 		margin-top: 2rem;
@@ -255,7 +455,77 @@
 	h2 {
 		color: #e94560;
 		font-size: 1.1rem;
+		margin: 0 0 0.4rem;
 	}
+	h3 {
+		color: #888;
+		font-size: 0.75rem;
+		text-transform: uppercase;
+		margin: 0 0 0.3rem;
+	}
+
+	/* Abilities + attacks: compact card-style blocks. */
+	.abilityBlock,
+	.attackBlock {
+		border-left: 3px solid #0f3460;
+		padding: 0.4rem 0.7rem;
+		margin-bottom: 0.6rem;
+	}
+	.abilityHead,
+	.attackHead {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+		font-weight: 600;
+	}
+	.abilityType {
+		background: #5c3a1a;
+		color: #f0c878;
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		padding: 1px 5px;
+		border-radius: 3px;
+	}
+	.abilityName,
+	.attackName {
+		color: #e0e0e0;
+	}
+	.attackCost {
+		display: inline-flex;
+		gap: 2px;
+	}
+	.attackDamage {
+		margin-left: auto;
+		color: #e94560;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
+	}
+	.cardText {
+		margin: 0.25rem 0 0;
+		color: #ccc;
+		font-size: 0.88rem;
+		line-height: 1.4;
+	}
+
+	/* Weakness / Resistance / Retreat: three small cells side by side. */
+	.combat {
+		display: flex;
+		gap: 1.5rem;
+		flex-wrap: wrap;
+		margin-top: 1.2rem;
+	}
+	.combatCell {
+		min-width: 90px;
+	}
+	.wr,
+	.retreat {
+		display: inline-flex;
+		gap: 0.2rem;
+		align-items: center;
+		font-size: 0.95rem;
+		color: #ddd;
+	}
+
 	table {
 		width: 100%;
 		max-width: 640px;
@@ -284,6 +554,14 @@
 		border-radius: 6px;
 		padding: 0.15rem;
 		font: inherit;
+	}
+	.tcgp {
+		font-size: 0.8rem;
+		color: #4a8df0;
+		text-decoration: none;
+	}
+	.tcgp:hover {
+		color: #e94560;
 	}
 	button {
 		background: #e94560;

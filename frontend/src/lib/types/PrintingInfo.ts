@@ -4,4 +4,8 @@
  * One printing of a card, with how many copies the user owns and the
  * latest TCGplayer market price (NULL until printing↔product linking lands).
  */
-export type PrintingInfo = { printing_id: string, variant: string, language: string, badge_overlay: string | null, image_override: string | null, deprecated: boolean, owned_count: number, market_price: number | null, };
+export type PrintingInfo = { printing_id: string, variant: string, language: string, badge_overlay: string | null, image_override: string | null, deprecated: boolean, owned_count: number, market_price: number | null, 
+/**
+ * TCGplayer product id, used to deep-link a printing to its product page.
+ */
+tcgplayer_product_id: number | null, };

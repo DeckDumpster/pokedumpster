@@ -25,4 +25,9 @@ types: string | null,
  * JSON array of attacks, each with a `cost` energy list — the table
  * renders one pip line per attack.
  */
-attacks: string | null, image_small: string | null, };
+attacks: string | null, 
+/**
+ * Latest TCGplayer market price for this exact printing (NULL when
+ * the printing isn't linked to a product, or no snapshot exists).
+ */
+market_price: number | null, image_small: string | null, };

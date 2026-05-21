@@ -14,7 +14,16 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
 COPY data/ data/
 
-RUN cargo build --release --locked --bin pkdump
+# BuildKit cache mounts: the cargo registry + the workspace's target/ both
+# persist across rebuilds, so a small Rust change incrementally compiles in
+# seconds instead of triggering a 3-4 minute release rebuild from scratch.
+# `cp` the binary out at the end because the cache mount disappears after
+# the RUN, taking target/release/pkdump with it.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target,sharing=locked \
+    cargo build --release --locked --bin pkdump \
+ && mkdir -p /out \
+ && cp target/release/pkdump /out/pkdump
 
 # --- Stage 2: SvelteKit build -----------------------------------------------
 # adapter-static emits the SPA to frontend/build. The committed ts-rs types in
@@ -38,7 +47,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/pkdump /usr/local/bin/pkdump
+COPY --from=builder /out/pkdump /usr/local/bin/pkdump
 COPY --from=frontend /app/frontend/build /srv/pkdump/static
 
 # Catalog + per-user databases live on a mounted volume.

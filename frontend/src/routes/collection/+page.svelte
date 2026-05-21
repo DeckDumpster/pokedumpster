@@ -52,7 +52,7 @@
 		} else {
 			sortKey = key;
 			// Counts and money default to high→low; everything else low→high.
-			sortDir = key === 'qty' || key === 'paid' ? 'desc' : 'asc';
+			sortDir = key === 'qty' || key === 'market' ? 'desc' : 'asc';
 		}
 	}
 
@@ -82,6 +82,9 @@
 
 	const filtered = $derived(
 		rows.filter((r) => !search || r.name.toLowerCase().includes(search))
+	);
+	const totalValue = $derived(
+		filtered.reduce((s, r) => s + (r.market_price ?? 0), 0)
 	);
 
 	function price(p: number | null): string {
@@ -113,6 +116,7 @@
 		ids: number[];
 		qty: number;
 		paid_total: number | null;
+		market_total: number | null;
 		printing_id: string;
 		card_id: string;
 		set_code: string;
@@ -142,12 +146,16 @@
 				if (r.purchase_price != null) {
 					existing.paid_total = (existing.paid_total ?? 0) + r.purchase_price;
 				}
+				if (r.market_price != null) {
+					existing.market_total = (existing.market_total ?? 0) + r.market_price;
+				}
 			} else {
 				map.set(key, {
 					key,
 					ids: [r.id],
 					qty: 1,
 					paid_total: r.purchase_price,
+					market_total: r.market_price,
 					printing_id: r.printing_id,
 					card_id: r.card_id,
 					set_code: r.set_code,
@@ -203,19 +211,11 @@
 		return subs.length ? `${a.supertype} · ${subs.join(' ')}` : a.supertype;
 	}
 
-	const ENERGY_COLOR: Record<string, string> = {
-		Grass: '#7ab91d',
-		Fire: '#e94022',
-		Water: '#3b98f1',
-		Lightning: '#f0b70f',
-		Psychic: '#945faa',
-		Fighting: '#c58f4d',
-		Darkness: '#2b2a3a',
-		Metal: '#9b9aa3',
-		Fairy: '#e91e92',
-		Dragon: '#c79c2e',
-		Colorless: '#a8a8a8'
-	};
+	// Energy-type icons live under /static/energy/<lowercase>.png — pulled
+	// from pkmn.gg (see static/energy/README.md).
+	function energyIcon(type: string): string {
+		return `/energy/${type.toLowerCase()}.png`;
+	}
 
 	// Map a catalog rarity string ("Special Illustration Rare",
 	// "MEGA_ATTACK_RARE") to the kebab-slug filename under static/rarity/
@@ -259,22 +259,6 @@
 		return RARITY_RANK[r] ?? 6;
 	}
 
-	const COND_RANK: Record<string, number> = {
-		'Near Mint': 0,
-		'Lightly Played': 1,
-		'Moderately Played': 2,
-		'Heavily Played': 3,
-		Damaged: 4
-	};
-	const COND_ABBREV: Record<string, string> = {
-		'Near Mint': 'NM',
-		'Lightly Played': 'LP',
-		'Moderately Played': 'MP',
-		'Heavily Played': 'HP',
-		Damaged: 'D'
-	};
-	const condAbbrev = (c: string): string => COND_ABBREV[c] ?? c;
-
 	function numberKey(n: string): number {
 		const m = n.match(/(\d+)/);
 		return m ? parseInt(m[1], 10) : 0;
@@ -294,10 +278,8 @@
 				return numberKey(a.number);
 			case 'rarity':
 				return rarityRank(a.rarity);
-			case 'condition':
-				return COND_RANK[a.condition] ?? 99;
-			case 'paid':
-				return a.paid_total ?? -1;
+			case 'market':
+				return a.market_total ?? -1;
 			default:
 				return 0;
 		}
@@ -451,7 +433,10 @@
 		oninput={(e) => onSearch(e.currentTarget.value)}
 	/>
 	<div class="toolbar">
-		<p class="muted">{filtered.length} of {rows.length} cards</p>
+		<p class="muted">
+			{filtered.length}
+			cards{#if totalValue > 0}, ${totalValue.toFixed(2)}{/if}
+		</p>
 		<span class="spacer"></span>
 		{#if rows.length > 0}
 			<div class="viewtoggle">
@@ -537,8 +522,7 @@
 					{@render sortable('rarity', 'Rarity', 'center')}
 					{@render sortable('set', 'Set', 'center')}
 					{@render sortable('number', '#', 'num')}
-					{@render sortable('condition', 'Cond', '')}
-					{@render sortable('paid', 'Paid', 'num')}
+					{@render sortable('market', 'Market', 'num')}
 				</tr>
 			</thead>
 			<tbody>
@@ -577,11 +561,7 @@
 							{#each parseAttacks(a.attacks) as att, i (i)}
 								<span class="attackline" title={att.name}>
 									{#each att.cost as c, j (j)}
-										<span
-											class="pip"
-											style:background-color={ENERGY_COLOR[c] ?? '#888'}
-											title={c}
-										></span>
+										<img class="energy" src={energyIcon(c)} alt={c} title={c} />
 									{/each}
 								</span>
 							{/each}
@@ -616,8 +596,9 @@
 							{/if}
 						</td>
 						<td class="num">{a.number}</td>
-						<td>{condAbbrev(a.condition)}</td>
-						<td class="num">{a.paid_total != null ? `$${a.paid_total.toFixed(2)}` : '—'}</td>
+						<td class="num">
+							{a.market_total != null ? `$${a.market_total.toFixed(2)}` : '—'}
+						</td>
 					</tr>
 				{/each}
 			</tbody>
@@ -626,7 +607,12 @@
 {/if}
 
 {#if selectedCard}
-	<CardModal setCode={selectedCard.set} number={selectedCard.number} onClose={closeCard} />
+	<CardModal
+		setCode={selectedCard.set}
+		number={selectedCard.number}
+		onClose={closeCard}
+		onNavigate={(s, n) => (selectedCard = { set: s, number: n })}
+	/>
 {/if}
 
 <style>
@@ -882,12 +868,11 @@
 		line-height: 1;
 		margin: 1px 0;
 	}
-	.pip {
-		width: 12px;
-		height: 12px;
-		border-radius: 50%;
+	.energy {
+		width: 16px;
+		height: 16px;
 		display: inline-block;
-		border: 1px solid rgba(0, 0, 0, 0.4);
+		vertical-align: middle;
 	}
 
 	/* Inline tags (variant, non-owned status) — DD card-tag pattern. */

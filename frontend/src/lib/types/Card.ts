@@ -4,4 +4,12 @@
  * A catalog card. JSON-typed columns (`subtypes`, `attacks`, …) are passed
  * through as raw JSON strings for the frontend to parse.
  */
-export type Card = { card_id: string, set_code: string, number: string, number_sortable: number, name: string, supertype: string | null, subtypes: string | null, hp: number | null, types: string | null, rarity: string | null, artist: string | null, flavor_text: string | null, attacks: string | null, abilities: string | null, weaknesses: string | null, resistances: string | null, retreat_cost: string | null, regulation_mark: string | null, national_pokedex_numbers: string | null, legalities: string | null, image_small: string | null, image_large: string | null, };
+export type Card = { card_id: string, set_code: string, number: string, number_sortable: number, name: string, supertype: string | null, subtypes: string | null, hp: number | null, types: string | null, rarity: string | null, artist: string | null, flavor_text: string | null, attacks: string | null, abilities: string | null, weaknesses: string | null, resistances: string | null, retreat_cost: string | null, regulation_mark: string | null, national_pokedex_numbers: string | null, legalities: string | null, image_small: string | null, image_large: string | null, 
+/**
+ * pokemontcg.io `evolvesFrom` — the name of the card this evolves from.
+ */
+evolves_from: string | null, 
+/**
+ * pokemontcg.io `evolvesTo` — a JSON array of names this evolves to.
+ */
+evolves_to: string | null, };

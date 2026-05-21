@@ -9,7 +9,9 @@ use crate::error::Result;
 const CARD_COLS: &str = "card_id, set_code, number, number_sortable, name, \
      supertype, subtypes, hp, types, rarity, artist, flavor_text, attacks, \
      abilities, weaknesses, resistances, retreat_cost, regulation_mark, \
-     national_pokedex_numbers, legalities, image_small, image_large";
+     national_pokedex_numbers, legalities, image_small, image_large, \
+     json_extract(raw_json, '$.evolvesFrom') AS evolves_from, \
+     json_extract(raw_json, '$.evolvesTo')   AS evolves_to";
 
 /// A catalog card. JSON-typed columns (`subtypes`, `attacks`, …) are passed
 /// through as raw JSON strings for the frontend to parse.
@@ -40,6 +42,10 @@ pub struct Card {
     pub legalities: Option<String>,
     pub image_small: Option<String>,
     pub image_large: Option<String>,
+    /// pokemontcg.io `evolvesFrom` — the name of the card this evolves from.
+    pub evolves_from: Option<String>,
+    /// pokemontcg.io `evolvesTo` — a JSON array of names this evolves to.
+    pub evolves_to: Option<String>,
 }
 
 /// One printing of a card, with how many copies the user owns and the
@@ -56,6 +62,9 @@ pub struct PrintingInfo {
     #[ts(type = "number")]
     pub owned_count: i64,
     pub market_price: Option<f64>,
+    /// TCGplayer product id, used to deep-link a printing to its product page.
+    #[ts(type = "number | null")]
+    pub tcgplayer_product_id: Option<i64>,
 }
 
 /// The full card-detail payload.
@@ -91,6 +100,8 @@ fn card_from_row(r: &rusqlite::Row) -> rusqlite::Result<Card> {
         legalities: r.get(19)?,
         image_small: r.get(20)?,
         image_large: r.get(21)?,
+        evolves_from: r.get(22)?,
+        evolves_to: r.get(23)?,
     })
 }
 
@@ -120,7 +131,8 @@ pub fn get_card_detail(
                     (SELECT lp.price FROM latest_prices lp \
                        WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
                          AND lp.price_type = 'market' \
-                         AND lp.sub_type_name = ({subtype}) LIMIT 1) \
+                         AND lp.sub_type_name = ({subtype}) LIMIT 1), \
+                    p.tcgplayer_product_id \
              FROM printings p WHERE p.card_id = ?1 ORDER BY p.variant",
             subtype = crate::VARIANT_PRICE_SUBTYPE,
         ))?;
@@ -134,6 +146,7 @@ pub fn get_card_detail(
                 deprecated: r.get::<_, Option<String>>(5)?.is_some(),
                 owned_count: r.get(6)?,
                 market_price: r.get(7)?,
+                tcgplayer_product_id: r.get(8)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>()?
@@ -145,6 +158,22 @@ pub fn get_card_detail(
         printings,
         copies,
     }))
+}
+
+/// Find a card by name — return the (set_code, number) of the most
+/// recently-released printing. Used by the modal's evolution links so a
+/// name like "Pikachu" resolves to a clickable card.
+pub fn find_first_by_name(conn: &Connection, name: &str) -> Result<Option<(String, String)>> {
+    Ok(conn
+        .prepare(
+            "SELECT cd.set_code, cd.number FROM cards cd \
+               JOIN sets s ON cd.set_code = s.set_code \
+             WHERE cd.name = ?1 COLLATE NOCASE \
+             ORDER BY s.release_date DESC NULLS LAST, cd.set_code, cd.number_sortable \
+             LIMIT 1",
+        )?
+        .query_row([name], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()?)
 }
 
 #[cfg(test)]

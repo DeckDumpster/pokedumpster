@@ -27,8 +27,19 @@
 	let selected = $state(new Set<number>());
 	let busy = $state(false);
 
-	// Grid (card images) vs. table view, and the card-detail modal.
-	let view = $state<'grid' | 'table'>('grid');
+	// Grid (card images) vs. table view — persisted across reloads in
+	// localStorage so refreshes don't snap back to the default.
+	function readStoredView(): 'grid' | 'table' {
+		if (typeof window === 'undefined') return 'grid';
+		const v = localStorage.getItem('collection.view');
+		return v === 'table' || v === 'grid' ? v : 'grid';
+	}
+	let view = $state<'grid' | 'table'>(readStoredView());
+	$effect(() => {
+		if (typeof window !== 'undefined') {
+			localStorage.setItem('collection.view', view);
+		}
+	});
 	let selectedCard = $state<{ set: string; number: string } | null>(null);
 
 	// Column sort for the table view.
@@ -113,6 +124,7 @@
 		supertype: string | null;
 		subtypes: string | null;
 		types: string | null;
+		attacks: string | null;
 		variant: string;
 		condition: string;
 		status: string;
@@ -147,6 +159,7 @@
 					supertype: r.supertype,
 					subtypes: r.subtypes,
 					types: r.types,
+					attacks: r.attacks,
 					variant: r.variant,
 					condition: r.condition,
 					status: r.status,
@@ -162,6 +175,23 @@
 		try {
 			const v: unknown = JSON.parse(s);
 			return Array.isArray(v) ? v.map(String) : [];
+		} catch {
+			return [];
+		}
+	}
+
+	// Attack list — one line of energy pips per attack in the Cost column.
+	type Attack = { name: string; cost: string[] };
+	function parseAttacks(s: string | null): Attack[] {
+		if (!s) return [];
+		try {
+			const v: unknown = JSON.parse(s);
+			if (!Array.isArray(v)) return [];
+			return v.map((a) => {
+				const obj = a as { name?: unknown; cost?: unknown };
+				const cost = Array.isArray(obj.cost) ? obj.cost.map(String) : [];
+				return { name: String(obj.name ?? ''), cost };
+			});
 		} catch {
 			return [];
 		}
@@ -187,47 +217,15 @@
 		Colorless: '#a8a8a8'
 	};
 
-	// Pokémon rarities → a small Unicode glyph + style tier (filled vs gold
-	// vs rainbow). Tooltipped with the full rarity name so the meaning is
-	// never lost.
-	type RarityGlyph = { glyph: string; class: string };
-	const RARITY_GLYPHS: Record<string, RarityGlyph> = {
-		Common: { glyph: '●', class: 'r-common' },
-		Uncommon: { glyph: '◆', class: 'r-uncommon' },
-		Rare: { glyph: '★', class: 'r-rare' },
-		'Rare Holo': { glyph: '★', class: 'r-holo' },
-		'Radiant Rare': { glyph: '★', class: 'r-holo' },
-		Promo: { glyph: '✦', class: 'r-promo' },
-		'Classic Collection': { glyph: '★', class: 'r-holo' },
-		'Rare Holo EX': { glyph: '★', class: 'r-double' },
-		'Rare Holo GX': { glyph: '★', class: 'r-double' },
-		'Rare Holo V': { glyph: '★', class: 'r-double' },
-		'Double Rare': { glyph: '★★', class: 'r-double' },
-		'Rare Holo VMAX': { glyph: '★', class: 'r-ultra' },
-		'Rare Holo VSTAR': { glyph: '★', class: 'r-ultra' },
-		'Ultra Rare': { glyph: '★', class: 'r-ultra' },
-		'Amazing Rare': { glyph: '✦', class: 'r-ultra' },
-		'Rare Shiny': { glyph: '✦', class: 'r-ultra' },
-		'Rare Shiny GX': { glyph: '✦', class: 'r-ultra' },
-		'Illustration Rare': { glyph: '✦', class: 'r-illust' },
-		'Trainer Gallery Rare Holo': { glyph: '✦', class: 'r-illust' },
-		'Rare Secret': { glyph: '✧', class: 'r-secret' },
-		'Rare Rainbow': { glyph: '✧', class: 'r-secret' },
-		'Special Illustration Rare': { glyph: '✦✦', class: 'r-sir' },
-		'Hyper Rare': { glyph: '✧✧✧', class: 'r-hyper' },
-		'Rare Holo Star': { glyph: '✧', class: 'r-hyper' }
-	};
-	function rarityGlyph(rarity: string | null): RarityGlyph | null {
+	// Map a catalog rarity string ("Special Illustration Rare",
+	// "MEGA_ATTACK_RARE") to the kebab-slug filename under static/rarity/
+	// where the matching SVG lives. Same lowercase + dash rule as the
+	// fetcher in static/rarity/README.md, so a refresh from pkmn.gg is
+	// fire-and-forget.
+	function rarityIconSrc(rarity: string | null): string | null {
 		if (!rarity) return null;
-		if (RARITY_GLYPHS[rarity]) return RARITY_GLYPHS[rarity];
-		// Loose fallbacks for new tiers not in the table.
-		if (rarity.includes('Hyper')) return RARITY_GLYPHS['Hyper Rare'];
-		if (rarity.includes('Special Illustration')) return RARITY_GLYPHS['Special Illustration Rare'];
-		if (rarity.includes('Illustration')) return RARITY_GLYPHS['Illustration Rare'];
-		if (rarity.includes('Secret') || rarity.includes('Rainbow')) return RARITY_GLYPHS['Rare Secret'];
-		if (rarity.includes('Holo')) return RARITY_GLYPHS['Rare Holo'];
-		if (rarity.includes('Rare')) return RARITY_GLYPHS['Rare'];
-		return { glyph: '●', class: 'r-common' };
+		const slug = rarity.toLowerCase().replace(/[ ._]/g, '-');
+		return `/rarity/${slug}.svg`;
 	}
 
 	const RARITY_RANK: Record<string, number> = {
@@ -537,7 +535,7 @@
 					{@render sortable('type', 'Type', '')}
 					<th>Cost</th>
 					{@render sortable('rarity', 'Rarity', 'center')}
-					{@render sortable('set', 'Set', '')}
+					{@render sortable('set', 'Set', 'center')}
 					{@render sortable('number', '#', 'num')}
 					{@render sortable('condition', 'Cond', '')}
 					{@render sortable('paid', 'Paid', 'num')}
@@ -576,27 +574,46 @@
 						</td>
 						<td><span class="typecell">{typeLabel(a)}</span></td>
 						<td>
-							<span class="pips">
-								{#each parseJsonStrArr(a.types) as t (t)}
-									<span
-										class="pip"
-										style:background-color={ENERGY_COLOR[t] ?? '#888'}
-										title={t}
-									></span>
-								{/each}
-							</span>
+							{#each parseAttacks(a.attacks) as att, i (i)}
+								<span class="attackline" title={att.name}>
+									{#each att.cost as c, j (j)}
+										<span
+											class="pip"
+											style:background-color={ENERGY_COLOR[c] ?? '#888'}
+											title={c}
+										></span>
+									{/each}
+								</span>
+							{/each}
 						</td>
 						<td class="center">
-							{#if rarityGlyph(a.rarity)}
-								{@const g = rarityGlyph(a.rarity)}
-								<span class="rarity {g?.class}" title={a.rarity}>{g?.glyph}</span>
+							{#if a.rarity}
+								{@const src = rarityIconSrc(a.rarity)}
+								{#if src}
+									<img
+										class="rarityicon"
+										{src}
+										alt={a.rarity}
+										title={a.rarity}
+										onerror={(e) =>
+											((e.currentTarget as HTMLImageElement).style.display = 'none')}
+									/>
+								{/if}
 							{/if}
 						</td>
-						<td>
-							<div class="setcell" title={a.set_code}>
-								{#if a.set_symbol_url}<img class="setsym" src={a.set_symbol_url} alt="" />{/if}
-								<span>{(a.set_ptcgo_code ?? a.set_code).toUpperCase()}</span>
-							</div>
+						<td class="center">
+							{#if a.set_symbol_url}
+								<img
+									class="setsym"
+									src={a.set_symbol_url}
+									alt="{(a.set_ptcgo_code ?? a.set_code).toUpperCase()}/{a.set_code}"
+									title="{(a.set_ptcgo_code ?? a.set_code).toUpperCase()}/{a.set_code}"
+								/>
+							{:else}
+								<span title={a.set_code}>
+									{(a.set_ptcgo_code ?? a.set_code).toUpperCase()}
+								</span>
+							{/if}
 						</td>
 						<td class="num">{a.number}</td>
 						<td>{condAbbrev(a.condition)}</td>
@@ -844,7 +861,7 @@
 		width: 110px;
 		height: 36px;
 		object-fit: cover;
-		object-position: center 18%;
+		object-position: top center;
 		border-radius: 3px;
 		flex-shrink: 0;
 		background: #0d1424;
@@ -858,10 +875,12 @@
 		font-size: 0.85rem;
 		white-space: nowrap;
 	}
-	.pips {
-		display: inline-flex;
+	.attackline {
+		display: flex;
 		gap: 3px;
 		align-items: center;
+		line-height: 1;
+		margin: 1px 0;
 	}
 	.pip {
 		width: 12px;
@@ -910,59 +929,23 @@
 		border-color: #8c2a3a;
 	}
 
-	/* Set cell: small symbol + collector-facing code. */
-	.setcell {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		white-space: nowrap;
-	}
+	/* Set cell: just the symbol; alt/title carries "PFL/me2". */
 	.setsym {
 		height: 22px;
 		width: auto;
+		max-width: 36px;
 		object-fit: contain;
+		vertical-align: middle;
 	}
 
-	/* Rarity glyph: a tier-coloured Unicode symbol with the full name on
-	   hover. Pokémon's actual rarity icons aren't part of the catalog, so
-	   the glyphs stand in. */
-	.rarity {
-		font-size: 1rem;
-		line-height: 1;
-		letter-spacing: -0.1em;
-	}
-	.r-common {
-		color: #888;
-	}
-	.r-uncommon {
-		color: #aaa;
-	}
-	.r-rare {
-		color: #d8d8d8;
-	}
-	.r-holo,
-	.r-promo {
-		color: #f0b70f;
-		text-shadow: 0 0 4px rgba(240, 183, 15, 0.45);
-	}
-	.r-double {
-		color: #f7c845;
-		text-shadow: 0 0 4px rgba(240, 183, 15, 0.6);
-	}
-	.r-ultra,
-	.r-illust {
-		background: linear-gradient(45deg, #f0b70f, #e94560, #6bd968);
-		-webkit-background-clip: text;
-		background-clip: text;
-		color: transparent;
-	}
-	.r-sir,
-	.r-secret,
-	.r-hyper {
-		background: linear-gradient(45deg, #f0b70f, #e94560, #4a8df0, #6bd968, #945faa);
-		-webkit-background-clip: text;
-		background-clip: text;
-		color: transparent;
+	/* Real Pokémon rarity icons live under static/rarity/, sourced from
+	   pkmn.gg (see static/rarity/README.md). Sized to sit comfortably in
+	   one table-row height. */
+	.rarityicon {
+		width: 22px;
+		height: 22px;
+		display: inline-block;
+		vertical-align: middle;
 	}
 
 	/* On a phone the table is just a denser version of itself — no row

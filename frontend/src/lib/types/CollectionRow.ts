@@ -20,4 +20,9 @@ subtypes: string | null,
 /**
  * JSON array of the card's energy types, e.g. `["Fire"]`.
  */
-types: string | null, image_small: string | null, };
+types: string | null, 
+/**
+ * JSON array of attacks, each with a `cost` energy list — the table
+ * renders one pip line per attack.
+ */
+attacks: string | null, image_small: string | null, };

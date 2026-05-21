@@ -213,6 +213,9 @@ pub struct CollectionRow {
     pub subtypes: Option<String>,
     /// JSON array of the card's energy types, e.g. `["Fire"]`.
     pub types: Option<String>,
+    /// JSON array of attacks, each with a `cost` energy list — the table
+    /// renders one pip line per attack.
+    pub attacks: Option<String>,
     pub image_small: Option<String>,
 }
 
@@ -220,7 +223,8 @@ const ROW_COLUMNS: &str = "c.id, c.printing_id, c.condition, c.language, \
      c.purchase_price, c.sale_price, c.acquired_at, c.source, c.notes, \
      c.status, c.graded, c.binder_id, c.deck_id, p.variant, cd.card_id, \
      cd.set_code, s.ptcgo_code, s.symbol_url, cd.number, cd.name, \
-     cd.rarity, cd.supertype, cd.subtypes, cd.types, cd.image_small";
+     cd.rarity, cd.supertype, cd.subtypes, cd.types, cd.attacks, \
+     cd.image_small";
 
 const ROW_FROM: &str = "FROM collection c \
      JOIN printings p ON c.printing_id = p.printing_id \
@@ -253,7 +257,8 @@ fn collection_row_from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionRow>
         supertype: r.get(21)?,
         subtypes: r.get(22)?,
         types: r.get(23)?,
-        image_small: r.get(24)?,
+        attacks: r.get(24)?,
+        image_small: r.get(25)?,
     })
 }
 

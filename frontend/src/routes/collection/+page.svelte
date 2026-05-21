@@ -281,6 +281,8 @@
 				return a.name.toLowerCase();
 			case 'type':
 				return `${typeMain(a)} ${typeSub(a)}`.toLowerCase();
+			case 'etype':
+				return parseJsonStrArr(a.types).join(' ').toLowerCase();
 			case 'set':
 				return (a.set_ptcgo_code ?? a.set_code).toLowerCase();
 			case 'number':
@@ -526,7 +528,8 @@
 					{/if}
 					{@render sortable('qty', 'Qty', 'num')}
 					{@render sortable('name', 'Name', '')}
-					{@render sortable('type', 'Type', '')}
+					{@render sortable('type', 'Class', '')}
+					{@render sortable('etype', 'Type', 'center')}
 					<th>Cost</th>
 					{@render sortable('rarity', 'Rarity', 'center')}
 					{@render sortable('set', 'Set', 'center')}
@@ -569,6 +572,13 @@
 							<span class="typecell">
 								<span class="typeMain">{typeMain(a)}</span>
 								{#if typeSub(a)}<span class="typeSub">{typeSub(a)}</span>{/if}
+							</span>
+						</td>
+						<td class="center">
+							<span class="etypes">
+								{#each parseJsonStrArr(a.types) as t (t)}
+									<img class="energy" src={energyIcon(t)} alt={t} title={t} />
+								{/each}
 							</span>
 						</td>
 						<td>
@@ -899,6 +909,11 @@
 		align-items: center;
 		line-height: 1;
 		margin: 1px 0;
+	}
+	.etypes {
+		display: inline-flex;
+		gap: 2px;
+		align-items: center;
 	}
 	.energy {
 		width: 16px;

@@ -264,7 +264,12 @@
 	// they read much larger than the detailed illustration/hyper/secret
 	// icons at the same render size. Scale just those three down to match.
 	function isBasicRarity(rarity: string | null): boolean {
-		return rarity === 'Common' || rarity === 'Uncommon' || rarity === 'Rare';
+		return (
+			rarity === 'Common' ||
+			rarity === 'Uncommon' ||
+			rarity === 'Rare' ||
+			rarity === 'Illustration Rare'
+		);
 	}
 
 	const RARITY_RANK: Record<string, number> = {
@@ -472,38 +477,80 @@
   +layout.svelte.
 -->
 <header class="topbar">
-	<a class="brand" href="/" aria-label="Home" title="Home">PokeDumpster</a>
-	<input
-		class="search"
-		type="text"
-		placeholder="Search cards…"
-		value={searchRaw}
-		oninput={(e) => onSearch(e.currentTarget.value)}
-	/>
-	{#if rows.length > 0}
-		<div class="viewtoggle" role="group" aria-label="View">
+	<div class="row row1">
+		<a class="brand" href="/" aria-label="Home" title="Home">
+			<!-- Pokéball mark: red strokes on transparent, DD-style. -->
+			<svg
+				class="brandmark"
+				viewBox="0 0 24 24"
+				xmlns="http://www.w3.org/2000/svg"
+				aria-hidden="true"
+			>
+				<circle
+					cx="12"
+					cy="12"
+					r="10"
+					fill="none"
+					stroke="#e94560"
+					stroke-width="2"
+				/>
+				<line
+					x1="2.5"
+					y1="12"
+					x2="21.5"
+					y2="12"
+					stroke="#e94560"
+					stroke-width="2"
+				/>
+				<circle
+					cx="12"
+					cy="12"
+					r="3.2"
+					fill="none"
+					stroke="#e94560"
+					stroke-width="2"
+				/>
+			</svg>
+		</a>
+		<input
+			class="search"
+			type="text"
+			placeholder="Search cards…"
+			value={searchRaw}
+			oninput={(e) => onSearch(e.currentTarget.value)}
+		/>
+	</div>
+	<div class="row row2">
+		<p class="countline muted">
+			{filtered.length}
+			cards{#if totalValue > 0}, ${totalValue.toFixed(2)}{/if}
+		</p>
+		{#if rows.length > 0}
+			<div class="viewtoggle" role="group" aria-label="View">
+				<button
+					class:on={view === 'grid'}
+					onclick={() => (view = 'grid')}
+					aria-label="Grid view"
+					title="Grid"
+				>▦</button>
+				<button
+					class:on={view === 'table'}
+					onclick={() => (view = 'table')}
+					aria-label="Table view"
+					title="Table"
+				>≡</button>
+			</div>
 			<button
-				class:on={view === 'grid'}
-				onclick={() => (view = 'grid')}
-				aria-label="Grid view"
-				title="Grid"
-			>▦</button>
-			<button
-				class:on={view === 'table'}
-				onclick={() => (view = 'table')}
-				aria-label="Table view"
-				title="Table"
-			>≡</button>
-		</div>
-		<button
-			class="burger"
-			onclick={() => (menuOpen = !menuOpen)}
-			aria-label="Menu"
-			aria-expanded={menuOpen}
-			title="Menu"
-		>☰</button>
-	{/if}
+				class="burger"
+				onclick={() => (menuOpen = !menuOpen)}
+				aria-label="Menu"
+				aria-expanded={menuOpen}
+				title="Menu"
+			>⋯</button>
+		{/if}
+	</div>
 </header>
+<div class="topbarSpacer" aria-hidden="true"></div>
 
 {#if menuOpen}
 	<div
@@ -530,10 +577,6 @@
 {:else if error}
 	<p class="error">Failed to load collection: {error}</p>
 {:else}
-	<p class="muted countline">
-		{filtered.length}
-		cards{#if totalValue > 0}, ${totalValue.toFixed(2)}{/if}
-	</p>
 
 	{#if selectMode && selected.size > 0}
 		<div class="bulkbar">
@@ -592,6 +635,7 @@
 				{/if}
 			</th>
 		{/snippet}
+		<div class="tableScroll">
 		<table class="dd">
 			<thead>
 				<tr>
@@ -702,6 +746,7 @@
 				{/each}
 			</tbody>
 		</table>
+		</div>
 	{/if}
 {/if}
 
@@ -725,39 +770,65 @@
 	/* --- DD-style top chrome ------------------------------------------- */
 
 	.topbar {
-		position: sticky;
+		/* Fixed (not just sticky) so horizontal table scroll can't drag
+		   the bar off the left of the viewport. The page itself never
+		   needs to scroll horizontally — the table does, inside its own
+		   .tableScroll container. */
+		position: fixed;
 		top: 0;
+		left: 0;
+		right: 0;
 		z-index: 50;
 		display: flex;
-		gap: 0.6rem;
-		align-items: center;
-		padding: 0.5rem 0.6rem;
+		flex-direction: column;
+		gap: 0.3rem;
+		padding: 0.4rem 0.7rem 0.45rem;
 		background: #16213e;
 		border-bottom: 1px solid #0f3460;
-		/* Bleed across the parent <main>'s padding so the bar pins flush
-		   to the viewport edges. */
-		margin: -0.6rem -0.6rem 0.6rem;
+	}
+	/* An in-page spacer the height of the fixed topbar so the rest of
+	   the page content doesn't slide under it. */
+	.topbarSpacer {
+		height: 5.5rem;
+	}
+	.row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.row2 {
+		justify-content: flex-end;
 	}
 	.brand {
-		font-weight: 700;
-		font-size: 1.05rem;
-		color: #e94560;
+		display: inline-flex;
+		align-items: center;
 		text-decoration: none;
-		white-space: nowrap;
+		flex-shrink: 0;
 	}
-	.brand:hover {
-		color: #ff6b85;
+	.brandmark {
+		width: 26px;
+		height: 26px;
+		display: block;
+	}
+	.brand:hover .brandmark {
+		filter: brightness(1.2);
 	}
 	.search {
 		flex: 1;
 		min-width: 0;
-		max-width: 480px;
-		padding: 0.4rem 0.55rem;
+		padding: 0.45rem 0.6rem;
 		background: #1a1a2e;
 		border: 1px solid #0f3460;
 		border-radius: 6px;
 		color: #e0e0e0;
 		font: inherit;
+	}
+	.countline {
+		margin: 0;
+		font-size: 0.85rem;
+	}
+	.tableScroll {
+		overflow-x: auto;
 	}
 	.viewtoggle {
 		display: flex;

@@ -205,10 +205,19 @@
 		}
 	}
 
-	function typeLabel(a: AggRow): string {
-		if (!a.supertype) return '';
-		const subs = parseJsonStrArr(a.subtypes);
-		return subs.length ? `${a.supertype} · ${subs.join(' ')}` : a.supertype;
+	function typeMain(a: AggRow): string {
+		return a.supertype ?? '';
+	}
+	function typeSub(a: AggRow): string {
+		return parseJsonStrArr(a.subtypes).join(' ');
+	}
+
+	// Short tag in the Name cell. The two common foil treatments collapse
+	// to single-letter badges; rarer treatments keep room for their name.
+	function variantTag(code: string): string {
+		if (code === 'holo') return 'H';
+		if (code === 'reverse_holo') return 'R';
+		return variantLabel(code);
 	}
 
 	// Energy-type icons live under /static/energy/<lowercase>.png — pulled
@@ -271,7 +280,7 @@
 			case 'name':
 				return a.name.toLowerCase();
 			case 'type':
-				return typeLabel(a).toLowerCase();
+				return `${typeMain(a)} ${typeSub(a)}`.toLowerCase();
 			case 'set':
 				return (a.set_ptcgo_code ?? a.set_code).toLowerCase();
 			case 'number':
@@ -546,7 +555,7 @@
 								<span class="cardname">{a.name}</span>
 								{#if a.variant !== 'normal'}
 									<span class="tag vtag" title={variantLabel(a.variant)}>
-										{variantLabel(a.variant)}
+										{variantTag(a.variant)}
 									</span>
 								{/if}
 								{#if statusBadge(a.status)}
@@ -556,7 +565,12 @@
 								{/if}
 							</div>
 						</td>
-						<td><span class="typecell">{typeLabel(a)}</span></td>
+						<td>
+							<span class="typecell">
+								<span class="typeMain">{typeMain(a)}</span>
+								{#if typeSub(a)}<span class="typeSub">{typeSub(a)}</span>{/if}
+							</span>
+						</td>
 						<td>
 							{#each parseAttacks(a.attacks) as att, i (i)}
 								<span class="attackline" title={att.name}>
@@ -856,9 +870,27 @@
 		font-weight: 500;
 		color: #e0e0e0;
 	}
+	/* Type cell: main type on top, subtypes on a smaller second line —
+	   matching DeckDumpster's .type-cell / .type-sub split. */
 	.typecell {
-		color: #ccc;
+		display: inline-flex;
+		flex-direction: column;
+		gap: 1px;
+		line-height: 1.2;
+		max-width: 180px;
+	}
+	.typeMain {
+		color: #ddd;
 		font-size: 0.85rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.typeSub {
+		color: #777;
+		font-size: 0.72rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.attackline {

@@ -201,20 +201,31 @@ pub struct CollectionRow {
     pub variant: String,
     pub card_id: String,
     pub set_code: String,
+    /// The collector-facing 3-letter set code (e.g. "MEW", "PFL"), if known.
+    pub set_ptcgo_code: Option<String>,
+    pub set_symbol_url: Option<String>,
     pub number: String,
     pub name: String,
     pub rarity: Option<String>,
+    /// `Pokémon` | `Trainer` | `Energy`.
+    pub supertype: Option<String>,
+    /// JSON array, e.g. `["Supporter"]` or `["Basic","ex"]`.
+    pub subtypes: Option<String>,
+    /// JSON array of the card's energy types, e.g. `["Fire"]`.
+    pub types: Option<String>,
     pub image_small: Option<String>,
 }
 
 const ROW_COLUMNS: &str = "c.id, c.printing_id, c.condition, c.language, \
      c.purchase_price, c.sale_price, c.acquired_at, c.source, c.notes, \
      c.status, c.graded, c.binder_id, c.deck_id, p.variant, cd.card_id, \
-     cd.set_code, cd.number, cd.name, cd.rarity, cd.image_small";
+     cd.set_code, s.ptcgo_code, s.symbol_url, cd.number, cd.name, \
+     cd.rarity, cd.supertype, cd.subtypes, cd.types, cd.image_small";
 
 const ROW_FROM: &str = "FROM collection c \
      JOIN printings p ON c.printing_id = p.printing_id \
-     JOIN cards cd ON p.card_id = cd.card_id";
+     JOIN cards cd ON p.card_id = cd.card_id \
+     JOIN sets s ON cd.set_code = s.set_code";
 
 fn collection_row_from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionRow> {
     Ok(CollectionRow {
@@ -234,10 +245,15 @@ fn collection_row_from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionRow>
         variant: r.get(13)?,
         card_id: r.get(14)?,
         set_code: r.get(15)?,
-        number: r.get(16)?,
-        name: r.get(17)?,
-        rarity: r.get(18)?,
-        image_small: r.get(19)?,
+        set_ptcgo_code: r.get(16)?,
+        set_symbol_url: r.get(17)?,
+        number: r.get(18)?,
+        name: r.get(19)?,
+        rarity: r.get(20)?,
+        supertype: r.get(21)?,
+        subtypes: r.get(22)?,
+        types: r.get(23)?,
+        image_small: r.get(24)?,
     })
 }
 

@@ -4,4 +4,20 @@
  * A collection entry joined to its printing and card — the display-ready
  * shape the `/collection` UI renders.
  */
-export type CollectionRow = { id: number, printing_id: string, condition: string, language: string, purchase_price: number | null, sale_price: number | null, acquired_at: string, source: string, notes: string | null, status: string, graded: boolean, binder_id: number | null, deck_id: number | null, variant: string, card_id: string, set_code: string, number: string, name: string, rarity: string | null, image_small: string | null, };
+export type CollectionRow = { id: number, printing_id: string, condition: string, language: string, purchase_price: number | null, sale_price: number | null, acquired_at: string, source: string, notes: string | null, status: string, graded: boolean, binder_id: number | null, deck_id: number | null, variant: string, card_id: string, set_code: string, 
+/**
+ * The collector-facing 3-letter set code (e.g. "MEW", "PFL"), if known.
+ */
+set_ptcgo_code: string | null, set_symbol_url: string | null, number: string, name: string, rarity: string | null, 
+/**
+ * `Pokémon` | `Trainer` | `Energy`.
+ */
+supertype: string | null, 
+/**
+ * JSON array, e.g. `["Supporter"]` or `["Basic","ex"]`.
+ */
+subtypes: string | null, 
+/**
+ * JSON array of the card's energy types, e.g. `["Fire"]`.
+ */
+types: string | null, image_small: string | null, };

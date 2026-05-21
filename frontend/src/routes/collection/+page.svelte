@@ -42,6 +42,12 @@
 	});
 	let selectedCard = $state<{ set: string; number: string } | null>(null);
 
+	// Burger menu (Export CSV, Select) lives in the sticky top bar.
+	let menuOpen = $state(false);
+	function closeMenu() {
+		menuOpen = false;
+	}
+
 	// Column sort for the table view.
 	let sortKey = $state('name');
 	let sortDir = $state<'asc' | 'desc'>('asc');
@@ -453,13 +459,20 @@
 
 <svelte:head><title>Collection — PokeDumpster</title></svelte:head>
 
-<h1>Collection</h1>
+<svelte:window
+	onkeydown={(e) => {
+		if (e.key === 'Escape') menuOpen = false;
+	}}
+/>
 
-{#if loading}
-	<p class="muted">Loading…</p>
-{:else if error}
-	<p class="error">Failed to load collection: {error}</p>
-{:else}
+<!--
+  DD-style chrome: a sticky top bar with brand → home, the search
+  pinned to the viewport, glyph view toggle, and Export/Select hidden
+  behind a burger. The global nav is suppressed for this page by
+  +layout.svelte.
+-->
+<header class="topbar">
+	<a class="brand" href="/" aria-label="Home" title="Home">PokeDumpster</a>
 	<input
 		class="search"
 		type="text"
@@ -467,23 +480,60 @@
 		value={searchRaw}
 		oninput={(e) => onSearch(e.currentTarget.value)}
 	/>
-	<div class="toolbar">
-		<p class="muted">
-			{filtered.length}
-			cards{#if totalValue > 0}, ${totalValue.toFixed(2)}{/if}
-		</p>
-		<span class="spacer"></span>
-		{#if rows.length > 0}
-			<div class="viewtoggle">
-				<button class:on={view === 'grid'} onclick={() => (view = 'grid')}>Grid</button>
-				<button class:on={view === 'table'} onclick={() => (view = 'table')}>Table</button>
-			</div>
-			<a class="ghost" href="/api/export/csv" download>Export CSV</a>
-			<button class="ghost" onclick={toggleSelectMode}>
-				{selectMode ? 'Cancel' : 'Select'}
-			</button>
-		{/if}
+	{#if rows.length > 0}
+		<div class="viewtoggle" role="group" aria-label="View">
+			<button
+				class:on={view === 'grid'}
+				onclick={() => (view = 'grid')}
+				aria-label="Grid view"
+				title="Grid"
+			>▦</button>
+			<button
+				class:on={view === 'table'}
+				onclick={() => (view = 'table')}
+				aria-label="Table view"
+				title="Table"
+			>≡</button>
+		</div>
+		<button
+			class="burger"
+			onclick={() => (menuOpen = !menuOpen)}
+			aria-label="Menu"
+			aria-expanded={menuOpen}
+			title="Menu"
+		>☰</button>
+	{/if}
+</header>
+
+{#if menuOpen}
+	<div
+		class="menuBackdrop"
+		role="presentation"
+		onclick={closeMenu}
+	></div>
+	<div class="menu" role="menu">
+		<a class="menuItem" href="/api/export/csv" download onclick={closeMenu}>Export CSV</a>
+		<button
+			class="menuItem"
+			onclick={() => {
+				toggleSelectMode();
+				closeMenu();
+			}}
+		>
+			{selectMode ? 'Cancel select' : 'Select'}
+		</button>
 	</div>
+{/if}
+
+{#if loading}
+	<p class="muted">Loading…</p>
+{:else if error}
+	<p class="error">Failed to load collection: {error}</p>
+{:else}
+	<p class="muted countline">
+		{filtered.length}
+		cards{#if totalValue > 0}, ${totalValue.toFixed(2)}{/if}
+	</p>
 
 	{#if selectMode && selected.size > 0}
 		<div class="bulkbar">
@@ -665,51 +715,49 @@
 {/if}
 
 <style>
-	h1 {
-		color: #e94560;
-	}
 	.muted {
 		color: #888;
 	}
 	.error {
 		color: #e94560;
 	}
+
+	/* --- DD-style top chrome ------------------------------------------- */
+
+	.topbar {
+		position: sticky;
+		top: 0;
+		z-index: 50;
+		display: flex;
+		gap: 0.6rem;
+		align-items: center;
+		padding: 0.5rem 0.6rem;
+		background: #16213e;
+		border-bottom: 1px solid #0f3460;
+		/* Bleed across the parent <main>'s padding so the bar pins flush
+		   to the viewport edges. */
+		margin: -0.6rem -0.6rem 0.6rem;
+	}
+	.brand {
+		font-weight: 700;
+		font-size: 1.05rem;
+		color: #e94560;
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.brand:hover {
+		color: #ff6b85;
+	}
 	.search {
-		width: 100%;
+		flex: 1;
+		min-width: 0;
 		max-width: 480px;
-		padding: 0.5rem;
+		padding: 0.4rem 0.55rem;
 		background: #1a1a2e;
 		border: 1px solid #0f3460;
 		border-radius: 6px;
 		color: #e0e0e0;
-		margin-bottom: 0.6rem;
-	}
-	.toolbar {
-		display: flex;
-		align-items: center;
-		gap: 0.75rem;
-		flex-wrap: wrap;
-	}
-	.toolbar .muted {
-		margin: 0;
-	}
-	.spacer {
-		flex: 1;
-	}
-	.ghost {
-		background: none;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
-		border-radius: 6px;
-		padding: 0.3rem 0.8rem;
-		font-size: 0.85rem;
-		cursor: pointer;
-		text-decoration: none;
-		display: inline-block;
-	}
-	.ghost:hover {
-		border-color: #e94560;
-		color: #e94560;
+		font: inherit;
 	}
 	.viewtoggle {
 		display: flex;
@@ -718,8 +766,9 @@
 		background: none;
 		border: 1px solid #0f3460;
 		color: #888;
-		padding: 0.3rem 0.7rem;
-		font-size: 0.85rem;
+		padding: 0.25rem 0.55rem;
+		font-size: 1.1rem;
+		line-height: 1;
 		cursor: pointer;
 	}
 	.viewtoggle button:first-child {
@@ -732,6 +781,60 @@
 	.viewtoggle button.on {
 		background: #0f3460;
 		color: #e0e0e0;
+	}
+	.burger {
+		background: none;
+		border: 1px solid transparent;
+		color: #888;
+		font-size: 1.3rem;
+		line-height: 1;
+		padding: 0.25rem 0.55rem;
+		cursor: pointer;
+		border-radius: 6px;
+	}
+	.burger:hover {
+		color: #e0e0e0;
+		border-color: #0f3460;
+	}
+
+	.menuBackdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 49;
+	}
+	.menu {
+		position: fixed;
+		top: 50px;
+		right: 0.7rem;
+		z-index: 60;
+		display: flex;
+		flex-direction: column;
+		min-width: 180px;
+		background: #16213e;
+		border: 1px solid #0f3460;
+		border-radius: 8px;
+		padding: 0.3rem;
+		box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+	}
+	.menuItem {
+		background: none;
+		border: none;
+		color: #e0e0e0;
+		text-align: left;
+		padding: 0.45rem 0.7rem;
+		font: inherit;
+		font-size: 0.9rem;
+		border-radius: 5px;
+		cursor: pointer;
+		text-decoration: none;
+		display: block;
+	}
+	.menuItem:hover {
+		background: #0f3460;
+		color: #e94560;
+	}
+	.countline {
+		margin: 0.2rem 0 0.6rem;
 	}
 
 	/* --- Grid view ------------------------------------------------------ */

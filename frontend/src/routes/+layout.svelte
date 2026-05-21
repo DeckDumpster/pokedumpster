@@ -1,7 +1,12 @@
 <script lang="ts">
+	import { page } from '$app/state';
 	import favicon from '$lib/assets/favicon.svg';
 
 	let { children } = $props();
+
+	// Pages that paint their own DD-style chrome (brand + sticky search +
+	// burger) suppress the global nav header. Index keeps the full nav.
+	const pagesWithOwnChrome = ['/collection'];
 
 	const nav = [
 		{ href: '/', label: 'Home' },
@@ -21,14 +26,16 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-<header>
-	<a class="brand" href="/">PokeDumpster</a>
-	<nav>
-		{#each nav as item (item.href)}
-			<a href={item.href}>{item.label}</a>
-		{/each}
-	</nav>
-</header>
+{#if !pagesWithOwnChrome.includes(page.url.pathname)}
+	<header>
+		<a class="brand" href="/">PokeDumpster</a>
+		<nav>
+			{#each nav as item (item.href)}
+				<a href={item.href}>{item.label}</a>
+			{/each}
+		</nav>
+	</header>
+{/if}
 
 <main>
 	{@render children()}

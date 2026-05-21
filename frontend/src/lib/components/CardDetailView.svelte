@@ -107,10 +107,26 @@
 		return p == null ? '—' : `$${p.toFixed(2)}`;
 	}
 
-	// Pokémon energy-type icons, served from /static/energy. Lowercased name
-	// matches the file under static/energy/.
+	// Pokémon energy-type icons, served from /static/energy. "Free" (a
+	// zero-energy attack cost rendered on the card art as a clear circle)
+	// falls back to colorless; any other unknown type does too rather than
+	// 404 → broken-image.
+	const KNOWN_ENERGY = new Set([
+		'grass',
+		'fire',
+		'water',
+		'lightning',
+		'psychic',
+		'fighting',
+		'darkness',
+		'metal',
+		'fairy',
+		'dragon',
+		'colorless'
+	]);
 	function energyIcon(type: string): string {
-		return `/energy/${type.toLowerCase()}.png`;
+		const t = type.toLowerCase();
+		return `/energy/${KNOWN_ENERGY.has(t) ? t : 'colorless'}.png`;
 	}
 
 	type AttackData = {

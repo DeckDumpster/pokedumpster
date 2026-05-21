@@ -221,9 +221,26 @@
 	}
 
 	// Energy-type icons live under /static/energy/<lowercase>.png — pulled
-	// from pkmn.gg (see static/energy/README.md).
+	// from pkmn.gg (see static/energy/README.md). "Free" — a zero-energy
+	// attack cost the card art draws as a clear circle — maps to the
+	// colorless icon, and anything else unknown falls back to colorless
+	// rather than 404 → broken-image.
+	const KNOWN_ENERGY = new Set([
+		'grass',
+		'fire',
+		'water',
+		'lightning',
+		'psychic',
+		'fighting',
+		'darkness',
+		'metal',
+		'fairy',
+		'dragon',
+		'colorless'
+	]);
 	function energyIcon(type: string): string {
-		return `/energy/${type.toLowerCase()}.png`;
+		const t = type.toLowerCase();
+		return `/energy/${KNOWN_ENERGY.has(t) ? t : 'colorless'}.png`;
 	}
 
 	// Map a catalog rarity string ("Special Illustration Rare",

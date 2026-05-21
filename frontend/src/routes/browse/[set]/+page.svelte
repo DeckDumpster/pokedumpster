@@ -31,7 +31,6 @@
 	];
 
 	let selectedSlot = $state<BinderSlot | null>(null);
-	let viewportWidth = $state(0);
 
 	// One binder-browse session per set visit groups its adds under a batch
 	// (PLAN §6.7). The batch is created lazily on the first add so merely
@@ -127,13 +126,9 @@
 		return 3;
 	}
 
-	// Narrow viewports cap the pocket-layout column count (PLAN §6.9).
-	const cols = $derived.by(() => {
-		const base = columns(layout);
-		if (viewportWidth > 0 && viewportWidth < 480) return 1;
-		if (viewportWidth > 0 && viewportWidth < 768) return Math.min(2, base);
-		return base;
-	});
+	// Always show the full binder-page column count — a 9-pocket page fits
+	// three columns even on a phone (cards scale down, pkmn.gg-style).
+	const cols = $derived(columns(layout));
 
 	const sectionLabel: Record<string, string> = {
 		base: '',
@@ -171,8 +166,6 @@
 </script>
 
 <svelte:head><title>{binder ? binder.set.name : 'Binder'} — PokeDumpster</title></svelte:head>
-<svelte:window bind:innerWidth={viewportWidth} />
-
 {#if loading && !binder}
 	<p class="muted">Loading…</p>
 {:else if error && !binder}
@@ -493,6 +486,17 @@
 		}
 		.bar {
 			width: 120px;
+		}
+		/* Tighter binder so a full page fits — small gaps, thin borders,
+		   no foot padding eating the card. */
+		.grid {
+			gap: 0.25rem;
+		}
+		.slot {
+			border-width: 1px;
+		}
+		.foot {
+			padding: 0.2rem 0.3rem;
 		}
 	}
 </style>

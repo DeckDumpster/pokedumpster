@@ -71,4 +71,9 @@
 	main {
 		padding: 1.5rem;
 	}
+	@media (max-width: 540px) {
+		main {
+			padding: 0.6rem;
+		}
+	}
 </style>

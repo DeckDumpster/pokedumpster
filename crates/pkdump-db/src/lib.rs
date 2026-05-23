@@ -32,12 +32,23 @@ pub use paths::{current_user, pkdump_home, shared_db_path, user_db_path};
 
 /// SQL `CASE` mapping a printing's `variant` to its TCGplayer price
 /// sub-type. Embedded in the price subqueries (`cards`, `binder`); assumes
-/// the printings table is aliased `p`. Variants with no TCGplayer sub-type
-/// (ball-pattern reverse holos, stamps) fall through to NULL — no price.
+/// the printings table is aliased `p`. Pattern-overlay variants (ball
+/// patterns, energy symbol, team rocket) live as their own TCGplayer
+/// products but all price under sub_type "Holofoil"; the per-pattern
+/// product_id on the printing is what disambiguates them. Variants with
+/// no sub-type mapping (stamps for now) still fall through to NULL.
 pub(crate) const VARIANT_PRICE_SUBTYPE: &str = "CASE p.variant \
      WHEN 'normal' THEN 'Normal' \
      WHEN 'holo' THEN 'Holofoil' \
      WHEN 'reverse_holo' THEN 'Reverse Holofoil' \
      WHEN 'first_ed_holo' THEN '1st Edition Holofoil' \
      WHEN 'first_ed_normal' THEN '1st Edition Normal' \
-     WHEN 'unlimited_holo' THEN 'Unlimited Holofoil' END";
+     WHEN 'unlimited_holo' THEN 'Unlimited Holofoil' \
+     WHEN 'pokeball_rh' THEN 'Holofoil' \
+     WHEN 'masterball_rh' THEN 'Holofoil' \
+     WHEN 'quickball_rh' THEN 'Holofoil' \
+     WHEN 'duskball_rh' THEN 'Holofoil' \
+     WHEN 'loveball_rh' THEN 'Holofoil' \
+     WHEN 'friendball_rh' THEN 'Holofoil' \
+     WHEN 'energy_symbol_rh' THEN 'Holofoil' \
+     WHEN 'team_rocket_rh' THEN 'Holofoil' END";

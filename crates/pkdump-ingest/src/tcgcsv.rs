@@ -362,16 +362,29 @@ const BASE_PRODUCT_VARIANTS: &[&str] = &[
 /// sub_types on one product). Pattern products get their own product id and
 /// link to a specific printing_id.
 ///
-/// Examples:
-///   "Bulbasaur"                         -> None (base)
-///   "Bulbasaur - Poke Ball Pattern"     -> Some("pokeball_rh")
-///   "Swadloon (Master Ball Pattern)"    -> Some("masterball_rh")
+/// Token coverage (current as of 2026-05): ball patterns (Master, Quick,
+/// Dusk, Love, Friend, Poké) and the Ascended Heroes "Energy Symbol
+/// Pattern" + "Team Rocket" treatments. Match order is significant:
+/// more-specific tokens first so e.g. "Master Ball" doesn't fall through
+/// to a generic "Ball" rule.
 pub fn variant_from_product_name(name: &str) -> Option<&'static str> {
     let lower = name.to_lowercase();
     if lower.contains("master ball") {
         Some("masterball_rh")
+    } else if lower.contains("quick ball") {
+        Some("quickball_rh")
+    } else if lower.contains("dusk ball") {
+        Some("duskball_rh")
+    } else if lower.contains("love ball") {
+        Some("loveball_rh")
+    } else if lower.contains("friend ball") {
+        Some("friendball_rh")
     } else if lower.contains("poke ball") || lower.contains("poké ball") {
         Some("pokeball_rh")
+    } else if lower.contains("energy symbol") {
+        Some("energy_symbol_rh")
+    } else if lower.contains("team rocket") {
+        Some("team_rocket_rh")
     } else {
         None
     }
@@ -454,10 +467,21 @@ pub fn link_card_printings(conn: &mut Connection, products: &[TcgProduct]) -> Re
         };
         let updated = match variant_from_product_name(&product.name) {
             Some(pattern) => {
+                // UPSERT — if the variant-expansion overlay didn't already
+                // create the printing (most modern pattern variants aren't
+                // in our overlay), the TCGCSV product is itself the proof
+                // the printing exists in the real world, so we materialize
+                // it here and link it. An existing soft-deprecated row
+                // (from a prior expansion that dropped the variant) is
+                // un-deprecated so the printing stays live across runs.
                 let printing_id = format!("{card_id}-{pattern}");
                 tx.execute(
-                    "UPDATE printings SET tcgplayer_product_id = ?1 WHERE printing_id = ?2",
-                    rusqlite::params![product.product_id, printing_id],
+                    "INSERT INTO printings (printing_id, card_id, variant, language, tcgplayer_product_id) \
+                     VALUES (?1, ?2, ?3, 'en', ?4) \
+                     ON CONFLICT(printing_id) DO UPDATE SET \
+                       deprecated_at = NULL, \
+                       tcgplayer_product_id = excluded.tcgplayer_product_id",
+                    rusqlite::params![printing_id, card_id, pattern, product.product_id],
                 )?
             }
             None => tx.execute(&base_sql, rusqlite::params![product.product_id, card_id])?,
@@ -1000,10 +1024,14 @@ mod tests {
     }
 
     #[test]
-    fn link_card_printings_skips_pattern_when_printing_absent() {
-        // If we receive a pattern product for a card whose variant overlay
-        // didn't produce the matching printing, the UPDATE finds no row and
-        // we silently skip — no fabrication.
+    fn link_card_printings_auto_creates_pattern_printing_when_absent() {
+        // TCGCSV is authoritative for which pattern products exist. If our
+        // variant overlay didn't pre-create the matching printing (most
+        // modern pattern variants — Energy Symbol, the various Balls
+        // beyond Poké/Master — have no overlay rule), the linker
+        // materializes the printing via UPSERT and links it. This is what
+        // makes WHT/BLK/ASC pattern variants surface without a hand-curated
+        // overlay per set.
         let (_d, mut conn) = shared_db();
         conn.execute(
             "INSERT INTO sets (set_code, ptcgo_code, name, series) \
@@ -1040,7 +1068,7 @@ mod tests {
         let products = vec![TcgProduct {
             product_id: 642291,
             group_id: 24326,
-            name: "Swadloon - Master Ball Pattern".into(),
+            name: "Swadloon (Master Ball Pattern)".into(),
             image_url: None,
             url: None,
             extended_data: vec![ExtendedDatum {
@@ -1049,7 +1077,16 @@ mod tests {
             }],
         }];
         link_card_printings(&mut conn, &products).unwrap();
-        // Base printings untouched.
+        // The pattern printing was auto-created and linked.
+        let mb_pid: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings WHERE printing_id = 'rsv10pt5-2-masterball_rh'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mb_pid, 642291);
+        // Base printings still untouched (no base product was passed).
         let normal_pid: Option<i64> = conn
             .query_row(
                 "SELECT tcgplayer_product_id FROM printings WHERE printing_id = 'rsv10pt5-2-normal'",

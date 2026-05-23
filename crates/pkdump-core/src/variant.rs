@@ -33,8 +33,17 @@ pub const KNOWN_VARIANTS: &[&str] = &[
     "first_ed_holo",
     "first_ed_normal",
     "unlimited_holo",
+    // Pattern overlays (each printed as a separate TCGplayer product, all
+    // priced under sub_type "Holofoil"). Naming convention: pattern token
+    // + "_rh" suffix to denote "reverse-holo style overlay".
     "pokeball_rh",
     "masterball_rh",
+    "quickball_rh",
+    "duskball_rh",
+    "loveball_rh",
+    "friendball_rh",
+    "energy_symbol_rh",
+    "team_rocket_rh",
     "cosmos_holo",
     "double_rare",
     "ultra_rare",

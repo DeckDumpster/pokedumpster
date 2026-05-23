@@ -240,7 +240,7 @@
 				<div class="attackBlock">
 					<div class="attackHead">
 						<span class="attackCost">
-							{#each att.cost ?? [] as c (c)}
+							{#each att.cost ?? [] as c, i (i)}
 								<img class="energy" src={energyIcon(c)} alt={c} title={c} />
 							{/each}
 						</span>

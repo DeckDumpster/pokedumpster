@@ -174,6 +174,16 @@
 		return slot.printings.find((p) => p.variant === variant && !p.deprecated);
 	}
 
+	/** Whether a given variant is already represented by an inline
+	 *  checkbox at the top of the slot footer — used to avoid duplicating
+	 *  it as a pip below. */
+	function checkboxVariant(rarity: string | null, variant: string): boolean {
+		const kind = inlineKind(rarity);
+		if (kind === 'reg_rh') return variant === 'normal' || variant === 'reverse_holo';
+		if (kind === 'holo_rh') return variant === 'holo' || variant === 'reverse_holo';
+		return false;
+	}
+
 	// Remove the most recent copy of a printing — the binder modal's "−".
 	async function removeCopy(printingId: string) {
 		const slot = selectedSlot;
@@ -365,13 +375,18 @@
 								{@render inlineCheck(slot, 'holo', 'Holo')}
 								{@render inlineCheck(slot, 'reverse_holo', 'RH')}
 							</div>
-						{:else}
-							<div class="pips">
-								{#each slot.printings.filter((p) => !p.deprecated) as p (p.printing_id)}
-									<span class="pip" class:owned={p.owned_count > 0}></span>
-								{/each}
-							</div>
 						{/if}
+						<!-- Pips for every variant that isn't already an inline
+						     checkbox above — keeps pattern variants
+						     (Energy Symbol / Quick Ball / Master Ball / etc.)
+						     visible so the slot communicates total variant
+						     count even when a checkbox can't be drawn for
+						     them. -->
+						<div class="pips">
+							{#each slot.printings.filter((p) => !p.deprecated && !checkboxVariant(slot.rarity, p.variant)) as p (p.printing_id)}
+								<span class="pip" class:owned={p.owned_count > 0}></span>
+							{/each}
+						</div>
 					</div>
 				</button>
 			{/each}

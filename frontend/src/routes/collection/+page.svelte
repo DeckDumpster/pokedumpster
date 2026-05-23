@@ -1213,8 +1213,14 @@
 	table.dd tbody tr.picked {
 		background: rgba(233, 69, 96, 0.14);
 	}
+	/* Match the .cardtile.missing treatment so unowned catalog rows read
+	   the same way in table view as in grid view. */
 	table.dd tbody tr.missing {
 		color: #777;
+		opacity: 0.82;
+	}
+	table.dd tbody tr.missing img {
+		filter: grayscale(0.9) brightness(0.62);
 	}
 	table.dd .cbcol {
 		width: 1.5rem;

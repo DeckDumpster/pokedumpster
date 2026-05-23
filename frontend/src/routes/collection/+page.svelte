@@ -741,7 +741,7 @@
 							<input type="checkbox" checked={tableAllSelected} onchange={toggleTableAll} />
 						</th>
 					{/if}
-					{@render sortable('qty', 'Qty', 'num')}
+					{@render sortable('qty', 'Qty', 'num qty')}
 					{@render sortable('name', 'Name', '')}
 					{@render sortable('type', 'Class', '')}
 					{@render sortable('etype', 'Type', 'center')}
@@ -1137,9 +1137,11 @@
 
 	/* /collection runs edge-to-edge — the global layout adds 1.5rem of
 	   padding around <main> but the page has its own sticky chrome that
-	   already provides whatever padding the content needs. */
+	   already provides whatever padding the content needs. !important
+	   because the layout's `main { padding: 1.5rem }` is svelte-scoped
+	   (.s-XXX main) and wins the specificity tie. */
 	:global(body main) {
-		padding: 0;
+		padding: 0 !important;
 	}
 
 	/* --- Table view (DeckDumpster-style) ------------------------------ */
@@ -1189,9 +1191,11 @@
 		width: 1.5rem;
 		text-align: center;
 	}
-	table.dd .qty {
-		width: 2.5rem;
-		padding-right: 0.4rem;
+	table.dd th.qty,
+	table.dd td.qty {
+		width: 1.5rem;
+		padding-left: 0.35rem;
+		padding-right: 0.35rem;
 	}
 	/* DD-style pill around per-row price values; '—' stays unstyled so empty
 	   prices don't draw a box. */

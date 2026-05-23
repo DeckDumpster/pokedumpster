@@ -90,7 +90,9 @@ pub struct BinderQuery {
     /// Case-insensitive card-name substring. Empty means no search.
     pub search: String,
     /// `all` | `have` (own ≥1 printing) | `need` (own none) |
-    /// `dupes` (own ≥2 of some printing).
+    /// `dupes` (own ≥2 of some printing) | `incomplete` (missing at
+    /// least one printing — broader than `need`, which requires owning
+    /// nothing at all).
     pub filter: String,
 }
 
@@ -306,6 +308,11 @@ pub fn get_binder_page(
             "have" => owns_one(s),
             "need" => !owns_one(s),
             "dupes" => s.printings.iter().any(|p| p.owned_count >= 2),
+            "incomplete" => s
+                .printings
+                .iter()
+                .filter(|p| !p.deprecated)
+                .any(|p| p.owned_count == 0),
             _ => true, // "all"
         }
     });

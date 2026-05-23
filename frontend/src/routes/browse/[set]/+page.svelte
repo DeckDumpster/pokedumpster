@@ -43,6 +43,10 @@
 	let search = $state(initialQ.trim());
 	let searchDebounce: ReturnType<typeof setTimeout>;
 	let tab = $state(urlStr('tab', 'all'));
+	// Pill toggle, mutually exclusive with the tab — when on, the binder
+	// query asks for the broader "incomplete" filter (any printing not
+	// owned), regardless of the underlying tab.
+	let incompleteOnly = $state(urlBool('incomplete', false));
 
 	const tabs = [
 		{ key: 'all', label: 'All' },
@@ -78,7 +82,7 @@
 				promos: includePromos,
 				sort,
 				q: search,
-				filter: tab
+				filter: incompleteOnly ? 'incomplete' : tab
 			});
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -102,6 +106,7 @@
 		set('sort', sort, 'number');
 		set('q', searchRaw.trim(), '');
 		set('tab', tab, 'all');
+		set('incomplete', incompleteOnly ? '1' : '0', '0');
 		window.history.replaceState({}, '', url);
 	}
 
@@ -115,6 +120,7 @@
 		void sort;
 		void search;
 		void tab;
+		void incompleteOnly;
 		syncUrl();
 		load();
 	});
@@ -124,6 +130,12 @@
 	async function addCopy(printingId: string) {
 		const slot = selectedSlot;
 		if (!slot) return;
+		await addToSlot(slot, printingId);
+	}
+
+	/** Like addCopy but for slots not currently open in the modal — drives
+	 *  the inline Reg/RH/Holo quick-toggle checkboxes in each slot footer. */
+	async function addToSlot(slot: BinderSlot, printingId: string) {
 		const printing = slot.printings.find((p) => p.printing_id === printingId);
 		if (!printing) return;
 		printing.owned_count += 1;
@@ -143,6 +155,23 @@
 			printing.owned_count -= 1; // revert
 			error = e instanceof Error ? e.message : String(e);
 		}
+	}
+
+	/** Inline-checkbox kind for a slot's rarity:
+	 *    Common/Uncommon/Rare → Reg+RH
+	 *    Rare Holo          → Holo+RH
+	 *    Anything higher    → no inline checkboxes; modal-only.
+	 *  See intents browse_slot_inline_checkbox_reg_rh / _holo_rh. */
+	function inlineKind(rarity: string | null): 'reg_rh' | 'holo_rh' | null {
+		if (!rarity) return null;
+		const r = rarity.toLowerCase();
+		if (r === 'common' || r === 'uncommon' || r === 'rare') return 'reg_rh';
+		if (r === 'rare holo') return 'holo_rh';
+		return null;
+	}
+
+	function findPrinting(slot: BinderSlot, variant: string) {
+		return slot.printings.find((p) => p.variant === variant && !p.deprecated);
 	}
 
 	// Remove the most recent copy of a printing — the binder modal's "−".
@@ -242,10 +271,25 @@
 	<div class="filterbar">
 		<div class="tabs">
 			{#each tabs as t (t.key)}
-				<button class="tab" class:active={tab === t.key} onclick={() => setTab(t.key)}>
+				<button
+					class="tab"
+					class:active={!incompleteOnly && tab === t.key}
+					onclick={() => setTab(t.key)}
+				>
 					{t.label}
 				</button>
 			{/each}
+			<button
+				class="tab pill"
+				class:active={incompleteOnly}
+				title="Show only slots that are missing at least one variant"
+				onclick={() => {
+					incompleteOnly = !incompleteOnly;
+					pageNum = 1;
+				}}
+			>
+				Incomplete only
+			</button>
 		</div>
 		<input
 			class="search"
@@ -275,7 +319,7 @@
 				<option value="number_desc">Number ↓</option>
 				<option value="price">Price ↓</option>
 				<option value="name">Name A→Z</option>
-				<option value="rarity">Rarity ↓</option>
+				<option value="rarity">Rarity (grouped)</option>
 			</select>
 		</label>
 		<span class="spacer"></span>
@@ -311,11 +355,23 @@
 						<div class="noart">{slot.name}</div>
 					{/if}
 					<div class="foot">
-						<div class="pips">
-							{#each slot.printings.filter((p) => !p.deprecated) as p (p.printing_id)}
-								<span class="pip" class:owned={p.owned_count > 0}></span>
-							{/each}
-						</div>
+						{#if inlineKind(slot.rarity) === 'reg_rh'}
+							<div class="inline-checks">
+								{@render inlineCheck(slot, 'normal', 'Reg')}
+								{@render inlineCheck(slot, 'reverse_holo', 'RH')}
+							</div>
+						{:else if inlineKind(slot.rarity) === 'holo_rh'}
+							<div class="inline-checks">
+								{@render inlineCheck(slot, 'holo', 'Holo')}
+								{@render inlineCheck(slot, 'reverse_holo', 'RH')}
+							</div>
+						{:else}
+							<div class="pips">
+								{#each slot.printings.filter((p) => !p.deprecated) as p (p.printing_id)}
+									<span class="pip" class:owned={p.owned_count > 0}></span>
+								{/each}
+							</div>
+						{/if}
 					</div>
 				</button>
 			{/each}
@@ -337,6 +393,23 @@
 		{/if}
 	{/if}
 {/if}
+
+{#snippet inlineCheck(slot: BinderSlot, variant: string, label: string)}
+	{@const p = findPrinting(slot, variant)}
+	{#if p}
+		<label class="ck" class:on={p.owned_count > 0}>
+			<input
+				type="checkbox"
+				checked={p.owned_count > 0}
+				onclick={(e) => {
+					e.stopPropagation();
+					addToSlot(slot, p.printing_id);
+				}}
+			/>
+			{label}
+		</label>
+	{/if}
+{/snippet}
 
 {#if selectedSlot && binder}
 	<VariantModal
@@ -424,6 +497,34 @@
 		background: #e94560;
 		border-color: #e94560;
 		color: #fff;
+	}
+	/* Distinct from the regular tabs — pill is an additive filter, not a
+	   mutually-exclusive view choice. */
+	.tab.pill {
+		border-radius: 999px;
+		margin-left: 0.5rem;
+		font-size: 0.78rem;
+	}
+	.inline-checks {
+		display: flex;
+		gap: 0.3rem;
+		font-size: 0.7rem;
+	}
+	.ck {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.15rem;
+		color: #888;
+		cursor: pointer;
+		padding: 0 0.15rem;
+		border-radius: 3px;
+	}
+	.ck.on {
+		color: #9fe7a0;
+	}
+	.ck input {
+		margin: 0;
+		cursor: pointer;
 	}
 	.search {
 		flex: 1;

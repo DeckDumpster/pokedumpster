@@ -145,6 +145,15 @@
 		pageNum = 1;
 	}
 
+	/** Bottom-pager click: change page and jump back to the top of the grid
+	 *  so the user doesn't have to scroll up themselves. */
+	function gotoPage(n: number) {
+		pageNum = n;
+		if (typeof window !== 'undefined') {
+			window.scrollTo({ top: 0, behavior: 'smooth' });
+		}
+	}
+
 	function onSearch(value: string) {
 		searchRaw = value;
 		clearTimeout(searchDebounce);
@@ -271,6 +280,21 @@
 				</button>
 			{/each}
 		</div>
+
+		{#if binder.total_pages > 1}
+			<div class="pager-bottom">
+				<button disabled={binder.page <= 1} onclick={() => gotoPage(binder!.page - 1)}>
+					← Prev
+				</button>
+				<span class="pageno">Page {binder.page} of {binder.total_pages}</span>
+				<button
+					disabled={binder.page >= binder.total_pages}
+					onclick={() => gotoPage(binder!.page + 1)}
+				>
+					Next →
+				</button>
+			</div>
+		{/if}
 	{/if}
 {/if}
 
@@ -377,6 +401,13 @@
 	}
 	.pageno {
 		color: #888;
+	}
+	.pager-bottom {
+		display: flex;
+		justify-content: center;
+		align-items: center;
+		gap: 0.75rem;
+		margin: 1.5rem 0 0.5rem;
 	}
 	button {
 		background: #16213e;

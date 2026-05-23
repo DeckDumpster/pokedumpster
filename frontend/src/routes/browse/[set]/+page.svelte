@@ -9,19 +9,40 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
-	let pageNum = $state(1);
-	let layout = $state(9);
-	let includeSecret = $state(true);
-	let includeSubset = $state(true);
-	let includePromos = $state(false);
+	// Hydrate every page/layout/filter knob from the URL so reloads + shared
+	// links land in the same view. (PLAN §6.8 keys the binder cache on
+	// this state.) syncUrl() below writes any subsequent changes back.
+	const urlBool = (k: string, dflt: boolean): boolean => {
+		if (typeof window === 'undefined') return dflt;
+		const v = page.url.searchParams.get(k);
+		if (v === null) return dflt;
+		return v === '1' || v === 'true';
+	};
+	const urlNum = (k: string, dflt: number): number => {
+		if (typeof window === 'undefined') return dflt;
+		const v = page.url.searchParams.get(k);
+		const n = v == null ? NaN : Number(v);
+		return Number.isFinite(n) && n > 0 ? n : dflt;
+	};
+	const urlStr = (k: string, dflt: string): string => {
+		if (typeof window === 'undefined') return dflt;
+		return page.url.searchParams.get(k) ?? dflt;
+	};
+
+	let pageNum = $state(urlNum('page', 1));
+	let layout = $state(urlNum('layout', 9));
+	let includeSecret = $state(urlBool('secret', true));
+	let includeSubset = $state(urlBool('subset', true));
+	let includePromos = $state(urlBool('promos', false));
 
 	// Sort, in-set search, and the ownership tab — all server-side, since
 	// the binder is paginated (a client-side sort would only touch one page).
-	let sort = $state('number');
-	let searchRaw = $state('');
-	let search = $state('');
+	const initialQ = urlStr('q', '');
+	let sort = $state(urlStr('sort', 'number'));
+	let searchRaw = $state(initialQ);
+	let search = $state(initialQ.trim());
 	let searchDebounce: ReturnType<typeof setTimeout>;
-	let tab = $state('all');
+	let tab = $state(urlStr('tab', 'all'));
 
 	const tabs = [
 		{ key: 'all', label: 'All' },
@@ -66,6 +87,24 @@
 		}
 	}
 
+	function syncUrl() {
+		if (typeof window === 'undefined') return;
+		const url = new URL(window.location.href);
+		const set = (k: string, v: string, dflt: string) => {
+			if (v === dflt) url.searchParams.delete(k);
+			else url.searchParams.set(k, v);
+		};
+		set('page', String(pageNum), '1');
+		set('layout', String(layout), '9');
+		set('secret', includeSecret ? '1' : '0', '1');
+		set('subset', includeSubset ? '1' : '0', '1');
+		set('promos', includePromos ? '1' : '0', '0');
+		set('sort', sort, 'number');
+		set('q', searchRaw.trim(), '');
+		set('tab', tab, 'all');
+		window.history.replaceState({}, '', url);
+	}
+
 	$effect(() => {
 		void page.params.set;
 		void pageNum;
@@ -76,6 +115,7 @@
 		void sort;
 		void search;
 		void tab;
+		syncUrl();
 		load();
 	});
 

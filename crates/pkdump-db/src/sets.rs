@@ -135,14 +135,11 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
     )?;
 
     // The latest TCGplayer market price for a printing `p`, by variant sub-type.
-    let price_expr = format!(
-        "(SELECT lp.price FROM latest_prices lp \
+    let price_expr = "(SELECT lp.price FROM latest_prices lp \
             WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
+              AND lp.sub_type_name = p.sub_type_name \
               AND lp.price_type = 'market' \
-              AND (({subtype}) IS NULL OR lp.sub_type_name = ({subtype})) \
-            LIMIT 1)",
-        subtype = crate::VARIANT_PRICE_SUBTYPE,
-    );
+            LIMIT 1)";
     let market_value: f64 = conn.query_row(
         &format!(
             "SELECT COALESCE(SUM({price_expr}), 0) \
@@ -274,8 +271,9 @@ mod tests {
             // Each card has one normal printing linked to a TCGplayer product.
             for (n, product) in [("1", 101), ("2", 102), ("3", 103)] {
                 c.execute(
-                    "INSERT INTO printings (printing_id, card_id, variant, tcgplayer_product_id) \
-                     VALUES (?1, ?2, 'normal', ?3)",
+                    "INSERT INTO printings \
+                       (printing_id, card_id, variant, tcgplayer_product_id, sub_type_name) \
+                     VALUES (?1, ?2, 'normal', ?3, 'Normal')",
                     rusqlite::params![format!("sv3pt5-{n}-normal"), format!("sv3pt5-{n}"), product],
                 )
                 .unwrap();

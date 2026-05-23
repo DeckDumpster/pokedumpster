@@ -57,20 +57,26 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     let added = import_tail(&mut conn)?;
     println!("  added {added} set(s) not yet in the catalog");
 
-    // 2. Variant expansion — runs before TCGCSV so the printings exist for
-    //    the price-linking step. Idempotent.
+    // 2. TCGCSV groups, sealed products, single-card products, prices —
+    //    raw ingest of everything TCGCSV publishes. Variant expansion in
+    //    step 3 reads this back out to determine which printings actually
+    //    exist for each card.
+    println!("Importing TCGCSV groups, products, prices...");
+    let r = import_tcgcsv(&mut conn)?;
+    println!(
+        "  {} groups, {} sealed products, {} card products, {} price rows",
+        r.0, r.1, r.2, r.3
+    );
+
+    // 3. Variant expansion. TCGCSV is authoritative for which printings a
+    //    card has; the overlay still applies for cards TCGCSV can't model
+    //    (cross-group stamped promos, etc.). Each printing carries its
+    //    sub_type_name + tcgplayer_product_id so price queries stay a
+    //    straight JOIN.
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
-
-    // 3. TCGCSV groups, sealed products, a fresh price snapshot, and links.
-    println!("Importing TCGCSV groups, sealed products, prices, links...");
-    let r = import_tcgcsv(&mut conn)?;
-    println!(
-        "  {} groups, {} sealed products, {} price rows, {} cards linked",
-        r.0, r.1, r.2, r.3
-    );
 
     println!("Refresh complete: {}", db_path.display());
     Ok(())
@@ -97,9 +103,10 @@ fn import_tail(conn: &mut Connection) -> anyhow::Result<usize> {
     Ok(added)
 }
 
-/// Import every TCGCSV group with its sealed products, a price snapshot, and
-/// printing↔product links. Returns (groups, sealed products, price rows,
-/// cards linked).
+/// Import every TCGCSV group: sealed products, single-card products
+/// (persisted to `tcgcsv_products` for variant expansion to read), and a
+/// fresh price snapshot. Returns (groups, sealed products, card products,
+/// price rows).
 fn import_tcgcsv(conn: &mut Connection) -> anyhow::Result<(usize, usize, usize, usize)> {
     let client = TcgcsvClient::new()?;
     let now = chrono::Utc::now().to_rfc3339();
@@ -109,14 +116,14 @@ fn import_tcgcsv(conn: &mut Connection) -> anyhow::Result<(usize, usize, usize, 
     let n_groups = tcgcsv::import_groups(conn, &groups, &now)?;
 
     let mut n_sealed = 0;
+    let mut n_cards = 0;
     let mut n_prices = 0;
-    let mut n_linked = 0;
     for group in &groups {
         let products = client.fetch_products(group.group_id)?;
         n_sealed += tcgcsv::import_sealed_products(conn, &products, &now)?;
-        n_linked += tcgcsv::link_card_printings(conn, &products)?;
+        n_cards += tcgcsv::import_products(conn, &products, &now)?;
         let prices = client.fetch_prices(group.group_id)?;
         n_prices += tcgcsv::import_prices(conn, &prices, &observed)?;
     }
-    Ok((n_groups, n_sealed, n_prices, n_linked))
+    Ok((n_groups, n_sealed, n_cards, n_prices))
 }

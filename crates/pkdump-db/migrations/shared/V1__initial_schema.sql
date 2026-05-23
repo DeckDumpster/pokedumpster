@@ -59,6 +59,13 @@ CREATE TABLE printings (
     variant                TEXT NOT NULL,        -- flat enum, see RESEARCH.md §4.2
     language               TEXT NOT NULL DEFAULT 'en',
     tcgplayer_product_id   INTEGER,              -- bridges to TCGCSV pricing
+    -- The TCGplayer price-block sub_type this printing maps to ("Normal",
+    -- "Holofoil", "Reverse Holofoil", …). Written at expansion time from
+    -- the TCGCSV product's advertised sub_types, so price queries become
+    -- a simple `WHERE lp.sub_type_name = p.sub_type_name` — no CASE
+    -- expressions in SQL, no per-set hardcoding. NULL only when the card
+    -- has no TCGCSV link at all.
+    sub_type_name          TEXT,
     image_override         TEXT,                 -- usually NULL
     badge_overlay          TEXT,                 -- 'STAMP'|'PRERELEASE'|...
     deprecated_at          TEXT,                 -- soft-delete for overlay removals
@@ -124,6 +131,27 @@ CREATE TABLE tcgplayer_groups (
     published_on TEXT,
     fetched_at   TEXT NOT NULL
 );
+
+-- Single-card TCGplayer products by group. Populated by import_tcgcsv;
+-- read by variant expansion to derive which printings actually exist
+-- (which is set-and-product-dependent — ASC's "Energy Symbol Pattern"
+-- products vs. BLK's "Master Ball Pattern" vs. 151's plain base products
+-- — instead of guessing from rarity).
+--
+-- `derived_variant` is NULL for the card's base product (covers
+-- normal/holo/reverse_holo via its own sub_types); otherwise it's the
+-- pattern variant code parsed from the product name
+-- (variant_from_product_name).
+CREATE TABLE tcgcsv_products (
+    product_id        INTEGER PRIMARY KEY,
+    group_id          INTEGER NOT NULL,
+    name              TEXT NOT NULL,
+    collector_number  TEXT,
+    derived_variant   TEXT,
+    fetched_at        TEXT NOT NULL
+);
+CREATE INDEX idx_tcgcsv_products_group ON tcgcsv_products(group_id);
+CREATE INDEX idx_tcgcsv_products_number ON tcgcsv_products(group_id, collector_number);
 
 CREATE TABLE sealed_products (
     product_id      INTEGER PRIMARY KEY,       -- TCGplayer productId

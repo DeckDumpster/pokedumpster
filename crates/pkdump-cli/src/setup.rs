@@ -70,24 +70,27 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
         println!("  added {added} set(s) not yet in the repo");
     }
 
-    // 3. Variant expansion — runs before TCGCSV so the printings exist for
-    //    the price-linking step.
+    // 3. TCGCSV groups, sealed products, single-card products, prices.
+    //    Variant expansion (step 4) reads this back out as its
+    //    authoritative source.
+    if args.skip_prices {
+        println!("Skipping TCGCSV import.");
+    } else {
+        println!("Importing TCGCSV groups, products, prices...");
+        let r = import_tcgcsv(&mut conn)?;
+        println!(
+            "  {} groups, {} sealed products, {} card products, {} price rows",
+            r.0, r.1, r.2, r.3
+        );
+    }
+
+    // 4. Variant expansion. TCGCSV-derived first (each printing carries
+    //    its sub_type_name + tcgplayer_product_id), overlay on top for
+    //    cards TCGCSV can't model (stamps, etc.).
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
-
-    // 4. TCGCSV groups, sealed products, prices, and printing↔product links.
-    if args.skip_prices {
-        println!("Skipping TCGCSV import.");
-    } else {
-        println!("Importing TCGCSV groups, sealed products, prices, links...");
-        let r = import_tcgcsv(&mut conn)?;
-        println!(
-            "  {} groups, {} sealed products, {} price rows, {} cards linked",
-            r.0, r.1, r.2, r.3
-        );
-    }
 
     println!("Setup complete: {}", db_path.display());
     Ok(())
@@ -114,9 +117,10 @@ fn import_tail(conn: &mut Connection) -> anyhow::Result<usize> {
     Ok(added)
 }
 
-/// Import every TCGCSV group with its sealed products, a price snapshot, and
-/// printing↔product links. Returns (groups, sealed products, price rows,
-/// cards linked).
+/// Import every TCGCSV group: sealed products, single-card products
+/// (persisted to `tcgcsv_products` for variant expansion to read), and a
+/// fresh price snapshot. Returns (groups, sealed products, card products,
+/// price rows).
 fn import_tcgcsv(conn: &mut Connection) -> anyhow::Result<(usize, usize, usize, usize)> {
     let client = TcgcsvClient::new()?;
     let now = chrono::Utc::now().to_rfc3339();
@@ -126,16 +130,16 @@ fn import_tcgcsv(conn: &mut Connection) -> anyhow::Result<(usize, usize, usize, 
     let n_groups = tcgcsv::import_groups(conn, &groups, &now)?;
 
     let mut n_sealed = 0;
+    let mut n_cards = 0;
     let mut n_prices = 0;
-    let mut n_linked = 0;
     for group in &groups {
         let products = client.fetch_products(group.group_id)?;
         n_sealed += tcgcsv::import_sealed_products(conn, &products, &now)?;
-        n_linked += tcgcsv::link_card_printings(conn, &products)?;
+        n_cards += tcgcsv::import_products(conn, &products, &now)?;
         let prices = client.fetch_prices(group.group_id)?;
         n_prices += tcgcsv::import_prices(conn, &prices, &observed)?;
     }
-    Ok((n_groups, n_sealed, n_prices, n_linked))
+    Ok((n_groups, n_sealed, n_cards, n_prices))
 }
 
 #[cfg(test)]
@@ -195,8 +199,12 @@ mod tests {
         assert_eq!(sets, 1);
         assert_eq!(cards, 2);
 
-        // Variant expansion ran: Bulbasaur (Common) -> normal + reverse_holo
-        // + the 151 overlay's pokeball_rh + masterball_rh.
+        // Variant expansion ran. skip_prices means TCGCSV is absent, so
+        // each card falls back to the bare `normal` placeholder; the 151
+        // overlay then adds pokeball_rh + masterball_rh for Bulbasaur
+        // (Common) and stops at `normal` for Charizard ex (no overlay
+        // rule). A real refresh with TCGCSV present would replace these
+        // with the true sub_type-derived variants.
         let bulbasaur: i64 = conn
             .query_row(
                 "SELECT count(*) FROM printings \
@@ -205,9 +213,8 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(bulbasaur, 4);
+        assert_eq!(bulbasaur, 3);
 
-        // Charizard ex (Double Rare) -> a single holo printing.
         let charizard: i64 = conn
             .query_row(
                 "SELECT count(*) FROM printings \

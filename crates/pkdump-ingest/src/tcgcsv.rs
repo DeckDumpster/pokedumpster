@@ -341,111 +341,14 @@ pub fn import_sealed_products(
     Ok(n)
 }
 
-/// Variants priced as sub_types of a single base TCGplayer product (Normal,
-/// Holofoil, Reverse Holofoil, and the period-specific foil treatments). A
-/// base product's UPDATE may legitimately touch any of these — they share
-/// `tcgplayer_product_id` and distinguish their price via VARIANT_PRICE_SUBTYPE.
-/// Pattern variants (Poké Ball, Master Ball, stamps) live as their own
-/// TCGplayer products and must not be overwritten by a base-product UPDATE.
-const BASE_PRODUCT_VARIANTS: &[&str] = &[
-    "normal",
-    "holo",
-    "reverse_holo",
-    "first_ed_holo",
-    "first_ed_normal",
-    "unlimited_holo",
-    "cosmos_holo",
-];
-
-/// Derive the printing variant carried by a TCGplayer product name. Returns
-/// `None` for the base product (covers normal / reverse_holo / holo via
-/// sub_types on one product). Pattern products get their own product id and
-/// link to a specific printing_id.
-///
-/// Token coverage (current as of 2026-05): ball patterns (Master, Quick,
-/// Dusk, Love, Friend, Poké) and the Ascended Heroes "Energy Symbol
-/// Pattern" + "Team Rocket" treatments. Match order is significant:
-/// more-specific tokens first so e.g. "Master Ball" doesn't fall through
-/// to a generic "Ball" rule.
-pub fn variant_from_product_name(name: &str) -> Option<&'static str> {
-    let lower = name.to_lowercase();
-    if lower.contains("master ball") {
-        Some("masterball_rh")
-    } else if lower.contains("quick ball") {
-        Some("quickball_rh")
-    } else if lower.contains("dusk ball") {
-        Some("duskball_rh")
-    } else if lower.contains("love ball") {
-        Some("loveball_rh")
-    } else if lower.contains("friend ball") {
-        Some("friendball_rh")
-    } else if lower.contains("poke ball") || lower.contains("poké ball") {
-        Some("pokeball_rh")
-    } else if lower.contains("energy symbol") {
-        Some("energy_symbol_rh")
-    } else if lower.contains("team rocket") {
-        Some("team_rocket_rh")
-    } else {
-        None
-    }
-}
-
-/// Link single-card TCGplayer products to catalog printings. Resolves the
-/// card by the group's bridged set + product collector `Number`, then routes
-/// the link by product-name pattern: a base product (Bulbasaur, "Swadloon")
-/// tags every base-foil printing of that card so price subqueries pick up
-/// the right sub_type per variant. A pattern product ("Swadloon - Master
-/// Ball Pattern") tags only its specific printing_id so it doesn't
-/// overwrite the base link and each pattern keeps its own pricing series.
-///
-/// The catalog and TCGCSV disagree on the printed form of a collector
-/// number, so the match runs on [`normalize_collector_number`] applied to
-/// both sides rather than a raw string compare. Best-effort — products
-/// whose normalized number doesn't match a catalog card, or whose derived
-/// printing variant isn't in the catalog, are skipped silently.
-/// Returns the number of products linked.
-pub fn link_card_printings(conn: &mut Connection, products: &[TcgProduct]) -> Result<usize> {
-    // group_id -> (normalized number -> card_id) for the bridged set.
-    // A normalized number can be shared by several cards (artwork variants
-    // reuse a printed number); each is linkable to its own product, so the
-    // table is keyed per group and the last card wins only on a true tie.
-    use std::collections::HashMap;
-    let mut by_group: HashMap<i64, HashMap<String, String>> = HashMap::new();
-    {
-        let mut stmt = conn.prepare(
-            "SELECT s.tcgcsv_group_id, c.number, c.card_id \
-             FROM cards c \
-             JOIN sets s ON c.set_code = s.set_code \
-             WHERE s.tcgcsv_group_id IS NOT NULL",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        for row in rows {
-            let (group_id, number, card_id) = row?;
-            by_group
-                .entry(group_id)
-                .or_default()
-                .insert(normalize_collector_number(&number), card_id);
-        }
-    }
-
-    // Sqlite needs a literal IN-list; build it from the constant.
-    let base_in = BASE_PRODUCT_VARIANTS
-        .iter()
-        .map(|v| format!("'{v}'"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let base_sql = format!(
-        "UPDATE printings SET tcgplayer_product_id = ?1 WHERE card_id = ?2 AND variant IN ({base_in})"
-    );
-
+/// Persist single-card TCGplayer products to `tcgcsv_products`. Variant
+/// expansion (in `crate::overrides::expand_all_printings`) reads this table
+/// to resolve which printings actually exist for each card, so the
+/// `derived_variant` column is pre-computed here from
+/// `variant_from_product_name` rather than re-parsed at query time.
+pub fn import_products(conn: &mut Connection, products: &[TcgProduct], now: &str) -> Result<usize> {
     let tx = conn.transaction()?;
-    let mut linked = 0;
+    let mut n = 0;
     for product in products {
         if !is_single_card(product) {
             continue;
@@ -455,43 +358,35 @@ pub fn link_card_printings(conn: &mut Connection, products: &[TcgProduct]) -> Re
             .iter()
             .find(|e| e.name.eq_ignore_ascii_case("Number"))
             .map(|e| e.value.as_str())
-            .unwrap_or_default();
-        if number.trim().is_empty() {
+            .unwrap_or_default()
+            .trim();
+        if number.is_empty() {
             continue;
         }
-        let Some(card_id) = by_group
-            .get(&product.group_id)
-            .and_then(|m| m.get(&normalize_collector_number(number)))
-        else {
-            continue;
-        };
-        let updated = match variant_from_product_name(&product.name) {
-            Some(pattern) => {
-                // UPSERT — if the variant-expansion overlay didn't already
-                // create the printing (most modern pattern variants aren't
-                // in our overlay), the TCGCSV product is itself the proof
-                // the printing exists in the real world, so we materialize
-                // it here and link it. An existing soft-deprecated row
-                // (from a prior expansion that dropped the variant) is
-                // un-deprecated so the printing stays live across runs.
-                let printing_id = format!("{card_id}-{pattern}");
-                tx.execute(
-                    "INSERT INTO printings (printing_id, card_id, variant, language, tcgplayer_product_id) \
-                     VALUES (?1, ?2, ?3, 'en', ?4) \
-                     ON CONFLICT(printing_id) DO UPDATE SET \
-                       deprecated_at = NULL, \
-                       tcgplayer_product_id = excluded.tcgplayer_product_id",
-                    rusqlite::params![printing_id, card_id, pattern, product.product_id],
-                )?
-            }
-            None => tx.execute(&base_sql, rusqlite::params![product.product_id, card_id])?,
-        };
-        if updated > 0 {
-            linked += 1;
-        }
+        let derived = pkdump_core::variant::variant_from_product_name(&product.name);
+        tx.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(product_id) DO UPDATE SET \
+               group_id         = excluded.group_id, \
+               name             = excluded.name, \
+               collector_number = excluded.collector_number, \
+               derived_variant  = excluded.derived_variant, \
+               fetched_at       = excluded.fetched_at",
+            rusqlite::params![
+                product.product_id,
+                product.group_id,
+                product.name,
+                number,
+                derived,
+                now
+            ],
+        )?;
+        n += 1;
     }
     tx.commit()?;
-    Ok(linked)
+    Ok(n)
 }
 
 /// Snapshot prices. Card-product prices land in the narrow `prices` time
@@ -846,258 +741,6 @@ mod tests {
     }
 
     #[test]
-    fn links_card_printings_to_products() {
-        let (_d, mut conn) = shared_db();
-        conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
-             VALUES ('sv3pt5', 'MEW', '151', 'Scarlet & Violet')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
-             VALUES ('sv3pt5-6', 'sv3pt5', '6', 6, 'Charizard ex')",
-            [],
-        )
-        .unwrap();
-        for v in ["normal", "reverse_holo"] {
-            conn.execute(
-                "INSERT INTO printings (printing_id, card_id, variant) VALUES (?1, 'sv3pt5-6', ?2)",
-                rusqlite::params![format!("sv3pt5-6-{v}"), v],
-            )
-            .unwrap();
-        }
-        // Bridge a TCGCSV group to the set.
-        import_groups(
-            &mut conn,
-            &[TcgGroup {
-                group_id: 23237,
-                name: "151".into(),
-                abbreviation: Some("MEW".into()),
-                published_on: None,
-            }],
-            "2026-05-18",
-        )
-        .unwrap();
-
-        let products = vec![TcgProduct {
-            product_id: 5006,
-            group_id: 23237,
-            name: "Charizard ex".into(),
-            image_url: None,
-            url: None,
-            extended_data: vec![ExtendedDatum {
-                name: "Number".into(),
-                value: "6".into(),
-            }],
-        }];
-        let linked = link_card_printings(&mut conn, &products).unwrap();
-        assert_eq!(linked, 1);
-
-        // Every printing of the card now carries the product id.
-        let pid: i64 = conn
-            .query_row(
-                "SELECT tcgplayer_product_id FROM printings WHERE printing_id = 'sv3pt5-6-reverse_holo'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(pid, 5006);
-    }
-
-    #[test]
-    fn variant_from_product_name_picks_pattern_codes() {
-        assert_eq!(variant_from_product_name("Bulbasaur"), None);
-        assert_eq!(
-            variant_from_product_name("Bulbasaur - Poke Ball Pattern"),
-            Some("pokeball_rh")
-        );
-        assert_eq!(
-            variant_from_product_name("Bulbasaur (Poké Ball Pattern)"),
-            Some("pokeball_rh")
-        );
-        assert_eq!(
-            variant_from_product_name("Swadloon - Master Ball Pattern"),
-            Some("masterball_rh")
-        );
-        // Case-insensitive.
-        assert_eq!(
-            variant_from_product_name("VICTINI MASTER BALL PATTERN"),
-            Some("masterball_rh")
-        );
-    }
-
-    #[test]
-    fn link_card_printings_routes_pattern_to_specific_printing() {
-        // Real-world: 151 Bulbasaur has Normal + Reverse Holofoil sub_types
-        // on a base product (502552), plus separate Poke Ball / Master Ball
-        // products. Each pattern must get its own product id so its price
-        // chart doesn't shadow the base's.
-        let (_d, mut conn) = shared_db();
-        conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
-             VALUES ('sv3pt5', 'MEW', '151', 'Scarlet & Violet')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
-             VALUES ('sv3pt5-1', 'sv3pt5', '1', 1, 'Bulbasaur')",
-            [],
-        )
-        .unwrap();
-        for v in ["normal", "reverse_holo", "pokeball_rh", "masterball_rh"] {
-            conn.execute(
-                "INSERT INTO printings (printing_id, card_id, variant) VALUES (?1, 'sv3pt5-1', ?2)",
-                rusqlite::params![format!("sv3pt5-1-{v}"), v],
-            )
-            .unwrap();
-        }
-        import_groups(
-            &mut conn,
-            &[TcgGroup {
-                group_id: 23237,
-                name: "151".into(),
-                abbreviation: Some("MEW".into()),
-                published_on: None,
-            }],
-            "2026-05-18",
-        )
-        .unwrap();
-
-        let number_attr = vec![ExtendedDatum {
-            name: "Number".into(),
-            value: "1".into(),
-        }];
-        let products = vec![
-            TcgProduct {
-                product_id: 502552,
-                group_id: 23237,
-                name: "Bulbasaur".into(),
-                image_url: None,
-                url: None,
-                extended_data: number_attr.clone(),
-            },
-            TcgProduct {
-                product_id: 502553,
-                group_id: 23237,
-                name: "Bulbasaur - Poke Ball Pattern".into(),
-                image_url: None,
-                url: None,
-                extended_data: number_attr.clone(),
-            },
-            TcgProduct {
-                product_id: 502554,
-                group_id: 23237,
-                name: "Bulbasaur - Master Ball Pattern".into(),
-                image_url: None,
-                url: None,
-                extended_data: number_attr,
-            },
-        ];
-        link_card_printings(&mut conn, &products).unwrap();
-
-        let lookup = |pid: &str| -> i64 {
-            conn.query_row(
-                "SELECT tcgplayer_product_id FROM printings WHERE printing_id = ?1",
-                [pid],
-                |r| r.get(0),
-            )
-            .unwrap()
-        };
-        assert_eq!(lookup("sv3pt5-1-normal"), 502552, "base product on normal");
-        assert_eq!(
-            lookup("sv3pt5-1-reverse_holo"),
-            502552,
-            "base product also on reverse_holo (shared via sub_type)"
-        );
-        assert_eq!(
-            lookup("sv3pt5-1-pokeball_rh"),
-            502553,
-            "Poke Ball product on its own printing"
-        );
-        assert_eq!(
-            lookup("sv3pt5-1-masterball_rh"),
-            502554,
-            "Master Ball product on its own printing"
-        );
-    }
-
-    #[test]
-    fn link_card_printings_auto_creates_pattern_printing_when_absent() {
-        // TCGCSV is authoritative for which pattern products exist. If our
-        // variant overlay didn't pre-create the matching printing (most
-        // modern pattern variants — Energy Symbol, the various Balls
-        // beyond Poké/Master — have no overlay rule), the linker
-        // materializes the printing via UPSERT and links it. This is what
-        // makes WHT/BLK/ASC pattern variants surface without a hand-curated
-        // overlay per set.
-        let (_d, mut conn) = shared_db();
-        conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
-             VALUES ('rsv10pt5', 'WHT', 'White Flare', 'Scarlet & Violet')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
-             VALUES ('rsv10pt5-2', 'rsv10pt5', '2', 2, 'Swadloon')",
-            [],
-        )
-        .unwrap();
-        // No masterball_rh printing in the catalog yet (no overlay rule for WHT).
-        for v in ["normal", "reverse_holo"] {
-            conn.execute(
-                "INSERT INTO printings (printing_id, card_id, variant) VALUES (?1, 'rsv10pt5-2', ?2)",
-                rusqlite::params![format!("rsv10pt5-2-{v}"), v],
-            )
-            .unwrap();
-        }
-        import_groups(
-            &mut conn,
-            &[TcgGroup {
-                group_id: 24326,
-                name: "White Flare".into(),
-                abbreviation: Some("WHT".into()),
-                published_on: None,
-            }],
-            "2026-05-18",
-        )
-        .unwrap();
-
-        let products = vec![TcgProduct {
-            product_id: 642291,
-            group_id: 24326,
-            name: "Swadloon (Master Ball Pattern)".into(),
-            image_url: None,
-            url: None,
-            extended_data: vec![ExtendedDatum {
-                name: "Number".into(),
-                value: "2".into(),
-            }],
-        }];
-        link_card_printings(&mut conn, &products).unwrap();
-        // The pattern printing was auto-created and linked.
-        let mb_pid: i64 = conn
-            .query_row(
-                "SELECT tcgplayer_product_id FROM printings WHERE printing_id = 'rsv10pt5-2-masterball_rh'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(mb_pid, 642291);
-        // Base printings still untouched (no base product was passed).
-        let normal_pid: Option<i64> = conn
-            .query_row(
-                "SELECT tcgplayer_product_id FROM printings WHERE printing_id = 'rsv10pt5-2-normal'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(normal_pid, None);
-    }
-
-    #[test]
     fn normalize_collector_number_reduces_both_sides() {
         // Modern sets: zero-padded, suffixed with the set total.
         assert_eq!(normalize_collector_number("006/165"), "6");
@@ -1116,65 +759,6 @@ mod tests {
         // Idempotent — re-normalizing changes nothing.
         let once = normalize_collector_number("009/165");
         assert_eq!(normalize_collector_number(&once), once);
-    }
-
-    #[test]
-    fn links_modern_zero_padded_product_numbers() {
-        // The real prod failure mode: pokemontcg.io stores bare "6" but
-        // TCGCSV reports the printed "006/165". A raw string compare links
-        // nothing; the normalized match must link the card.
-        let (_d, mut conn) = shared_db();
-        conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
-             VALUES ('sv3pt5', 'MEW', '151', 'Scarlet & Violet')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
-             VALUES ('sv3pt5-6', 'sv3pt5', '6', 6, 'Charizard ex')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO printings (printing_id, card_id, variant) \
-             VALUES ('sv3pt5-6-holo', 'sv3pt5-6', 'holo')",
-            [],
-        )
-        .unwrap();
-        import_groups(
-            &mut conn,
-            &[TcgGroup {
-                group_id: 23237,
-                name: "151".into(),
-                abbreviation: Some("MEW".into()),
-                published_on: None,
-            }],
-            "2026-05-18",
-        )
-        .unwrap();
-
-        let products = vec![TcgProduct {
-            product_id: 5006,
-            group_id: 23237,
-            name: "Charizard ex - 006/165".into(),
-            image_url: None,
-            url: None,
-            extended_data: vec![ExtendedDatum {
-                name: "Number".into(),
-                value: "006/165".into(),
-            }],
-        }];
-        let linked = link_card_printings(&mut conn, &products).unwrap();
-        assert_eq!(linked, 1, "zero-padded TCGCSV number must still link");
-        let pid: i64 = conn
-            .query_row(
-                "SELECT tcgplayer_product_id FROM printings WHERE printing_id = 'sv3pt5-6-holo'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(pid, 5006);
     }
 
     #[test]

@@ -136,20 +136,19 @@ pub fn get_card_detail(
     };
 
     let printings: Vec<PrintingInfo> = {
-        let mut stmt = conn.prepare(&format!(
+        let mut stmt = conn.prepare(
             "SELECT p.printing_id, p.variant, p.language, p.badge_overlay, \
                     p.image_override, p.deprecated_at, \
                     (SELECT count(*) FROM collection c \
                        WHERE c.printing_id = p.printing_id), \
                     (SELECT lp.price FROM latest_prices lp \
                        WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
+                         AND lp.sub_type_name = p.sub_type_name \
                          AND lp.price_type = 'market' \
-                         AND (({subtype}) IS NULL OR lp.sub_type_name = ({subtype})) \
                        LIMIT 1), \
                     p.tcgplayer_product_id \
              FROM printings p WHERE p.card_id = ?1 ORDER BY p.variant",
-            subtype = crate::VARIANT_PRICE_SUBTYPE,
-        ))?;
+        )?;
         let rows = stmt.query_map([&card.card_id], |r| {
             Ok(PrintingInfo {
                 printing_id: r.get(0)?,
@@ -212,25 +211,24 @@ pub fn get_card_prices(
         return Ok(Vec::new());
     };
 
-    let sub_expr = crate::VARIANT_PRICE_SUBTYPE;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT p.printing_id, p.variant, ({sub_expr}) AS sub_type, \
+    let mut stmt = conn.prepare(
+        "SELECT p.printing_id, p.variant, p.sub_type_name, \
                 pr.price_type, pr.observed_at, pr.price \
            FROM printings p \
            JOIN prices pr ON pr.tcgplayer_product_id = p.tcgplayer_product_id \
-                         AND (({sub_expr}) IS NULL OR pr.sub_type_name = ({sub_expr})) \
+                         AND pr.sub_type_name = p.sub_type_name \
                          AND pr.source = 'tcgplayer' \
                          AND pr.price_type = 'market' \
           WHERE p.card_id = ?1 \
           ORDER BY p.variant, pr.observed_at",
-    ))?;
+    )?;
 
     let mut series: Vec<PriceSeries> = Vec::new();
     let mut rows = stmt.query([&card_id])?;
     while let Some(r) = rows.next()? {
         let printing_id: String = r.get(0)?;
         let variant: String = r.get(1)?;
-        let sub: String = r.get(2)?;
+        let sub: Option<String> = r.get(2)?;
         let price_type: String = r.get(3)?;
         let date: String = r.get(4)?;
         let price: f64 = r.get(5)?;
@@ -245,7 +243,7 @@ pub fn get_card_prices(
             None => series.push(PriceSeries {
                 printing_id,
                 variant,
-                sub_type_name: sub,
+                sub_type_name: sub.unwrap_or_default(),
                 price_type,
                 points: vec![point],
             }),
@@ -439,16 +437,17 @@ mod tests {
                 [],
             )
             .unwrap();
-            // Printings linked to TCGplayer product 5006.
-            for v in ["normal", "reverse_holo"] {
+            // Printings linked to TCGplayer product 5006; each carries
+            // the sub_type_name expansion would have set.
+            for (v, sub) in [("normal", "Normal"), ("reverse_holo", "Reverse Holofoil")] {
                 c.execute(
-                    "INSERT INTO printings (printing_id, card_id, variant, tcgplayer_product_id) \
-                     VALUES (?1, 'sv3pt5-6', ?2, 5006)",
-                    rusqlite::params![format!("sv3pt5-6-{v}"), v],
+                    "INSERT INTO printings \
+                       (printing_id, card_id, variant, tcgplayer_product_id, sub_type_name) \
+                     VALUES (?1, 'sv3pt5-6', ?2, 5006, ?3)",
+                    rusqlite::params![format!("sv3pt5-6-{v}"), v, sub],
                 )
                 .unwrap();
             }
-            // Distinct market prices per sub-type.
             for (sub, price) in [("Normal", 10.0_f64), ("Reverse Holofoil", 25.0)] {
                 c.execute(
                     "INSERT INTO prices \
@@ -494,11 +493,12 @@ mod tests {
                 [],
             )
             .unwrap();
-            for v in ["normal", "reverse_holo"] {
+            for (v, sub) in [("normal", "Normal"), ("reverse_holo", "Reverse Holofoil")] {
                 c.execute(
-                    "INSERT INTO printings (printing_id, card_id, variant, tcgplayer_product_id) \
-                     VALUES (?1, 'sv3pt5-6', ?2, 5006)",
-                    params![format!("sv3pt5-6-{v}"), v],
+                    "INSERT INTO printings \
+                       (printing_id, card_id, variant, tcgplayer_product_id, sub_type_name) \
+                     VALUES (?1, 'sv3pt5-6', ?2, 5006, ?3)",
+                    params![format!("sv3pt5-6-{v}"), v, sub],
                 )
                 .unwrap();
             }

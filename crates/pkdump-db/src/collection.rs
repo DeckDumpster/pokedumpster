@@ -222,25 +222,18 @@ pub struct CollectionRow {
     pub image_small: Option<String>,
 }
 
-/// SELECT-list columns shared by every collection-row query. A function
-/// (not a const) because the variant→sub_type CASE expression is itself a
-/// const string interpolated in at query time.
-fn row_columns_sql() -> String {
-    format!(
-        "c.id, c.printing_id, c.condition, c.language, \
-         c.purchase_price, c.sale_price, c.acquired_at, c.source, c.notes, \
-         c.status, c.graded, c.binder_id, c.deck_id, p.variant, cd.card_id, \
-         cd.set_code, s.ptcgo_code, s.symbol_url, cd.number, cd.name, \
-         cd.rarity, cd.supertype, cd.subtypes, cd.types, cd.attacks, \
-         (SELECT lp.price FROM latest_prices lp \
-            WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-              AND lp.price_type = 'market' \
-              AND (({subtype}) IS NULL OR lp.sub_type_name = ({subtype})) \
-            LIMIT 1) AS market_price, \
-         cd.image_small",
-        subtype = crate::VARIANT_PRICE_SUBTYPE,
-    )
-}
+/// SELECT-list columns shared by every collection-row query.
+const ROW_COLUMNS_SQL: &str = "c.id, c.printing_id, c.condition, c.language, \
+     c.purchase_price, c.sale_price, c.acquired_at, c.source, c.notes, \
+     c.status, c.graded, c.binder_id, c.deck_id, p.variant, cd.card_id, \
+     cd.set_code, s.ptcgo_code, s.symbol_url, cd.number, cd.name, \
+     cd.rarity, cd.supertype, cd.subtypes, cd.types, cd.attacks, \
+     (SELECT lp.price FROM latest_prices lp \
+        WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
+          AND lp.sub_type_name = p.sub_type_name \
+          AND lp.price_type = 'market' \
+        LIMIT 1) AS market_price, \
+     cd.image_small";
 
 const ROW_FROM: &str = "FROM collection c \
      JOIN printings p ON c.printing_id = p.printing_id \
@@ -282,7 +275,7 @@ fn collection_row_from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionRow>
 /// List collection entries as display rows (joined to printing + card),
 /// newest first. Requires the catalog to be attached (a user connection).
 pub fn list_rows(conn: &Connection, limit: i64, offset: i64) -> Result<Vec<CollectionRow>> {
-    let cols = row_columns_sql();
+    let cols = ROW_COLUMNS_SQL;
     let mut stmt = conn.prepare(&format!(
         "SELECT {cols} {ROW_FROM} ORDER BY c.id DESC LIMIT ?1 OFFSET ?2"
     ))?;
@@ -292,14 +285,14 @@ pub fn list_rows(conn: &Connection, limit: i64, offset: i64) -> Result<Vec<Colle
 
 /// Fetch a single collection entry as a display row.
 pub fn get_row(conn: &Connection, id: i64) -> Result<Option<CollectionRow>> {
-    let cols = row_columns_sql();
+    let cols = ROW_COLUMNS_SQL;
     let mut stmt = conn.prepare(&format!("SELECT {cols} {ROW_FROM} WHERE c.id = ?1"))?;
     Ok(stmt.query_row([id], collection_row_from_row).optional()?)
 }
 
 /// List the display rows assigned to a binder.
 pub fn list_by_binder(conn: &Connection, binder_id: i64) -> Result<Vec<CollectionRow>> {
-    let cols = row_columns_sql();
+    let cols = ROW_COLUMNS_SQL;
     let mut stmt = conn.prepare(&format!(
         "SELECT {cols} {ROW_FROM} WHERE c.binder_id = ?1 ORDER BY c.id"
     ))?;
@@ -309,7 +302,7 @@ pub fn list_by_binder(conn: &Connection, binder_id: i64) -> Result<Vec<Collectio
 
 /// List the display rows assigned to a deck.
 pub fn list_by_deck(conn: &Connection, deck_id: i64) -> Result<Vec<CollectionRow>> {
-    let cols = row_columns_sql();
+    let cols = ROW_COLUMNS_SQL;
     let mut stmt = conn.prepare(&format!(
         "SELECT {cols} {ROW_FROM} WHERE c.deck_id = ?1 ORDER BY c.id"
     ))?;
@@ -319,7 +312,7 @@ pub fn list_by_deck(conn: &Connection, deck_id: i64) -> Result<Vec<CollectionRow
 
 /// List the display rows belonging to an order.
 pub fn list_by_order(conn: &Connection, order_id: i64) -> Result<Vec<CollectionRow>> {
-    let cols = row_columns_sql();
+    let cols = ROW_COLUMNS_SQL;
     let mut stmt = conn.prepare(&format!(
         "SELECT {cols} {ROW_FROM} WHERE c.order_id = ?1 ORDER BY c.id"
     ))?;
@@ -329,7 +322,7 @@ pub fn list_by_order(conn: &Connection, order_id: i64) -> Result<Vec<CollectionR
 
 /// List the display rows belonging to an ingest batch.
 pub fn list_by_batch(conn: &Connection, batch_id: i64) -> Result<Vec<CollectionRow>> {
-    let cols = row_columns_sql();
+    let cols = ROW_COLUMNS_SQL;
     let mut stmt = conn.prepare(&format!(
         "SELECT {cols} {ROW_FROM} WHERE c.batch_id = ?1 ORDER BY c.id"
     ))?;

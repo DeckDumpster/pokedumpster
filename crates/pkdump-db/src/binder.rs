@@ -216,7 +216,8 @@ pub fn get_binder_page(
                     (SELECT lp.price FROM latest_prices lp \
                        WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
                          AND lp.price_type = 'market' \
-                         AND lp.sub_type_name = ({subtype}) LIMIT 1) \
+                         AND (({subtype}) IS NULL OR lp.sub_type_name = ({subtype})) \
+                       LIMIT 1) \
              FROM printings p JOIN cards cd ON p.card_id = cd.card_id \
              WHERE cd.set_code = ?1 ORDER BY cd.number_sortable, p.variant",
             subtype = crate::VARIANT_PRICE_SUBTYPE,

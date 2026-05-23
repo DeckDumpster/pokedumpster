@@ -139,7 +139,8 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
         "(SELECT lp.price FROM latest_prices lp \
             WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
               AND lp.price_type = 'market' \
-              AND lp.sub_type_name = ({subtype}) LIMIT 1)",
+              AND (({subtype}) IS NULL OR lp.sub_type_name = ({subtype})) \
+            LIMIT 1)",
         subtype = crate::VARIANT_PRICE_SUBTYPE,
     );
     let market_value: f64 = conn.query_row(

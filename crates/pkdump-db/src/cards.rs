@@ -144,7 +144,8 @@ pub fn get_card_detail(
                     (SELECT lp.price FROM latest_prices lp \
                        WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
                          AND lp.price_type = 'market' \
-                         AND lp.sub_type_name = ({subtype}) LIMIT 1), \
+                         AND (({subtype}) IS NULL OR lp.sub_type_name = ({subtype})) \
+                       LIMIT 1), \
                     p.tcgplayer_product_id \
              FROM printings p WHERE p.card_id = ?1 ORDER BY p.variant",
             subtype = crate::VARIANT_PRICE_SUBTYPE,
@@ -217,7 +218,7 @@ pub fn get_card_prices(
                 pr.price_type, pr.observed_at, pr.price \
            FROM printings p \
            JOIN prices pr ON pr.tcgplayer_product_id = p.tcgplayer_product_id \
-                         AND pr.sub_type_name = ({sub_expr}) \
+                         AND (({sub_expr}) IS NULL OR pr.sub_type_name = ({sub_expr})) \
                          AND pr.source = 'tcgplayer' \
                          AND pr.price_type = 'market' \
           WHERE p.card_id = ?1 \

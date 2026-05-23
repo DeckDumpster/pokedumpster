@@ -22,11 +22,10 @@
 
 <div class="backdrop" role="presentation" onclick={onClose}></div>
 <div class="modal" role="dialog" aria-modal="true" aria-label="Card detail">
-	<!-- Sticky so the close control stays reachable however far the card
-	     detail is scrolled — important on the mobile bottom sheet. -->
-	<div class="closebar">
-		<button class="x" onclick={onClose} aria-label="Close">×</button>
-	</div>
+	<!-- Floating close button over the modal's top-right corner — gives the
+	     card the full width without the dedicated closebar row. Always above
+	     the scrolling content so it stays reachable as the user scrolls. -->
+	<button class="x" onclick={onClose} aria-label="Close">×</button>
 	<div class="body">
 		<CardDetailView {setCode} {number} {onNavigate} />
 	</div>
@@ -41,45 +40,56 @@
 	}
 	.modal {
 		position: fixed;
-		top: 50%;
+		/* Pin near the top so shorter cards don't sit in dead-center
+		   whitespace; longer cards fill the remaining 88vh and scroll. */
+		top: 4vh;
 		left: 50%;
-		transform: translate(-50%, -50%);
+		transform: translateX(-50%);
 		z-index: 101;
 		width: 760px;
-		max-width: 94vw;
-		max-height: 88vh;
-		overflow-y: auto;
-		/* Belt-and-suspenders: if any inner content insists on overflowing
-		   horizontally (e.g. an oversized chart canvas) it should not be
-		   able to clip outside the modal's rounded edges. */
-		overflow-x: hidden;
+		/* border-box so the 2px borders count inside the 92vw budget —
+		   prevents the right edge spilling past the viewport on narrow
+		   screens. */
+		box-sizing: border-box;
+		max-width: 92vw;
+		max-height: 92vh;
+		/* Scroll lives on .body so the absolute-positioned X stays pinned
+		   to the modal's top-right regardless of how far the content has
+		   been scrolled. */
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
 		background: #1a1a2e;
 		border: 2px solid #0f3460;
 		border-radius: 12px;
 	}
-	.closebar {
-		position: sticky;
-		top: 0;
-		z-index: 2;
-		display: flex;
-		justify-content: flex-end;
-		background: #1a1a2e;
-		border-bottom: 1px solid #0f3460;
-		padding: 0.4rem 0.6rem;
-	}
 	.x {
-		background: none;
-		border: none;
-		color: #888;
-		font-size: 1.7rem;
+		position: absolute;
+		top: 8px;
+		right: 8px;
+		z-index: 3;
+		width: 32px;
+		height: 32px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: rgba(10, 10, 30, 0.75);
+		border: 1px solid #0f3460;
+		border-radius: 50%;
+		color: #e0e0e0;
+		font-size: 1.4rem;
 		line-height: 1;
 		cursor: pointer;
-		padding: 0 0.4rem;
+		padding: 0;
 	}
 	.x:hover {
-		color: #e94560;
+		background: #e94560;
+		color: #fff;
 	}
 	.body {
+		flex: 1;
+		overflow-y: auto;
+		overflow-x: hidden;
 		padding: 1.25rem 1.5rem 1.5rem;
 	}
 
@@ -92,12 +102,8 @@
 			transform: none;
 			width: 100%;
 			max-width: 100%;
-			max-height: 90vh;
+			max-height: 92vh;
 			border-radius: 14px 14px 0 0;
-		}
-		.x {
-			font-size: 2rem;
-			padding: 0.2rem 0.6rem;
 		}
 		.body {
 			padding: 1rem 0.85rem 1.25rem;

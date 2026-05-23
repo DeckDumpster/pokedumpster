@@ -235,7 +235,8 @@ fn row_columns_sql() -> String {
          (SELECT lp.price FROM latest_prices lp \
             WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
               AND lp.price_type = 'market' \
-              AND lp.sub_type_name = ({subtype}) LIMIT 1) AS market_price, \
+              AND (({subtype}) IS NULL OR lp.sub_type_name = ({subtype})) \
+            LIMIT 1) AS market_price, \
          cd.image_small",
         subtype = crate::VARIANT_PRICE_SUBTYPE,
     )

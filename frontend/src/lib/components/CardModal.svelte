@@ -49,6 +49,10 @@
 		max-width: 94vw;
 		max-height: 88vh;
 		overflow-y: auto;
+		/* Belt-and-suspenders: if any inner content insists on overflowing
+		   horizontally (e.g. an oversized chart canvas) it should not be
+		   able to clip outside the modal's rounded edges. */
+		overflow-x: hidden;
 		background: #1a1a2e;
 		border: 2px solid #0f3460;
 		border-radius: 12px;

@@ -433,6 +433,10 @@
 		display: flex;
 		gap: 1.5rem;
 		flex-wrap: wrap;
+		/* Centers each flex row, so when .info wraps below .art the lone
+		   card image sits in the middle of the viewport (mirrors how DD
+		   centers its card-image-section). */
+		justify-content: center;
 	}
 	.art img {
 		width: 320px;
@@ -728,6 +732,23 @@
 	/* On a phone the data tables reflow to stacked label:value blocks so
 	   they fit the modal instead of forcing it wider. */
 	@media (max-width: 540px) {
+		/* Let .info shrink past 260px so it never forces horizontal
+		   overflow on narrow modals. */
+		.info {
+			min-width: 0;
+		}
+		.art img {
+			width: 320px;
+			max-width: 100%;
+		}
+		/* W/R/R combat row was 3 × 90px min + 2 × 1.5rem gap ≈ 318px
+		   which clipped on 320-340px viewports. */
+		.combat {
+			gap: 0.6rem;
+		}
+		.combatCell {
+			min-width: 0;
+		}
 		table {
 			max-width: 100%;
 		}

@@ -4,7 +4,7 @@
 # The image runs `pkdump serve`; populate the catalog with deploy/seed.sh.
 
 # --- Stage 1: Rust build ----------------------------------------------------
-FROM rust:1.94-slim AS builder
+FROM docker.io/library/rust:1.94-slim AS builder
 
 WORKDIR /app
 
@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # --- Stage 2: SvelteKit build -----------------------------------------------
 # adapter-static emits the SPA to frontend/build. The committed ts-rs types in
 # frontend/src/lib/types/ mean this stage needs nothing from the Rust build.
-FROM node:22-slim AS frontend
+FROM docker.io/library/node:22-slim AS frontend
 
 WORKDIR /app/frontend
 
@@ -39,7 +39,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- Stage 3: runtime -------------------------------------------------------
-FROM debian:bookworm-slim
+FROM docker.io/library/debian:bookworm-slim
 
 # ca-certificates for HTTPS during `pkdump setup` / `pkdump data refresh`. No
 # OpenSSL needed — reqwest is built with rustls.

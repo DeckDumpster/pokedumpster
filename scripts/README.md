@@ -1,64 +1,69 @@
 # scripts/
 
-## `pkmngg_export.user.js` — pkmn.gg → PokeDumpster CSV
+Tools that sit alongside the main app — pkmn.gg ingest, etc.
 
-A Tampermonkey / Violentmonkey userscript that runs on a logged-in
-**pkmn.gg** page and downloads a CSV importable by PokeDumpster's
-`/ingest/csv` (format **PokeDumpster**).
+## `pkmngg_fetch.js` — pkmn.gg → PokeDumpster CSV (recommended)
 
-### Install
+A headless-browser scraper. Drives Playwright (re-using the install at
+`tests/ui/node_modules/playwright`) against pkmn.gg, captures every
+JSON response the page makes while you'd normally browse the
+collection, flattens the lot into a PokeDumpster-native CSV ready for
+`/ingest/csv`.
 
-1. Install **[Tampermonkey][tm]** (Chrome / Firefox) or
-   **[Violentmonkey][vm]** (open-source equivalent).
-2. Open `scripts/pkmngg_export.user.js` in the browser and click the
-   "Install" prompt — or paste it into a new userscript by hand.
+### First run — magic-link bootstrap
 
-[tm]: https://www.tampermonkey.net/
-[vm]: https://violentmonkey.github.io/
+pkmn.gg login is passwordless: you request a link, the site emails it.
+First run, pass the link from that email — the script visits it once,
+saves the resulting browser session, then runs the collection scrape:
 
-### Use
+```bash
+node scripts/pkmngg_fetch.js --link "https://pkmn.gg/.../?token=..."
+```
 
-1. Log in to pkmn.gg in the same browser profile and open your
-   collection.
-2. A small floating **Export CSV** button appears bottom-right. Click
-   it. The script auto-scrolls the page (to materialise lazy rows),
-   collects the rendered cards, then downloads
-   `pokedumpster-pkmngg-<timestamp>.csv`.
-3. In PokeDumpster, go to **/ingest/csv**, pick format **PokeDumpster
-   (pkmn.gg export)**, upload the file, preview, commit.
+### Subsequent runs
 
-### How it works
+Storage state is saved to `~/.pkdump/pkmngg-state.json` (chmod 600).
+Re-runs use it without bothering you for a fresh link until the
+session expires:
 
-The script tries two strategies, in order:
+```bash
+node scripts/pkmngg_fetch.js
+# → ./pokedumpster-pkmngg-<timestamp>.csv
+```
 
-1. **API capture** — `window.fetch` is hooked; any pkmn.gg response that
-   looks like a collection page (URL contains `collection` / `card` /
-   `inventory` / `owned`) is buffered. On click, every captured blob is
-   walked recursively for objects that look like collection rows
-   (a set identifier + a card number).
-2. **DOM scrape** — fallback for when the API capture finds nothing.
-   Card tiles + table rows are scanned for set / number /
-   variant / quantity in data-attributes, with the `/cards/<set>/<number>`
-   link href used as a last resort.
+Then upload at PokeDumpster's `/ingest/csv` with format
+**PokeDumpster (pkmn.gg export)**.
 
-The two-pass design keeps it working when pkmn.gg redesigns its
-chrome but keeps the JSON API stable, and vice-versa. If both
-strategies come up empty, the script logs to the browser console and
-shows an alert so you can paste an example response back here for us
-to teach the script.
+### Options
 
-### CSV shape
+```
+--link URL       Magic-link URL from the login email (single-use).
+--storage PATH   Storage state file. Default: ~/.pkdump/pkmngg-state.json
+--out FILE       Output CSV. Default: ./pokedumpster-pkmngg-<ts>.csv
+--debug FILE     Log of every captured JSON response (URL + truncated
+                 body). Default: ~/.pkdump/pkmngg-debug.log
+--url URL        Where to land after login. Default: https://pkmn.gg/
+--headed         Run a visible browser (debugging the flow).
+--help, -h       Print this help.
+```
 
-Matches the PokeDumpster-native parser at
-`crates/pkdump-core/src/import/pokedumpster.rs`:
+The `--debug` log is the recovery mechanism: if zero rows come out,
+pkmn.gg's API shape changed (or the script's heuristic doesn't match
+it). Paste a relevant entry from the log back into the repo so the
+flattener can be taught the new shape.
 
-```text
+### CSV columns
+
+Matches `crates/pkdump-core/src/import/pokedumpster.rs`:
+
+```
 set_code, ptcgo_code, number, variant, condition,
 language, quantity, purchase_price, currency, source, notes
 ```
 
-`set_code` (the pokemontcg.io id) and `ptcgo_code` (the collector-facing
-3-letter code) are both written when the page exposes them — the
-importer resolves either. `variant` is mapped to PokeDumpster's flat
-variant enum (`holo`, `reverse_holo`, `first_ed_holo`, …); anything
-unrecognised passes through verbatim so a manual fix-up is possible.
+## `pkmngg_export.user.js` — Tampermonkey export (legacy)
+
+A Tampermonkey userscript that runs *inside* a logged-in pkmn.gg tab
+and offers an Export CSV button. Kept around as a manual fallback if
+the headless scraper ever can't establish a session, but
+`pkmngg_fetch.js` is the recommended path.

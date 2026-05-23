@@ -99,45 +99,129 @@ pub fn variant_from_product_name(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Parse a stamped-promo TCGplayer product name into a variant code + a
-/// set-name keyword used to find the base card the stamp is on. Stamps
-/// live in a different TCGCSV group than their base set (the
-/// "Miscellaneous Cards and Products" catch-all), so the parenthetical
-/// `"… Stamped …"` token in the product name is the bridge.
+/// Parse a stamped-promo TCGplayer product name into a (variant_code,
+/// optional set keyword). Stamps live in a different TCGCSV group than
+/// their base set (the "Miscellaneous Cards and Products" catch-all), so
+/// the product-name suffix is the bridge.
+///
+/// Set keyword, when present, narrows the base-card match to a set whose
+/// name contains it — load-bearing for cases where multiple sets share a
+/// printed_total (e.g. BLK and WHT both 86 cards). When `None`, the
+/// caller falls back to matching the parsed card name + collector number
+/// + printed_total against the catalog.
 ///
 /// Examples:
 ///   "Victini (Black Bolt Stamped)"
-///     -> Some(("stamp_black_bolt", "black bolt"))
-///   "Corviknight - 156/189 (Darkness Ablaze Stamped)"
-///     -> Some(("stamp_darkness_ablaze", "darkness ablaze"))
+///     -> Some(("stamp_black_bolt", Some("black bolt")))
 ///   "Pikachu - 58/102 (E3 Stamped)"
-///     -> Some(("stamp_e3", "e3"))
-///   "Pikachu - 58/102 (E3 Stamped with Red Cheeks)"
-///     -> Some(("stamp_e3", "e3"))  // secondary distinction not modelled yet
-///   "Buck's Training (Prerelease)"
-///     -> None  // no set keyword to disambiguate
-pub fn parse_stamp_tag(name: &str) -> Option<(String, String)> {
+///     -> Some(("stamp_e3", Some("e3")))
+///   "Ditto - 39/113 (SDCC Stamp)"
+///     -> Some(("stamp_sdcc", Some("sdcc")))
+///   "Buck's Training - 130/146 (Prerelease)"
+///     -> Some(("stamp_prerelease", None))
+///   "Buck's Training - 130/146 (Prerelease) [Staff]"
+///     -> Some(("stamp_prerelease_staff", None))
+///   "Shellos West Sea (SDCC 2007 Staff)"
+///     -> Some(("stamp_sdcc_2007_staff", None))
+///   "Pikachu (Toys R Us Promo)"
+///     -> None  // generic promo isn't a stamp
+pub fn parse_stamp_tag(name: &str) -> Option<(String, Option<String>)> {
     let lower = name.to_lowercase();
-    let open = lower.rfind('(')?;
-    let close = lower[open..].find(')').map(|i| open + i)?;
-    let inner = lower[open + 1..close].trim();
-    if !inner.contains("stamped") {
+    let bracket_staff = lower.contains("[staff]");
+
+    // Pull the LAST parenthetical (some products carry both "(...)" and a
+    // trailing "[Staff]" bracket).
+    let inner = lower.rfind('(').and_then(|open| {
+        lower[open..]
+            .find(')')
+            .map(|close| lower[open + 1..open + close].trim().to_string())
+    });
+
+    let (mut variant, keyword) = if let Some(inner) = inner {
+        if let Some(stripped) = strip_stamp_suffix(&inner) {
+            // "(X Stamped)" / "(X Stamp)" — keyword = X (used to
+            // disambiguate among sets sharing a printed_total).
+            let keyword = stripped.trim().to_string();
+            if keyword.is_empty() {
+                return None;
+            }
+            (format!("stamp_{}", to_snake(&keyword)), Some(keyword))
+        } else if inner == "prerelease" {
+            ("stamp_prerelease".to_string(), None)
+        } else if inner.ends_with(" staff") {
+            // "(SDCC 2007 Staff)" — paren-internal Staff, no separate
+            // [Staff] bracket. Treat the part before "staff" as the
+            // event identifier; the resulting variant naturally ends in
+            // "_staff", so we won't append it twice below.
+            let event = inner[..inner.len() - " staff".len()].trim();
+            if event.is_empty() {
+                return None;
+            }
+            (format!("stamp_{}_staff", to_snake(event)), None)
+        } else if bracket_staff {
+            // Some other paren content (an event marker like "SDCC 2009",
+            // a venue like "Pokemon Center Exclusive") combined with a
+            // [Staff] bracket — treat the paren as the event identifier
+            // and let the suffix-appender below add "_staff".
+            (format!("stamp_{}", to_snake(&inner)), None)
+        } else {
+            return None;
+        }
+    } else if bracket_staff {
+        ("stamp_staff".to_string(), None)
+    } else {
         return None;
+    };
+
+    // Append "_staff" if the [Staff] bracket was present and we haven't
+    // already encoded it.
+    if bracket_staff && !variant.ends_with("_staff") {
+        variant.push_str("_staff");
     }
-    let (before, _after) = inner.split_once("stamped")?;
-    let keyword = before.trim();
-    if keyword.is_empty() {
-        return None;
+    Some((variant, keyword))
+}
+
+/// Strip a trailing " stamp" or " stamped" word from a stamped-paren's
+/// inner token. Returns the remainder (which becomes the keyword), or
+/// `None` if the inner doesn't end with either form.
+fn strip_stamp_suffix(inner: &str) -> Option<&str> {
+    for suffix in [" stamped", " stamp"] {
+        if let Some(rest) = inner.strip_suffix(suffix) {
+            return Some(rest);
+        }
+        // "X Stamped with Y" — keep everything before "stamped" as the
+        // keyword, dropping any post-suffix qualifier.
+        if let Some((before, _)) = inner.split_once(suffix.trim_start())
+            && !before.is_empty()
+            && before.ends_with(' ')
+        {
+            return Some(before.trim_end());
+        }
     }
-    let snake: String = keyword
-        .chars()
+    None
+}
+
+/// Reduce a free-form label to snake_case, ASCII alphanumeric only.
+fn to_snake(s: &str) -> String {
+    s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect::<String>()
         .split('_')
         .filter(|p| !p.is_empty())
         .collect::<Vec<_>>()
-        .join("_");
-    Some((format!("stamp_{snake}"), keyword.to_string()))
+        .join("_")
+}
+
+/// Parse the card name from a TCGplayer product name. Returns the
+/// substring before the first ` - ` (the collector-number separator) or
+/// the first ` (` (the parenthetical-tag opener), whichever comes first.
+/// Used by the stamp matcher when no set keyword is available, to filter
+/// candidate cards by name.
+pub fn parse_product_card_name(product_name: &str) -> &str {
+    let dash = product_name.find(" - ").unwrap_or(product_name.len());
+    let paren = product_name.find(" (").unwrap_or(product_name.len());
+    let cut = dash.min(paren);
+    product_name[..cut].trim()
 }
 
 /// Predicate part of an overlay rule. A `None` field matches anything; every
@@ -257,26 +341,73 @@ mod tests {
 
     #[test]
     fn parse_stamp_tag_extracts_variant_and_keyword() {
+        // Set-named "(X Stamped)" — keyword present, used to
+        // disambiguate among sets sharing a printed_total.
         assert_eq!(
             parse_stamp_tag("Victini (Black Bolt Stamped)"),
-            Some(("stamp_black_bolt".into(), "black bolt".into()))
+            Some(("stamp_black_bolt".into(), Some("black bolt".into())))
         );
         assert_eq!(
             parse_stamp_tag("Corviknight - 156/189 (Darkness Ablaze Stamped)"),
-            Some(("stamp_darkness_ablaze".into(), "darkness ablaze".into()))
+            Some((
+                "stamp_darkness_ablaze".into(),
+                Some("darkness ablaze".into())
+            ))
         );
         assert_eq!(
             parse_stamp_tag("Pikachu - 58/102 (E3 Stamped)"),
-            Some(("stamp_e3".into(), "e3".into()))
+            Some(("stamp_e3".into(), Some("e3".into())))
         );
-        // Pre-release / generic-Promo / [Staff] don't carry a set keyword
-        // we can match against, so they return None for now.
-        assert_eq!(parse_stamp_tag("Buck's Training (Prerelease)"), None);
+        assert_eq!(
+            parse_stamp_tag("Ditto - 39/113 (SDCC Stamp)"),
+            Some(("stamp_sdcc".into(), Some("sdcc".into())))
+        );
+
+        // Prerelease — no set keyword, caller matches by card name + total.
+        assert_eq!(
+            parse_stamp_tag("Buck's Training - 130/146 (Prerelease)"),
+            Some(("stamp_prerelease".into(), None))
+        );
+        // Prerelease + [Staff] = composite variant code.
+        assert_eq!(
+            parse_stamp_tag("Buck's Training - 130/146 (Prerelease) [Staff]"),
+            Some(("stamp_prerelease_staff".into(), None))
+        );
+        // (Event) alone — no stamp/staff marker — returns None.
+        assert_eq!(parse_stamp_tag("Riolu - 91/127 (SDCC 2009)"), None);
+        // (Event) + [Staff] — variant code merges the event into the
+        // staff suffix.
+        assert_eq!(
+            parse_stamp_tag("Riolu - 91/127 (SDCC 2009) [Staff]"),
+            Some(("stamp_sdcc_2009_staff".into(), None))
+        );
+        // Paren-internal Staff with no [Staff] bracket.
+        assert_eq!(
+            parse_stamp_tag("Shellos West Sea (SDCC 2007 Staff)"),
+            Some(("stamp_sdcc_2007_staff".into(), None))
+        );
+
+        // Non-stamps return None.
         assert_eq!(parse_stamp_tag("Pikachu (Toys R Us Promo)"), None);
-        assert_eq!(parse_stamp_tag("Riolu - 91/127 [Staff]"), None);
-        // Non-stamp products return None.
         assert_eq!(parse_stamp_tag("Bulbasaur - 001/165"), None);
         assert_eq!(parse_stamp_tag("Bulbasaur (Master Ball Pattern)"), None);
+    }
+
+    #[test]
+    fn parse_product_card_name_strips_dash_or_paren_suffix() {
+        assert_eq!(
+            parse_product_card_name("Buck's Training - 130/146 (Prerelease)"),
+            "Buck's Training"
+        );
+        assert_eq!(
+            parse_product_card_name("Victini (Black Bolt Stamped)"),
+            "Victini"
+        );
+        assert_eq!(
+            parse_product_card_name("Team Rocket's Mimikyu (Prerelease) [Staff]"),
+            "Team Rocket's Mimikyu"
+        );
+        assert_eq!(parse_product_card_name("Bulbasaur"), "Bulbasaur");
     }
 
     #[test]

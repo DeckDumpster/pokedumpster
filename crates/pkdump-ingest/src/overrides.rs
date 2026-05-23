@@ -11,7 +11,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use rusqlite::Connection;
 
-use pkdump_core::variant::{VariantOverride, parse_stamp_tag, sub_type_to_variant};
+use pkdump_core::variant::{
+    VariantOverride, parse_product_card_name, parse_stamp_tag, sub_type_to_variant,
+};
 
 use crate::error::Result;
 use crate::tcgcsv::normalize_collector_number;
@@ -40,10 +42,17 @@ struct CardRow {
     set_code: String,
     number: String,
     rarity: Option<String>,
+    /// Lowercase card name — matched against the card name parsed from
+    /// stamp product names when no set keyword is available.
+    name_lower: String,
     /// Lowercase set name, used to match against stamp-tag set keywords
     /// like "black bolt" / "darkness ablaze" when resolving cross-group
     /// stamped promos to a base card.
     set_name_lower: String,
+    /// The set's `printed_total` (e.g. 146, 102) — matched against the
+    /// `/total` half of a stamp product's collector number when no set
+    /// keyword is available.
+    printed_total: Option<i64>,
 }
 
 /// A parsed cross-group stamp product, preloaded so the per-card pass is
@@ -51,17 +60,31 @@ struct CardRow {
 struct StampProduct {
     product_id: i64,
     variant: String,
-    /// Lowercase set keyword extracted from the parenthetical tag — must
-    /// be a substring of the candidate base card's set name to match.
-    set_keyword: String,
+    /// Lowercase set keyword from the parenthetical tag, e.g. "black bolt".
+    /// When present, the base card must belong to a set whose name
+    /// contains this token. When absent (Prerelease, Staff, event-only
+    /// stamps), the matcher falls back to `card_name_lower` + `set_total`.
+    set_keyword: Option<String>,
+    /// Lowercase card name parsed from the product name — used when
+    /// `set_keyword` is None.
+    card_name_lower: String,
+    /// The `/total` half of the collector number (e.g. 146 from
+    /// "130/146"). `None` for promos without a printed-total suffix.
+    set_total: Option<i64>,
     sub_type: Option<String>,
+}
+
+/// Extract the `/total` half of a TCGCSV collector_number like "130/146".
+/// Returns `None` when the number has no `/total` suffix.
+fn parse_set_total(raw: &str) -> Option<i64> {
+    let (_, total) = raw.split_once('/')?;
+    total.trim().parse::<i64>().ok()
 }
 
 /// Preload every cross-group stamp product into a map keyed by
 /// normalized collector number, so per-card stamp matching is an
-/// in-memory lookup. Stamps with an unmatched tag (Prerelease, [Staff],
-/// generic Promo without a set keyword) are skipped for now — those need
-/// a more involved disambiguation strategy.
+/// in-memory lookup. Stamps that don't parse cleanly (a product without
+/// a recognised stamp marker) are skipped silently.
 fn preload_stamp_products(conn: &Connection) -> Result<HashMap<String, Vec<StampProduct>>> {
     let mut stmt = conn.prepare(
         "SELECT product_id, name, collector_number FROM tcgcsv_products \
@@ -86,6 +109,8 @@ fn preload_stamp_products(conn: &Connection) -> Result<HashMap<String, Vec<Stamp
             .prepare("SELECT sub_type_name FROM prices WHERE tcgplayer_product_id = ?1 LIMIT 1")?
             .query_row([product_id], |r| r.get(0))
             .ok();
+        let card_name_lower = parse_product_card_name(&name).to_lowercase();
+        let set_total = parse_set_total(&num);
         by_number
             .entry(normalize_collector_number(&num))
             .or_default()
@@ -93,6 +118,8 @@ fn preload_stamp_products(conn: &Connection) -> Result<HashMap<String, Vec<Stamp
                 product_id,
                 variant,
                 set_keyword,
+                card_name_lower,
+                set_total,
                 sub_type,
             });
     }
@@ -167,7 +194,8 @@ fn variants_from_tcgcsv(conn: &Connection, card: &CardRow) -> Result<Vec<Variant
 pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]) -> Result<usize> {
     let cards: Vec<CardRow> = {
         let mut stmt = conn.prepare(
-            "SELECT c.card_id, c.set_code, c.number, c.rarity, LOWER(s.name) \
+            "SELECT c.card_id, c.set_code, c.number, c.rarity, \
+                    LOWER(c.name), LOWER(s.name), s.printed_total \
                FROM cards c JOIN sets s ON s.set_code = c.set_code",
         )?;
         let rows = stmt.query_map([], |r| {
@@ -176,7 +204,9 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
                 set_code: r.get(1)?,
                 number: r.get(2)?,
                 rarity: r.get(3)?,
-                set_name_lower: r.get(4)?,
+                name_lower: r.get(4)?,
+                set_name_lower: r.get(5)?,
+                printed_total: r.get(6)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>()?
@@ -189,11 +219,21 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
     for c in &cards {
         let mut tcgcsv_variants = variants_from_tcgcsv(conn, c)?;
         // Cross-group stamps: any MCAP-group stamp product whose
-        // collector number matches and whose set keyword is a substring
-        // of this card's set name resolves to a printing on this card.
+        // collector number matches AND that resolves to this card via
+        // either a set-name keyword or a card-name + printed_total
+        // fallback. Numbers alone are too ambiguous (the same number
+        // appears in many sets).
         if let Some(candidates) = stamps_by_number.get(&normalize_collector_number(&c.number)) {
             for stamp in candidates {
-                if c.set_name_lower.contains(&stamp.set_keyword) {
+                let matches = match &stamp.set_keyword {
+                    Some(kw) => c.set_name_lower.contains(kw),
+                    None => {
+                        stamp.card_name_lower == c.name_lower
+                            && stamp.set_total.is_some()
+                            && stamp.set_total == c.printed_total
+                    }
+                };
+                if matches {
                     tcgcsv_variants.push((
                         stamp.variant.clone(),
                         stamp.sub_type.clone(),
@@ -565,6 +605,80 @@ mod tests {
             leaked, 0,
             "stamp must not bleed across sets with the same total"
         );
+    }
+
+    #[test]
+    fn keyword_less_stamp_resolves_via_card_name_and_printed_total() {
+        // "(Prerelease)" carries no set keyword — the matcher has to
+        // disambiguate the base card by (card name, collector number,
+        // set printed_total).
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        // Two sets, only one with the matching printed_total.
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('hgss4', 'Triumphant', 'HGSS', 102), \
+                    ('xy12', 'Evolutions', 'XY', 108)",
+            [],
+        )
+        .unwrap();
+        // Wartortle in two sets — only the one whose printed_total is
+        // 112 should match the (Prerelease) stamp.
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('ex2', 'Sandstorm', 'EX', 100)",
+            [],
+        )
+        .unwrap();
+        // Set with the matching total.
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('hgss5', 'Call of Legends', 'HGSS', 112)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('hgss5-50', 'hgss5', '50', 50, 'Wartortle', 'Uncommon')",
+            [],
+        )
+        .unwrap();
+        // Same name+number in another set with different total — must NOT match.
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('ex2-50', 'ex2', '50', 50, 'Wartortle', 'Uncommon')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (285695, 2374, 'Wartortle - 50/112 (Prerelease)', '050/112', NULL, '2026-05-23')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        // The Call of Legends Wartortle gains a stamp_prerelease printing.
+        let resolved: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'hgss5-50-stamp_prerelease'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 285695);
+        // The Sandstorm Wartortle (same number, different total) does not.
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM printings WHERE printing_id = 'ex2-50-stamp_prerelease'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leaked, 0, "printed_total must disambiguate the base set");
     }
 
     #[test]

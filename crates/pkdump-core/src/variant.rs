@@ -68,13 +68,32 @@ pub fn variants_from_price_keys(price_keys: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Reverse holos didn't exist in the English Pokémon TCG until Legendary
+/// Collection (2002-05-24). Sets released before this date are
+/// `release_date`-gated out of the reverse-holo bootstrap so we don't
+/// fabricate a printing that never existed (e.g. a base1 Computer Search
+/// reverse holo).
+const REVERSE_HOLO_ERA_START: &str = "2002/05/24";
+
+fn has_reverse_holos(release_date: Option<&str>) -> bool {
+    match release_date {
+        Some(d) => d >= REVERSE_HOLO_ERA_START,
+        None => true,
+    }
+}
+
 /// Layer 2 — used only when layer 1 yields nothing. Commons/Uncommons/Rares
-/// get a regular plus a reverse holo; everything else (holo rares and the
-/// special rarities) gets a single holo printing.
-pub fn bootstrap_from_rarity(rarity: Option<&str>) -> Vec<String> {
+/// in the reverse-holo era (Legendary Collection onward) get a regular plus
+/// a reverse holo; before LC they get just a regular. Everything else (holo
+/// rares and the special rarities) gets a single holo printing.
+pub fn bootstrap_from_rarity(rarity: Option<&str>, release_date: Option<&str>) -> Vec<String> {
     match rarity {
         Some("Common" | "Uncommon" | "Rare") => {
-            vec!["normal".into(), "reverse_holo".into()]
+            if has_reverse_holos(release_date) {
+                vec!["normal".into(), "reverse_holo".into()]
+            } else {
+                vec!["normal".into()]
+            }
         }
         Some(r) if !r.is_empty() => vec!["holo".into()],
         _ => vec!["normal".into()],
@@ -132,12 +151,13 @@ pub fn expand_variants(
     set_code: &str,
     number: &str,
     rarity: Option<&str>,
+    release_date: Option<&str>,
     price_keys: &[String],
     overrides: &[VariantOverride],
 ) -> Vec<String> {
     let mut variants: BTreeSet<String> = variants_from_price_keys(price_keys).into_iter().collect();
     if variants.is_empty() {
-        variants.extend(bootstrap_from_rarity(rarity));
+        variants.extend(bootstrap_from_rarity(rarity, release_date));
     }
     for ov in overrides {
         if ov.match_.matches(set_code, rarity, number) {
@@ -170,27 +190,69 @@ mod tests {
 
     #[test]
     fn layer2_bootstrap_by_rarity() {
+        // Modern set — Common gets reverse holo.
         assert_eq!(
-            bootstrap_from_rarity(Some("Common")),
+            bootstrap_from_rarity(Some("Common"), Some("2023/09/22")),
             s(&["normal", "reverse_holo"])
         );
         assert_eq!(
-            bootstrap_from_rarity(Some("Special Illustration Rare")),
+            bootstrap_from_rarity(Some("Special Illustration Rare"), Some("2023/09/22")),
             s(&["holo"])
         );
-        assert_eq!(bootstrap_from_rarity(None), s(&["normal"]));
+        assert_eq!(
+            bootstrap_from_rarity(None, Some("2023/09/22")),
+            s(&["normal"])
+        );
+    }
+
+    #[test]
+    fn layer2_bootstrap_omits_reverse_holo_for_pre_legendary_sets() {
+        // Base Set (1999), Jungle, Fossil, Base Set 2, Team Rocket — all
+        // pre-2002-05-24, so no reverse holo.
+        assert_eq!(
+            bootstrap_from_rarity(Some("Common"), Some("1999/01/09")),
+            s(&["normal"])
+        );
+        assert_eq!(
+            bootstrap_from_rarity(Some("Uncommon"), Some("2000/04/24")),
+            s(&["normal"])
+        );
+        // Legendary Collection itself (2002-05-24) — the cutoff is inclusive.
+        assert_eq!(
+            bootstrap_from_rarity(Some("Rare"), Some("2002/05/24")),
+            s(&["normal", "reverse_holo"])
+        );
+        // Holo rares are still holo, no reverse, regardless of era.
+        assert_eq!(
+            bootstrap_from_rarity(Some("Rare Holo"), Some("1999/01/09")),
+            s(&["holo"])
+        );
     }
 
     #[test]
     fn expand_prefers_price_keys_over_bootstrap() {
-        let v = expand_variants("sv3pt5", "4", Some("Common"), &s(&["holofoil"]), &[]);
+        let v = expand_variants(
+            "sv3pt5",
+            "4",
+            Some("Common"),
+            Some("2023/09/22"),
+            &s(&["holofoil"]),
+            &[],
+        );
         assert_eq!(v, s(&["holo"])); // not the rarity bootstrap
     }
 
     #[test]
     fn expand_bootstraps_when_no_price_keys() {
-        let v = expand_variants("sv99", "1", Some("Common"), &[], &[]);
+        let v = expand_variants("sv99", "1", Some("Common"), Some("2023/09/22"), &[], &[]);
         assert_eq!(v, s(&["normal", "reverse_holo"]));
+    }
+
+    #[test]
+    fn expand_skips_reverse_holo_for_pre_legendary_sets() {
+        // base1 Computer Search (Common) — no price keys, pre-LC release.
+        let v = expand_variants("base1", "58", Some("Common"), Some("1999/01/09"), &[], &[]);
+        assert_eq!(v, s(&["normal"]));
     }
 
     #[test]
@@ -204,6 +266,7 @@ mod tests {
             "sv3pt5",
             "4",
             Some("Common"),
+            Some("2023/09/22"),
             &s(&["normal", "reverseHolofoil"]),
             &overrides,
         );
@@ -216,10 +279,24 @@ mod tests {
         let json = r#"[{"match":{"set":"sv3pt5","rarity":["Common"]},"add":["pokeball_rh"]}]"#;
         let overrides: Vec<VariantOverride> = serde_json::from_str(json).unwrap();
         // wrong set — rule does not fire
-        let v = expand_variants("sv4", "4", Some("Common"), &s(&["normal"]), &overrides);
+        let v = expand_variants(
+            "sv4",
+            "4",
+            Some("Common"),
+            Some("2023/09/22"),
+            &s(&["normal"]),
+            &overrides,
+        );
         assert_eq!(v, s(&["normal"]));
         // wrong rarity — rule does not fire
-        let v = expand_variants("sv3pt5", "4", Some("Rare"), &s(&["normal"]), &overrides);
+        let v = expand_variants(
+            "sv3pt5",
+            "4",
+            Some("Rare"),
+            Some("2023/09/22"),
+            &s(&["normal"]),
+            &overrides,
+        );
         assert_eq!(v, s(&["normal"]));
     }
 }

@@ -35,12 +35,34 @@ fn price_keys_from_raw(raw_json: &str) -> Vec<String> {
 /// Run variant expansion for every card in the catalog, writing `printings`
 /// rows. Printings expansion no longer produces are soft-deprecated — their
 /// `deprecated_at` is set, never deleted (PLAN.md §4.4). Idempotent.
+struct ExpansionInput {
+    card_id: String,
+    set_code: String,
+    number: String,
+    rarity: Option<String>,
+    release_date: Option<String>,
+    raw_json: String,
+}
+
 pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]) -> Result<usize> {
-    let cards: Vec<(String, String, String, Option<String>, String)> = {
-        let mut stmt =
-            conn.prepare("SELECT card_id, set_code, number, rarity, raw_json FROM cards")?;
+    // LEFT JOIN sets so cards in a set we haven't ingested yet (shouldn't
+    // happen, but defensive) still expand — release_date just falls back to
+    // None, which bootstrap_from_rarity treats as "modern" (reverse-holo OK).
+    let cards: Vec<ExpansionInput> = {
+        let mut stmt = conn.prepare(
+            "SELECT c.card_id, c.set_code, c.number, c.rarity, \
+                    s.release_date, c.raw_json \
+               FROM cards c LEFT JOIN sets s ON s.set_code = c.set_code",
+        )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok(ExpansionInput {
+                card_id: r.get(0)?,
+                set_code: r.get(1)?,
+                number: r.get(2)?,
+                rarity: r.get(3)?,
+                release_date: r.get(4)?,
+                raw_json: r.get(5)?,
+            })
         })?;
         rows.collect::<rusqlite::Result<_>>()?
     };
@@ -48,9 +70,16 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
     let now = chrono::Utc::now().to_rfc3339();
     let tx = conn.transaction()?;
     let mut printings = 0usize;
-    for (card_id, set_code, number, rarity, raw_json) in &cards {
-        let price_keys = price_keys_from_raw(raw_json);
-        let variants = expand_variants(set_code, number, rarity.as_deref(), &price_keys, overrides);
+    for c in &cards {
+        let price_keys = price_keys_from_raw(&c.raw_json);
+        let variants = expand_variants(
+            &c.set_code,
+            &c.number,
+            c.rarity.as_deref(),
+            c.release_date.as_deref(),
+            &price_keys,
+            overrides,
+        );
 
         // Deprecate every currently-live printing of this card; the upserts
         // below revive the ones expansion still produces. Printings that drop
@@ -58,15 +87,15 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
         tx.execute(
             "UPDATE printings SET deprecated_at = ?1 \
              WHERE card_id = ?2 AND deprecated_at IS NULL",
-            rusqlite::params![now, card_id],
+            rusqlite::params![now, c.card_id],
         )?;
         for variant in &variants {
-            let printing_id = format!("{card_id}-{variant}");
+            let printing_id = format!("{}-{variant}", c.card_id);
             tx.execute(
                 "INSERT INTO printings (printing_id, card_id, variant, language) \
                  VALUES (?1, ?2, ?3, 'en') \
                  ON CONFLICT(printing_id) DO UPDATE SET deprecated_at = NULL",
-                rusqlite::params![printing_id, card_id, variant],
+                rusqlite::params![printing_id, c.card_id, variant],
             )?;
             printings += 1;
         }

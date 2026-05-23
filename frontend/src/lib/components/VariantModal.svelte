@@ -15,6 +15,14 @@
 		onRemove: (printingId: string, variant: string) => void;
 		onClose: () => void;
 	} = $props();
+
+	// Hide deprecated printings the user doesn't own (e.g. a bogus
+	// reverse_holo for a base-set card that variant expansion has since
+	// dropped). Keep deprecated printings the user *does* own visible — and
+	// dimmed — so they can still see and remove those copies.
+	const visible = $derived(
+		slot.printings.filter((p) => !p.deprecated || p.owned_count > 0)
+	);
 </script>
 
 <svelte:window
@@ -31,7 +39,7 @@
 	</header>
 
 	<ul>
-		{#each slot.printings as p (p.printing_id)}
+		{#each visible as p (p.printing_id)}
 			<li class:dim={p.deprecated}>
 				<span class="variant">{variantLabel(p.variant)}</span>
 				<span class="price">

@@ -54,7 +54,6 @@
 	});
 	function toggleAllCards() {
 		allCards = !allCards;
-		if (allCards) view = 'grid';
 	}
 
 	// --- Multi-select bulk operations. ---
@@ -654,7 +653,7 @@
 			<p class="muted">Searching…</p>
 		{:else if catalogRows.length === 0}
 			<p class="muted">No catalog matches for “{search}”.</p>
-		{:else}
+		{:else if view === 'grid'}
 			<div class="cardgrid">
 				{#each catalogRows as row (row.card_id)}
 					<button
@@ -674,6 +673,34 @@
 						{#if row.owned_count > 0}<span class="ownbadge">×{row.owned_count}</span>{/if}
 					</button>
 				{/each}
+			</div>
+		{:else}
+			<div class="tableScroll">
+				<table class="dd">
+					<thead>
+						<tr>
+							<th>Name</th>
+							<th>Set</th>
+							<th class="num">#</th>
+							<th class="center">Rarity</th>
+							<th class="num">Owned</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each catalogRows as row (row.card_id)}
+							<tr
+								class:missing={row.owned_count === 0}
+								onclick={() => (selectedCard = { set: row.set_code, number: row.number })}
+							>
+								<td>{row.name}</td>
+								<td>{row.set_name}</td>
+								<td class="num">{row.number}</td>
+								<td class="center">{row.rarity ?? '—'}</td>
+								<td class="num">{row.owned_count > 0 ? `×${row.owned_count}` : '+ add'}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
 			</div>
 		{/if}
 	{:else if rows.length === 0}
@@ -1141,6 +1168,9 @@
 	}
 	table.dd tbody tr.picked {
 		background: rgba(233, 69, 96, 0.14);
+	}
+	table.dd tbody tr.missing {
+		color: #777;
 	}
 	table.dd .cbcol {
 		width: 1.5rem;

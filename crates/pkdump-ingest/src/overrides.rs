@@ -7,14 +7,20 @@
 //! so the overlay ships with the binary (the pokedex pattern). See PLAN.md
 //! §4 and `data/known_issues.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use rusqlite::Connection;
 
-use pkdump_core::variant::{VariantOverride, sub_type_to_variant};
+use pkdump_core::variant::{VariantOverride, parse_stamp_tag, sub_type_to_variant};
 
 use crate::error::Result;
 use crate::tcgcsv::normalize_collector_number;
+
+/// TCGCSV group_id for the "Miscellaneous Cards and Products" bin, which
+/// hosts stamped promos (Black Bolt Stamped, Darkness Ablaze Stamped, E3
+/// Stamped, …). These products live cross-group from the base card's set,
+/// so expansion has to look here explicitly to surface them.
+const MISC_GROUP_ID: i64 = 2374;
 
 const VARIANT_AUGMENTATIONS: &str =
     include_str!("../../../data/overrides/variant_augmentations.json");
@@ -34,6 +40,63 @@ struct CardRow {
     set_code: String,
     number: String,
     rarity: Option<String>,
+    /// Lowercase set name, used to match against stamp-tag set keywords
+    /// like "black bolt" / "darkness ablaze" when resolving cross-group
+    /// stamped promos to a base card.
+    set_name_lower: String,
+}
+
+/// A parsed cross-group stamp product, preloaded so the per-card pass is
+/// a HashMap lookup rather than a SQL roundtrip per card.
+struct StampProduct {
+    product_id: i64,
+    variant: String,
+    /// Lowercase set keyword extracted from the parenthetical tag — must
+    /// be a substring of the candidate base card's set name to match.
+    set_keyword: String,
+    sub_type: Option<String>,
+}
+
+/// Preload every cross-group stamp product into a map keyed by
+/// normalized collector number, so per-card stamp matching is an
+/// in-memory lookup. Stamps with an unmatched tag (Prerelease, [Staff],
+/// generic Promo without a set keyword) are skipped for now — those need
+/// a more involved disambiguation strategy.
+fn preload_stamp_products(conn: &Connection) -> Result<HashMap<String, Vec<StampProduct>>> {
+    let mut stmt = conn.prepare(
+        "SELECT product_id, name, collector_number FROM tcgcsv_products \
+          WHERE group_id = ?1",
+    )?;
+    let rows = stmt.query_map([MISC_GROUP_ID], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+
+    let mut by_number: HashMap<String, Vec<StampProduct>> = HashMap::new();
+    for row in rows {
+        let (product_id, name, raw_num) = row?;
+        let Some(num) = raw_num else { continue };
+        let Some((variant, set_keyword)) = parse_stamp_tag(&name) else {
+            continue;
+        };
+        let sub_type: Option<String> = conn
+            .prepare("SELECT sub_type_name FROM prices WHERE tcgplayer_product_id = ?1 LIMIT 1")?
+            .query_row([product_id], |r| r.get(0))
+            .ok();
+        by_number
+            .entry(normalize_collector_number(&num))
+            .or_default()
+            .push(StampProduct {
+                product_id,
+                variant,
+                set_keyword,
+                sub_type,
+            });
+    }
+    Ok(by_number)
 }
 
 /// Look up TCGCSV products for a card and resolve each to (variant,
@@ -103,22 +166,42 @@ fn variants_from_tcgcsv(conn: &Connection, card: &CardRow) -> Result<Vec<Variant
 /// `deprecated_at` is set, never deleted (PLAN.md §4.4). Idempotent.
 pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]) -> Result<usize> {
     let cards: Vec<CardRow> = {
-        let mut stmt = conn.prepare("SELECT card_id, set_code, number, rarity FROM cards")?;
+        let mut stmt = conn.prepare(
+            "SELECT c.card_id, c.set_code, c.number, c.rarity, LOWER(s.name) \
+               FROM cards c JOIN sets s ON s.set_code = c.set_code",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok(CardRow {
                 card_id: r.get(0)?,
                 set_code: r.get(1)?,
                 number: r.get(2)?,
                 rarity: r.get(3)?,
+                set_name_lower: r.get(4)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>()?
     };
 
+    let stamps_by_number = preload_stamp_products(conn)?;
+
     let now = chrono::Utc::now().to_rfc3339();
     let mut printings = 0usize;
     for c in &cards {
-        let tcgcsv_variants = variants_from_tcgcsv(conn, c)?;
+        let mut tcgcsv_variants = variants_from_tcgcsv(conn, c)?;
+        // Cross-group stamps: any MCAP-group stamp product whose
+        // collector number matches and whose set keyword is a substring
+        // of this card's set name resolves to a printing on this card.
+        if let Some(candidates) = stamps_by_number.get(&normalize_collector_number(&c.number)) {
+            for stamp in candidates {
+                if c.set_name_lower.contains(&stamp.set_keyword) {
+                    tcgcsv_variants.push((
+                        stamp.variant.clone(),
+                        stamp.sub_type.clone(),
+                        Some(stamp.product_id),
+                    ));
+                }
+            }
+        }
         let base: Vec<VariantResolution> = if tcgcsv_variants.is_empty() {
             // Brand-new card TCGCSV hasn't indexed yet — give it a `normal`
             // placeholder so the binder still renders it, and let the next
@@ -393,6 +476,94 @@ mod tests {
         assert!(
             stamp_sub.unwrap().is_none(),
             "overlay-added variants don't have a TCGplayer sub_type"
+        );
+    }
+
+    #[test]
+    fn cross_group_stamp_resolves_to_base_card_via_set_keyword() {
+        // Victini Black Bolt Stamped (MCAP product 668956) is a stamped
+        // version of zsv10pt5-12 Victini. The matcher should resolve the
+        // stamp to the base card by (number, set-name keyword) and create
+        // a stamp_black_bolt printing tied to the MCAP product, even
+        // though Victini lives in a different TCGCSV group.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
+             VALUES ('zsv10pt5', 'Black Bolt', 'Scarlet & Violet', 24325, 86)",
+            [],
+        )
+        .unwrap();
+        // A second set with the same printed_total demonstrates the
+        // keyword disambiguates beyond just the number match.
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
+             VALUES ('rsv10pt5', 'White Flare', 'Scarlet & Violet', 24326, 86)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('zsv10pt5-12', 'zsv10pt5', '12', 12, 'Victini', 'Rare')",
+            [],
+        )
+        .unwrap();
+        // A same-numbered Victini in WHT — the stamp must NOT bleed onto it.
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('rsv10pt5-12', 'rsv10pt5', '12', 12, 'Victini', 'Rare')",
+            [],
+        )
+        .unwrap();
+        // The stamp product, living in the MCAP group.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (668956, 2374, 'Victini (Black Bolt Stamped)', '012/086', NULL, '2026-05-23')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prices \
+               (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+             VALUES (668956, 'Holofoil', 'tcgplayer', 'market', 5.0, '2026-05-23')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        // Black Bolt Victini gains the stamp printing.
+        let row: (String, Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT variant, sub_type_name, tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'zsv10pt5-12-stamp_black_bolt'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "stamp_black_bolt".into(),
+                Some("Holofoil".into()),
+                Some(668956)
+            )
+        );
+
+        // White Flare Victini does NOT receive a stamp_black_bolt
+        // printing — the keyword filtered it out even though the number
+        // matched.
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM printings WHERE printing_id = 'rsv10pt5-12-stamp_black_bolt'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            leaked, 0,
+            "stamp must not bleed across sets with the same total"
         );
     }
 

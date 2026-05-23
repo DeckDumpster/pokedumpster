@@ -99,6 +99,47 @@ pub fn variant_from_product_name(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Parse a stamped-promo TCGplayer product name into a variant code + a
+/// set-name keyword used to find the base card the stamp is on. Stamps
+/// live in a different TCGCSV group than their base set (the
+/// "Miscellaneous Cards and Products" catch-all), so the parenthetical
+/// `"… Stamped …"` token in the product name is the bridge.
+///
+/// Examples:
+///   "Victini (Black Bolt Stamped)"
+///     -> Some(("stamp_black_bolt", "black bolt"))
+///   "Corviknight - 156/189 (Darkness Ablaze Stamped)"
+///     -> Some(("stamp_darkness_ablaze", "darkness ablaze"))
+///   "Pikachu - 58/102 (E3 Stamped)"
+///     -> Some(("stamp_e3", "e3"))
+///   "Pikachu - 58/102 (E3 Stamped with Red Cheeks)"
+///     -> Some(("stamp_e3", "e3"))  // secondary distinction not modelled yet
+///   "Buck's Training (Prerelease)"
+///     -> None  // no set keyword to disambiguate
+pub fn parse_stamp_tag(name: &str) -> Option<(String, String)> {
+    let lower = name.to_lowercase();
+    let open = lower.rfind('(')?;
+    let close = lower[open..].find(')').map(|i| open + i)?;
+    let inner = lower[open + 1..close].trim();
+    if !inner.contains("stamped") {
+        return None;
+    }
+    let (before, _after) = inner.split_once("stamped")?;
+    let keyword = before.trim();
+    if keyword.is_empty() {
+        return None;
+    }
+    let snake: String = keyword
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect::<String>()
+        .split('_')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    Some((format!("stamp_{snake}"), keyword.to_string()))
+}
+
 /// Predicate part of an overlay rule. A `None` field matches anything; every
 /// field that *is* set must match.
 #[derive(Debug, Clone, Deserialize)]
@@ -212,6 +253,30 @@ mod tests {
             variant_from_product_name("Team Rocket's Tarountula"),
             Some("team_rocket_rh")
         );
+    }
+
+    #[test]
+    fn parse_stamp_tag_extracts_variant_and_keyword() {
+        assert_eq!(
+            parse_stamp_tag("Victini (Black Bolt Stamped)"),
+            Some(("stamp_black_bolt".into(), "black bolt".into()))
+        );
+        assert_eq!(
+            parse_stamp_tag("Corviknight - 156/189 (Darkness Ablaze Stamped)"),
+            Some(("stamp_darkness_ablaze".into(), "darkness ablaze".into()))
+        );
+        assert_eq!(
+            parse_stamp_tag("Pikachu - 58/102 (E3 Stamped)"),
+            Some(("stamp_e3".into(), "e3".into()))
+        );
+        // Pre-release / generic-Promo / [Staff] don't carry a set keyword
+        // we can match against, so they return None for now.
+        assert_eq!(parse_stamp_tag("Buck's Training (Prerelease)"), None);
+        assert_eq!(parse_stamp_tag("Pikachu (Toys R Us Promo)"), None);
+        assert_eq!(parse_stamp_tag("Riolu - 91/127 [Staff]"), None);
+        // Non-stamp products return None.
+        assert_eq!(parse_stamp_tag("Bulbasaur - 001/165"), None);
+        assert_eq!(parse_stamp_tag("Bulbasaur (Master Ball Pattern)"), None);
     }
 
     #[test]

@@ -70,6 +70,8 @@
 
 	const addCopy = (printingId: string) =>
 		withBusy(() => api.addCopy({ printing_id: printingId, source: 'manual' }));
+	const removeCopy = (printingId: string) =>
+		withBusy(() => api.removeCopyByPrinting(printingId));
 	const changeVariant = (copyId: number, printingId: string) =>
 		withBusy(() => api.changePrinting(copyId, printingId));
 	const changeStatus = (copyId: number, status: string) =>
@@ -217,124 +219,121 @@
 					</dd>
 				{/if}
 			</dl>
+
+			{#if parseObjArr<AbilityData>(card.abilities).length > 0}
+				<section class="cardSection">
+					<h2>Abilities</h2>
+					{#each parseObjArr<AbilityData>(card.abilities) as ab, i (i)}
+						<div class="abilityBlock">
+							<div class="abilityHead">
+								{#if ab.type}<span class="abilityType">{ab.type}</span>{/if}
+								<span class="abilityName">{ab.name ?? ''}</span>
+							</div>
+							{#if ab.text}<p class="cardText">{ab.text}</p>{/if}
+						</div>
+					{/each}
+				</section>
+			{/if}
+
+			{#if parseObjArr<AttackData>(card.attacks).length > 0}
+				<section class="cardSection">
+					<h2>Attacks</h2>
+					{#each parseObjArr<AttackData>(card.attacks) as att, i (i)}
+						<div class="attackBlock">
+							<div class="attackHead">
+								<span class="attackCost">
+									{#each att.cost ?? [] as c, i (i)}
+										<img class="energy" src={energyIcon(c)} alt={c} title={c} />
+									{/each}
+								</span>
+								<span class="attackName">{att.name ?? ''}</span>
+								{#if att.damage}<span class="attackDamage">{att.damage}</span>{/if}
+							</div>
+							{#if att.text}<p class="cardText">{att.text}</p>{/if}
+						</div>
+					{/each}
+				</section>
+			{/if}
+
+			{#if parseObjArr<WrData>(card.weaknesses).length > 0 || parseObjArr<WrData>(card.resistances).length > 0 || parseStrArr(card.retreat_cost).length > 0}
+				<section class="cardSection combat">
+					{#if parseObjArr<WrData>(card.weaknesses).length > 0}
+						<div class="combatCell">
+							<h3>Weakness</h3>
+							{#each parseObjArr<WrData>(card.weaknesses) as w (w.type)}
+								<span class="wr">
+									{#if w.type}<img class="energy" src={energyIcon(w.type)} alt={w.type} title={w.type} />{/if}
+									{w.value ?? ''}
+								</span>
+							{/each}
+						</div>
+					{/if}
+					{#if parseObjArr<WrData>(card.resistances).length > 0}
+						<div class="combatCell">
+							<h3>Resistance</h3>
+							{#each parseObjArr<WrData>(card.resistances) as r (r.type)}
+								<span class="wr">
+									{#if r.type}<img class="energy" src={energyIcon(r.type)} alt={r.type} title={r.type} />{/if}
+									{r.value ?? ''}
+								</span>
+							{/each}
+						</div>
+					{/if}
+					{#if parseStrArr(card.retreat_cost).length > 0}
+						<div class="combatCell">
+							<h3>Retreat</h3>
+							<span class="retreat">
+								{#each parseStrArr(card.retreat_cost) as c, i (i)}
+									<img class="energy" src={energyIcon(c)} alt={c} title={c} />
+								{/each}
+							</span>
+						</div>
+					{/if}
+				</section>
+			{/if}
+
+			{#if card.flavor_text}<p class="flavor">{card.flavor_text}</p>{/if}
 		</div>
 	</div>
 
 	{#if error}<p class="error">{error}</p>{/if}
 
-	{#if parseObjArr<AbilityData>(card.abilities).length > 0}
-		<section>
-			<h2>Abilities</h2>
-			{#each parseObjArr<AbilityData>(card.abilities) as ab, i (i)}
-				<div class="abilityBlock">
-					<div class="abilityHead">
-						{#if ab.type}<span class="abilityType">{ab.type}</span>{/if}
-						<span class="abilityName">{ab.name ?? ''}</span>
-					</div>
-					{#if ab.text}<p class="cardText">{ab.text}</p>{/if}
-				</div>
-			{/each}
-		</section>
-	{/if}
-
-	{#if parseObjArr<AttackData>(card.attacks).length > 0}
-		<section>
-			<h2>Attacks</h2>
-			{#each parseObjArr<AttackData>(card.attacks) as att, i (i)}
-				<div class="attackBlock">
-					<div class="attackHead">
-						<span class="attackCost">
-							{#each att.cost ?? [] as c, i (i)}
-								<img class="energy" src={energyIcon(c)} alt={c} title={c} />
-							{/each}
-						</span>
-						<span class="attackName">{att.name ?? ''}</span>
-						{#if att.damage}<span class="attackDamage">{att.damage}</span>{/if}
-					</div>
-					{#if att.text}<p class="cardText">{att.text}</p>{/if}
-				</div>
-			{/each}
-		</section>
-	{/if}
-
-	{#if parseObjArr<WrData>(card.weaknesses).length > 0 || parseObjArr<WrData>(card.resistances).length > 0 || parseStrArr(card.retreat_cost).length > 0}
-		<section class="combat">
-			{#if parseObjArr<WrData>(card.weaknesses).length > 0}
-				<div class="combatCell">
-					<h3>Weakness</h3>
-					{#each parseObjArr<WrData>(card.weaknesses) as w (w.type)}
-						<span class="wr">
-							{#if w.type}<img class="energy" src={energyIcon(w.type)} alt={w.type} title={w.type} />{/if}
-							{w.value ?? ''}
-						</span>
-					{/each}
-				</div>
-			{/if}
-			{#if parseObjArr<WrData>(card.resistances).length > 0}
-				<div class="combatCell">
-					<h3>Resistance</h3>
-					{#each parseObjArr<WrData>(card.resistances) as r (r.type)}
-						<span class="wr">
-							{#if r.type}<img class="energy" src={energyIcon(r.type)} alt={r.type} title={r.type} />{/if}
-							{r.value ?? ''}
-						</span>
-					{/each}
-				</div>
-			{/if}
-			{#if parseStrArr(card.retreat_cost).length > 0}
-				<div class="combatCell">
-					<h3>Retreat</h3>
-					<span class="retreat">
-						{#each parseStrArr(card.retreat_cost) as c, i (i)}
-							<img class="energy" src={energyIcon(c)} alt={c} title={c} />
-						{/each}
-					</span>
-				</div>
-			{/if}
-		</section>
-	{/if}
-
-	{#if card.flavor_text}<p class="flavor">{card.flavor_text}</p>{/if}
-
 	<section>
 		<h2>Printings</h2>
-		<table>
-			<thead>
-				<tr>
-					<th>Variant</th>
-					<th>Owned</th>
-					<th>Market</th>
-					<th>Links</th>
-					<th></th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each detail.printings as p (p.printing_id)}
-					<tr class:dim={p.deprecated}>
-						<td data-label="Variant">{variantLabel(p.variant)}</td>
-						<td data-label="Owned">{p.owned_count}</td>
-						<td data-label="Market">{price(p.market_price)}</td>
-						<td data-label="Links">
-							{#if p.tcgplayer_product_id != null}
-								<a
-									class="tcgp"
-									href="https://www.tcgplayer.com/product/{p.tcgplayer_product_id}"
-									target="_blank"
-									rel="noopener"
-								>
-									TCGplayer →
-								</a>
-							{/if}
-						</td>
-						<td data-label="">
-							<button disabled={busy || p.deprecated} onclick={() => addCopy(p.printing_id)}>
-								+ Add
-							</button>
-						</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
+		<ul class="printings">
+			{#each detail.printings.filter((p) => !p.deprecated || p.owned_count > 0) as p (p.printing_id)}
+				<li class:dim={p.deprecated}>
+					<span class="variant">{variantLabel(p.variant)}</span>
+					<span class="market">{price(p.market_price)}</span>
+					{#if p.tcgplayer_product_id != null}
+						<a
+							class="tcgp"
+							href="https://www.tcgplayer.com/product/{p.tcgplayer_product_id}"
+							target="_blank"
+							rel="noopener"
+							title="Open on TCGplayer"
+						>TCG↗</a>
+					{:else}
+						<span class="tcgp-spacer"></span>
+					{/if}
+					<div class="stepper">
+						<button
+							class="step"
+							disabled={busy || p.owned_count <= 0}
+							onclick={() => removeCopy(p.printing_id)}
+							aria-label="Remove one {variantLabel(p.variant)}"
+						>−</button>
+						<span class="count" class:has={p.owned_count > 0}>{p.owned_count}</span>
+						<button
+							class="step"
+							disabled={busy || p.deprecated}
+							onclick={() => addCopy(p.printing_id)}
+							aria-label="Add one {variantLabel(p.variant)}"
+						>+</button>
+					</div>
+				</li>
+			{/each}
+		</ul>
 	</section>
 
 	<section>
@@ -425,6 +424,13 @@
 	.info {
 		flex: 1;
 		min-width: 260px;
+	}
+	/* Inside .info: abilities, attacks, weakness/resistance, flavor sit
+	   next to the card art on wide viewports (and wrap below it on narrow
+	   via the parent's flex-wrap). Tighter top margin than top-level
+	   sections so the right column doesn't gap out. */
+	.cardSection {
+		margin-top: 1.2rem;
 	}
 	h1 {
 		color: #e94560;
@@ -537,7 +543,6 @@
 		display: flex;
 		gap: 1.5rem;
 		flex-wrap: wrap;
-		margin-top: 1.2rem;
 	}
 	.combatCell {
 		min-width: 90px;
@@ -549,6 +554,79 @@
 		align-items: center;
 		font-size: 0.95rem;
 		color: #ddd;
+	}
+
+	/* Printings list — one row per variant with [- N +] stepper, mirroring
+	   the browse-page VariantModal so the same muscle memory works here. */
+	.printings {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		max-width: 480px;
+	}
+	.printings li {
+		display: grid;
+		grid-template-columns: 1fr auto auto auto;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.45rem 0;
+		border-bottom: 1px solid #0f3460;
+	}
+	.printings li.dim {
+		opacity: 0.5;
+	}
+	.printings .variant {
+		color: #e0e0e0;
+	}
+	.printings .market {
+		color: #888;
+		font-size: 0.85rem;
+		font-variant-numeric: tabular-nums;
+	}
+	.tcgp-spacer {
+		display: inline-block;
+		width: 2.6rem;
+	}
+	.stepper {
+		display: flex;
+		align-items: center;
+	}
+	.step {
+		background: #0f3460;
+		border: none;
+		color: #e0e0e0;
+		width: 30px;
+		height: 30px;
+		cursor: pointer;
+		font-size: 1.1rem;
+		line-height: 1;
+		padding: 0;
+		border-radius: 0;
+	}
+	.step:first-child {
+		border-radius: 6px 0 0 6px;
+	}
+	.step:last-child {
+		border-radius: 0 6px 6px 0;
+	}
+	.step:hover:not(:disabled) {
+		background: #e94560;
+	}
+	.step:disabled {
+		opacity: 0.35;
+		cursor: default;
+	}
+	.count {
+		min-width: 34px;
+		height: 30px;
+		line-height: 30px;
+		text-align: center;
+		font-size: 0.9rem;
+		color: #888;
+		background: #1a1a2e;
+	}
+	.count.has {
+		color: #9fe7a0;
 	}
 
 	table {
@@ -568,9 +646,6 @@
 	td {
 		padding: 0.4rem 0.6rem;
 		border-bottom: 1px solid #0f3460;
-	}
-	tr.dim {
-		opacity: 0.5;
 	}
 	select {
 		background: #1a1a2e;

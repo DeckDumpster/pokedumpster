@@ -16,14 +16,19 @@ use crate::error::{DbError, Result};
 pub enum ImportFormat {
     Manabox,
     Tcgplayer,
+    /// PokeDumpster-native — what the pkmn.gg Tampermonkey export writes.
+    Pokedumpster,
 }
 
 impl ImportFormat {
-    /// Parse the wire name (`"manabox"` or `"tcgplayer"`).
+    /// Parse the wire name (`"manabox"`, `"tcgplayer"`, `"pokedumpster"`).
+    /// `"pkmngg"` is accepted as an alias for `"pokedumpster"` since that
+    /// is currently the only producer of the format.
     pub fn parse(name: &str) -> Result<Self> {
         match name.trim().to_lowercase().as_str() {
             "manabox" => Ok(Self::Manabox),
             "tcgplayer" => Ok(Self::Tcgplayer),
+            "pokedumpster" | "pkmngg" => Ok(Self::Pokedumpster),
             other => Err(DbError::Import(format!("unknown import format '{other}'"))),
         }
     }
@@ -33,6 +38,7 @@ impl ImportFormat {
         match self {
             Self::Manabox => "csv_manabox",
             Self::Tcgplayer => "csv_tcgplayer",
+            Self::Pokedumpster => "csv_pokedumpster",
         }
     }
 
@@ -41,6 +47,7 @@ impl ImportFormat {
         match self {
             Self::Manabox => "csv_manabox",
             Self::Tcgplayer => "csv_tcgplayer",
+            Self::Pokedumpster => "csv_pokedumpster",
         }
     }
 }
@@ -50,6 +57,7 @@ fn parse(format: ImportFormat, content: &str) -> Result<Vec<ParsedRow>> {
     Ok(match format {
         ImportFormat::Manabox => import::manabox::parse(content)?,
         ImportFormat::Tcgplayer => import::tcgplayer::parse(content)?,
+        ImportFormat::Pokedumpster => import::pokedumpster::parse(content)?,
     })
 }
 

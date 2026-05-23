@@ -65,6 +65,7 @@
 		<select bind:value={format}>
 			<option value="manabox">ManaBox</option>
 			<option value="tcgplayer">TCGplayer</option>
+			<option value="pokedumpster">PokeDumpster (pkmn.gg export)</option>
 		</select>
 	</label>
 

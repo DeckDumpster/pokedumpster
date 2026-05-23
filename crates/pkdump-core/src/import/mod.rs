@@ -3,6 +3,7 @@
 //! `pkdump-db` then matches against the card catalogue. Pure: no IO.
 
 pub mod manabox;
+pub mod pokedumpster;
 pub mod tcgplayer;
 
 use serde::Serialize;

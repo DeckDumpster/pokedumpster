@@ -12,4 +12,17 @@ evolves_from: string | null,
 /**
  * pokemontcg.io `evolvesTo` — a JSON array of names this evolves to.
  */
-evolves_to: string | null, };
+evolves_to: string | null, 
+/**
+ * 3-letter TCGplayer code (e.g. "MEW", "WHT") for the set; preferred
+ * over `set_code` as the human-visible label.
+ */
+set_ptcgo_code: string | null, 
+/**
+ * URL of the set's symbol image (joined from `sets.symbol_url`).
+ */
+set_symbol_url: string | null, 
+/**
+ * Full set name (joined from `sets.name`).
+ */
+set_name: string, };

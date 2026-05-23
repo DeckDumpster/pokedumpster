@@ -3,10 +3,11 @@
 /**
  * One row in the global catalog-search results.
  *
- * Lightweight by design — the grid view just needs the image + label
- * fields, and `owned_count` so the frontend can dim unowned tiles.
+ * Mirrors the columns the collection table renders so the frontend can
+ * fold catalog matches into the same grid/table view as owned copies —
+ * `owned_count` distinguishes unowned tiles for the dim treatment.
  */
-export type CatalogSearchRow = { card_id: string, set_code: string, set_name: string, number: string, name: string, rarity: string | null, image_small: string | null, 
+export type CatalogSearchRow = { card_id: string, set_code: string, set_ptcgo_code: string | null, set_name: string, set_symbol_url: string | null, number: string, name: string, rarity: string | null, supertype: string | null, subtypes: string | null, types: string | null, attacks: string | null, image_small: string | null, 
 /**
  * Sum of copies the user owns across every printing of this card.
  */

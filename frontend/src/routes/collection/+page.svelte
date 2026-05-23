@@ -56,6 +56,16 @@
 		allCards = !allCards;
 	}
 
+	// Catalog rows the user doesn't currently own — what gets *added* to
+	// the existing grid/table loops when the toggle is on so unowned cards
+	// appear inline with owned ones (dimmed via .missing). Owned catalog
+	// matches are already represented in `rows`/`filtered`/`sorted`, so we
+	// skip them here to avoid double-rendering.
+	const ownedCardIds = $derived(new Set(rows.map((r) => r.card_id)));
+	const unownedCatalog = $derived(
+		allCards ? catalogRows.filter((c) => !ownedCardIds.has(c.card_id)) : []
+	);
+
 	// --- Multi-select bulk operations. ---
 	let binders = $state<Binder[]>([]);
 	let decks = $state<Deck[]>([]);
@@ -646,65 +656,10 @@
 		</div>
 	{/if}
 
-	{#if allCards}
-		{#if !search}
-			<p class="muted">Start typing to search the full catalog.</p>
-		{:else if catalogLoading && catalogRows.length === 0}
-			<p class="muted">Searching…</p>
-		{:else if catalogRows.length === 0}
-			<p class="muted">No catalog matches for “{search}”.</p>
-		{:else if view === 'grid'}
-			<div class="cardgrid">
-				{#each catalogRows as row (row.card_id)}
-					<button
-						class="cardtile"
-						class:missing={row.owned_count === 0}
-						title="{row.name} · {row.set_code} #{row.number}{row.owned_count > 0
-							? ` · ${row.owned_count} owned`
-							: ' · click to add'}"
-						onclick={() =>
-							(selectedCard = { set: row.set_code, number: row.number })}
-					>
-						{#if row.image_small}
-							<img src={row.image_small} alt={row.name} loading="lazy" />
-						{:else}
-							<div class="tilenoart">{row.name}</div>
-						{/if}
-						{#if row.owned_count > 0}<span class="ownbadge">×{row.owned_count}</span>{/if}
-					</button>
-				{/each}
-			</div>
-		{:else}
-			<div class="tableScroll">
-				<table class="dd">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>Set</th>
-							<th class="num">#</th>
-							<th class="center">Rarity</th>
-							<th class="num">Owned</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each catalogRows as row (row.card_id)}
-							<tr
-								class:missing={row.owned_count === 0}
-								onclick={() => (selectedCard = { set: row.set_code, number: row.number })}
-							>
-								<td>{row.name}</td>
-								<td>{row.set_name}</td>
-								<td class="num">{row.number}</td>
-								<td class="center">{row.rarity ?? '—'}</td>
-								<td class="num">{row.owned_count > 0 ? `×${row.owned_count}` : '+ add'}</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
-		{/if}
-	{:else if rows.length === 0}
-		<p class="muted">Your collection is empty. Add cards from a set's binder view.</p>
+	{#if rows.length === 0 && (!allCards || !search)}
+		<p class="muted">
+			{#if allCards}Start typing to search the full catalog.{:else}Your collection is empty. Add cards from a set's binder view.{/if}
+		</p>
 	{:else if view === 'grid'}
 		<div class="cardgrid">
 			{#each filtered as row (row.id)}
@@ -720,6 +675,19 @@
 						<div class="tilenoart">{row.name}</div>
 					{/if}
 					{#if selectMode && selected.has(row.id)}<span class="tick">✓</span>{/if}
+				</button>
+			{/each}
+			{#each unownedCatalog as c (c.card_id)}
+				<button
+					class="cardtile missing"
+					title="{c.name} · {(c.set_ptcgo_code ?? c.set_code).toUpperCase()} #{c.number} · click to add"
+					onclick={() => (selectedCard = { set: c.set_code, number: c.number })}
+				>
+					{#if c.image_small}
+						<img src={c.image_small} alt={c.name} loading="lazy" />
+					{:else}
+						<div class="tilenoart">{c.name}</div>
+					{/if}
 				</button>
 			{/each}
 		</div>
@@ -843,6 +811,72 @@
 								<span class="pricedash">—</span>
 							{/if}
 						</td>
+					</tr>
+				{/each}
+				{#each unownedCatalog as c (c.card_id)}
+					<tr
+						class="missing"
+						onclick={() => (selectedCard = { set: c.set_code, number: c.number })}
+					>
+						{#if selectMode}<td class="cbcol"></td>{/if}
+						<td class="num qty"><span class="pricedash">—</span></td>
+						<td>
+							<div class="namecell">
+								{#if c.image_small}
+									<img class="cardthumb" src={c.image_small} alt="" loading="lazy" />
+								{/if}
+								<span class="cardname">{c.name}</span>
+							</div>
+						</td>
+						<td>{c.supertype ?? ''}</td>
+						<td class="center">
+							<span class="etypes">
+								{#each parseJsonStrArr(c.types) as t (t)}
+									<img class="energy" src={energyIcon(t)} alt={t} title={t} />
+								{/each}
+							</span>
+						</td>
+						<td>
+							{#each parseAttacks(c.attacks) as att, i (i)}
+								<span class="attackline" title={att.name}>
+									{#each att.cost as cc, j (j)}
+										<img class="energy" src={energyIcon(cc)} alt={cc} title={cc} />
+									{/each}
+								</span>
+							{/each}
+						</td>
+						<td class="center">
+							{#if c.rarity}
+								{@const src = rarityIconSrc(c.rarity)}
+								{#if src}
+									<img
+										class="rarityicon"
+										class:basic={isBasicRarity(c.rarity)}
+										{src}
+										alt={c.rarity}
+										title={c.rarity}
+										onerror={(e) =>
+											((e.currentTarget as HTMLImageElement).style.display = 'none')}
+									/>
+								{/if}
+							{/if}
+						</td>
+						<td class="center">
+							{#if c.set_symbol_url}
+								<img
+									class="setsym"
+									src={c.set_symbol_url}
+									alt="{(c.set_ptcgo_code ?? c.set_code).toUpperCase()}/{c.set_code}"
+									title="{(c.set_ptcgo_code ?? c.set_code).toUpperCase()}/{c.set_code}"
+								/>
+							{:else}
+								<span title={c.set_code}>
+									{(c.set_ptcgo_code ?? c.set_code).toUpperCase()}
+								</span>
+							{/if}
+						</td>
+						<td class="num">{c.number}</td>
+						<td class="num"><span class="pricedash">—</span></td>
 					</tr>
 				{/each}
 			</tbody>

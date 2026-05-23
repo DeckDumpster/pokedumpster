@@ -6,12 +6,13 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::collection::{self, CollectionEntry};
 use crate::error::Result;
 
-const CARD_COLS: &str = "card_id, set_code, number, number_sortable, name, \
-     supertype, subtypes, hp, types, rarity, artist, flavor_text, attacks, \
-     abilities, weaknesses, resistances, retreat_cost, regulation_mark, \
-     national_pokedex_numbers, legalities, image_small, image_large, \
-     json_extract(raw_json, '$.evolvesFrom') AS evolves_from, \
-     json_extract(raw_json, '$.evolvesTo')   AS evolves_to";
+const CARD_COLS: &str = "c.card_id, c.set_code, c.number, c.number_sortable, c.name, \
+     c.supertype, c.subtypes, c.hp, c.types, c.rarity, c.artist, c.flavor_text, c.attacks, \
+     c.abilities, c.weaknesses, c.resistances, c.retreat_cost, c.regulation_mark, \
+     c.national_pokedex_numbers, c.legalities, c.image_small, c.image_large, \
+     json_extract(c.raw_json, '$.evolvesFrom') AS evolves_from, \
+     json_extract(c.raw_json, '$.evolvesTo')   AS evolves_to, \
+     s.ptcgo_code AS set_ptcgo_code, s.symbol_url AS set_symbol_url, s.name AS set_name";
 
 /// A catalog card. JSON-typed columns (`subtypes`, `attacks`, …) are passed
 /// through as raw JSON strings for the frontend to parse.
@@ -46,6 +47,13 @@ pub struct Card {
     pub evolves_from: Option<String>,
     /// pokemontcg.io `evolvesTo` — a JSON array of names this evolves to.
     pub evolves_to: Option<String>,
+    /// 3-letter TCGplayer code (e.g. "MEW", "WHT") for the set; preferred
+    /// over `set_code` as the human-visible label.
+    pub set_ptcgo_code: Option<String>,
+    /// URL of the set's symbol image (joined from `sets.symbol_url`).
+    pub set_symbol_url: Option<String>,
+    /// Full set name (joined from `sets.name`).
+    pub set_name: String,
 }
 
 /// One printing of a card, with how many copies the user owns and the
@@ -102,6 +110,9 @@ fn card_from_row(r: &rusqlite::Row) -> rusqlite::Result<Card> {
         image_large: r.get(21)?,
         evolves_from: r.get(22)?,
         evolves_to: r.get(23)?,
+        set_ptcgo_code: r.get(24)?,
+        set_symbol_url: r.get(25)?,
+        set_name: r.get(26)?,
     })
 }
 
@@ -114,7 +125,9 @@ pub fn get_card_detail(
 ) -> Result<Option<CardDetail>> {
     let card: Option<Card> = conn
         .prepare(&format!(
-            "SELECT {CARD_COLS} FROM cards WHERE set_code = ?1 AND number = ?2"
+            "SELECT {CARD_COLS} FROM cards c \
+             JOIN sets s ON s.set_code = c.set_code \
+             WHERE c.set_code = ?1 AND c.number = ?2"
         ))?
         .query_row(params![set_code, number], card_from_row)
         .optional()?;
@@ -242,17 +255,24 @@ pub fn get_card_prices(
 
 /// One row in the global catalog-search results.
 ///
-/// Lightweight by design — the grid view just needs the image + label
-/// fields, and `owned_count` so the frontend can dim unowned tiles.
+/// Mirrors the columns the collection table renders so the frontend can
+/// fold catalog matches into the same grid/table view as owned copies —
+/// `owned_count` distinguishes unowned tiles for the dim treatment.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct CatalogSearchRow {
     pub card_id: String,
     pub set_code: String,
+    pub set_ptcgo_code: Option<String>,
     pub set_name: String,
+    pub set_symbol_url: Option<String>,
     pub number: String,
     pub name: String,
     pub rarity: Option<String>,
+    pub supertype: Option<String>,
+    pub subtypes: Option<String>,
+    pub types: Option<String>,
+    pub attacks: Option<String>,
     pub image_small: Option<String>,
     /// Sum of copies the user owns across every printing of this card.
     #[ts(type = "number")]
@@ -272,8 +292,9 @@ pub fn catalog_search(conn: &Connection, q: &str, limit: usize) -> Result<Vec<Ca
     let like = format!("%{q}%");
     let starts = format!("{q}%");
     let mut stmt = conn.prepare(
-        "SELECT c.card_id, c.set_code, s.name AS set_name, c.number, c.name, \
-                c.rarity, c.image_small, \
+        "SELECT c.card_id, c.set_code, s.ptcgo_code, s.name AS set_name, \
+                s.symbol_url, c.number, c.name, c.rarity, c.supertype, \
+                c.subtypes, c.types, c.attacks, c.image_small, \
                 (SELECT COALESCE(SUM(1), 0) FROM collection co \
                    JOIN printings p ON p.printing_id = co.printing_id \
                   WHERE p.card_id = c.card_id) AS owned_count \
@@ -292,12 +313,18 @@ pub fn catalog_search(conn: &Connection, q: &str, limit: usize) -> Result<Vec<Ca
         Ok(CatalogSearchRow {
             card_id: r.get(0)?,
             set_code: r.get(1)?,
-            set_name: r.get(2)?,
-            number: r.get(3)?,
-            name: r.get(4)?,
-            rarity: r.get(5)?,
-            image_small: r.get(6)?,
-            owned_count: r.get(7)?,
+            set_ptcgo_code: r.get(2)?,
+            set_name: r.get(3)?,
+            set_symbol_url: r.get(4)?,
+            number: r.get(5)?,
+            name: r.get(6)?,
+            rarity: r.get(7)?,
+            supertype: r.get(8)?,
+            subtypes: r.get(9)?,
+            types: r.get(10)?,
+            attacks: r.get(11)?,
+            image_small: r.get(12)?,
+            owned_count: r.get(13)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

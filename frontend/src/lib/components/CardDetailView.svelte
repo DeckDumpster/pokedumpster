@@ -135,6 +135,13 @@
 		return `/energy/${KNOWN_ENERGY.has(t) ? t : 'colorless'}.png`;
 	}
 
+	// Rarity-glyph SVG slug; mirrors the collection page's rarityIconSrc.
+	// "Special Illustration Rare" → /rarity/special-illustration-rare.svg.
+	function rarityIconSrc(rarity: string | null): string | null {
+		if (!rarity) return null;
+		return `/rarity/${rarity.toLowerCase().replace(/[ ._]/g, '-')}.svg`;
+	}
+
 	type AttackData = {
 		name?: string;
 		cost?: string[];
@@ -180,7 +187,21 @@
 		<div class="info">
 			<h1>{card.name}</h1>
 			<p class="sub">
-				{card.set_code} · #{card.number}{#if card.rarity} · {card.rarity}{/if}
+				{#if card.set_symbol_url}
+					<img
+						class="setsym"
+						src={card.set_symbol_url}
+						alt={card.set_code}
+						title="{card.set_name} ({card.set_code})"
+					/>
+				{/if}
+				<span title={card.set_code}>{(card.set_ptcgo_code ?? card.set_code).toUpperCase()}</span>
+				· #{card.number}{#if card.rarity}
+					·
+					{#if rarityIconSrc(card.rarity)}
+						<img class="raritysym" src={rarityIconSrc(card.rarity)} alt="" />
+					{/if}
+					{card.rarity}{/if}
 			</p>
 			<dl>
 				{#if card.supertype}<dt>Type</dt><dd>
@@ -255,42 +276,49 @@
 				</section>
 			{/if}
 
-			{#if parseObjArr<WrData>(card.weaknesses).length > 0 || parseObjArr<WrData>(card.resistances).length > 0 || parseStrArr(card.retreat_cost).length > 0}
-				<section class="cardSection combat">
+			<!-- Always render the W/R/R block so the layout stays consistent
+			     across cards — Resistance and Retreat cells appear even when
+			     empty (rendered as '—') rather than dropping out entirely. -->
+			<section class="cardSection combat">
+				<div class="combatCell">
+					<h3>Weakness</h3>
 					{#if parseObjArr<WrData>(card.weaknesses).length > 0}
-						<div class="combatCell">
-							<h3>Weakness</h3>
-							{#each parseObjArr<WrData>(card.weaknesses) as w (w.type)}
-								<span class="wr">
-									{#if w.type}<img class="energy" src={energyIcon(w.type)} alt={w.type} title={w.type} />{/if}
-									{w.value ?? ''}
-								</span>
-							{/each}
-						</div>
-					{/if}
-					{#if parseObjArr<WrData>(card.resistances).length > 0}
-						<div class="combatCell">
-							<h3>Resistance</h3>
-							{#each parseObjArr<WrData>(card.resistances) as r (r.type)}
-								<span class="wr">
-									{#if r.type}<img class="energy" src={energyIcon(r.type)} alt={r.type} title={r.type} />{/if}
-									{r.value ?? ''}
-								</span>
-							{/each}
-						</div>
-					{/if}
-					{#if parseStrArr(card.retreat_cost).length > 0}
-						<div class="combatCell">
-							<h3>Retreat</h3>
-							<span class="retreat">
-								{#each parseStrArr(card.retreat_cost) as c, i (i)}
-									<img class="energy" src={energyIcon(c)} alt={c} title={c} />
-								{/each}
+						{#each parseObjArr<WrData>(card.weaknesses) as w (w.type)}
+							<span class="wr">
+								{#if w.type}<img class="energy" src={energyIcon(w.type)} alt={w.type} title={w.type} />{/if}
+								{w.value ?? ''}
 							</span>
-						</div>
+						{/each}
+					{:else}
+						<span class="wr-empty">—</span>
 					{/if}
-				</section>
-			{/if}
+				</div>
+				<div class="combatCell">
+					<h3>Resistance</h3>
+					{#if parseObjArr<WrData>(card.resistances).length > 0}
+						{#each parseObjArr<WrData>(card.resistances) as r (r.type)}
+							<span class="wr">
+								{#if r.type}<img class="energy" src={energyIcon(r.type)} alt={r.type} title={r.type} />{/if}
+								{r.value ?? ''}
+							</span>
+						{/each}
+					{:else}
+						<span class="wr-empty">—</span>
+					{/if}
+				</div>
+				<div class="combatCell">
+					<h3>Retreat</h3>
+					{#if parseStrArr(card.retreat_cost).length > 0}
+						<span class="retreat">
+							{#each parseStrArr(card.retreat_cost) as c, i (i)}
+								<img class="energy" src={energyIcon(c)} alt={c} title={c} />
+							{/each}
+						</span>
+					{:else}
+						<span class="wr-empty">—</span>
+					{/if}
+				</div>
+			</section>
 
 			{#if card.flavor_text}<p class="flavor">{card.flavor_text}</p>{/if}
 		</div>
@@ -439,6 +467,22 @@
 	.sub {
 		color: #888;
 		margin: 0.25rem 0 1rem;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		flex-wrap: wrap;
+	}
+	.sub .setsym {
+		width: 22px;
+		height: 22px;
+		object-fit: contain;
+		vertical-align: middle;
+	}
+	.sub .raritysym {
+		width: 16px;
+		height: 16px;
+		object-fit: contain;
+		vertical-align: middle;
 	}
 	dl {
 		display: grid;
@@ -554,6 +598,10 @@
 		align-items: center;
 		font-size: 0.95rem;
 		color: #ddd;
+	}
+	.wr-empty {
+		color: #555;
+		font-size: 0.95rem;
 	}
 
 	/* Printings list — one row per variant with [- N +] stepper, mirroring

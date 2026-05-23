@@ -290,6 +290,9 @@ pub fn catalog_search(conn: &Connection, q: &str, limit: usize) -> Result<Vec<Ca
     }
     let like = format!("%{q}%");
     let starts = format!("{q}%");
+    // Match across the same facets the collection page's free-text
+    // search does (name, artist, set name + ptcgo code, rarity, types).
+    // Same rank: exact name → starts-with name → any substring match.
     let mut stmt = conn.prepare(
         "SELECT c.card_id, c.set_code, s.ptcgo_code, s.name AS set_name, \
                 s.symbol_url, c.number, c.name, c.rarity, c.supertype, \
@@ -299,7 +302,14 @@ pub fn catalog_search(conn: &Connection, q: &str, limit: usize) -> Result<Vec<Ca
                   WHERE p.card_id = c.card_id) AS owned_count \
            FROM cards c \
            JOIN sets s ON s.set_code = c.set_code \
-          WHERE c.name LIKE ?1 COLLATE NOCASE \
+          WHERE c.name        LIKE ?1 COLLATE NOCASE \
+             OR c.artist      LIKE ?1 COLLATE NOCASE \
+             OR c.rarity      LIKE ?1 COLLATE NOCASE \
+             OR c.types       LIKE ?1 COLLATE NOCASE \
+             OR c.subtypes    LIKE ?1 COLLATE NOCASE \
+             OR c.supertype   LIKE ?1 COLLATE NOCASE \
+             OR s.name        LIKE ?1 COLLATE NOCASE \
+             OR s.ptcgo_code  LIKE ?1 COLLATE NOCASE \
           ORDER BY \
             CASE WHEN c.name = ?2 COLLATE NOCASE THEN 0 \
                  WHEN c.name LIKE ?3 COLLATE NOCASE THEN 1 \
@@ -605,5 +615,47 @@ mod tests {
         let (_d, conn) = user_conn();
         assert!(catalog_search(&conn, "", 10).unwrap().is_empty());
         assert!(catalog_search(&conn, "   ", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn catalog_search_matches_facets_beyond_card_name() {
+        // The collection page's free-text search matches across name,
+        // artist, set, rarity, types — clicking an artist facet on a
+        // card the user doesn't own must still resolve to the catalog.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, ptcgo_code) \
+                 VALUES ('me2', 'Phantasmal Flames', 'Mega Evolution', 'PFL')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name, \
+                                    rarity, artist, types) \
+                 VALUES ('me2-57', 'me2', '57', 57, 'Murkrow', \
+                         'Common', 'Tomokazu Komiya', '[\"Darkness\"]')",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+
+        // Artist match.
+        let by_artist = catalog_search(&conn, "Tomokazu Komiya", 10).unwrap();
+        assert_eq!(by_artist.len(), 1);
+        assert_eq!(by_artist[0].card_id, "me2-57");
+
+        // Set ptcgo_code match.
+        let by_set = catalog_search(&conn, "PFL", 10).unwrap();
+        assert_eq!(by_set.len(), 1);
+        assert_eq!(by_set[0].card_id, "me2-57");
+
+        // Energy type match (substring within the types JSON).
+        let by_type = catalog_search(&conn, "Darkness", 10).unwrap();
+        assert_eq!(by_type.len(), 1);
+        assert_eq!(by_type[0].card_id, "me2-57");
     }
 }

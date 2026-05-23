@@ -143,11 +143,11 @@
 	}
 
 	/** Link a metadata cell (artist, set, rarity, type, variant, …) to a
-	 *  pre-filled /collection?q= search. The collection page's `rowMatches`
-	 *  does case-insensitive substring across all the facets so the bare
-	 *  value works as-is. */
+	 *  pre-filled /collection?q= search. `all=1` flips the "All cards"
+	 *  toggle on so unowned matches still surface — without it, clicking
+	 *  the artist of a card the user doesn't own lands on an empty list. */
 	function facetHref(value: string): string {
-		return `/collection?q=${encodeURIComponent(value)}`;
+		return `/collection?q=${encodeURIComponent(value)}&all=1`;
 	}
 
 	type AttackData = {

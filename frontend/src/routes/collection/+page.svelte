@@ -45,6 +45,7 @@
 	// change triggers the resync.
 	$effect(() => {
 		const q = page.url.searchParams.get('q') ?? '';
+		const wantAll = page.url.searchParams.get('all') === '1';
 		untrack(() => {
 			if (q !== searchRaw) {
 				clearTimeout(debounce);
@@ -53,6 +54,7 @@
 				// Close any open modal so the filtered list is visible.
 				selectedCard = null;
 			}
+			if (wantAll && !allCards) allCards = true;
 		});
 	});
 
@@ -61,8 +63,13 @@
 	// owned ones, with unowned tiles dimmed via .missing — the same visual
 	// treatment /browse/[set] uses for unowned binder slots. The toggle is
 	// grid-only; flipping it on forces grid view since the table columns
-	// (Qty, Paid, etc.) are owned-collection-shaped.
-	let allCards = $state(false);
+	// (Qty, Paid, etc.) are owned-collection-shaped. Initial value comes
+	// from ?all=1 so clickable facets on the card-detail page (artist
+	// etc.) always surface something even when the user owns nothing
+	// matching.
+	const initialAllCards =
+		typeof window !== 'undefined' && page.url.searchParams.get('all') === '1';
+	let allCards = $state(initialAllCards);
 	let catalogRows = $state<CatalogSearchRow[]>([]);
 	let catalogLoading = $state(false);
 	$effect(() => {
@@ -89,6 +96,14 @@
 	});
 	function toggleAllCards() {
 		allCards = !allCards;
+		// Persist so refresh + back-button keep the choice (matches how
+		// search ?q= is reflected).
+		if (typeof window !== 'undefined') {
+			const url = new URL(window.location.href);
+			if (allCards) url.searchParams.set('all', '1');
+			else url.searchParams.delete('all');
+			window.history.replaceState({}, '', url);
+		}
 	}
 
 	// Catalog rows the user doesn't currently own — what gets *added* to

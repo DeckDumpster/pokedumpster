@@ -31,9 +31,6 @@ import type { WishEdit } from './types/WishEdit';
 import type { Batch } from './types/Batch';
 import type { BatchDetail } from './types/BatchDetail';
 import type { NewBatch } from './types/NewBatch';
-import type { CollectionView } from './types/CollectionView';
-import type { NewView } from './types/NewView';
-import type { ViewEdit } from './types/ViewEdit';
 import type { ResolutionReport } from './types/ResolutionReport';
 import type { CommitResult } from './types/CommitResult';
 
@@ -182,11 +179,6 @@ export const api = {
 	importCommit: (format: string, content: string, name?: string) =>
 		send<CommitResult>('POST', '/api/import/csv/commit', { format, content, name }),
 
-	// --- Saved collection views ---
-	views: () => getJson<CollectionView[]>('/api/views'),
-	createView: (v: NewView) => send<number>('POST', '/api/views', v),
-	updateView: (id: number, e: Partial<ViewEdit>) => send<void>('PUT', `/api/views/${id}`, e),
-	deleteView: (id: number) => send<void>('DELETE', `/api/views/${id}`)
 };
 
 /** Turn a variant code (`reverse_holo`) into a label (`Reverse Holo`). */

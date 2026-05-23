@@ -148,15 +148,6 @@ CREATE TABLE sealed_collection (
 CREATE INDEX idx_sealed_collection_product ON sealed_collection(product_id);
 CREATE INDEX idx_sealed_collection_status  ON sealed_collection(status);
 
-CREATE TABLE collection_views (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    name         TEXT NOT NULL,
-    description  TEXT,
-    filters_json TEXT NOT NULL,
-    created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL
-);
-
 CREATE TABLE settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

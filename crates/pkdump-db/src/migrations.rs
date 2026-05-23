@@ -91,7 +91,6 @@ mod tests {
             "movement_log",
             "wishlist",
             "sealed_collection",
-            "collection_views",
             "settings",
         ] {
             let n: i64 = conn

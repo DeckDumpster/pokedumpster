@@ -17,7 +17,6 @@ pub mod import;
 pub mod orders;
 pub mod sealed;
 pub mod sets;
-pub mod views;
 pub mod wishlist;
 
 mod connection;

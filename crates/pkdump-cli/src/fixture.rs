@@ -26,7 +26,6 @@ use pkdump_db::{
     decks::{self, NewDeck},
     orders::{self, NewOrder, OrderLine},
     sealed::{self, NewSealed},
-    views::{self, NewView},
     wishlist::{self, NewWish},
 };
 
@@ -1296,16 +1295,6 @@ fn seed_user(conn: &mut Connection) -> anyhow::Result<()> {
             max_price: Some(300.00),
             priority: Some(1),
             notes: "Already ordered — kept as a price watch.".into_some(),
-        },
-    )?;
-
-    // --- Saved collection view ----------------------------------------
-    views::create(
-        conn,
-        &NewView {
-            name: "Vintage Holos".into(),
-            description: Some("Base Set holo rares worth tracking.".into()),
-            filters_json: r#"{"set":"base1","rarity":"Rare Holo"}"#.into(),
         },
     )?;
 

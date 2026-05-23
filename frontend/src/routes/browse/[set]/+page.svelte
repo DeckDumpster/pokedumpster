@@ -90,7 +90,7 @@
 		try {
 			if (sessionBatchId === null) {
 				sessionBatchId = await api.createBatch({
-					batch_type: 'binder_browse',
+					batch_type: 'binder_click',
 					name: binder?.set.name ?? null
 				});
 			}

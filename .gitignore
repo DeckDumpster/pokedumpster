@@ -23,8 +23,10 @@
 *.sqlite-shm
 *.sqlite-wal
 
-# ...except the committed UI test fixture
-!tests/ui/fixtures/test-data.sqlite
+# ...except the committed UI test fixtures (shared catalog + user
+# collection, rebuilt deterministically via `pkdump seed-fixture`).
+!tests/ui/fixtures/shared.sqlite
+!tests/ui/fixtures/collection.sqlite
 
 # Reference clones — kept locally, not part of the project
 /_deckdumpster-src

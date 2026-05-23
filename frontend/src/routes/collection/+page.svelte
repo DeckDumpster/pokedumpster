@@ -749,7 +749,7 @@
 					{@render sortable('rarity', 'Rarity', 'center')}
 					{@render sortable('set', 'Set', 'center')}
 					{@render sortable('number', '#', 'num')}
-					{@render sortable('market', 'Market', 'num')}
+					{@render sortable('market', 'Price', 'num')}
 				</tr>
 			</thead>
 			<tbody>
@@ -837,7 +837,11 @@
 						</td>
 						<td class="num">{a.number}</td>
 						<td class="num">
-							{a.market_total != null ? `$${a.market_total.toFixed(2)}` : '—'}
+							{#if a.market_total != null}
+								<span class="pricebox">${a.market_total.toFixed(2)}</span>
+							{:else}
+								<span class="pricedash">—</span>
+							{/if}
 						</td>
 					</tr>
 				{/each}
@@ -884,9 +888,11 @@
 		border-bottom: 1px solid #0f3460;
 	}
 	/* An in-page spacer the height of the fixed topbar so the rest of
-	   the page content doesn't slide under it. */
+	   the page content doesn't slide under it. Tuned to the actual
+	   rendered topbar — was 5.5rem and left a visible gap above the
+	   first row of results. */
 	.topbarSpacer {
-		height: 5.5rem;
+		height: 4.4rem;
 	}
 	.row {
 		display: flex;
@@ -1022,8 +1028,8 @@
 	.cardgrid {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-		gap: 0.8rem;
-		margin-top: 0.8rem;
+		gap: 0.4rem;
+		margin-top: 0;
 	}
 	.cardtile {
 		position: relative;
@@ -1129,13 +1135,20 @@
 		cursor: default;
 	}
 
+	/* /collection runs edge-to-edge — the global layout adds 1.5rem of
+	   padding around <main> but the page has its own sticky chrome that
+	   already provides whatever padding the content needs. */
+	:global(body main) {
+		padding: 0;
+	}
+
 	/* --- Table view (DeckDumpster-style) ------------------------------ */
 
 	table.dd {
 		width: 100%;
 		border-collapse: collapse;
 		font-size: 0.9rem;
-		margin-top: 0.8rem;
+		margin-top: 0;
 	}
 	table.dd th,
 	table.dd td {
@@ -1175,6 +1188,23 @@
 	table.dd .cbcol {
 		width: 1.5rem;
 		text-align: center;
+	}
+	table.dd .qty {
+		width: 2.5rem;
+		padding-right: 0.4rem;
+	}
+	/* DD-style pill around per-row price values; '—' stays unstyled so empty
+	   prices don't draw a box. */
+	.pricebox {
+		display: inline-block;
+		background: #1a1a2e;
+		border: 1px solid #0f3460;
+		border-radius: 4px;
+		padding: 1px 6px;
+		font-variant-numeric: tabular-nums;
+	}
+	.pricedash {
+		color: #555;
 	}
 	.sortable {
 		cursor: pointer;

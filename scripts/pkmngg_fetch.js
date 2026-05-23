@@ -93,19 +93,96 @@ function printHelp() {
 
 // ── Session bootstrap ───────────────────────────────────────────────────
 
+// Use a real desktop Chrome UA. The default `chrome-headless-shell`
+// build advertises "HeadlessChrome/…" in the UA string, which sites
+// regularly serve a degraded shell for. Pin a current Chrome
+// signature instead — it's the same Chromium under the hood.
+const REAL_UA =
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const CTX_OPTS = {
+    userAgent: REAL_UA,
+    viewport: { width: 1366, height: 900 },
+    locale: 'en-US',
+    timezoneId: 'America/Los_Angeles',
+};
+
 async function establishSession(link, storagePath, headed) {
     await fs.promises.mkdir(path.dirname(storagePath), { recursive: true });
     const browser = await chromium.launch({ headless: !headed });
     try {
-        const ctx = await browser.newContext();
+        const ctx = await browser.newContext(CTX_OPTS);
         const page = await ctx.newPage();
         console.error('Visiting magic link …');
         await page.goto(link, { waitUntil: 'networkidle', timeout: 60_000 });
-        // The link target usually redirects through one or two intermediate
-        // pages before landing on the authenticated home; give it a beat.
         await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
-        console.error('Post-login URL:', page.url());
-        await ctx.storageState({ path: storagePath });
+        console.error('After-link URL:', page.url());
+
+        // pkmn.gg uses an interstitial confirm page so the magic link
+        // can't be eaten by an email pre-fetcher: the GET lands on
+        // /auth/email-confirm?token=… and the user has to click a
+        // button to actually consume the token. Find and click it.
+        if (/\/auth\/email-confirm/i.test(page.url())) {
+            console.error('Email-confirm page — looking for the confirm button …');
+            const candidates = [
+                'button:has-text("Sign in")',
+                'button:has-text("Continue")',
+                'button:has-text("Confirm")',
+                'button:has-text("Log in")',
+                'a:has-text("Sign in")',
+                'a:has-text("Continue")',
+                'a:has-text("Confirm")',
+                'form button[type="submit"]',
+                'button[type="submit"]',
+            ];
+            let clicked = false;
+            for (const sel of candidates) {
+                const el = await page.$(sel);
+                if (el) {
+                    console.error('  clicking', sel);
+                    await Promise.all([
+                        page
+                            .waitForURL((u) => !/email-confirm/i.test(u.toString()), {
+                                timeout: 30_000,
+                            })
+                            .catch(() => {}),
+                        el.click(),
+                    ]);
+                    clicked = true;
+                    break;
+                }
+            }
+            if (!clicked) {
+                console.error(
+                    '  no confirm button matched — dumping page HTML head so we can teach the selector list',
+                );
+                const head = (await page.content()).slice(0, 4000);
+                console.error(head);
+            }
+            await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => {});
+            console.error('Post-confirm URL:', page.url());
+        }
+
+        // Best-effort: nudge to the homepage so any post-login session
+        // refresh fires before we serialise the state.
+        try {
+            await page.goto('https://pkmn.gg/', { waitUntil: 'networkidle', timeout: 30_000 });
+        } catch {}
+
+        const state = await ctx.storageState();
+        const sessionCookie = state.cookies.find((c) =>
+            /session|auth|token/i.test(c.name),
+        );
+        if (!sessionCookie) {
+            console.error(
+                '\nWARNING: no session-looking cookie present after login.',
+                '\nCookies on file:',
+                state.cookies.map((c) => c.name).join(', ') || '(none)',
+                '\nMagic link may have already been consumed or the confirm step failed.',
+            );
+        } else {
+            console.error('Session cookie established:', sessionCookie.name);
+        }
+        await fs.promises.writeFile(storagePath, JSON.stringify(state, null, 2));
         await fs.promises.chmod(storagePath, 0o600).catch(() => {});
         console.error('Saved storage state →', storagePath);
     } finally {
@@ -129,9 +206,22 @@ async function captureCollection(args) {
     await fs.promises.mkdir(path.dirname(args.debug), { recursive: true });
     const debugStream = fs.createWriteStream(args.debug, { flags: 'w' });
 
+    const shotsDir = path.join(path.dirname(args.debug), 'pkmngg-shots');
+    await fs.promises.mkdir(shotsDir, { recursive: true });
+    let shotN = 0;
+    const screenshot = async (page, label) => {
+        const file = path.join(shotsDir, `${String(++shotN).padStart(2, '0')}-${label}.png`);
+        try {
+            await page.screenshot({ path: file, fullPage: true });
+            console.error('  shot →', file);
+        } catch (e) {
+            console.error('  shot failed:', e.message);
+        }
+    };
+
     const browser = await chromium.launch({ headless: !args.headed });
     try {
-        const ctx = await browser.newContext({ storageState: args.storage });
+        const ctx = await browser.newContext({ ...CTX_OPTS, storageState: args.storage });
         const page = await ctx.newPage();
 
         // Every JSON response gets dumped to the debug log + buffered for
@@ -145,25 +235,34 @@ async function captureCollection(args) {
             try {
                 const body = await res.json();
                 captured.push({ url, body });
-                debugStream.write(
-                    `--- ${url}\n${JSON.stringify(body).slice(0, 1200)}\n`,
-                );
+                // Don't truncate — we may need the full shape to teach
+                // the flattener a new pkmn.gg API.
+                debugStream.write(`--- ${url}\n${JSON.stringify(body)}\n`);
             } catch (_) {}
         });
 
         console.error('Loading', args.url, '…');
         await page.goto(args.url, { waitUntil: 'networkidle', timeout: 60_000 });
+        await screenshot(page, 'home');
 
-        // Try a handful of likely collection routes. The first one whose
-        // navigation doesn't throw wins — pkmn.gg's exact path may
-        // change, and this gives the request handler a chance to fire on
-        // the collection-specific API regardless.
-        for (const slug of ['/collection', '/me/collection', '/dashboard', '/me']) {
+        // Probe plausible collection routes. We DON'T break on first
+        // success — pkmn.gg may serve a 200 for any path (SPA routing)
+        // and the visit we actually need is whichever fires the
+        // user-specific JSON. Each goto + screenshot tells us what
+        // pkmn.gg actually rendered.
+        for (const slug of [
+            '/collections',
+            '/lists',
+            '/auth/newuser',
+            '/me',
+            '/profile',
+            '/account',
+        ]) {
             const dest = new URL(slug, args.url).toString();
             try {
                 console.error('Trying', dest);
                 await page.goto(dest, { waitUntil: 'networkidle', timeout: 30_000 });
-                break;
+                await screenshot(page, slug.replace(/\W+/g, '-').replace(/^-+|-+$/g, ''));
             } catch (e) {
                 console.error('  → failed:', e.message);
             }

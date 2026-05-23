@@ -4,6 +4,7 @@
 import type { CollectionRow } from './types/CollectionRow';
 import type { CardDetail } from './types/CardDetail';
 import type { PriceSeries } from './types/PriceSeries';
+import type { CatalogSearchRow } from './types/CatalogSearchRow';
 import type { NewCopy } from './types/NewCopy';
 import type { SetSummary } from './types/SetSummary';
 import type { SetAnalytics } from './types/SetAnalytics';
@@ -78,6 +79,13 @@ export const api = {
 	cardByName: (name: string) =>
 		getJson<{ set_code: string; number: string }>(
 			`/api/cards/by-name/${encodeURIComponent(name)}`
+		),
+
+	/** Global catalog search — backs the "All cards" toggle on /collection so
+	 *  the user can find and add cards they don't own. */
+	cardsCatalog: (q: string, limit = 50) =>
+		getJson<CatalogSearchRow[]>(
+			`/api/cards/catalog?q=${encodeURIComponent(q)}&limit=${limit}`
 		),
 
 	/** Every set, with card and owned-card counts. */

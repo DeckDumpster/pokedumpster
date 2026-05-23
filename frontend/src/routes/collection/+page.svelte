@@ -5,6 +5,7 @@
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
+	import type { CatalogSearchRow } from '$lib/types/CatalogSearchRow';
 
 	let rows = $state<CollectionRow[]>([]);
 	let loading = $state(true);
@@ -18,6 +19,42 @@
 		searchRaw = value;
 		clearTimeout(debounce);
 		debounce = setTimeout(() => (search = value.trim().toLowerCase()), 200);
+	}
+
+	// "All cards" toggle widens the search from owned-only to the full
+	// catalog. Catalog results render as grid tiles next to (or instead of)
+	// owned ones, with unowned tiles dimmed via .missing — the same visual
+	// treatment /browse/[set] uses for unowned binder slots. The toggle is
+	// grid-only; flipping it on forces grid view since the table columns
+	// (Qty, Paid, etc.) are owned-collection-shaped.
+	let allCards = $state(false);
+	let catalogRows = $state<CatalogSearchRow[]>([]);
+	let catalogLoading = $state(false);
+	$effect(() => {
+		void search;
+		if (!allCards) {
+			catalogRows = [];
+			return;
+		}
+		if (!search) {
+			catalogRows = [];
+			return;
+		}
+		catalogLoading = true;
+		api
+			.cardsCatalog(search, 60)
+			.then((r) => {
+				catalogRows = r;
+				catalogLoading = false;
+			})
+			.catch((e) => {
+				error = e instanceof Error ? e.message : String(e);
+				catalogLoading = false;
+			});
+	});
+	function toggleAllCards() {
+		allCards = !allCards;
+		if (allCards) view = 'grid';
 	}
 
 	// --- Multi-select bulk operations. ---
@@ -515,10 +552,14 @@
 		<input
 			class="search"
 			type="text"
-			placeholder="Search cards…"
+			placeholder={allCards ? 'Search all cards…' : 'Search cards…'}
 			value={searchRaw}
 			oninput={(e) => onSearch(e.currentTarget.value)}
 		/>
+		<label class="alltoggle" title="Search the full card catalog, not just your collection">
+			<input type="checkbox" checked={allCards} onchange={toggleAllCards} />
+			All cards
+		</label>
 	</div>
 	<div class="row row2">
 		<p class="countline muted">
@@ -606,7 +647,36 @@
 		</div>
 	{/if}
 
-	{#if rows.length === 0}
+	{#if allCards}
+		{#if !search}
+			<p class="muted">Start typing to search the full catalog.</p>
+		{:else if catalogLoading && catalogRows.length === 0}
+			<p class="muted">Searching…</p>
+		{:else if catalogRows.length === 0}
+			<p class="muted">No catalog matches for “{search}”.</p>
+		{:else}
+			<div class="cardgrid">
+				{#each catalogRows as row (row.card_id)}
+					<button
+						class="cardtile"
+						class:missing={row.owned_count === 0}
+						title="{row.name} · {row.set_code} #{row.number}{row.owned_count > 0
+							? ` · ${row.owned_count} owned`
+							: ' · click to add'}"
+						onclick={() =>
+							(selectedCard = { set: row.set_code, number: row.number })}
+					>
+						{#if row.image_small}
+							<img src={row.image_small} alt={row.name} loading="lazy" />
+						{:else}
+							<div class="tilenoart">{row.name}</div>
+						{/if}
+						{#if row.owned_count > 0}<span class="ownbadge">×{row.owned_count}</span>{/if}
+					</button>
+				{/each}
+			</div>
+		{/if}
+	{:else if rows.length === 0}
 		<p class="muted">Your collection is empty. Add cards from a set's binder view.</p>
 	{:else if view === 'grid'}
 		<div class="cardgrid">
@@ -823,6 +893,18 @@
 		color: #e0e0e0;
 		font: inherit;
 	}
+	.alltoggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		color: #888;
+		font-size: 0.85rem;
+		white-space: nowrap;
+		cursor: pointer;
+	}
+	.alltoggle input {
+		cursor: pointer;
+	}
 	.countline {
 		margin: 0;
 		font-size: 0.85rem;
@@ -934,6 +1016,26 @@
 	}
 	.cardtile.picked {
 		border-color: #e94560;
+	}
+	/* Catalog rows the user doesn't own — mirror the .missing treatment
+	   the browse view uses for empty binder slots. */
+	.cardtile.missing img,
+	.cardtile.missing .tilenoart {
+		filter: grayscale(0.9) brightness(0.62);
+	}
+	.cardtile.missing {
+		opacity: 0.82;
+	}
+	.ownbadge {
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		background: #0f3460;
+		color: #9fe7a0;
+		font-size: 0.7rem;
+		padding: 1px 5px;
+		border-radius: 4px;
+		font-weight: 600;
 	}
 	.tilenoart {
 		aspect-ratio: 5 / 7;

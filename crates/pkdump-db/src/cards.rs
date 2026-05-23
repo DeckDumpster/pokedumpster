@@ -240,6 +240,69 @@ pub fn get_card_prices(
     Ok(series)
 }
 
+/// One row in the global catalog-search results.
+///
+/// Lightweight by design — the grid view just needs the image + label
+/// fields, and `owned_count` so the frontend can dim unowned tiles.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct CatalogSearchRow {
+    pub card_id: String,
+    pub set_code: String,
+    pub set_name: String,
+    pub number: String,
+    pub name: String,
+    pub rarity: Option<String>,
+    pub image_small: Option<String>,
+    /// Sum of copies the user owns across every printing of this card.
+    #[ts(type = "number")]
+    pub owned_count: i64,
+}
+
+/// Catalog-wide name search. Used by the collection page's "All cards"
+/// toggle so the user can find cards they don't own and add them. Returns
+/// up to `limit` rows ranked by match quality (exact name → starts-with →
+/// substring), then newer sets first within each tier. `q` must be
+/// non-empty.
+pub fn catalog_search(conn: &Connection, q: &str, limit: usize) -> Result<Vec<CatalogSearchRow>> {
+    let q = q.trim();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let like = format!("%{q}%");
+    let starts = format!("{q}%");
+    let mut stmt = conn.prepare(
+        "SELECT c.card_id, c.set_code, s.name AS set_name, c.number, c.name, \
+                c.rarity, c.image_small, \
+                (SELECT COALESCE(SUM(1), 0) FROM collection co \
+                   JOIN printings p ON p.printing_id = co.printing_id \
+                  WHERE p.card_id = c.card_id) AS owned_count \
+           FROM cards c \
+           JOIN sets s ON s.set_code = c.set_code \
+          WHERE c.name LIKE ?1 COLLATE NOCASE \
+          ORDER BY \
+            CASE WHEN c.name = ?2 COLLATE NOCASE THEN 0 \
+                 WHEN c.name LIKE ?3 COLLATE NOCASE THEN 1 \
+                 ELSE 2 END, \
+            s.release_date DESC NULLS LAST, \
+            c.set_code, c.number_sortable \
+          LIMIT ?4",
+    )?;
+    let rows = stmt.query_map(params![like, q, starts, limit as i64], |r| {
+        Ok(CatalogSearchRow {
+            card_id: r.get(0)?,
+            set_code: r.get(1)?,
+            set_name: r.get(2)?,
+            number: r.get(3)?,
+            name: r.get(4)?,
+            rarity: r.get(5)?,
+            image_small: r.get(6)?,
+            owned_count: r.get(7)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Find a card by name — return the (set_code, number) of the most
 /// recently-released printing. Used by the modal's evolution links so a
 /// name like "Pikachu" resolves to a clickable card.
@@ -444,5 +507,75 @@ mod tests {
     fn get_card_prices_returns_empty_for_unknown_card() {
         let (_d, conn) = user_conn();
         assert!(get_card_prices(&conn, "sv3pt5", "999").unwrap().is_empty());
+    }
+
+    #[test]
+    fn catalog_search_ranks_exact_then_starts_then_contains() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            // Two sets, different release dates so the secondary sort is
+            // observable (newer first within a match tier).
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, release_date) \
+                 VALUES ('sv3pt5', '151', 'Scarlet & Violet', '2023/09/22'), \
+                        ('sv8pt5', 'Prismatic Evolutions', 'Scarlet & Violet', '2025/01/17')",
+                [],
+            )
+            .unwrap();
+            // Insert four cards. Exact match wins regardless of release; the
+            // starts-with row comes before the substring row.
+            let cards = [
+                ("sv3pt5-1", "sv3pt5", "1", "Bulbasaur"),
+                ("sv8pt5-1", "sv8pt5", "1", "Bulbasaur"), // exact, newer
+                ("sv3pt5-2", "sv3pt5", "2", "Bulbasaur ex"), // starts-with
+                ("sv3pt5-7", "sv3pt5", "7", "Tangela"),   // no match
+            ];
+            for (id, set, num, name) in cards {
+                c.execute(
+                    "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![id, set, num, num.parse::<i64>().unwrap_or(0), name],
+                )
+                .unwrap();
+            }
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let rows = catalog_search(&conn, "bulbasaur", 10).unwrap();
+        assert_eq!(rows.len(), 3, "Tangela is not a match");
+        // Exact-match tier: newer set comes first.
+        assert_eq!(rows[0].card_id, "sv8pt5-1");
+        assert_eq!(rows[1].card_id, "sv3pt5-1");
+        // Then the starts-with row.
+        assert_eq!(rows[2].card_id, "sv3pt5-2");
+    }
+
+    #[test]
+    fn catalog_search_counts_owned_copies_across_all_printings() {
+        let (_d, mut conn) = user_conn();
+        // Catalog has Bulbasaur with both printings (set up by user_conn).
+        // Add one copy of each printing.
+        for variant in ["normal", "reverse_holo"] {
+            collection::add(
+                &mut conn,
+                &NewCopy {
+                    printing_id: format!("sv3pt5-1-{variant}"),
+                    source: "test".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let rows = catalog_search(&conn, "bulb", 10).unwrap();
+        let bulb = rows.iter().find(|r| r.card_id == "sv3pt5-1").unwrap();
+        assert_eq!(bulb.owned_count, 2);
+    }
+
+    #[test]
+    fn catalog_search_empty_query_returns_empty() {
+        let (_d, conn) = user_conn();
+        assert!(catalog_search(&conn, "", 10).unwrap().is_empty());
+        assert!(catalog_search(&conn, "   ", 10).unwrap().is_empty());
     }
 }

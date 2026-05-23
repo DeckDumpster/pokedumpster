@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use pkdump_db::DbError;
-use pkdump_db::cards::{self, CardDetail, PriceSeries};
+use pkdump_db::cards::{self, CardDetail, CatalogSearchRow, PriceSeries};
 
 use crate::{AppError, AppState, blocking};
 
@@ -26,6 +26,7 @@ pub fn routes() -> Router<AppState> {
         .route("/card/{set}/{number}/prices", get(card_prices))
         .route("/cards/by-set-cn", get(by_set_cn))
         .route("/cards/by-name/{name}", get(by_name))
+        .route("/cards/catalog", get(catalog))
 }
 
 /// Find the most-recently-released printing of a card matching `name` —
@@ -88,4 +89,28 @@ async fn by_set_cn(
     Query(q): Query<BySetCn>,
 ) -> Result<Json<CardDetail>, AppError> {
     lookup(&state, q.set, q.cn).await
+}
+
+#[derive(Deserialize)]
+struct CatalogQuery {
+    q: String,
+    #[serde(default = "default_catalog_limit")]
+    limit: usize,
+}
+
+fn default_catalog_limit() -> usize {
+    50
+}
+
+/// Global catalog search — drives the collection page's "All cards" toggle.
+/// Returns lightweight rows ranked by name-match quality; the frontend
+/// dims unowned tiles via `owned_count == 0`.
+async fn catalog(
+    State(state): State<AppState>,
+    Query(q): Query<CatalogQuery>,
+) -> Result<Json<Vec<CatalogSearchRow>>, AppError> {
+    let limit = q.limit.clamp(1, 200);
+    let query = q.q.clone();
+    let rows = blocking(&state, move |c| cards::catalog_search(c, &query, limit)).await?;
+    Ok(Json(rows))
 }

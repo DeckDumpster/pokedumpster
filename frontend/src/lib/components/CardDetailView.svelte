@@ -732,10 +732,17 @@
 	/* On a phone the data tables reflow to stacked label:value blocks so
 	   they fit the modal instead of forcing it wider. */
 	@media (max-width: 540px) {
-		/* Let .info shrink past 260px so it never forces horizontal
-		   overflow on narrow modals. */
+		/* Stack art over info on phones (mirrors DD's
+		   card-detail-layout). Setting flex-direction: column means the
+		   row-wise min-width of .info never wedges info beside art —
+		   info always flows below, full-width. */
+		.detail {
+			flex-direction: column;
+			align-items: center;
+		}
 		.info {
 			min-width: 0;
+			width: 100%;
 		}
 		.art img {
 			width: 320px;

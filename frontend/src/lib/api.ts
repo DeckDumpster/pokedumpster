@@ -3,6 +3,7 @@
 
 import type { CollectionRow } from './types/CollectionRow';
 import type { CardDetail } from './types/CardDetail';
+import type { PriceSeries } from './types/PriceSeries';
 import type { NewCopy } from './types/NewCopy';
 import type { SetSummary } from './types/SetSummary';
 import type { SetAnalytics } from './types/SetAnalytics';
@@ -66,6 +67,12 @@ export const api = {
 	/** Full card detail: the card, its printings, and owned copies. */
 	card: (setCode: string, number: string) =>
 		getJson<CardDetail>(`/api/card/${encodeURIComponent(setCode)}/${encodeURIComponent(number)}`),
+
+	/** Per-printing market-price time series — drives the card-detail chart. */
+	cardPrices: (setCode: string, number: string) =>
+		getJson<PriceSeries[]>(
+			`/api/card/${encodeURIComponent(setCode)}/${encodeURIComponent(number)}/prices`
+		),
 
 	/** Resolve a card name to its newest printing — drives the evolution links. */
 	cardByName: (name: string) =>

@@ -3,6 +3,8 @@
 	import type { CardDetail } from '$lib/types/CardDetail';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
+	import type { PriceSeries } from '$lib/types/PriceSeries';
+	import PriceChart from './PriceChart.svelte';
 
 	// The card-detail body, shared by the /card/[set]/[number] route and the
 	// collection-page modal. Self-contained: it fetches its own data.
@@ -22,6 +24,7 @@
 	let detail = $state<CardDetail | null>(null);
 	let binders = $state<Binder[]>([]);
 	let decks = $state<Deck[]>([]);
+	let priceSeries = $state<PriceSeries[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let busy = $state(false);
@@ -33,10 +36,11 @@
 		loading = true;
 		error = null;
 		try {
-			[detail, binders, decks] = await Promise.all([
+			[detail, binders, decks, priceSeries] = await Promise.all([
 				api.card(setCode, number),
 				api.binders(),
-				api.decks()
+				api.decks(),
+				api.cardPrices(setCode, number)
 			]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -331,6 +335,11 @@
 				{/each}
 			</tbody>
 		</table>
+	</section>
+
+	<section>
+		<h2>Price history</h2>
+		<PriceChart series={priceSeries} />
 	</section>
 
 	<section>

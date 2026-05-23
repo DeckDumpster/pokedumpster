@@ -6,7 +6,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use pkdump_db::DbError;
-use pkdump_db::cards::{self, CardDetail};
+use pkdump_db::cards::{self, CardDetail, PriceSeries};
 
 use crate::{AppError, AppState, blocking};
 
@@ -23,6 +23,7 @@ pub struct CardRef {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/card/{set}/{number}", get(card_detail))
+        .route("/card/{set}/{number}/prices", get(card_prices))
         .route("/cards/by-set-cn", get(by_set_cn))
         .route("/cards/by-name/{name}", get(by_name))
 }
@@ -62,6 +63,18 @@ async fn card_detail(
     Path((set, number)): Path<(String, String)>,
 ) -> Result<Json<CardDetail>, AppError> {
     lookup(&state, set, number).await
+}
+
+/// Time-series price history for every printing of a card. Drives the
+/// chart on the card-detail view. v1 emits one series per printing,
+/// price_type=`market`; the response shape is condition-agnostic so v2
+/// can add per-condition series without breaking the client.
+async fn card_prices(
+    State(state): State<AppState>,
+    Path((set, number)): Path<(String, String)>,
+) -> Result<Json<Vec<PriceSeries>>, AppError> {
+    let series = blocking(&state, move |c| cards::get_card_prices(c, &set, &number)).await?;
+    Ok(Json(series))
 }
 
 #[derive(Deserialize)]

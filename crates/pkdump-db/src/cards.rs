@@ -160,6 +160,86 @@ pub fn get_card_detail(
     }))
 }
 
+/// One snapshot in a printing's market-price history.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct PricePoint {
+    /// `YYYY-MM-DD` — the day TCGCSV was queried (see `import_prices`).
+    pub date: String,
+    pub price: f64,
+}
+
+/// Full price history for one printing × price_type. The frontend renders
+/// one chart line per series. v1 only emits `price_type = "market"`.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct PriceSeries {
+    pub printing_id: String,
+    pub variant: String,
+    /// TCGplayer sub_type — `Normal` / `Holofoil` / `Reverse Holofoil` / …
+    pub sub_type_name: String,
+    pub price_type: String,
+    pub points: Vec<PricePoint>,
+}
+
+/// All market-price snapshots for every printing of a card, ordered oldest
+/// → newest within each series. Printings without a TCGplayer link or with
+/// a variant that has no sub_type mapping yield no series.
+pub fn get_card_prices(
+    conn: &Connection,
+    set_code: &str,
+    number: &str,
+) -> Result<Vec<PriceSeries>> {
+    let card_id: Option<String> = conn
+        .prepare("SELECT card_id FROM cards WHERE set_code = ?1 AND number = ?2")?
+        .query_row(params![set_code, number], |r| r.get(0))
+        .optional()?;
+    let Some(card_id) = card_id else {
+        return Ok(Vec::new());
+    };
+
+    let sub_expr = crate::VARIANT_PRICE_SUBTYPE;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT p.printing_id, p.variant, ({sub_expr}) AS sub_type, \
+                pr.price_type, pr.observed_at, pr.price \
+           FROM printings p \
+           JOIN prices pr ON pr.tcgplayer_product_id = p.tcgplayer_product_id \
+                         AND pr.sub_type_name = ({sub_expr}) \
+                         AND pr.source = 'tcgplayer' \
+                         AND pr.price_type = 'market' \
+          WHERE p.card_id = ?1 \
+          ORDER BY p.variant, pr.observed_at",
+    ))?;
+
+    let mut series: Vec<PriceSeries> = Vec::new();
+    let mut rows = stmt.query([&card_id])?;
+    while let Some(r) = rows.next()? {
+        let printing_id: String = r.get(0)?;
+        let variant: String = r.get(1)?;
+        let sub: String = r.get(2)?;
+        let price_type: String = r.get(3)?;
+        let date: String = r.get(4)?;
+        let price: f64 = r.get(5)?;
+
+        let point = PricePoint { date, price };
+        let key = (&printing_id, &price_type);
+        match series
+            .last_mut()
+            .filter(|s| s.printing_id == *key.0 && s.price_type == *key.1)
+        {
+            Some(s) => s.points.push(point),
+            None => series.push(PriceSeries {
+                printing_id,
+                variant,
+                sub_type_name: sub,
+                price_type,
+                points: vec![point],
+            }),
+        }
+    }
+    Ok(series)
+}
+
 /// Find a card by name — return the (set_code, number) of the most
 /// recently-released printing. Used by the modal's evolution links so a
 /// name like "Pikachu" resolves to a clickable card.
@@ -303,5 +383,66 @@ mod tests {
             .unwrap();
         assert_eq!(normal.market_price, Some(10.0));
         assert_eq!(rh.market_price, Some(25.0));
+    }
+
+    #[test]
+    fn get_card_prices_returns_ordered_series_per_printing() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) \
+                 VALUES ('sv3pt5', '151', 'Scarlet & Violet')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('sv3pt5-6', 'sv3pt5', '6', 6, 'Charizard ex')",
+                [],
+            )
+            .unwrap();
+            for v in ["normal", "reverse_holo"] {
+                c.execute(
+                    "INSERT INTO printings (printing_id, card_id, variant, tcgplayer_product_id) \
+                     VALUES (?1, 'sv3pt5-6', ?2, 5006)",
+                    params![format!("sv3pt5-6-{v}"), v],
+                )
+                .unwrap();
+            }
+            // Two days, two sub-types, plus a non-market row that must be filtered out.
+            let rows = [
+                ("Normal", "market", 9.5_f64, "2026-05-21"),
+                ("Normal", "market", 10.0, "2026-05-22"),
+                ("Reverse Holofoil", "market", 24.0, "2026-05-21"),
+                ("Reverse Holofoil", "market", 25.0, "2026-05-22"),
+                ("Normal", "low", 7.0, "2026-05-22"),
+            ];
+            for (sub, pt, price, day) in rows {
+                c.execute(
+                    "INSERT INTO prices \
+                       (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+                     VALUES (5006, ?1, 'tcgplayer', ?2, ?3, ?4)",
+                    params![sub, pt, price, day],
+                )
+                .unwrap();
+            }
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let series = get_card_prices(&conn, "sv3pt5", "6").unwrap();
+        assert_eq!(series.len(), 2, "one series per printing");
+        let normal = series.iter().find(|s| s.variant == "normal").unwrap();
+        assert_eq!(normal.points.len(), 2);
+        assert_eq!(normal.points[0].date, "2026-05-21");
+        assert_eq!(normal.points[0].price, 9.5);
+        assert_eq!(normal.points[1].price, 10.0);
+        assert!(series.iter().all(|s| s.price_type == "market"));
+    }
+
+    #[test]
+    fn get_card_prices_returns_empty_for_unknown_card() {
+        let (_d, conn) = user_conn();
+        assert!(get_card_prices(&conn, "sv3pt5", "999").unwrap().is_empty());
     }
 }

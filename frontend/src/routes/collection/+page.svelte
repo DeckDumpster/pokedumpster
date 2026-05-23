@@ -871,14 +871,13 @@
 	/* --- DD-style top chrome ------------------------------------------- */
 
 	.topbar {
-		/* Fixed (not just sticky) so horizontal table scroll can't drag
-		   the bar off the left of the viewport. The page itself never
-		   needs to scroll horizontally — the table does, inside its own
-		   .tableScroll container. */
-		position: fixed;
+		/* Sticky (not fixed) so the bar takes its own height in the page
+		   flow — no manual spacer needed, and the bar can never overlap
+		   the first row of results. Horizontal table scroll is owned by
+		   .tableScroll, so the page itself doesn't scroll horizontally
+		   and the bar stays put. */
+		position: sticky;
 		top: 0;
-		left: 0;
-		right: 0;
 		z-index: 50;
 		display: flex;
 		flex-direction: column;
@@ -887,12 +886,8 @@
 		background: #16213e;
 		border-bottom: 1px solid #0f3460;
 	}
-	/* An in-page spacer the height of the fixed topbar so the rest of
-	   the page content doesn't slide under it. Tuned to the actual
-	   rendered topbar — was 5.5rem and left a visible gap above the
-	   first row of results. */
 	.topbarSpacer {
-		height: 4.4rem;
+		display: none;
 	}
 	.row {
 		display: flex;

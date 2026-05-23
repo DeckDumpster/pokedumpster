@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api, variantLabel } from '$lib/api';
 	import CardModal from '$lib/components/CardModal.svelte';
@@ -39,17 +39,21 @@
 	// Re-sync from the URL whenever it changes — covers the case where the
 	// user clicks a facet link in the card modal while already on
 	// /collection. SvelteKit's client router updates the URL but doesn't
-	// remount us, so the initial-value read above never re-runs. Equality
-	// guard prevents the typing-debounce write-back from looping.
+	// remount us, so the initial-value read above never re-runs. `untrack`
+	// keeps this effect from refiring when the user types into the box
+	// (which writes searchRaw + the URL itself); only an external URL
+	// change triggers the resync.
 	$effect(() => {
 		const q = page.url.searchParams.get('q') ?? '';
-		if (q !== searchRaw) {
-			clearTimeout(debounce);
-			searchRaw = q;
-			search = q.trim().toLowerCase();
-			// Close any open modal so the filtered list is visible.
-			selectedCard = null;
-		}
+		untrack(() => {
+			if (q !== searchRaw) {
+				clearTimeout(debounce);
+				searchRaw = q;
+				search = q.trim().toLowerCase();
+				// Close any open modal so the filtered list is visible.
+				selectedCard = null;
+			}
+		});
 	});
 
 	// "All cards" toggle widens the search from owned-only to the full

@@ -142,6 +142,14 @@
 		return `/rarity/${rarity.toLowerCase().replace(/[ ._]/g, '-')}.svg`;
 	}
 
+	/** Link a metadata cell (artist, set, rarity, type, variant, …) to a
+	 *  pre-filled /collection?q= search. The collection page's `rowMatches`
+	 *  does case-insensitive substring across all the facets so the bare
+	 *  value works as-is. */
+	function facetHref(value: string): string {
+		return `/collection?q=${encodeURIComponent(value)}`;
+	}
+
 	type AttackData = {
 		name?: string;
 		cost?: string[];
@@ -187,26 +195,37 @@
 		<div class="info">
 			<h1>{card.name}</h1>
 			<p class="sub">
-				{#if card.set_symbol_url}
-					<img
-						class="setsym"
-						src={card.set_symbol_url}
-						alt={card.set_code}
-						title="{card.set_name} ({card.set_code})"
-					/>
-				{/if}
-				<span title={card.set_code}>{(card.set_ptcgo_code ?? card.set_code).toUpperCase()}</span>
+				<a
+					class="facet"
+					href={facetHref((card.set_ptcgo_code ?? card.set_code).toUpperCase())}
+					title="Filter collection by {(card.set_ptcgo_code ?? card.set_code).toUpperCase()}"
+				>
+					{#if card.set_symbol_url}
+						<img
+							class="setsym"
+							src={card.set_symbol_url}
+							alt={card.set_code}
+							title="{card.set_name} ({card.set_code})"
+						/>
+					{/if}
+					<span>{(card.set_ptcgo_code ?? card.set_code).toUpperCase()}</span>
+				</a>
 				· #{card.number}{#if card.rarity}
 					·
-					{#if rarityIconSrc(card.rarity)}
-						<img class="raritysym" src={rarityIconSrc(card.rarity)} alt="" />
-					{/if}
-					{card.rarity}{/if}
+					<a class="facet" href={facetHref(card.rarity)} title="Filter collection by {card.rarity}">
+						{#if rarityIconSrc(card.rarity)}
+							<img class="raritysym" src={rarityIconSrc(card.rarity)} alt="" />
+						{/if}
+						{card.rarity}
+					</a>{/if}
 			</p>
 			<dl>
 				{#if card.supertype}<dt>Type</dt><dd>
-						{card.supertype}{#if parseStrArr(card.subtypes).length}
-							· {parseStrArr(card.subtypes).join(' ')}
+						<a class="facet" href={facetHref(card.supertype)}>{card.supertype}</a>{#if parseStrArr(card.subtypes).length}
+							·
+							{#each parseStrArr(card.subtypes) as st (st)}
+								<a class="facet" href={facetHref(st)}>{st}</a>
+							{/each}
 						{/if}
 					</dd>{/if}
 				{#if card.hp != null}<dt>HP</dt><dd>{card.hp}</dd>{/if}
@@ -214,12 +233,16 @@
 					<dt>Element</dt>
 					<dd class="enr">
 						{#each parseStrArr(card.types) as t (t)}
-							<img class="energy" src={energyIcon(t)} alt={t} title={t} />
+							<a class="facet" href={facetHref(t)} title="Filter collection by {t}">
+								<img class="energy" src={energyIcon(t)} alt={t} title={t} />
+							</a>
 						{/each}
 					</dd>
 				{/if}
 				{#if card.regulation_mark}<dt>Regulation</dt><dd>{card.regulation_mark}</dd>{/if}
-				{#if card.artist}<dt>Artist</dt><dd>{card.artist}</dd>{/if}
+				{#if card.artist}<dt>Artist</dt><dd>
+						<a class="facet" href={facetHref(card.artist)}>{card.artist}</a>
+					</dd>{/if}
 
 				{#if card.evolves_from}
 					<dt>Evolves from</dt>
@@ -331,7 +354,9 @@
 		<ul class="printings">
 			{#each detail.printings.filter((p) => !p.deprecated || p.owned_count > 0) as p (p.printing_id)}
 				<li class:dim={p.deprecated}>
-					<span class="variant">{variantLabel(p.variant)}</span>
+					<a class="facet variant" href={facetHref(variantLabel(p.variant))}>
+						{variantLabel(p.variant)}
+					</a>
 					<span class="market">{price(p.market_price)}</span>
 					{#if p.tcgplayer_product_id != null}
 						<a
@@ -510,6 +535,24 @@
 		width: 18px;
 		height: 18px;
 		vertical-align: middle;
+	}
+	/* Clickable facet — set glyph, rarity, type, artist, variant. Looks
+	   like body text by default; hover hints the link affordance. */
+	.facet {
+		color: inherit;
+		text-decoration: none;
+		cursor: pointer;
+		border-radius: 4px;
+		padding: 1px 3px;
+	}
+	.facet:hover {
+		background: rgba(233, 69, 96, 0.18);
+		color: #e0e0e0;
+	}
+	.facet:hover .energy,
+	.facet:hover .setsym,
+	.facet:hover .raritysym {
+		filter: brightness(1.2);
 	}
 	.evolink {
 		background: none;

@@ -10,6 +10,10 @@ export type CollectionRow = { id: number, printing_id: string, condition: string
  */
 set_ptcgo_code: string | null, set_symbol_url: string | null, number: string, name: string, rarity: string | null, 
 /**
+ * Artist credit, surfaced so the /collection search can filter by it.
+ */
+artist: string | null, 
+/**
  * `Pokémon` | `Trainer` | `Energy`.
  */
 supertype: string | null, 

@@ -207,6 +207,8 @@ pub struct CollectionRow {
     pub number: String,
     pub name: String,
     pub rarity: Option<String>,
+    /// Artist credit, surfaced so the /collection search can filter by it.
+    pub artist: Option<String>,
     /// `Pokémon` | `Trainer` | `Energy`.
     pub supertype: Option<String>,
     /// JSON array, e.g. `["Supporter"]` or `["Basic","ex"]`.
@@ -227,7 +229,7 @@ const ROW_COLUMNS_SQL: &str = "c.id, c.printing_id, c.condition, c.language, \
      c.purchase_price, c.sale_price, c.acquired_at, c.source, c.notes, \
      c.status, c.graded, c.binder_id, c.deck_id, p.variant, cd.card_id, \
      cd.set_code, s.ptcgo_code, s.symbol_url, cd.number, cd.name, \
-     cd.rarity, cd.supertype, cd.subtypes, cd.types, cd.attacks, \
+     cd.rarity, cd.artist, cd.supertype, cd.subtypes, cd.types, cd.attacks, \
      (SELECT lp.price FROM latest_prices lp \
         WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
           AND lp.sub_type_name = p.sub_type_name \
@@ -263,12 +265,13 @@ fn collection_row_from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionRow>
         number: r.get(18)?,
         name: r.get(19)?,
         rarity: r.get(20)?,
-        supertype: r.get(21)?,
-        subtypes: r.get(22)?,
-        types: r.get(23)?,
-        attacks: r.get(24)?,
-        market_price: r.get(25)?,
-        image_small: r.get(26)?,
+        artist: r.get(21)?,
+        supertype: r.get(22)?,
+        subtypes: r.get(23)?,
+        types: r.get(24)?,
+        attacks: r.get(25)?,
+        market_price: r.get(26)?,
+        image_small: r.get(27)?,
     })
 }
 

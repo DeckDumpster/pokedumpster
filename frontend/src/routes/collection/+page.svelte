@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { api, variantLabel } from '$lib/api';
 	import CardModal from '$lib/components/CardModal.svelte';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
@@ -11,14 +12,28 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
-	// Debounced search.
-	let searchRaw = $state('');
-	let search = $state('');
+	// Debounced search. Initial value comes from ?q= so clickable facets
+	// on the card-detail page (artist, set, energy type, rarity, …) can
+	// land here with the filter pre-applied.
+	const initialQuery =
+		typeof window !== 'undefined' ? (page.url.searchParams.get('q') ?? '') : '';
+	let searchRaw = $state(initialQuery);
+	let search = $state(initialQuery.trim().toLowerCase());
 	let debounce: ReturnType<typeof setTimeout>;
 	function onSearch(value: string) {
 		searchRaw = value;
 		clearTimeout(debounce);
-		debounce = setTimeout(() => (search = value.trim().toLowerCase()), 200);
+		debounce = setTimeout(() => {
+			search = value.trim().toLowerCase();
+			// Reflect the active query in the URL so refreshes + back-button
+			// keep state. replaceState avoids a history entry per keystroke.
+			if (typeof window !== 'undefined') {
+				const url = new URL(window.location.href);
+				if (search) url.searchParams.set('q', searchRaw.trim());
+				else url.searchParams.delete('q');
+				window.history.replaceState({}, '', url);
+			}
+		}, 200);
 	}
 
 	// "All cards" toggle widens the search from owned-only to the full
@@ -132,9 +147,26 @@
 		}
 	});
 
-	const filtered = $derived(
-		rows.filter((r) => !search || r.name.toLowerCase().includes(search))
-	);
+	// Free-text substring across the user-facing facets — name, artist,
+	// set name, ptcgo code, rarity, energy types, supertype/subtypes,
+	// variant. Drives both typed queries and clickable facets that arrive
+	// via ?q=.
+	function rowMatches(r: CollectionRow, q: string): boolean {
+		if (!q) return true;
+		const haystacks: (string | null | undefined)[] = [
+			r.name,
+			r.artist,
+			r.rarity,
+			r.set_code,
+			r.set_ptcgo_code,
+			r.supertype,
+			r.subtypes,
+			r.types,
+			variantLabel(r.variant)
+		];
+		return haystacks.some((h) => h != null && h.toLowerCase().includes(q));
+	}
+	const filtered = $derived(rows.filter((r) => rowMatches(r, search)));
 	const totalValue = $derived(
 		filtered.reduce((s, r) => s + (r.market_price ?? 0), 0)
 	);

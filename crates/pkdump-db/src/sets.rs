@@ -71,6 +71,20 @@ pub struct RarityCount {
     pub owned_cards: i64,
 }
 
+/// Per-card copy count for the stats-page histogram. One row per
+/// catalogued card in the set, in collector-number order; `copies` is
+/// the total physical count across every variant.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct CardCopyCount {
+    pub number: String,
+    #[ts(type = "number")]
+    pub number_sortable: i64,
+    pub rarity: Option<String>,
+    #[ts(type = "number")]
+    pub copies: i64,
+}
+
 /// Analytical breakdown of a single set: completion against both the
 /// numbered set and the master (every printing) set, the rarity split,
 /// and value — the full set's market value and the value owned.
@@ -97,10 +111,19 @@ pub struct SetAnalytics {
     pub total_printings: i64,
     #[ts(type = "number")]
     pub owned_printings: i64,
-    /// Market value of one of every printing, and of the copies owned.
+    /// Total physical copies of any card in the set — sums duplicates.
+    #[ts(type = "number")]
+    pub owned_copies: i64,
+    /// Market value: one of every printing in the set, one of every
+    /// printing the user owns, and the all-physical-copies sum (counts
+    /// duplicates).
     pub market_value: f64,
+    pub owned_value_unique: f64,
     pub owned_value: f64,
     pub rarities: Vec<RarityCount>,
+    /// One entry per card in the set, ordered by collector number —
+    /// drives the stats-page copy-count histogram.
+    pub copy_counts: Vec<CardCopyCount>,
 }
 
 /// Compute the analytical breakdown for one set. `None` if no such set.
@@ -187,6 +210,54 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
         [set_code],
         |r| r.get(0),
     )?;
+    // One-of-each owned printing value — the "completion picture" sum
+    // that doesn't double-count duplicates. Drops deprecated printings
+    // for parity with owned_printings.
+    let owned_value_unique: f64 = conn.query_row(
+        &format!(
+            "SELECT COALESCE(SUM({price_expr}), 0) \
+             FROM printings p JOIN cards c ON p.card_id = c.card_id \
+             WHERE c.set_code = ?1 \
+               AND p.deprecated_at IS NULL \
+               AND EXISTS (SELECT 1 FROM collection col WHERE col.printing_id = p.printing_id)"
+        ),
+        [set_code],
+        |r| r.get(0),
+    )?;
+    // Total physical copies in the set (one row per copy in `collection`).
+    let owned_copies: i64 = conn.query_row(
+        "SELECT count(*) FROM collection col \
+           JOIN printings p ON col.printing_id = p.printing_id \
+           JOIN cards c ON p.card_id = c.card_id \
+         WHERE c.set_code = ?1",
+        [set_code],
+        |r| r.get(0),
+    )?;
+
+    // Per-card copy counts in collector-number order. LEFT JOIN through
+    // printings/collection so cards owned 0 times still produce a row
+    // (copies = 0 because COUNT ignores NULLs).
+    let copy_counts: Vec<CardCopyCount> = {
+        let mut stmt = conn.prepare(
+            "SELECT c.number, c.number_sortable, c.rarity, \
+                    COUNT(col.id) AS copies \
+             FROM cards c \
+             LEFT JOIN printings p ON p.card_id = c.card_id \
+             LEFT JOIN collection col ON col.printing_id = p.printing_id \
+             WHERE c.set_code = ?1 \
+             GROUP BY c.card_id \
+             ORDER BY c.number_sortable",
+        )?;
+        let rows = stmt.query_map([set_code], |r| {
+            Ok(CardCopyCount {
+                number: r.get(0)?,
+                number_sortable: r.get(1)?,
+                rarity: r.get(2)?,
+                copies: r.get(3)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
 
     let rarities = {
         let mut stmt = conn.prepare(
@@ -221,9 +292,12 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
         owned_cards,
         total_printings,
         owned_printings,
+        owned_copies,
         market_value,
+        owned_value_unique,
         owned_value,
         rarities,
+        copy_counts,
     }))
 }
 
@@ -336,7 +410,20 @@ mod tests {
         assert_eq!(a.total_printings, 3);
         assert_eq!(a.owned_printings, 2);
         assert_eq!(a.market_value, 6.0); // 1 + 2 + 3
-        assert_eq!(a.owned_value, 5.0); // 1 + 1 + 3
+        // Three physical copies → owned_value sums duplicates ($1+$1+$3),
+        // owned_value_unique sums one-of-each owned printing ($1+$3).
+        assert_eq!(a.owned_copies, 3);
+        assert_eq!(a.owned_value, 5.0);
+        assert_eq!(a.owned_value_unique, 4.0);
+
+        // Per-card copy counts in collector-number order.
+        assert_eq!(a.copy_counts.len(), 3);
+        assert_eq!(a.copy_counts[0].number, "1");
+        assert_eq!(a.copy_counts[0].copies, 2);
+        assert_eq!(a.copy_counts[1].number, "2");
+        assert_eq!(a.copy_counts[1].copies, 0);
+        assert_eq!(a.copy_counts[2].number, "3");
+        assert_eq!(a.copy_counts[2].copies, 1);
 
         let common = a.rarities.iter().find(|r| r.rarity == "Common").unwrap();
         assert_eq!(common.total_cards, 2);

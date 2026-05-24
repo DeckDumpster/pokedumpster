@@ -91,6 +91,54 @@
 			return ra !== rb ? ra - rb : a.rarity.localeCompare(b.rarity);
 		});
 	});
+
+	// Duplicates summary — owned_copies counts every physical card,
+	// owned_cards counts unique cards. Dupes = the difference. Cards
+	// with 2+ copies are the ones the user might trade away.
+	const duplicates = $derived.by(() => {
+		if (!stats) return null;
+		const dupes = stats.owned_copies - stats.owned_cards;
+		const cardsWithDupes = stats.copy_counts.filter((c) => c.copies > 1);
+		const mostOwned = stats.copy_counts.reduce((m, c) => Math.max(m, c.copies), 0);
+		return {
+			total_copies: stats.owned_copies,
+			extra_copies: dupes,
+			cards_with_dupes: cardsWithDupes.length,
+			most_owned: mostOwned
+		};
+	});
+
+	// Histogram. Cap bar heights to maxCopies so single-extreme columns
+	// don't squash everything else; rarity tier paints the bar colour so
+	// the rarity boundaries are visible without explicit divider lines.
+	const maxCopies = $derived(
+		stats ? Math.max(1, ...stats.copy_counts.map((c) => c.copies)) : 1
+	);
+	function rarityColor(rarity: string | null): string {
+		if (!rarity) return '#3a3a52';
+		switch (canonicalRarity(rarity)) {
+			case 'Common':
+				return '#6a7280';
+			case 'Uncommon':
+				return '#5cb85c';
+			case 'Rare':
+				return '#4a8df0';
+			case 'Rare Holo':
+			case 'Double Rare':
+				return '#9c5fb5';
+			case 'Illustration Rare':
+				return '#f0c878';
+			case 'Special Illustration Rare':
+			case 'Ultra Rare':
+				return '#e94560';
+			case 'Hyper Rare':
+			case 'Mega Attack Rare':
+			case 'Mega Hyper Rare':
+				return '#ffd24a';
+			default:
+				return '#b88cc0';
+		}
+	}
 </script>
 
 <svelte:head><title>{stats ? stats.name : 'Set'} stats — PokeDumpster</title></svelte:head>
@@ -129,20 +177,71 @@
 			<h2>Value</h2>
 			<div class="figs">
 				<div class="fig">
+					<span class="figval">{money(stats.owned_value_unique)}</span>
+					<span class="figlabel">Owned (unique)</span>
+				</div>
+				<div class="fig">
 					<span class="figval">{money(stats.owned_value)}</span>
-					<span class="figlabel">Owned</span>
+					<span class="figlabel">With duplicates</span>
 				</div>
 				<div class="fig">
 					<span class="figval">{money(stats.market_value)}</span>
 					<span class="figlabel">Full set</span>
 				</div>
 				<div class="fig">
-					<span class="figval">{pct(stats.owned_value, stats.market_value)}%</span>
+					<span class="figval">{pct(stats.owned_value_unique, stats.market_value)}%</span>
 					<span class="figlabel">of set value</span>
 				</div>
 			</div>
 		</section>
 	</div>
+
+	{#if duplicates}
+		<section class="card">
+			<h2>Duplicates</h2>
+			<div class="figs">
+				<div class="fig">
+					<span class="figval">{duplicates.total_copies}</span>
+					<span class="figlabel">Total copies</span>
+				</div>
+				<div class="fig">
+					<span class="figval">{duplicates.extra_copies}</span>
+					<span class="figlabel">Extra copies</span>
+				</div>
+				<div class="fig">
+					<span class="figval">{duplicates.cards_with_dupes}</span>
+					<span class="figlabel">Cards with dupes</span>
+				</div>
+				<div class="fig">
+					<span class="figval">{duplicates.most_owned}</span>
+					<span class="figlabel">Most owned</span>
+				</div>
+			</div>
+		</section>
+	{/if}
+
+	{#if stats.copy_counts.length > 0}
+		<section class="card">
+			<h2>Copies by card #</h2>
+			<p class="histohint">
+				Bar height = physical copies owned · colour = rarity tier · hover for details.
+			</p>
+			<div class="histo" style:--max={maxCopies}>
+				{#each stats.copy_counts as c (c.number)}
+					<span
+						class="histo-col"
+						class:owned={c.copies > 0}
+						class:dupe={c.copies > 1}
+						style:height="{Math.max(2, (c.copies / maxCopies) * 100)}%"
+						style:background={c.copies > 0 ? rarityColor(c.rarity) : '#1f2640'}
+						title="#{c.number} · {c.rarity ?? 'Unknown'} · {c.copies} {c.copies === 1
+							? 'copy'
+							: 'copies'}"
+					></span>
+				{/each}
+			</div>
+		</section>
+	{/if}
 
 	<section class="card">
 		<h2>Rarity split</h2>
@@ -339,5 +438,35 @@
 		font-size: 0.8rem;
 		min-width: 2.5rem;
 		text-align: right;
+	}
+	/* Copies histogram. One thin column per card across the row,
+	   sized by flex so the whole set fits regardless of card count;
+	   each column's height is set inline as a percentage of the row. */
+	.histohint {
+		color: #888;
+		font-size: 0.8rem;
+		margin: 0 0 0.6rem;
+	}
+	.histo {
+		display: flex;
+		align-items: flex-end;
+		gap: 1px;
+		height: 120px;
+		padding: 4px 0;
+		background: #0c1426;
+		border-radius: 6px;
+	}
+	.histo-col {
+		flex: 1 1 0;
+		min-width: 0;
+		border-radius: 1px 1px 0 0;
+		transition: filter 0.1s ease-out;
+	}
+	.histo-col:hover {
+		filter: brightness(1.4);
+	}
+	.histo-col.dupe {
+		outline: 1px solid rgba(255, 255, 255, 0.25);
+		outline-offset: -1px;
 	}
 </style>

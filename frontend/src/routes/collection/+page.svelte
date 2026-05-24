@@ -160,7 +160,7 @@
 		} else {
 			sortKey = key;
 			// Counts and money default to high→low; everything else low→high.
-			sortDir = key === 'qty' || key === 'market' ? 'desc' : 'asc';
+			sortDir = key === 'qty' || key === 'market' || key === 'value' ? 'desc' : 'asc';
 		}
 	}
 
@@ -241,6 +241,9 @@
 		ids: number[];
 		qty: number;
 		paid_total: number | null;
+		/** Per-copy market price (every row in the group shares a printing). */
+		market_unit: number | null;
+		/** Sum across all copies in the group — market_unit × qty. */
 		market_total: number | null;
 		printing_id: string;
 		card_id: string;
@@ -280,6 +283,7 @@
 					ids: [r.id],
 					qty: 1,
 					paid_total: r.purchase_price,
+					market_unit: r.market_price,
 					market_total: r.market_price,
 					printing_id: r.printing_id,
 					card_id: r.card_id,
@@ -453,6 +457,8 @@
 			case 'rarity':
 				return rarityRank(a.rarity);
 			case 'market':
+				return a.market_unit ?? -1;
+			case 'value':
 				return a.market_total ?? -1;
 			default:
 				return 0;
@@ -818,6 +824,7 @@
 					{@render sortable('set', 'Set', 'center')}
 					{@render sortable('number', '#', 'num')}
 					{@render sortable('market', 'Price', 'num')}
+					{@render sortable('value', 'Value', 'num')}
 					<!-- Trailing spacer column: absorbs leftover viewport width
 					     so the named columns stay content-sized and the header
 					     underline still reaches the right edge. -->
@@ -911,6 +918,13 @@
 						</td>
 						<td class="num">{a.number}</td>
 						<td class="num">
+							{#if a.market_unit != null}
+								<span class="pricebox">${a.market_unit.toFixed(2)}</span>
+							{:else}
+								<span class="pricedash">—</span>
+							{/if}
+						</td>
+						<td class="num">
 							{#if a.market_total != null}
 								<span class="pricebox">${a.market_total.toFixed(2)}</span>
 							{:else}
@@ -983,6 +997,7 @@
 							{/if}
 						</td>
 						<td class="num">{c.number}</td>
+						<td class="num"><span class="pricedash">—</span></td>
 						<td class="num"><span class="pricedash">—</span></td>
 						<td class="spacer"></td>
 					</tr>

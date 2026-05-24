@@ -599,7 +599,9 @@
 		display: block;
 		aspect-ratio: 5 / 7;
 		object-fit: contain;
-		background: #0d1424;
+		/* Card images have transparent rounded corners — let the body
+		   color show through instead of painting black behind them. */
+		background: transparent;
 	}
 	.noart {
 		aspect-ratio: 5 / 7;

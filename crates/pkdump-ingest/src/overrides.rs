@@ -19,11 +19,23 @@ use pkdump_core::variant::{
 use crate::error::Result;
 use crate::tcgcsv::normalize_collector_number;
 
-/// TCGCSV group_id for the "Miscellaneous Cards and Products" bin, which
-/// hosts stamped promos (Black Bolt Stamped, Darkness Ablaze Stamped, E3
-/// Stamped, …). These products live cross-group from the base card's set,
-/// so expansion has to look here explicitly to surface them.
-const MISC_GROUP_ID: i64 = 2374;
+/// TCGCSV groups scanned cross-group during variant expansion. Products
+/// here belong to base cards that live in a different group (the card's
+/// own set), so expansion has to look here explicitly to surface them.
+///
+/// - 2374 "Miscellaneous Cards and Products" (MCAP) — stamped promos
+///   (Black Bolt Stamped, E3 Stamped, …) plus non-stamp pattern overlays
+///   (Cosmo Holo, etc.). Variant comes from the product name.
+/// - 1840 "Deck Exclusives" — non-foil reprints that ship inside
+///   preconstructed products (Build & Battle decks, theme decks,
+///   Battle Academies). Most entries are bare-name "Zacian - 045/094"
+///   with no parenthetical; the variant comes from the
+///   `prices.sub_type_name` (typically "Normal") rather than the name.
+const CROSS_GROUP_SOURCE_GROUPS: &[i64] = &[2374, 1840];
+
+/// Subset of `CROSS_GROUP_SOURCE_GROUPS` whose bare-name products resolve
+/// via `sub_type_to_variant` instead of via a name-pattern parser.
+const DECK_EXCLUSIVES_GROUP_ID: i64 = 1840;
 
 const VARIANT_AUGMENTATIONS: &str =
     include_str!("../../../data/overrides/variant_augmentations.json");
@@ -96,38 +108,59 @@ fn parse_set_total(raw: &str) -> Option<i64> {
 fn preload_cross_group_products(
     conn: &Connection,
 ) -> Result<HashMap<String, Vec<CrossGroupProduct>>> {
-    let mut stmt = conn.prepare(
-        "SELECT product_id, name, collector_number FROM tcgcsv_products \
-          WHERE group_id = ?1",
-    )?;
-    let rows = stmt.query_map([MISC_GROUP_ID], |r| {
+    // i64 list → string is injection-safe; rusqlite's IN-list ergonomics
+    // are awkward for a small static set, so inline the IDs.
+    let in_list = CROSS_GROUP_SOURCE_GROUPS
+        .iter()
+        .map(|g| g.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT product_id, group_id, name, collector_number FROM tcgcsv_products \
+          WHERE group_id IN ({in_list})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, i64>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, Option<String>>(2)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(3)?,
         ))
     })?;
 
     let mut by_number: HashMap<String, Vec<CrossGroupProduct>> = HashMap::new();
     for row in rows {
-        let (product_id, name, raw_num) = row?;
+        let (product_id, group_id, name, raw_num) = row?;
         let Some(num) = raw_num else { continue };
-        // Stamp parser first — it consumes the parenthetical when it
-        // matches; otherwise try the generic pattern parser. Stamps
-        // carry an optional set_keyword for set-disambiguation;
-        // non-stamp overlays don't (they rely on card-name + set-total
-        // matching at attach time).
-        let (variant, set_keyword) = if let Some((v, kw)) = parse_stamp_tag(&name) {
-            (v, kw)
+        // Resolution order:
+        //   1. Stamp parser ("(Black Bolt Stamped)", "(Prerelease)", …)
+        //      — consumes the parenthetical, may yield a set_keyword.
+        //   2. Pattern parser ("(Cosmo Holo)", "(Master Ball Pattern)", …)
+        //      — name carries the variant; no set_keyword.
+        //   3. Deck Exclusives: bare-name products (no parenthetical) in
+        //      group 1840. Variant comes from the sub_type — typically
+        //      "Normal" → `normal`. Products in 1840 with an unrecognized
+        //      parenthetical (e.g. "(Cracked Ice Holo)") are skipped here
+        //      and would need their own variant code before being lifted
+        //      in via the pattern parser.
+        let (variant, set_keyword, sub_type) = if let Some((v, kw)) = parse_stamp_tag(&name) {
+            let sub = sub_type_first(conn, product_id)?;
+            (v, kw, sub)
         } else if let Some(v) = variant_from_product_name(&name) {
-            (v.to_string(), None)
+            let sub = sub_type_first(conn, product_id)?;
+            (v.to_string(), None, sub)
+        } else if group_id == DECK_EXCLUSIVES_GROUP_ID && !name.contains('(') {
+            let Some(sub) = sub_type_first(conn, product_id)? else {
+                continue;
+            };
+            let Some(v) = sub_type_to_variant(&sub) else {
+                continue;
+            };
+            (v.to_string(), None, Some(sub))
         } else {
             continue;
         };
-        let sub_type: Option<String> = conn
-            .prepare("SELECT sub_type_name FROM prices WHERE tcgplayer_product_id = ?1 LIMIT 1")?
-            .query_row([product_id], |r| r.get(0))
-            .ok();
         let card_name_lower = parse_product_card_name(&name).to_lowercase();
         let set_total = parse_set_total(&num);
         by_number
@@ -143,6 +176,18 @@ fn preload_cross_group_products(
             });
     }
     Ok(by_number)
+}
+
+/// Fetch one `sub_type_name` from `prices` for the given product. Pattern
+/// and stamp products in practice carry a single sub_type each, so LIMIT 1
+/// is safe (whichever row the engine returns is the right one). For
+/// products that lack any price row this returns `None` and the caller
+/// falls back accordingly.
+fn sub_type_first(conn: &Connection, product_id: i64) -> Result<Option<String>> {
+    Ok(conn
+        .prepare("SELECT sub_type_name FROM prices WHERE tcgplayer_product_id = ?1 LIMIT 1")?
+        .query_row([product_id], |r| r.get(0))
+        .ok())
 }
 
 /// Look up TCGCSV products for a card and resolve each to (variant,
@@ -830,6 +875,93 @@ mod tests {
         assert_eq!(
             leaked, 0,
             "cosmo holo must not bleed onto same-named card in another set"
+        );
+    }
+
+    #[test]
+    fn cross_group_deck_exclusive_non_foil_attaches_to_base_card() {
+        // Zacian - 045/094 (group 1840 "Deck Exclusives", product 664005)
+        // is a non-foil reprint of me2-45 from a Phantasmal Flames
+        // preconstructed product (Build & Battle Box, etc.). Like the
+        // cosmos-holo case, the matcher resolves it via card-name +
+        // printed_total — but here the variant comes from the
+        // `prices.sub_type_name` ("Normal") rather than from any
+        // parenthetical pattern in the product name.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
+             VALUES ('me2', 'Phantasmal Flames', 'Mega Evolution', 24448, 94)",
+            [],
+        )
+        .unwrap();
+        // Same card name + number but a different printed total — the
+        // disambiguation must keep the deck exclusive off this card.
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
+             VALUES ('swsh2', 'Rebel Clash', 'Sword & Shield', 9999, 192)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('me2-45', 'me2', '45', 45, 'Zacian', 'Rare')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('swsh2-45', 'swsh2', '45', 45, 'Zacian', 'Rare')",
+            [],
+        )
+        .unwrap();
+        // The deck-exclusive product itself — bare-name (no parenthetical
+        // pattern), in group 1840.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (664005, 1840, 'Zacian - 045/094', '045/094', NULL, '2026-05-24')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prices \
+               (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+             VALUES (664005, 'Normal', 'tcgplayer', 'market', 0.5, '2026-05-24')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        // PFL Zacian gains a `normal` printing tied to the deck-exclusive product.
+        let row: (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT sub_type_name, tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'me2-45-normal'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (Some("Normal".into()), Some(664005)));
+
+        // The Rebel Clash Zacian (same name+number, different printed
+        // total) might still get a bootstrap `normal` placeholder, but it
+        // must NOT be tied to the deck-exclusive product — the
+        // set-total disambiguator should keep the cross-group product
+        // away from this card.
+        let leaked_with_product: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM printings \
+                  WHERE printing_id = 'swsh2-45-normal' \
+                    AND tcgplayer_product_id = 664005",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            leaked_with_product, 0,
+            "deck exclusive must not bleed onto same-name+number card in another set"
         );
     }
 

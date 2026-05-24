@@ -399,16 +399,33 @@
 		'Rare Shiny': 9,
 		'Rare Shiny GX': 9,
 		'Illustration Rare': 10,
+		// Mega Attack Rare slots between IR and SIR in the printed set
+		// numbering for Mega Evolution sets (me1..me4, me2pt5).
+		'Mega Attack Rare': 11,
 		'Trainer Gallery Rare Holo': 11,
 		'Rare Secret': 12,
 		'Rare Rainbow': 12,
 		'Special Illustration Rare': 13,
 		'Hyper Rare': 14,
-		'Rare Holo Star': 14
+		'Rare Holo Star': 14,
+		'Mega Hyper Rare': 15
 	};
+	// Upstream rarity strings arrive in both 'Title Case' and
+	// 'SCREAMING_SNAKE' (e.g. MEGA_ATTACK_RARE) depending on which feed
+	// catalogued the card. Canonicalise to title case before any lookup
+	// so the rank table doesn't need both spellings.
+	function canonicalRarity(r: string): string {
+		return r
+			.toLowerCase()
+			.replace(/_/g, ' ')
+			.split(' ')
+			.filter((w) => w.length > 0)
+			.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+			.join(' ');
+	}
 	function rarityRank(r: string | null): number {
 		if (!r) return 0;
-		return RARITY_RANK[r] ?? 6;
+		return RARITY_RANK[canonicalRarity(r)] ?? 6;
 	}
 
 	function numberKey(n: string): number {

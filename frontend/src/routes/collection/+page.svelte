@@ -462,6 +462,41 @@
 		return out;
 	});
 
+	// Grid view sorts per-copy (one tile per CollectionRow). Reuses the
+	// same sortKey + sortDir as the table so toggling the view never
+	// loses your sort. 'qty' isn't meaningful per-copy and is hidden
+	// from the grid's sort dropdown.
+	function sortRowValue(r: CollectionRow, key: string): string | number {
+		switch (key) {
+			case 'name':
+				return r.name.toLowerCase();
+			case 'type':
+				return (r.supertype ?? '').toLowerCase();
+			case 'etype':
+				return (parseJsonStrArr(r.types)[0] ?? '').toLowerCase();
+			case 'set':
+				return (r.set_ptcgo_code ?? r.set_code).toLowerCase();
+			case 'number':
+				return numberKey(r.number);
+			case 'rarity':
+				return rarityRank(r.rarity);
+			case 'market':
+				return r.market_price ?? -1;
+			default:
+				return 0;
+		}
+	}
+	const sortedRows = $derived.by(() => {
+		const out = [...filtered];
+		out.sort((a, b) => {
+			const va = sortRowValue(a, sortKey);
+			const vb = sortRowValue(b, sortKey);
+			const cmp = va < vb ? -1 : va > vb ? 1 : 0;
+			return sortDir === 'asc' ? cmp : -cmp;
+		});
+		return out;
+	});
+
 	function groupChecked(ids: number[]): boolean {
 		return ids.every((id) => selected.has(id));
 	}
@@ -753,8 +788,34 @@
 			{#if allCards}Start typing to search the full catalog.{:else}Your collection is empty. Add cards from a set's binder view.{/if}
 		</p>
 	{:else if view === 'grid'}
+		<!-- Grid lacks the table's sortable column headers, so it gets a
+		     dedicated sort bar above the tiles. State is shared with the
+		     table view (sortKey/sortDir) so flipping the view never
+		     loses your sort. -->
+		<div class="gridsort">
+			<label>
+				Sort
+				<select bind:value={sortKey}>
+					<option value="name">Name</option>
+					<option value="type">Class</option>
+					<option value="etype">Type</option>
+					<option value="rarity">Rarity</option>
+					<option value="set">Set</option>
+					<option value="number">#</option>
+					<option value="market">Price</option>
+				</select>
+			</label>
+			<button
+				class="sortdir"
+				onclick={() => (sortDir = sortDir === 'asc' ? 'desc' : 'asc')}
+				aria-label={sortDir === 'asc' ? 'Ascending' : 'Descending'}
+				title={sortDir === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending'}
+			>
+				{sortDir === 'asc' ? '↑' : '↓'}
+			</button>
+		</div>
 		<div class="cardgrid">
-			{#each filtered as row (row.id)}
+			{#each sortedRows as row (row.id)}
 				<button
 					class="cardtile"
 					class:picked={selectMode && selected.has(row.id)}
@@ -1193,6 +1254,36 @@
 
 	/* --- Grid view ------------------------------------------------------ */
 
+	.gridsort {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+		margin: 0 0 0.5rem;
+		font-size: 0.85rem;
+		color: #ccc;
+	}
+	.gridsort select {
+		background: #1a1a2e;
+		border: 1px solid #0f3460;
+		color: #e0e0e0;
+		border-radius: 6px;
+		padding: 0.2rem 0.4rem;
+		font: inherit;
+		margin-left: 0.3rem;
+	}
+	.sortdir {
+		background: #16213e;
+		border: 1px solid #0f3460;
+		color: #e0e0e0;
+		border-radius: 6px;
+		padding: 0.2rem 0.55rem;
+		font: inherit;
+		cursor: pointer;
+	}
+	.sortdir:hover {
+		border-color: #e94560;
+		color: #e94560;
+	}
 	.cardgrid {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));

@@ -243,7 +243,15 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
 
     let now = chrono::Utc::now().to_rfc3339();
     let mut printings = 0usize;
-    for c in &cards {
+    // Periodic progress. Rust block-buffers stdout to pipes (so seed.sh's
+    // tee shows nothing during the loop unless we flush). Emit a line
+    // every PROGRESS_EVERY cards with elapsed + rate, and flush stdout
+    // so it lands in the log immediately.
+    const PROGRESS_EVERY: usize = 1_000;
+    let total = cards.len();
+    let start = std::time::Instant::now();
+    use std::io::Write;
+    for (i, c) in cards.iter().enumerate() {
         let mut tcgcsv_variants = variants_from_tcgcsv(conn, c)?;
         // Cross-group stamps: any MCAP-group stamp product whose
         // collector number matches AND that resolves to this card via
@@ -324,6 +332,21 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
             printings += 1;
         }
         tx.commit()?;
+
+        let done = i + 1;
+        if done % PROGRESS_EVERY == 0 || done == total {
+            let elapsed = start.elapsed().as_secs_f64();
+            let rate = if elapsed > 0.0 {
+                done as f64 / elapsed
+            } else {
+                0.0
+            };
+            let pct = (done as f64 / total as f64) * 100.0;
+            println!(
+                "  [{done:>5}/{total}] {pct:>5.1}% · {printings} printings · {elapsed:>5.1}s · {rate:>5.0} cards/s"
+            );
+            let _ = std::io::stdout().flush();
+        }
     }
     Ok(printings)
 }

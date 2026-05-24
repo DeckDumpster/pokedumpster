@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
+	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import type { SetAnalytics } from '$lib/types/SetAnalytics';
 
 	let stats = $state<SetAnalytics | null>(null);
@@ -14,9 +15,20 @@
 		error = null;
 		api
 			.setAnalytics(set)
-			.then((s) => (stats = s))
+			.then((s) => {
+				stats = s;
+				breadcrumbs.set([
+					{ label: 'Browse', href: '/browse' },
+					{ label: s.name, href: `/browse/${s.set_code}` },
+					{ label: 'Stats' }
+				]);
+			})
 			.catch((e) => (error = e instanceof Error ? e.message : String(e)))
 			.finally(() => (loading = false));
+	});
+
+	$effect(() => {
+		return () => breadcrumbs.set(null);
 	});
 
 	function pct(owned: number, total: number): number {

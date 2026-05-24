@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { api, variantLabel, variantRank } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
+	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import type { BinderPage } from '$lib/types/BinderPage';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
 
@@ -63,6 +64,12 @@
 	let sessionSet = $state<string | null>(null);
 	let sessionBatchId = $state<number | null>(null);
 
+	// Clear the page-supplied breadcrumb when this route unmounts so the
+	// next route doesn't briefly inherit the previous set's leaf label.
+	$effect(() => {
+		return () => breadcrumbs.set(null);
+	});
+
 	async function load() {
 		const set = page.params.set;
 		if (!set) return;
@@ -84,6 +91,10 @@
 				q: search,
 				filter: incompleteOnly ? 'incomplete' : tab
 			});
+			breadcrumbs.set([
+				{ label: 'Browse', href: '/browse' },
+				{ label: binder.set.name }
+			]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -271,7 +282,6 @@
 	<p class="error">Failed to load binder: {error}</p>
 {:else if binder}
 	<header>
-		<h1>{binder.set.name}</h1>
 		<a class="statslink" href="/browse/{binder.set.set_code}/stats">Set stats →</a>
 		<div class="stats">
 			<div class="stat">
@@ -323,8 +333,6 @@
 
 	<div class="controls">
 		<label><input type="checkbox" bind:checked={includeSecret} onchange={resetPage} /> Secret</label>
-		<label><input type="checkbox" bind:checked={includeSubset} onchange={resetPage} /> Subset</label>
-		<label><input type="checkbox" bind:checked={includePromos} onchange={resetPage} /> Promos</label>
 		<label>
 			Layout
 			<select bind:value={layout} onchange={resetPage}>
@@ -343,6 +351,28 @@
 				<option value="rarity">Rarity (grouped)</option>
 			</select>
 		</label>
+		<!-- Subset + Promos are rarely populated on modern sets (SwSh-era
+		     Trainer/Galarian Galleries; legacy attached promos) — tuck them
+		     into an overflow menu so they don't take a row of real estate. -->
+		<details class="overflow">
+			<summary aria-label="More filters" title="More filters">⋯</summary>
+			<div class="overflow-menu">
+				<label
+					><input
+						type="checkbox"
+						bind:checked={includeSubset}
+						onchange={resetPage}
+					/> Subset</label
+				>
+				<label
+					><input
+						type="checkbox"
+						bind:checked={includePromos}
+						onchange={resetPage}
+					/> Promos</label
+				>
+			</div>
+		</details>
 		<span class="spacer"></span>
 		<button disabled={binder.page <= 1} onclick={() => (pageNum = binder!.page - 1)}>← Prev</button>
 		<span class="pageno">Page {binder.page} of {binder.total_pages}</span>
@@ -436,10 +466,6 @@
 		align-items: baseline;
 		flex-wrap: wrap;
 	}
-	h1 {
-		color: #e94560;
-		margin: 0;
-	}
 	.statslink {
 		color: #e0e0e0;
 		font-size: 0.85rem;
@@ -481,6 +507,52 @@
 		flex-wrap: wrap;
 		margin: 1rem 0;
 		font-size: 0.85rem;
+	}
+	.overflow {
+		position: relative;
+	}
+	.overflow > summary {
+		list-style: none;
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		border-radius: 6px;
+		background: #16213e;
+		border: 1px solid #0f3460;
+		color: #b8c1d9;
+		font-size: 1.1rem;
+		line-height: 1;
+		user-select: none;
+	}
+	.overflow > summary::-webkit-details-marker {
+		display: none;
+	}
+	.overflow > summary:hover {
+		border-color: #e94560;
+		color: #e94560;
+	}
+	.overflow[open] > summary {
+		border-color: #e94560;
+		color: #e94560;
+	}
+	.overflow-menu {
+		position: absolute;
+		top: calc(100% + 4px);
+		left: 0;
+		z-index: 5;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		padding: 0.6rem 0.8rem;
+		background: #16213e;
+		border: 1px solid #0f3460;
+		border-radius: 6px;
+		min-width: 140px;
+		white-space: nowrap;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 	}
 	.controls label {
 		color: #ccc;

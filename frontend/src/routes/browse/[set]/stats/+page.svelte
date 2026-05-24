@@ -25,6 +25,47 @@
 	function money(n: number): string {
 		return `$${n.toFixed(2)}`;
 	}
+
+	// Rarity glyphs live under static/rarity/ — same convention the
+	// /collection table uses (rarityIconSrc + isBasicRarity scaling).
+	function rarityIconSrc(rarity: string | null): string | null {
+		if (!rarity) return null;
+		const slug = rarity.toLowerCase().replace(/[ ._]/g, '-');
+		return `/rarity/${slug}.svg`;
+	}
+	function isBasicRarity(rarity: string | null): boolean {
+		return (
+			rarity === 'Common' ||
+			rarity === 'Uncommon' ||
+			rarity === 'Rare' ||
+			rarity === 'Illustration Rare'
+		);
+	}
+
+	// Rarity-split table order. Listed rarities come first in this
+	// sequence; anything else falls in afterwards, alphabetised.
+	const RARITY_ORDER: Record<string, number> = {
+		Common: 0,
+		Uncommon: 1,
+		Rare: 2,
+		'Rare Holo': 3,
+		'Double Rare': 4,
+		'Illustration Rare': 5,
+		'Special Illustration Rare': 6,
+		'Ultra Rare': 7,
+		'Hyper Rare': 8,
+		'Mega Attack Rare': 9,
+		'Mega Hyper Rare': 10
+	};
+	const sortedRarities = $derived.by(() => {
+		if (!stats) return [];
+		const rank = (r: string): number => RARITY_ORDER[r] ?? 100;
+		return [...stats.rarities].sort((a, b) => {
+			const ra = rank(a.rarity);
+			const rb = rank(b.rarity);
+			return ra !== rb ? ra - rb : a.rarity.localeCompare(b.rarity);
+		});
+	});
 </script>
 
 <svelte:head><title>{stats ? stats.name : 'Set'} stats — PokeDumpster</title></svelte:head>
@@ -87,9 +128,24 @@
 					<tr><th>Rarity</th><th>Owned</th><th>Total</th><th class="pcol">Progress</th></tr>
 				</thead>
 				<tbody>
-					{#each stats.rarities as r (r.rarity)}
+					{#each sortedRarities as r (r.rarity)}
 						<tr>
-							<td>{r.rarity}</td>
+							<td>
+								<div class="rcell">
+									{#if rarityIconSrc(r.rarity)}
+										<img
+											class="rarityicon"
+											class:basic={isBasicRarity(r.rarity)}
+											src={rarityIconSrc(r.rarity)}
+											alt=""
+											onerror={(e) =>
+												((e.currentTarget as HTMLImageElement).style.display =
+													'none')}
+										/>
+									{/if}
+									<span>{r.rarity}</span>
+								</div>
+							</td>
 							<td>{r.owned_cards}</td>
 							<td>{r.total_cards}</td>
 							<td class="pcol">
@@ -218,6 +274,23 @@
 	td {
 		padding: 0.4rem 0.6rem;
 		border-bottom: 1px solid #0f3460;
+	}
+	/* Rarity glyph + name, scaled to match the /collection table so the
+	   icons feel consistent across pages. */
+	.rcell {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.rarityicon {
+		width: 22px;
+		height: 22px;
+		display: inline-block;
+		vertical-align: middle;
+	}
+	.rarityicon.basic {
+		width: 11px;
+		height: 11px;
 	}
 	.pcol {
 		width: 40%;

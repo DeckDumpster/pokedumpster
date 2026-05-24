@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api } from '$lib/api';
+	import { api, variantLabel } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
 	import type { BinderPage } from '$lib/types/BinderPage';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
@@ -157,34 +157,42 @@
 		}
 	}
 
-	/** Inline-checkbox kind for a slot — driven by which variants the slot
-	 *  actually has, not its declared rarity (pokemontcg.io sometimes
-	 *  labels a holo card as "Rare" rather than "Rare Holo", so the data
-	 *  is more truthful than the label):
-	 *    has normal + reverse_holo → Reg+RH
-	 *    has holo   + reverse_holo → Holo+RH
-	 *    anything else             → no inline checkboxes; modal-only. */
-	function inlineKind(slot: BinderSlot): 'reg_rh' | 'holo_rh' | null {
-		const variants = new Set(
-			slot.printings.filter((p) => !p.deprecated).map((p) => p.variant)
-		);
-		if (variants.has('normal') && variants.has('reverse_holo')) return 'reg_rh';
-		if (variants.has('holo') && variants.has('reverse_holo')) return 'holo_rh';
-		return null;
-	}
-
-	function findPrinting(slot: BinderSlot, variant: string) {
-		return slot.printings.find((p) => p.variant === variant && !p.deprecated);
-	}
-
-	/** Whether a given variant is already represented by an inline
-	 *  checkbox at the top of the slot footer — used to avoid duplicating
-	 *  it as a pip below. */
-	function checkboxVariant(slot: BinderSlot, variant: string): boolean {
-		const kind = inlineKind(slot);
-		if (kind === 'reg_rh') return variant === 'normal' || variant === 'reverse_holo';
-		if (kind === 'holo_rh') return variant === 'holo' || variant === 'reverse_holo';
-		return false;
+	/** Distinct color per variant treatment, so each colored pip below
+	 *  the slot is unambiguous at a glance. Ball patterns mirror the
+	 *  ball's real-world color; treatments without a natural color get a
+	 *  consistent fallback. */
+	function variantColor(variant: string): string {
+		switch (variant) {
+			case 'normal':
+				return '#bbbbbb';
+			case 'holo':
+				return '#f0c878';
+			case 'reverse_holo':
+				return '#a0c4f0';
+			case 'pokeball_rh':
+				return '#e94560';
+			case 'masterball_rh':
+				return '#9c5fb5';
+			case 'quickball_rh':
+				return '#4a8df0';
+			case 'duskball_rh':
+				return '#3a3a52';
+			case 'loveball_rh':
+				return '#f478a0';
+			case 'friendball_rh':
+				return '#5cb85c';
+			case 'energy_symbol_rh':
+				return '#ffd24a';
+			case 'team_rocket_rh':
+				return '#2f1b1b';
+			case 'first_ed_holo':
+			case 'first_ed_normal':
+				return '#d4af37';
+			case 'unlimited_holo':
+				return '#aa7733';
+			default:
+				return '#b88cc0';
+		}
 	}
 
 	// Remove the most recent copy of a printing — the binder modal's "−".
@@ -357,41 +365,37 @@
 				{#if slot.section !== prevSection && slot.section !== 'base'}
 					<div class="divider">{sectionLabel[slot.section]}</div>
 				{/if}
-				<button
-					class="slot"
-					class:missing={!ownedAny(slot)}
-					onclick={() => (selectedSlot = slot)}
-				>
-					{#if slot.image_large}
-						<img src={slot.image_large} alt={slot.name} loading="lazy" />
-					{:else}
-						<div class="noart">{slot.name}</div>
-					{/if}
-					<div class="foot">
-						{#if inlineKind(slot) === 'reg_rh'}
-							<div class="inline-checks">
-								{@render inlineCheck(slot, 'normal', 'Reg')}
-								{@render inlineCheck(slot, 'reverse_holo', 'RH')}
-							</div>
-						{:else if inlineKind(slot) === 'holo_rh'}
-							<div class="inline-checks">
-								{@render inlineCheck(slot, 'holo', 'Holo')}
-								{@render inlineCheck(slot, 'reverse_holo', 'RH')}
-							</div>
+				<div class="slotwrap" class:missing={!ownedAny(slot)}>
+					<button class="slot" onclick={() => (selectedSlot = slot)}>
+						{#if slot.image_large}
+							<img src={slot.image_large} alt={slot.name} loading="lazy" />
+						{:else}
+							<div class="noart">{slot.name}</div>
 						{/if}
-						<!-- Pips for every variant that isn't already an inline
-						     checkbox above — keeps pattern variants
-						     (Energy Symbol / Quick Ball / Master Ball / etc.)
-						     visible so the slot communicates total variant
-						     count even when a checkbox can't be drawn for
-						     them. -->
-						<div class="pips">
-							{#each slot.printings.filter((p) => !p.deprecated && !checkboxVariant(slot, p.variant)) as p (p.printing_id)}
-								<span class="pip" class:owned={p.owned_count > 0}></span>
-							{/each}
-						</div>
+					</button>
+					<!-- One colored pip per variant, sibling to the slot so the
+					     pip buttons aren't nested inside the slot button (invalid
+					     HTML). Empty when unowned, filled with the variant's
+					     color when owned, count badge when owned > 1. -->
+					<div class="vchips">
+						{#each slot.printings.filter((p) => !p.deprecated) as p (p.printing_id)}
+							<button
+								class="vchip"
+								class:owned={p.owned_count > 0}
+								style:--c={variantColor(p.variant)}
+								title="{variantLabel(p.variant)}{p.owned_count > 0
+									? ` ×${p.owned_count}`
+									: ''} — click to add"
+								aria-label="Add one {variantLabel(p.variant)}{p.owned_count > 0
+									? ` (own ${p.owned_count})`
+									: ''}"
+								onclick={() => addToSlot(slot, p.printing_id)}
+							>
+								{#if p.owned_count > 1}<span class="vcount">{p.owned_count}</span>{/if}
+							</button>
+						{/each}
 					</div>
-				</button>
+				</div>
 			{/each}
 		</div>
 
@@ -411,23 +415,6 @@
 		{/if}
 	{/if}
 {/if}
-
-{#snippet inlineCheck(slot: BinderSlot, variant: string, label: string)}
-	{@const p = findPrinting(slot, variant)}
-	{#if p}
-		<label class="ck" class:on={p.owned_count > 0}>
-			<input
-				type="checkbox"
-				checked={p.owned_count > 0}
-				onclick={(e) => {
-					e.stopPropagation();
-					addToSlot(slot, p.printing_id);
-				}}
-			/>
-			{label}
-		</label>
-	{/if}
-{/snippet}
 
 {#if selectedSlot && binder}
 	<VariantModal
@@ -523,43 +510,6 @@
 		margin-left: 0.5rem;
 		font-size: 0.78rem;
 	}
-	/* Labeled-pill style for inline quick-toggle checkboxes — matches
-	   the visual weight of the .pip dots below. The native checkbox is
-	   visually hidden but kept for keyboard + screen-reader access. */
-	.inline-checks {
-		display: flex;
-		gap: 3px;
-	}
-	.ck {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-width: 1.5rem;
-		padding: 0 4px;
-		height: 14px;
-		border: 1px solid #0f3460;
-		border-radius: 7px;
-		background: transparent;
-		color: #888;
-		font-size: 0.62rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		cursor: pointer;
-		line-height: 1;
-	}
-	.ck.on {
-		background: #e94560;
-		border-color: #e94560;
-		color: #fff;
-	}
-	.ck input {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		opacity: 0;
-		pointer-events: none;
-	}
 	.search {
 		flex: 1;
 		min-width: 160px;
@@ -618,24 +568,27 @@
 		padding-bottom: 0.2rem;
 		margin-top: 0.5rem;
 	}
+	.slotwrap {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
 	.slot {
 		display: block;
 		width: 100%;
 		padding: 0;
-		background: #16213e;
-		border: 2px solid #0f3460;
-		border-radius: 8px;
-		overflow: hidden;
+		background: transparent;
+		border: none;
 		color: #e0e0e0;
 		text-align: left;
 		cursor: pointer;
 	}
 	/* Cards the user owns no printing of read as greyed-out. */
-	.slot.missing img,
-	.slot.missing .noart {
+	.slotwrap.missing img,
+	.slotwrap.missing .noart {
 		filter: grayscale(0.9) brightness(0.62);
 	}
-	.slot.missing {
+	.slotwrap.missing {
 		opacity: 0.82;
 	}
 	.slot img {
@@ -655,26 +608,45 @@
 		padding: 0.5rem;
 		text-align: center;
 	}
-	.foot {
+	/* Color-coded variant chips centered below the card. Empty (border-
+	   only) when unowned, filled with the variant's color when owned;
+	   count badge appears when owned > 1. */
+	.vchips {
 		display: flex;
 		justify-content: center;
 		align-items: center;
-		padding: 0.3rem 0.5rem;
+		gap: 4px;
+		flex-wrap: wrap;
 	}
-	.pips {
-		display: flex;
-		gap: 3px;
-	}
-	.pip {
-		width: 8px;
-		height: 8px;
+	.vchip {
+		width: 20px;
+		height: 20px;
 		border-radius: 50%;
-		border: 1px solid #0f3460;
+		border: 2px solid var(--c, #666);
 		background: transparent;
+		color: #fff;
+		padding: 0;
+		cursor: pointer;
+		font: inherit;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		transition: transform 0.08s ease-out;
 	}
-	.pip.owned {
-		background: #e94560;
-		border-color: #e94560;
+	.vchip.owned {
+		background: var(--c);
+	}
+	.vchip:hover {
+		transform: scale(1.15);
+	}
+	.vcount {
+		font-size: 0.62rem;
+		font-weight: 700;
+		line-height: 1;
+		/* Dark text on light fills (yellow/silver/light blue); white text
+		   on dark fills. Black with a thin white halo reads on both. */
+		color: #0a0a1a;
+		text-shadow: 0 0 2px rgba(255, 255, 255, 0.7);
 	}
 
 	/* Larger tap targets on touch-sized viewports (PLAN §6.9). */
@@ -698,11 +670,8 @@
 		.grid {
 			gap: 0.25rem;
 		}
-		.slot {
-			border-width: 1px;
-		}
-		.foot {
-			padding: 0.2rem 0.3rem;
+		.slotwrap {
+			gap: 4px;
 		}
 	}
 </style>

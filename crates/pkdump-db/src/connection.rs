@@ -15,12 +15,24 @@ use crate::migrations;
 
 /// Open the shared catalog database, creating it if absent, applying any
 /// pending migrations. Read-write — for `pkdump setup` and ingest only.
+///
+/// PRAGMAs tuned for the variant-expansion write workload, which opens
+/// ~20k per-card transactions: WAL keeps writes sequential, synchronous
+/// = NORMAL drops the per-commit fsync (still crash-safe in WAL mode),
+/// and a 64MB page cache keeps the printings + indices hot through the
+/// full expansion pass. Without these, throughput collapses ~3× once
+/// the table exceeds the default ~2MB cache (pokedumpster-rqr).
 pub fn open_shared(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let mut conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL; \
+         PRAGMA synchronous = NORMAL; \
+         PRAGMA cache_size = -65536; \
+         PRAGMA foreign_keys = ON;",
+    )?;
     conn.busy_timeout(Duration::from_secs(5))?;
     migrations::run_shared_migrations(&mut conn)?;
     Ok(conn)

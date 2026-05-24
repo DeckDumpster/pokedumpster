@@ -326,11 +326,27 @@
 		return parseJsonStrArr(a.subtypes).join(' ');
 	}
 
-	// Short tag in the Name cell. The two common foil treatments collapse
-	// to single-letter badges; rarer treatments keep room for their name.
+	// Short, all-caps tag in the Name cell. Pattern variants collapse to
+	// their family (BALL / ENERGY / ROCKET / STAMP) — the chip colour
+	// already carries the per-variant distinction on the binder page, so
+	// the table tag just needs to communicate the family.
 	function variantTag(code: string): string {
 		if (code === 'holo') return 'H';
 		if (code === 'reverse_holo') return 'R';
+		if (
+			code === 'pokeball_rh' ||
+			code === 'masterball_rh' ||
+			code === 'quickball_rh' ||
+			code === 'duskball_rh' ||
+			code === 'loveball_rh' ||
+			code === 'friendball_rh'
+		)
+			return 'BALL';
+		if (code === 'energy_symbol_rh') return 'ENERGY';
+		if (code === 'team_rocket_rh') return 'ROCKET';
+		if (code.startsWith('stamp_')) return 'STAMP';
+		if (code === 'first_ed_holo' || code === 'first_ed_normal') return '1ED';
+		if (code === 'unlimited_holo') return 'U';
 		return variantLabel(code);
 	}
 
@@ -1246,7 +1262,13 @@
 	/* --- Table view (DeckDumpster-style) ------------------------------ */
 
 	table.dd {
-		width: 100%;
+		/* Size to content rather than stretching to viewport width — the
+		   Name column was getting all the slack and reading way wider
+		   than any actual card name. max-content + max-width caps it so
+		   wide tables (e.g. when many cards have long Pokémon names)
+		   still wrap within the viewport. */
+		width: max-content;
+		max-width: 100%;
 		border-collapse: collapse;
 		font-size: 0.9rem;
 		margin-top: 0;

@@ -32,15 +32,37 @@ pub struct Variant {
 /// stamps discovered at ingest time). Called from `pkdump setup` before
 /// variant expansion, so every variant code the expander emits is known
 /// to the FK by the time we INSERT.
+///
+/// The V2 migration backfills non-seed codes with raw-code placeholder
+/// labels (so the FK rebuild can finish); this function then *always*
+/// refreshes those placeholders via `synthesize`, so dynamic stamp
+/// labels read e.g. "Prismatic Evolutions Stamp" instead of the raw
+/// code.
 pub fn reconcile(conn: &mut Connection) -> Result<usize> {
     let seed: Vec<Variant> = serde_json::from_str(VARIANTS_SEED)?;
+    let seed_codes: std::collections::HashSet<&str> =
+        seed.iter().map(|v| v.code.as_str()).collect();
     let tx = conn.transaction()?;
     for v in &seed {
         upsert(&tx, v)?;
     }
-    // Catch set-specific stamp codes that already exist in printings but
-    // aren't in the seed. Synthesize a human label from the suffix.
-    let unknown: Vec<String> = {
+    // Refresh every non-seed row with a synthesized label. This also
+    // picks up the V2 migration's raw-code placeholders.
+    let existing: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT code FROM variants")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut synthesized = 0;
+    for code in &existing {
+        if !seed_codes.contains(code.as_str()) {
+            upsert(&tx, &synthesize(code))?;
+            synthesized += 1;
+        }
+    }
+    // Defensive: any code in printings missing a variants row gets
+    // synthesized too. Post-migration this should always be empty.
+    let missing: Vec<String> = {
         let mut stmt = tx.prepare(
             "SELECT DISTINCT p.variant FROM printings p \
              WHERE p.variant NOT IN (SELECT code FROM variants)",
@@ -48,25 +70,26 @@ pub fn reconcile(conn: &mut Connection) -> Result<usize> {
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    for code in &unknown {
+    for code in &missing {
         upsert(&tx, &synthesize(code))?;
     }
     tx.commit()?;
-    Ok(seed.len() + unknown.len())
+    Ok(seed.len() + synthesized + missing.len())
 }
 
 /// Ensure a variant code has a row before something tries to FK to it.
 /// Used by ingest right before inserting a printing with a freshly-
-/// discovered stamp code.
+/// discovered stamp code. Single INSERT OR IGNORE — no read; existing
+/// rows are not touched (so synthesized labels stay stable across runs
+/// and `reconcile`'s placeholder-refresh is the single source of label
+/// truth).
 pub fn ensure_code(conn: &Connection, code: &str) -> Result<()> {
-    let exists: i64 = conn.query_row(
-        "SELECT count(*) FROM variants WHERE code = ?1",
-        [code],
-        |r| r.get(0),
+    let v = synthesize(code);
+    conn.execute(
+        "INSERT OR IGNORE INTO variants (code, label, short, rank, color) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![v.code, v.label, v.short, v.rank, v.color],
     )?;
-    if exists == 0 {
-        upsert(conn, &synthesize(code))?;
-    }
     Ok(())
 }
 
@@ -200,6 +223,34 @@ mod tests {
             )
             .unwrap();
         assert_eq!(label, "Black Bolt Stamp");
+    }
+
+    #[test]
+    fn reconcile_refreshes_migration_placeholder_labels() {
+        // The V2 migration backfills any printings.variant code not in the
+        // seed JSON with the raw code as its label, just so the FK
+        // rebuild can succeed. reconcile() must overwrite those
+        // placeholders with synthesized labels so users see
+        // "Prismatic Evolutions Stamp" instead of "stamp_prismatic_evolutions".
+        let (_d, mut conn) = fresh();
+        // Simulate the migration backfill state: a row exists with the
+        // raw code as its label.
+        conn.execute(
+            "INSERT INTO variants (code, label, short, rank, color) \
+             VALUES ('stamp_prismatic_evolutions', 'stamp_prismatic_evolutions', \
+                     'STAMP', 4, '#b88cc0')",
+            [],
+        )
+        .unwrap();
+        reconcile(&mut conn).unwrap();
+        let label: String = conn
+            .query_row(
+                "SELECT label FROM variants WHERE code = 'stamp_prismatic_evolutions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(label, "Prismatic Evolutions Stamp");
     }
 
     #[test]

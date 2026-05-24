@@ -214,6 +214,33 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
 
     let stamps_by_number = preload_stamp_products(conn)?;
 
+    // Pre-ensure every variant code the upcoming expansion might emit, so
+    // the per-card insert loop doesn't pay a SELECT+INSERT roundtrip per
+    // (card, variant) pair just to satisfy the FK on printings.variant.
+    // TCGCSV-derived variants are already covered by the seed JSON
+    // (sub_type_to_variant + variant_from_product_name only return seed
+    // codes); we just need to add stamp codes from preload + overlay
+    // add-lists.
+    {
+        use std::collections::HashSet;
+        let mut codes: HashSet<&str> = HashSet::new();
+        for products in stamps_by_number.values() {
+            for s in products {
+                codes.insert(&s.variant);
+            }
+        }
+        for ov in overrides {
+            for add in &ov.add {
+                codes.insert(add);
+            }
+        }
+        let tx = conn.transaction()?;
+        for code in &codes {
+            pkdump_db::variants::ensure_code(&tx, code)?;
+        }
+        tx.commit()?;
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     let mut printings = 0usize;
     for c in &cards {
@@ -281,10 +308,8 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
             rusqlite::params![now, c.card_id],
         )?;
         for (variant, (sub, pid)) in variant_map {
-            // FK target: every code must exist in `variants` before the
-            // INSERT. Set-specific stamps get auto-created with a
-            // synthesized label.
-            pkdump_db::variants::ensure_code(&tx, &variant)?;
+            // FK target was bulk-ensured at function entry above; no
+            // per-row check needed.
             let printing_id = format!("{}-{variant}", c.card_id);
             tx.execute(
                 "INSERT INTO printings (printing_id, card_id, variant, language, \

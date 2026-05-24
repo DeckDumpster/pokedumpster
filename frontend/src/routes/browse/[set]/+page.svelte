@@ -371,7 +371,7 @@
 		     derives from it (cols × 3 rows per page) so the backend's
 		     pagination stays consistent at 3 visible rows. -->
 		<div class="cpr">
-			<span class="cpr-label">Cards per row</span>
+			<span class="cpr-label">Columns</span>
 			<button
 				class="cpr-btn"
 				disabled={cols <= 1}

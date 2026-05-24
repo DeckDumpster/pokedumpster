@@ -32,7 +32,11 @@
 	};
 
 	let pageNum = $state(urlNum('page', 1));
-	let layout = $state(urlNum('layout', 9));
+	// Cards per row is a pure UI choice — decoupled from binder pocket
+	// sizes. The backend's `layout` (cards per page) derives from cols:
+	// always 3 rows per page so denser grids → bigger pages.
+	let cols = $state(Math.min(10, Math.max(1, urlNum('cols', 3))));
+	const layout = $derived(cols * 3);
 	let includeSecret = $state(urlBool('secret', true));
 	let includeSubset = $state(urlBool('subset', true));
 	let includePromos = $state(urlBool('promos', false));
@@ -86,18 +90,10 @@
 		{ key: 'need', label: 'Need' }
 	];
 
-	// "Cards per row" exposes the underlying layout (4/9/12 pocket size)
-	// as the user-facing axis the user actually cares about. Stepping
-	// cycles through {2, 3, 4} → layout {4, 9, 12}.
-	const CPR_TO_LAYOUT: Record<number, number> = { 2: 4, 3: 9, 4: 12 };
-	function layoutToCpr(l: number): number {
-		if (l === 4) return 2;
-		if (l === 12) return 4;
-		return 3;
-	}
-	function stepCpr(delta: number) {
-		const next = Math.min(4, Math.max(2, layoutToCpr(layout) + delta));
-		layout = CPR_TO_LAYOUT[next];
+	function stepCols(delta: number) {
+		const next = Math.min(10, Math.max(1, cols + delta));
+		if (next === cols) return;
+		cols = next;
 		pageNum = 1;
 	}
 
@@ -155,7 +151,7 @@
 			else url.searchParams.set(k, v);
 		};
 		set('page', String(pageNum), '1');
-		set('layout', String(layout), '9');
+		set('cols', String(cols), '3');
 		set('secret', includeSecret ? '1' : '0', '1');
 		set('subset', includeSubset ? '1' : '0', '1');
 		set('promos', includePromos ? '1' : '0', '0');
@@ -168,7 +164,7 @@
 	$effect(() => {
 		void page.params.set;
 		void pageNum;
-		void layout;
+		void cols;
 		void includeSecret;
 		void includeSubset;
 		void includePromos;
@@ -225,16 +221,6 @@
 			error = e instanceof Error ? e.message : String(e);
 		}
 	}
-
-	function columns(l: number): number {
-		if (l === 4) return 2;
-		if (l === 12) return 4;
-		return 3;
-	}
-
-	// Always show the full binder-page column count — a 9-pocket page fits
-	// three columns even on a phone (cards scale down, pkmn.gg-style).
-	const cols = $derived(columns(layout));
 
 	const sectionLabel: Record<string, string> = {
 		base: '',
@@ -366,22 +352,22 @@
 				</button>
 			{/each}
 		</div>
-		<!-- Cards per row stepper. Replaces the 'Layout' <select>; the
-		     underlying state is still `layout` (4/9/12) so the backend
-		     contract doesn't change. -->
+		<!-- Cards per row stepper. Pure UI choice (1..10) — page size
+		     derives from it (cols × 3 rows per page) so the backend's
+		     pagination stays consistent at 3 visible rows. -->
 		<div class="cpr">
 			<span class="cpr-label">Cards per row</span>
 			<button
 				class="cpr-btn"
-				disabled={layoutToCpr(layout) <= 2}
-				onclick={() => stepCpr(-1)}
+				disabled={cols <= 1}
+				onclick={() => stepCols(-1)}
 				aria-label="Fewer cards per row"
 			>−</button>
-			<span class="cpr-value">{layoutToCpr(layout)}</span>
+			<span class="cpr-value">{cols}</span>
 			<button
 				class="cpr-btn"
-				disabled={layoutToCpr(layout) >= 4}
-				onclick={() => stepCpr(1)}
+				disabled={cols >= 10}
+				onclick={() => stepCols(1)}
 				aria-label="More cards per row"
 			>+</button>
 		</div>

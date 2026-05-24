@@ -157,6 +157,19 @@
 		}
 	}
 
+	/** Tier-rank for variant chip ordering: base treatments before
+	 *  pattern overlays, so the eye scans the most-common variants
+	 *  first. Within a tier, the chips fall in alphabetical order
+	 *  (stable JS sort), which keeps each card's chip row predictable
+	 *  across renders. */
+	function variantRank(v: string): number {
+		if (v === 'normal' || v === 'first_ed_normal') return 0;
+		if (v === 'holo' || v === 'first_ed_holo' || v === 'unlimited_holo') return 1;
+		if (v === 'reverse_holo') return 2;
+		if (v.endsWith('_rh')) return 3;
+		return 4;
+	}
+
 	/** Distinct color per variant treatment, so each colored pip below
 	 *  the slot is unambiguous at a glance. Ball patterns mirror the
 	 *  ball's real-world color; treatments without a natural color get a
@@ -378,7 +391,10 @@
 					     HTML). Empty when unowned, filled with the variant's
 					     color when owned, count badge when owned > 1. -->
 					<div class="vchips">
-						{#each slot.printings.filter((p) => !p.deprecated) as p (p.printing_id)}
+						{#each slot.printings
+							.filter((p) => !p.deprecated)
+							.slice()
+							.sort((a, b) => variantRank(a.variant) - variantRank(b.variant)) as p (p.printing_id)}
 							<button
 								class="vchip"
 								class:owned={p.owned_count > 0}

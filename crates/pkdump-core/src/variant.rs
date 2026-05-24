@@ -74,25 +74,31 @@ pub fn sub_type_to_variant(sub_type: &str) -> Option<&'static str> {
 /// via its own sub_types); returns `Some(variant)` for separately-keyed
 /// pattern products (Master Ball, Energy Symbol, etc.).
 ///
-/// Match order is significant: more-specific tokens first so e.g.
+/// Only the trailing parenthetical is consulted — a card whose own name
+/// contains a pattern token ("Team Rocket's Spidops", "Pokémon Center
+/// Tin") would otherwise be misidentified as a pattern product. Match
+/// order is significant: more-specific tokens first so e.g.
 /// "Master Ball" doesn't fall through to a "Ball" rule.
 pub fn variant_from_product_name(name: &str) -> Option<&'static str> {
     let lower = name.to_lowercase();
-    if lower.contains("master ball") {
+    let open = lower.rfind('(')?;
+    let close = lower[open..].find(')').map(|i| open + i)?;
+    let inner = lower[open + 1..close].trim();
+    if inner.contains("master ball") {
         Some("masterball_rh")
-    } else if lower.contains("quick ball") {
+    } else if inner.contains("quick ball") {
         Some("quickball_rh")
-    } else if lower.contains("dusk ball") {
+    } else if inner.contains("dusk ball") {
         Some("duskball_rh")
-    } else if lower.contains("love ball") {
+    } else if inner.contains("love ball") {
         Some("loveball_rh")
-    } else if lower.contains("friend ball") {
+    } else if inner.contains("friend ball") {
         Some("friendball_rh")
-    } else if lower.contains("poke ball") || lower.contains("poké ball") {
+    } else if inner.contains("poke ball") || inner.contains("poké ball") {
         Some("pokeball_rh")
-    } else if lower.contains("energy symbol") {
+    } else if inner.contains("energy symbol") {
         Some("energy_symbol_rh")
-    } else if lower.contains("team rocket") {
+    } else if inner.contains("team rocket") {
         Some("team_rocket_rh")
     } else {
         None
@@ -299,6 +305,27 @@ mod tests {
     }
 
     #[test]
+    fn variant_from_product_name_only_consults_trailing_paren() {
+        // Cards whose own name contains a pattern token must not be
+        // misidentified as a pattern product when the trailing paren
+        // (or absence of one) doesn't actually carry the marker.
+        assert_eq!(variant_from_product_name("Team Rocket's Spidops"), None);
+        assert_eq!(
+            variant_from_product_name("Team Rocket's Mimikyu - 087/182"),
+            None
+        );
+        // The same card with an explicit pattern paren still resolves.
+        assert_eq!(
+            variant_from_product_name("Team Rocket's Spidops (Team Rocket)"),
+            Some("team_rocket_rh")
+        );
+        assert_eq!(
+            variant_from_product_name("Team Rocket's Spidops (Energy Symbol Pattern)"),
+            Some("energy_symbol_rh")
+        );
+    }
+
+    #[test]
     fn variant_from_product_name_picks_pattern_codes() {
         assert_eq!(variant_from_product_name("Bulbasaur - 001/165"), None);
         assert_eq!(
@@ -314,7 +341,7 @@ mod tests {
             Some("masterball_rh")
         );
         assert_eq!(
-            variant_from_product_name("Dreepy - 158/217 - Energy Symbol Pattern"),
+            variant_from_product_name("Dreepy - 158/217 (Energy Symbol Pattern)"),
             Some("energy_symbol_rh")
         );
         assert_eq!(
@@ -333,8 +360,12 @@ mod tests {
             variant_from_product_name("Klink (Friend Ball)"),
             Some("friendball_rh")
         );
+        // "Team Rocket's <X>" is a card *name*, not a Team Rocket pattern
+        // product — the actual pattern variant lives in the trailing
+        // paren and is recognised correctly.
+        assert_eq!(variant_from_product_name("Team Rocket's Tarountula"), None);
         assert_eq!(
-            variant_from_product_name("Team Rocket's Tarountula"),
+            variant_from_product_name("Team Rocket's Tarountula (Team Rocket)"),
             Some("team_rocket_rh")
         );
     }

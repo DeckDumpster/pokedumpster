@@ -83,12 +83,11 @@
 	let search = $state(initialQ.trim());
 	let searchDebounce: ReturnType<typeof setTimeout>;
 	let searchInput = $state<HTMLInputElement | undefined>();
-	let tab = $state(urlStr('tab', 'all'));
-
-	const tabs = [
-		{ key: 'all', label: 'All' },
-		{ key: 'need', label: 'Need' }
-	];
+	// Stop-gap filter until the unified search lands (pokedumpster-dzf).
+	// Default off — show the full set. When on, restricts the binder to
+	// cards the user owns no printing of. Inverted equivalent of the
+	// 'All cards' toggle on /collection.
+	let missingOnly = $state(urlBool('missing', false));
 
 	function stepCols(delta: number) {
 		const next = Math.min(10, Math.max(1, cols + delta));
@@ -130,7 +129,7 @@
 				promos: includePromos,
 				sort,
 				q: search,
-				filter: tab
+				filter: missingOnly ? 'need' : 'all'
 			});
 			breadcrumbs.set([
 				{ label: 'Browse', href: '/browse' },
@@ -157,7 +156,7 @@
 		set('promos', includePromos ? '1' : '0', '0');
 		set('sort', sort, 'number');
 		set('q', searchRaw.trim(), '');
-		set('tab', tab, 'all');
+		set('missing', missingOnly ? '1' : '0', '0');
 		window.history.replaceState({}, '', url);
 	}
 
@@ -170,7 +169,7 @@
 		void includePromos;
 		void sort;
 		void search;
-		void tab;
+		void missingOnly;
 		syncUrl();
 		load();
 	});
@@ -255,11 +254,6 @@
 		}, 250);
 	}
 
-	function setTab(key: string) {
-		tab = key;
-		pageNum = 1;
-	}
-
 	/** Whether the user owns at least one printing of this slot's card. */
 	function ownedAny(slot: BinderSlot): boolean {
 		return slot.printings.some((p) => p.owned_count > 0);
@@ -341,17 +335,18 @@
 	</div>
 
 	<div class="filterbar">
-		<div class="tabs">
-			{#each tabs as t (t.key)}
-				<button
-					class="tab"
-					class:active={tab === t.key}
-					onclick={() => setTab(t.key)}
-				>
-					{t.label}
-				</button>
-			{/each}
-		</div>
+		<!-- Stop-gap until the unified search lands (pokedumpster-dzf):
+		     a single 'Missing only' checkbox restricts the binder to
+		     cards the user owns no printing of. Default off → show the
+		     whole set. -->
+		<label class="missingonly">
+			<input
+				type="checkbox"
+				bind:checked={missingOnly}
+				onchange={() => (pageNum = 1)}
+			/>
+			Missing only
+		</label>
 		<!-- Cards per row stepper. Pure UI choice (1..10) — page size
 		     derives from it (cols × 3 rows per page) so the backend's
 		     pagination stays consistent at 3 visible rows. -->
@@ -653,19 +648,17 @@
 		flex-wrap: wrap;
 		margin: 1rem 0 0.25rem;
 	}
-	.tabs {
-		display: flex;
-		gap: 0.25rem;
-	}
-	.tab {
-		color: #888;
-		padding: 0.35rem 0.9rem;
+	.missingonly {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: #ccc;
 		font-size: 0.85rem;
+		cursor: pointer;
+		user-select: none;
 	}
-	.tab.active {
-		background: #e94560;
-		border-color: #e94560;
-		color: #fff;
+	.missingonly input {
+		cursor: pointer;
 	}
 	/* Search row — own line, full width. */
 	.searchrow {

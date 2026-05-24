@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { variantLabel } from '$lib/api';
+	import { variantLabel, variantRank } from '$lib/api';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
 
 	let {
@@ -19,9 +19,13 @@
 	// Hide deprecated printings the user doesn't own (e.g. a bogus
 	// reverse_holo for a base-set card that variant expansion has since
 	// dropped). Keep deprecated printings the user *does* own visible — and
-	// dimmed — so they can still see and remove those copies.
+	// dimmed — so they can still see and remove those copies. Sort by
+	// variantRank so the modal mirrors the browse slot chip order.
 	const visible = $derived(
-		slot.printings.filter((p) => !p.deprecated || p.owned_count > 0)
+		slot.printings
+			.filter((p) => !p.deprecated || p.owned_count > 0)
+			.slice()
+			.sort((a, b) => variantRank(a.variant) - variantRank(b.variant))
 	);
 </script>
 

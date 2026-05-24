@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api, variantLabel } from '$lib/api';
+	import { api, variantLabel, variantRank } from '$lib/api';
 	import type { CardDetail } from '$lib/types/CardDetail';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
@@ -351,7 +351,10 @@
 	<section>
 		<h2>Printings</h2>
 		<ul class="printings">
-			{#each detail.printings.filter((p) => !p.deprecated || p.owned_count > 0) as p (p.printing_id)}
+			{#each detail.printings
+				.filter((p) => !p.deprecated || p.owned_count > 0)
+				.slice()
+				.sort((a, b) => variantRank(a.variant) - variantRank(b.variant)) as p (p.printing_id)}
 				<li class:dim={p.deprecated}>
 					<a class="facet variant" href={facetHref(variantLabel(p.variant))}>
 						{variantLabel(p.variant)}
@@ -411,7 +414,9 @@
 									disabled={busy}
 									onchange={(e) => changeVariant(copy.id, e.currentTarget.value)}
 								>
-									{#each detail.printings as p (p.printing_id)}
+									{#each detail.printings
+										.slice()
+										.sort((a, b) => variantRank(a.variant) - variantRank(b.variant)) as p (p.printing_id)}
 										<option value={p.printing_id}>{variantLabel(p.variant)}</option>
 									{/each}
 								</select>

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, variantLabel } from '$lib/api';
+	import { api, variantLabel, variantRank } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
 	import type { BinderPage } from '$lib/types/BinderPage';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
@@ -155,19 +155,6 @@
 			printing.owned_count -= 1; // revert
 			error = e instanceof Error ? e.message : String(e);
 		}
-	}
-
-	/** Tier-rank for variant chip ordering: base treatments before
-	 *  pattern overlays, so the eye scans the most-common variants
-	 *  first. Within a tier, the chips fall in alphabetical order
-	 *  (stable JS sort), which keeps each card's chip row predictable
-	 *  across renders. */
-	function variantRank(v: string): number {
-		if (v === 'normal' || v === 'first_ed_normal') return 0;
-		if (v === 'holo' || v === 'first_ed_holo' || v === 'unlimited_holo') return 1;
-		if (v === 'reverse_holo') return 2;
-		if (v.endsWith('_rh')) return 3;
-		return 4;
 	}
 
 	/** Distinct color per variant treatment, so each colored pip below

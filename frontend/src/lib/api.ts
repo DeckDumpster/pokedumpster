@@ -188,3 +188,15 @@ export function variantLabel(code: string): string {
 		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
 		.join(' ');
 }
+
+/** Tier rank used to sort printings consistently across the UI — browse
+ *  slot chips, card-detail Printings list, modal stepper, copy-row
+ *  variant `<select>`. Base treatments first, pattern overlays after.
+ *  Alpha within tier (stable JS sort) keeps the order predictable. */
+export function variantRank(v: string): number {
+	if (v === 'normal' || v === 'first_ed_normal') return 0;
+	if (v === 'holo' || v === 'first_ed_holo' || v === 'unlimited_holo') return 1;
+	if (v === 'reverse_holo') return 2;
+	if (v.endsWith('_rh')) return 3;
+	return 4;
+}

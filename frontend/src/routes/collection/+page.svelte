@@ -2,7 +2,15 @@
 	import { onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
-	import { variantLabel, variantTag } from '$lib/variants.svelte';
+	import { variantLabel, variantTag, variants } from '$lib/variants.svelte';
+
+	// Foil shimmer treatment for holo / reverse-holo / pattern-RH /
+	// cosmos_holo variants — ranks 1..3 in the variants table. Stamps
+	// (rank 4) and normals (rank 0) are matte.
+	function isFoilVariant(code: string): boolean {
+		const rank = variants.map[code]?.rank ?? 0;
+		return rank >= 1 && rank <= 3;
+	}
 	import CardModal from '$lib/components/CardModal.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
@@ -463,40 +471,6 @@
 		return out;
 	});
 
-	// Grid view sorts per-copy (one tile per CollectionRow). Reuses the
-	// same sortKey + sortDir as the table so toggling the view never
-	// loses your sort. 'qty' isn't meaningful per-copy and is hidden
-	// from the grid's sort dropdown.
-	function sortRowValue(r: CollectionRow, key: string): string | number {
-		switch (key) {
-			case 'name':
-				return r.name.toLowerCase();
-			case 'type':
-				return (r.supertype ?? '').toLowerCase();
-			case 'etype':
-				return (parseJsonStrArr(r.types)[0] ?? '').toLowerCase();
-			case 'set':
-				return (r.set_ptcgo_code ?? r.set_code).toLowerCase();
-			case 'number':
-				return numberKey(r.number);
-			case 'rarity':
-				return rarityRank(r.rarity);
-			case 'market':
-				return r.market_price ?? -1;
-			default:
-				return 0;
-		}
-	}
-	const sortedRows = $derived.by(() => {
-		const out = [...filtered];
-		out.sort((a, b) => {
-			const va = sortRowValue(a, sortKey);
-			const vb = sortRowValue(b, sortKey);
-			const cmp = va < vb ? -1 : va > vb ? 1 : 0;
-			return sortDir === 'asc' ? cmp : -cmp;
-		});
-		return out;
-	});
 
 	function groupChecked(ids: number[]): boolean {
 		return ids.every((id) => selected.has(id));
@@ -786,19 +760,21 @@
 			{@render sortBtn('market', 'Price')}
 		</div>
 		<div class="cardgrid">
-			{#each sortedRows as row (row.id)}
+			{#each sorted as a (a.key)}
 				<button
 					class="cardtile"
-					class:picked={selectMode && selected.has(row.id)}
-					title="{row.name} · {variantLabel(row.variant)}"
-					onclick={() => openCard(row)}
+					class:picked={selectMode && groupChecked(a.ids)}
+					class:foil={isFoilVariant(a.variant)}
+					title="{a.name} · {variantLabel(a.variant)}{a.qty > 1 ? ` ×${a.qty}` : ''}"
+					onclick={() => openGroup(a)}
 				>
-					{#if row.image_small}
-						<img src={row.image_small} alt={row.name} loading="lazy" />
+					{#if a.image_small}
+						<img src={a.image_small} alt={a.name} loading="lazy" />
 					{:else}
-						<div class="tilenoart">{row.name}</div>
+						<div class="tilenoart">{a.name}</div>
 					{/if}
-					{#if selectMode && selected.has(row.id)}<span class="tick">✓</span>{/if}
+					{#if a.qty > 1}<span class="qtybadge">×{a.qty}</span>{/if}
+					{#if selectMode && groupChecked(a.ids)}<span class="tick">✓</span>{/if}
 				</button>
 			{/each}
 			{#each unownedCatalog as c (c.card_id)}
@@ -864,7 +840,9 @@
 						<td>
 							<div class="namecell">
 								{#if a.image_small}
-									<img class="cardthumb" src={a.image_small} alt="" loading="lazy" />
+									<span class="thumbwrap" class:foil={isFoilVariant(a.variant)}>
+										<img class="cardthumb" src={a.image_small} alt="" loading="lazy" />
+									</span>
 								{/if}
 								<span class="cardname">{a.name}</span>
 								{#if a.variant !== 'normal'}
@@ -1291,6 +1269,89 @@
 	}
 	.cardtile.missing {
 		opacity: 0.82;
+	}
+	/* Foil treatment for holo / reverse-holo / pattern-RH / cosmos
+	   variants. Two pseudo-elements stacked over the card image:
+	   ::before paints a rainbow tint via mix-blend-mode, ::after
+	   animates a diagonal sheen across the surface. Pointer-events
+	   none so clicks still hit the underlying button. The .cardtile
+	   already has rounded corners + overflow handled by its img;
+	   give the foil overlays the same border-radius and clip them
+	   to the tile. */
+	.cardtile.foil {
+		overflow: hidden;
+	}
+	.cardtile.foil::before,
+	.thumbwrap.foil::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		border-radius: inherit;
+		background: repeating-linear-gradient(
+			135deg,
+			rgba(255, 0, 0, 0.08),
+			rgba(255, 165, 0, 0.08) 5%,
+			rgba(255, 255, 0, 0.08) 10%,
+			rgba(0, 200, 0, 0.08) 15%,
+			rgba(0, 140, 255, 0.08) 20%,
+			rgba(130, 0, 255, 0.08) 25%,
+			rgba(255, 0, 200, 0.08) 30%,
+			rgba(255, 0, 0, 0.08) 33.33%
+		);
+		mix-blend-mode: color;
+		pointer-events: none;
+		z-index: 1;
+	}
+	.cardtile.foil::after,
+	.thumbwrap.foil::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		border-radius: inherit;
+		background:
+			linear-gradient(
+				135deg,
+				transparent 46%,
+				rgba(255, 255, 255, 0.18) 49%,
+				rgba(255, 255, 255, 0.18) 51%,
+				transparent 54%
+			)
+			100% 100% / 240% 240%;
+		pointer-events: none;
+		z-index: 2;
+		animation: foil-streak 3.2s ease-in-out infinite;
+	}
+	@keyframes foil-streak {
+		0% {
+			background-position: 100% 100%;
+		}
+		15%,
+		100% {
+			background-position: 0 0;
+		}
+	}
+	/* Wrapper around the small table-row thumbnail so foil pseudos
+	   have somewhere to attach (an <img> can't host pseudo-elements). */
+	.thumbwrap {
+		position: relative;
+		display: inline-block;
+		flex-shrink: 0;
+		border-radius: 3px;
+		overflow: hidden;
+	}
+	/* Quantity badge in the corner of an aggregated grid tile. */
+	.qtybadge {
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		background: rgba(15, 52, 96, 0.95);
+		color: #fff;
+		font-size: 0.72rem;
+		font-weight: 700;
+		padding: 0.1rem 0.4rem;
+		border-radius: 999px;
+		z-index: 3;
+		pointer-events: none;
 	}
 	.ownbadge {
 		position: absolute;

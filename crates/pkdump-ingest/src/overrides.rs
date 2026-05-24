@@ -13,6 +13,7 @@ use rusqlite::Connection;
 
 use pkdump_core::variant::{
     VariantOverride, parse_product_card_name, parse_stamp_tag, sub_type_to_variant,
+    variant_from_product_name,
 };
 
 use crate::error::Result;
@@ -55,15 +56,19 @@ struct CardRow {
     printed_total: Option<i64>,
 }
 
-/// A parsed cross-group stamp product, preloaded so the per-card pass is
-/// a HashMap lookup rather than a SQL roundtrip per card.
-struct StampProduct {
+/// A parsed cross-group product preloaded so the per-card pass is a
+/// HashMap lookup. Covers both stamped promos (set_keyword filled when
+/// the paren names a set) and non-stamp pattern overlays MCAP hosts
+/// for numbered-set cards (Cosmo Holo, etc. — set_keyword is None and
+/// the matcher relies on card_name_lower + set_total).
+struct CrossGroupProduct {
     product_id: i64,
     variant: String,
     /// Lowercase set keyword from the parenthetical tag, e.g. "black bolt".
     /// When present, the base card must belong to a set whose name
     /// contains this token. When absent (Prerelease, Staff, event-only
-    /// stamps), the matcher falls back to `card_name_lower` + `set_total`.
+    /// stamps; or any non-stamp overlay), the matcher falls back to
+    /// `card_name_lower` + `set_total`.
     set_keyword: Option<String>,
     /// Lowercase card name parsed from the product name — used when
     /// `set_keyword` is None.
@@ -81,11 +86,16 @@ fn parse_set_total(raw: &str) -> Option<i64> {
     total.trim().parse::<i64>().ok()
 }
 
-/// Preload every cross-group stamp product into a map keyed by
-/// normalized collector number, so per-card stamp matching is an
-/// in-memory lookup. Stamps that don't parse cleanly (a product without
-/// a recognised stamp marker) are skipped silently.
-fn preload_stamp_products(conn: &Connection) -> Result<HashMap<String, Vec<StampProduct>>> {
+/// Preload every cross-group MCAP product into a map keyed by normalized
+/// collector number, so per-card matching is an in-memory lookup. Tries
+/// the stamp parser first (Black Bolt Stamped, Prerelease, etc.); if
+/// that doesn't bite, falls back to `variant_from_product_name` to pick
+/// up non-stamp pattern overlays MCAP hosts for numbered-set reprints
+/// (e.g. "Erika's Tangela 007/217 (Cosmo Holo)"). Products that match
+/// neither parser are skipped silently.
+fn preload_cross_group_products(
+    conn: &Connection,
+) -> Result<HashMap<String, Vec<CrossGroupProduct>>> {
     let mut stmt = conn.prepare(
         "SELECT product_id, name, collector_number FROM tcgcsv_products \
           WHERE group_id = ?1",
@@ -98,11 +108,20 @@ fn preload_stamp_products(conn: &Connection) -> Result<HashMap<String, Vec<Stamp
         ))
     })?;
 
-    let mut by_number: HashMap<String, Vec<StampProduct>> = HashMap::new();
+    let mut by_number: HashMap<String, Vec<CrossGroupProduct>> = HashMap::new();
     for row in rows {
         let (product_id, name, raw_num) = row?;
         let Some(num) = raw_num else { continue };
-        let Some((variant, set_keyword)) = parse_stamp_tag(&name) else {
+        // Stamp parser first — it consumes the parenthetical when it
+        // matches; otherwise try the generic pattern parser. Stamps
+        // carry an optional set_keyword for set-disambiguation;
+        // non-stamp overlays don't (they rely on card-name + set-total
+        // matching at attach time).
+        let (variant, set_keyword) = if let Some((v, kw)) = parse_stamp_tag(&name) {
+            (v, kw)
+        } else if let Some(v) = variant_from_product_name(&name) {
+            (v.to_string(), None)
+        } else {
             continue;
         };
         let sub_type: Option<String> = conn
@@ -114,7 +133,7 @@ fn preload_stamp_products(conn: &Connection) -> Result<HashMap<String, Vec<Stamp
         by_number
             .entry(normalize_collector_number(&num))
             .or_default()
-            .push(StampProduct {
+            .push(CrossGroupProduct {
                 product_id,
                 variant,
                 set_keyword,
@@ -212,19 +231,19 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
         rows.collect::<rusqlite::Result<_>>()?
     };
 
-    let stamps_by_number = preload_stamp_products(conn)?;
+    let cross_group_by_number = preload_cross_group_products(conn)?;
 
     // Pre-ensure every variant code the upcoming expansion might emit, so
     // the per-card insert loop doesn't pay a SELECT+INSERT roundtrip per
     // (card, variant) pair just to satisfy the FK on printings.variant.
     // TCGCSV-derived variants are already covered by the seed JSON
     // (sub_type_to_variant + variant_from_product_name only return seed
-    // codes); we just need to add stamp codes from preload + overlay
-    // add-lists.
+    // codes); we just need to add cross-group MCAP codes from preload +
+    // overlay add-lists.
     {
         use std::collections::HashSet;
         let mut codes: HashSet<&str> = HashSet::new();
-        for products in stamps_by_number.values() {
+        for products in cross_group_by_number.values() {
             for s in products {
                 codes.insert(&s.variant);
             }
@@ -253,26 +272,28 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
     use std::io::Write;
     for (i, c) in cards.iter().enumerate() {
         let mut tcgcsv_variants = variants_from_tcgcsv(conn, c)?;
-        // Cross-group stamps: any MCAP-group stamp product whose
-        // collector number matches AND that resolves to this card via
-        // either a set-name keyword or a card-name + printed_total
-        // fallback. Numbers alone are too ambiguous (the same number
-        // appears in many sets).
-        if let Some(candidates) = stamps_by_number.get(&normalize_collector_number(&c.number)) {
-            for stamp in candidates {
-                let matches = match &stamp.set_keyword {
+        // Cross-group MCAP products: stamps and non-stamp overlays
+        // (e.g. "Cosmo Holo"). The matcher resolves a candidate to
+        // this card via either a set-name keyword (stamps) or a
+        // card-name + printed_total fallback (non-stamp overlays and
+        // stamps without a set keyword). Numbers alone are too
+        // ambiguous — the same number appears in many sets.
+        if let Some(candidates) = cross_group_by_number.get(&normalize_collector_number(&c.number))
+        {
+            for product in candidates {
+                let matches = match &product.set_keyword {
                     Some(kw) => c.set_name_lower.contains(kw),
                     None => {
-                        stamp.card_name_lower == c.name_lower
-                            && stamp.set_total.is_some()
-                            && stamp.set_total == c.printed_total
+                        product.card_name_lower == c.name_lower
+                            && product.set_total.is_some()
+                            && product.set_total == c.printed_total
                     }
                 };
                 if matches {
                     tcgcsv_variants.push((
-                        stamp.variant.clone(),
-                        stamp.sub_type.clone(),
-                        Some(stamp.product_id),
+                        product.variant.clone(),
+                        product.sub_type.clone(),
+                        Some(product.product_id),
                     ));
                 }
             }
@@ -731,6 +752,85 @@ mod tests {
             )
             .unwrap();
         assert_eq!(leaked, 0, "printed_total must disambiguate the base set");
+    }
+
+    #[test]
+    fn cross_group_cosmos_holo_attaches_to_numbered_set_card() {
+        // Erika's Tangela (Cosmo Holo), MCAP product 679253, is a
+        // non-stamp pattern reprint of me2pt5-7 (217-card set). The
+        // matcher should resolve it via card-name + set-total fallback
+        // (the parenthetical names a treatment, not a set, so there's
+        // no set_keyword) and attach a `cosmos_holo` printing.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
+             VALUES ('me2pt5', 'Ascended Heroes', 'Mega Evolution', 30001, 217)",
+            [],
+        )
+        .unwrap();
+        // A second set with a DIFFERENT total — same name+number must
+        // not pull the cosmos holo in via the card-name fallback.
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('gym1', 'Gym Heroes', 'Gym', 132)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('me2pt5-7', 'me2pt5', '7', 7, 'Erika''s Tangela', 'Common')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('gym1-79', 'gym1', '79', 79, 'Erika''s Tangela', 'Common')",
+            [],
+        )
+        .unwrap();
+        // The MCAP product — group 2374, "(Cosmo Holo)" trailing tag.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (679253, 2374, 'Erika''s Tangela - 007/217 (Cosmo Holo)', '007/217', NULL, '2026-05-24')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prices \
+               (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+             VALUES (679253, 'Holofoil', 'tcgplayer', 'market', 2.0, '2026-05-24')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        // The ASC Erika's Tangela gains a cosmos_holo printing tied to
+        // the MCAP product.
+        let row: (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT sub_type_name, tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'me2pt5-7-cosmos_holo'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (Some("Holofoil".into()), Some(679253)));
+        // The 1999 Erika's Tangela in gym1 does NOT receive a
+        // cosmos_holo printing — the set total disambiguates.
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM printings WHERE printing_id = 'gym1-79-cosmos_holo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            leaked, 0,
+            "cosmo holo must not bleed onto same-named card in another set"
+        );
     }
 
     #[test]

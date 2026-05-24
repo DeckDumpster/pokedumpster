@@ -100,6 +100,12 @@ pub fn variant_from_product_name(name: &str) -> Option<&'static str> {
         Some("energy_symbol_rh")
     } else if inner.contains("team rocket") {
         Some("team_rocket_rh")
+    } else if inner.contains("cosmo holo") || inner.contains("cosmos holo") {
+        // MCAP (group 2374) hosts cosmos-holo reprints of numbered-set
+        // cards, e.g. "Erika's Tangela - 007/217 (Cosmo Holo)" — the
+        // cross-group matcher in pkdump-ingest attaches them to the
+        // base card as a fourth variant.
+        Some("cosmos_holo")
     } else {
         None
     }
@@ -367,6 +373,21 @@ mod tests {
         assert_eq!(
             variant_from_product_name("Team Rocket's Tarountula (Team Rocket)"),
             Some("team_rocket_rh")
+        );
+        // MCAP-style cosmos-holo reprints — both "Cosmo Holo" (the
+        // current ASC era) and the older "Cosmos Holo" / "Cosmos
+        // Holofoil" spellings.
+        assert_eq!(
+            variant_from_product_name("Erika's Tangela - 007/217 (Cosmo Holo)"),
+            Some("cosmos_holo")
+        );
+        assert_eq!(
+            variant_from_product_name("Rowlet - 9/149 (Cosmos Holo)"),
+            Some("cosmos_holo")
+        );
+        assert_eq!(
+            variant_from_product_name("Cynthia's Feelings - 131/146 (Cosmos Holofoil)"),
+            Some("cosmos_holo")
         );
     }
 

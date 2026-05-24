@@ -143,11 +143,10 @@
 	}
 
 	/** Link a metadata cell (artist, set, rarity, type, variant, …) to a
-	 *  pre-filled /collection?q= search. `all=1` flips the "All cards"
-	 *  toggle on so unowned matches still surface — without it, clicking
-	 *  the artist of a card the user doesn't own lands on an empty list. */
+	 *  pre-filled /collection?q= search. Stays scoped to the user's
+	 *  collection — toggle "All cards" manually to widen to the catalog. */
 	function facetHref(value: string): string {
-		return `/collection?q=${encodeURIComponent(value)}&all=1`;
+		return `/collection?q=${encodeURIComponent(value)}`;
 	}
 
 	type AttackData = {

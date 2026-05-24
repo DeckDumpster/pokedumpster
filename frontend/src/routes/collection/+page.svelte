@@ -45,7 +45,6 @@
 	// change triggers the resync.
 	$effect(() => {
 		const q = page.url.searchParams.get('q') ?? '';
-		const wantAll = page.url.searchParams.get('all') === '1';
 		untrack(() => {
 			if (q !== searchRaw) {
 				clearTimeout(debounce);
@@ -54,7 +53,6 @@
 				// Close any open modal so the filtered list is visible.
 				selectedCard = null;
 			}
-			if (wantAll && !allCards) allCards = true;
 		});
 	});
 
@@ -63,10 +61,7 @@
 	// owned ones, with unowned tiles dimmed via .missing — the same visual
 	// treatment /browse/[set] uses for unowned binder slots. The toggle is
 	// grid-only; flipping it on forces grid view since the table columns
-	// (Qty, Paid, etc.) are owned-collection-shaped. Initial value comes
-	// from ?all=1 so clickable facets on the card-detail page (artist
-	// etc.) always surface something even when the user owns nothing
-	// matching.
+	// (Qty, Paid, etc.) are owned-collection-shaped.
 	const initialAllCards =
 		typeof window !== 'undefined' && page.url.searchParams.get('all') === '1';
 	let allCards = $state(initialAllCards);

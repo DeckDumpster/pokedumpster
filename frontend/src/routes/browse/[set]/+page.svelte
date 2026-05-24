@@ -157,16 +157,19 @@
 		}
 	}
 
-	/** Inline-checkbox kind for a slot's rarity:
-	 *    Common/Uncommon/Rare → Reg+RH
-	 *    Rare Holo          → Holo+RH
-	 *    Anything higher    → no inline checkboxes; modal-only.
-	 *  See intents browse_slot_inline_checkbox_reg_rh / _holo_rh. */
-	function inlineKind(rarity: string | null): 'reg_rh' | 'holo_rh' | null {
-		if (!rarity) return null;
-		const r = rarity.toLowerCase();
-		if (r === 'common' || r === 'uncommon' || r === 'rare') return 'reg_rh';
-		if (r === 'rare holo') return 'holo_rh';
+	/** Inline-checkbox kind for a slot — driven by which variants the slot
+	 *  actually has, not its declared rarity (pokemontcg.io sometimes
+	 *  labels a holo card as "Rare" rather than "Rare Holo", so the data
+	 *  is more truthful than the label):
+	 *    has normal + reverse_holo → Reg+RH
+	 *    has holo   + reverse_holo → Holo+RH
+	 *    anything else             → no inline checkboxes; modal-only. */
+	function inlineKind(slot: BinderSlot): 'reg_rh' | 'holo_rh' | null {
+		const variants = new Set(
+			slot.printings.filter((p) => !p.deprecated).map((p) => p.variant)
+		);
+		if (variants.has('normal') && variants.has('reverse_holo')) return 'reg_rh';
+		if (variants.has('holo') && variants.has('reverse_holo')) return 'holo_rh';
 		return null;
 	}
 
@@ -177,8 +180,8 @@
 	/** Whether a given variant is already represented by an inline
 	 *  checkbox at the top of the slot footer — used to avoid duplicating
 	 *  it as a pip below. */
-	function checkboxVariant(rarity: string | null, variant: string): boolean {
-		const kind = inlineKind(rarity);
+	function checkboxVariant(slot: BinderSlot, variant: string): boolean {
+		const kind = inlineKind(slot);
 		if (kind === 'reg_rh') return variant === 'normal' || variant === 'reverse_holo';
 		if (kind === 'holo_rh') return variant === 'holo' || variant === 'reverse_holo';
 		return false;
@@ -365,12 +368,12 @@
 						<div class="noart">{slot.name}</div>
 					{/if}
 					<div class="foot">
-						{#if inlineKind(slot.rarity) === 'reg_rh'}
+						{#if inlineKind(slot) === 'reg_rh'}
 							<div class="inline-checks">
 								{@render inlineCheck(slot, 'normal', 'Reg')}
 								{@render inlineCheck(slot, 'reverse_holo', 'RH')}
 							</div>
-						{:else if inlineKind(slot.rarity) === 'holo_rh'}
+						{:else if inlineKind(slot) === 'holo_rh'}
 							<div class="inline-checks">
 								{@render inlineCheck(slot, 'holo', 'Holo')}
 								{@render inlineCheck(slot, 'reverse_holo', 'RH')}
@@ -383,7 +386,7 @@
 						     count even when a checkbox can't be drawn for
 						     them. -->
 						<div class="pips">
-							{#each slot.printings.filter((p) => !p.deprecated && !checkboxVariant(slot.rarity, p.variant)) as p (p.printing_id)}
+							{#each slot.printings.filter((p) => !p.deprecated && !checkboxVariant(slot, p.variant)) as p (p.printing_id)}
 								<span class="pip" class:owned={p.owned_count > 0}></span>
 							{/each}
 						</div>

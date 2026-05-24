@@ -93,10 +93,12 @@
 							<td>{r.owned_cards}</td>
 							<td>{r.total_cards}</td>
 							<td class="pcol">
-								<div class="bar small">
-									<span style:width="{pct(r.owned_cards, r.total_cards)}%"></span>
+								<div class="pcell">
+									<div class="bar small">
+										<span style:width="{pct(r.owned_cards, r.total_cards)}%"></span>
+									</div>
+									<span class="rpct">{pct(r.owned_cards, r.total_cards)}%</span>
 								</div>
-								<span class="rpct">{pct(r.owned_cards, r.total_cards)}%</span>
 							</td>
 						</tr>
 					{/each}
@@ -220,7 +222,9 @@
 	.pcol {
 		width: 40%;
 	}
-	td.pcol {
+	/* Flex on a div INSIDE the td — applying it to td breaks table-cell
+	   layout and the Progress column floats out of the row alignment. */
+	.pcell {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;

@@ -92,7 +92,15 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let n_variants = pkdump_db::variants::reconcile(&mut conn)?;
     println!("  {n_variants} variants known");
 
-    // 5. Variant expansion. TCGCSV-derived first (each printing carries
+    // 5. Synthesize card rows for bridged TCGCSV groups whose upstream
+    //    pokemontcg.io entry doesn't exist yet (e.g. MEP). Idempotent
+    //    INSERT OR IGNORE — when upstream catches up, the real cards
+    //    win and stubs stand down on the next refresh.
+    println!("Synthesizing cards for bridged groups...");
+    let n_synth = tcgcsv::synthesize_cards_for_bridges(&mut conn)?;
+    println!("  {n_synth} cards synthesized");
+
+    // 6. Variant expansion. TCGCSV-derived first (each printing carries
     //    its sub_type_name + tcgplayer_product_id), overlay on top for
     //    cards TCGCSV can't model (stamps, etc.).
     println!("Expanding variants into printings...");

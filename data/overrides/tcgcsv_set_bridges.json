@@ -13,6 +13,7 @@
       "series": "Mega Evolution",
       "release_date": "2025/09/26"
     },
-    "comment": "Synthesize MEP. pokemontcg.io has not yet published a Mega Evolution Promo set (~8 months past TCGCSV's release on 2025-09-26 as of 2026-05-24). Building the set row from TCGCSV's group metadata lets the 83 known MEP printings show up in /browse without waiting on upstream. If pokemontcg.io eventually adds a competing set entry, drop the synthesize block and keep this as a plain bridge."
+    "synthesize_cards": true,
+    "comment": "Synthesize MEP. pokemontcg.io has not yet published a Mega Evolution Promo set (~8 months past TCGCSV's release on 2025-09-26 as of 2026-05-24). The set row is built from TCGCSV's group metadata, and synthesize_cards=true populates the cards table from the 83 known TCGCSV products so the binder isn't empty. INSERT OR IGNORE — when pokemontcg.io eventually adds the real set, its upserts win and synthesized stubs are superseded silently."
   }
 ]

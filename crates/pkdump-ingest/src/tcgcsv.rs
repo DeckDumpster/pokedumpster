@@ -195,6 +195,14 @@ struct SetBridge {
     /// upstream set entry doesn't exist yet.
     #[serde(default)]
     synthesize: Option<SetSynthesis>,
+    /// When true, `synthesize_cards_for_bridges` builds card rows from
+    /// the bridged group's TCGCSV products (one row per unique collector
+    /// number). Used for sets whose pokemontcg.io entry doesn't yet
+    /// exist so the binder isn't a populated tile pointing at zero
+    /// cards. INSERT OR IGNORE — never clobbers upstream rows that
+    /// arrive later.
+    #[serde(default)]
+    synthesize_cards: bool,
     /// Free-form note describing why the bridge exists. Not consumed
     /// by code; the bridge file is the documentation surface.
     #[serde(default)]
@@ -373,6 +381,71 @@ pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> R
     Ok(groups.len())
 }
 
+/// For each bridge entry with `synthesize_cards: true`, build `cards`
+/// rows from TCGCSV products in the bridged group (one row per unique
+/// collector number). Sourcing the canonical name + image: prefer
+/// products with no parenthetical tag and no `[Staff]` marker — that's
+/// the bare base product. Falls back to any product matching the
+/// number when no bare-name one exists.
+///
+/// `INSERT OR IGNORE` — never overwrites a row already in the catalog
+/// (so when pokemontcg.io eventually publishes the upstream set, the
+/// real card metadata takes precedence and synthesized stubs stand
+/// down on the next refresh). Returns the count of `cards` rows
+/// written by this call.
+pub fn synthesize_cards_for_bridges(conn: &mut Connection) -> Result<usize> {
+    let bridges = load_set_bridges()?;
+    let tx = conn.transaction()?;
+    let mut n = 0;
+    for b in &bridges {
+        if !b.synthesize_cards {
+            continue;
+        }
+        // Pull every product in the bridged group with a collector
+        // number. Order so bare-name products (no `[`, no `(`) come
+        // first — the first row per number becomes the canonical source.
+        let mut stmt = tx.prepare(
+            "SELECT product_id, name, collector_number, image_url \
+               FROM tcgcsv_products \
+              WHERE group_id = ?1 AND collector_number IS NOT NULL \
+              ORDER BY \
+                (CASE WHEN name LIKE '%[%' OR name LIKE '%(%' THEN 1 ELSE 0 END), \
+                product_id",
+        )?;
+        let rows: Vec<(i64, String, String, Option<String>)> = stmt
+            .query_map([b.tcgcsv_group_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+
+        // First row per number wins (canonical = bare-name where one exists).
+        let mut seen: HashSet<String> = HashSet::new();
+        for (_product_id, name, number, image_url) in &rows {
+            let normalized = normalize_collector_number(number);
+            if !seen.insert(normalized.clone()) {
+                continue;
+            }
+            let card_id = format!("{}-{}", b.set_code, normalized);
+            let card_name = pkdump_core::variant::parse_product_card_name(name);
+            let sortable = pkdump_core::number_sortable(&normalized);
+            tx.execute(
+                "INSERT OR IGNORE INTO cards \
+                   (card_id, set_code, number, number_sortable, name, image_small, image_large) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                rusqlite::params![
+                    card_id, b.set_code, normalized, sortable, card_name, image_url,
+                ],
+            )?;
+            // `changes()` reports rows affected by the last statement —
+            // 1 when a fresh INSERT happened, 0 when IGNORE skipped.
+            n += tx.changes() as usize;
+        }
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
 /// Import the sealed products from a group's product list (single cards are
 /// skipped — they are catalogued from pokemon-tcg-data instead).
 pub fn import_sealed_products(
@@ -418,8 +491,10 @@ pub fn import_sealed_products(
 /// Persist single-card TCGplayer products to `tcgcsv_products`. Variant
 /// expansion (in `crate::overrides::expand_all_printings`) reads this table
 /// to resolve which printings actually exist for each card, so the
-/// `derived_variant` column is pre-computed here from
-/// `variant_from_product_name` rather than re-parsed at query time.
+/// `derived_variant` column is pre-computed here from both pattern and
+/// stamp parsers — stamp products that live in the card's own group
+/// (e.g. MEP's "Alakazam - 003 [Staff]") would otherwise fall through
+/// to the base-product branch and steal another variant's printing.
 pub fn import_products(conn: &mut Connection, products: &[TcgProduct], now: &str) -> Result<usize> {
     let tx = conn.transaction()?;
     let mut n = 0;
@@ -437,16 +512,20 @@ pub fn import_products(conn: &mut Connection, products: &[TcgProduct], now: &str
         if number.is_empty() {
             continue;
         }
-        let derived = pkdump_core::variant::variant_from_product_name(&product.name);
+        let derived: Option<String> =
+            pkdump_core::variant::variant_from_product_name(&product.name)
+                .map(|s| s.to_string())
+                .or_else(|| pkdump_core::variant::parse_stamp_tag(&product.name).map(|(v, _)| v));
         tx.execute(
             "INSERT INTO tcgcsv_products \
-               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+               (product_id, group_id, name, collector_number, derived_variant, image_url, fetched_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
              ON CONFLICT(product_id) DO UPDATE SET \
                group_id         = excluded.group_id, \
                name             = excluded.name, \
                collector_number = excluded.collector_number, \
                derived_variant  = excluded.derived_variant, \
+               image_url        = excluded.image_url, \
                fetched_at       = excluded.fetched_at",
             rusqlite::params![
                 product.product_id,
@@ -454,6 +533,7 @@ pub fn import_products(conn: &mut Connection, products: &[TcgProduct], now: &str
                 product.name,
                 number,
                 derived,
+                product.image_url,
                 now
             ],
         )?;
@@ -1045,6 +1125,212 @@ mod tests {
                 Some(24451),
             )
         );
+    }
+
+    #[test]
+    fn import_products_persists_image_url() {
+        let (_d, mut conn) = shared_db();
+        let products = vec![TcgProduct {
+            product_id: 654594,
+            group_id: 24451,
+            name: "Meganium - 001".into(),
+            image_url: Some("https://tcgplayer.example/654594.jpg".into()),
+            url: None,
+            extended_data: vec![ExtendedDatum {
+                name: "Number".into(),
+                value: "001".into(),
+            }],
+        }];
+        import_products(&mut conn, &products, "2026-05-24").unwrap();
+        let url: Option<String> = conn
+            .query_row(
+                "SELECT image_url FROM tcgcsv_products WHERE product_id = 654594",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(url.as_deref(), Some("https://tcgplayer.example/654594.jpg"));
+    }
+
+    #[test]
+    fn import_products_derives_stamp_variant_for_staff_products() {
+        // Stamp products that live in the card's own group (not MCAP)
+        // must pre-resolve to a stamp_* variant here, so variant
+        // expansion's own-group path picks them up via derived_variant
+        // instead of mis-classifying them as base products.
+        let (_d, mut conn) = shared_db();
+        let products = vec![
+            TcgProduct {
+                product_id: 656385,
+                group_id: 24451,
+                name: "Alakazam - 003 [Staff]".into(),
+                image_url: None,
+                url: None,
+                extended_data: vec![ExtendedDatum {
+                    name: "Number".into(),
+                    value: "003".into(),
+                }],
+            },
+            TcgProduct {
+                product_id: 663187,
+                group_id: 24451,
+                name: "Ceruledge (Prerelease)".into(),
+                image_url: None,
+                url: None,
+                extended_data: vec![ExtendedDatum {
+                    name: "Number".into(),
+                    value: "014".into(),
+                }],
+            },
+        ];
+        import_products(&mut conn, &products, "2026-05-24").unwrap();
+        let staff: Option<String> = conn
+            .query_row(
+                "SELECT derived_variant FROM tcgcsv_products WHERE product_id = 656385",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(staff.as_deref(), Some("stamp_staff"));
+        let pre: Option<String> = conn
+            .query_row(
+                "SELECT derived_variant FROM tcgcsv_products WHERE product_id = 663187",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pre.as_deref(), Some("stamp_prerelease"));
+    }
+
+    #[test]
+    fn synthesize_cards_for_bridges_populates_mep_from_tcgcsv_products() {
+        // MEP has no pokemontcg.io counterpart, so the bridge declares
+        // synthesize_cards: true and the synthesis step builds card rows
+        // from TCGCSV's product list. One row per unique collector
+        // number, sourced from the canonical bare-name product when
+        // available (the [Staff] / Pokemon Center Exclusive variants
+        // share a number with the base card).
+        let (_d, mut conn) = shared_db();
+        // The MEP set row is pre-seeded by import_groups (via the
+        // bridge); for this unit test we seed it directly.
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            [],
+        )
+        .unwrap();
+        let products = vec![
+            // Base card: source of the canonical name + image.
+            TcgProduct {
+                product_id: 654597,
+                group_id: 24451,
+                name: "Alakazam - 003".into(),
+                image_url: Some("https://tcgplayer.example/654597.jpg".into()),
+                url: None,
+                extended_data: vec![ExtendedDatum {
+                    name: "Number".into(),
+                    value: "003".into(),
+                }],
+            },
+            // [Staff] of the same card — must NOT create a second row.
+            TcgProduct {
+                product_id: 656385,
+                group_id: 24451,
+                name: "Alakazam - 003 [Staff]".into(),
+                image_url: None,
+                url: None,
+                extended_data: vec![ExtendedDatum {
+                    name: "Number".into(),
+                    value: "003".into(),
+                }],
+            },
+            // Different card, only a (Prerelease) product exists — the
+            // base name still parses out via parse_product_card_name.
+            TcgProduct {
+                product_id: 663187,
+                group_id: 24451,
+                name: "Ceruledge (Prerelease)".into(),
+                image_url: Some("https://tcgplayer.example/663187.jpg".into()),
+                url: None,
+                extended_data: vec![ExtendedDatum {
+                    name: "Number".into(),
+                    value: "014".into(),
+                }],
+            },
+        ];
+        import_products(&mut conn, &products, "2026-05-24").unwrap();
+        let synth = synthesize_cards_for_bridges(&mut conn).unwrap();
+        assert_eq!(synth, 2, "two unique collector numbers → two cards");
+
+        let (alakazam_name, alakazam_img): (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, image_large FROM cards WHERE card_id = 'mep-3'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(alakazam_name, "Alakazam");
+        assert_eq!(
+            alakazam_img.as_deref(),
+            Some("https://tcgplayer.example/654597.jpg"),
+            "base product is the canonical source for image"
+        );
+
+        let ceruledge_name: String = conn
+            .query_row("SELECT name FROM cards WHERE card_id = 'mep-14'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(ceruledge_name, "Ceruledge");
+    }
+
+    #[test]
+    fn synthesize_cards_is_idempotent_and_skips_existing() {
+        // Running synthesize twice must not duplicate; a pre-existing
+        // card row (real catalog data) must be preserved untouched.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            [],
+        )
+        .unwrap();
+        // Pre-existing card row from upstream (hypothetical) — the
+        // synth step must leave it alone.
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+             VALUES ('mep-3', 'mep', '3', 3, 'Real Upstream Name')",
+            [],
+        )
+        .unwrap();
+        let products = vec![TcgProduct {
+            product_id: 654597,
+            group_id: 24451,
+            name: "Alakazam - 003".into(),
+            image_url: Some("https://tcgplayer.example/654597.jpg".into()),
+            url: None,
+            extended_data: vec![ExtendedDatum {
+                name: "Number".into(),
+                value: "003".into(),
+            }],
+        }];
+        import_products(&mut conn, &products, "2026-05-24").unwrap();
+        synthesize_cards_for_bridges(&mut conn).unwrap();
+        synthesize_cards_for_bridges(&mut conn).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM cards WHERE card_id = 'mep-3'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        let name: String = conn
+            .query_row("SELECT name FROM cards WHERE card_id = 'mep-3'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Real Upstream Name", "existing row not clobbered");
     }
 
     #[test]

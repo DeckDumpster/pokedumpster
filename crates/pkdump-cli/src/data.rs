@@ -68,7 +68,15 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
         r.0, r.1, r.2, r.3
     );
 
-    // 3. Variant expansion. TCGCSV is authoritative for which printings a
+    // 3. Synthesize card rows for bridged TCGCSV groups whose upstream
+    //    pokemontcg.io entry doesn't exist yet (e.g. MEP). Idempotent
+    //    INSERT OR IGNORE — once pokemontcg.io publishes the real set,
+    //    upserts from import_tail win and synthesized stubs stand down.
+    println!("Synthesizing cards for bridged groups...");
+    let n_synth = tcgcsv::synthesize_cards_for_bridges(&mut conn)?;
+    println!("  {n_synth} cards synthesized");
+
+    // 4. Variant expansion. TCGCSV is authoritative for which printings a
     //    card has; the overlay still applies for cards TCGCSV can't model
     //    (cross-group stamped promos, etc.). Each printing carries its
     //    sub_type_name + tcgplayer_product_id so price queries stay a

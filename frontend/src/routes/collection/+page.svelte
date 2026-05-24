@@ -4,6 +4,7 @@
 	import { api } from '$lib/api';
 	import { variantLabel, variantTag } from '$lib/variants.svelte';
 	import CardModal from '$lib/components/CardModal.svelte';
+	import Pokeball from '$lib/components/Pokeball.svelte';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
@@ -633,38 +634,7 @@
 <header class="topbar">
 	<div class="row row1">
 		<a class="brand" href="/" aria-label="Home" title="Home">
-			<!-- Pokéball mark: red strokes on transparent, DD-style. -->
-			<svg
-				class="brandmark"
-				viewBox="0 0 24 24"
-				xmlns="http://www.w3.org/2000/svg"
-				aria-hidden="true"
-			>
-				<circle
-					cx="12"
-					cy="12"
-					r="10"
-					fill="none"
-					stroke="#e94560"
-					stroke-width="2"
-				/>
-				<line
-					x1="2.5"
-					y1="12"
-					x2="21.5"
-					y2="12"
-					stroke="#e94560"
-					stroke-width="2"
-				/>
-				<circle
-					cx="12"
-					cy="12"
-					r="3.2"
-					fill="none"
-					stroke="#e94560"
-					stroke-width="2"
-				/>
-			</svg>
+			<span class="brandmark"><Pokeball size={26} /></span>
 		</a>
 		<div class="searchwrap">
 			<input

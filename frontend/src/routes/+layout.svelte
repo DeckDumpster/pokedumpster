@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import favicon from '$lib/assets/favicon.svg';
 	import { breadcrumbs, type Crumb } from '$lib/breadcrumbs.svelte';
+	import Pokeball from '$lib/components/Pokeball.svelte';
 
 	let { children } = $props();
 
@@ -42,13 +43,7 @@
 {#if !flush && !isHome}
 	<header>
 		<a class="logo" href="/" aria-label="Home">
-			<svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg">
-				<circle cx="12" cy="12" r="10.5" fill="#fff" stroke="#0f3460" stroke-width="1.2" />
-				<path d="M1.5 12 A 10.5 10.5 0 0 1 22.5 12 Z" fill="#e94560" />
-				<rect x="1.5" y="11.25" width="21" height="1.5" fill="#0f3460" />
-				<circle cx="12" cy="12" r="3.2" fill="#fff" stroke="#0f3460" stroke-width="1.4" />
-				<circle cx="12" cy="12" r="1.3" fill="#fff" stroke="#0f3460" stroke-width="0.7" />
-			</svg>
+			<Pokeball />
 		</a>
 		<nav class="crumbs" aria-label="Breadcrumb">
 			{#each crumbs as crumb, i (i + crumb.label)}
@@ -87,9 +82,6 @@
 		display: inline-flex;
 		align-items: center;
 		text-decoration: none;
-	}
-	.logo svg {
-		display: block;
 	}
 	.crumbs {
 		display: flex;

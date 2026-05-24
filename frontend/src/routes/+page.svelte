@@ -1,4 +1,6 @@
 <script lang="ts">
+	import Pokeball from '$lib/components/Pokeball.svelte';
+
 	const sections = [
 		{ href: '/collection', label: 'Collection', desc: 'Browse every card you own.' },
 		{ href: '/browse', label: 'Browse', desc: 'Open sets as virtual binder pages.' },
@@ -15,20 +17,7 @@
 <svelte:head><title>PokeDumpster</title></svelte:head>
 
 <header class="hero">
-	<svg
-		class="logo"
-		viewBox="0 0 24 24"
-		width="56"
-		height="56"
-		xmlns="http://www.w3.org/2000/svg"
-		aria-hidden="true"
-	>
-		<circle cx="12" cy="12" r="10.5" fill="#fff" stroke="#0f3460" stroke-width="1.2" />
-		<path d="M1.5 12 A 10.5 10.5 0 0 1 22.5 12 Z" fill="#e94560" />
-		<rect x="1.5" y="11.25" width="21" height="1.5" fill="#0f3460" />
-		<circle cx="12" cy="12" r="3.2" fill="#fff" stroke="#0f3460" stroke-width="1.4" />
-		<circle cx="12" cy="12" r="1.3" fill="#fff" stroke="#0f3460" stroke-width="0.7" />
-	</svg>
+	<span class="logo"><Pokeball size={56} /></span>
 	<div>
 		<h1>PokeDumpster</h1>
 		<p class="tagline">A Pokémon TCG collection tracker.</p>

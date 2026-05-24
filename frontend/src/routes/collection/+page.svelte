@@ -674,13 +674,29 @@
 					title="Table"
 				>≡</button>
 			</div>
-			<button
-				class="burger"
-				onclick={() => (menuOpen = !menuOpen)}
-				aria-label="Menu"
-				aria-expanded={menuOpen}
-				title="Menu"
-			>⋯</button>
+			<div class="burgerWrap">
+				<button
+					class="burger"
+					onclick={() => (menuOpen = !menuOpen)}
+					aria-label="Menu"
+					aria-expanded={menuOpen}
+					title="Menu"
+				>⋯</button>
+				{#if menuOpen}
+					<div class="menu" role="menu">
+						<a class="menuItem" href="/api/export/csv" download onclick={closeMenu}>Export CSV</a>
+						<button
+							class="menuItem"
+							onclick={() => {
+								toggleSelectMode();
+								closeMenu();
+							}}
+						>
+							{selectMode ? 'Cancel select' : 'Select'}
+						</button>
+					</div>
+				{/if}
+			</div>
 		{/if}
 		<p class="countline muted">
 			{filtered.length}
@@ -696,18 +712,6 @@
 		role="presentation"
 		onclick={closeMenu}
 	></div>
-	<div class="menu" role="menu">
-		<a class="menuItem" href="/api/export/csv" download onclick={closeMenu}>Export CSV</a>
-		<button
-			class="menuItem"
-			onclick={() => {
-				toggleSelectMode();
-				closeMenu();
-			}}
-		>
-			{selectMode ? 'Cancel select' : 'Select'}
-		</button>
-	</div>
 {/if}
 
 {#if loading}
@@ -1148,10 +1152,17 @@
 		inset: 0;
 		z-index: 49;
 	}
+	/* Burger wrapper anchors the dropdown to the button itself — no
+	   matter how tall the topbar grows, the menu lands just below the
+	   ⋯ and never overlays it. */
+	.burgerWrap {
+		position: relative;
+		display: inline-flex;
+	}
 	.menu {
-		position: fixed;
-		top: 50px;
-		left: 0.7rem;
+		position: absolute;
+		top: calc(100% + 4px);
+		left: 0;
 		z-index: 60;
 		display: flex;
 		flex-direction: column;

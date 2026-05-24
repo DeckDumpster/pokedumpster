@@ -308,7 +308,8 @@
 		</div>
 	</header>
 
-	<!-- Search gets its own row so it can stretch. -->
+	<!-- Search + 'Missing only' share a row. On laptop the checkbox
+	     hugs the right edge; on narrow viewports it wraps below. -->
 	<div class="searchrow">
 		<div class="searchwrap">
 			<input
@@ -332,13 +333,9 @@
 				>×</button>
 			{/if}
 		</div>
-	</div>
-
-	<div class="filterbar">
 		<!-- Stop-gap until the unified search lands (pokedumpster-dzf):
-		     a single 'Missing only' checkbox restricts the binder to
-		     cards the user owns no printing of. Default off → show the
-		     whole set. -->
+		     restricts the binder to cards the user owns no printing of.
+		     Default off → show the whole set. -->
 		<label class="missingonly">
 			<input
 				type="checkbox"
@@ -347,6 +344,9 @@
 			/>
 			Missing only
 		</label>
+	</div>
+
+	<div class="filterbar">
 		<!-- Cards per row stepper. Pure UI choice (1..10) — page size
 		     derives from it (cols × 3 rows per page) so the backend's
 		     pagination stays consistent at 3 visible rows. -->
@@ -660,15 +660,22 @@
 	.missingonly input {
 		cursor: pointer;
 	}
-	/* Search row — own line, full width. */
+	/* Search row — search input + 'Missing only' checkbox on the same
+	   line. Search takes all the slack via flex:1; the checkbox hugs
+	   the right edge and wraps below on narrow viewports. */
 	.searchrow {
+		display: flex;
+		gap: 0.75rem;
+		align-items: center;
+		flex-wrap: wrap;
 		margin: 1rem 0 0.5rem;
 	}
-	/* Search input + clear-X. Wrapper carries the row flex slot; the
-	   input has extra right padding to leave room for the × button
-	   without overlapping typed text. */
+	/* Search input + clear-X. flex:1 lets it absorb all available
+	   width; min-width:0 stops it from refusing to shrink below its
+	   intrinsic placeholder width on tight viewports. */
 	.searchwrap {
-		width: 100%;
+		flex: 1;
+		min-width: 220px;
 		position: relative;
 		display: flex;
 		align-items: center;

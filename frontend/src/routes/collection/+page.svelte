@@ -643,10 +643,6 @@
 		</label>
 	</div>
 	<div class="row row2">
-		<p class="countline muted">
-			{filtered.length}
-			cards{#if totalValue > 0}, ${totalValue.toFixed(2)}{/if}
-		</p>
 		{#if rows.length > 0}
 			<div class="viewtoggle" role="group" aria-label="View">
 				<button
@@ -670,6 +666,10 @@
 				title="Menu"
 			>⋯</button>
 		{/if}
+		<p class="countline muted">
+			{filtered.length}
+			cards{#if totalValue > 0}, ${totalValue.toFixed(2)}{/if}
+		</p>
 	</div>
 </header>
 <div class="topbarSpacer" aria-hidden="true"></div>
@@ -1000,8 +1000,11 @@
 		align-items: center;
 		gap: 0.5rem;
 	}
+	/* Toggles + ⋯ hug the left; countline rides flush right via the
+	   `.countline { margin-left: auto }` rule below. Vertical alignment
+	   inherits from `.row { align-items: center }`. */
 	.row2 {
-		justify-content: flex-end;
+		justify-content: flex-start;
 	}
 	.brand {
 		display: inline-flex;
@@ -1040,7 +1043,7 @@
 		cursor: pointer;
 	}
 	.countline {
-		margin: 0;
+		margin: 0 0 0 auto;
 		font-size: 0.85rem;
 	}
 	.tableScroll {
@@ -1119,9 +1122,6 @@
 	.menuItem:hover {
 		background: #0f3460;
 		color: #e94560;
-	}
-	.countline {
-		margin: 0.2rem 0 0.6rem;
 	}
 
 	/* --- Grid view ------------------------------------------------------ */

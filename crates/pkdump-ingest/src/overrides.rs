@@ -281,6 +281,10 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
             rusqlite::params![now, c.card_id],
         )?;
         for (variant, (sub, pid)) in variant_map {
+            // FK target: every code must exist in `variants` before the
+            // INSERT. Set-specific stamps get auto-created with a
+            // synthesized label.
+            pkdump_db::variants::ensure_code(&tx, &variant)?;
             let printing_id = format!("{}-{variant}", c.card_id);
             tx.execute(
                 "INSERT INTO printings (printing_id, card_id, variant, language, \

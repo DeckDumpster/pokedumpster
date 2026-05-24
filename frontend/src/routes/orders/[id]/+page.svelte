@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, variantLabel } from '$lib/api';
+	import { api } from '$lib/api';
+	import { variantLabel } from '$lib/variants.svelte';
 	import type { OrderDetail } from '$lib/types/OrderDetail';
 
 	let detail = $state<OrderDetail | null>(null);

@@ -1,0 +1,52 @@
+// Variant display metadata, fetched once from /api/variants and read
+// synchronously thereafter. Replaces the ad-hoc label/rank/color/short
+// heuristics that used to live in api.ts and a couple of route files —
+// the data model owns this, the frontend just renders.
+
+import { api } from './api';
+import type { Variant } from './types/Variant';
+
+class VariantsStore {
+	map = $state<Record<string, Variant>>({});
+	loaded = $state(false);
+	private loading: Promise<void> | null = null;
+
+	async load(): Promise<void> {
+		if (this.loaded) return;
+		if (this.loading) return this.loading;
+		this.loading = (async () => {
+			const list = await api.variants();
+			const m: Record<string, Variant> = {};
+			for (const v of list) m[v.code] = v;
+			this.map = m;
+			this.loaded = true;
+		})();
+		return this.loading;
+	}
+}
+
+export const variants = new VariantsStore();
+
+// Fallbacks below are defensive for the pre-load window only; the
+// +layout.ts load gate awaits variants.load() before any page renders,
+// so in practice the map is always populated when these are called.
+
+/** Human-readable label, e.g. 'pokeball_rh' → 'Poké Ball Reverse Holo'. */
+export function variantLabel(code: string): string {
+	return variants.map[code]?.label ?? code;
+}
+
+/** Sort rank — base treatments first (0), pattern overlays later (3+). */
+export function variantRank(code: string): number {
+	return variants.map[code]?.rank ?? 100;
+}
+
+/** Chip pip color for browse-slot variant chips. */
+export function variantColor(code: string): string {
+	return variants.map[code]?.color ?? '#b88cc0';
+}
+
+/** Short tag for the collection table's Variant column ('BALL', 'H', …). */
+export function variantTag(code: string): string {
+	return variants.map[code]?.short ?? code;
+}

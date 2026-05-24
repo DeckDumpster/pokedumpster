@@ -84,7 +84,15 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
         );
     }
 
-    // 4. Variant expansion. TCGCSV-derived first (each printing carries
+    // 4. Reconcile the variants lookup table — re-apply data/variants.json
+    //    and synthesize rows for any set-specific stamp codes already in
+    //    `printings` from prior runs, so the FK on printings.variant is
+    //    satisfied before expansion writes more.
+    println!("Reconciling variants table...");
+    let n_variants = pkdump_db::variants::reconcile(&mut conn)?;
+    println!("  {n_variants} variants known");
+
+    // 5. Variant expansion. TCGCSV-derived first (each printing carries
     //    its sub_type_name + tcgplayer_product_id), overlay on top for
     //    cards TCGCSV can't model (stamps, etc.).
     println!("Expanding variants into printings...");

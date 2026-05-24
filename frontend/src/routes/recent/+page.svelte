@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, variantLabel } from '$lib/api';
+	import { api } from '$lib/api';
+	import { variantLabel } from '$lib/variants.svelte';
 	import type { Batch } from '$lib/types/Batch';
 	import type { BatchDetail } from '$lib/types/BatchDetail';
 

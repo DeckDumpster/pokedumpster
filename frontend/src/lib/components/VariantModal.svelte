@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { variantLabel, variantRank } from '$lib/api';
+	import { variantLabel, variantRank } from '$lib/variants.svelte';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
 
 	let {

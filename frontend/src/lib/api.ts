@@ -33,6 +33,7 @@ import type { BatchDetail } from './types/BatchDetail';
 import type { NewBatch } from './types/NewBatch';
 import type { ResolutionReport } from './types/ResolutionReport';
 import type { CommitResult } from './types/CommitResult';
+import type { Variant } from './types/Variant';
 
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -179,31 +180,7 @@ export const api = {
 	importCommit: (format: string, content: string, name?: string) =>
 		send<CommitResult>('POST', '/api/import/csv/commit', { format, content, name }),
 
+	// --- Variants display metadata (backs $lib/variants.svelte) ---
+	variants: () => getJson<Variant[]>('/api/variants'),
+
 };
-
-/** Turn a variant code (`reverse_holo`) into a label (`Reverse Holo`).
- *  The `_rh` suffix on pattern overlays (e.g. `pokeball_rh`) expands to
- *  " Reverse Holo" — the bare "Rh" is too cryptic in user-facing UI. */
-export function variantLabel(code: string): string {
-	const titleCase = (s: string): string =>
-		s
-			.split('_')
-			.map((w) => (w.length === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1)))
-			.join(' ');
-	if (code.endsWith('_rh')) {
-		return `${titleCase(code.slice(0, -3))} Reverse Holo`;
-	}
-	return titleCase(code);
-}
-
-/** Tier rank used to sort printings consistently across the UI — browse
- *  slot chips, card-detail Printings list, modal stepper, copy-row
- *  variant `<select>`. Base treatments first, pattern overlays after.
- *  Alpha within tier (stable JS sort) keeps the order predictable. */
-export function variantRank(v: string): number {
-	if (v === 'normal' || v === 'first_ed_normal') return 0;
-	if (v === 'holo' || v === 'first_ed_holo' || v === 'unlimited_holo') return 1;
-	if (v === 'reverse_holo') return 2;
-	if (v.endsWith('_rh')) return 3;
-	return 4;
-}

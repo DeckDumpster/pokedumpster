@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, variantLabel } from '$lib/api';
+	import { api } from '$lib/api';
+	import { variantLabel } from '$lib/variants.svelte';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 
 	let {

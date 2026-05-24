@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { api, variantLabel } from '$lib/api';
+	import { api } from '$lib/api';
+	import { variantLabel } from '$lib/variants.svelte';
 	import type { CardDetail } from '$lib/types/CardDetail';
 
 	let setCode = $state('');

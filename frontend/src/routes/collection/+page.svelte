@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { api, variantLabel } from '$lib/api';
+	import { api } from '$lib/api';
+	import { variantLabel, variantTag } from '$lib/variants.svelte';
 	import CardModal from '$lib/components/CardModal.svelte';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { Binder } from '$lib/types/Binder';
@@ -324,30 +325,6 @@
 	}
 	function typeSub(a: AggRow): string {
 		return parseJsonStrArr(a.subtypes).join(' ');
-	}
-
-	// Short, all-caps tag in the Name cell. Pattern variants collapse to
-	// their family (BALL / ENERGY / ROCKET / STAMP) — the chip colour
-	// already carries the per-variant distinction on the binder page, so
-	// the table tag just needs to communicate the family.
-	function variantTag(code: string): string {
-		if (code === 'holo') return 'H';
-		if (code === 'reverse_holo') return 'R';
-		if (
-			code === 'pokeball_rh' ||
-			code === 'masterball_rh' ||
-			code === 'quickball_rh' ||
-			code === 'duskball_rh' ||
-			code === 'loveball_rh' ||
-			code === 'friendball_rh'
-		)
-			return 'BALL';
-		if (code === 'energy_symbol_rh') return 'ENERGY';
-		if (code === 'team_rocket_rh') return 'ROCKET';
-		if (code.startsWith('stamp_')) return 'STAMP';
-		if (code === 'first_ed_holo' || code === 'first_ed_normal') return '1ED';
-		if (code === 'unlimited_holo') return 'U';
-		return variantLabel(code);
 	}
 
 	// Energy-type icons live under /static/energy/<lowercase>.png — pulled

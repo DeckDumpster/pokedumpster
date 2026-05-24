@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { api, variantLabel, variantRank } from '$lib/api';
+	import { api } from '$lib/api';
+	import { variantLabel, variantRank } from '$lib/variants.svelte';
 	import type { CardDetail } from '$lib/types/CardDetail';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, variantLabel } from '$lib/api';
+	import { api } from '$lib/api';
+	import { variantLabel } from '$lib/variants.svelte';
 	import type { BatchDetail } from '$lib/types/BatchDetail';
 
 	let detail = $state<BatchDetail | null>(null);

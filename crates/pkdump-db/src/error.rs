@@ -28,6 +28,12 @@ pub enum DbError {
     /// boundary — the caller sent a malformed CSV.
     #[error("import: {0}")]
     Import(String),
+
+    /// Failed to parse an embedded data file (e.g. `data/variants.json`).
+    /// Compile-time `include_str!` means this is a developer-error path —
+    /// a malformed JSON file ships in the binary.
+    #[error("seed: {0}")]
+    Seed(#[from] serde_json::Error),
 }
 
 impl From<pkdump_core::import::ImportError> for DbError {

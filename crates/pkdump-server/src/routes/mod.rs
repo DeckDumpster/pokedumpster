@@ -10,6 +10,7 @@ pub mod import;
 pub mod orders;
 pub mod sealed;
 pub mod sets;
+pub mod variants;
 pub mod wishlist;
 
 use axum::Router;
@@ -26,6 +27,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(binders::routes())
         .merge(decks::routes())
         .merge(sealed::routes())
+        .merge(variants::routes())
         .merge(orders::routes())
         .merge(wishlist::routes())
         .merge(batches::routes())

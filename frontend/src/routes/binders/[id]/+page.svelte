@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { api, variantLabel } from '$lib/api';
+	import { api } from '$lib/api';
+	import { variantLabel } from '$lib/variants.svelte';
 	import CollectionPicker from '$lib/components/CollectionPicker.svelte';
 	import type { BinderDetail } from '$lib/types/BinderDetail';
 

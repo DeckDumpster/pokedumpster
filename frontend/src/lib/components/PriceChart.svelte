@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Chart, registerables, type ChartConfiguration } from 'chart.js';
-	import { variantLabel } from '$lib/api';
+	import { variantLabel } from '$lib/variants.svelte';
 	import type { PriceSeries } from '$lib/types/PriceSeries';
 
 	Chart.register(...registerables);

@@ -1,0 +1,26 @@
+[
+  { "code": "normal",              "label": "Normal",                       "short": "Normal", "rank": 0, "color": "#bbbbbb" },
+  { "code": "first_ed_normal",     "label": "1st Edition Normal",           "short": "1ED",    "rank": 0, "color": "#d4af37" },
+
+  { "code": "holo",                "label": "Holofoil",                     "short": "H",      "rank": 1, "color": "#f0c878" },
+  { "code": "first_ed_holo",       "label": "1st Edition Holofoil",         "short": "1ED",    "rank": 1, "color": "#d4af37" },
+  { "code": "unlimited_holo",      "label": "Unlimited Holofoil",           "short": "U",      "rank": 1, "color": "#aa7733" },
+  { "code": "cosmos_holo",         "label": "Cosmos Holo",                  "short": "COSMOS", "rank": 1, "color": "#c0d0f0" },
+
+  { "code": "reverse_holo",        "label": "Reverse Holo",                 "short": "R",      "rank": 2, "color": "#a0c4f0" },
+
+  { "code": "pokeball_rh",         "label": "Poké Ball Reverse Holo",       "short": "BALL",   "rank": 3, "color": "#e94560" },
+  { "code": "masterball_rh",       "label": "Master Ball Reverse Holo",     "short": "BALL",   "rank": 3, "color": "#9c5fb5" },
+  { "code": "quickball_rh",        "label": "Quick Ball Reverse Holo",      "short": "BALL",   "rank": 3, "color": "#4a8df0" },
+  { "code": "duskball_rh",         "label": "Dusk Ball Reverse Holo",       "short": "BALL",   "rank": 3, "color": "#3a3a52" },
+  { "code": "loveball_rh",         "label": "Love Ball Reverse Holo",       "short": "BALL",   "rank": 3, "color": "#f478a0" },
+  { "code": "friendball_rh",       "label": "Friend Ball Reverse Holo",     "short": "BALL",   "rank": 3, "color": "#5cb85c" },
+  { "code": "energy_symbol_rh",    "label": "Energy Symbol Reverse Holo",   "short": "ENERGY", "rank": 3, "color": "#ffd24a" },
+  { "code": "team_rocket_rh",      "label": "Team Rocket Reverse Holo",     "short": "ROCKET", "rank": 3, "color": "#2f1b1b" },
+
+  { "code": "stamp_prerelease",        "label": "Prerelease Stamp",         "short": "STAMP",  "rank": 4, "color": "#b88cc0" },
+  { "code": "stamp_prerelease_staff",  "label": "Prerelease Staff Stamp",   "short": "STAMP",  "rank": 4, "color": "#b88cc0" },
+  { "code": "stamp_buildbattle",       "label": "Build & Battle Stamp",     "short": "STAMP",  "rank": 4, "color": "#b88cc0" },
+  { "code": "stamp_pokemoncenter",     "label": "Pokémon Center Stamp",     "short": "STAMP",  "rank": 4, "color": "#b88cc0" },
+  { "code": "stamp_staff",             "label": "Staff Stamp",              "short": "STAMP",  "rank": 4, "color": "#b88cc0" }
+]

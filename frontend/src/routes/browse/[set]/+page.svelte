@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, variantLabel, variantRank } from '$lib/api';
+	import { api } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
+	import { variantColor, variantLabel, variantRank } from '$lib/variants.svelte';
 	import type { BinderPage } from '$lib/types/BinderPage';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
 
@@ -165,44 +166,6 @@
 		} catch (e) {
 			printing.owned_count -= 1; // revert
 			error = e instanceof Error ? e.message : String(e);
-		}
-	}
-
-	/** Distinct color per variant treatment, so each colored pip below
-	 *  the slot is unambiguous at a glance. Ball patterns mirror the
-	 *  ball's real-world color; treatments without a natural color get a
-	 *  consistent fallback. */
-	function variantColor(variant: string): string {
-		switch (variant) {
-			case 'normal':
-				return '#bbbbbb';
-			case 'holo':
-				return '#f0c878';
-			case 'reverse_holo':
-				return '#a0c4f0';
-			case 'pokeball_rh':
-				return '#e94560';
-			case 'masterball_rh':
-				return '#9c5fb5';
-			case 'quickball_rh':
-				return '#4a8df0';
-			case 'duskball_rh':
-				return '#3a3a52';
-			case 'loveball_rh':
-				return '#f478a0';
-			case 'friendball_rh':
-				return '#5cb85c';
-			case 'energy_symbol_rh':
-				return '#ffd24a';
-			case 'team_rocket_rh':
-				return '#2f1b1b';
-			case 'first_ed_holo':
-			case 'first_ed_normal':
-				return '#d4af37';
-			case 'unlimited_holo':
-				return '#aa7733';
-			default:
-				return '#b88cc0';
 		}
 	}
 

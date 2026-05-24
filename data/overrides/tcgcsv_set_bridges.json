@@ -1,0 +1,18 @@
+[
+  {
+    "tcgcsv_group_id": 22872,
+    "set_code": "svp",
+    "comment": "Bridge SVP. pokemontcg.io ships an svp set (ptcgo_code 'PR-SV', name 'Scarlet & Violet Black Star Promos'), but neither its abbreviation nor its normalized name matches TCGCSV's 'SVP' / 'SV: Scarlet & Violet Promo Cards'. The auto-linker can't bridge them, so the link has to be supplied explicitly."
+  },
+  {
+    "tcgcsv_group_id": 24451,
+    "set_code": "mep",
+    "synthesize": {
+      "ptcgo_code": "MEP",
+      "name": "ME Black Star Promos",
+      "series": "Mega Evolution",
+      "release_date": "2025/09/26"
+    },
+    "comment": "Synthesize MEP. pokemontcg.io has not yet published a Mega Evolution Promo set (~8 months past TCGCSV's release on 2025-09-26 as of 2026-05-24). Building the set row from TCGCSV's group metadata lets the 83 known MEP printings show up in /browse without waiting on upstream. If pokemontcg.io eventually adds a competing set entry, drop the synthesize block and keep this as a plain bridge."
+  }
+]

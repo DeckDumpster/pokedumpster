@@ -181,6 +181,41 @@ pub fn classify_sealed(name: &str) -> &'static str {
     }
 }
 
+/// Hand-curated overlay mapping TCGCSV groups to sets the auto-linker
+/// can't reach (abbreviation + normalized-name don't match) or that
+/// pokemontcg.io has not yet published. See
+/// `data/overrides/tcgcsv_set_bridges.json` for the entries themselves
+/// and the per-bridge `comment` field for the rationale.
+#[derive(Debug, Clone, Deserialize)]
+struct SetBridge {
+    tcgcsv_group_id: i64,
+    set_code: String,
+    /// When present, the bridge first INSERT-OR-IGNOREs a `sets` row
+    /// built from these fields before linking — used for groups whose
+    /// upstream set entry doesn't exist yet.
+    #[serde(default)]
+    synthesize: Option<SetSynthesis>,
+    /// Free-form note describing why the bridge exists. Not consumed
+    /// by code; the bridge file is the documentation surface.
+    #[serde(default)]
+    #[allow(dead_code)]
+    comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SetSynthesis {
+    ptcgo_code: Option<String>,
+    name: String,
+    series: String,
+    release_date: Option<String>,
+}
+
+const SET_BRIDGES_JSON: &str = include_str!("../../../data/overrides/tcgcsv_set_bridges.json");
+
+fn load_set_bridges() -> Result<Vec<SetBridge>> {
+    Ok(serde_json::from_str(SET_BRIDGES_JSON)?)
+}
+
 /// Resolve which catalog set each TCGCSV group bridges to.
 ///
 /// A group is bridged to a set in two tiers, the first that yields a
@@ -261,8 +296,47 @@ fn resolve_group_set_links(
 /// [`resolve_group_set_links`]. Both `tcgplayer_groups.set_code` and the
 /// reciprocal `sets.tcgcsv_group_id` are written from that single decision
 /// so the two links never disagree. Returns the number of groups.
+///
+/// Before the auto-link runs, the bridge overlay
+/// (`data/overrides/tcgcsv_set_bridges.json`) is applied: it synthesizes
+/// any `sets` rows the overlay declares (idempotent INSERT-OR-IGNORE) so
+/// the auto-linker can see them, then injects (group_id → set_code)
+/// entries that take precedence over abbreviation/name matching.
 pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> Result<usize> {
-    let links = resolve_group_set_links(conn, groups)?;
+    let bridges = load_set_bridges()?;
+
+    // Synthesize sets the overlay declares but the catalog lacks. Done
+    // before the auto-link so `resolve_group_set_links` sees them and
+    // can't accidentally claim them for the wrong group via tier 1/2.
+    {
+        let tx = conn.transaction()?;
+        for b in &bridges {
+            if let Some(synth) = &b.synthesize {
+                tx.execute(
+                    "INSERT OR IGNORE INTO sets \
+                       (set_code, ptcgo_code, name, series, release_date) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        b.set_code,
+                        synth.ptcgo_code,
+                        synth.name,
+                        synth.series,
+                        synth.release_date,
+                    ],
+                )?;
+            }
+        }
+        tx.commit()?;
+    }
+
+    let mut links = resolve_group_set_links(conn, groups)?;
+    // Bridges win: clear any auto-link that would conflict with a
+    // bridged set_code, then apply the bridge mapping directly.
+    for b in &bridges {
+        links.retain(|_, v| v != &b.set_code);
+        links.insert(b.tcgcsv_group_id, b.set_code.clone());
+    }
+
     let tx = conn.transaction()?;
     // Re-derive every link from scratch so `data refresh` re-runs converge
     // on the same state regardless of prior contents.
@@ -895,5 +969,137 @@ mod tests {
             )
             .unwrap();
         assert_eq!(distinct, 2);
+    }
+
+    #[test]
+    fn import_groups_applies_explicit_bridge_for_svp() {
+        // The svp set ships from pokemontcg.io with ptcgo_code 'PR-SV'
+        // and name 'Scarlet & Violet Black Star Promos'. The auto-linker
+        // can't bridge it to TCGCSV's group 22872 'SV: Scarlet & Violet
+        // Promo Cards' (abbreviation 'SVP') — neither the abbreviations
+        // nor the normalized names match. The bridge overlay supplies
+        // the link explicitly.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
+             VALUES ('svp','PR-SV','Scarlet & Violet Black Star Promos','Scarlet & Violet','2023/01/01')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![TcgGroup {
+            group_id: 22872,
+            name: "SV: Scarlet & Violet Promo Cards".into(),
+            abbreviation: Some("SVP".into()),
+            published_on: Some("2023-03-31T00:00:00".into()),
+        }];
+        import_groups(&mut conn, &groups, "2026-05-24").unwrap();
+
+        let gid: Option<i64> = conn
+            .query_row(
+                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'svp'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gid, Some(22872), "bridge links svp to TCGCSV group 22872");
+
+        let set_code: Option<String> = conn
+            .query_row(
+                "SELECT set_code FROM tcgplayer_groups WHERE group_id = 22872",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(set_code.as_deref(), Some("svp"));
+    }
+
+    #[test]
+    fn import_groups_synthesizes_orphan_promo_set_for_mep() {
+        // pokemontcg.io has not published a Mega Evolution Promo set
+        // entry (as of 2026-05-24, ~8 months past TCGCSV's release).
+        // The bridge overlay synthesizes a sets row from TCGCSV group
+        // 24451's metadata so the set appears in /browse.
+        let (_d, mut conn) = shared_db();
+        let groups = vec![TcgGroup {
+            group_id: 24451,
+            name: "ME: Mega Evolution Promo".into(),
+            abbreviation: Some("MEP".into()),
+            published_on: Some("2025-09-26T00:00:00".into()),
+        }];
+        import_groups(&mut conn, &groups, "2026-05-24").unwrap();
+
+        let row: (String, Option<String>, String, Option<i64>) = conn
+            .query_row(
+                "SELECT set_code, ptcgo_code, name, tcgcsv_group_id \
+                   FROM sets WHERE set_code = 'mep'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "mep".into(),
+                Some("MEP".into()),
+                "ME Black Star Promos".into(),
+                Some(24451),
+            )
+        );
+    }
+
+    #[test]
+    fn import_groups_bridges_are_idempotent_across_reruns() {
+        // Running import_groups twice with the same groups list must
+        // converge — synthesized sets aren't duplicated, links stay put.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
+             VALUES ('svp','PR-SV','Scarlet & Violet Black Star Promos','Scarlet & Violet','2023/01/01')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![
+            TcgGroup {
+                group_id: 22872,
+                name: "SV: Scarlet & Violet Promo Cards".into(),
+                abbreviation: Some("SVP".into()),
+                published_on: Some("2023-03-31T00:00:00".into()),
+            },
+            TcgGroup {
+                group_id: 24451,
+                name: "ME: Mega Evolution Promo".into(),
+                abbreviation: Some("MEP".into()),
+                published_on: Some("2025-09-26T00:00:00".into()),
+            },
+        ];
+        import_groups(&mut conn, &groups, "2026-05-24").unwrap();
+        import_groups(&mut conn, &groups, "2026-05-25").unwrap();
+
+        // svp still linked to 22872.
+        let svp_gid: Option<i64> = conn
+            .query_row(
+                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'svp'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(svp_gid, Some(22872));
+        // mep was synthesized exactly once, still linked to 24451.
+        let mep_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sets WHERE set_code = 'mep'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mep_count, 1, "synthesized set must not duplicate on re-run");
+        let mep_gid: Option<i64> = conn
+            .query_row(
+                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'mep'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mep_gid, Some(24451));
     }
 }

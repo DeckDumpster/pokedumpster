@@ -5,8 +5,10 @@
 	let { children } = $props();
 
 	// Pages that paint their own DD-style chrome (brand + sticky search +
-	// burger) suppress the global nav header. Index keeps the full nav.
+	// burger) suppress the global nav header AND the default main
+	// padding so they can run edge-to-edge.
 	const pagesWithOwnChrome = ['/collection'];
+	const flush = $derived(pagesWithOwnChrome.includes(page.url.pathname));
 
 	const nav = [
 		{ href: '/', label: 'Home' },
@@ -37,7 +39,7 @@
 	</header>
 {/if}
 
-<main>
+<main class:flush>
 	{@render children()}
 </main>
 
@@ -77,6 +79,11 @@
 	}
 	main {
 		padding: 1.5rem;
+	}
+	/* Pages with their own sticky chrome (currently /collection) get an
+	   edge-to-edge main so the chrome can pin to the viewport edges. */
+	main.flush {
+		padding: 0;
 	}
 	@media (max-width: 540px) {
 		main {

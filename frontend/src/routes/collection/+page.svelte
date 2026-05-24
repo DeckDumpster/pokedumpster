@@ -1226,15 +1226,6 @@
 		cursor: default;
 	}
 
-	/* /collection runs edge-to-edge — the global layout adds 1.5rem of
-	   padding around <main> but the page has its own sticky chrome that
-	   already provides whatever padding the content needs. !important
-	   because the layout's `main { padding: 1.5rem }` is svelte-scoped
-	   (.s-XXX main) and wins the specificity tie. */
-	:global(body main) {
-		padding: 0 !important;
-	}
-
 	/* --- Table view (DeckDumpster-style) ------------------------------ */
 
 	table.dd {

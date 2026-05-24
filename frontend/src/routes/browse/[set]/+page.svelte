@@ -83,10 +83,23 @@
 
 	const tabs = [
 		{ key: 'all', label: 'All' },
-		{ key: 'have', label: 'Have' },
-		{ key: 'need', label: 'Need' },
-		{ key: 'dupes', label: 'Dupes' }
+		{ key: 'need', label: 'Need' }
 	];
+
+	// "Cards per row" exposes the underlying layout (4/9/12 pocket size)
+	// as the user-facing axis the user actually cares about. Stepping
+	// cycles through {2, 3, 4} → layout {4, 9, 12}.
+	const CPR_TO_LAYOUT: Record<number, number> = { 2: 4, 3: 9, 4: 12 };
+	function layoutToCpr(l: number): number {
+		if (l === 4) return 2;
+		if (l === 12) return 4;
+		return 3;
+	}
+	function stepCpr(delta: number) {
+		const next = Math.min(4, Math.max(2, layoutToCpr(layout) + delta));
+		layout = CPR_TO_LAYOUT[next];
+		pageNum = 1;
+	}
 
 	let selectedSlot = $state<BinderSlot | null>(null);
 
@@ -268,6 +281,30 @@
 </script>
 
 <svelte:head><title>{binder ? binder.set.name : 'Binder'} — PokeDumpster</title></svelte:head>
+
+<!--
+  Arrow-key paging: ← / → moves between binder pages. Skip when the
+  user is typing in an input/textarea or has the variant modal open
+  (modal owns its own Escape handler; arrows would feel wrong there).
+-->
+<svelte:window
+	onkeydown={(e) => {
+		if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+		if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+		if (selectedSlot) return;
+		const target = e.target as HTMLElement | null;
+		const tag = target?.tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+		if (!binder) return;
+		if (e.key === 'ArrowLeft' && binder.page > 1) {
+			e.preventDefault();
+			gotoPage(binder.page - 1);
+		} else if (e.key === 'ArrowRight' && binder.page < binder.total_pages) {
+			e.preventDefault();
+			gotoPage(binder.page + 1);
+		}
+	}}
+/>
 {#if loading && !binder}
 	<p class="muted">Loading…</p>
 {:else if error && !binder}
@@ -291,18 +328,8 @@
 		</div>
 	</header>
 
-	<div class="filterbar">
-		<div class="tabs">
-			{#each tabs as t (t.key)}
-				<button
-					class="tab"
-					class:active={tab === t.key}
-					onclick={() => setTab(t.key)}
-				>
-					{t.label}
-				</button>
-			{/each}
-		</div>
+	<!-- Search gets its own row so it can stretch. -->
+	<div class="searchrow">
 		<div class="searchwrap">
 			<input
 				class="search"
@@ -327,15 +354,40 @@
 		</div>
 	</div>
 
+	<div class="filterbar">
+		<div class="tabs">
+			{#each tabs as t (t.key)}
+				<button
+					class="tab"
+					class:active={tab === t.key}
+					onclick={() => setTab(t.key)}
+				>
+					{t.label}
+				</button>
+			{/each}
+		</div>
+		<!-- Cards per row stepper. Replaces the 'Layout' <select>; the
+		     underlying state is still `layout` (4/9/12) so the backend
+		     contract doesn't change. -->
+		<div class="cpr">
+			<span class="cpr-label">Cards per row</span>
+			<button
+				class="cpr-btn"
+				disabled={layoutToCpr(layout) <= 2}
+				onclick={() => stepCpr(-1)}
+				aria-label="Fewer cards per row"
+			>−</button>
+			<span class="cpr-value">{layoutToCpr(layout)}</span>
+			<button
+				class="cpr-btn"
+				disabled={layoutToCpr(layout) >= 4}
+				onclick={() => stepCpr(1)}
+				aria-label="More cards per row"
+			>+</button>
+		</div>
+	</div>
+
 	<div class="controls">
-		<label>
-			Layout
-			<select bind:value={layout} onchange={resetPage}>
-				<option value={4}>4-pocket</option>
-				<option value={9}>9-pocket</option>
-				<option value={12}>12-pocket</option>
-			</select>
-		</label>
 		<!-- Per-field sort buttons (DD-style). Click an inactive button
 		     to switch sorts (default direction per field); click the
 		     active button to toggle asc/desc. -->
@@ -388,14 +440,21 @@
 			</div>
 		</details>
 		<span class="spacer"></span>
-		<button disabled={binder.page <= 1} onclick={() => (pageNum = binder!.page - 1)}>← Prev</button>
-		<span class="pageno">Page {binder.page} of {binder.total_pages}</span>
-		<button
-			disabled={binder.page >= binder.total_pages}
-			onclick={() => (pageNum = binder!.page + 1)}
-		>
-			Next →
-		</button>
+		<!-- Top pager — Prev/Next buttons hidden on mobile (.toppager-arrows),
+		     the page counter stays visible. Bottom pager always shows both. -->
+		<div class="toppager">
+			<button
+				class="toppager-arrows"
+				disabled={binder.page <= 1}
+				onclick={() => (pageNum = binder!.page - 1)}
+			>← Prev</button>
+			<span class="pageno">Page {binder.page} of {binder.total_pages}</span>
+			<button
+				class="toppager-arrows"
+				disabled={binder.page >= binder.total_pages}
+				onclick={() => (pageNum = binder!.page + 1)}
+			>Next →</button>
+		</div>
 	</div>
 
 	{#if error}<p class="error">{error}</p>{/if}
@@ -622,16 +681,71 @@
 		border-color: #e94560;
 		color: #fff;
 	}
+	/* Search row — own line, full width. */
+	.searchrow {
+		margin: 1rem 0 0.5rem;
+	}
 	/* Search input + clear-X. Wrapper carries the row flex slot; the
 	   input has extra right padding to leave room for the × button
 	   without overlapping typed text. */
 	.searchwrap {
-		flex: 1;
-		min-width: 160px;
-		max-width: 320px;
+		width: 100%;
 		position: relative;
 		display: flex;
 		align-items: center;
+	}
+	/* Cards-per-row stepper. */
+	.cpr {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: #ccc;
+		margin-left: auto;
+	}
+	.cpr-label {
+		font-size: 0.85rem;
+		color: #888;
+	}
+	.cpr-btn {
+		width: 28px;
+		height: 28px;
+		padding: 0;
+		font-size: 1.1rem;
+		line-height: 1;
+		background: #16213e;
+		border: 1px solid #0f3460;
+		color: #e0e0e0;
+		border-radius: 6px;
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.cpr-btn:hover:not(:disabled) {
+		border-color: #e94560;
+		color: #e94560;
+	}
+	.cpr-btn:disabled {
+		opacity: 0.35;
+		cursor: default;
+	}
+	.cpr-value {
+		min-width: 1.2rem;
+		text-align: center;
+		font-variant-numeric: tabular-nums;
+		font-weight: 600;
+		color: #e0e0e0;
+	}
+	/* Top pager — Prev/Next arrows collapse on mobile, page counter stays. */
+	.toppager {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	@media (max-width: 540px) {
+		.toppager-arrows {
+			display: none;
+		}
 	}
 	.search {
 		flex: 1;
@@ -691,13 +805,6 @@
 	button:disabled {
 		opacity: 0.4;
 		cursor: default;
-	}
-	select {
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
-		border-radius: 6px;
-		padding: 0.2rem;
 	}
 	.grid {
 		display: grid;

@@ -80,10 +80,6 @@
 	let searchDebounce: ReturnType<typeof setTimeout>;
 	let searchInput = $state<HTMLInputElement | undefined>();
 	let tab = $state(urlStr('tab', 'all'));
-	// Pill toggle, mutually exclusive with the tab — when on, the binder
-	// query asks for the broader "incomplete" filter (any printing not
-	// owned), regardless of the underlying tab.
-	let incompleteOnly = $state(urlBool('incomplete', false));
 
 	const tabs = [
 		{ key: 'all', label: 'All' },
@@ -125,7 +121,7 @@
 				promos: includePromos,
 				sort,
 				q: search,
-				filter: incompleteOnly ? 'incomplete' : tab
+				filter: tab
 			});
 			breadcrumbs.set([
 				{ label: 'Browse', href: '/browse' },
@@ -153,7 +149,6 @@
 		set('sort', sort, 'number');
 		set('q', searchRaw.trim(), '');
 		set('tab', tab, 'all');
-		set('incomplete', incompleteOnly ? '1' : '0', '0');
 		window.history.replaceState({}, '', url);
 	}
 
@@ -167,7 +162,6 @@
 		void sort;
 		void search;
 		void tab;
-		void incompleteOnly;
 		syncUrl();
 		load();
 	});
@@ -302,23 +296,12 @@
 			{#each tabs as t (t.key)}
 				<button
 					class="tab"
-					class:active={!incompleteOnly && tab === t.key}
+					class:active={tab === t.key}
 					onclick={() => setTab(t.key)}
 				>
 					{t.label}
 				</button>
 			{/each}
-			<button
-				class="tab pill"
-				class:active={incompleteOnly}
-				title="Show only slots that are missing at least one variant"
-				onclick={() => {
-					incompleteOnly = !incompleteOnly;
-					pageNum = 1;
-				}}
-			>
-				Incomplete only
-			</button>
 		</div>
 		<div class="searchwrap">
 			<input
@@ -638,13 +621,6 @@
 		background: #e94560;
 		border-color: #e94560;
 		color: #fff;
-	}
-	/* Distinct from the regular tabs — pill is an additive filter, not a
-	   mutually-exclusive view choice. */
-	.tab.pill {
-		border-radius: 999px;
-		margin-left: 0.5rem;
-		font-size: 0.78rem;
 	}
 	/* Search input + clear-X. Wrapper carries the row flex slot; the
 	   input has extra right padding to leave room for the × button

@@ -83,9 +83,9 @@ pub struct BinderQuery {
     pub include_secret: bool,
     pub include_subset: bool,
     pub include_promos: bool,
-    /// `number` (asc) | `number_desc` | `price` (high→low) |
-    /// `name` (A→Z) | `rarity` (rare→common). Unknown values fall back
-    /// to `number`.
+    /// `number` (asc) | `number_desc` | `name` (A→Z) | `name_desc` |
+    /// `price` (high→low) | `price_asc` | `rarity` (rare→common) |
+    /// `rarity_asc`. Unknown values fall back to `number`.
     pub sort: String,
     /// Case-insensitive card-name substring. Empty means no search.
     pub search: String,
@@ -292,8 +292,15 @@ pub fn get_binder_page(
                 .to_ascii_lowercase()
                 .cmp(&b.name.to_ascii_lowercase())
         }),
+        "name_desc" => visible.sort_by(|a, b| {
+            b.name
+                .to_ascii_lowercase()
+                .cmp(&a.name.to_ascii_lowercase())
+        }),
         "price" => visible.sort_by(|a, b| slot_price(b).total_cmp(&slot_price(a))),
+        "price_asc" => visible.sort_by(|a, b| slot_price(a).total_cmp(&slot_price(b))),
         "rarity" => visible.sort_by(|a, b| rarity_rank(&b.rarity).cmp(&rarity_rank(&a.rarity))),
+        "rarity_asc" => visible.sort_by(|a, b| rarity_rank(&a.rarity).cmp(&rarity_rank(&b.rarity))),
         _ => {} // "number" — already collector-number ascending.
     }
 
@@ -477,6 +484,22 @@ mod tests {
             .unwrap();
         assert_eq!(desc.slots[0].number, "GG01");
         assert_eq!(desc.slots[3].number, "1");
+
+        // The reverse-direction siblings round-trip — name_desc, price_asc,
+        // rarity_asc just flip the comparator. Smoke-test that they parse
+        // and produce a page (full ordering is exercised by the desc
+        // variants above).
+        for s in [
+            "name",
+            "name_desc",
+            "price",
+            "price_asc",
+            "rarity",
+            "rarity_asc",
+        ] {
+            let page = get_binder_page(&conn, "sv3pt5", &q(s, "all", "")).unwrap();
+            assert!(page.is_some(), "sort '{s}' should produce a page");
+        }
 
         // "need" → cards with no owned printing (#3 and GG01).
         let need = get_binder_page(&conn, "sv3pt5", &q("number", "need", ""))

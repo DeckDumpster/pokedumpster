@@ -789,30 +789,31 @@
 		</p>
 	{:else if view === 'grid'}
 		<!-- Grid lacks the table's sortable column headers, so it gets a
-		     dedicated sort bar above the tiles. State is shared with the
+		     row of per-field buttons. Click an inactive button to switch
+		     to that field (with a sensible default direction); click the
+		     active one to toggle asc/desc. State is shared with the
 		     table view (sortKey/sortDir) so flipping the view never
 		     loses your sort. -->
 		<div class="gridsort">
-			<label>
-				Sort
-				<select bind:value={sortKey}>
-					<option value="name">Name</option>
-					<option value="type">Class</option>
-					<option value="etype">Type</option>
-					<option value="rarity">Rarity</option>
-					<option value="set">Set</option>
-					<option value="number">#</option>
-					<option value="market">Price</option>
-				</select>
-			</label>
-			<button
-				class="sortdir"
-				onclick={() => (sortDir = sortDir === 'asc' ? 'desc' : 'asc')}
-				aria-label={sortDir === 'asc' ? 'Ascending' : 'Descending'}
-				title={sortDir === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending'}
-			>
-				{sortDir === 'asc' ? '↑' : '↓'}
-			</button>
+			{#snippet sortBtn(key: string, label: string)}
+				<button
+					class="sortbtn"
+					class:active={sortKey === key}
+					onclick={() => sortBy(key)}
+				>
+					{label}
+					{#if sortKey === key}
+						<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>
+					{/if}
+				</button>
+			{/snippet}
+			{@render sortBtn('name', 'Name')}
+			{@render sortBtn('type', 'Class')}
+			{@render sortBtn('etype', 'Type')}
+			{@render sortBtn('rarity', 'Rarity')}
+			{@render sortBtn('set', 'Set')}
+			{@render sortBtn('number', '#')}
+			{@render sortBtn('market', 'Price')}
 		</div>
 		<div class="cardgrid">
 			{#each sortedRows as row (row.id)}
@@ -1256,33 +1257,36 @@
 
 	.gridsort {
 		display: flex;
-		gap: 0.5rem;
+		gap: 0.4rem;
 		align-items: center;
+		flex-wrap: wrap;
 		margin: 0 0 0.5rem;
 		font-size: 0.85rem;
-		color: #ccc;
 	}
-	.gridsort select {
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
-		border-radius: 6px;
-		padding: 0.2rem 0.4rem;
-		font: inherit;
-		margin-left: 0.3rem;
-	}
-	.sortdir {
+	.sortbtn {
 		background: #16213e;
 		border: 1px solid #0f3460;
-		color: #e0e0e0;
+		color: #888;
 		border-radius: 6px;
-		padding: 0.2rem 0.55rem;
+		padding: 0.3rem 0.7rem;
 		font: inherit;
 		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
 	}
-	.sortdir:hover {
+	.sortbtn:hover {
 		border-color: #e94560;
-		color: #e94560;
+		color: #e0e0e0;
+	}
+	.sortbtn.active {
+		background: #e94560;
+		border-color: #e94560;
+		color: #fff;
+	}
+	.sortbtn .caret {
+		font-size: 0.65rem;
+		opacity: 0.9;
 	}
 	.cardgrid {
 		display: grid;

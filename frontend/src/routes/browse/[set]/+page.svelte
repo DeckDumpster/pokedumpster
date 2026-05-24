@@ -40,7 +40,41 @@
 	// Sort, in-set search, and the ownership tab — all server-side, since
 	// the binder is paginated (a client-side sort would only touch one page).
 	const initialQ = urlStr('q', '');
-	let sort = $state(urlStr('sort', 'number'));
+	// Sort state lives as (key, dir) and serializes to a flat URL value
+	// for backend backcompat: bare key when direction matches the key's
+	// default; otherwise key + '_asc' or '_desc'. Mirrors DeckDumpster's
+	// per-field button row UX.
+	type SortKey = 'number' | 'name' | 'price' | 'rarity';
+	const SORT_KEYS = ['number', 'name', 'price', 'rarity'] as const;
+	const DEFAULT_DIR: Record<SortKey, 'asc' | 'desc'> = {
+		number: 'asc',
+		name: 'asc',
+		price: 'desc',
+		rarity: 'desc'
+	};
+	function parseSort(raw: string): { key: SortKey; dir: 'asc' | 'desc' } {
+		const suffix = raw.endsWith('_desc') ? '_desc' : raw.endsWith('_asc') ? '_asc' : '';
+		const key = (suffix ? raw.slice(0, -suffix.length) : raw) as SortKey;
+		if (!SORT_KEYS.includes(key)) return { key: 'number', dir: 'asc' };
+		const dir: 'asc' | 'desc' =
+			suffix === '_desc' ? 'desc' : suffix === '_asc' ? 'asc' : DEFAULT_DIR[key];
+		return { key, dir };
+	}
+	const initialSort = parseSort(urlStr('sort', 'number'));
+	let sortKey = $state<SortKey>(initialSort.key);
+	let sortDir = $state<'asc' | 'desc'>(initialSort.dir);
+	const sort = $derived.by(() =>
+		sortDir === DEFAULT_DIR[sortKey] ? sortKey : `${sortKey}_${sortDir}`
+	);
+	function toggleSort(key: SortKey) {
+		if (sortKey === key) {
+			sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+		} else {
+			sortKey = key;
+			sortDir = DEFAULT_DIR[key];
+		}
+		pageNum = 1;
+	}
 	let searchRaw = $state(initialQ);
 	let search = $state(initialQ.trim());
 	let searchDebounce: ReturnType<typeof setTimeout>;
@@ -311,7 +345,6 @@
 	</div>
 
 	<div class="controls">
-		<label><input type="checkbox" bind:checked={includeSecret} onchange={resetPage} /> Secret</label>
 		<label>
 			Layout
 			<select bind:value={layout} onchange={resetPage}>
@@ -320,22 +353,41 @@
 				<option value={12}>12-pocket</option>
 			</select>
 		</label>
-		<label>
-			Sort
-			<select bind:value={sort} onchange={resetPage}>
-				<option value="number">Number ↑</option>
-				<option value="number_desc">Number ↓</option>
-				<option value="price">Price ↓</option>
-				<option value="name">Name A→Z</option>
-				<option value="rarity">Rarity (grouped)</option>
-			</select>
-		</label>
-		<!-- Subset + Promos are rarely populated on modern sets (SwSh-era
-		     Trainer/Galarian Galleries; legacy attached promos) — tuck them
+		<!-- Per-field sort buttons (DD-style). Click an inactive button
+		     to switch sorts (default direction per field); click the
+		     active button to toggle asc/desc. -->
+		<div class="sortbtns">
+			{#snippet sortBtn(key: SortKey, label: string)}
+				<button
+					class="sortbtn"
+					class:active={sortKey === key}
+					onclick={() => toggleSort(key)}
+				>
+					{label}
+					{#if sortKey === key}
+						<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>
+					{/if}
+				</button>
+			{/snippet}
+			{@render sortBtn('number', '#')}
+			{@render sortBtn('name', 'Name')}
+			{@render sortBtn('rarity', 'Rarity')}
+			{@render sortBtn('price', 'Price')}
+		</div>
+		<!-- Section-include toggles. Secret usually has content on modern
+		     sets but it's not something you flip every visit; Subset and
+		     Promos are mostly empty on SV/ME-era sets — tuck all three
 		     into an overflow menu so they don't take a row of real estate. -->
 		<details class="overflow">
 			<summary aria-label="More filters" title="More filters">⋯</summary>
 			<div class="overflow-menu">
+				<label
+					><input
+						type="checkbox"
+						bind:checked={includeSecret}
+						onchange={resetPage}
+					/> Secret</label
+				>
 				<label
 					><input
 						type="checkbox"
@@ -486,6 +538,36 @@
 		flex-wrap: wrap;
 		margin: 1rem 0;
 		font-size: 0.85rem;
+	}
+	.sortbtns {
+		display: flex;
+		gap: 0.3rem;
+		flex-wrap: wrap;
+	}
+	.sortbtn {
+		background: #16213e;
+		border: 1px solid #0f3460;
+		color: #888;
+		border-radius: 6px;
+		padding: 0.3rem 0.7rem;
+		font: inherit;
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+	}
+	.sortbtn:hover {
+		border-color: #e94560;
+		color: #e0e0e0;
+	}
+	.sortbtn.active {
+		background: #e94560;
+		border-color: #e94560;
+		color: #fff;
+	}
+	.sortbtn .caret {
+		font-size: 0.65rem;
+		opacity: 0.9;
 	}
 	.overflow {
 		position: relative;

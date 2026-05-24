@@ -275,14 +275,16 @@ fn collection_row_from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionRow>
     })
 }
 
-/// List collection entries as display rows (joined to printing + card),
-/// newest first. Requires the catalog to be attached (a user connection).
-pub fn list_rows(conn: &Connection, limit: i64, offset: i64) -> Result<Vec<CollectionRow>> {
+/// List every collection entry as display rows (joined to printing +
+/// card), newest first. Requires the catalog to be attached (a user
+/// connection). Single-user app — no pagination; if the frontend ever
+/// needs lazy loading we can add it back as a wrapper. Until then,
+/// loading the whole collection up front lets the page do all
+/// filtering/sorting client-side.
+pub fn list_rows(conn: &Connection) -> Result<Vec<CollectionRow>> {
     let cols = ROW_COLUMNS_SQL;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {cols} {ROW_FROM} ORDER BY c.id DESC LIMIT ?1 OFFSET ?2"
-    ))?;
-    let rows = stmt.query_map([limit, offset], collection_row_from_row)?;
+    let mut stmt = conn.prepare(&format!("SELECT {cols} {ROW_FROM} ORDER BY c.id DESC"))?;
+    let rows = stmt.query_map([], collection_row_from_row)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 

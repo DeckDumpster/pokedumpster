@@ -1,6 +1,6 @@
 //! `/api/collection` — collection CRUD endpoints (PLAN.md §5.2).
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -61,12 +61,6 @@ struct PrintingBody {
     printing_id: String,
 }
 
-#[derive(Deserialize)]
-struct ListParams {
-    limit: Option<i64>,
-    offset: Option<i64>,
-}
-
 #[derive(Serialize, ts_rs::TS)]
 #[ts(export)]
 struct BulkAdded {
@@ -81,13 +75,10 @@ struct BulkDeleted {
     deleted: usize,
 }
 
-async fn list(
-    State(state): State<AppState>,
-    Query(p): Query<ListParams>,
-) -> Result<Json<Vec<CollectionRow>>, AppError> {
-    let limit = p.limit.unwrap_or(1000).clamp(1, 5000);
-    let offset = p.offset.unwrap_or(0).max(0);
-    let rows = blocking(&state, move |c| collection::list_rows(c, limit, offset)).await?;
+async fn list(State(state): State<AppState>) -> Result<Json<Vec<CollectionRow>>, AppError> {
+    // Single-user app — return everything; client-side does filtering,
+    // aggregation, and sort. Lazy loading is YAGNI until we feel it.
+    let rows = blocking(&state, |c| collection::list_rows(c)).await?;
     Ok(Json(rows))
 }
 

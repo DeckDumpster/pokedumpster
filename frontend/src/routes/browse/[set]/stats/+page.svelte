@@ -57,9 +57,22 @@
 		'Mega Attack Rare': 9,
 		'Mega Hyper Rare': 10
 	};
+	// Upstream rarity strings are inconsistent — some are title-case
+	// ("Special Illustration Rare"), others are SCREAMING_SNAKE
+	// ("MEGA_ATTACK_RARE"). Normalize both into the same canonical form
+	// before ranking.
+	function canonicalRarity(r: string): string {
+		return r
+			.toLowerCase()
+			.replace(/_/g, ' ')
+			.split(' ')
+			.filter((w) => w.length > 0)
+			.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+			.join(' ');
+	}
 	const sortedRarities = $derived.by(() => {
 		if (!stats) return [];
-		const rank = (r: string): number => RARITY_ORDER[r] ?? 100;
+		const rank = (r: string): number => RARITY_ORDER[canonicalRarity(r)] ?? 100;
 		return [...stats.rarities].sort((a, b) => {
 			const ra = rank(a.rarity);
 			const rb = rank(b.rarity);
@@ -125,27 +138,31 @@
 		{:else}
 			<table>
 				<thead>
-					<tr><th>Rarity</th><th>Owned</th><th>Total</th><th class="pcol">Progress</th></tr>
+					<tr>
+						<th class="iconcol" aria-label="Rarity glyph"></th>
+						<th>Rarity</th>
+						<th>Owned</th>
+						<th>Total</th>
+						<th class="pcol">Progress</th>
+					</tr>
 				</thead>
 				<tbody>
 					{#each sortedRarities as r (r.rarity)}
 						<tr>
-							<td>
-								<div class="rcell">
-									{#if rarityIconSrc(r.rarity)}
-										<img
-											class="rarityicon"
-											class:basic={isBasicRarity(r.rarity)}
-											src={rarityIconSrc(r.rarity)}
-											alt=""
-											onerror={(e) =>
-												((e.currentTarget as HTMLImageElement).style.display =
-													'none')}
-										/>
-									{/if}
-									<span>{r.rarity}</span>
-								</div>
+							<td class="iconcol">
+								{#if rarityIconSrc(r.rarity)}
+									<img
+										class="rarityicon"
+										class:basic={isBasicRarity(canonicalRarity(r.rarity))}
+										src={rarityIconSrc(canonicalRarity(r.rarity))}
+										alt=""
+										onerror={(e) =>
+											((e.currentTarget as HTMLImageElement).style.display =
+												'none')}
+									/>
+								{/if}
 							</td>
+							<td>{canonicalRarity(r.rarity)}</td>
 							<td>{r.owned_cards}</td>
 							<td>{r.total_cards}</td>
 							<td class="pcol">
@@ -275,12 +292,14 @@
 		padding: 0.4rem 0.6rem;
 		border-bottom: 1px solid #0f3460;
 	}
-	/* Rarity glyph + name, scaled to match the /collection table so the
-	   icons feel consistent across pages. */
-	.rcell {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.5rem;
+	/* Rarity glyph in its own column, right-aligned, so every rarity
+	   name in the next column starts on the same x-position. Glyph
+	   scaling matches the /collection table for visual consistency. */
+	.iconcol {
+		width: 1%;
+		text-align: right;
+		white-space: nowrap;
+		padding-right: 0.4rem;
 	}
 	.rarityicon {
 		width: 22px;

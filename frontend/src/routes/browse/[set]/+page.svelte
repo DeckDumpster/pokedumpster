@@ -346,7 +346,27 @@
 		</label>
 	</div>
 
-	<div class="filterbar">
+	<div class="controls">
+		<!-- Per-field sort buttons (DD-style). # already orders by
+		     rarity (set numbering groups by rarity tier) so the
+		     standalone Rarity button is redundant; Name sorting is
+		     subsumed by the search input. -->
+		<div class="sortbtns">
+			{#snippet sortBtn(key: SortKey, label: string)}
+				<button
+					class="sortbtn"
+					class:active={sortKey === key}
+					onclick={() => toggleSort(key)}
+				>
+					{label}
+					{#if sortKey === key}
+						<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>
+					{/if}
+				</button>
+			{/snippet}
+			{@render sortBtn('number', '#')}
+			{@render sortBtn('price', 'Price')}
+		</div>
 		<!-- Cards per row stepper. Pure UI choice (1..10) — page size
 		     derives from it (cols × 3 rows per page) so the backend's
 		     pagination stays consistent at 3 visible rows. -->
@@ -365,30 +385,6 @@
 				onclick={() => stepCols(1)}
 				aria-label="More cards per row"
 			>+</button>
-		</div>
-	</div>
-
-	<div class="controls">
-		<!-- Per-field sort buttons (DD-style). Click an inactive button
-		     to switch sorts (default direction per field); click the
-		     active button to toggle asc/desc. -->
-		<div class="sortbtns">
-			{#snippet sortBtn(key: SortKey, label: string)}
-				<button
-					class="sortbtn"
-					class:active={sortKey === key}
-					onclick={() => toggleSort(key)}
-				>
-					{label}
-					{#if sortKey === key}
-						<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>
-					{/if}
-				</button>
-			{/snippet}
-			{@render sortBtn('number', '#')}
-			{@render sortBtn('name', 'Name')}
-			{@render sortBtn('rarity', 'Rarity')}
-			{@render sortBtn('price', 'Price')}
 		</div>
 		<!-- Section-include toggles. Secret usually has content on modern
 		     sets but it's not something you flip every visit; Subset and
@@ -421,17 +417,15 @@
 			</div>
 		</details>
 		<span class="spacer"></span>
-		<!-- Top pager — Prev/Next buttons hidden on mobile (.toppager-arrows),
-		     the page counter stays visible. Bottom pager always shows both. -->
+		<!-- Top pager — entire row hidden on mobile (the bottom pager
+		     handles paging there); arrow keys work either way. -->
 		<div class="toppager">
 			<button
-				class="toppager-arrows"
 				disabled={binder.page <= 1}
 				onclick={() => (pageNum = binder!.page - 1)}
 			>← Prev</button>
 			<span class="pageno">Page {binder.page} of {binder.total_pages}</span>
 			<button
-				class="toppager-arrows"
 				disabled={binder.page >= binder.total_pages}
 				onclick={() => (pageNum = binder!.page + 1)}
 			>Next →</button>
@@ -641,13 +635,6 @@
 	.controls label {
 		color: #ccc;
 	}
-	.filterbar {
-		display: flex;
-		gap: 1rem;
-		align-items: center;
-		flex-wrap: wrap;
-		margin: 1rem 0 0.25rem;
-	}
 	.missingonly {
 		display: inline-flex;
 		align-items: center;
@@ -722,14 +709,15 @@
 		font-weight: 600;
 		color: #e0e0e0;
 	}
-	/* Top pager — Prev/Next arrows collapse on mobile, page counter stays. */
+	/* Top pager — page counter + Prev/Next arrows. Both hidden on
+	   mobile (the bottom pager handles paging there). */
 	.toppager {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.5rem;
 	}
 	@media (max-width: 540px) {
-		.toppager-arrows {
+		.toppager {
 			display: none;
 		}
 	}

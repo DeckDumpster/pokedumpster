@@ -21,6 +21,7 @@
 	let searchRaw = $state(initialQuery);
 	let search = $state(initialQuery.trim().toLowerCase());
 	let debounce: ReturnType<typeof setTimeout>;
+	let searchInput = $state<HTMLInputElement | undefined>();
 	function onSearch(value: string) {
 		searchRaw = value;
 		clearTimeout(debounce);
@@ -630,13 +631,28 @@
 				/>
 			</svg>
 		</a>
-		<input
-			class="search"
-			type="text"
-			placeholder={allCards ? 'Search all cards…' : 'Search cards…'}
-			value={searchRaw}
-			oninput={(e) => onSearch(e.currentTarget.value)}
-		/>
+		<div class="searchwrap">
+			<input
+				class="search"
+				type="text"
+				placeholder={allCards ? 'Search all cards…' : 'Search cards…'}
+				value={searchRaw}
+				oninput={(e) => onSearch(e.currentTarget.value)}
+				bind:this={searchInput}
+			/>
+			{#if searchRaw}
+				<button
+					class="searchclear"
+					type="button"
+					aria-label="Clear search"
+					title="Clear"
+					onclick={() => {
+						onSearch('');
+						searchInput?.focus();
+					}}
+				>×</button>
+			{/if}
+		</div>
 		<label class="alltoggle" title="Search the full card catalog, not just your collection">
 			<input type="checkbox" checked={allCards} onchange={toggleAllCards} />
 			All cards
@@ -1026,15 +1042,49 @@
 	.brand:hover .brandmark {
 		filter: brightness(1.2);
 	}
+	/* The input inherits the row's flex slot via its wrapper, so the
+	   wrapper carries the flex sizing rather than the input itself. */
+	.searchwrap {
+		flex: 1;
+		min-width: 0;
+		position: relative;
+		display: flex;
+		align-items: center;
+	}
 	.search {
 		flex: 1;
 		min-width: 0;
-		padding: 0.45rem 0.6rem;
+		/* Extra right padding leaves room for the clear button without
+		   it overlapping typed text. */
+		padding: 0.45rem 2rem 0.45rem 0.6rem;
 		background: #1a1a2e;
 		border: 1px solid #0f3460;
 		border-radius: 6px;
 		color: #e0e0e0;
 		font: inherit;
+	}
+	.searchclear {
+		position: absolute;
+		right: 0.4rem;
+		top: 50%;
+		transform: translateY(-50%);
+		width: 1.4rem;
+		height: 1.4rem;
+		padding: 0;
+		background: none;
+		border: none;
+		color: #888;
+		font-size: 1.1rem;
+		line-height: 1;
+		border-radius: 50%;
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.searchclear:hover {
+		color: #e94560;
+		background: rgba(233, 69, 96, 0.12);
 	}
 	.alltoggle {
 		display: inline-flex;

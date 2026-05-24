@@ -44,6 +44,7 @@
 	let searchRaw = $state(initialQ);
 	let search = $state(initialQ.trim());
 	let searchDebounce: ReturnType<typeof setTimeout>;
+	let searchInput = $state<HTMLInputElement | undefined>();
 	let tab = $state(urlStr('tab', 'all'));
 	// Pill toggle, mutually exclusive with the tab — when on, the binder
 	// query asks for the broader "incomplete" filter (any printing not
@@ -285,13 +286,28 @@
 				Incomplete only
 			</button>
 		</div>
-		<input
-			class="search"
-			type="text"
-			placeholder="Search this set…"
-			value={searchRaw}
-			oninput={(e) => onSearch(e.currentTarget.value)}
-		/>
+		<div class="searchwrap">
+			<input
+				class="search"
+				type="text"
+				placeholder="Search this set…"
+				value={searchRaw}
+				oninput={(e) => onSearch(e.currentTarget.value)}
+				bind:this={searchInput}
+			/>
+			{#if searchRaw}
+				<button
+					class="searchclear"
+					type="button"
+					aria-label="Clear search"
+					title="Clear"
+					onclick={() => {
+						onSearch('');
+						searchInput?.focus();
+					}}
+				>×</button>
+			{/if}
+		</div>
 	</div>
 
 	<div class="controls">
@@ -548,16 +564,49 @@
 		margin-left: 0.5rem;
 		font-size: 0.78rem;
 	}
-	.search {
+	/* Search input + clear-X. Wrapper carries the row flex slot; the
+	   input has extra right padding to leave room for the × button
+	   without overlapping typed text. */
+	.searchwrap {
 		flex: 1;
 		min-width: 160px;
 		max-width: 320px;
+		position: relative;
+		display: flex;
+		align-items: center;
+	}
+	.search {
+		flex: 1;
+		min-width: 0;
 		background: #1a1a2e;
 		border: 1px solid #0f3460;
 		color: #e0e0e0;
 		border-radius: 6px;
-		padding: 0.4rem 0.6rem;
+		padding: 0.4rem 2rem 0.4rem 0.6rem;
 		font: inherit;
+	}
+	.searchclear {
+		position: absolute;
+		right: 0.4rem;
+		top: 50%;
+		transform: translateY(-50%);
+		width: 1.4rem;
+		height: 1.4rem;
+		padding: 0;
+		background: none;
+		border: none;
+		color: #888;
+		font-size: 1.1rem;
+		line-height: 1;
+		border-radius: 50%;
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.searchclear:hover {
+		color: #e94560;
+		background: rgba(233, 69, 96, 0.12);
 	}
 	.spacer {
 		flex: 1;

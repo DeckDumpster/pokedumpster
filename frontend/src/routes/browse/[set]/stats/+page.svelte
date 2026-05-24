@@ -108,6 +108,7 @@
 					<div class="bar"><span style:width="{pct(owned, total)}%"></span></div>
 				</div>
 			{/snippet}
+			{@render bar('Base set', stats.base_owned_cards, stats.base_total_cards)}
 			{@render bar('Numbered set', stats.owned_cards, stats.total_cards)}
 			{@render bar('Master set', stats.owned_printings, stats.total_printings)}
 		</section>

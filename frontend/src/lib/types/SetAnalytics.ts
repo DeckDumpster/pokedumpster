@@ -8,6 +8,12 @@ import type { RarityCount } from "./RarityCount";
  */
 export type SetAnalytics = { set_code: string, name: string, series: string, 
 /**
+ * Base-set cards only (number ≤ printed_total — excludes secret
+ * rares, subset sections, promos), and how many the user owns
+ * (any variant counts).
+ */
+base_total_cards: number, base_owned_cards: number, 
+/**
  * Numbered cards in the set, and how many the user owns.
  */
 total_cards: number, owned_cards: number, 

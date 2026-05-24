@@ -80,6 +80,13 @@ pub struct SetAnalytics {
     pub set_code: String,
     pub name: String,
     pub series: String,
+    /// Base-set cards only (number ≤ printed_total — excludes secret
+    /// rares, subset sections, promos), and how many the user owns
+    /// (any variant counts).
+    #[ts(type = "number")]
+    pub base_total_cards: i64,
+    #[ts(type = "number")]
+    pub base_owned_cards: i64,
     /// Numbered cards in the set, and how many the user owns.
     #[ts(type = "number")]
     pub total_cards: i64,
@@ -116,6 +123,27 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
            JOIN printings p ON c.printing_id = p.printing_id \
            JOIN cards cd ON p.card_id = cd.card_id \
          WHERE cd.set_code = ?1",
+        [set_code],
+        |r| r.get(0),
+    )?;
+    // Base-set cards = number ≤ printed_total. Matches binder.rs
+    // section_of's "base" bucket — excludes secret rares + subsets.
+    let base_total_cards: i64 = conn.query_row(
+        "SELECT count(*) FROM cards c JOIN sets s ON s.set_code = c.set_code \
+         WHERE c.set_code = ?1 \
+           AND s.printed_total IS NOT NULL \
+           AND c.number_sortable <= s.printed_total",
+        [set_code],
+        |r| r.get(0),
+    )?;
+    let base_owned_cards: i64 = conn.query_row(
+        "SELECT count(DISTINCT cd.card_id) FROM collection co \
+           JOIN printings p ON co.printing_id = p.printing_id \
+           JOIN cards cd ON p.card_id = cd.card_id \
+           JOIN sets s ON s.set_code = cd.set_code \
+         WHERE cd.set_code = ?1 \
+           AND s.printed_total IS NOT NULL \
+           AND cd.number_sortable <= s.printed_total",
         [set_code],
         |r| r.get(0),
     )?;
@@ -187,6 +215,8 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
         set_code: set_code.to_string(),
         name,
         series,
+        base_total_cards,
+        base_owned_cards,
         total_cards,
         owned_cards,
         total_printings,

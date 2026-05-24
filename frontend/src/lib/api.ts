@@ -181,12 +181,19 @@ export const api = {
 
 };
 
-/** Turn a variant code (`reverse_holo`) into a label (`Reverse Holo`). */
+/** Turn a variant code (`reverse_holo`) into a label (`Reverse Holo`).
+ *  The `_rh` suffix on pattern overlays (e.g. `pokeball_rh`) expands to
+ *  " Reverse Holo" — the bare "Rh" is too cryptic in user-facing UI. */
 export function variantLabel(code: string): string {
-	return code
-		.split('_')
-		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-		.join(' ');
+	const titleCase = (s: string): string =>
+		s
+			.split('_')
+			.map((w) => (w.length === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1)))
+			.join(' ');
+	if (code.endsWith('_rh')) {
+		return `${titleCase(code.slice(0, -3))} Reverse Holo`;
+	}
+	return titleCase(code);
 }
 
 /** Tier rank used to sort printings consistently across the UI — browse

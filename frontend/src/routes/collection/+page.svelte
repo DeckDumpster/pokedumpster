@@ -790,6 +790,10 @@
 					{@render sortable('set', 'Set', 'center')}
 					{@render sortable('number', '#', 'num')}
 					{@render sortable('market', 'Price', 'num')}
+					<!-- Trailing spacer column: absorbs leftover viewport width
+					     so the named columns stay content-sized and the header
+					     underline still reaches the right edge. -->
+					<th class="spacer" aria-hidden="true"></th>
 				</tr>
 			</thead>
 			<tbody>
@@ -883,6 +887,7 @@
 								<span class="pricedash">—</span>
 							{/if}
 						</td>
+						<td class="spacer"></td>
 					</tr>
 				{/each}
 				{#each unownedCatalog as c (c.card_id)}
@@ -949,6 +954,7 @@
 						</td>
 						<td class="num">{c.number}</td>
 						<td class="num"><span class="pricedash">—</span></td>
+						<td class="spacer"></td>
 					</tr>
 				{/each}
 			</tbody>
@@ -1095,7 +1101,7 @@
 	.menu {
 		position: fixed;
 		top: 50px;
-		right: 0.7rem;
+		left: 0.7rem;
 		z-index: 60;
 		display: flex;
 		flex-direction: column;
@@ -1239,16 +1245,22 @@
 	/* --- Table view (DeckDumpster-style) ------------------------------ */
 
 	table.dd {
-		/* Size to content rather than stretching to viewport width — the
-		   Name column was getting all the slack and reading way wider
-		   than any actual card name. max-content + max-width caps it so
-		   wide tables (e.g. when many cards have long Pokémon names)
-		   still wrap within the viewport. */
-		width: max-content;
-		max-width: 100%;
+		/* Span the full container so the header underline reaches the
+		   right edge on wide viewports. Named columns still hug their
+		   content because the trailing `.spacer` column absorbs all
+		   leftover width (see the empty <th>/<td> at row end). */
+		width: 100%;
 		border-collapse: collapse;
 		font-size: 0.9rem;
 		margin-top: 0;
+	}
+	/* Spacer column — invisible filler at the end of every row. `width:
+	   100%` makes table-layout: auto give it all the slack, so the
+	   named columns stay content-sized. */
+	table.dd th.spacer,
+	table.dd td.spacer {
+		width: 100%;
+		padding: 0;
 	}
 	table.dd th,
 	table.dd td {

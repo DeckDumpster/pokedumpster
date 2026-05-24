@@ -523,26 +523,42 @@
 		margin-left: 0.5rem;
 		font-size: 0.78rem;
 	}
+	/* Labeled-pill style for inline quick-toggle checkboxes — matches
+	   the visual weight of the .pip dots below. The native checkbox is
+	   visually hidden but kept for keyboard + screen-reader access. */
 	.inline-checks {
 		display: flex;
-		gap: 0.3rem;
-		font-size: 0.7rem;
+		gap: 3px;
 	}
 	.ck {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.15rem;
+		justify-content: center;
+		min-width: 1.5rem;
+		padding: 0 4px;
+		height: 14px;
+		border: 1px solid #0f3460;
+		border-radius: 7px;
+		background: transparent;
 		color: #888;
+		font-size: 0.62rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
 		cursor: pointer;
-		padding: 0 0.15rem;
-		border-radius: 3px;
+		line-height: 1;
 	}
 	.ck.on {
-		color: #9fe7a0;
+		background: #e94560;
+		border-color: #e94560;
+		color: #fff;
 	}
 	.ck input {
-		margin: 0;
-		cursor: pointer;
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		opacity: 0;
+		pointer-events: none;
 	}
 	.search {
 		flex: 1;

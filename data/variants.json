@@ -6,6 +6,7 @@
   { "code": "first_ed_holo",       "label": "1st Edition Holofoil",         "short": "1ED",    "rank": 1, "color": "#d4af37" },
   { "code": "unlimited_holo",      "label": "Unlimited Holofoil",           "short": "U",      "rank": 1, "color": "#aa7733" },
   { "code": "cosmos_holo",         "label": "Cosmos Holo",                  "short": "COSMOS", "rank": 1, "color": "#c0d0f0" },
+  { "code": "cracked_ice_holo",    "label": "Cracked Ice Holo",             "short": "CRACK",  "rank": 1, "color": "#9ed4f0" },
 
   { "code": "reverse_holo",        "label": "Reverse Holo",                 "short": "R",      "rank": 2, "color": "#a0c4f0" },
 
@@ -22,5 +23,10 @@
   { "code": "stamp_prerelease_staff",  "label": "Prerelease Staff Stamp",   "short": "STAMP",  "rank": 4, "color": "#b88cc0" },
   { "code": "stamp_buildbattle",       "label": "Build & Battle Stamp",     "short": "STAMP",  "rank": 4, "color": "#b88cc0" },
   { "code": "stamp_pokemoncenter",     "label": "Pokémon Center Stamp",     "short": "STAMP",  "rank": 4, "color": "#b88cc0" },
-  { "code": "stamp_staff",             "label": "Staff Stamp",              "short": "STAMP",  "rank": 4, "color": "#b88cc0" }
+  { "code": "stamp_staff",             "label": "Staff Stamp",              "short": "STAMP",  "rank": 4, "color": "#b88cc0" },
+  { "code": "stamp_winner",            "label": "Winner Stamp",             "short": "STAMP",  "rank": 4, "color": "#ffd700" },
+  { "code": "stamp_holiday_calendar",  "label": "Holiday Calendar Stamp",   "short": "STAMP",  "rank": 4, "color": "#c0282d" },
+
+  { "code": "peelable_ditto",          "label": "Peelable Ditto",           "short": "DITTO",  "rank": 5, "color": "#d8a4d4" },
+  { "code": "black_dot_error",         "label": "Black Dot Error",          "short": "ERROR",  "rank": 5, "color": "#222222" }
 ]

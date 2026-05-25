@@ -106,6 +106,22 @@ pub fn variant_from_product_name(name: &str) -> Option<&'static str> {
         // cross-group matcher in pkdump-ingest attaches them to the
         // base card as a fourth variant.
         Some("cosmos_holo")
+    } else if inner.contains("cracked ice holo") {
+        // A distinct foiling treatment (etched ice pattern), most
+        // commonly found alongside a regular Holofoil version of the
+        // same card — without this pattern the two collapse onto the
+        // same `holo` variant and one is silently hidden.
+        Some("cracked_ice_holo")
+    } else if inner.contains("peelable ditto") {
+        // Pokemon GO has three cards (Bidoof, Numel, Spinarak) with
+        // peelable Ditto variants that share a collector number with
+        // their non-peelable counterparts.
+        Some("peelable_ditto")
+    } else if inner.contains("black dot error") {
+        // Base Set Charizard #4 has a (Black Dot Error) misprint
+        // variant sharing the same collector number as the corrected
+        // print.
+        Some("black_dot_error")
     } else {
         None
     }
@@ -138,11 +154,14 @@ pub fn variant_from_product_name(name: &str) -> Option<&'static str> {
 ///   "Pikachu (Toys R Us Promo)"
 ///     -> None  // generic promo isn't a stamp
 pub fn parse_stamp_tag(name: &str) -> Option<(String, Option<String>)> {
-    let lower = name.to_lowercase();
+    // Lowercase + lightweight accent fold. TCGCSV spells "Pokémon" both
+    // ways across the catalog — same variant either way.
+    let lower = name.to_lowercase().replace(['é', 'è', 'ê'], "e");
     let bracket_staff = lower.contains("[staff]");
+    let bracket_winner = lower.contains("[winner]");
 
     // Pull the LAST parenthetical (some products carry both "(...)" and a
-    // trailing "[Staff]" bracket).
+    // trailing "[Staff]"/"[Winner]" bracket).
     let inner = lower.rfind('(').and_then(|open| {
         lower[open..]
             .find(')')
@@ -167,6 +186,20 @@ pub fn parse_stamp_tag(name: &str) -> Option<(String, Option<String>)> {
             // booster/ETB version and the PC version surface as two
             // distinct printings on the same card.
             ("stamp_pokemoncenter".to_string(), None)
+        } else if inner == "holiday calendar" {
+            // Prismatic Evolutions advent product — gives 26 cards an
+            // alternate-treatment variant that shares its collector
+            // number with the regular ETB/booster print.
+            ("stamp_holiday_calendar".to_string(), None)
+        } else if inner == "staff" {
+            // Bare "(Staff)" — older convention than "[Staff]" but
+            // TCGCSV uses both interchangeably for staff promos.
+            ("stamp_staff".to_string(), None)
+        } else if inner.contains("championship") {
+            // (World Championship 2025), (Asia Championship Series 23-24)
+            // and similar event stamps. Generic so we don't have to
+            // enumerate every year × region the catalog will see.
+            (format!("stamp_{}", to_snake(&inner)), None)
         } else if inner.ends_with(" staff") {
             // "(SDCC 2007 Staff)" — paren-internal Staff, no separate
             // [Staff] bracket. Treat the part before "staff" as the
@@ -177,25 +210,29 @@ pub fn parse_stamp_tag(name: &str) -> Option<(String, Option<String>)> {
                 return None;
             }
             (format!("stamp_{}_staff", to_snake(event)), None)
-        } else if bracket_staff {
+        } else if bracket_staff || bracket_winner {
             // Some other paren content (an event marker like "SDCC 2009",
             // a venue like "Pokemon Center Exclusive") combined with a
-            // [Staff] bracket — treat the paren as the event identifier
-            // and let the suffix-appender below add "_staff".
+            // [Staff]/[Winner] bracket — treat the paren as the event
+            // identifier and let the suffix-appender below add the role.
             (format!("stamp_{}", to_snake(&inner)), None)
         } else {
             return None;
         }
     } else if bracket_staff {
         ("stamp_staff".to_string(), None)
+    } else if bracket_winner {
+        ("stamp_winner".to_string(), None)
     } else {
         return None;
     };
 
-    // Append "_staff" if the [Staff] bracket was present and we haven't
-    // already encoded it.
+    // Append the bracket role if present and not already encoded.
     if bracket_staff && !variant.ends_with("_staff") {
         variant.push_str("_staff");
+    }
+    if bracket_winner && !variant.ends_with("_winner") {
+        variant.push_str("_winner");
     }
     Some((variant, keyword))
 }
@@ -396,6 +433,28 @@ mod tests {
             variant_from_product_name("Cynthia's Feelings - 131/146 (Cosmos Holofoil)"),
             Some("cosmos_holo")
         );
+
+        // Cracked Ice Holo — a distinct foiling treatment that
+        // otherwise collides with the base holo on the same number
+        // (e.g. every SVE basic energy has both a regular Holofoil and
+        // a Cracked Ice Holo product).
+        assert_eq!(
+            variant_from_product_name("Basic Grass Energy (Cracked Ice Holo)"),
+            Some("cracked_ice_holo")
+        );
+
+        // Peelable Ditto — Pokemon GO booster transform cards (Bidoof,
+        // Spinarak, Numel each have a peelable variant).
+        assert_eq!(
+            variant_from_product_name("Spinarak (Peelable Ditto)"),
+            Some("peelable_ditto")
+        );
+
+        // Charizard Base Set 4 has a one-off (Black Dot Error) variant.
+        assert_eq!(
+            variant_from_product_name("Charizard (Black Dot Error)"),
+            Some("black_dot_error")
+        );
     }
 
     #[test]
@@ -450,7 +509,8 @@ mod tests {
         // into the seeded `stamp_pokemoncenter` code so the regular
         // and PC-stamped products of the same card surface as two
         // distinct printings (they're priced very differently and
-        // collectors track them separately).
+        // collectors track them separately). The é/e accent variant
+        // also folds in.
         assert_eq!(
             parse_stamp_tag("Charcadet - 022 (Pokemon Center Exclusive)"),
             Some(("stamp_pokemoncenter".into(), None))
@@ -458,6 +518,43 @@ mod tests {
         assert_eq!(
             parse_stamp_tag("Flutter Mane - 097 (Pokemon Center)"),
             Some(("stamp_pokemoncenter".into(), None))
+        );
+        assert_eq!(
+            parse_stamp_tag("Magneton - 159 (Pokémon Center Exclusive)"),
+            Some(("stamp_pokemoncenter".into(), None))
+        );
+
+        // Bare (Staff) — TCGCSV uses this where the older convention
+        // was `[Staff]`. Both fold to stamp_staff.
+        assert_eq!(
+            parse_stamp_tag("Gouging Fire - 151 (Staff)"),
+            Some(("stamp_staff".into(), None))
+        );
+
+        // (Holiday Calendar) — the Prismatic Evolutions advent product.
+        assert_eq!(
+            parse_stamp_tag("Glaceon ex - 026/131 (Holiday Calendar)"),
+            Some(("stamp_holiday_calendar".into(), None))
+        );
+
+        // Championship events — generic "contains 'championship'" rule
+        // so we don't have to enumerate every year × series TCGCSV
+        // catalogs.
+        assert_eq!(
+            parse_stamp_tag("Pikachu - 225 (World Championship 2025)"),
+            Some(("stamp_world_championship_2025".into(), None))
+        );
+        assert_eq!(
+            parse_stamp_tag("Pikachu - 101 (Asia Championship Series 23-24)"),
+            Some(("stamp_asia_championship_series_23_24".into(), None))
+        );
+
+        // [Winner] bracket — analogous to [Staff]. Pikachu 225 has both
+        // a base (World Championship 2025) product and a (...) [Winner]
+        // variant that gets its own stamp_*_winner code.
+        assert_eq!(
+            parse_stamp_tag("Pikachu - 225 (World Championship 2025) [Winner]"),
+            Some(("stamp_world_championship_2025_winner".into(), None))
         );
 
         // Non-stamps return None.

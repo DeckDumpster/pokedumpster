@@ -44,6 +44,12 @@ pub struct TcgProduct {
     pub name: String,
     pub image_url: Option<String>,
     pub url: Option<String>,
+    /// TCGplayer's count of uploaded images for the product. Zero means
+    /// the mechanically-generated `image_url` resolves to a 403 — common
+    /// for newly-listed cards, Pokemon Center Exclusives, and [Staff]
+    /// variants. We treat the URL as unusable when this is 0.
+    #[serde(default)]
+    pub image_count: i64,
     #[serde(default)]
     pub extended_data: Vec<ExtendedDatum>,
 }
@@ -388,11 +394,24 @@ pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> R
 /// the bare base product. Falls back to any product matching the
 /// number when no bare-name one exists.
 ///
-/// `INSERT OR IGNORE` — never overwrites a row already in the catalog
-/// (so when pokemontcg.io eventually publishes the upstream set, the
-/// real card metadata takes precedence and synthesized stubs stand
-/// down on the next refresh). Returns the count of `cards` rows
-/// written by this call.
+/// Two writes per card:
+///   - `INSERT OR IGNORE` to create the row when missing, so synth never
+///     overwrites a real upstream pokemontcg.io row.
+///   - A follow-on `UPDATE` to refresh name + images for synth-owned rows
+///     specifically — rows where `image_large` is NULL or points at
+///     tcgplayer-cdn (synth's only ever source). This is what heals an
+///     earlier refresh that shipped a known-broken URL once TCGCSV's
+///     imageCount transitions to non-zero or a sibling product gains an
+///     image.
+///
+/// The canonical product per collector number sources `name`. The image
+/// prefers the canonical's `image_url`, falling back to any sibling
+/// product (same number, different treatment) when the canonical has
+/// none — Pokemon Center Exclusives sometimes have an image while the
+/// bare-name base does not.
+///
+/// Returns the count of `cards` rows freshly inserted by this call (does
+/// not count UPDATEs to existing synth-owned rows).
 pub fn synthesize_cards_for_bridges(conn: &mut Connection) -> Result<usize> {
     let bridges = load_set_bridges()?;
     let tx = conn.transaction()?;
@@ -419,27 +438,52 @@ pub fn synthesize_cards_for_bridges(conn: &mut Connection) -> Result<usize> {
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
 
-        // First row per number wins (canonical = bare-name where one exists).
-        let mut seen: HashSet<String> = HashSet::new();
-        for (_product_id, name, number, image_url) in &rows {
-            let normalized = normalize_collector_number(number);
-            if !seen.insert(normalized.clone()) {
-                continue;
-            }
-            let card_id = format!("{}-{}", b.set_code, normalized);
-            let card_name = pkdump_core::variant::parse_product_card_name(name);
-            let sortable = pkdump_core::number_sortable(&normalized);
+        // Group products by normalized collector number, preserving the
+        // canonical-first ordering above so the first entry per group is
+        // always the source of `name`.
+        let mut by_number: std::collections::BTreeMap<String, Vec<(String, Option<String>)>> =
+            std::collections::BTreeMap::new();
+        for (_product_id, name, number, image_url) in rows {
+            let normalized = normalize_collector_number(&number);
+            by_number
+                .entry(normalized)
+                .or_default()
+                .push((name, image_url));
+        }
+
+        for (number, products) in by_number {
+            let canonical = &products[0];
+            let card_name = pkdump_core::variant::parse_product_card_name(&canonical.0);
+            // First non-NULL image across products for this number; the
+            // canonical is checked first because it leads the list.
+            let image = products.iter().find_map(|(_, u)| u.as_deref());
+            let card_id = format!("{}-{}", b.set_code, number);
+            let sortable = pkdump_core::number_sortable(&number);
+
             tx.execute(
                 "INSERT OR IGNORE INTO cards \
                    (card_id, set_code, number, number_sortable, name, image_small, image_large) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                rusqlite::params![
-                    card_id, b.set_code, normalized, sortable, card_name, image_url,
-                ],
+                rusqlite::params![card_id, b.set_code, number, sortable, card_name, image],
             )?;
-            // `changes()` reports rows affected by the last statement —
-            // 1 when a fresh INSERT happened, 0 when IGNORE skipped.
             n += tx.changes() as usize;
+
+            // Heal a synth-owned row whose image needs updating (the
+            // canonical or fallback may have changed since last refresh,
+            // or the previous run wrote a now-known-broken URL). The
+            // `raw_json IS NULL` predicate scopes the UPDATE to
+            // synth-managed rows — pokemon_tcg_data::upsert_card always
+            // writes raw_json on upstream rows, so it's the cleanest
+            // signal that a row came from synth rather than upstream.
+            tx.execute(
+                "UPDATE cards \
+                    SET name        = ?2, \
+                        image_small = ?3, \
+                        image_large = ?3 \
+                  WHERE card_id = ?1 \
+                    AND raw_json IS NULL",
+                rusqlite::params![card_id, card_name, image],
+            )?;
         }
     }
     tx.commit()?;
@@ -516,6 +560,15 @@ pub fn import_products(conn: &mut Connection, products: &[TcgProduct], now: &str
             pkdump_core::variant::variant_from_product_name(&product.name)
                 .map(|s| s.to_string())
                 .or_else(|| pkdump_core::variant::parse_stamp_tag(&product.name).map(|(v, _)| v));
+        // TCGCSV's image_url is mechanically generated and 403s when the
+        // product has no uploaded image yet (imageCount=0). Don't carry
+        // the known-broken URL forward — synth's per-number fallback
+        // picks up a sibling product's image when this one has none.
+        let image_url = if product.image_count > 0 {
+            product.image_url.as_deref()
+        } else {
+            None
+        };
         tx.execute(
             "INSERT INTO tcgcsv_products \
                (product_id, group_id, name, collector_number, derived_variant, image_url, fetched_at) \
@@ -533,7 +586,7 @@ pub fn import_products(conn: &mut Connection, products: &[TcgProduct], now: &str
                 product.name,
                 number,
                 derived,
-                product.image_url,
+                image_url,
                 now
             ],
         )?;
@@ -676,6 +729,7 @@ mod tests {
             name: "Charizard ex".into(),
             image_url: None,
             url: None,
+            image_count: 0,
             extended_data: vec![ExtendedDatum {
                 name: "Number".into(),
                 value: "6".into(),
@@ -687,6 +741,7 @@ mod tests {
             name: "151 Elite Trainer Box".into(),
             image_url: None,
             url: None,
+            image_count: 0,
             extended_data: vec![],
         };
         assert!(is_single_card(&card));
@@ -796,6 +851,7 @@ mod tests {
                 name: "Pikachu".into(),
                 image_url: None,
                 url: None,
+                image_count: 0,
                 extended_data: vec![ExtendedDatum {
                     name: "Number".into(),
                     value: "25".into(),
@@ -807,6 +863,7 @@ mod tests {
                 name: "151 Booster Box".into(),
                 image_url: None,
                 url: None,
+                image_count: 0,
                 extended_data: vec![],
             },
         ];
@@ -836,6 +893,7 @@ mod tests {
             name: "151 Booster Box".into(),
             image_url: None,
             url: None,
+            image_count: 0,
             extended_data: vec![],
         }];
         import_sealed_products(&mut conn, &sealed, "2026-05-18").unwrap();
@@ -1128,6 +1186,39 @@ mod tests {
     }
 
     #[test]
+    fn import_products_drops_image_url_when_image_count_is_zero() {
+        // TCGCSV's image_url is mechanically generated; it 403s for
+        // products whose imageCount is 0 (newly listed, Pokemon Center
+        // Exclusives, [Staff] variants). Storing the URL anyway would
+        // ship a known-broken image to the binder.
+        let (_d, mut conn) = shared_db();
+        let products = vec![TcgProduct {
+            product_id: 694694,
+            group_id: 24451,
+            name: "Fennekin - 080".into(),
+            image_url: Some("https://tcgplayer-cdn.tcgplayer.com/product/694694_200w.jpg".into()),
+            url: None,
+            image_count: 0,
+            extended_data: vec![ExtendedDatum {
+                name: "Number".into(),
+                value: "080".into(),
+            }],
+        }];
+        import_products(&mut conn, &products, "2026-05-24").unwrap();
+        let url: Option<String> = conn
+            .query_row(
+                "SELECT image_url FROM tcgcsv_products WHERE product_id = 694694",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            url, None,
+            "image_url must be NULL when TCGCSV reports imageCount=0"
+        );
+    }
+
+    #[test]
     fn import_products_persists_image_url() {
         let (_d, mut conn) = shared_db();
         let products = vec![TcgProduct {
@@ -1136,6 +1227,7 @@ mod tests {
             name: "Meganium - 001".into(),
             image_url: Some("https://tcgplayer.example/654594.jpg".into()),
             url: None,
+            image_count: 1,
             extended_data: vec![ExtendedDatum {
                 name: "Number".into(),
                 value: "001".into(),
@@ -1166,6 +1258,7 @@ mod tests {
                 name: "Alakazam - 003 [Staff]".into(),
                 image_url: None,
                 url: None,
+                image_count: 0,
                 extended_data: vec![ExtendedDatum {
                     name: "Number".into(),
                     value: "003".into(),
@@ -1177,6 +1270,7 @@ mod tests {
                 name: "Ceruledge (Prerelease)".into(),
                 image_url: None,
                 url: None,
+                image_count: 0,
                 extended_data: vec![ExtendedDatum {
                     name: "Number".into(),
                     value: "014".into(),
@@ -1227,6 +1321,7 @@ mod tests {
                 name: "Alakazam - 003".into(),
                 image_url: Some("https://tcgplayer.example/654597.jpg".into()),
                 url: None,
+                image_count: 1,
                 extended_data: vec![ExtendedDatum {
                     name: "Number".into(),
                     value: "003".into(),
@@ -1239,6 +1334,7 @@ mod tests {
                 name: "Alakazam - 003 [Staff]".into(),
                 image_url: None,
                 url: None,
+                image_count: 0,
                 extended_data: vec![ExtendedDatum {
                     name: "Number".into(),
                     value: "003".into(),
@@ -1252,6 +1348,7 @@ mod tests {
                 name: "Ceruledge (Prerelease)".into(),
                 image_url: Some("https://tcgplayer.example/663187.jpg".into()),
                 url: None,
+                image_count: 1,
                 extended_data: vec![ExtendedDatum {
                     name: "Number".into(),
                     value: "014".into(),
@@ -1285,6 +1382,161 @@ mod tests {
     }
 
     #[test]
+    fn synthesize_cards_falls_back_to_sibling_image_when_canonical_has_none() {
+        // Fennekin - 080 is the bare-name canonical (TCGCSV has no
+        // uploaded image yet → image_url NULL), but Fennekin - 080
+        // (Pokemon Center Exclusive) sharing the same number does have
+        // one. The synth should reach across to that sibling rather
+        // than ship a card with no image.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            [],
+        )
+        .unwrap();
+        let products = vec![
+            TcgProduct {
+                product_id: 694694,
+                group_id: 24451,
+                name: "Fennekin - 080".into(),
+                image_url: Some(
+                    "https://tcgplayer-cdn.tcgplayer.com/product/694694_200w.jpg".into(),
+                ),
+                url: None,
+                image_count: 0, // canonical, but no image
+                extended_data: vec![ExtendedDatum {
+                    name: "Number".into(),
+                    value: "080".into(),
+                }],
+            },
+            TcgProduct {
+                product_id: 694695,
+                group_id: 24451,
+                name: "Fennekin - 080 (Pokemon Center Exclusive)".into(),
+                image_url: Some(
+                    "https://tcgplayer-cdn.tcgplayer.com/product/694695_200w.jpg".into(),
+                ),
+                url: None,
+                image_count: 1, // sibling has the image
+                extended_data: vec![ExtendedDatum {
+                    name: "Number".into(),
+                    value: "080".into(),
+                }],
+            },
+        ];
+        import_products(&mut conn, &products, "2026-05-24").unwrap();
+        synthesize_cards_for_bridges(&mut conn).unwrap();
+
+        let (name, img): (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, image_large FROM cards WHERE card_id = 'mep-80'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Fennekin", "name still sourced from canonical");
+        assert_eq!(
+            img.as_deref(),
+            Some("https://tcgplayer-cdn.tcgplayer.com/product/694695_200w.jpg"),
+            "image falls back to sibling product when canonical has none"
+        );
+    }
+
+    #[test]
+    fn synthesize_cards_refreshes_existing_synth_owned_row() {
+        // Prod state on 2026-05-25: mep-80 was written with the broken
+        // canonical URL during yesterday's refresh. After the
+        // imageCount fix, the next refresh must heal the row by
+        // updating its image_large — INSERT OR IGNORE alone would leave
+        // the broken URL in place. Synth-owned rows are recognised by
+        // their image_large pointing at tcgplayer-cdn (upstream uses
+        // images.pokemontcg.io).
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            [],
+        )
+        .unwrap();
+        // Pre-existing synth-owned row with the broken URL we shipped
+        // before honoring imageCount.
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, image_small, image_large) \
+             VALUES ('mep-80', 'mep', '80', 80, 'Fennekin', \
+                     'https://tcgplayer-cdn.tcgplayer.com/product/694694_200w.jpg', \
+                     'https://tcgplayer-cdn.tcgplayer.com/product/694694_200w.jpg')",
+            [],
+        )
+        .unwrap();
+        // After the imageCount fix, 694694 has no image_url in our
+        // table; the PC Exclusive sibling does.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, image_url, fetched_at) \
+             VALUES (694694, 24451, 'Fennekin - 080', '080', NULL, NULL, '2026-05-25'), \
+                    (694695, 24451, 'Fennekin - 080 (Pokemon Center Exclusive)', '080', NULL, \
+                     'https://tcgplayer-cdn.tcgplayer.com/product/694695_200w.jpg', '2026-05-25')",
+            [],
+        )
+        .unwrap();
+        synthesize_cards_for_bridges(&mut conn).unwrap();
+        let img: Option<String> = conn
+            .query_row(
+                "SELECT image_large FROM cards WHERE card_id = 'mep-80'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            img.as_deref(),
+            Some("https://tcgplayer-cdn.tcgplayer.com/product/694695_200w.jpg"),
+            "synth-owned row was refreshed from sibling image after imageCount fix"
+        );
+    }
+
+    #[test]
+    fn synthesize_cards_does_not_clobber_upstream_pokemontcg_row() {
+        // The refresh contract: upstream pokemontcg.io upserts are
+        // authoritative for any card they cover. Synth must never
+        // overwrite a row whose image_large points at
+        // images.pokemontcg.io, even if the bridge happens to have the
+        // same set_code as an upstream-managed set.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, image_large, raw_json) \
+             VALUES ('mep-99', 'mep', '99', 99, 'Real Upstream Name', \
+                     'https://images.pokemontcg.io/mep/99_hires.png', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, image_url, fetched_at) \
+             VALUES (999999, 24451, 'Other Name - 099', '099', NULL, \
+                     'https://tcgplayer-cdn.tcgplayer.com/product/999999_200w.jpg', '2026-05-25')",
+            [],
+        )
+        .unwrap();
+        synthesize_cards_for_bridges(&mut conn).unwrap();
+        let (name, img): (String, String) = conn
+            .query_row(
+                "SELECT name, image_large FROM cards WHERE card_id = 'mep-99'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Real Upstream Name");
+        assert_eq!(img, "https://images.pokemontcg.io/mep/99_hires.png");
+    }
+
+    #[test]
     fn synthesize_cards_is_idempotent_and_skips_existing() {
         // Running synthesize twice must not duplicate; a pre-existing
         // card row (real catalog data) must be preserved untouched.
@@ -1295,11 +1547,13 @@ mod tests {
             [],
         )
         .unwrap();
-        // Pre-existing card row from upstream (hypothetical) — the
-        // synth step must leave it alone.
+        // Pre-existing card row from upstream (hypothetical). What
+        // marks it as upstream-managed is the populated `raw_json` —
+        // pokemon_tcg_data::upsert_card always writes it, synth never
+        // does. The synth step's UPDATE must skip it.
         conn.execute(
-            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
-             VALUES ('mep-3', 'mep', '3', 3, 'Real Upstream Name')",
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, raw_json) \
+             VALUES ('mep-3', 'mep', '3', 3, 'Real Upstream Name', '{}')",
             [],
         )
         .unwrap();
@@ -1309,6 +1563,7 @@ mod tests {
             name: "Alakazam - 003".into(),
             image_url: Some("https://tcgplayer.example/654597.jpg".into()),
             url: None,
+            image_count: 1,
             extended_data: vec![ExtendedDatum {
                 name: "Number".into(),
                 value: "003".into(),

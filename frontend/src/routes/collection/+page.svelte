@@ -150,9 +150,28 @@
 		menuOpen = false;
 	}
 
-	// Column sort for the table view.
-	let sortKey = $state('name');
-	let sortDir = $state<'asc' | 'desc'>('asc');
+	// Column sort for the table view — persisted across reloads in
+	// localStorage so refreshes don't snap back to the default (mirrors
+	// the view-mode persistence above).
+	const SORT_KEYS = ['name', 'type', 'etype', 'rarity', 'set', 'number', 'market', 'value', 'qty'];
+	function readStoredSort(): { key: string; dir: 'asc' | 'desc' } {
+		if (typeof window === 'undefined') return { key: 'name', dir: 'asc' };
+		const k = localStorage.getItem('collection.sortKey');
+		const d = localStorage.getItem('collection.sortDir');
+		return {
+			key: k && SORT_KEYS.includes(k) ? k : 'name',
+			dir: d === 'desc' ? 'desc' : 'asc'
+		};
+	}
+	const _storedSort = readStoredSort();
+	let sortKey = $state(_storedSort.key);
+	let sortDir = $state<'asc' | 'desc'>(_storedSort.dir);
+	$effect(() => {
+		if (typeof window !== 'undefined') {
+			localStorage.setItem('collection.sortKey', sortKey);
+			localStorage.setItem('collection.sortDir', sortDir);
+		}
+	});
 
 	function sortBy(key: string) {
 		if (sortKey === key) {

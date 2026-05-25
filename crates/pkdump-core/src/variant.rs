@@ -160,6 +160,13 @@ pub fn parse_stamp_tag(name: &str) -> Option<(String, Option<String>)> {
             (format!("stamp_{}", to_snake(&keyword)), Some(keyword))
         } else if inner == "prerelease" {
             ("stamp_prerelease".to_string(), None)
+        } else if inner == "pokemon center" || inner == "pokemon center exclusive" {
+            // PC-stamped reprints of regular promos. TCGCSV uses both
+            // phrasings interchangeably — both fold into the same
+            // `stamp_pokemoncenter` variant (seeded in V2) so the
+            // booster/ETB version and the PC version surface as two
+            // distinct printings on the same card.
+            ("stamp_pokemoncenter".to_string(), None)
         } else if inner.ends_with(" staff") {
             // "(SDCC 2007 Staff)" — paren-internal Staff, no separate
             // [Staff] bracket. Treat the part before "staff" as the
@@ -437,6 +444,20 @@ mod tests {
         assert_eq!(
             parse_stamp_tag("Shellos West Sea (SDCC 2007 Staff)"),
             Some(("stamp_sdcc_2007_staff".into(), None))
+        );
+
+        // Pokemon Center variants — both phrasings TCGCSV uses fold
+        // into the seeded `stamp_pokemoncenter` code so the regular
+        // and PC-stamped products of the same card surface as two
+        // distinct printings (they're priced very differently and
+        // collectors track them separately).
+        assert_eq!(
+            parse_stamp_tag("Charcadet - 022 (Pokemon Center Exclusive)"),
+            Some(("stamp_pokemoncenter".into(), None))
+        );
+        assert_eq!(
+            parse_stamp_tag("Flutter Mane - 097 (Pokemon Center)"),
+            Some(("stamp_pokemoncenter".into(), None))
         );
 
         // Non-stamps return None.

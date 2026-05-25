@@ -28,6 +28,7 @@ pub struct ServeArgs {
 /// Execute `pkdump serve`. Database paths come from `PKDUMP_HOME` /
 /// `PKDUMP_USER` (the shared catalog and the active user's collection).
 pub fn run(args: ServeArgs) -> anyhow::Result<()> {
+    let data_dir = pkdump_db::pkdump_home()?;
     let shared_db = pkdump_db::shared_db_path()?;
     let user_db = pkdump_db::user_db_path(&pkdump_db::current_user())?;
     let static_dir = args.static_dir.unwrap_or_else(|| {
@@ -37,6 +38,6 @@ pub fn run(args: ServeArgs) -> anyhow::Result<()> {
     });
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(pkdump_server::serve(
-        user_db, shared_db, static_dir, args.host, args.port,
+        user_db, shared_db, static_dir, data_dir, args.host, args.port,
     ))
 }

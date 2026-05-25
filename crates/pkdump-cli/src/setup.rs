@@ -16,7 +16,7 @@ use rusqlite::Connection;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{overrides, pokemon_tcg_data, tcgcsv};
+use pkdump_ingest::{overrides, pokemon_tcg_data, symbols, tcgcsv};
 
 /// Arguments for `pkdump setup`.
 #[derive(clap::Args)]
@@ -107,6 +107,20 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
+
+    // 7. Normalize set symbol glyphs — trim transparent padding off the
+    //    upstream PNGs and self-host at a uniform target height so the
+    //    /browse tiles render consistently. See `symbols.rs`.
+    let data_dir = db_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    println!("Normalizing set symbol glyphs...");
+    let s = symbols::normalize_all_symbols(&mut conn, &data_dir)?;
+    println!(
+        "  {} processed, {} cached, {} overrides, {} failed",
+        s.processed, s.cached, s.overrides, s.failed
+    );
 
     println!("Setup complete: {}", db_path.display());
     Ok(())

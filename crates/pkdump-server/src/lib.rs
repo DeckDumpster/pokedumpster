@@ -82,7 +82,7 @@ where
 /// SvelteKit bundle under `/_app` and `/robots.txt` are served as files;
 /// every other path returns the SPA's `index.html` so SvelteKit handles
 /// client-side routing.
-fn app(state: AppState, static_dir: PathBuf) -> Router {
+fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
     let index_html = std::fs::read_to_string(static_dir.join("index.html")).unwrap_or_else(|_| {
         "<!doctype html><title>PokeDumpster</title><body>\
              Frontend not built — run <code>npm run build</code> in frontend/.\
@@ -104,6 +104,11 @@ fn app(state: AppState, static_dir: PathBuf) -> Router {
         .nest_service("/rarity", ServeDir::new(static_dir.join("rarity")))
         .nest_service("/energy", ServeDir::new(static_dir.join("energy")))
         .nest_service("/sets", ServeDir::new(static_dir.join("sets")))
+        // Trimmed-and-resized set symbol glyphs written by the ingest
+        // pipeline's symbols phase. Lives on the data volume so it
+        // rebuilds from upstream alongside shared.sqlite, not in the
+        // baked-in image static dir.
+        .nest_service("/sym", ServeDir::new(data_dir.join("symbols")))
         .route_service("/robots.txt", ServeFile::new(static_dir.join("robots.txt")))
         .with_state(state)
         .fallback(get(spa))
@@ -115,6 +120,7 @@ pub async fn serve(
     user_db: PathBuf,
     shared_db: PathBuf,
     static_dir: PathBuf,
+    data_dir: PathBuf,
     host: IpAddr,
     port: u16,
 ) -> anyhow::Result<()> {
@@ -125,7 +131,7 @@ pub async fn serve(
     let addr = SocketAddr::new(host, port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("pkdump serving on http://{addr}");
-    axum::serve(listener, app(state, static_dir)).await?;
+    axum::serve(listener, app(state, static_dir, data_dir)).await?;
     Ok(())
 }
 
@@ -173,7 +179,8 @@ mod tests {
         let state = AppState {
             conn: Arc::new(Mutex::new(conn)),
         };
-        (dir, app(state, static_dir))
+        let data_dir = dir.path().to_path_buf();
+        (dir, app(state, static_dir, data_dir))
     }
 
     async fn body_string(resp: Response) -> String {

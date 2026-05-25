@@ -12,7 +12,7 @@ use rusqlite::Connection;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{overrides, pokemon_tcg_data, tcgcsv};
+use pkdump_ingest::{overrides, pokemon_tcg_data, symbols, tcgcsv};
 
 /// The `pkdump data` subcommand group.
 #[derive(clap::Args)]
@@ -26,6 +26,10 @@ enum DataCommand {
     /// Incrementally refresh the shared catalog: newest sets, prices, and
     /// dirty-data overrides.
     Refresh(RefreshArgs),
+    /// Trim and resize set symbol glyphs in isolation — useful for
+    /// migrating an existing catalog without paying for a full TCGCSV
+    /// import.
+    NormalizeSymbols(RefreshArgs),
 }
 
 /// Arguments for `pkdump data refresh`.
@@ -40,7 +44,29 @@ pub struct RefreshArgs {
 pub fn run(args: DataArgs) -> anyhow::Result<()> {
     match args.command {
         DataCommand::Refresh(args) => refresh(args),
+        DataCommand::NormalizeSymbols(args) => normalize_symbols(args),
     }
+}
+
+/// Execute `pkdump data normalize-symbols` — just the symbols phase, no
+/// network catalog work.
+fn normalize_symbols(args: RefreshArgs) -> anyhow::Result<()> {
+    let db_path = match args.db {
+        Some(p) => p,
+        None => pkdump_db::shared_db_path()?,
+    };
+    let mut conn = pkdump_db::open_shared(&db_path)?;
+    let data_dir = db_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    println!("Normalizing set symbol glyphs...");
+    let s = symbols::normalize_all_symbols(&mut conn, &data_dir)?;
+    println!(
+        "  {} processed, {} cached, {} overrides, {} failed",
+        s.processed, s.cached, s.overrides, s.failed
+    );
+    Ok(())
 }
 
 /// Execute `pkdump data refresh`.
@@ -85,6 +111,20 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
+
+    // 5. Normalize set symbol glyphs for any new sets the tail fetch added.
+    //    Existing rows already point at /sym/<set>.png and are skipped via
+    //    the http-prefix gate in normalize_all_symbols.
+    let data_dir = db_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    println!("Normalizing set symbol glyphs...");
+    let s = symbols::normalize_all_symbols(&mut conn, &data_dir)?;
+    println!(
+        "  {} processed, {} cached, {} overrides, {} failed",
+        s.processed, s.cached, s.overrides, s.failed
+    );
 
     println!("Refresh complete: {}", db_path.display());
     Ok(())

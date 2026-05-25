@@ -9,6 +9,7 @@ mod error;
 pub mod overrides;
 pub mod pokemon_tcg_data;
 pub mod pokemontcg;
+pub mod symbols;
 pub mod tcgcsv;
 
 pub use error::{IngestError, Result};

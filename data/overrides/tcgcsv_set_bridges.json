@@ -2,7 +2,8 @@
   {
     "tcgcsv_group_id": 22872,
     "set_code": "svp",
-    "comment": "Bridge SVP. pokemontcg.io ships an svp set (ptcgo_code 'PR-SV', name 'Scarlet & Violet Black Star Promos'), but neither its abbreviation nor its normalized name matches TCGCSV's 'SVP' / 'SV: Scarlet & Violet Promo Cards'. The auto-linker can't bridge them, so the link has to be supplied explicitly."
+    "synthesize_cards": true,
+    "comment": "Bridge SVP. pokemontcg.io ships an svp set (ptcgo_code 'PR-SV', name 'Scarlet & Violet Black Star Promos'), but neither its abbreviation nor its normalized name matches TCGCSV's 'SVP' / 'SV: Scarlet & Violet Promo Cards'. The auto-linker can't bridge them, so the link has to be supplied explicitly. synthesize_cards=true also fills the upstream gap: pokemontcg.io covers svp-1..165 but TCGCSV has products through ~svp-225 (World Championship etc.) — INSERT OR IGNORE leaves the upstream-managed rows untouched and only creates stubs for numbers pokemontcg.io hasn't published yet."
   },
   {
     "tcgcsv_group_id": 24451,

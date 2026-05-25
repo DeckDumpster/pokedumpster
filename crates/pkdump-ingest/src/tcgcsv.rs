@@ -222,6 +222,14 @@ struct SetSynthesis {
     name: String,
     series: String,
     release_date: Option<String>,
+    /// Logo/symbol URLs to plant on the synthesized `sets` row. Most
+    /// callers point at the parent-series set on pokemontcg.io so the
+    /// browse tile + binder symbol match the surrounding aesthetic
+    /// rather than rendering a textual ptcgo_code fallback.
+    #[serde(default)]
+    logo_url: Option<String>,
+    #[serde(default)]
+    symbol_url: Option<String>,
 }
 
 const SET_BRIDGES_JSON: &str = include_str!("../../../data/overrides/tcgcsv_set_bridges.json");
@@ -328,14 +336,17 @@ pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> R
             if let Some(synth) = &b.synthesize {
                 tx.execute(
                     "INSERT OR IGNORE INTO sets \
-                       (set_code, ptcgo_code, name, series, release_date) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                       (set_code, ptcgo_code, name, series, release_date, \
+                        logo_url, symbol_url) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     rusqlite::params![
                         b.set_code,
                         synth.ptcgo_code,
                         synth.name,
                         synth.series,
                         synth.release_date,
+                        synth.logo_url,
+                        synth.symbol_url,
                     ],
                 )?;
             }
@@ -424,65 +435,74 @@ pub fn synthesize_cards_for_bridges(conn: &mut Connection) -> Result<usize> {
         // number. Order so bare-name products (no `[`, no `(`) come
         // first — the first row per number becomes the canonical source.
         let mut stmt = tx.prepare(
-            "SELECT product_id, name, collector_number, image_url \
+            "SELECT product_id, name, collector_number, image_url, rarity \
                FROM tcgcsv_products \
               WHERE group_id = ?1 AND collector_number IS NOT NULL \
               ORDER BY \
                 (CASE WHEN name LIKE '%[%' OR name LIKE '%(%' THEN 1 ELSE 0 END), \
                 product_id",
         )?;
-        let rows: Vec<(i64, String, String, Option<String>)> = stmt
+        // (product_id, name, collector_number, image_url, rarity).
+        type SynthRow = (i64, String, String, Option<String>, Option<String>);
+        // (name, image_url, rarity) for each product sharing a number.
+        type ProductFields = (String, Option<String>, Option<String>);
+        let rows: Vec<SynthRow> = stmt
             .query_map([b.tcgcsv_group_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })?
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
 
         // Group products by normalized collector number, preserving the
         // canonical-first ordering above so the first entry per group is
-        // always the source of `name`.
-        let mut by_number: std::collections::BTreeMap<String, Vec<(String, Option<String>)>> =
+        // always the source of `name` (with image/rarity falling back to
+        // any sibling that has them).
+        let mut by_number: std::collections::BTreeMap<String, Vec<ProductFields>> =
             std::collections::BTreeMap::new();
-        for (_product_id, name, number, image_url) in rows {
+        for (_product_id, name, number, image_url, rarity) in rows {
             let normalized = normalize_collector_number(&number);
             by_number
                 .entry(normalized)
                 .or_default()
-                .push((name, image_url));
+                .push((name, image_url, rarity));
         }
 
         for (number, products) in by_number {
             let canonical = &products[0];
             let card_name = pkdump_core::variant::parse_product_card_name(&canonical.0);
-            // First non-NULL image across products for this number; the
-            // canonical is checked first because it leads the list.
-            let image = products.iter().find_map(|(_, u)| u.as_deref());
+            let image = products.iter().find_map(|(_, u, _)| u.as_deref());
+            let rarity = products.iter().find_map(|(_, _, r)| r.as_deref());
             let card_id = format!("{}-{}", b.set_code, number);
             let sortable = pkdump_core::number_sortable(&number);
 
             tx.execute(
                 "INSERT OR IGNORE INTO cards \
-                   (card_id, set_code, number, number_sortable, name, image_small, image_large) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                rusqlite::params![card_id, b.set_code, number, sortable, card_name, image],
+                   (card_id, set_code, number, number_sortable, name, rarity, \
+                    image_small, image_large) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                rusqlite::params![
+                    card_id, b.set_code, number, sortable, card_name, rarity, image
+                ],
             )?;
             n += tx.changes() as usize;
 
-            // Heal a synth-owned row whose image needs updating (the
-            // canonical or fallback may have changed since last refresh,
-            // or the previous run wrote a now-known-broken URL). The
-            // `raw_json IS NULL` predicate scopes the UPDATE to
-            // synth-managed rows — pokemon_tcg_data::upsert_card always
-            // writes raw_json on upstream rows, so it's the cleanest
-            // signal that a row came from synth rather than upstream.
+            // Heal a synth-owned row whose image/rarity needs updating
+            // (the canonical or fallback may have changed since last
+            // refresh, or the previous run wrote a now-known-broken
+            // URL). The `raw_json IS NULL` predicate scopes the UPDATE
+            // to synth-managed rows — pokemon_tcg_data::upsert_card
+            // always writes raw_json on upstream rows, so it's the
+            // cleanest signal that a row came from synth rather than
+            // upstream.
             tx.execute(
                 "UPDATE cards \
                     SET name        = ?2, \
-                        image_small = ?3, \
-                        image_large = ?3 \
+                        rarity      = ?3, \
+                        image_small = ?4, \
+                        image_large = ?4 \
                   WHERE card_id = ?1 \
                     AND raw_json IS NULL",
-                rusqlite::params![card_id, card_name, image],
+                rusqlite::params![card_id, card_name, rarity, image],
             )?;
         }
     }
@@ -556,6 +576,12 @@ pub fn import_products(conn: &mut Connection, products: &[TcgProduct], now: &str
         if number.is_empty() {
             continue;
         }
+        let rarity = product
+            .extended_data
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case("Rarity"))
+            .map(|e| e.value.trim().to_string())
+            .filter(|s| !s.is_empty());
         let derived: Option<String> =
             pkdump_core::variant::variant_from_product_name(&product.name)
                 .map(|s| s.to_string())
@@ -571,14 +597,16 @@ pub fn import_products(conn: &mut Connection, products: &[TcgProduct], now: &str
         };
         tx.execute(
             "INSERT INTO tcgcsv_products \
-               (product_id, group_id, name, collector_number, derived_variant, image_url, fetched_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+               (product_id, group_id, name, collector_number, derived_variant, \
+                image_url, rarity, fetched_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
              ON CONFLICT(product_id) DO UPDATE SET \
                group_id         = excluded.group_id, \
                name             = excluded.name, \
                collector_number = excluded.collector_number, \
                derived_variant  = excluded.derived_variant, \
                image_url        = excluded.image_url, \
+               rarity           = excluded.rarity, \
                fetched_at       = excluded.fetched_at",
             rusqlite::params![
                 product.product_id,
@@ -587,6 +615,7 @@ pub fn import_products(conn: &mut Connection, products: &[TcgProduct], now: &str
                 number,
                 derived,
                 image_url,
+                rarity,
                 now
             ],
         )?;
@@ -1182,6 +1211,113 @@ mod tests {
                 "ME Black Star Promos".into(),
                 Some(24451),
             )
+        );
+    }
+
+    #[test]
+    fn import_products_persists_rarity_from_extended_data() {
+        // TCGCSV ships "Rarity" alongside "Number" in extendedData
+        // — typically "Promo" for items in promo groups. Capturing it
+        // lets synth-cards render the same rarity glyph other cards
+        // get instead of looking blank.
+        let (_d, mut conn) = shared_db();
+        let products = vec![TcgProduct {
+            product_id: 694694,
+            group_id: 24451,
+            name: "Fennekin - 080".into(),
+            image_url: Some("https://tcgplayer-cdn.tcgplayer.com/product/694694_200w.jpg".into()),
+            url: None,
+            image_count: 1,
+            extended_data: vec![
+                ExtendedDatum {
+                    name: "Number".into(),
+                    value: "080".into(),
+                },
+                ExtendedDatum {
+                    name: "Rarity".into(),
+                    value: "Promo".into(),
+                },
+            ],
+        }];
+        import_products(&mut conn, &products, "2026-05-25").unwrap();
+        let rarity: Option<String> = conn
+            .query_row(
+                "SELECT rarity FROM tcgcsv_products WHERE product_id = 694694",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rarity.as_deref(), Some("Promo"));
+    }
+
+    #[test]
+    fn synthesize_cards_writes_rarity_from_canonical_product() {
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            [],
+        )
+        .unwrap();
+        let products = vec![TcgProduct {
+            product_id: 654594,
+            group_id: 24451,
+            name: "Meganium - 001".into(),
+            image_url: Some("https://tcgplayer.example/654594.jpg".into()),
+            url: None,
+            image_count: 1,
+            extended_data: vec![
+                ExtendedDatum {
+                    name: "Number".into(),
+                    value: "001".into(),
+                },
+                ExtendedDatum {
+                    name: "Rarity".into(),
+                    value: "Promo".into(),
+                },
+            ],
+        }];
+        import_products(&mut conn, &products, "2026-05-25").unwrap();
+        synthesize_cards_for_bridges(&mut conn).unwrap();
+        let rarity: Option<String> = conn
+            .query_row(
+                "SELECT rarity FROM cards WHERE card_id = 'mep-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rarity.as_deref(), Some("Promo"));
+    }
+
+    #[test]
+    fn synthesize_set_carries_logo_and_symbol_urls() {
+        // The bridge's synthesize block may supply logo_url + symbol_url
+        // (e.g. point MEP at the Mega Evolution parent set's art so the
+        // synthesized set tile matches the other Black Star Promos
+        // aesthetically). Tested via the existing MEP bridge entry.
+        let (_d, mut conn) = shared_db();
+        let groups = vec![TcgGroup {
+            group_id: 24451,
+            name: "ME: Mega Evolution Promo".into(),
+            abbreviation: Some("MEP".into()),
+            published_on: Some("2025-09-26T00:00:00".into()),
+        }];
+        import_groups(&mut conn, &groups, "2026-05-25").unwrap();
+        let row: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT logo_url, symbol_url FROM sets WHERE set_code = 'mep'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row.0.as_deref(),
+            Some("https://images.pokemontcg.io/me1/logo.png"),
+            "MEP inherits the Mega Evolution parent-set logo"
+        );
+        assert_eq!(
+            row.1.as_deref(),
+            Some("https://images.pokemontcg.io/me1/symbol.png")
         );
     }
 

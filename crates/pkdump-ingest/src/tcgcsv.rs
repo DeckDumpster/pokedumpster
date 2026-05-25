@@ -209,6 +209,15 @@ struct SetBridge {
     /// arrive later.
     #[serde(default)]
     synthesize_cards: bool,
+    /// Optional overrides for the set's logo/symbol URLs. When present,
+    /// these UPDATE the existing row even for upstream-managed sets —
+    /// "the bridge knows better than upstream art." Used to swap
+    /// pokemontcg.io's busy SVP symbol for a self-hosted glyph that
+    /// matches the rest of the promo-set lineup.
+    #[serde(default)]
+    logo_url: Option<String>,
+    #[serde(default)]
+    symbol_url: Option<String>,
     /// Free-form note describing why the bridge exists. Not consumed
     /// by code; the bridge file is the documentation surface.
     #[serde(default)]
@@ -222,14 +231,6 @@ struct SetSynthesis {
     name: String,
     series: String,
     release_date: Option<String>,
-    /// Logo/symbol URLs to plant on the synthesized `sets` row. Most
-    /// callers point at the parent-series set on pokemontcg.io so the
-    /// browse tile + binder symbol match the surrounding aesthetic
-    /// rather than rendering a textual ptcgo_code fallback.
-    #[serde(default)]
-    logo_url: Option<String>,
-    #[serde(default)]
-    symbol_url: Option<String>,
 }
 
 const SET_BRIDGES_JSON: &str = include_str!("../../../data/overrides/tcgcsv_set_bridges.json");
@@ -345,24 +346,21 @@ pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> R
                         synth.name,
                         synth.series,
                         synth.release_date,
-                        synth.logo_url,
-                        synth.symbol_url,
+                        b.logo_url,
+                        b.symbol_url,
                     ],
                 )?;
                 // Heal a synth-owned set row whose synthesize block has
-                // grown new fields since it was first inserted (e.g. we
-                // later added logo_url/symbol_url to the MEP bridge).
+                // grown new fields since it was first inserted.
                 // `ptcgio_fetched_at IS NULL` scopes this to synth rows
-                // — pokemon_tcg_data::upsert_set always stamps that
-                // column on upstream-managed rows.
+                // so upstream-managed sets stay untouched here — the
+                // logo/symbol override below handles those explicitly.
                 tx.execute(
                     "UPDATE sets \
                         SET ptcgo_code   = ?2, \
                             name         = ?3, \
                             series       = ?4, \
-                            release_date = ?5, \
-                            logo_url     = ?6, \
-                            symbol_url   = ?7 \
+                            release_date = ?5 \
                       WHERE set_code = ?1 \
                         AND ptcgio_fetched_at IS NULL",
                     rusqlite::params![
@@ -371,9 +369,21 @@ pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> R
                         synth.name,
                         synth.series,
                         synth.release_date,
-                        synth.logo_url,
-                        synth.symbol_url,
                     ],
+                )?;
+            }
+            // logo_url / symbol_url overrides apply to both synth and
+            // upstream-managed rows. The bridge is the source of truth
+            // for set art when it asserts an override — used to swap
+            // pokemontcg.io's busy SVP symbol for a self-hosted glyph
+            // that matches MEP and the rest of the promo lineup.
+            if b.logo_url.is_some() || b.symbol_url.is_some() {
+                tx.execute(
+                    "UPDATE sets \
+                        SET logo_url   = COALESCE(?2, logo_url), \
+                            symbol_url = COALESCE(?3, symbol_url) \
+                      WHERE set_code = ?1",
+                    rusqlite::params![b.set_code, b.logo_url, b.symbol_url],
                 )?;
             }
         }
@@ -1347,6 +1357,49 @@ mod tests {
             "MEP carries a self-hosted symbol so the /browse tile is \
              visually distinct from the regular Mega Evolution series \
              tiles (which all share me1/symbol.png)"
+        );
+    }
+
+    #[test]
+    fn bridge_symbol_url_overrides_upstream_pokemontcg_row() {
+        // SVP's pokemontcg.io row carries the official symbol_url, but
+        // the bridge ships a self-hosted glyph to match MEP's. The
+        // override must replace upstream's symbol on every refresh —
+        // unlike name/series, which stay upstream's authority.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date, \
+                               symbol_url, ptcgio_fetched_at) \
+             VALUES ('svp','PR-SV','Scarlet & Violet Black Star Promos','Scarlet & Violet', \
+                     '2023/01/01', \
+                     'https://images.pokemontcg.io/svp/symbol.png', \
+                     '2026-05-25T00:00:00')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![TcgGroup {
+            group_id: 22872,
+            name: "SV: Scarlet & Violet Promo Cards".into(),
+            abbreviation: Some("SVP".into()),
+            published_on: Some("2023-03-31T00:00:00".into()),
+        }];
+        import_groups(&mut conn, &groups, "2026-05-25").unwrap();
+
+        let row: (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, symbol_url FROM sets WHERE set_code='svp'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row.0, "Scarlet & Violet Black Star Promos",
+            "name stays under upstream's authority"
+        );
+        assert_eq!(
+            row.1.as_deref(),
+            Some("/sets/svp-symbol.svg"),
+            "bridge symbol_url overrides the upstream svp/symbol.png"
         );
     }
 

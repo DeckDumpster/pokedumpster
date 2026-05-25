@@ -1,7 +1,7 @@
-<!-- MEP symbol — flat text-on-black-with-border glyph. Matches the
-     companion svp-symbol.svg so the two promo sets read as a pair in
-     /browse instead of one looking ad-hoc next to the other. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 64" role="img" aria-label="MEP">
+<!-- SVP symbol — flat text-on-black-with-border glyph that overrides
+     pokemontcg.io's busier official symbol so SVP and MEP read as a
+     visually consistent pair in /browse. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 64" role="img" aria-label="SVP">
   <rect x="0" y="0" width="96" height="64" fill="#000" />
   <rect x="6" y="6" width="84" height="52" fill="none" stroke="#fff" stroke-width="3" />
   <text
@@ -13,5 +13,5 @@
     font-size="32"
     letter-spacing="2"
     fill="#fff"
-  >MEP</text>
+  >SVP</text>
 </svg>

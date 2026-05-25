@@ -1,0 +1,7 @@
+[
+  {
+    "card_id": "zsv10pt5-80",
+    "number": "80",
+    "reason": "pokemontcg.io ships id='zsv10pt5-80' (image: zsv10pt5/80.png) with number='60'; the printed card and image agree on 80. Live-verified against /v2/cards/zsv10pt5-80 on 2026-05-25 — not a stale cache. Without the override, Antique Cover Fossil collides with Escavalier at binder slot 60 and /card/zsv10pt5/80 404s."
+  }
+]

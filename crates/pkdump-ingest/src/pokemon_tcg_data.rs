@@ -6,13 +6,54 @@
 //! pokemontcg.io client fills the 2–3 month tail of newest sets the repo
 //! lags on.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use rusqlite::Connection;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::{IngestError, Result};
 use crate::pokemontcg::{PokemonTcgCard, PokemonTcgSet, cards_from_values};
+
+const UPSTREAM_CARD_CORRECTIONS: &str =
+    include_str!("../../../data/overrides/upstream_card_corrections.json");
+
+#[derive(Debug, Clone, Deserialize)]
+struct UpstreamCardCorrection {
+    card_id: String,
+    /// Overrides `cards.number` when pokemontcg.io's `number` disagrees
+    /// with the canonical id/image filename. `raw_json` is preserved
+    /// verbatim — only the materialized column is corrected.
+    #[serde(default)]
+    number: Option<String>,
+}
+
+fn upstream_card_corrections() -> &'static HashMap<String, UpstreamCardCorrection> {
+    static MAP: OnceLock<HashMap<String, UpstreamCardCorrection>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let entries: Vec<UpstreamCardCorrection> = serde_json::from_str(UPSTREAM_CARD_CORRECTIONS)
+            .expect("upstream_card_corrections.json failed to parse");
+        entries
+            .into_iter()
+            .map(|c| (c.card_id.clone(), c))
+            .collect()
+    })
+}
+
+/// Apply field-level corrections to a `PokemonTcgCard` before it's
+/// written to the catalog. Upstream pokemontcg.io occasionally ships
+/// rows where its own `id` and `number` disagree (e.g. `zsv10pt5-80`
+/// shipped with `number="60"`). The override registry is the registered
+/// list of those known cases — keyed by card_id.
+fn apply_upstream_card_correction(card: &mut PokemonTcgCard) {
+    if let Some(c) = upstream_card_corrections().get(&card.id)
+        && let Some(n) = &c.number
+    {
+        card.number = n.clone();
+    }
+}
 
 const REPO_TARBALL: &str =
     "https://codeload.github.com/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master";
@@ -129,6 +170,10 @@ pub fn upsert_set(conn: &Connection, set: &PokemonTcgSet, now: &str) -> Result<(
 /// the pokemontcg.io tail fetch (`pkdump setup`). `set_code` is supplied by
 /// the caller — the repo's per-set card files do not carry a `set` object.
 pub fn upsert_card(conn: &Connection, card: &PokemonTcgCard, set_code: &str) -> Result<()> {
+    let mut card = card.clone();
+    apply_upstream_card_correction(&mut card);
+    let card = &card;
+
     let arr_s = |v: &Option<Vec<String>>| v.as_ref().map(|x| Value::from(x.clone()).to_string());
     let arr_i = |v: &Option<Vec<i64>>| v.as_ref().map(|x| Value::from(x.clone()).to_string());
     let val = |v: &Option<Value>| v.as_ref().map(Value::to_string);
@@ -266,6 +311,79 @@ mod tests {
             .unwrap();
         assert_eq!(hp, 70);
         assert_eq!(ns, 1);
+    }
+
+    #[test]
+    fn upsert_card_applies_upstream_number_correction() {
+        // pokemontcg.io ships zsv10pt5-80 (Antique Cover Fossil) with
+        // number="60", colliding with zsv10pt5-60 Escavalier in our
+        // binder layout and 404ing /card/zsv10pt5/80. The override
+        // registry corrects number to "80" so the row lands at slot 80
+        // and number_sortable is computed from the corrected value.
+        let dbdir = tempfile::tempdir().unwrap();
+        let conn = pkdump_db::open_shared(&dbdir.path().join("shared.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, total, printed_total) \
+             VALUES ('zsv10pt5', 'Black Bolt', 'Scarlet & Violet', 172, 86)",
+            [],
+        )
+        .unwrap();
+
+        let raw = serde_json::json!({
+            "id": "zsv10pt5-80",
+            "name": "Antique Cover Fossil",
+            "supertype": "Trainer",
+            "subtypes": ["Item"],
+            "number": "60",
+            "rarity": "Common",
+            "images": {
+                "small": "https://images.pokemontcg.io/zsv10pt5/80.png",
+                "large": "https://images.pokemontcg.io/zsv10pt5/80_hires.png"
+            }
+        });
+        let mut card: PokemonTcgCard = serde_json::from_value(raw.clone()).unwrap();
+        card.raw = raw;
+
+        upsert_card(&conn, &card, "zsv10pt5").unwrap();
+
+        let (number, sortable): (String, i64) = conn
+            .query_row(
+                "SELECT number, number_sortable FROM cards WHERE card_id = 'zsv10pt5-80'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            number, "80",
+            "override must correct number to the id-suffix"
+        );
+        assert_eq!(
+            sortable, 80,
+            "number_sortable must follow the corrected number"
+        );
+
+        // Sanity: a row whose id and upstream number already agree
+        // passes through untouched (override only fires on registered
+        // card_ids).
+        let raw2 = serde_json::json!({
+            "id": "zsv10pt5-60",
+            "name": "Escavalier",
+            "supertype": "Pokémon",
+            "number": "60",
+            "rarity": "Uncommon",
+            "images": {"small": "https://x/60.png", "large": "https://x/60_hires.png"}
+        });
+        let mut card2: PokemonTcgCard = serde_json::from_value(raw2.clone()).unwrap();
+        card2.raw = raw2;
+        upsert_card(&conn, &card2, "zsv10pt5").unwrap();
+        let number2: String = conn
+            .query_row(
+                "SELECT number FROM cards WHERE card_id = 'zsv10pt5-60'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(number2, "60");
     }
 
     #[test]

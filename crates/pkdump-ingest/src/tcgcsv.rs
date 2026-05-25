@@ -1343,7 +1343,10 @@ mod tests {
         );
         assert_eq!(
             row.1.as_deref(),
-            Some("https://images.pokemontcg.io/me1/symbol.png")
+            Some("/sets/mep-symbol.svg"),
+            "MEP carries a self-hosted symbol so the /browse tile is \
+             visually distinct from the regular Mega Evolution series \
+             tiles (which all share me1/symbol.png)"
         );
     }
 

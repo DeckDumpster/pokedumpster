@@ -1,0 +1,28 @@
+<!-- ME: Mega Evolution Promo symbol — a self-hosted distinguishable
+     glyph. pokemontcg.io has no upstream MEP artwork (the set isn't
+     published there), so we ship our own: the classic Black Star Promo
+     motif with an "M" mark for Mega Evolution lineage. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ME Promo">
+  <!-- Five-pointed black star, the standard "promo" emblem. -->
+  <polygon
+    points="32,4 39.3,24.2 60.8,24.2 43.2,36.6 50.5,56.8 32,44.4 13.5,56.8 20.8,36.6 3.2,24.2 24.7,24.2"
+    fill="#111"
+    stroke="#111"
+    stroke-linejoin="round"
+    stroke-width="2"
+  />
+  <!-- Bold white "M" centered over the star body — keeps the silhouette
+       a clear star while marking the Mega Evolution lineage so MEP
+       reads visually distinct from me1/me2 (which carry the smooth
+       Mega Evolution chevron) and from svp (which carries the
+       SV-flair black star). -->
+  <text
+    x="32"
+    y="38"
+    text-anchor="middle"
+    font-family="-apple-system,'Segoe UI',sans-serif"
+    font-weight="900"
+    font-size="20"
+    fill="#fff"
+  >M</text>
+</svg>

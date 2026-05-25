@@ -281,21 +281,34 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
     // Pre-ensure every variant code the upcoming expansion might emit, so
     // the per-card insert loop doesn't pay a SELECT+INSERT roundtrip per
     // (card, variant) pair just to satisfy the FK on printings.variant.
-    // TCGCSV-derived variants are already covered by the seed JSON
-    // (sub_type_to_variant + variant_from_product_name only return seed
-    // codes); we just need to add cross-group MCAP codes from preload +
-    // overlay add-lists.
+    // Codes come from three sources:
+    //   - cross-group MCAP/Deck-Exclusives preload (stamps + patterns);
+    //   - overlay add-lists;
+    //   - tcgcsv_products.derived_variant for own-group products
+    //     (parse_stamp_tag at import time can produce arbitrary stamp_*
+    //     codes that aren't in the V2 seed — McDonald's promo stamps,
+    //     Worlds/Regionals staff stamps, etc.).
     {
         use std::collections::HashSet;
-        let mut codes: HashSet<&str> = HashSet::new();
+        let mut codes: HashSet<String> = HashSet::new();
         for products in cross_group_by_number.values() {
             for s in products {
-                codes.insert(&s.variant);
+                codes.insert(s.variant.clone());
             }
         }
         for ov in overrides {
             for add in &ov.add {
-                codes.insert(add);
+                codes.insert(add.clone());
+            }
+        }
+        {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT derived_variant FROM tcgcsv_products \
+                  WHERE derived_variant IS NOT NULL",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            for row in rows {
+                codes.insert(row?);
             }
         }
         let tx = conn.transaction()?;
@@ -876,6 +889,69 @@ mod tests {
             leaked, 0,
             "cosmo holo must not bleed onto same-named card in another set"
         );
+    }
+
+    #[test]
+    fn own_group_stamp_variant_is_pre_ensured_before_printing_insert() {
+        // Regression test for the FK violation on data refresh after
+        // import_products started writing stamp codes to derived_variant:
+        // the bulk-ensure at function entry must cover own-group derived
+        // codes (which now include arbitrary stamp_* codes from
+        // parse_stamp_tag), not just cross-group / overlay-add codes.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
+             VALUES ('m22', 'McDonald\u{2019}s Promos 2022', 'Sword & Shield', 3150, 15)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('m22-1', 'm22', '1', 1, 'Charizard', 'Promo')",
+            [],
+        )
+        .unwrap();
+        // A product in the card's own group whose derived_variant is a
+        // stamp code not present in the V2 seed. Mirrors what
+        // import_products writes today for McDonald's-style stamp
+        // products like "Charizard - 1 (1 Charizard Stamp)".
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (999001, 3150, 'Charizard - 1 (1 Charizard Stamp)', '1', 'stamp_1_charizard', '2026-05-24')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prices \
+               (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+             VALUES (999001, 'Holofoil', 'tcgplayer', 'market', 1.0, '2026-05-24')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let row: (String, Option<i64>) = conn
+            .query_row(
+                "SELECT variant, tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'm22-1-stamp_1_charizard'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("stamp_1_charizard".into(), Some(999001)));
+        // Variant was pre-ensured into the variants table so the FK
+        // could be satisfied.
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM variants WHERE code = 'stamp_1_charizard'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]

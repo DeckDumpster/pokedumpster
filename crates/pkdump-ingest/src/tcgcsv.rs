@@ -349,6 +349,32 @@ pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> R
                         synth.symbol_url,
                     ],
                 )?;
+                // Heal a synth-owned set row whose synthesize block has
+                // grown new fields since it was first inserted (e.g. we
+                // later added logo_url/symbol_url to the MEP bridge).
+                // `ptcgio_fetched_at IS NULL` scopes this to synth rows
+                // — pokemon_tcg_data::upsert_set always stamps that
+                // column on upstream-managed rows.
+                tx.execute(
+                    "UPDATE sets \
+                        SET ptcgo_code   = ?2, \
+                            name         = ?3, \
+                            series       = ?4, \
+                            release_date = ?5, \
+                            logo_url     = ?6, \
+                            symbol_url   = ?7 \
+                      WHERE set_code = ?1 \
+                        AND ptcgio_fetched_at IS NULL",
+                    rusqlite::params![
+                        b.set_code,
+                        synth.ptcgo_code,
+                        synth.name,
+                        synth.series,
+                        synth.release_date,
+                        synth.logo_url,
+                        synth.symbol_url,
+                    ],
+                )?;
             }
         }
         tx.commit()?;
@@ -1319,6 +1345,75 @@ mod tests {
             row.1.as_deref(),
             Some("https://images.pokemontcg.io/me1/symbol.png")
         );
+    }
+
+    #[test]
+    fn synthesize_set_self_heals_when_bridge_gains_fields() {
+        // Prod state on 2026-05-25: mep was synthesized before the bridge
+        // had logo_url/symbol_url, so the existing row carries NULL there.
+        // Subsequent refreshes must self-heal — INSERT OR IGNORE alone
+        // would leave the row half-populated. The heal scopes to
+        // `ptcgio_fetched_at IS NULL` so upstream-managed sets stay
+        // untouched.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', '2025/09/26')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![TcgGroup {
+            group_id: 24451,
+            name: "ME: Mega Evolution Promo".into(),
+            abbreviation: Some("MEP".into()),
+            published_on: Some("2025-09-26T00:00:00".into()),
+        }];
+        import_groups(&mut conn, &groups, "2026-05-25").unwrap();
+        let logo: Option<String> = conn
+            .query_row(
+                "SELECT logo_url FROM sets WHERE set_code = 'mep'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            logo.as_deref(),
+            Some("https://images.pokemontcg.io/me1/logo.png"),
+            "pre-existing synth row picks up new bridge fields"
+        );
+    }
+
+    #[test]
+    fn synthesize_set_does_not_clobber_upstream_pokemontcg_row() {
+        // If pokemontcg.io eventually publishes a competing set under
+        // the same set_code, the upstream row (marked by a non-NULL
+        // ptcgio_fetched_at) wins — synth's self-heal must leave it
+        // alone.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date, \
+                               logo_url, symbol_url, ptcgio_fetched_at) \
+             VALUES ('mep', 'REAL', 'Real Upstream MEP', 'Real Series', \
+                     '2026/01/01', \
+                     'https://images.pokemontcg.io/mep/logo.png', \
+                     'https://images.pokemontcg.io/mep/symbol.png', \
+                     '2026-05-25T00:00:00')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![TcgGroup {
+            group_id: 24451,
+            name: "ME: Mega Evolution Promo".into(),
+            abbreviation: Some("MEP".into()),
+            published_on: Some("2025-09-26T00:00:00".into()),
+        }];
+        import_groups(&mut conn, &groups, "2026-05-25").unwrap();
+        let name: String = conn
+            .query_row("SELECT name FROM sets WHERE set_code = 'mep'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Real Upstream MEP", "upstream row untouched");
     }
 
     #[test]

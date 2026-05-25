@@ -16,6 +16,7 @@
       "release_date": "2025/09/26"
     },
     "synthesize_cards": true,
+    "synthesize_rarity": "Promo",
     "logo_url": "https://images.pokemontcg.io/me1/logo.png",
     "symbol_url": "/sets/mep-symbol.svg",
     "comment": "Synthesize MEP. pokemontcg.io has not yet published a Mega Evolution Promo set (~8 months past TCGCSV's release on 2025-09-26 as of 2026-05-24). The set row is built from TCGCSV's group metadata, and synthesize_cards=true populates the cards table from the 83 known TCGCSV products so the binder isn't empty. INSERT OR IGNORE — when pokemontcg.io eventually adds the real set, its upserts win and synthesized stubs are superseded silently."

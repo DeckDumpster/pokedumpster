@@ -218,6 +218,14 @@ struct SetBridge {
     logo_url: Option<String>,
     #[serde(default)]
     symbol_url: Option<String>,
+    /// When set, every synthesized card in this bridge takes this
+    /// literal rarity regardless of what the canonical TCGCSV product's
+    /// "Rarity" extendedData says. Used for promo sets where the
+    /// convention (matching pokemontcg.io's svp) is that every card
+    /// reads as "Promo" — TCGCSV otherwise tags chase cards as e.g.
+    /// "Illustration Rare", which the promo-set binder shouldn't show.
+    #[serde(default)]
+    synthesize_rarity: Option<String>,
     /// Free-form note describing why the bridge exists. Not consumed
     /// by code; the bridge file is the documentation surface.
     #[serde(default)]
@@ -507,7 +515,14 @@ pub fn synthesize_cards_for_bridges(conn: &mut Connection) -> Result<usize> {
             let canonical = &products[0];
             let card_name = pkdump_core::variant::parse_product_card_name(&canonical.0);
             let image = products.iter().find_map(|(_, u, _)| u.as_deref());
-            let rarity = products.iter().find_map(|(_, _, r)| r.as_deref());
+            // Bridge-level `synthesize_rarity` (e.g. "Promo" for MEP)
+            // wins over whatever TCGCSV tags individual chase cards as.
+            // Mirrors the pokemontcg.io svp convention where every
+            // Black Star Promo card carries rarity "Promo".
+            let rarity = b
+                .synthesize_rarity
+                .as_deref()
+                .or_else(|| products.iter().find_map(|(_, _, r)| r.as_deref()));
             let card_id = format!("{}-{}", b.set_code, number);
             let sortable = pkdump_core::number_sortable(&number);
 
@@ -1284,6 +1299,54 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rarity.as_deref(), Some("Promo"));
+    }
+
+    #[test]
+    fn synthesize_rarity_override_in_bridge_wins_over_tcgcsv() {
+        // MEP's bridge sets synthesize_rarity="Promo" so every card —
+        // including the chase ones TCGCSV tags as "Illustration Rare" /
+        // "Holo Rare" — surfaces as Promo, matching the pokemontcg.io
+        // svp convention. This test exercises that path via the
+        // baked-in MEP bridge entry.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            [],
+        )
+        .unwrap();
+        let products = vec![TcgProduct {
+            product_id: 659231,
+            group_id: 24451,
+            name: "Meloetta - 026".into(),
+            image_url: None,
+            url: None,
+            image_count: 1,
+            extended_data: vec![
+                ExtendedDatum {
+                    name: "Number".into(),
+                    value: "026".into(),
+                },
+                ExtendedDatum {
+                    name: "Rarity".into(),
+                    value: "Illustration Rare".into(),
+                },
+            ],
+        }];
+        import_products(&mut conn, &products, "2026-05-25").unwrap();
+        synthesize_cards_for_bridges(&mut conn).unwrap();
+        let rarity: Option<String> = conn
+            .query_row(
+                "SELECT rarity FROM cards WHERE card_id = 'mep-26'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rarity.as_deref(),
+            Some("Promo"),
+            "bridge synthesize_rarity overrides TCGCSV's Illustration Rare tag"
+        );
     }
 
     #[test]

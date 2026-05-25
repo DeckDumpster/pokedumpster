@@ -103,6 +103,7 @@ fn app(state: AppState, static_dir: PathBuf) -> Router {
         // render the icon as a broken HTML "image").
         .nest_service("/rarity", ServeDir::new(static_dir.join("rarity")))
         .nest_service("/energy", ServeDir::new(static_dir.join("energy")))
+        .nest_service("/sets", ServeDir::new(static_dir.join("sets")))
         .route_service("/robots.txt", ServeFile::new(static_dir.join("robots.txt")))
         .with_state(state)
         .fallback(get(spa))

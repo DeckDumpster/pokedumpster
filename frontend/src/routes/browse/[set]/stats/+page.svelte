@@ -50,7 +50,9 @@
 			rarity === 'Common' ||
 			rarity === 'Uncommon' ||
 			rarity === 'Rare' ||
-			rarity === 'Illustration Rare'
+			rarity === 'Illustration Rare' ||
+			rarity === 'ACE SPEC Rare' ||
+			rarity === 'Rare ACE'
 		);
 	}
 

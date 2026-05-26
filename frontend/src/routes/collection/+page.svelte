@@ -402,7 +402,9 @@
 			rarity === 'Common' ||
 			rarity === 'Uncommon' ||
 			rarity === 'Rare' ||
-			rarity === 'Illustration Rare'
+			rarity === 'Illustration Rare' ||
+			rarity === 'ACE SPEC Rare' ||
+			rarity === 'Rare ACE'
 		);
 	}
 
@@ -835,7 +837,7 @@
 						</th>
 					{/if}
 					{@render sortable('qty', 'Qty', 'num qty')}
-					{@render sortable('name', 'Name', '')}
+					{@render sortable('name', 'Name', 'colflex')}
 					{@render sortable('type', 'Class', '')}
 					{@render sortable('etype', 'Type', 'center')}
 					<th>Cost</th>
@@ -844,10 +846,6 @@
 					{@render sortable('number', '#', 'num')}
 					{@render sortable('market', 'Price', 'num')}
 					{@render sortable('value', 'Value', 'num')}
-					<!-- Trailing spacer column: absorbs leftover viewport width
-					     so the named columns stay content-sized and the header
-					     underline still reaches the right edge. -->
-					<th class="spacer" aria-hidden="true"></th>
 				</tr>
 			</thead>
 			<tbody>
@@ -863,7 +861,7 @@
 							</td>
 						{/if}
 						<td class="num qty">{a.qty}</td>
-						<td>
+						<td class="colflex">
 							<div class="namecell">
 								{#if a.image_small}
 									<span class="thumbwrap" class:foil={isFoilVariant(a.variant)}>
@@ -948,7 +946,6 @@
 								<span class="pricedash">—</span>
 							{/if}
 						</td>
-						<td class="spacer"></td>
 					</tr>
 				{/each}
 				{#each unownedCatalog as c (c.card_id)}
@@ -958,7 +955,7 @@
 					>
 						{#if selectMode}<td class="cbcol"></td>{/if}
 						<td class="num qty"><span class="pricedash">—</span></td>
-						<td>
+						<td class="colflex">
 							<div class="namecell">
 								{#if c.image_small}
 									<img class="cardthumb" src={c.image_small} alt="" loading="lazy" />
@@ -1016,7 +1013,6 @@
 						<td class="num">{c.number}</td>
 						<td class="num"><span class="pricedash">—</span></td>
 						<td class="num"><span class="pricedash">—</span></td>
-						<td class="spacer"></td>
 					</tr>
 				{/each}
 			</tbody>
@@ -1470,21 +1466,20 @@
 
 	table.dd {
 		/* Span the full container so the header underline reaches the
-		   right edge on wide viewports. Named columns still hug their
-		   content because the trailing `.spacer` column absorbs all
-		   leftover width (see the empty <th>/<td> at row end). */
+		   right edge on wide viewports. The Name column (`.colflex`)
+		   absorbs all leftover width — the longest text column is the
+		   natural one to flex — while other columns stay content-sized. */
 		width: 100%;
 		border-collapse: collapse;
 		font-size: 0.9rem;
 		margin-top: 0;
 	}
-	/* Spacer column — invisible filler at the end of every row. `width:
-	   100%` makes table-layout: auto give it all the slack, so the
-	   named columns stay content-sized. */
-	table.dd th.spacer,
-	table.dd td.spacer {
+	/* The flex column: `width: 100%` under `table-layout: auto` makes
+	   this column claim all leftover horizontal space. Today it's the
+	   Name column. */
+	table.dd th.colflex,
+	table.dd td.colflex {
 		width: 100%;
-		padding: 0;
 	}
 	table.dd th,
 	table.dd td {

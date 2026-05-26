@@ -102,7 +102,16 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     let n_synth = tcgcsv::synthesize_cards_for_bridges(&mut conn)?;
     println!("  {n_synth} cards synthesized");
 
-    // 4. Variant expansion. TCGCSV is authoritative for which printings a
+    // 4. Re-seed the variants table from data/variants.json. `pkdump
+    //    setup` does this implicitly at bootstrap, but a long-lived
+    //    catalog never runs setup again — so edits to variants.json
+    //    (new codes, updated provenance, color tweaks) only land on
+    //    refresh if we explicitly reconcile here. Idempotent.
+    println!("Reconciling variants table from data/variants.json...");
+    let n_variants = pkdump_db::variants::reconcile(&mut conn)?;
+    println!("  {n_variants} variant rows reconciled");
+
+    // 5. Variant expansion. TCGCSV is authoritative for which printings a
     //    card has; the overlay still applies for cards TCGCSV can't model
     //    (cross-group stamped promos, etc.). Each printing carries its
     //    sub_type_name + tcgplayer_product_id so price queries stay a

@@ -3,4 +3,10 @@
 /**
  * One row of the variants table. Mirrors the schema 1:1.
  */
-export type Variant = { code: string, label: string, short: string, rank: number, color: string, };
+export type Variant = { code: string, label: string, short: string, rank: number, color: string, 
+/**
+ * Human-readable origin description (e.g. "Build & Battle Box",
+ * "Trick or Trade BOOster Bundle"). NULL for variants without a
+ * single canonical source. See pokedumpster-rlq.
+ */
+provenance: string | null, };

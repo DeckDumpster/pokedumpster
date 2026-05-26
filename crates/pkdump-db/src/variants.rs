@@ -25,6 +25,11 @@ pub struct Variant {
     #[ts(type = "number")]
     pub rank: i64,
     pub color: String,
+    /// Human-readable origin description (e.g. "Build & Battle Box",
+    /// "Trick or Trade BOOster Bundle"). NULL for variants without a
+    /// single canonical source. See pokedumpster-rlq.
+    #[serde(default)]
+    pub provenance: Option<String>,
 }
 
 /// Re-seed `variants` from `data/variants.json` and synthesize rows for
@@ -96,7 +101,9 @@ pub fn ensure_code(conn: &Connection, code: &str) -> Result<()> {
 /// Read the full variants table — backs the `/api/variants` endpoint.
 pub fn list_all(conn: &Connection) -> Result<Vec<Variant>> {
     let mut stmt =
-        conn.prepare("SELECT code, label, short, rank, color FROM variants ORDER BY rank, code")?;
+        conn.prepare(
+            "SELECT code, label, short, rank, color, provenance FROM variants ORDER BY rank, code",
+        )?;
     let rows = stmt.query_map([], |r| {
         Ok(Variant {
             code: r.get(0)?,
@@ -104,6 +111,7 @@ pub fn list_all(conn: &Connection) -> Result<Vec<Variant>> {
             short: r.get(2)?,
             rank: r.get(3)?,
             color: r.get(4)?,
+            provenance: r.get(5)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -111,12 +119,13 @@ pub fn list_all(conn: &Connection) -> Result<Vec<Variant>> {
 
 fn upsert(conn: &Connection, v: &Variant) -> Result<()> {
     conn.execute(
-        "INSERT INTO variants (code, label, short, rank, color) \
-         VALUES (?1, ?2, ?3, ?4, ?5) \
+        "INSERT INTO variants (code, label, short, rank, color, provenance) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
          ON CONFLICT(code) DO UPDATE SET \
            label = excluded.label, short = excluded.short, \
-           rank = excluded.rank, color = excluded.color",
-        params![v.code, v.label, v.short, v.rank, v.color],
+           rank = excluded.rank, color = excluded.color, \
+           provenance = excluded.provenance",
+        params![v.code, v.label, v.short, v.rank, v.color, v.provenance],
     )?;
     Ok(())
 }
@@ -149,6 +158,7 @@ fn synthesize(code: &str) -> Variant {
         short,
         rank: 4,
         color: "#b88cc0".to_string(),
+        provenance: None,
     }
 }
 

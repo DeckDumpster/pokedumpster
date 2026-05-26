@@ -2,6 +2,7 @@
 
 pub mod batches;
 pub mod binders;
+pub mod bundles;
 pub mod card;
 pub mod collection;
 pub mod decks;
@@ -25,6 +26,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(card::routes())
         .merge(sets::routes())
         .merge(binders::routes())
+        .merge(bundles::routes())
         .merge(decks::routes())
         .merge(sealed::routes())
         .merge(variants::routes())

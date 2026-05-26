@@ -2,15 +2,17 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import type { SetSummary } from '$lib/types/SetSummary';
+	import type { Bundle } from '$lib/types/Bundle';
 
 	let sets = $state<SetSummary[]>([]);
+	let bundles = $state<Bundle[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let search = $state('');
 
 	onMount(async () => {
 		try {
-			sets = await api.sets();
+			[sets, bundles] = await Promise.all([api.sets(), api.bundles()]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -45,6 +47,19 @@
 {:else if error}
 	<p class="error">Failed to load sets: {error}</p>
 {:else}
+	{#if bundles.length > 0}
+		<section class="bundles">
+			<h2>Bundles</h2>
+			<div class="bundlerow">
+				{#each bundles as b (b.slug)}
+					<a class="bundletile" href="/bundles/{b.slug}">
+						<div class="btitle">{b.name}</div>
+						<div class="bcount">{b.owned_count} / {b.slot_count} collected</div>
+					</a>
+				{/each}
+			</div>
+		</section>
+	{/if}
 	<input class="search" type="text" placeholder="Search sets…" bind:value={search} />
 	<p class="muted">{filtered.length} of {sets.length} sets</p>
 	<div class="grid">
@@ -140,5 +155,38 @@
 	}
 	.count + .bar.base {
 		margin-bottom: 0.35rem;
+	}
+	.bundles {
+		margin: 0.5rem 0 1.25rem;
+	}
+	.bundles h2 {
+		color: #e0e0e0;
+		font-size: 1rem;
+		margin: 0 0 0.4rem;
+	}
+	.bundlerow {
+		display: flex;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+	}
+	.bundletile {
+		flex: 0 0 auto;
+		background: #16213e;
+		border: 2px solid #0f3460;
+		border-radius: 8px;
+		padding: 0.5rem 0.8rem;
+		text-decoration: none;
+		color: #e0e0e0;
+	}
+	.bundletile:hover {
+		border-color: #e7732f;
+	}
+	.btitle {
+		font-weight: 600;
+		color: #e7732f;
+	}
+	.bcount {
+		font-size: 0.8rem;
+		color: #888;
 	}
 </style>

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import { variantLabel, variantRank } from '$lib/variants.svelte';
+	import { variantLabel, variantRank, variantProvenance } from '$lib/variants.svelte';
 	import type { CardDetail } from '$lib/types/CardDetail';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
@@ -358,9 +358,14 @@
 				.slice()
 				.sort((a, b) => variantRank(a.variant) - variantRank(b.variant)) as p (p.printing_id)}
 				<li class:dim={p.deprecated}>
-					<a class="facet variant" href={facetHref(variantLabel(p.variant))}>
-						{variantLabel(p.variant)}
-					</a>
+					<div class="vlabel">
+						<a class="facet variant" href={facetHref(variantLabel(p.variant))}>
+							{variantLabel(p.variant)}
+						</a>
+						{#if variantProvenance(p.variant)}
+							<span class="provenance">{variantProvenance(p.variant)}</span>
+						{/if}
+					</div>
 					<span class="market">{price(p.market_price)}</span>
 					{#if p.tcgplayer_product_id != null}
 						<a
@@ -678,6 +683,17 @@
 	}
 	.printings .variant {
 		color: #e0e0e0;
+	}
+	.vlabel {
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+		min-width: 0;
+	}
+	.provenance {
+		color: #888;
+		font-size: 0.72rem;
+		line-height: 1.25;
 	}
 	.printings .market {
 		color: #888;

@@ -34,6 +34,8 @@ import type { NewBatch } from './types/NewBatch';
 import type { ResolutionReport } from './types/ResolutionReport';
 import type { CommitResult } from './types/CommitResult';
 import type { Variant } from './types/Variant';
+import type { Bundle } from './types/Bundle';
+import type { BundleDetail } from './types/BundleDetail';
 
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
@@ -88,6 +90,12 @@ export const api = {
 
 	/** Every set, with card and owned-card counts. */
 	sets: () => getJson<SetSummary[]>('/api/sets'),
+
+	/** List bundle products (Trick or Trade BOOster Bundles). */
+	bundles: () => getJson<Bundle[]>('/api/bundles'),
+
+	/** Resolved 30-slot grid for one bundle. */
+	bundle: (slug: string) => getJson<BundleDetail>(`/api/bundles/${encodeURIComponent(slug)}`),
 
 	/** Analytical breakdown for one set: completion, rarity split, value. */
 	setAnalytics: (code: string) =>

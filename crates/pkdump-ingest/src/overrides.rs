@@ -31,11 +31,24 @@ use crate::tcgcsv::normalize_collector_number;
 ///   Battle Academies). Most entries are bare-name "Zacian - 045/094"
 ///   with no parenthetical; the variant comes from the
 ///   `prices.sub_type_name` (typically "Normal") rather than the name.
-const CROSS_GROUP_SOURCE_GROUPS: &[i64] = &[2374, 1840];
+/// - 3179 / 23266 / 23561 — Trick or Trade BOOster Bundle (2022 / 2023 /
+///   2024). All three years stamp reprinted cards with a Halloween
+///   Pikachu jack-o-lantern on the artwork; the 10 TTBB 2024 Cosmos Holo
+///   specials add a Cosmos Holo treatment too. Routed via two new
+///   variant codes (`stamp_trick_or_trade`, `cosmos_holo_trick_or_trade`)
+///   — see pokedumpster-vz2 / pokedumpster-bn9.
+const CROSS_GROUP_SOURCE_GROUPS: &[i64] = &[2374, 1840, 3179, 23266, 23561];
 
 /// Subset of `CROSS_GROUP_SOURCE_GROUPS` whose bare-name products resolve
 /// via `sub_type_to_variant` instead of via a name-pattern parser.
 const DECK_EXCLUSIVES_GROUP_ID: i64 = 1840;
+
+/// TCGCSV groups for the Trick or Trade BOOster Bundles. Bare-name
+/// products in these groups (no parenthetical) carry the year-agnostic
+/// Halloween Pikachu stamp on the card artwork → `stamp_trick_or_trade`.
+/// Parenthetical "(Cosmos Holo)" products in TTBB 2024 (23561) layer a
+/// Cosmos Holo treatment on top of the stamp → `cosmos_holo_trick_or_trade`.
+const TTBB_GROUP_IDS: &[i64] = &[3179, 23266, 23561];
 
 const VARIANT_AUGMENTATIONS: &str =
     include_str!("../../../data/overrides/variant_augmentations.json");
@@ -149,7 +162,17 @@ fn preload_cross_group_products(
             (v, kw, sub)
         } else if let Some(v) = variant_from_product_name(&name) {
             let sub = sub_type_first(conn, product_id)?;
-            (v.to_string(), None, sub)
+            // TTBB 2024 Cosmos Holo specials parse as "cosmos_holo" by the
+            // generic pattern parser. They're TTBB-exclusive (modern sets
+            // don't otherwise ship Cosmos Holo), so route them to the
+            // combined variant code that identifies them as TTBB on the
+            // chip. See pokedumpster-vz2.
+            let routed = if TTBB_GROUP_IDS.contains(&group_id) && v == "cosmos_holo" {
+                "cosmos_holo_trick_or_trade".to_string()
+            } else {
+                v.to_string()
+            };
+            (routed, None, sub)
         } else if group_id == DECK_EXCLUSIVES_GROUP_ID && !name.contains('(') {
             let Some(sub) = sub_type_first(conn, product_id)? else {
                 continue;
@@ -158,6 +181,15 @@ fn preload_cross_group_products(
                 continue;
             };
             (v.to_string(), None, Some(sub))
+        } else if TTBB_GROUP_IDS.contains(&group_id) && !name.contains('(') {
+            // Plain-name TTBB reprints — e.g. "Phantump 016/196",
+            // "Sprigatito - 012/193". No parenthetical to parse; the
+            // distinguishing feature is the Halloween Pikachu stamp on
+            // the artwork. All three TTBB years share the same stamp
+            // graphic, so they share one variant code; the year is
+            // recoverable via the printing's tcgcsv group_id if needed.
+            let sub = sub_type_first(conn, product_id)?;
+            ("stamp_trick_or_trade".to_string(), None, sub)
         } else {
             continue;
         };
@@ -1038,6 +1070,149 @@ mod tests {
         assert_eq!(
             leaked_with_product, 0,
             "deck exclusive must not bleed onto same-name+number card in another set"
+        );
+    }
+
+    #[test]
+    fn cross_group_ttbb_2024_cosmos_holo_attaches_with_combined_code() {
+        // TTBB 2024 (group 23561) ships 10 Cosmos Holo specials whose
+        // product names match the generic "(Cosmos Holo)" pattern. They
+        // must be routed to `cosmos_holo_trick_or_trade`, not the bare
+        // `cosmos_holo` code — the combined variant identifies them as
+        // TTBB-exclusive on the chip. See pokedumpster-vz2.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
+             VALUES ('sv3', 'Obsidian Flames', 'Scarlet & Violet', 22930, 197)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('sv3-136', 'sv3', '136', 136, 'Darkrai', 'Rare')",
+            [],
+        )
+        .unwrap();
+        // TTBB 2024 group, "(Cosmos Holo)" parenthetical. The tcgcsv
+        // ingest already pre-derives `cosmos_holo` from the name; the
+        // bridge must remap it for products in group 23561.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (568826, 23561, 'Darkrai (Cosmos Holo)', '136/197', 'cosmos_holo', '2026-05-26')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prices \
+               (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+             VALUES (568826, 'Holofoil', 'tcgplayer', 'market', 5.0, '2026-05-26')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let row: (String, Option<i64>) = conn
+            .query_row(
+                "SELECT variant, tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'sv3-136-cosmos_holo_trick_or_trade'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("cosmos_holo_trick_or_trade".into(), Some(568826)),
+            "TTBB 2024 Cosmos Holo must attach as cosmos_holo_trick_or_trade"
+        );
+        // The unrouted cosmos_holo must NOT appear — that would be the
+        // ambiguous "is it TTBB or a regular cosmos holo" chip.
+        let bare: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM printings WHERE printing_id = 'sv3-136-cosmos_holo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bare, 0, "must not double-attach as bare cosmos_holo");
+    }
+
+    #[test]
+    fn cross_group_ttbb_plain_reprint_attaches_as_stamp_trick_or_trade() {
+        // TTBB 2023 (group 23266) ships 30 bare-name reprints with the
+        // Halloween Pikachu stamp on the artwork — no parenthetical
+        // means none of the existing parsers triggered before. The
+        // bridge's TTBB branch routes them to `stamp_trick_or_trade`.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
+             VALUES ('swsh11', 'Lost Origin', 'Sword & Shield', 17688, 196)",
+            [],
+        )
+        .unwrap();
+        // Same-named card in another set with a different printed_total —
+        // the set_total disambiguator must keep the TTBB stamp off it.
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('xy11', 'Steam Siege', 'XY', 114)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('swsh11-16', 'swsh11', '16', 16, 'Phantump', 'Common')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('xy11-16', 'xy11', '16', 16, 'Phantump', 'Common')",
+            [],
+        )
+        .unwrap();
+        // The TTBB 2023 product — bare name, no derived_variant.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (515647, 23266, 'Phantump', '016/196', NULL, '2026-05-26')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prices \
+               (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+             VALUES (515647, 'Normal', 'tcgplayer', 'market', 0.25, '2026-05-26')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let row: (String, Option<i64>) = conn
+            .query_row(
+                "SELECT variant, tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'swsh11-16-stamp_trick_or_trade'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("stamp_trick_or_trade".into(), Some(515647)));
+        // The XY11 Phantump (same name+number, different printed_total)
+        // must NOT receive the TTBB stamp.
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM printings \
+                  WHERE printing_id = 'xy11-16-stamp_trick_or_trade'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            leaked, 0,
+            "TTBB stamp must not bleed onto same-name+number card in another set"
         );
     }
 

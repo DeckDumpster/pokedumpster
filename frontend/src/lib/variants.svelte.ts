@@ -50,3 +50,10 @@ export function variantColor(code: string): string {
 export function variantTag(code: string): string {
 	return variants.map[code]?.short ?? code;
 }
+
+/** Origin-of-the-printing description, e.g. "Build & Battle Box" or
+ *  "Trick or Trade BOOster Bundle". Null when no canonical source is
+ *  known. Rendered as a small subtitle on variant rows. */
+export function variantProvenance(code: string): string | null {
+	return variants.map[code]?.provenance ?? null;
+}

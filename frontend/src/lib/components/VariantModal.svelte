@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { variantLabel, variantRank } from '$lib/variants.svelte';
+	import { variantLabel, variantRank, variantProvenance } from '$lib/variants.svelte';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
 
 	let {
@@ -45,7 +45,12 @@
 	<ul>
 		{#each visible as p (p.printing_id)}
 			<li class:dim={p.deprecated}>
-				<span class="variant">{variantLabel(p.variant)}</span>
+				<div class="vlabel">
+					<span class="variant">{variantLabel(p.variant)}</span>
+					{#if variantProvenance(p.variant)}
+						<span class="provenance">{variantProvenance(p.variant)}</span>
+					{/if}
+				</div>
 				<span class="price">
 					{p.market_price != null ? `$${p.market_price.toFixed(2)}` : ''}
 				</span>
@@ -130,6 +135,17 @@
 	}
 	li.dim {
 		opacity: 0.5;
+	}
+	.vlabel {
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+		min-width: 0;
+	}
+	.provenance {
+		color: #888;
+		font-size: 0.72rem;
+		line-height: 1.25;
 	}
 	.price {
 		font-size: 0.8rem;

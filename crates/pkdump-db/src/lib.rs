@@ -8,6 +8,7 @@
 pub mod batches;
 pub mod binder;
 pub mod binders;
+pub mod bundles;
 pub mod cards;
 pub mod catalog;
 pub mod collection;

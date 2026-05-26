@@ -26,6 +26,14 @@ pub struct SetSummary {
     /// Distinct cards in the set the user owns at least one copy of.
     #[ts(type = "number")]
     pub owned_cards: i64,
+    /// Base-set cards only — `number_sortable <= printed_total`. Excludes
+    /// secret rares, subset sections, and promos. `None` when the set has
+    /// no `printed_total` so the UI can hide the bar gracefully (avoids
+    /// rendering 0/0 = NaN%).
+    #[ts(type = "number | null")]
+    pub base_total_cards: Option<i64>,
+    #[ts(type = "number | null")]
+    pub base_owned_cards: Option<i64>,
 }
 
 /// List every set, newest first, with card and owned-card counts. Requires a
@@ -38,7 +46,17 @@ pub fn list_sets(conn: &Connection) -> Result<Vec<SetSummary>> {
                 (SELECT count(DISTINCT cd.card_id) FROM collection c \
                    JOIN printings p ON c.printing_id = p.printing_id \
                    JOIN cards cd ON p.card_id = cd.card_id \
-                 WHERE cd.set_code = s.set_code) \
+                 WHERE cd.set_code = s.set_code), \
+                CASE WHEN s.printed_total IS NULL THEN NULL ELSE ( \
+                  SELECT count(*) FROM cards \
+                   WHERE set_code = s.set_code \
+                     AND number_sortable <= s.printed_total) END, \
+                CASE WHEN s.printed_total IS NULL THEN NULL ELSE ( \
+                  SELECT count(DISTINCT cd.card_id) FROM collection co \
+                    JOIN printings p ON co.printing_id = p.printing_id \
+                    JOIN cards cd ON p.card_id = cd.card_id \
+                  WHERE cd.set_code = s.set_code \
+                    AND cd.number_sortable <= s.printed_total) END \
          FROM sets s \
          ORDER BY s.release_date DESC NULLS LAST, s.set_code",
     )?;
@@ -55,6 +73,8 @@ pub fn list_sets(conn: &Connection) -> Result<Vec<SetSummary>> {
             symbol_url: r.get(8)?,
             total_cards: r.get(9)?,
             owned_cards: r.get(10)?,
+            base_total_cards: r.get(11)?,
+            base_owned_cards: r.get(12)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -350,6 +370,59 @@ mod tests {
         assert_eq!(sets[0].set_code, "sv3pt5");
         assert_eq!(sets[0].total_cards, 2);
         assert_eq!(sets[0].owned_cards, 1);
+        // printed_total is NULL on this fixture, so base counts are None
+        // — UI should hide the base bar in that case.
+        assert_eq!(sets[0].base_total_cards, None);
+        assert_eq!(sets[0].base_owned_cards, None);
+    }
+
+    #[test]
+    fn list_sets_reports_base_counts_when_printed_total_known() {
+        // printed_total=2 → cards #1 and #2 are base; #3 is a secret rare
+        // outside the base count. Owning #1 (base) and #3 (secret) yields
+        // base_owned=1 / base_total=2 while owned_cards=2 / total_cards=3.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, total, printed_total, release_date) \
+                 VALUES ('sv3pt5', '151', 'Scarlet & Violet', 3, 2, '2023/09/22')",
+                [],
+            )
+            .unwrap();
+            for n in ["1", "2", "3"] {
+                c.execute(
+                    "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                     VALUES (?1, 'sv3pt5', ?2, ?3, 'Card')",
+                    rusqlite::params![format!("sv3pt5-{n}"), n, n.parse::<i64>().unwrap()],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO printings (printing_id, card_id, variant) \
+                     VALUES (?1, ?2, 'normal')",
+                    rusqlite::params![format!("sv3pt5-{n}-normal"), format!("sv3pt5-{n}")],
+                )
+                .unwrap();
+            }
+        }
+        let mut conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        for n in ["1", "3"] {
+            collection::add(
+                &mut conn,
+                &NewCopy {
+                    printing_id: format!("sv3pt5-{n}-normal"),
+                    source: "manual_id".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let sets = list_sets(&conn).unwrap();
+        assert_eq!(sets[0].total_cards, 3);
+        assert_eq!(sets[0].owned_cards, 2);
+        assert_eq!(sets[0].base_total_cards, Some(2));
+        assert_eq!(sets[0].base_owned_cards, Some(1));
     }
 
     #[test]

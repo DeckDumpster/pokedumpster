@@ -195,19 +195,20 @@
 		<div class="info">
 			<h1>{card.name}</h1>
 			<p class="sub">
+				{#if card.set_symbol_url}
+					<a
+						class="facet binderlink"
+						href="/browse/{card.set_code}"
+						title="Open {card.set_name} binder"
+					>
+						<img class="setsym" src={card.set_symbol_url} alt={card.set_code} />
+					</a>
+				{/if}
 				<a
 					class="facet"
 					href={facetHref((card.set_ptcgo_code ?? card.set_code).toUpperCase())}
 					title="Filter collection by {(card.set_ptcgo_code ?? card.set_code).toUpperCase()}"
 				>
-					{#if card.set_symbol_url}
-						<img
-							class="setsym"
-							src={card.set_symbol_url}
-							alt={card.set_code}
-							title="{card.set_name} ({card.set_code})"
-						/>
-					{/if}
 					<span>{(card.set_ptcgo_code ?? card.set_code).toUpperCase()}</span>
 				</a>
 				· #{card.number}{#if card.rarity}

@@ -28,6 +28,11 @@
 	function pct(s: SetSummary): number {
 		return s.total_cards > 0 ? Math.round((s.owned_cards / s.total_cards) * 100) : 0;
 	}
+	function basePct(s: SetSummary): number {
+		if (s.base_total_cards == null || s.base_owned_cards == null || s.base_total_cards === 0)
+			return 0;
+		return Math.round((s.base_owned_cards / s.base_total_cards) * 100);
+	}
 </script>
 
 <svelte:head><title>Browse sets — PokeDumpster</title></svelte:head>
@@ -50,7 +55,11 @@
 				{/if}
 				<div class="title">{set.name}</div>
 				<div class="series">{set.series}</div>
-				<div class="count">{set.owned_cards} / {set.total_cards} cards</div>
+				{#if set.base_total_cards != null && set.base_owned_cards != null}
+					<div class="count">Base {set.base_owned_cards} / {set.base_total_cards}</div>
+					<div class="bar base"><span style:width="{basePct(set)}%"></span></div>
+				{/if}
+				<div class="count">Master {set.owned_cards} / {set.total_cards}</div>
 				<div class="bar"><span style:width="{pct(set)}%"></span></div>
 			</a>
 		{/each}
@@ -116,12 +125,20 @@
 		height: 6px;
 		background: #0f3460;
 		border-radius: 3px;
-		margin-top: 0.4rem;
+		margin-top: 0.2rem;
 		overflow: hidden;
 	}
 	.bar span {
 		display: block;
 		height: 100%;
 		background: #e94560;
+	}
+	/* Base-set bar is the "completion you actually care about" measure;
+	   green to distinguish from the red Master bar. */
+	.bar.base span {
+		background: #4caf72;
+	}
+	.count + .bar.base {
+		margin-bottom: 0.35rem;
 	}
 </style>

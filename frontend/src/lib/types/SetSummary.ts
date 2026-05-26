@@ -12,4 +12,11 @@ total_cards: number,
 /**
  * Distinct cards in the set the user owns at least one copy of.
  */
-owned_cards: number, };
+owned_cards: number, 
+/**
+ * Base-set cards only — `number_sortable <= printed_total`. Excludes
+ * secret rares, subset sections, and promos. `None` when the set has
+ * no `printed_total` so the UI can hide the bar gracefully (avoids
+ * rendering 0/0 = NaN%).
+ */
+base_total_cards: number | null, base_owned_cards: number | null, };

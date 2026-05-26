@@ -870,17 +870,15 @@
 										<img class="cardthumb" src={a.image_small} alt="" loading="lazy" />
 									</span>
 								{/if}
-								<span class="cardname">{a.name}</span>
-								{#if a.variant !== 'normal'}
-									<span class="tag vtag" title={variantLabel(a.variant)}>
-										{variantTag(a.variant)}
-									</span>
-								{/if}
-								{#if statusBadge(a.status)}
-									<span class="tag stag t-{a.status}" title={a.status}>
-										{statusBadge(a.status)}
-									</span>
-								{/if}
+								<span class="namebody"
+									><span class="cardname">{a.name}</span>{#if a.variant !== 'normal'}<span
+											class="tag vtag"
+											title={variantLabel(a.variant)}>{variantTag(a.variant)}</span
+										>{/if}{#if statusBadge(a.status)}<span
+											class="tag stag t-{a.status}"
+											title={a.status}>{statusBadge(a.status)}</span
+										>{/if}</span
+								>
 							</div>
 						</td>
 						<td>
@@ -1267,6 +1265,11 @@
 		color: #fff;
 	}
 	.sortbtn .caret {
+		/* Override the global .caret rule (#e94560) which collides with
+		   the active sortbtn's red background. Inheriting the button's
+		   color gives gray on inactive buttons and white on the active
+		   one, both readable. */
+		color: inherit;
 		font-size: 0.65rem;
 		opacity: 0.9;
 	}
@@ -1582,6 +1585,14 @@
 		font-weight: 500;
 		color: #e0e0e0;
 	}
+	/* Wrap name + inline tags so the tags flow with the text. Without this
+	   wrapper they sit as flex siblings of .namecell, and a long-wrapping
+	   name shrinks to fill the remaining width, pushing the tags to the
+	   right edge of the cell instead of abutting the name. */
+	.namebody {
+		min-width: 0;
+		line-height: 1.25;
+	}
 	/* Type cell: main type on top, subtypes on a smaller second line —
 	   matching DeckDumpster's .type-cell / .type-sub split. */
 	.typecell {
@@ -1624,8 +1635,14 @@
 		vertical-align: middle;
 	}
 
-	/* Inline tags (variant, non-owned status) — DD card-tag pattern. */
+	/* Inline tags (variant, non-owned status) — DD card-tag pattern.
+	   inline-block + vertical-align lets the pill keep its shape while
+	   flowing as inline content inside .namebody, so a wrapped card
+	   name has its tags glued to the last line of text. */
 	.tag {
+		display: inline-block;
+		vertical-align: middle;
+		margin-left: 0.4rem;
 		padding: 1px 4px;
 		font-size: 0.62rem;
 		font-weight: 600;
@@ -1633,6 +1650,7 @@
 		border-radius: 3px;
 		border: 1px solid;
 		letter-spacing: 0.04em;
+		white-space: nowrap;
 	}
 	.vtag {
 		background: #16213e;

@@ -1,10 +1,10 @@
 [
   { "code": "normal",              "label": "Normal",                       "short": "Normal", "rank": 0, "color": "#bbbbbb" },
-  { "code": "first_ed_normal",     "label": "1st Edition Normal",           "short": "1ED",    "rank": 0, "color": "#d4af37" },
+  { "code": "first_ed_normal",     "label": "1st Edition Normal",           "short": "1ED",    "rank": 0, "color": "#d4af37", "provenance": "1st Edition print run — early-era cards carry a '1st Edition' stamp on the artwork." },
 
-  { "code": "holo",                "label": "Holofoil",                     "short": "H",      "rank": 1, "color": "#f0c878" },
-  { "code": "first_ed_holo",       "label": "1st Edition Holofoil",         "short": "1ED",    "rank": 1, "color": "#d4af37" },
-  { "code": "unlimited_holo",      "label": "Unlimited Holofoil",           "short": "U",      "rank": 1, "color": "#aa7733" },
+  { "code": "holo",                "label": "Holofoil",                     "short": "H",      "rank": 1, "color": "#f0c878", "provenance": "Pulled from boosters — the holofoil version of the card's base printing." },
+  { "code": "first_ed_holo",       "label": "1st Edition Holofoil",         "short": "1ED",    "rank": 1, "color": "#d4af37", "provenance": "1st Edition print run — early-era cards carry a '1st Edition' stamp on the artwork; replaced by 'Unlimited' in later printings." },
+  { "code": "unlimited_holo",      "label": "Unlimited Holofoil",           "short": "U",      "rank": 1, "color": "#aa7733", "provenance": "Unlimited print run — the holo version sold after the 1st Edition stamp was dropped from the print plate." },
   { "code": "cosmos_holo",         "label": "Cosmos Holo",                  "short": "COSMOS", "rank": 1, "color": "#c0d0f0", "provenance": "Classic cosmos-pattern holofoil — older era Pokémon TCG products and reprint runs." },
   { "code": "cosmos_holo_trick_or_trade", "label": "Cosmos Holo (Trick or Trade)", "short": "TOT",    "rank": 1, "color": "#e88a3a", "provenance": "Trick or Trade BOOster Bundle 2024 — Cosmos Holo treatment exclusive to this Halloween bundle." },
   { "code": "cracked_ice_holo",    "label": "Cracked Ice Holo",             "short": "CRACK",  "rank": 1, "color": "#9ed4f0", "provenance": "Cracked-ice holofoil — themed deck and preconstructed product runs." },
@@ -29,6 +29,6 @@
   { "code": "stamp_holiday_calendar",  "label": "Holiday Calendar Stamp",   "short": "STAMP",  "rank": 4, "color": "#c0282d", "provenance": "Holiday Advent Calendar — sealed seasonal product." },
   { "code": "stamp_trick_or_trade",    "label": "Trick or Trade Stamp",     "short": "TOT",    "rank": 4, "color": "#e7732f", "provenance": "Trick or Trade BOOster Bundle — Halloween booster bundle stamped with a jack-o-lantern Pikachu, released annually." },
 
-  { "code": "peelable_ditto",          "label": "Peelable Ditto",           "short": "DITTO",  "rank": 5, "color": "#d8a4d4" },
-  { "code": "black_dot_error",         "label": "Black Dot Error",          "short": "ERROR",  "rank": 5, "color": "#222222" }
+  { "code": "peelable_ditto",          "label": "Peelable Ditto",           "short": "DITTO",  "rank": 5, "color": "#d8a4d4", "provenance": "Peelable Ditto — a Ditto-disguised card whose sticker layer peels off to reveal the underlying Pokémon." },
+  { "code": "black_dot_error",         "label": "Black Dot Error",          "short": "ERROR",  "rank": 5, "color": "#222222", "provenance": "Black-dot misprint — production error from a specific print run; collectible specifically as an error variant." }
 ]

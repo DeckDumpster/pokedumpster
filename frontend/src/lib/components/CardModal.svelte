@@ -22,10 +22,21 @@
 
 <div class="backdrop" role="presentation" onclick={onClose}></div>
 <div class="modal" role="dialog" aria-modal="true" aria-label="Card detail">
-	<!-- Floating close button over the modal's top-right corner — gives the
-	     card the full width without the dedicated closebar row. Always above
-	     the scrolling content so it stays reachable as the user scrolls. -->
-	<button class="x" onclick={onClose} aria-label="Close">×</button>
+	<!-- Floating controls over the modal's top-right corner. Stays above
+	     the scrolling content so they're reachable as the user scrolls.
+	     The full-page link is the canonical view — every mutation here
+	     hits the same backend, so opening the page reloads fresh state
+	     and reconciles any drift between this modal and a page open in
+	     another tab. -->
+	<div class="controls">
+		<a
+			class="fulllink"
+			href="/card/{setCode}/{number}"
+			title="Open the full card page (canonical view)"
+			aria-label="Open full card page">⤢</a
+		>
+		<button class="x" onclick={onClose} aria-label="Close">×</button>
+	</div>
 	<div class="body">
 		<CardDetailView {setCode} {number} {onNavigate} />
 	</div>
@@ -63,11 +74,16 @@
 		border: 2px solid #0f3460;
 		border-radius: 12px;
 	}
-	.x {
+	.controls {
 		position: absolute;
 		top: 8px;
 		right: 8px;
 		z-index: 3;
+		display: flex;
+		gap: 6px;
+	}
+	.x,
+	.fulllink {
 		width: 32px;
 		height: 32px;
 		display: flex;
@@ -81,8 +97,13 @@
 		line-height: 1;
 		cursor: pointer;
 		padding: 0;
+		text-decoration: none;
 	}
-	.x:hover {
+	.fulllink {
+		font-size: 1rem;
+	}
+	.x:hover,
+	.fulllink:hover {
 		background: #e94560;
 		color: #fff;
 	}

@@ -78,7 +78,15 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     println!("Opening shared catalog at {}", db_path.display());
     let mut conn = pkdump_db::open_shared(&db_path)?;
 
-    // 1. pokemontcg.io tail — pick up sets released since the last refresh.
+    // 1. Reconcile the variants table from data/variants.json — runs
+    //    first because it's purely local (no network) and idempotent.
+    //    Putting it ahead of the network calls means a flaky upstream
+    //    can't keep variants.json edits from landing on the next refresh.
+    println!("Reconciling variants table from data/variants.json...");
+    let n_variants = pkdump_db::variants::reconcile(&mut conn)?;
+    println!("  {n_variants} variant rows reconciled");
+
+    // 2. pokemontcg.io tail — pick up sets released since the last refresh.
     println!("Filling newest sets from pokemontcg.io...");
     let added = import_tail(&mut conn)?;
     println!("  added {added} set(s) not yet in the catalog");
@@ -101,15 +109,6 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     println!("Synthesizing cards for bridged groups...");
     let n_synth = tcgcsv::synthesize_cards_for_bridges(&mut conn)?;
     println!("  {n_synth} cards synthesized");
-
-    // 4. Re-seed the variants table from data/variants.json. `pkdump
-    //    setup` does this implicitly at bootstrap, but a long-lived
-    //    catalog never runs setup again — so edits to variants.json
-    //    (new codes, updated provenance, color tweaks) only land on
-    //    refresh if we explicitly reconcile here. Idempotent.
-    println!("Reconciling variants table from data/variants.json...");
-    let n_variants = pkdump_db::variants::reconcile(&mut conn)?;
-    println!("  {n_variants} variant rows reconciled");
 
     // 5. Variant expansion. TCGCSV is authoritative for which printings a
     //    card has; the overlay still applies for cards TCGCSV can't model

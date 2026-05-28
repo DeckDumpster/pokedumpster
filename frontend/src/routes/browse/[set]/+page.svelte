@@ -79,6 +79,10 @@
 		}
 		pageNum = 1;
 	}
+	// Two-tier state: `searchRaw` mirrors the input character-by-character,
+	// `search` is the debounced value that drives the URL + API load. The
+	// per-keystroke effect below schedules the debounce; the load effect
+	// only sees the debounced one.
 	let searchRaw = $state(initialQ);
 	let search = $state(initialQ.trim());
 	let searchDebounce: ReturnType<typeof setTimeout>;
@@ -155,7 +159,7 @@
 		set('subset', includeSubset ? '1' : '0', '1');
 		set('promos', includePromos ? '1' : '0', '0');
 		set('sort', sort, 'number');
-		set('q', searchRaw.trim(), '');
+		set('q', search, '');
 		set('missing', missingOnly ? '1' : '0', '0');
 		window.history.replaceState({}, '', url);
 	}
@@ -245,13 +249,28 @@
 		}
 	}
 
-	function onSearch(value: string) {
-		searchRaw = value;
+	// Reschedule the debounced `search` update whenever the raw input changes.
+	// Kept in its own effect so the load+syncUrl effect below only depends on
+	// the debounced value — otherwise every keystroke would refire load().
+	$effect(() => {
+		void searchRaw;
 		clearTimeout(searchDebounce);
 		searchDebounce = setTimeout(() => {
-			search = value.trim();
+			const next = searchRaw.trim();
+			if (next === search) return;
+			search = next;
 			pageNum = 1;
 		}, 250);
+	});
+
+	function clearSearch() {
+		clearTimeout(searchDebounce);
+		searchRaw = '';
+		if (search !== '') {
+			search = '';
+			pageNum = 1;
+		}
+		searchInput?.focus();
 	}
 
 	/** Whether the user owns at least one printing of this slot's card. */
@@ -316,8 +335,7 @@
 				class="search"
 				type="text"
 				placeholder="Search this set…"
-				value={searchRaw}
-				oninput={(e) => onSearch(e.currentTarget.value)}
+				bind:value={searchRaw}
 				bind:this={searchInput}
 			/>
 			{#if searchRaw}
@@ -326,10 +344,7 @@
 					type="button"
 					aria-label="Clear search"
 					title="Clear"
-					onclick={() => {
-						onSearch('');
-						searchInput?.focus();
-					}}
+					onclick={clearSearch}
 				>×</button>
 			{/if}
 		</div>

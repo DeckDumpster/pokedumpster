@@ -41,6 +41,24 @@ export function variantRank(code: string): number {
 	return variants.map[code]?.rank ?? 100;
 }
 
+/** Intra-rank sort key — lower sorts first inside the same rank.
+ *  Places first_ed_* before shadowless_* before normal/unlimited_* in
+ *  the binder-slot chip ribbon. */
+export function variantTiebreak(code: string): number {
+	return variants.map[code]?.tiebreak ?? 0;
+}
+
+/** Comparator that sorts a list of variant codes by (rank, tiebreak, code). */
+export function variantSortCmp(a: string, b: string): number {
+	const ra = variantRank(a);
+	const rb = variantRank(b);
+	if (ra !== rb) return ra - rb;
+	const ta = variantTiebreak(a);
+	const tb = variantTiebreak(b);
+	if (ta !== tb) return ta - tb;
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** Chip pip color for browse-slot variant chips. */
 export function variantColor(code: string): string {
 	return variants.map[code]?.color ?? '#b88cc0';

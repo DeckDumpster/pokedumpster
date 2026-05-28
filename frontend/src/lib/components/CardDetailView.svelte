@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import { variantLabel, variantRank, variantProvenance } from '$lib/variants.svelte';
+	import { variantLabel, variantSortCmp, variantProvenance } from '$lib/variants.svelte';
 	import type { CardDetail } from '$lib/types/CardDetail';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
@@ -356,7 +356,7 @@
 			{#each detail.printings
 				.filter((p) => !p.deprecated || p.owned_count > 0)
 				.slice()
-				.sort((a, b) => variantRank(a.variant) - variantRank(b.variant)) as p (p.printing_id)}
+				.sort((a, b) => variantSortCmp(a.variant, b.variant)) as p (p.printing_id)}
 				<li class:dim={p.deprecated}>
 					<div class="vlabel">
 						<a class="facet variant" href={facetHref(variantLabel(p.variant))}>
@@ -423,7 +423,7 @@
 								>
 									{#each detail.printings
 										.slice()
-										.sort((a, b) => variantRank(a.variant) - variantRank(b.variant)) as p (p.printing_id)}
+										.sort((a, b) => variantSortCmp(a.variant, b.variant)) as p (p.printing_id)}
 										<option value={p.printing_id}>{variantLabel(p.variant)}</option>
 									{/each}
 								</select>

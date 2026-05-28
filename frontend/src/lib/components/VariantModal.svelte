@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { variantLabel, variantRank, variantProvenance } from '$lib/variants.svelte';
+	import { variantLabel, variantSortCmp, variantProvenance } from '$lib/variants.svelte';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
 
 	let {
@@ -20,12 +20,12 @@
 	// reverse_holo for a base-set card that variant expansion has since
 	// dropped). Keep deprecated printings the user *does* own visible — and
 	// dimmed — so they can still see and remove those copies. Sort by
-	// variantRank so the modal mirrors the browse slot chip order.
+	// (rank, tiebreak, code) so the modal mirrors the browse slot chip order.
 	const visible = $derived(
 		slot.printings
 			.filter((p) => !p.deprecated || p.owned_count > 0)
 			.slice()
-			.sort((a, b) => variantRank(a.variant) - variantRank(b.variant))
+			.sort((a, b) => variantSortCmp(a.variant, b.variant))
 	);
 </script>
 

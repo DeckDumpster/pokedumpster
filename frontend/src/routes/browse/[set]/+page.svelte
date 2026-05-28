@@ -3,7 +3,7 @@
 	import { api } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
-	import { variantColor, variantLabel, variantRank } from '$lib/variants.svelte';
+	import { variantColor, variantLabel, variantSortCmp } from '$lib/variants.svelte';
 	import type { BinderPage } from '$lib/types/BinderPage';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
 
@@ -459,7 +459,7 @@
 						{#each slot.printings
 							.filter((p) => !p.deprecated)
 							.slice()
-							.sort((a, b) => variantRank(a.variant) - variantRank(b.variant)) as p (p.printing_id)}
+							.sort((a, b) => variantSortCmp(a.variant, b.variant)) as p (p.printing_id)}
 							<button
 								class="vchip"
 								class:owned={p.owned_count > 0}

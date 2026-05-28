@@ -92,6 +92,14 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let n_variants = pkdump_db::variants::reconcile(&mut conn)?;
     println!("  {n_variants} variants known");
 
+    // 4b. Reconcile the TCGCSV (group, sub_type) → variant lookup table —
+    //     authored in data/tcgcsv_sub_type_variants.json. Must run after
+    //     variants::reconcile (the FK is on variants.code) and before
+    //     expand_all_printings consults it. See pokedumpster-5is.
+    println!("Reconciling tcgcsv_sub_type_variant_map...");
+    let n_sub = pkdump_db::sub_type_map::reconcile(&mut conn)?;
+    println!("  {n_sub} (group, sub_type) → variant rows");
+
     // 5. Synthesize card rows for bridged TCGCSV groups whose upstream
     //    pokemontcg.io entry doesn't exist yet (e.g. MEP). Idempotent
     //    INSERT OR IGNORE — when upstream catches up, the real cards

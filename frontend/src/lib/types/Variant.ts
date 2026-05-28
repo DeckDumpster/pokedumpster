@@ -3,7 +3,15 @@
 /**
  * One row of the variants table. Mirrors the schema 1:1.
  */
-export type Variant = { code: string, label: string, short: string, rank: number, color: string, 
+export type Variant = { code: string, label: string, short: string, rank: number, 
+/**
+ * Intra-rank sort key — lower sorts first inside the same rank.
+ * Lets `first_ed_normal` (0) precede `shadowless_normal` (1) precede
+ * `normal`/`unlimited_normal` (2) inside a single binder slot.
+ * Defaults to 0 for variants where the order within their rank
+ * doesn't matter. See pokedumpster-5is.
+ */
+tiebreak: number, color: string, 
 /**
  * Human-readable origin description (e.g. "Build & Battle Box",
  * "Trick or Trade BOOster Bundle"). NULL for variants without a

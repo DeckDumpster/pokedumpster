@@ -24,6 +24,14 @@ pub struct Variant {
     pub short: String,
     #[ts(type = "number")]
     pub rank: i64,
+    /// Intra-rank sort key — lower sorts first inside the same rank.
+    /// Lets `first_ed_normal` (0) precede `shadowless_normal` (1) precede
+    /// `normal`/`unlimited_normal` (2) inside a single binder slot.
+    /// Defaults to 0 for variants where the order within their rank
+    /// doesn't matter. See pokedumpster-5is.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub tiebreak: i64,
     pub color: String,
     /// Human-readable origin description (e.g. "Build & Battle Box",
     /// "Trick or Trade BOOster Bundle"). NULL for variants without a
@@ -91,27 +99,28 @@ pub fn reconcile(conn: &mut Connection) -> Result<usize> {
 pub fn ensure_code(conn: &Connection, code: &str) -> Result<()> {
     let v = synthesize(code);
     conn.execute(
-        "INSERT OR IGNORE INTO variants (code, label, short, rank, color) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![v.code, v.label, v.short, v.rank, v.color],
+        "INSERT OR IGNORE INTO variants (code, label, short, rank, tiebreak, color) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![v.code, v.label, v.short, v.rank, v.tiebreak, v.color],
     )?;
     Ok(())
 }
 
 /// Read the full variants table — backs the `/api/variants` endpoint.
 pub fn list_all(conn: &Connection) -> Result<Vec<Variant>> {
-    let mut stmt =
-        conn.prepare(
-            "SELECT code, label, short, rank, color, provenance FROM variants ORDER BY rank, code",
-        )?;
+    let mut stmt = conn.prepare(
+        "SELECT code, label, short, rank, tiebreak, color, provenance \
+           FROM variants ORDER BY rank, tiebreak, code",
+    )?;
     let rows = stmt.query_map([], |r| {
         Ok(Variant {
             code: r.get(0)?,
             label: r.get(1)?,
             short: r.get(2)?,
             rank: r.get(3)?,
-            color: r.get(4)?,
-            provenance: r.get(5)?,
+            tiebreak: r.get(4)?,
+            color: r.get(5)?,
+            provenance: r.get(6)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -119,13 +128,21 @@ pub fn list_all(conn: &Connection) -> Result<Vec<Variant>> {
 
 fn upsert(conn: &Connection, v: &Variant) -> Result<()> {
     conn.execute(
-        "INSERT INTO variants (code, label, short, rank, color, provenance) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+        "INSERT INTO variants (code, label, short, rank, tiebreak, color, provenance) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
          ON CONFLICT(code) DO UPDATE SET \
            label = excluded.label, short = excluded.short, \
-           rank = excluded.rank, color = excluded.color, \
-           provenance = excluded.provenance",
-        params![v.code, v.label, v.short, v.rank, v.color, v.provenance],
+           rank = excluded.rank, tiebreak = excluded.tiebreak, \
+           color = excluded.color, provenance = excluded.provenance",
+        params![
+            v.code,
+            v.label,
+            v.short,
+            v.rank,
+            v.tiebreak,
+            v.color,
+            v.provenance
+        ],
     )?;
     Ok(())
 }
@@ -157,6 +174,7 @@ fn synthesize(code: &str) -> Variant {
         label,
         short,
         rank: 4,
+        tiebreak: 0,
         color: "#b88cc0".to_string(),
         provenance: None,
     }

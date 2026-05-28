@@ -30,11 +30,18 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL; \
          PRAGMA synchronous = NORMAL; \
-         PRAGMA cache_size = -65536; \
-         PRAGMA foreign_keys = ON;",
+         PRAGMA cache_size = -65536;",
     )?;
     conn.busy_timeout(Duration::from_secs(5))?;
+    // Foreign keys must be OFF during migrations: table-rebuild migrations
+    // (drop column + CREATE NEW / COPY / DROP / RENAME) trip the FK
+    // checker on DROP TABLE for any rebuilt parent table, and SQLite's
+    // `defer_foreign_keys` only defers DML checks, not DDL. After the
+    // migration commits, all FK targets exist again (the rename restored
+    // them), so turning enforcement back on is safe.
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
     migrations::run_shared_migrations(&mut conn)?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     Ok(conn)
 }
 

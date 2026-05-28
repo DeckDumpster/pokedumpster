@@ -30,6 +30,11 @@ enum DataCommand {
     /// migrating an existing catalog without paying for a full TCGCSV
     /// import.
     NormalizeSymbols(RefreshArgs),
+    /// Reconcile variant + sub_type maps from JSON and re-run variant
+    /// expansion against existing TCGCSV products. No network — useful
+    /// after editing data/variants.json or data/tcgcsv_sub_type_variants
+    /// .json, or after a migration that adds a new bridge.
+    Expand(RefreshArgs),
 }
 
 /// Arguments for `pkdump data refresh`.
@@ -45,7 +50,36 @@ pub fn run(args: DataArgs) -> anyhow::Result<()> {
     match args.command {
         DataCommand::Refresh(args) => refresh(args),
         DataCommand::NormalizeSymbols(args) => normalize_symbols(args),
+        DataCommand::Expand(args) => expand_only(args),
     }
+}
+
+/// Execute `pkdump data expand` — reconcile JSON-driven lookups and
+/// re-run variant expansion. Skips all network steps. Use after editing
+/// `data/variants.json` or `data/tcgcsv_sub_type_variants.json`, or
+/// after a migration that adds a bridge entry the catalog doesn't yet
+/// have linked in `tcgplayer_groups`.
+fn expand_only(args: RefreshArgs) -> anyhow::Result<()> {
+    let db_path = match args.db {
+        Some(p) => p,
+        None => pkdump_db::shared_db_path()?,
+    };
+    println!("Opening shared catalog at {}", db_path.display());
+    let mut conn = pkdump_db::open_shared(&db_path)?;
+
+    println!("Reconciling variants table from data/variants.json...");
+    let n_variants = pkdump_db::variants::reconcile(&mut conn)?;
+    println!("  {n_variants} variant rows reconciled");
+
+    println!("Reconciling tcgcsv_sub_type_variant_map...");
+    let n_sub = pkdump_db::sub_type_map::reconcile(&mut conn)?;
+    println!("  {n_sub} (group, sub_type) → variant rows");
+
+    println!("Expanding variants into printings...");
+    let overlay = overrides::load_variant_augmentations()?;
+    let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
+    println!("  wrote {printings} printings");
+    Ok(())
 }
 
 /// Execute `pkdump data normalize-symbols` — just the symbols phase, no
@@ -85,6 +119,14 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     println!("Reconciling variants table from data/variants.json...");
     let n_variants = pkdump_db::variants::reconcile(&mut conn)?;
     println!("  {n_variants} variant rows reconciled");
+
+    // 1b. Reconcile (group, sub_type) → variant map from
+    //     data/tcgcsv_sub_type_variants.json. Lives next to the
+    //     variants seed and follows the same idempotent-reconcile
+    //     pattern. Variant expansion (step 3 below) reads this back.
+    println!("Reconciling tcgcsv_sub_type_variant_map...");
+    let n_sub = pkdump_db::sub_type_map::reconcile(&mut conn)?;
+    println!("  {n_sub} (group, sub_type) → variant rows");
 
     // 2. pokemontcg.io tail — pick up sets released since the last refresh.
     println!("Filling newest sets from pokemontcg.io...");

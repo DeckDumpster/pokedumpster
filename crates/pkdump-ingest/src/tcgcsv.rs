@@ -196,6 +196,15 @@ pub fn classify_sealed(name: &str) -> &'static str {
 struct SetBridge {
     tcgcsv_group_id: i64,
     set_code: String,
+    /// What this bridge represents in the set ↔ groups mapping. 'primary'
+    /// (the default) is the regular print run — bridging it wipes any
+    /// auto-link to the same set_code so the bridge wins on conflict.
+    /// Auxiliary roles like 'shadowless' or 'first_edition' don't wipe;
+    /// they layer additional (group, set) bridges on top of the primary,
+    /// which is what makes Base Set's group-604 + group-1663 split
+    /// expressible in the data model (pokedumpster-5is).
+    #[serde(default = "default_bridge_role")]
+    role: String,
     /// When present, the bridge first INSERT-OR-IGNOREs a `sets` row
     /// built from these fields before linking — used for groups whose
     /// upstream set entry doesn't exist yet.
@@ -243,6 +252,10 @@ struct SetSynthesis {
 
 const SET_BRIDGES_JSON: &str = include_str!("../../../data/overrides/tcgcsv_set_bridges.json");
 
+fn default_bridge_role() -> String {
+    "primary".to_string()
+}
+
 fn load_set_bridges() -> Result<Vec<SetBridge>> {
     Ok(serde_json::from_str(SET_BRIDGES_JSON)?)
 }
@@ -254,12 +267,15 @@ fn load_set_bridges() -> Result<Vec<SetBridge>> {
 ///   1. `group.abbreviation` ↔ `sets.ptcgo_code` (case-insensitive),
 ///   2. `normalize_set_name(group.name)` ↔ `normalize_set_name(set.name)`.
 ///
-/// Each set is claimed by at most one group and each group bridges to at
-/// most one set, so `sets.tcgcsv_group_id` stays UNIQUE. `ptcgo_code` is
-/// not unique (promo codes recur, many are NULL) and TCGCSV reuses a name
-/// across the odd group, so any tier may offer the same set to several
-/// groups — the first group (by id, deterministic) takes it. Groups are
-/// processed in id order so the assignment is stable across re-runs.
+/// One set is claimed by at most one group via auto-link (the regular
+/// print run, role='primary'); auxiliary print runs that need a second
+/// group bridged to the same set (e.g. base1's Shadowless group 1663)
+/// are supplied by the bridge overlay with role='shadowless' and don't
+/// pass through this function. `ptcgo_code` is not unique (promo codes
+/// recur, many are NULL) and TCGCSV reuses a name across the odd group,
+/// so any tier may offer the same set to several groups — the first
+/// group (by id, deterministic) takes it. Groups are processed in id
+/// order so the assignment is stable across re-runs.
 fn resolve_group_set_links(
     conn: &Connection,
     groups: &[TcgGroup],
@@ -324,15 +340,19 @@ fn resolve_group_set_links(
 }
 
 /// Import groups into `tcgplayer_groups`, bridging each to a catalog set via
-/// [`resolve_group_set_links`]. Both `tcgplayer_groups.set_code` and the
-/// reciprocal `sets.tcgcsv_group_id` are written from that single decision
-/// so the two links never disagree. Returns the number of groups.
+/// [`resolve_group_set_links`]. `tcgplayer_groups.set_code` is the 1:N bridge
+/// from set → groups; each row also carries a `role` (`primary` for the
+/// regular run, `shadowless`/`first_edition`/… for auxiliary print runs
+/// supplied by the bridge overlay). Returns the number of groups.
 ///
 /// Before the auto-link runs, the bridge overlay
 /// (`data/overrides/tcgcsv_set_bridges.json`) is applied: it synthesizes
 /// any `sets` rows the overlay declares (idempotent INSERT-OR-IGNORE) so
 /// the auto-linker can see them, then injects (group_id → set_code)
-/// entries that take precedence over abbreviation/name matching.
+/// entries that take precedence over abbreviation/name matching. A
+/// `primary`-role bridge wipes any auto-link to the same set_code and
+/// claims the slot; auxiliary-role bridges layer additional links on
+/// top — the auto-linked primary stays intact.
 pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> Result<usize> {
     let bridges = load_set_bridges()?;
 
@@ -398,45 +418,49 @@ pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> R
         tx.commit()?;
     }
 
-    let mut links = resolve_group_set_links(conn, groups)?;
-    // Bridges win: clear any auto-link that would conflict with a
-    // bridged set_code, then apply the bridge mapping directly.
+    // (group_id) -> (set_code, role). Start from auto-links (all primary),
+    // then layer bridges on top per role.
+    let auto = resolve_group_set_links(conn, groups)?;
+    let mut links_with_role: std::collections::HashMap<i64, (String, String)> = auto
+        .into_iter()
+        .map(|(g, s)| (g, (s, "primary".to_string())))
+        .collect();
     for b in &bridges {
-        links.retain(|_, v| v != &b.set_code);
-        links.insert(b.tcgcsv_group_id, b.set_code.clone());
+        if b.role == "primary" {
+            // Primary bridges win on conflict — strip any other auto-link
+            // claiming the same set_code as primary, then claim it.
+            links_with_role.retain(|_, (s, r)| !(s == &b.set_code && r == "primary"));
+        }
+        links_with_role.insert(b.tcgcsv_group_id, (b.set_code.clone(), b.role.clone()));
     }
 
     let tx = conn.transaction()?;
-    // Re-derive every link from scratch so `data refresh` re-runs converge
-    // on the same state regardless of prior contents.
-    tx.execute("UPDATE sets SET tcgcsv_group_id = NULL", [])?;
     for g in groups {
-        let set_code = links.get(&g.group_id);
+        let (set_code, role) = match links_with_role.get(&g.group_id) {
+            Some((s, r)) => (Some(s.as_str()), r.as_str()),
+            None => (None, "primary"),
+        };
         tx.execute(
             "INSERT INTO tcgplayer_groups
-               (group_id, set_code, name, abbreviation, published_on, fetched_at)
-             VALUES (?1, ?6, ?2, ?4, ?3, ?5)
+               (group_id, set_code, name, abbreviation, published_on, fetched_at, role)
+             VALUES (?1, ?6, ?2, ?4, ?3, ?5, ?7)
              ON CONFLICT(group_id) DO UPDATE SET
                set_code     = excluded.set_code,
                name         = excluded.name,
                abbreviation = excluded.abbreviation,
                published_on = excluded.published_on,
-               fetched_at   = excluded.fetched_at",
+               fetched_at   = excluded.fetched_at,
+               role         = excluded.role",
             rusqlite::params![
                 g.group_id,
                 g.name,
                 g.published_on,
                 g.abbreviation,
                 now,
-                set_code
+                set_code,
+                role,
             ],
         )?;
-        if let Some(set_code) = set_code {
-            tx.execute(
-                "UPDATE sets SET tcgcsv_group_id = ?1 WHERE set_code = ?2",
-                rusqlite::params![g.group_id, set_code],
-            )?;
-        }
     }
     tx.commit()?;
     Ok(groups.len())
@@ -862,7 +886,8 @@ mod tests {
 
         let gid: Option<i64> = conn
             .query_row(
-                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'sv3pt5'",
+                "SELECT group_id FROM tcgplayer_groups \
+                  WHERE set_code = 'sv3pt5' AND role = 'primary'",
                 [],
                 |r| r.get(0),
             )
@@ -873,8 +898,8 @@ mod tests {
     #[test]
     fn import_groups_survives_shared_ptcgo_code() {
         // Two sets share a ptcgo_code (real promo codes recur). Two groups
-        // carry that code. The import must not violate UNIQUE(tcgcsv_group_id)
-        // — each group links a single distinct set.
+        // carry that code. Each group links a single distinct set as its
+        // primary bridge.
         let (_d, mut conn) = shared_db();
         conn.execute(
             "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
@@ -904,7 +929,8 @@ mod tests {
 
         let linked: i64 = conn
             .query_row(
-                "SELECT count(*) FROM sets WHERE tcgcsv_group_id IS NOT NULL",
+                "SELECT count(*) FROM tcgplayer_groups \
+                  WHERE set_code IS NOT NULL AND role = 'primary'",
                 [],
                 |r| r.get(0),
             )
@@ -912,13 +938,16 @@ mod tests {
         assert_eq!(linked, 2, "each group linked one distinct set");
         let distinct: i64 = conn
             .query_row(
-                "SELECT count(DISTINCT tcgcsv_group_id) FROM sets \
-                 WHERE tcgcsv_group_id IS NOT NULL",
+                "SELECT count(DISTINCT set_code) FROM tcgplayer_groups \
+                  WHERE set_code IS NOT NULL AND role = 'primary'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(distinct, 2, "the two sets hold distinct group ids");
+        assert_eq!(
+            distinct, 2,
+            "the two sets each have a distinct primary group"
+        );
     }
 
     #[test]
@@ -1101,14 +1130,6 @@ mod tests {
         }];
         import_groups(&mut conn, &groups, "2026-05-19").unwrap();
 
-        let gid: Option<i64> = conn
-            .query_row(
-                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'swsh8'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(gid, Some(2906), "name fallback must bridge the set");
         let set_code: Option<String> = conn
             .query_row(
                 "SELECT set_code FROM tcgplayer_groups WHERE group_id = 2906",
@@ -1119,28 +1140,27 @@ mod tests {
         assert_eq!(
             set_code.as_deref(),
             Some("swsh8"),
-            "both link sides must agree"
+            "name fallback must bridge the set"
         );
 
         // Idempotent across re-runs.
         import_groups(&mut conn, &groups, "2026-05-19").unwrap();
-        let again: Option<i64> = conn
+        let again: Option<String> = conn
             .query_row(
-                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'swsh8'",
+                "SELECT set_code FROM tcgplayer_groups WHERE group_id = 2906",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(again, Some(2906));
+        assert_eq!(again.as_deref(), Some("swsh8"));
     }
 
     #[test]
     fn import_groups_keeps_link_sides_consistent() {
-        // Many groups share the "PR" promo abbreviation. The group that
-        // claims a set must be the one whose `set_code` points back to it,
-        // so `link_card_printings` (which trusts `sets.tcgcsv_group_id`)
-        // and `import_sealed_products` (which reads `tcgplayer_groups
-        // .set_code`) never disagree.
+        // Many groups share the "PR" promo abbreviation. Each set ↔ group
+        // bridge stored in tcgplayer_groups.set_code is the single source
+        // of truth — variant expansion and import_sealed_products both
+        // read from it, so there's only one side to keep consistent.
         let (_d, mut conn) = shared_db();
         conn.execute(
             "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
@@ -1165,28 +1185,29 @@ mod tests {
         ];
         import_groups(&mut conn, &groups, "2026-05-19").unwrap();
 
-        // Every set with a group id has a group that points back to it.
-        let mismatched: i64 = conn
+        // Two distinct sets, two distinct group ids — each set has one
+        // primary bridge and they don't collide.
+        let linked: i64 = conn
             .query_row(
-                "SELECT count(*) FROM sets s \
-                 JOIN tcgplayer_groups g ON s.tcgcsv_group_id = g.group_id \
-                 WHERE g.set_code IS NOT s.set_code",
+                "SELECT count(DISTINCT set_code) FROM tcgplayer_groups \
+                  WHERE set_code IS NOT NULL AND role = 'primary'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(mismatched, 0, "the two link sides must never disagree");
-
-        // Two distinct sets, two distinct group ids — UNIQUE preserved.
-        let distinct: i64 = conn
+        assert_eq!(linked, 2);
+        // Each linked group has a set_code that points back to a real set.
+        let orphans: i64 = conn
             .query_row(
-                "SELECT count(DISTINCT tcgcsv_group_id) FROM sets \
-                 WHERE tcgcsv_group_id IS NOT NULL",
+                "SELECT count(*) FROM tcgplayer_groups g \
+                  WHERE g.set_code IS NOT NULL \
+                    AND NOT EXISTS \
+                      (SELECT 1 FROM sets s WHERE s.set_code = g.set_code)",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(distinct, 2);
+        assert_eq!(orphans, 0, "every linked group points at a real set");
     }
 
     #[test]
@@ -1212,15 +1233,6 @@ mod tests {
         }];
         import_groups(&mut conn, &groups, "2026-05-24").unwrap();
 
-        let gid: Option<i64> = conn
-            .query_row(
-                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'svp'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(gid, Some(22872), "bridge links svp to TCGCSV group 22872");
-
         let set_code: Option<String> = conn
             .query_row(
                 "SELECT set_code FROM tcgplayer_groups WHERE group_id = 22872",
@@ -1228,7 +1240,11 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(set_code.as_deref(), Some("svp"));
+        assert_eq!(
+            set_code.as_deref(),
+            Some("svp"),
+            "bridge links svp to TCGCSV group 22872"
+        );
     }
 
     #[test]
@@ -1246,12 +1262,11 @@ mod tests {
         }];
         import_groups(&mut conn, &groups, "2026-05-24").unwrap();
 
-        let row: (String, Option<String>, String, Option<i64>) = conn
+        let row: (String, Option<String>, String) = conn
             .query_row(
-                "SELECT set_code, ptcgo_code, name, tcgcsv_group_id \
-                   FROM sets WHERE set_code = 'mep'",
+                "SELECT set_code, ptcgo_code, name FROM sets WHERE set_code = 'mep'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
         assert_eq!(
@@ -1260,9 +1275,16 @@ mod tests {
                 "mep".into(),
                 Some("MEP".into()),
                 "ME Black Star Promos".into(),
-                Some(24451),
             )
         );
+        let bridged: Option<String> = conn
+            .query_row(
+                "SELECT set_code FROM tcgplayer_groups WHERE group_id = 24451",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bridged.as_deref(), Some("mep"));
     }
 
     #[test]
@@ -1310,8 +1332,8 @@ mod tests {
         // baked-in MEP bridge entry.
         let (_d, mut conn) = shared_db();
         conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
-             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution')",
             [],
         )
         .unwrap();
@@ -1353,8 +1375,8 @@ mod tests {
     fn synthesize_cards_writes_rarity_from_canonical_product() {
         let (_d, mut conn) = shared_db();
         conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
-             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution')",
             [],
         )
         .unwrap();
@@ -1658,8 +1680,8 @@ mod tests {
         // The MEP set row is pre-seeded by import_groups (via the
         // bridge); for this unit test we seed it directly.
         conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
-             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution')",
             [],
         )
         .unwrap();
@@ -1740,8 +1762,8 @@ mod tests {
         // than ship a card with no image.
         let (_d, mut conn) = shared_db();
         conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
-             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution')",
             [],
         )
         .unwrap();
@@ -1804,8 +1826,8 @@ mod tests {
         // images.pokemontcg.io).
         let (_d, mut conn) = shared_db();
         conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
-             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution')",
             [],
         )
         .unwrap();
@@ -1854,8 +1876,8 @@ mod tests {
         // same set_code as an upstream-managed set.
         let (_d, mut conn) = shared_db();
         conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
-             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution')",
             [],
         )
         .unwrap();
@@ -1892,8 +1914,8 @@ mod tests {
         // card row (real catalog data) must be preserved untouched.
         let (_d, mut conn) = shared_db();
         conn.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series, tcgcsv_group_id) \
-             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution', 24451)",
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution')",
             [],
         )
         .unwrap();
@@ -1967,14 +1989,14 @@ mod tests {
         import_groups(&mut conn, &groups, "2026-05-25").unwrap();
 
         // svp still linked to 22872.
-        let svp_gid: Option<i64> = conn
+        let svp_link: Option<String> = conn
             .query_row(
-                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'svp'",
+                "SELECT set_code FROM tcgplayer_groups WHERE group_id = 22872",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(svp_gid, Some(22872));
+        assert_eq!(svp_link.as_deref(), Some("svp"));
         // mep was synthesized exactly once, still linked to 24451.
         let mep_count: i64 = conn
             .query_row(
@@ -1984,13 +2006,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(mep_count, 1, "synthesized set must not duplicate on re-run");
-        let mep_gid: Option<i64> = conn
+        let mep_link: Option<String> = conn
             .query_row(
-                "SELECT tcgcsv_group_id FROM sets WHERE set_code = 'mep'",
+                "SELECT set_code FROM tcgplayer_groups WHERE group_id = 24451",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(mep_gid, Some(24451));
+        assert_eq!(mep_link.as_deref(), Some("mep"));
     }
 }

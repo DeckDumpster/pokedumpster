@@ -284,11 +284,17 @@ mod tests {
         // Slot ordering is by numeric prefix of collector_number — 130
         // (Umbreon) before 136 (Darkrai).
         assert_eq!(detail.slots[0].number_sortable, 130);
-        assert_eq!(detail.slots[0].variant.as_deref(), Some("stamp_trick_or_trade"));
+        assert_eq!(
+            detail.slots[0].variant.as_deref(),
+            Some("stamp_trick_or_trade")
+        );
         assert_eq!(detail.slots[0].card_id.as_deref(), Some("sv3-130"));
         assert_eq!(detail.slots[0].set_name.as_deref(), Some("Obsidian Flames"));
         assert_eq!(detail.slots[1].number_sortable, 136);
-        assert_eq!(detail.slots[1].variant.as_deref(), Some("cosmos_holo_trick_or_trade"));
+        assert_eq!(
+            detail.slots[1].variant.as_deref(),
+            Some("cosmos_holo_trick_or_trade")
+        );
     }
 
     #[test]
@@ -305,8 +311,16 @@ mod tests {
         )
         .unwrap();
         let detail = get_bundle(&conn, "ttbb-2024").unwrap().unwrap();
-        let umb = detail.slots.iter().find(|s| s.number_sortable == 130).unwrap();
-        let dark = detail.slots.iter().find(|s| s.number_sortable == 136).unwrap();
+        let umb = detail
+            .slots
+            .iter()
+            .find(|s| s.number_sortable == 130)
+            .unwrap();
+        let dark = detail
+            .slots
+            .iter()
+            .find(|s| s.number_sortable == 136)
+            .unwrap();
         assert_eq!(umb.owned_count, 1);
         assert_eq!(dark.owned_count, 0);
         assert_eq!(detail.bundle.owned_count, 1);

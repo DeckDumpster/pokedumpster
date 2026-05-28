@@ -18,6 +18,7 @@ pub mod import;
 pub mod orders;
 pub mod sealed;
 pub mod sets;
+pub mod sub_type_map;
 pub mod variants;
 pub mod wishlist;
 

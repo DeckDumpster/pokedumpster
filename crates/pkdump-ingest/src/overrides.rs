@@ -12,9 +12,9 @@ use std::collections::{BTreeMap, HashMap};
 use rusqlite::Connection;
 
 use pkdump_core::variant::{
-    VariantOverride, parse_product_card_name, parse_stamp_tag, sub_type_to_variant,
-    variant_from_product_name,
+    VariantOverride, parse_product_card_name, parse_stamp_tag, variant_from_product_name,
 };
+use pkdump_db::sub_type_map::SubTypeVariantMap;
 
 use crate::error::Result;
 use crate::tcgcsv::normalize_collector_number;
@@ -40,7 +40,8 @@ use crate::tcgcsv::normalize_collector_number;
 const CROSS_GROUP_SOURCE_GROUPS: &[i64] = &[2374, 1840, 3179, 23266, 23561];
 
 /// Subset of `CROSS_GROUP_SOURCE_GROUPS` whose bare-name products resolve
-/// via `sub_type_to_variant` instead of via a name-pattern parser.
+/// via the `tcgcsv_sub_type_variant_map` lookup instead of via a
+/// name-pattern parser.
 const DECK_EXCLUSIVES_GROUP_ID: i64 = 1840;
 
 /// TCGCSV groups for the Trick or Trade BOOster Bundles. Bare-name
@@ -120,6 +121,7 @@ fn parse_set_total(raw: &str) -> Option<i64> {
 /// neither parser are skipped silently.
 fn preload_cross_group_products(
     conn: &Connection,
+    sub_type_map: &SubTypeVariantMap,
 ) -> Result<HashMap<String, Vec<CrossGroupProduct>>> {
     // i64 list → string is injection-safe; rusqlite's IN-list ergonomics
     // are awkward for a small static set, so inline the IDs.
@@ -177,7 +179,7 @@ fn preload_cross_group_products(
             let Some(sub) = sub_type_first(conn, product_id)? else {
                 continue;
             };
-            let Some(v) = sub_type_to_variant(&sub) else {
+            let Some(v) = sub_type_map.lookup(group_id, &sub) else {
                 continue;
             };
             (v.to_string(), None, Some(sub))
@@ -225,23 +227,34 @@ fn sub_type_first(conn: &Connection, product_id: i64) -> Result<Option<String>> 
 /// Look up TCGCSV products for a card and resolve each to (variant,
 /// sub_type, product_id). Returns an empty vec when the card has no TCGCSV
 /// products — caller handles the bootstrap fallback.
-fn variants_from_tcgcsv(conn: &Connection, card: &CardRow) -> Result<Vec<VariantResolution>> {
-    // Pull every product in the card's group whose collector number
-    // matches (TCGCSV's number is suffixed with the set total, our cards
-    // table has the bare form; normalize both).
+///
+/// A set can have multiple TCGCSV groups linked via `tcgplayer_groups
+/// .set_code` (the bridge): the regular run as role='primary', plus any
+/// auxiliary runs (e.g. base1's group 1663 'shadowless'). The query
+/// iterates products from every linked group, and the per-group entry
+/// in `tcgcsv_sub_type_variant_map` reroutes ambiguous sub_type strings
+/// (e.g. "Unlimited Holofoil" → unlimited_holo in the Unlimited group,
+/// → shadowless_holo in the Shadowless group). See pokedumpster-5is.
+fn variants_from_tcgcsv(
+    conn: &Connection,
+    card: &CardRow,
+    sub_type_map: &SubTypeVariantMap,
+) -> Result<Vec<VariantResolution>> {
     let mut stmt = conn.prepare(
-        "SELECT tp.product_id, tp.collector_number, tp.derived_variant \
+        "SELECT tp.product_id, tp.collector_number, tp.derived_variant, tp.group_id \
            FROM tcgcsv_products tp \
-           JOIN sets s ON s.tcgcsv_group_id = tp.group_id \
-          WHERE s.set_code = ?1",
+           JOIN tcgplayer_groups g ON g.group_id = tp.group_id \
+          WHERE g.set_code = ?1",
     )?;
-    let raw: Vec<(i64, Option<String>, Option<String>)> = stmt
-        .query_map([&card.set_code], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+    let raw: Vec<(i64, Option<String>, Option<String>, i64)> = stmt
+        .query_map([&card.set_code], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
         .collect::<rusqlite::Result<_>>()?;
 
     let want = normalize_collector_number(&card.number);
     let mut out: Vec<VariantResolution> = Vec::new();
-    for (product_id, raw_num, derived) in raw {
+    for (product_id, raw_num, derived, group_id) in raw {
         let Some(num) = raw_num else { continue };
         if normalize_collector_number(&num) != want {
             continue;
@@ -262,7 +275,8 @@ fn variants_from_tcgcsv(conn: &Connection, card: &CardRow) -> Result<Vec<Variant
                 out.push((pattern, sub, Some(product_id)));
             }
             None => {
-                // Base product: one variant per advertised sub_type.
+                // Base product: one variant per advertised sub_type,
+                // resolved through the group-aware map.
                 let mut p_stmt = conn.prepare(
                     "SELECT DISTINCT sub_type_name FROM prices \
                       WHERE tcgplayer_product_id = ?1",
@@ -271,7 +285,7 @@ fn variants_from_tcgcsv(conn: &Connection, card: &CardRow) -> Result<Vec<Variant
                     .query_map([product_id], |r| r.get(0))?
                     .collect::<rusqlite::Result<_>>()?;
                 for sub in sub_types {
-                    if let Some(variant) = sub_type_to_variant(&sub) {
+                    if let Some(variant) = sub_type_map.lookup(group_id, &sub) {
                         out.push((variant.to_string(), Some(sub), Some(product_id)));
                     }
                 }
@@ -308,7 +322,8 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
         rows.collect::<rusqlite::Result<_>>()?
     };
 
-    let cross_group_by_number = preload_cross_group_products(conn)?;
+    let sub_type_map = SubTypeVariantMap::load(conn)?;
+    let cross_group_by_number = preload_cross_group_products(conn, &sub_type_map)?;
 
     // Pre-ensure every variant code the upcoming expansion might emit, so
     // the per-card insert loop doesn't pay a SELECT+INSERT roundtrip per
@@ -361,7 +376,7 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
     let start = std::time::Instant::now();
     use std::io::Write;
     for (i, c) in cards.iter().enumerate() {
-        let mut tcgcsv_variants = variants_from_tcgcsv(conn, c)?;
+        let mut tcgcsv_variants = variants_from_tcgcsv(conn, c, &sub_type_map)?;
         // Cross-group MCAP products: stamps and non-stamp overlays
         // (e.g. "Cosmo Holo"). The matcher resolves a candidate to
         // this card via either a set-name keyword (stamps) or a
@@ -466,15 +481,42 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
 mod tests {
     use super::*;
 
-    fn seed() -> (tempfile::TempDir, Connection) {
+    /// Open a fresh shared catalog with the production-default variants
+    /// and sub_type_variant_map seeds applied. Mirrors what `pkdump setup`
+    /// does before expand_all_printings, so tests exercise the same FK
+    /// state production runs against.
+    fn fresh_shared() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
-        let conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        pkdump_db::variants::reconcile(&mut conn).unwrap();
+        pkdump_db::sub_type_map::reconcile(&mut conn).unwrap();
+        (dir, conn)
+    }
+
+    /// Bridge a set to a TCGCSV group via the `tcgplayer_groups.set_code`
+    /// bridge. Replaces the dropped `sets.tcgcsv_group_id` column.
+    fn link_set_to_group(conn: &Connection, set_code: &str, group_id: i64) {
+        link_set_to_group_with_role(conn, set_code, group_id, "primary");
+    }
+
+    fn link_set_to_group_with_role(conn: &Connection, set_code: &str, group_id: i64, role: &str) {
         conn.execute(
-            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id) \
-             VALUES ('me2pt5', 'Ascended Heroes', 'Mega Evolution', 24541)",
+            "INSERT INTO tcgplayer_groups (group_id, set_code, name, fetched_at, role) \
+             VALUES (?1, ?2, ?3, '2026-05-28', ?4)",
+            rusqlite::params![group_id, set_code, format!("test:{set_code}"), role],
+        )
+        .unwrap();
+    }
+
+    fn seed() -> (tempfile::TempDir, Connection) {
+        let (dir, conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series) \
+             VALUES ('me2pt5', 'Ascended Heroes', 'Mega Evolution')",
             [],
         )
         .unwrap();
+        link_set_to_group(&conn, "me2pt5", 24541);
         conn.execute(
             "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
              VALUES ('me2pt5-158', 'me2pt5', '158', 158, 'Dreepy', 'Common')",
@@ -566,14 +608,14 @@ mod tests {
 
     #[test]
     fn base_product_with_multiple_sub_types_splits_into_multiple_variants() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let (_d, conn) = fresh_shared();
         conn.execute(
-            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id) \
-             VALUES ('sv3pt5', '151', 'Scarlet & Violet', 23237)",
+            "INSERT INTO sets (set_code, name, series) \
+             VALUES ('sv3pt5', '151', 'Scarlet & Violet')",
             [],
         )
         .unwrap();
+        link_set_to_group(&conn, "sv3pt5", 23237);
         conn.execute(
             "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
              VALUES ('sv3pt5-1', 'sv3pt5', '1', 1, 'Bulbasaur', 'Common')",
@@ -624,8 +666,7 @@ mod tests {
 
     #[test]
     fn card_without_tcgcsv_falls_back_to_normal_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let (_d, mut conn) = fresh_shared();
         conn.execute(
             "INSERT INTO sets (set_code, name, series) \
              VALUES ('xx99', 'Brand New Set', 'Test')",
@@ -689,22 +730,23 @@ mod tests {
         // stamp to the base card by (number, set-name keyword) and create
         // a stamp_black_bolt printing tied to the MCAP product, even
         // though Victini lives in a different TCGCSV group.
-        let dir = tempfile::tempdir().unwrap();
-        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let (_d, mut conn) = fresh_shared();
         conn.execute(
-            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
-             VALUES ('zsv10pt5', 'Black Bolt', 'Scarlet & Violet', 24325, 86)",
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('zsv10pt5', 'Black Bolt', 'Scarlet & Violet', 86)",
             [],
         )
         .unwrap();
+        link_set_to_group(&conn, "zsv10pt5", 24325);
         // A second set with the same printed_total demonstrates the
         // keyword disambiguates beyond just the number match.
         conn.execute(
-            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
-             VALUES ('rsv10pt5', 'White Flare', 'Scarlet & Violet', 24326, 86)",
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('rsv10pt5', 'White Flare', 'Scarlet & Violet', 86)",
             [],
         )
         .unwrap();
+        link_set_to_group(&conn, "rsv10pt5", 24326);
         conn.execute(
             "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
              VALUES ('zsv10pt5-12', 'zsv10pt5', '12', 12, 'Victini', 'Rare')",
@@ -775,8 +817,7 @@ mod tests {
         // "(Prerelease)" carries no set keyword — the matcher has to
         // disambiguate the base card by (card name, collector number,
         // set printed_total).
-        let dir = tempfile::tempdir().unwrap();
-        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let (_d, mut conn) = fresh_shared();
         // Two sets, only one with the matching printed_total.
         conn.execute(
             "INSERT INTO sets (set_code, name, series, printed_total) \
@@ -851,14 +892,14 @@ mod tests {
         // matcher should resolve it via card-name + set-total fallback
         // (the parenthetical names a treatment, not a set, so there's
         // no set_keyword) and attach a `cosmos_holo` printing.
-        let dir = tempfile::tempdir().unwrap();
-        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let (_d, mut conn) = fresh_shared();
         conn.execute(
-            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
-             VALUES ('me2pt5', 'Ascended Heroes', 'Mega Evolution', 30001, 217)",
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('me2pt5', 'Ascended Heroes', 'Mega Evolution', 217)",
             [],
         )
         .unwrap();
+        link_set_to_group(&conn, "me2pt5", 30001);
         // A second set with a DIFFERENT total — same name+number must
         // not pull the cosmos holo in via the card-name fallback.
         conn.execute(
@@ -930,14 +971,14 @@ mod tests {
         // the bulk-ensure at function entry must cover own-group derived
         // codes (which now include arbitrary stamp_* codes from
         // parse_stamp_tag), not just cross-group / overlay-add codes.
-        let dir = tempfile::tempdir().unwrap();
-        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let (_d, mut conn) = fresh_shared();
         conn.execute(
-            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
-             VALUES ('m22', 'McDonald\u{2019}s Promos 2022', 'Sword & Shield', 3150, 15)",
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('m22', 'McDonald\u{2019}s Promos 2022', 'Sword & Shield', 15)",
             [],
         )
         .unwrap();
+        link_set_to_group(&conn, "m22", 3150);
         conn.execute(
             "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
              VALUES ('m22-1', 'm22', '1', 1, 'Charizard', 'Promo')",
@@ -995,22 +1036,23 @@ mod tests {
         // printed_total — but here the variant comes from the
         // `prices.sub_type_name` ("Normal") rather than from any
         // parenthetical pattern in the product name.
-        let dir = tempfile::tempdir().unwrap();
-        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let (_d, mut conn) = fresh_shared();
         conn.execute(
-            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
-             VALUES ('me2', 'Phantasmal Flames', 'Mega Evolution', 24448, 94)",
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('me2', 'Phantasmal Flames', 'Mega Evolution', 94)",
             [],
         )
         .unwrap();
+        link_set_to_group(&conn, "me2", 24448);
         // Same card name + number but a different printed total — the
         // disambiguation must keep the deck exclusive off this card.
         conn.execute(
-            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
-             VALUES ('swsh2', 'Rebel Clash', 'Sword & Shield', 9999, 192)",
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('swsh2', 'Rebel Clash', 'Sword & Shield', 192)",
             [],
         )
         .unwrap();
+        link_set_to_group(&conn, "swsh2", 9999);
         conn.execute(
             "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
              VALUES ('me2-45', 'me2', '45', 45, 'Zacian', 'Rare')",
@@ -1080,14 +1122,14 @@ mod tests {
         // must be routed to `cosmos_holo_trick_or_trade`, not the bare
         // `cosmos_holo` code — the combined variant identifies them as
         // TTBB-exclusive on the chip. See pokedumpster-vz2.
-        let dir = tempfile::tempdir().unwrap();
-        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let (_d, mut conn) = fresh_shared();
         conn.execute(
-            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
-             VALUES ('sv3', 'Obsidian Flames', 'Scarlet & Violet', 22930, 197)",
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('sv3', 'Obsidian Flames', 'Scarlet & Violet', 197)",
             [],
         )
         .unwrap();
+        link_set_to_group(&conn, "sv3", 22930);
         conn.execute(
             "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
              VALUES ('sv3-136', 'sv3', '136', 136, 'Darkrai', 'Rare')",
@@ -1145,14 +1187,14 @@ mod tests {
         // Halloween Pikachu stamp on the artwork — no parenthetical
         // means none of the existing parsers triggered before. The
         // bridge's TTBB branch routes them to `stamp_trick_or_trade`.
-        let dir = tempfile::tempdir().unwrap();
-        let mut conn = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let (_d, mut conn) = fresh_shared();
         conn.execute(
-            "INSERT INTO sets (set_code, name, series, tcgcsv_group_id, printed_total) \
-             VALUES ('swsh11', 'Lost Origin', 'Sword & Shield', 17688, 196)",
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('swsh11', 'Lost Origin', 'Sword & Shield', 196)",
             [],
         )
         .unwrap();
+        link_set_to_group(&conn, "swsh11", 17688);
         // Same-named card in another set with a different printed_total —
         // the set_total disambiguator must keep the TTBB stamp off it.
         conn.execute(
@@ -1213,6 +1255,178 @@ mod tests {
         assert_eq!(
             leaked, 0,
             "TTBB stamp must not bleed onto same-name+number card in another set"
+        );
+    }
+
+    #[test]
+    fn base_set_charizard_splits_into_holo_first_ed_holo_and_shadowless_holo() {
+        // base1 (Base Set) is the original WotC set with three real-world
+        // print runs: Unlimited (with art-frame shadow), Shadowless (no
+        // stamp, no shadow), and 1st Edition (stamped, no shadow).
+        //
+        // TCGCSV models this as TWO groups bridged to the same set:
+        //   - 604  "Base Set"             — sub_types Normal/Holofoil
+        //                                   (means Unlimited-with-shadow)
+        //   - 1663 "Base Set (Shadowless)" — sub_types 1st Edition/
+        //                                   Unlimited (the 1st-Ed vs no-
+        //                                   stamp split lives in
+        //                                   subTypeName only)
+        //
+        // Per pokedumpster-5is, the bridge from base1 to both groups goes
+        // through tcgplayer_groups.set_code, and the group-aware
+        // sub_type_variant_map routes each (group, sub_type) to a
+        // distinct PokeDumpster variant code.
+        let (_d, mut conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('base1', 'Base', 'Original', 102)",
+            [],
+        )
+        .unwrap();
+        // Primary bridge — group 604, the Unlimited-with-shadow run.
+        link_set_to_group(&conn, "base1", 604);
+        // Auxiliary bridge — group 1663, the Shadowless productId umbrella.
+        link_set_to_group_with_role(&conn, "base1", 1663, "shadowless");
+
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('base1-4', 'base1', '4', 4, 'Charizard', 'Holo Rare')",
+            [],
+        )
+        .unwrap();
+
+        // Group 604 (Unlimited): Charizard product 42382 with Holofoil only.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (42382, 604, 'Charizard - 4/102', '004/102', NULL, '2026-05-28')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prices \
+               (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+             VALUES (42382, 'Holofoil', 'tcgplayer', 'market', 200.0, '2026-05-28')",
+            [],
+        )
+        .unwrap();
+
+        // Group 1663 (Shadowless): Charizard product 106999 with
+        // 1st Edition Holofoil AND Unlimited Holofoil sub_types.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (106999, 1663, 'Charizard', '004/102', NULL, '2026-05-28')",
+            [],
+        )
+        .unwrap();
+        for sub in ["1st Edition Holofoil", "Unlimited Holofoil"] {
+            conn.execute(
+                "INSERT INTO prices \
+                   (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+                 VALUES (106999, ?1, 'tcgplayer', 'market', 500.0, '2026-05-28')",
+                [sub],
+            )
+            .unwrap();
+        }
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT variant, sub_type_name, tcgplayer_product_id FROM printings \
+                  WHERE card_id = 'base1-4' AND deprecated_at IS NULL \
+                  ORDER BY variant",
+            )
+            .unwrap();
+        let rows: Vec<(String, Option<String>, Option<i64>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "first_ed_holo".into(),
+                    Some("1st Edition Holofoil".into()),
+                    Some(106999),
+                ),
+                ("holo".into(), Some("Holofoil".into()), Some(42382)),
+                (
+                    "shadowless_holo".into(),
+                    Some("Unlimited Holofoil".into()),
+                    Some(106999),
+                ),
+            ],
+            "Base Set Charizard must split into holo (604, Unlimited-with-shadow), \
+             first_ed_holo (1663 + 1st Edition Holofoil sub_type), and \
+             shadowless_holo (1663 + Unlimited Holofoil sub_type)",
+        );
+    }
+
+    #[test]
+    fn jungle_non_holo_splits_into_first_ed_normal_and_unlimited_normal() {
+        // Jungle (group 635) ships a single TCGCSV group whose non-holo
+        // products price two sub_types side-by-side: "1st Edition" and
+        // "Unlimited". The flat Rust sub_type_to_variant this replaces
+        // dropped both because they lacked the "Holofoil" suffix, so
+        // Jungle commons silently collapsed into a single fabricated
+        // 'normal' printing. The group-aware map routes them correctly.
+        let (_d, mut conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('base2', 'Jungle', 'Original', 64)",
+            [],
+        )
+        .unwrap();
+        link_set_to_group(&conn, "base2", 635);
+
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('base2-46', 'base2', '46', 46, 'Diglett', 'Common')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (45146, 635, 'Diglett', '046/064', NULL, '2026-05-28')",
+            [],
+        )
+        .unwrap();
+        for sub in ["1st Edition", "Unlimited"] {
+            conn.execute(
+                "INSERT INTO prices \
+                   (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+                 VALUES (45146, ?1, 'tcgplayer', 'market', 1.0, '2026-05-28')",
+                [sub],
+            )
+            .unwrap();
+        }
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let mut variants: Vec<String> = conn
+            .prepare(
+                "SELECT variant FROM printings \
+                  WHERE card_id = 'base2-46' AND deprecated_at IS NULL",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        variants.sort();
+        assert_eq!(
+            variants,
+            vec![
+                "first_ed_normal".to_string(),
+                "unlimited_normal".to_string()
+            ],
+            "plain '1st Edition' and 'Unlimited' sub_types must route to \
+             first_ed_normal and unlimited_normal (regression for the \
+             dropped Rust sub_type_to_variant)",
         );
     }
 

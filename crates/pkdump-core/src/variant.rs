@@ -15,14 +15,21 @@ use serde::Deserialize;
 /// introduce new gimmicks as upstream ships them.
 pub const KNOWN_VARIANTS: &[&str] = &[
     // Base treatments — these share one TCGplayer product per card and
-    // distinguish themselves via the sub_type. `sub_type_to_variant`
-    // owns the mapping.
+    // distinguish themselves via the sub_type. The (group_id, sub_type)
+    // → variant mapping lives in shared.sqlite's
+    // `tcgcsv_sub_type_variant_map` table (seeded from
+    // data/tcgcsv_sub_type_variants.json), not in this crate, because
+    // the same sub_type string means different physical printings in
+    // different TCGCSV groups (Base Set 604 vs Shadowless 1663).
     "normal",
     "holo",
     "reverse_holo",
     "first_ed_holo",
     "first_ed_normal",
     "unlimited_holo",
+    "unlimited_normal",
+    "shadowless_normal",
+    "shadowless_holo",
     // Pattern overlays — each is its own TCGplayer product. `_rh` suffix
     // denotes "reverse-holo style overlay treatment".
     "pokeball_rh",
@@ -52,22 +59,6 @@ pub const KNOWN_VARIANTS: &[&str] = &[
     "stamp_pokemoncenter",
     "stamp_staff",
 ];
-
-/// Map a TCGCSV `sub_type_name` (as it appears in the `prices` table) to a
-/// PokeDumpster base-variant code. Returns `None` for sub_types we don't
-/// model — those products typically belong to non-base treatments handled
-/// via `variant_from_product_name`.
-pub fn sub_type_to_variant(sub_type: &str) -> Option<&'static str> {
-    match sub_type {
-        "Normal" => Some("normal"),
-        "Holofoil" => Some("holo"),
-        "Reverse Holofoil" => Some("reverse_holo"),
-        "1st Edition Holofoil" => Some("first_ed_holo"),
-        "1st Edition Normal" => Some("first_ed_normal"),
-        "Unlimited Holofoil" => Some("unlimited_holo"),
-        _ => None,
-    }
-}
 
 /// Extract the pattern variant carried by a TCGplayer product name. Returns
 /// `None` for the card's base product (covers normal / reverse_holo / holo
@@ -330,29 +321,6 @@ pub struct VariantOverride {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sub_type_to_variant_covers_the_six_base_treatments() {
-        assert_eq!(sub_type_to_variant("Normal"), Some("normal"));
-        assert_eq!(sub_type_to_variant("Holofoil"), Some("holo"));
-        assert_eq!(
-            sub_type_to_variant("Reverse Holofoil"),
-            Some("reverse_holo")
-        );
-        assert_eq!(
-            sub_type_to_variant("1st Edition Holofoil"),
-            Some("first_ed_holo")
-        );
-        assert_eq!(
-            sub_type_to_variant("1st Edition Normal"),
-            Some("first_ed_normal")
-        );
-        assert_eq!(
-            sub_type_to_variant("Unlimited Holofoil"),
-            Some("unlimited_holo")
-        );
-        assert_eq!(sub_type_to_variant("Anything Else"), None);
-    }
 
     #[test]
     fn variant_from_product_name_only_consults_trailing_paren() {

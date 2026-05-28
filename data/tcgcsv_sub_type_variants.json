@@ -1,0 +1,168 @@
+[
+  {
+    "comment": "Global default mapping (group_id = 0). Modern sets (SV / SWSH / SM / XY / BW / HGSS / DP / EX) carry these sub_type names with their conventional meanings. WotC-era groups override per row below.",
+    "tcgcsv_group_id": 0,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"        },
+      { "sub_type": "Holofoil",             "variant": "holo"          },
+      { "sub_type": "Reverse Holofoil",     "variant": "reverse_holo"  },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal" },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo" },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo" }
+    ]
+  },
+  {
+    "comment": "TCGCSV group 604 — Base Set (the Unlimited print run, with the right-side art-frame shadow). Sub_types are just Normal/Holofoil; both mean 'Unlimited with shadow'.",
+    "tcgcsv_group_id": 604,
+    "entries": [
+      { "sub_type": "Normal",   "variant": "normal" },
+      { "sub_type": "Holofoil", "variant": "holo"   }
+    ]
+  },
+  {
+    "comment": "TCGCSV group 1663 — Base Set (Shadowless). The 'Shadowless' productId is the umbrella for any card lacking the right-side art-frame shadow, which encompasses BOTH the 1st-Edition-stamped run AND the brief unstamped transition run that collectors usually mean by 'Shadowless'. The split lives in sub_type_name. '1st Edition*' → first_ed_*; 'Unlimited*' → shadowless_* (no stamp, no shadow).",
+    "tcgcsv_group_id": 1663,
+    "entries": [
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited Holofoil",   "variant": "shadowless_holo"   },
+      { "sub_type": "Unlimited",            "variant": "shadowless_normal" },
+      { "sub_type": "Normal",               "variant": "shadowless_normal" },
+      { "sub_type": "Holofoil",             "variant": "shadowless_holo"   }
+    ]
+  },
+  {
+    "comment": "WotC-era groups with 1st-Edition + Unlimited sub_types side-by-side on the same productId — Jungle (635), Fossil (630), Base Set 2 (605), Team Rocket (1373), Gym Heroes (1441), Gym Challenge (1440), Neo Genesis (1396), Neo Discovery (1434), Neo Revelation (1389), Neo Destiny (1444), Legendary Collection (1374). Plain 'Unlimited' / '1st Edition' (no Holofoil suffix) are the non-holo printings; the global default mapper would drop them. Holofoil sub_type names route the same way as the global default.",
+    "tcgcsv_group_id": 635,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  },
+  {
+    "tcgcsv_group_id": 630,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  },
+  {
+    "tcgcsv_group_id": 605,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  },
+  {
+    "tcgcsv_group_id": 1373,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  },
+  {
+    "tcgcsv_group_id": 1441,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  },
+  {
+    "tcgcsv_group_id": 1440,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  },
+  {
+    "tcgcsv_group_id": 1396,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  },
+  {
+    "tcgcsv_group_id": 1434,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  },
+  {
+    "tcgcsv_group_id": 1389,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  },
+  {
+    "tcgcsv_group_id": 1444,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  },
+  {
+    "tcgcsv_group_id": 1374,
+    "entries": [
+      { "sub_type": "Normal",               "variant": "normal"            },
+      { "sub_type": "Holofoil",             "variant": "holo"              },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal"   },
+      { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo"     },
+      { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal"   },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal"  },
+      { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo"    }
+    ]
+  }
+]

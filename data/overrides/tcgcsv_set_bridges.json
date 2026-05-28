@@ -20,5 +20,11 @@
     "logo_url": "https://images.pokemontcg.io/me1/logo.png",
     "symbol_url": "/sets/mep-symbol.svg",
     "comment": "Synthesize MEP. pokemontcg.io has not yet published a Mega Evolution Promo set (~8 months past TCGCSV's release on 2025-09-26 as of 2026-05-24). The set row is built from TCGCSV's group metadata, and synthesize_cards=true populates the cards table from the 83 known TCGCSV products so the binder isn't empty. INSERT OR IGNORE — when pokemontcg.io eventually adds the real set, its upserts win and synthesized stubs are superseded silently."
+  },
+  {
+    "tcgcsv_group_id": 1663,
+    "set_code": "base1",
+    "role": "shadowless",
+    "comment": "Secondary bridge: base1's no-art-frame-shadow print run. TCGCSV splits Base Set into two productId-level groups — 604 (the regular Unlimited run with the shadow; auto-linked as the primary group) and 1663 (everything without the shadow). Within 1663 the 1st-Edition vs unstamped-transition split lives only in price.sub_type_name, mapped by tcgcsv_sub_type_variant_map for group 1663: 1st Edition* → first_ed_*; Unlimited*/Normal/Holofoil → shadowless_*. role='shadowless' tells import_groups to add the link instead of wiping the primary 604 → base1 mapping. See pokedumpster-5is."
   }
 ]

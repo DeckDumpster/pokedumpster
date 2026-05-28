@@ -15,20 +15,23 @@
 		error = null;
 		api
 			.setAnalytics(set)
-			.then((s) => {
-				stats = s;
-				breadcrumbs.set([
-					{ label: 'Browse', href: '/browse' },
-					{ label: s.name, href: `/browse/${s.set_code}` },
-					{ label: 'Stats' }
-				]);
-			})
+			.then((s) => (stats = s))
 			.catch((e) => (error = e instanceof Error ? e.message : String(e)))
 			.finally(() => (loading = false));
 	});
 
-	$effect(() => {
-		return () => breadcrumbs.set(null);
+	// Keep the breadcrumb fresh — use the URL-param set code as a
+	// placeholder until analytics resolves with the full set name. No
+	// unmount cleanup; the breadcrumbs store is path-keyed and invalidates
+	// itself when the URL changes.
+	$effect.pre(() => {
+		const setCode = page.params.set;
+		if (!setCode) return;
+		breadcrumbs.set([
+			{ label: 'Browse', href: '/browse' },
+			{ label: stats?.name ?? setCode, href: `/browse/${setCode}` },
+			{ label: 'Stats' }
+		]);
 	});
 
 	function pct(owned: number, total: number): number {

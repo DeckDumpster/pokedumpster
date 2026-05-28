@@ -63,11 +63,14 @@
 		load();
 	});
 
-	// Override the layout breadcrumb trail with something useful — the
-	// URL-derived crumbs would render as "Card › Sv10 › 153" with both
-	// "Card" and "Sv10" linking to non-existent routes. Cleared on unmount
-	// so the next page's crumbs aren't stuck on a stale card label.
-	$effect(() => {
+	// Upgrade the breadcrumb labels once card data resolves — the route
+	// page seeded a synchronous placeholder using URL params, this swaps
+	// the bare set_code for "Base" and "#4" for "Charizard #4". $effect.pre
+	// runs before the DOM updates so the upgrade lands in the same frame
+	// as the data; no visible "Base1 → Base" / "#4 → Charizard #4" flash.
+	// No unmount cleanup needed — the breadcrumbs store is path-keyed
+	// and auto-discards overrides when the URL changes.
+	$effect.pre(() => {
 		if (!manageBreadcrumbs) return;
 		const card = detail?.card;
 		if (!card) return;
@@ -76,11 +79,6 @@
 			{ label: card.set_name, href: `/browse/${card.set_code}` },
 			{ label: `${card.name} #${card.number}` }
 		]);
-	});
-
-	$effect(() => {
-		if (!manageBreadcrumbs) return;
-		return () => breadcrumbs.set(null);
 	});
 
 	async function withBusy(fn: () => Promise<unknown>) {

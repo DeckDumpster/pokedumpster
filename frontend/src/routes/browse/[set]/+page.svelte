@@ -109,10 +109,20 @@
 	let sessionSet = $state<string | null>(null);
 	let sessionBatchId = $state<number | null>(null);
 
-	// Clear the page-supplied breadcrumb when this route unmounts so the
-	// next route doesn't briefly inherit the previous set's leaf label.
-	$effect(() => {
-		return () => breadcrumbs.set(null);
+	// Keep the breadcrumb in sync with the latest known label for this set.
+	// Uses binder.set.name once the API has resolved, the URL param as a
+	// placeholder before that, so the first paint after navigating here
+	// never falls back to the URL-derived "Browse › Base1" — and the
+	// "Base1 → Base" upgrade happens in the same frame as the data load
+	// since $effect.pre runs before the DOM updates. No unmount cleanup
+	// needed — the breadcrumbs store is path-keyed.
+	$effect.pre(() => {
+		const setCode = page.params.set;
+		if (!setCode) return;
+		breadcrumbs.set([
+			{ label: 'Browse', href: '/browse' },
+			{ label: binder?.set.name ?? setCode }
+		]);
 	});
 
 	async function load() {
@@ -136,10 +146,6 @@
 				q: search,
 				filter: missingOnly ? 'need' : 'all'
 			});
-			breadcrumbs.set([
-				{ label: 'Browse', href: '/browse' },
-				{ label: binder.set.name }
-			]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {

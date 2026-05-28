@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
+	import { replaceState } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { variantLabel, variantTag, variants } from '$lib/variants.svelte';
 
@@ -37,12 +38,16 @@
 		debounce = setTimeout(() => {
 			search = value.trim().toLowerCase();
 			// Reflect the active query in the URL so refreshes + back-button
-			// keep state. replaceState avoids a history entry per keystroke.
+			// keep state. SvelteKit's replaceState (not window.history's)
+			// keeps the router's internal state aligned with the URL —
+			// raw window.history.replaceState corrupts the history entry
+			// so a later popstate from a navigated-away page can leave
+			// SvelteKit unable to re-render this route.
 			if (typeof window !== 'undefined') {
 				const url = new URL(window.location.href);
 				if (search) url.searchParams.set('q', searchRaw.trim());
 				else url.searchParams.delete('q');
-				window.history.replaceState({}, '', url);
+				replaceState(url, {});
 			}
 		}, 200);
 	}
@@ -108,7 +113,7 @@
 			const url = new URL(window.location.href);
 			if (allCards) url.searchParams.set('all', '1');
 			else url.searchParams.delete('all');
-			window.history.replaceState({}, '', url);
+			replaceState(url, {});
 		}
 	}
 

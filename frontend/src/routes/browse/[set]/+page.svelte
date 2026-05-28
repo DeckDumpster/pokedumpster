@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { replaceState } from '$app/navigation';
 	import { api } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
@@ -161,7 +162,13 @@
 		set('sort', sort, 'number');
 		set('q', search, '');
 		set('missing', missingOnly ? '1' : '0', '0');
-		window.history.replaceState({}, '', url);
+		// SvelteKit's replaceState (NOT window.history's): keeps the
+		// router state aligned with the URL. Raw window.history.replaceState
+		// strips SvelteKit's internal history-entry state, so navigating
+		// forward to a card page and then back here leaves the router
+		// unable to tell that the popped entry belongs to it — the URL
+		// changes but the route component doesn't re-render.
+		replaceState(url, {});
 	}
 
 	$effect(() => {

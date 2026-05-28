@@ -108,7 +108,7 @@
 			{#each wishes as w (w.id)}
 				<tr class:dim={w.fulfilled_at != null}>
 					<td><a href="/card/{w.set_code}/{w.number}">{w.name}</a></td>
-					<td>{w.set_code}</td>
+					<td><a href="/browse/{w.set_code}">{w.set_name}</a></td>
 					<td>{w.number}</td>
 					<td>{w.priority}</td>
 					<td>{money(w.max_price)}</td>

@@ -7,4 +7,4 @@ export type WishlistEntry = { id: number, card_id: string,
 /**
  * A specific wanted printing, or null for "any printing".
  */
-printing_id: string | null, max_price: number | null, priority: number, notes: string | null, added_at: string, source: string, fulfilled_at: string | null, set_code: string, number: string, name: string, rarity: string | null, image_small: string | null, };
+printing_id: string | null, max_price: number | null, priority: number, notes: string | null, added_at: string, source: string, fulfilled_at: string | null, set_code: string, set_name: string, number: string, name: string, rarity: string | null, image_small: string | null, };

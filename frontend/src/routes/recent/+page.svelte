@@ -76,7 +76,7 @@
 								<li>
 									<a href="/card/{card.set_code}/{card.number}">{card.name}</a>
 									<span class="cardmeta">
-										{card.set_code} · {variantLabel(card.variant)} · {card.status}
+										{card.set_name} · {variantLabel(card.variant)} · {card.status}
 									</span>
 								</li>
 							{/each}

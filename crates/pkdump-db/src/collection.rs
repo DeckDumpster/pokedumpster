@@ -201,6 +201,9 @@ pub struct CollectionRow {
     pub variant: String,
     pub card_id: String,
     pub set_code: String,
+    /// Full human-readable set name (e.g. "Surging Sparks", "Base Set") —
+    /// preferred over `set_code` for any column or breadcrumb label.
+    pub set_name: String,
     /// The collector-facing 3-letter set code (e.g. "MEW", "PFL"), if known.
     pub set_ptcgo_code: Option<String>,
     pub set_symbol_url: Option<String>,
@@ -228,8 +231,9 @@ pub struct CollectionRow {
 const ROW_COLUMNS_SQL: &str = "c.id, c.printing_id, c.condition, c.language, \
      c.purchase_price, c.sale_price, c.acquired_at, c.source, c.notes, \
      c.status, c.graded, c.binder_id, c.deck_id, p.variant, cd.card_id, \
-     cd.set_code, s.ptcgo_code, s.symbol_url, cd.number, cd.name, \
-     cd.rarity, cd.artist, cd.supertype, cd.subtypes, cd.types, cd.attacks, \
+     cd.set_code, s.name AS set_name, s.ptcgo_code, s.symbol_url, \
+     cd.number, cd.name, cd.rarity, cd.artist, cd.supertype, cd.subtypes, \
+     cd.types, cd.attacks, \
      (SELECT lp.price FROM latest_prices lp \
         WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
           AND lp.sub_type_name = p.sub_type_name \
@@ -260,18 +264,19 @@ fn collection_row_from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionRow>
         variant: r.get(13)?,
         card_id: r.get(14)?,
         set_code: r.get(15)?,
-        set_ptcgo_code: r.get(16)?,
-        set_symbol_url: r.get(17)?,
-        number: r.get(18)?,
-        name: r.get(19)?,
-        rarity: r.get(20)?,
-        artist: r.get(21)?,
-        supertype: r.get(22)?,
-        subtypes: r.get(23)?,
-        types: r.get(24)?,
-        attacks: r.get(25)?,
-        market_price: r.get(26)?,
-        image_small: r.get(27)?,
+        set_name: r.get(16)?,
+        set_ptcgo_code: r.get(17)?,
+        set_symbol_url: r.get(18)?,
+        number: r.get(19)?,
+        name: r.get(20)?,
+        rarity: r.get(21)?,
+        artist: r.get(22)?,
+        supertype: r.get(23)?,
+        subtypes: r.get(24)?,
+        types: r.get(25)?,
+        attacks: r.get(26)?,
+        market_price: r.get(27)?,
+        image_small: r.get(28)?,
     })
 }
 

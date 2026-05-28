@@ -80,7 +80,7 @@
 			{#each detail.cards as card (card.id)}
 				<tr>
 					<td><a href="/card/{card.set_code}/{card.number}">{card.name}</a></td>
-					<td>{card.set_code}</td>
+					<td><a href="/browse/{card.set_code}">{card.set_name}</a></td>
 					<td>{card.number}</td>
 					<td>{variantLabel(card.variant)}</td>
 					<td>{money(card.purchase_price)}</td>

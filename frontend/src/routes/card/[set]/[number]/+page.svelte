@@ -6,5 +6,9 @@
 <svelte:head><title>Card — PokeDumpster</title></svelte:head>
 
 {#if page.params.set && page.params.number}
-	<CardDetailView setCode={page.params.set} number={page.params.number} />
+	<CardDetailView
+		setCode={page.params.set}
+		number={page.params.number}
+		manageBreadcrumbs
+	/>
 {/if}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import { variantLabel, variantSortCmp, variantProvenance } from '$lib/variants.svelte';
 	import type { CardDetail } from '$lib/types/CardDetail';
 	import type { Binder } from '$lib/types/Binder';
@@ -12,7 +13,8 @@
 	let {
 		setCode,
 		number,
-		onNavigate
+		onNavigate,
+		manageBreadcrumbs = false
 	}: {
 		setCode: string;
 		number: string;
@@ -20,6 +22,11 @@
 		 *  collection modal to support evolution-chain links without
 		 *  closing/reopening. Falls back to a full-page nav if absent. */
 		onNavigate?: (set: string, number: string) => void;
+		/** When true, override the layout breadcrumb trail to "Browse ›
+		 *  <set name> › <card name> #<number>". The /card route page
+		 *  sets this; the CardModal wrapper (used inside /collection) does
+		 *  not, so the modal doesn't clobber the host page's crumbs. */
+		manageBreadcrumbs?: boolean;
 	} = $props();
 
 	let detail = $state<CardDetail | null>(null);
@@ -54,6 +61,26 @@
 		void setCode;
 		void number;
 		load();
+	});
+
+	// Override the layout breadcrumb trail with something useful — the
+	// URL-derived crumbs would render as "Card › Sv10 › 153" with both
+	// "Card" and "Sv10" linking to non-existent routes. Cleared on unmount
+	// so the next page's crumbs aren't stuck on a stale card label.
+	$effect(() => {
+		if (!manageBreadcrumbs) return;
+		const card = detail?.card;
+		if (!card) return;
+		breadcrumbs.set([
+			{ label: 'Browse', href: '/browse' },
+			{ label: card.set_name, href: `/browse/${card.set_code}` },
+			{ label: `${card.name} #${card.number}` }
+		]);
+	});
+
+	$effect(() => {
+		if (!manageBreadcrumbs) return;
+		return () => breadcrumbs.set(null);
 	});
 
 	async function withBusy(fn: () => Promise<unknown>) {

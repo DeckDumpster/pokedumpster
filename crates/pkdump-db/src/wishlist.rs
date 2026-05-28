@@ -7,7 +7,7 @@ use crate::error::{DbError, Result};
 
 const COLS: &str = "w.id, w.card_id, w.printing_id, w.max_price, w.priority, \
      w.notes, w.added_at, w.source, w.fulfilled_at, \
-     cd.set_code, cd.number, cd.name, cd.rarity, cd.image_small";
+     cd.set_code, s.name AS set_name, cd.number, cd.name, cd.rarity, cd.image_small";
 
 /// A wishlist entry joined to its card.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
@@ -26,6 +26,7 @@ pub struct WishlistEntry {
     pub source: String,
     pub fulfilled_at: Option<String>,
     pub set_code: String,
+    pub set_name: String,
     pub number: String,
     pub name: String,
     pub rarity: Option<String>,
@@ -66,10 +67,11 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<WishlistEntry> {
         source: r.get(7)?,
         fulfilled_at: r.get(8)?,
         set_code: r.get(9)?,
-        number: r.get(10)?,
-        name: r.get(11)?,
-        rarity: r.get(12)?,
-        image_small: r.get(13)?,
+        set_name: r.get(10)?,
+        number: r.get(11)?,
+        name: r.get(12)?,
+        rarity: r.get(13)?,
+        image_small: r.get(14)?,
     })
 }
 
@@ -106,7 +108,9 @@ pub fn list(conn: &Connection, include_fulfilled: bool) -> Result<Vec<WishlistEn
         "WHERE w.fulfilled_at IS NULL "
     };
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} FROM wishlist w JOIN cards cd ON w.card_id = cd.card_id \
+        "SELECT {COLS} FROM wishlist w \
+           JOIN cards cd ON w.card_id = cd.card_id \
+           JOIN sets s ON cd.set_code = s.set_code \
          {filter}ORDER BY w.priority DESC, w.id DESC"
     ))?;
     let rows = stmt.query_map([], from_row)?;

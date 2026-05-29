@@ -15,6 +15,7 @@ pub mod collection;
 pub mod decks;
 pub mod export;
 pub mod import;
+pub mod manual_prices;
 pub mod orders;
 pub mod sealed;
 pub mod sets;

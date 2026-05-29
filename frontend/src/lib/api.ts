@@ -34,6 +34,8 @@ import type { NewBatch } from './types/NewBatch';
 import type { ResolutionReport } from './types/ResolutionReport';
 import type { CommitResult } from './types/CommitResult';
 import type { Variant } from './types/Variant';
+import type { ManualPrice } from './types/ManualPrice';
+import type { NewManualPrice } from './types/NewManualPrice';
 import type { Bundle } from './types/Bundle';
 import type { BundleDetail } from './types/BundleDetail';
 
@@ -190,5 +192,18 @@ export const api = {
 
 	// --- Variants display metadata (backs $lib/variants.svelte) ---
 	variants: () => getJson<Variant[]>('/api/variants'),
+
+	// --- Manual prices ---
+	/** All manual-price entries for one printing, newest first. */
+	manualPrices: (printingId: string) =>
+		getJson<ManualPrice[]>(
+			`/api/manual-prices/by-printing/${encodeURIComponent(printingId)}`
+		),
+	/** Record a new manual price observation. */
+	addManualPrice: (entry: NewManualPrice) =>
+		send<number>('POST', '/api/manual-prices', entry),
+	/** Delete a manual-price entry. */
+	deleteManualPrice: (id: number) =>
+		send<void>('DELETE', `/api/manual-prices/${id}`),
 
 };

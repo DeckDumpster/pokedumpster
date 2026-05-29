@@ -7,6 +7,7 @@
 	import type { Deck } from '$lib/types/Deck';
 	import type { PriceSeries } from '$lib/types/PriceSeries';
 	import PriceChart from './PriceChart.svelte';
+	import ManualPriceModal from './ManualPriceModal.svelte';
 
 	// The card-detail body, shared by the /card/[set]/[number] route and the
 	// collection-page modal. Self-contained: it fetches its own data.
@@ -36,6 +37,7 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let busy = $state(false);
+	let priceModalFor = $state<{ printing_id: string; label: string } | null>(null);
 
 	const STATUSES = ['owned', 'ordered', 'listed', 'sold', 'removed', 'traded', 'gifted', 'lost'];
 
@@ -403,6 +405,15 @@
 					{:else}
 						<span class="tcgp-spacer"></span>
 					{/if}
+					<button
+						class="manual-price"
+						onclick={() => (priceModalFor = {
+							printing_id: p.printing_id,
+							label: `${card.name} #${card.number} — ${variantLabel(p.variant)}`
+						})}
+						title="Record a manual price"
+						aria-label="Record a manual price for {variantLabel(p.variant)}"
+					>$</button>
 					<div class="stepper">
 						<button
 							class="step"
@@ -481,6 +492,15 @@
 			</table>
 		{/if}
 	</section>
+{/if}
+
+{#if priceModalFor}
+	<ManualPriceModal
+		printingId={priceModalFor.printing_id}
+		label={priceModalFor.label}
+		onClose={() => (priceModalFor = null)}
+		onChange={() => api.cardPrices(setCode, number).then((s) => (priceSeries = s))}
+	/>
 {/if}
 
 <style>
@@ -697,11 +717,27 @@
 	}
 	.printings li {
 		display: grid;
-		grid-template-columns: 1fr auto auto auto;
+		grid-template-columns: 1fr auto auto auto auto;
 		align-items: center;
 		gap: 0.75rem;
 		padding: 0.45rem 0;
 		border-bottom: 1px solid #0f3460;
+	}
+	.manual-price {
+		background: none;
+		border: 1px solid #0f3460;
+		color: #888;
+		width: 28px;
+		height: 28px;
+		border-radius: 6px;
+		cursor: pointer;
+		font: inherit;
+		font-size: 0.85rem;
+		line-height: 1;
+	}
+	.manual-price:hover {
+		border-color: #e94560;
+		color: #e94560;
 	}
 	.printings li.dim {
 		opacity: 0.5;

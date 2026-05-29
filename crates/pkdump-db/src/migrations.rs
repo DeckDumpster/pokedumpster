@@ -92,6 +92,7 @@ mod tests {
             "wishlist",
             "sealed_collection",
             "settings",
+            "manual_prices",
         ] {
             let n: i64 = conn
                 .query_row(

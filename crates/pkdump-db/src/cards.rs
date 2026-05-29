@@ -195,9 +195,20 @@ pub struct PriceSeries {
     pub points: Vec<PricePoint>,
 }
 
-/// All market-price snapshots for every printing of a card, ordered oldest
-/// → newest within each series. Printings without a TCGplayer link or with
-/// a variant that has no sub_type mapping yield no series.
+/// All price snapshots for every printing of a card, ordered oldest →
+/// newest within each series.
+///
+/// Emits two `price_type`s:
+/// - `"market"` — TCGplayer market price from the shared `prices` table.
+///   Printings with no `tcgplayer_product_id` (or no matching `prices`
+///   row) yield no market series.
+/// - `"manual"` — user-entered prices from the user-DB `manual_prices`
+///   table. Surfaced so they're visible on the chart alongside TCGplayer.
+///
+/// For "the effective current value of this printing" the rule is gap-fill:
+/// take the latest `market` point if one exists, otherwise the latest
+/// `manual` point. The frontend renders all series and applies that rule
+/// when computing summary stats.
 pub fn get_card_prices(
     conn: &Connection,
     set_code: &str,
@@ -213,14 +224,20 @@ pub fn get_card_prices(
 
     let mut stmt = conn.prepare(
         "SELECT p.printing_id, p.variant, p.sub_type_name, \
-                pr.price_type, pr.observed_at, pr.price \
+                'market' AS price_type, pr.observed_at AS observed_at, pr.price \
            FROM printings p \
            JOIN prices pr ON pr.tcgplayer_product_id = p.tcgplayer_product_id \
                          AND pr.sub_type_name = p.sub_type_name \
                          AND pr.source = 'tcgplayer' \
                          AND pr.price_type = 'market' \
           WHERE p.card_id = ?1 \
-          ORDER BY p.variant, pr.observed_at",
+         UNION ALL \
+         SELECT p.printing_id, p.variant, p.sub_type_name, \
+                'manual' AS price_type, mp.observed_at AS observed_at, mp.price \
+           FROM printings p \
+           JOIN manual_prices mp ON mp.printing_id = p.printing_id \
+          WHERE p.card_id = ?1 \
+          ORDER BY printing_id, price_type, observed_at",
     )?;
 
     let mut series: Vec<PriceSeries> = Vec::new();
@@ -545,6 +562,120 @@ mod tests {
     fn get_card_prices_returns_empty_for_unknown_card() {
         let (_d, conn) = user_conn();
         assert!(get_card_prices(&conn, "sv3pt5", "999").unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_card_prices_emits_manual_series_even_without_tcgplayer_link() {
+        // Mirrors the basep motivating case: a printing with no
+        // tcgplayer_product_id but a user-entered manual price still
+        // shows up in the chart payload.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) VALUES ('basep', 'Promos', 'Base')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('basep-14', 'basep', '14', 14, 'Mewtwo')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id, card_id, variant) \
+                 VALUES ('basep-14-normal', 'basep-14', 'normal')",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        crate::manual_prices::insert(
+            &conn,
+            &crate::manual_prices::NewManualPrice {
+                printing_id: "basep-14-normal".into(),
+                price: 175.0,
+                observed_at: Some("2024-03-01T00:00:00Z".into()),
+                note: None,
+            },
+        )
+        .unwrap();
+        crate::manual_prices::insert(
+            &conn,
+            &crate::manual_prices::NewManualPrice {
+                printing_id: "basep-14-normal".into(),
+                price: 200.0,
+                observed_at: Some("2024-06-01T00:00:00Z".into()),
+                note: None,
+            },
+        )
+        .unwrap();
+
+        let series = get_card_prices(&conn, "basep", "14").unwrap();
+        assert_eq!(series.len(), 1, "one manual series, no market");
+        let s = &series[0];
+        assert_eq!(s.price_type, "manual");
+        assert_eq!(s.printing_id, "basep-14-normal");
+        assert_eq!(s.points.len(), 2);
+        // Oldest first within the series.
+        assert_eq!(s.points[0].price, 175.0);
+        assert_eq!(s.points[1].price, 200.0);
+    }
+
+    #[test]
+    fn get_card_prices_emits_both_market_and_manual_series_for_same_printing() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) VALUES ('sv3pt5', '151', 'SV')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('sv3pt5-6', 'sv3pt5', '6', 6, 'Charizard ex')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings \
+                   (printing_id, card_id, variant, tcgplayer_product_id, sub_type_name) \
+                 VALUES ('sv3pt5-6-normal', 'sv3pt5-6', 'normal', 5006, 'Normal')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO prices \
+                   (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+                 VALUES (5006, 'Normal', 'tcgplayer', 'market', 10.0, '2026-05-22')",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        crate::manual_prices::insert(
+            &conn,
+            &crate::manual_prices::NewManualPrice {
+                printing_id: "sv3pt5-6-normal".into(),
+                price: 12.5,
+                observed_at: Some("2026-05-25T00:00:00Z".into()),
+                note: Some("eBay sold".into()),
+            },
+        )
+        .unwrap();
+
+        let series = get_card_prices(&conn, "sv3pt5", "6").unwrap();
+        assert_eq!(series.len(), 2);
+        let market = series.iter().find(|s| s.price_type == "market").unwrap();
+        let manual = series.iter().find(|s| s.price_type == "manual").unwrap();
+        assert_eq!(market.points.len(), 1);
+        assert_eq!(manual.points.len(), 1);
+        assert_eq!(market.points[0].price, 10.0);
+        assert_eq!(manual.points[0].price, 12.5);
     }
 
     #[test]

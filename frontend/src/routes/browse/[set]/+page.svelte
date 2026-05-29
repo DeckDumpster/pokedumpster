@@ -37,6 +37,11 @@
 	// sizes. The backend's `layout` (cards per page) derives from cols:
 	// always 3 rows per page so denser grids → bigger pages.
 	let cols = $state(Math.min(10, Math.max(1, urlNum('cols', 3))));
+	// 'binder' = image + pips only, mimics a physical binder page.
+	// 'card'   = adds a metadata footer (collector #, name, rarity, owned).
+	type ViewMode = 'binder' | 'card';
+	const initialView = (urlStr('view', 'binder') === 'card' ? 'card' : 'binder') as ViewMode;
+	let view = $state<ViewMode>(initialView);
 	const layout = $derived(cols * 3);
 	let includeSecret = $state(urlBool('secret', true));
 	let includeSubset = $state(urlBool('subset', true));
@@ -168,6 +173,7 @@
 		set('sort', sort, 'number');
 		set('q', search, '');
 		set('missing', missingOnly ? '1' : '0', '0');
+		set('view', view, 'binder');
 		// SvelteKit's replaceState (NOT window.history's): keeps the
 		// router state aligned with the URL. Raw window.history.replaceState
 		// strips SvelteKit's internal history-entry state, so navigating
@@ -189,6 +195,13 @@
 		void missingOnly;
 		syncUrl();
 		load();
+	});
+
+	// View mode is a pure UI choice — persist it in the URL but don't
+	// refetch the binder data when it flips.
+	$effect(() => {
+		void view;
+		syncUrl();
 	});
 
 	// Add a copy of a printing — the binder modal's "+". Optimistic: the pip
@@ -289,6 +302,11 @@
 	/** Whether the user owns at least one printing of this slot's card. */
 	function ownedAny(slot: BinderSlot): boolean {
 		return slot.printings.some((p) => p.owned_count > 0);
+	}
+
+	/** Total copies the user owns across all printings of this slot. */
+	function ownedTotal(slot: BinderSlot): number {
+		return slot.printings.reduce((s, p) => s + p.owned_count, 0);
 	}
 </script>
 
@@ -395,6 +413,20 @@
 			{@render sortBtn('number', '#')}
 			{@render sortBtn('price', 'Price')}
 		</div>
+		<!-- Binder view = image + pips only (mimics a physical binder).
+		     Card view = adds a metadata footer (#, name, rarity, owned). -->
+		<div class="viewtoggle" role="group" aria-label="View mode">
+			<button
+				class:active={view === 'binder'}
+				onclick={() => (view = 'binder')}
+				title="Binder view — image + variant pips only"
+			>Binder</button>
+			<button
+				class:active={view === 'card'}
+				onclick={() => (view = 'card')}
+				title="Card view — image + #, name, rarity, owned"
+			>Card</button>
+		</div>
 		<!-- Cards per row stepper. Pure UI choice (1..10) — page size
 		     derives from it (cols × 3 rows per page) so the backend's
 		     pagination stays consistent at 3 visible rows. -->
@@ -479,6 +511,18 @@
 							<div class="noart">{slot.name}</div>
 						{/if}
 					</button>
+					{#if view === 'card'}
+						<div class="meta">
+							<span class="num">#{slot.number}</span>
+							<span class="name" title={slot.name}>{slot.name}</span>
+							{#if slot.rarity}
+								<span class="rarity" title={slot.rarity}>{slot.rarity}</span>
+							{/if}
+							{#if ownedTotal(slot) > 0}
+								<span class="own" title="Owned copies">×{ownedTotal(slot)}</span>
+							{/if}
+						</div>
+					{/if}
 					<!-- One colored pip per variant, sibling to the slot so the
 					     pip buttons aren't nested inside the slot button (invalid
 					     HTML). Empty when unowned, filled with the variant's
@@ -695,6 +739,33 @@
 		display: flex;
 		align-items: center;
 	}
+	/* Binder/Card view-mode segmented control. */
+	.viewtoggle {
+		display: inline-flex;
+		border: 1px solid #0f3460;
+		border-radius: 6px;
+		overflow: hidden;
+	}
+	.viewtoggle button {
+		background: #16213e;
+		border: none;
+		color: #888;
+		padding: 0.3rem 0.65rem;
+		font: inherit;
+		font-size: 0.85rem;
+		cursor: pointer;
+		border-radius: 0;
+	}
+	.viewtoggle button + button {
+		border-left: 1px solid #0f3460;
+	}
+	.viewtoggle button:hover {
+		color: #e0e0e0;
+	}
+	.viewtoggle button.active {
+		background: #e94560;
+		color: #fff;
+	}
 	/* Cards-per-row stepper. */
 	.cpr {
 		display: inline-flex;
@@ -863,6 +934,50 @@
 		color: #888;
 		padding: 0.5rem;
 		text-align: center;
+	}
+	/* 'Card view' metadata footer: collector #, name, rarity, owned count.
+	   Sits between the image and the variant pips so the pip row stays
+	   the bottom-of-tile interaction zone. */
+	.meta {
+		display: grid;
+		grid-template-columns: auto 1fr auto;
+		align-items: baseline;
+		gap: 0.35rem;
+		font-size: 0.78rem;
+		line-height: 1.2;
+		color: #ccc;
+	}
+	.meta .num {
+		color: #888;
+		font-variant-numeric: tabular-nums;
+	}
+	.meta .name {
+		color: #e0e0e0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+	.meta .rarity {
+		grid-column: 2;
+		color: #888;
+		font-size: 0.7rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.meta .own {
+		grid-column: 3;
+		grid-row: 1 / span 2;
+		color: #9fe7a0;
+		font-variant-numeric: tabular-nums;
+		font-weight: 600;
+		align-self: center;
+	}
+	.slotwrap.missing .meta .name,
+	.slotwrap.missing .meta .num,
+	.slotwrap.missing .meta .rarity {
+		color: #888;
 	}
 	/* Color-coded variant chips centered below the card. Empty (border-
 	   only) when unowned, filled with the variant's color when owned;

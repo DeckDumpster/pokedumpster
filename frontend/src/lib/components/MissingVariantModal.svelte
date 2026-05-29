@@ -128,7 +128,7 @@
 		<div class="row">
 			<label>
 				<span>Price observed <em>(optional)</em></span>
-				<input type="datetime-local" bind:value={timeInput} disabled={busy} />
+				<input type="date" bind:value={timeInput} disabled={busy} />
 			</label>
 			<label>
 				<span>Price note <em>(optional)</em></span>

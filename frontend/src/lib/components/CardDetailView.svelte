@@ -395,12 +395,18 @@
 				.sort((a, b) => variantSortCmp(a.variant, b.variant)) as p (p.printing_id)}
 				<li class:dim={p.deprecated} class:user-added={p.is_user_added}>
 					<div class="vlabel">
-						<a class="facet variant" href={facetHref(variantLabel(p.variant))}>
-							{variantLabel(p.variant)}
-						</a>
-						{#if p.is_user_added}
-							<span class="user-tag" title="User-added via the missing-variant escape hatch">user</span>
-						{/if}
+						<div class="vline">
+							{#if p.is_user_added}
+								<span
+									class="user-pip"
+									title="User-added via the missing-variant escape hatch"
+									aria-label="User-added variant"
+								></span>
+							{/if}
+							<a class="facet variant" href={facetHref(variantLabel(p.variant))}>
+								{variantLabel(p.variant)}
+							</a>
+						</div>
 						{#if p.is_user_added && p.description}
 							<span class="provenance">{p.description}</span>
 						{:else if variantProvenance(p.variant)}
@@ -970,19 +976,21 @@
 	}
 
 	/* User-added printings (the missing-variant escape hatch) render
-	   with an italic variant label and a small 'user' tag next to it. */
+	   with an italic variant label and a small color pip to its left. */
 	.printings li.user-added .vlabel .variant {
 		font-style: italic;
 	}
-	.user-tag {
-		font-size: 0.62rem;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		color: #888;
-		border: 1px solid #0f3460;
-		border-radius: 3px;
-		padding: 0 0.3rem;
-		margin-left: 0.4rem;
-		vertical-align: middle;
+	.vline {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.user-pip {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: #777;
+		flex-shrink: 0;
 	}
 </style>

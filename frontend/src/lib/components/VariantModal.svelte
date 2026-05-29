@@ -27,6 +27,9 @@
 			.slice()
 			.sort((a, b) => variantSortCmp(a.variant, b.variant))
 	);
+	// For bundle slots whose card lives in another set, route the
+	// card-detail link to the home set rather than the bundle slug.
+	const linkSet = $derived(slot.external_set?.set_code ?? setCode);
 </script>
 
 <svelte:window
@@ -77,7 +80,7 @@
 		{/each}
 	</ul>
 
-	<a class="full" href="/card/{setCode}/{slot.number}">Full card details →</a>
+	<a class="full" href="/card/{linkSet}/{slot.number}">Full card details →</a>
 </div>
 
 <style>

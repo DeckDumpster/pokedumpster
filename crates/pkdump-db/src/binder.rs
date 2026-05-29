@@ -12,7 +12,10 @@ use crate::error::Result;
 const SUBSET_FLOOR: i64 = 1_000;
 const PROMO_FLOOR: i64 = 9_000;
 
-/// Set header shown above a binder.
+/// Header shown above a binder. Renders both real sets (kind="set") and
+/// logical-set containers like Trick or Trade bundles (kind="bundle").
+/// For bundles, `series` is the synthetic label ("Trick or Trade Bundle")
+/// and total/printed_total are `None` so the base-completion bar hides.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct BinderSetInfo {
@@ -23,6 +26,8 @@ pub struct BinderSetInfo {
     pub total: Option<i64>,
     #[ts(type = "number | null")]
     pub printed_total: Option<i64>,
+    /// `"set"` for real sets, `"bundle"` for TTBB-style containers.
+    pub kind: String,
 }
 
 /// One printing within a slot.
@@ -37,6 +42,17 @@ pub struct SlotPrinting {
     pub market_price: Option<f64>,
 }
 
+/// Pointer to the home set of a slot's underlying card, when that set
+/// differs from the container being rendered. Populated only for bundle
+/// slots (TTBB products are reprints of cards in other sets) — `None`
+/// for normal set slots.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct ExternalSet {
+    pub set_code: String,
+    pub name: String,
+}
+
 /// One binder slot — a single card number and all its printings.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
@@ -46,9 +62,14 @@ pub struct BinderSlot {
     pub name: String,
     pub rarity: Option<String>,
     pub image_large: Option<String>,
-    /// `base` | `secret` | `subset` | `promo`.
+    /// `base` | `secret` | `subset` | `promo`. Bundles use `base` for
+    /// every slot since they have no rarity-tier sections.
     pub section: String,
     pub printings: Vec<SlotPrinting>,
+    /// Home set of the slot's card when different from the container —
+    /// bundle slots use this to surface "lives in Obsidian Flames" and
+    /// to route the card-detail link. `None` for regular set slots.
+    pub external_set: Option<ExternalSet>,
 }
 
 /// A single rendered binder page with master-set progress.
@@ -180,6 +201,7 @@ pub fn get_binder_page(
                 series: r.get(2)?,
                 total: r.get(3)?,
                 printed_total: r.get(4)?,
+                kind: "set".to_string(),
             })
         })
         .optional()?;
@@ -268,6 +290,7 @@ pub fn get_binder_page(
                 image_large: card.image_large,
                 section: section.to_string(),
                 printings: slot_printings,
+                external_set: None,
             })
         })
         .collect();

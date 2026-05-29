@@ -100,6 +100,13 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let n_sub = pkdump_db::sub_type_map::reconcile(&mut conn)?;
     println!("  {n_sub} (group, sub_type) → variant rows");
 
+    // 4c. Reconcile the bundles registry from data/bundles.json. The
+    //     /api/sets dispatch is driven by `bundles.slug`, so this must
+    //     run before serving traffic.
+    println!("Reconciling bundles table from data/bundles.json...");
+    let n_bundles = pkdump_db::bundles::reconcile(&mut conn)?;
+    println!("  {n_bundles} bundles registered");
+
     // 5. Synthesize card rows for bridged TCGCSV groups whose upstream
     //    pokemontcg.io entry doesn't exist yet (e.g. MEP). Idempotent
     //    INSERT OR IGNORE — when upstream catches up, the real cards

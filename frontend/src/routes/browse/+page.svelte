@@ -2,17 +2,15 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import type { SetSummary } from '$lib/types/SetSummary';
-	import type { Bundle } from '$lib/types/Bundle';
 
-	let sets = $state<SetSummary[]>([]);
-	let bundles = $state<Bundle[]>([]);
+	let containers = $state<SetSummary[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let search = $state('');
 
 	onMount(async () => {
 		try {
-			[sets, bundles] = await Promise.all([api.sets(), api.bundles()]);
+			containers = await api.sets();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -20,12 +18,18 @@
 		}
 	});
 
+	// The /api/sets endpoint returns sets + bundles in one list, kind-
+	// discriminated. The picker groups them into separate sections so
+	// bundles remain discoverable above the long set list, but both
+	// kinds render through the same .tile component.
 	const filtered = $derived(
-		sets.filter((s) => {
+		containers.filter((c) => {
 			const q = search.trim().toLowerCase();
-			return !q || s.name.toLowerCase().includes(q) || s.series.toLowerCase().includes(q);
+			return !q || c.name.toLowerCase().includes(q) || c.series.toLowerCase().includes(q);
 		})
 	);
+	const bundles = $derived(filtered.filter((c) => c.kind === 'bundle'));
+	const sets = $derived(filtered.filter((c) => c.kind !== 'bundle'));
 
 	function pct(s: SetSummary): number {
 		return s.total_cards > 0 ? Math.round((s.owned_cards / s.total_cards) * 100) : 0;
@@ -40,51 +44,63 @@
 <svelte:head><title>Browse sets — PokeDumpster</title></svelte:head>
 
 <h1>Browse sets</h1>
-<p class="muted">Pick a set to open its binder view.</p>
+<p class="muted">Pick a set or bundle to open its binder view.</p>
 
 {#if loading}
 	<p class="muted">Loading…</p>
 {:else if error}
 	<p class="error">Failed to load sets: {error}</p>
 {:else}
+	<input class="search" type="text" placeholder="Search sets or bundles…" bind:value={search} />
+	<p class="muted">{filtered.length} of {containers.length}</p>
+
 	{#if bundles.length > 0}
-		<section class="bundles">
-			<h2>Bundles</h2>
-			<div class="bundlerow">
-				{#each bundles as b (b.slug)}
-					<a class="bundletile" href="/bundles/{b.slug}">
-						<div class="btitle">{b.name}</div>
-						<div class="bcount">{b.owned_count} / {b.slot_count} collected</div>
-					</a>
-				{/each}
-			</div>
-		</section>
+		<h2 class="sectionhdr">Bundles</h2>
+		<div class="grid">
+			{#each bundles as b (b.set_code)}
+				<a class="tile bundle" href="/browse/{b.set_code}">
+					<div class="title">{b.name}</div>
+					<div class="series">{b.series}</div>
+					<div class="count">Master {b.owned_cards} / {b.total_cards}</div>
+					<div class="bar"><span style:width="{pct(b)}%"></span></div>
+				</a>
+			{/each}
+		</div>
 	{/if}
-	<input class="search" type="text" placeholder="Search sets…" bind:value={search} />
-	<p class="muted">{filtered.length} of {sets.length} sets</p>
-	<div class="grid">
-		{#each filtered as set (set.set_code)}
-			<a class="tile" href="/browse/{set.set_code}">
-				{#if set.symbol_url}
-					<img class="symbol" src={set.symbol_url} alt="" />
-				{/if}
-				<div class="title">{set.name}</div>
-				<div class="series">{set.series}</div>
-				{#if set.base_total_cards != null && set.base_owned_cards != null}
-					<div class="count">Base {set.base_owned_cards} / {set.base_total_cards}</div>
-					<div class="bar base"><span style:width="{basePct(set)}%"></span></div>
-				{/if}
-				<div class="count">Master {set.owned_cards} / {set.total_cards}</div>
-				<div class="bar"><span style:width="{pct(set)}%"></span></div>
-			</a>
-		{/each}
-	</div>
+
+	{#if sets.length > 0}
+		{#if bundles.length > 0}<h2 class="sectionhdr">Sets</h2>{/if}
+		<div class="grid">
+			{#each sets as set (set.set_code)}
+				<a class="tile" href="/browse/{set.set_code}">
+					{#if set.symbol_url}
+						<img class="symbol" src={set.symbol_url} alt="" />
+					{/if}
+					<div class="title">{set.name}</div>
+					<div class="series">{set.series}</div>
+					{#if set.base_total_cards != null && set.base_owned_cards != null}
+						<div class="count">Base {set.base_owned_cards} / {set.base_total_cards}</div>
+						<div class="bar base"><span style:width="{basePct(set)}%"></span></div>
+					{/if}
+					<div class="count">Master {set.owned_cards} / {set.total_cards}</div>
+					<div class="bar"><span style:width="{pct(set)}%"></span></div>
+				</a>
+			{/each}
+		</div>
+	{/if}
 {/if}
 
 <style>
 	h1 {
 		color: #e94560;
 		margin-bottom: 0.25rem;
+	}
+	.sectionhdr {
+		color: #e0e0e0;
+		font-size: 1rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		margin: 1.25rem 0 0.5rem;
 	}
 	.muted {
 		color: #888;
@@ -119,6 +135,17 @@
 	}
 	.tile:hover {
 		border-color: #e94560;
+	}
+	/* Bundles share the same tile silhouette but get an accent color so
+	   they remain visually distinct from real sets in the picker. */
+	.tile.bundle {
+		border-color: #5a2f17;
+	}
+	.tile.bundle:hover {
+		border-color: #e7732f;
+	}
+	.tile.bundle .title {
+		color: #e7732f;
 	}
 	.symbol {
 		height: 28px;
@@ -155,38 +182,5 @@
 	}
 	.count + .bar.base {
 		margin-bottom: 0.35rem;
-	}
-	.bundles {
-		margin: 0.5rem 0 1.25rem;
-	}
-	.bundles h2 {
-		color: #e0e0e0;
-		font-size: 1rem;
-		margin: 0 0 0.4rem;
-	}
-	.bundlerow {
-		display: flex;
-		gap: 0.6rem;
-		flex-wrap: wrap;
-	}
-	.bundletile {
-		flex: 0 0 auto;
-		background: #16213e;
-		border: 2px solid #0f3460;
-		border-radius: 8px;
-		padding: 0.5rem 0.8rem;
-		text-decoration: none;
-		color: #e0e0e0;
-	}
-	.bundletile:hover {
-		border-color: #e7732f;
-	}
-	.btitle {
-		font-weight: 600;
-		color: #e7732f;
-	}
-	.bcount {
-		font-size: 0.8rem;
-		color: #888;
 	}
 </style>

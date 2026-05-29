@@ -38,9 +38,6 @@ import type { ManualPrice } from './types/ManualPrice';
 import type { NewManualPrice } from './types/NewManualPrice';
 import type { CreateMissingVariant } from './types/CreateMissingVariant';
 import type { CreateMissingVariantResult } from './types/CreateMissingVariantResult';
-import type { Bundle } from './types/Bundle';
-import type { BundleDetail } from './types/BundleDetail';
-
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
 	if (!res.ok) {
@@ -92,14 +89,9 @@ export const api = {
 			`/api/cards/catalog?q=${encodeURIComponent(q)}&limit=${limit}`
 		),
 
-	/** Every set, with card and owned-card counts. */
+	/** Every set + bundle, with card and owned-card counts. Bundles
+	 *  carry kind="bundle" so the picker can group them. */
 	sets: () => getJson<SetSummary[]>('/api/sets'),
-
-	/** List bundle products (Trick or Trade BOOster Bundles). */
-	bundles: () => getJson<Bundle[]>('/api/bundles'),
-
-	/** Resolved 30-slot grid for one bundle. */
-	bundle: (slug: string) => getJson<BundleDetail>(`/api/bundles/${encodeURIComponent(slug)}`),
 
 	/** Analytical breakdown for one set: completion, rarity split, value. */
 	setAnalytics: (code: string) =>

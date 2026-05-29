@@ -75,6 +75,10 @@ fn expand_only(args: RefreshArgs) -> anyhow::Result<()> {
     let n_sub = pkdump_db::sub_type_map::reconcile(&mut conn)?;
     println!("  {n_sub} (group, sub_type) → variant rows");
 
+    println!("Reconciling bundles table from data/bundles.json...");
+    let n_bundles = pkdump_db::bundles::reconcile(&mut conn)?;
+    println!("  {n_bundles} bundles registered");
+
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
@@ -127,6 +131,12 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     println!("Reconciling tcgcsv_sub_type_variant_map...");
     let n_sub = pkdump_db::sub_type_map::reconcile(&mut conn)?;
     println!("  {n_sub} (group, sub_type) → variant rows");
+
+    // 1c. Reconcile the bundles registry from data/bundles.json. Drives
+    //     the /api/sets dispatch for TTBB-style containers.
+    println!("Reconciling bundles table from data/bundles.json...");
+    let n_bundles = pkdump_db::bundles::reconcile(&mut conn)?;
+    println!("  {n_bundles} bundles registered");
 
     // 2. pokemontcg.io tail — pick up sets released since the last refresh.
     println!("Filling newest sets from pokemontcg.io...");

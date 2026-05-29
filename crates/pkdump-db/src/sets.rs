@@ -5,7 +5,9 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::error::Result;
 
 /// A set with its card count and how many of its cards the user owns —
-/// the shape the `/browse` set picker renders.
+/// the shape the `/browse` set picker renders. Bundles project into the
+/// same type with `kind="bundle"` and synthesized series/null totals so
+/// the picker can render them through the same tile component.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct SetSummary {
@@ -34,6 +36,9 @@ pub struct SetSummary {
     pub base_total_cards: Option<i64>,
     #[ts(type = "number | null")]
     pub base_owned_cards: Option<i64>,
+    /// `"set"` for real catalogued sets, `"bundle"` for TTBB-style
+    /// logical-set containers.
+    pub kind: String,
 }
 
 /// List every set, newest first, with card and owned-card counts. Requires a
@@ -75,6 +80,7 @@ pub fn list_sets(conn: &Connection) -> Result<Vec<SetSummary>> {
             owned_cards: r.get(10)?,
             base_total_cards: r.get(11)?,
             base_owned_cards: r.get(12)?,
+            kind: "set".to_string(),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

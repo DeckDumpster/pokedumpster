@@ -2,7 +2,9 @@
 
 /**
  * A set with its card count and how many of its cards the user owns —
- * the shape the `/browse` set picker renders.
+ * the shape the `/browse` set picker renders. Bundles project into the
+ * same type with `kind="bundle"` and synthesized series/null totals so
+ * the picker can render them through the same tile component.
  */
 export type SetSummary = { set_code: string, ptcgo_code: string | null, name: string, series: string, total: number | null, printed_total: number | null, release_date: string | null, logo_url: string | null, symbol_url: string | null, 
 /**
@@ -19,4 +21,9 @@ owned_cards: number,
  * no `printed_total` so the UI can hide the bar gracefully (avoids
  * rendering 0/0 = NaN%).
  */
-base_total_cards: number | null, base_owned_cards: number | null, };
+base_total_cards: number | null, base_owned_cards: number | null, 
+/**
+ * `"set"` for real catalogued sets, `"bundle"` for TTBB-style
+ * logical-set containers.
+ */
+kind: string, };

@@ -271,6 +271,12 @@
 		promo: 'Promos'
 	};
 
+	// Bundles (e.g. TTBB) are single-section containers — the
+	// secret/subset/promo toggles don't apply, and per-slot prices come
+	// straight from one TTBB-specific printing, so sort-by-price still
+	// makes sense. Drives the rendering branches below.
+	const isBundle = $derived(binder?.set.kind === 'bundle');
+
 	function pct(owned: number, total: number): number {
 		return total > 0 ? Math.round((owned / total) * 100) : 0;
 	}
@@ -356,18 +362,29 @@
 	<header>
 		<a class="statslink" href="/browse/{binder.set.set_code}/stats">Set stats →</a>
 		<div class="stats">
-			<div class="stat">
-				<span>Base {binder.base_owned}/{binder.base_total}</span>
-				<div class="bar">
-					<span style:width="{pct(binder.base_owned, binder.base_total)}%"></span>
+			{#if isBundle}
+				<!-- Bundles have a single section: base == master. Show one
+				     progress bar instead of two identical ones. -->
+				<div class="stat">
+					<span>Collected {binder.master_owned}/{binder.master_total}</span>
+					<div class="bar">
+						<span style:width="{pct(binder.master_owned, binder.master_total)}%"></span>
+					</div>
 				</div>
-			</div>
-			<div class="stat">
-				<span>Master {binder.master_owned}/{binder.master_total}</span>
-				<div class="bar">
-					<span style:width="{pct(binder.master_owned, binder.master_total)}%"></span>
+			{:else}
+				<div class="stat">
+					<span>Base {binder.base_owned}/{binder.base_total}</span>
+					<div class="bar">
+						<span style:width="{pct(binder.base_owned, binder.base_total)}%"></span>
+					</div>
 				</div>
-			</div>
+				<div class="stat">
+					<span>Master {binder.master_owned}/{binder.master_total}</span>
+					<div class="bar">
+						<span style:width="{pct(binder.master_owned, binder.master_total)}%"></span>
+					</div>
+				</div>
+			{/if}
 		</div>
 	</header>
 
@@ -462,33 +479,36 @@
 		<!-- Section-include toggles. Secret usually has content on modern
 		     sets but it's not something you flip every visit; Subset and
 		     Promos are mostly empty on SV/ME-era sets — tuck all three
-		     into an overflow menu so they don't take a row of real estate. -->
-		<details class="overflow">
-			<summary aria-label="More filters" title="More filters">⋯</summary>
-			<div class="overflow-menu">
-				<label
-					><input
-						type="checkbox"
-						bind:checked={includeSecret}
-						onchange={resetPage}
-					/> Secret</label
-				>
-				<label
-					><input
-						type="checkbox"
-						bind:checked={includeSubset}
-						onchange={resetPage}
-					/> Subset</label
-				>
-				<label
-					><input
-						type="checkbox"
-						bind:checked={includePromos}
-						onchange={resetPage}
-					/> Promos</label
-				>
-			</div>
-		</details>
+		     into an overflow menu so they don't take a row of real estate.
+		     Hidden for bundles since they have a single section. -->
+		{#if !isBundle}
+			<details class="overflow">
+				<summary aria-label="More filters" title="More filters">⋯</summary>
+				<div class="overflow-menu">
+					<label
+						><input
+							type="checkbox"
+							bind:checked={includeSecret}
+							onchange={resetPage}
+						/> Secret</label
+					>
+					<label
+						><input
+							type="checkbox"
+							bind:checked={includeSubset}
+							onchange={resetPage}
+						/> Subset</label
+					>
+					<label
+						><input
+							type="checkbox"
+							bind:checked={includePromos}
+							onchange={resetPage}
+						/> Promos</label
+					>
+				</div>
+			</details>
+		{/if}
 		<span class="spacer"></span>
 		<!-- Top pager — entire row hidden on mobile (the bottom pager
 		     handles paging there); arrow keys work either way. -->
@@ -561,6 +581,13 @@
 							{/if}
 							{@render pips(slot)}
 						</div>
+						{#if slot.external_set}
+							<!-- Bundle slot: the underlying card lives in another set.
+							     Link out so the user can land on the home-set's binder. -->
+							<a class="extset" href="/browse/{slot.external_set.set_code}"
+								>{slot.external_set.name}</a
+							>
+						{/if}
 					{:else}
 						{@render pips(slot)}
 					{/if}
@@ -990,6 +1017,15 @@
 	.slotwrap.missing .meta .name,
 	.slotwrap.missing .meta .num {
 		color: #888;
+	}
+	/* Bundle-slot home-set link, sits under the meta row in card view. */
+	.extset {
+		font-size: 0.72rem;
+		color: #888;
+		text-decoration: none;
+	}
+	.extset:hover {
+		color: #e94560;
 	}
 	/* Color-coded variant chips centered below the card. Empty (border-
 	   only) when unowned, filled with the variant's color when owned;

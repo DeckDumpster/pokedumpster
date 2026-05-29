@@ -213,11 +213,16 @@ pub fn get_binder_page(
         let mut stmt = conn.prepare(
             "SELECT p.card_id, p.printing_id, p.variant, p.deprecated_at, \
                     (SELECT count(*) FROM collection c WHERE c.printing_id = p.printing_id), \
-                    (SELECT lp.price FROM latest_prices lp \
-                       WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-                         AND lp.sub_type_name = p.sub_type_name \
-                         AND lp.price_type = 'market' \
-                       LIMIT 1) \
+                    COALESCE( \
+                       (SELECT lp.price FROM latest_prices lp \
+                          WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
+                            AND lp.sub_type_name = p.sub_type_name \
+                            AND lp.price_type = 'market' \
+                          LIMIT 1), \
+                       (SELECT mp.price FROM manual_prices mp \
+                          WHERE mp.printing_id = p.printing_id \
+                          ORDER BY mp.observed_at DESC LIMIT 1) \
+                    ) \
              FROM printings p JOIN cards cd ON p.card_id = cd.card_id \
              WHERE cd.set_code = ?1 ORDER BY cd.number_sortable, p.variant",
         )?;

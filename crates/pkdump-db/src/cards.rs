@@ -141,11 +141,16 @@ pub fn get_card_detail(
                     p.image_override, p.deprecated_at, \
                     (SELECT count(*) FROM collection c \
                        WHERE c.printing_id = p.printing_id), \
-                    (SELECT lp.price FROM latest_prices lp \
-                       WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-                         AND lp.sub_type_name = p.sub_type_name \
-                         AND lp.price_type = 'market' \
-                       LIMIT 1), \
+                    COALESCE( \
+                       (SELECT lp.price FROM latest_prices lp \
+                          WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
+                            AND lp.sub_type_name = p.sub_type_name \
+                            AND lp.price_type = 'market' \
+                          LIMIT 1), \
+                       (SELECT mp.price FROM manual_prices mp \
+                          WHERE mp.printing_id = p.printing_id \
+                          ORDER BY mp.observed_at DESC LIMIT 1) \
+                    ), \
                     p.tcgplayer_product_id \
              FROM printings p WHERE p.card_id = ?1 ORDER BY p.variant",
         )?;
@@ -500,6 +505,64 @@ mod tests {
             .unwrap();
         assert_eq!(normal.market_price, Some(10.0));
         assert_eq!(rh.market_price, Some(25.0));
+    }
+
+    #[test]
+    fn card_detail_gap_fills_market_price_from_manual_when_no_tcgplayer() {
+        // basep motivating case: printing has no tcgplayer_product_id,
+        // so latest_prices yields NULL. CardDetail.market_price should
+        // fall back to the most recent manual_prices entry.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) VALUES ('basep', 'Promos', 'Base')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('basep-10', 'basep', '10', 10, 'Meowth')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id, card_id, variant) \
+                 VALUES ('basep-10-normal', 'basep-10', 'normal')",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+
+        // No manual price yet → market_price is NULL.
+        let detail = get_card_detail(&conn, "basep", "10").unwrap().unwrap();
+        assert_eq!(detail.printings[0].market_price, None);
+
+        // Add two manual entries; newest one wins.
+        crate::manual_prices::insert(
+            &conn,
+            &crate::manual_prices::NewManualPrice {
+                printing_id: "basep-10-normal".into(),
+                price: 8.0,
+                observed_at: Some("2024-01-01T00:00:00Z".into()),
+                note: None,
+            },
+        )
+        .unwrap();
+        crate::manual_prices::insert(
+            &conn,
+            &crate::manual_prices::NewManualPrice {
+                printing_id: "basep-10-normal".into(),
+                price: 12.50,
+                observed_at: Some("2026-05-01T00:00:00Z".into()),
+                note: None,
+            },
+        )
+        .unwrap();
+        let detail = get_card_detail(&conn, "basep", "10").unwrap().unwrap();
+        assert_eq!(detail.printings[0].market_price, Some(12.50));
     }
 
     #[test]

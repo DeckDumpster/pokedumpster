@@ -234,11 +234,16 @@ const ROW_COLUMNS_SQL: &str = "c.id, c.printing_id, c.condition, c.language, \
      cd.set_code, s.name AS set_name, s.ptcgo_code, s.symbol_url, \
      cd.number, cd.name, cd.rarity, cd.artist, cd.supertype, cd.subtypes, \
      cd.types, cd.attacks, \
-     (SELECT lp.price FROM latest_prices lp \
-        WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-          AND lp.sub_type_name = p.sub_type_name \
-          AND lp.price_type = 'market' \
-        LIMIT 1) AS market_price, \
+     COALESCE( \
+        (SELECT lp.price FROM latest_prices lp \
+           WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
+             AND lp.sub_type_name = p.sub_type_name \
+             AND lp.price_type = 'market' \
+           LIMIT 1), \
+        (SELECT mp.price FROM manual_prices mp \
+           WHERE mp.printing_id = p.printing_id \
+           ORDER BY mp.observed_at DESC LIMIT 1) \
+     ) AS market_price, \
      cd.image_small";
 
 const ROW_FROM: &str = "FROM collection c \

@@ -205,12 +205,20 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
         |r| r.get(0),
     )?;
 
-    // The latest TCGplayer market price for a printing `p`, by variant sub-type.
-    let price_expr = "(SELECT lp.price FROM latest_prices lp \
-            WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-              AND lp.sub_type_name = p.sub_type_name \
-              AND lp.price_type = 'market' \
-            LIMIT 1)";
+    // Effective market price for a printing `p`. Gap-fill rule: latest
+    // TCGplayer market when present; otherwise the latest manual_prices
+    // entry — so printings without a tcgplayer_product_id (e.g. basep
+    // promos) still contribute once the user records a manual value.
+    let price_expr = "COALESCE( \
+            (SELECT lp.price FROM latest_prices lp \
+               WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
+                 AND lp.sub_type_name = p.sub_type_name \
+                 AND lp.price_type = 'market' \
+               LIMIT 1), \
+            (SELECT mp.price FROM manual_prices mp \
+               WHERE mp.printing_id = p.printing_id \
+               ORDER BY mp.observed_at DESC LIMIT 1) \
+        )";
     let market_value: f64 = conn.query_row(
         &format!(
             "SELECT COALESCE(SUM({price_expr}), 0) \

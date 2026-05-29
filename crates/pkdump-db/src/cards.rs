@@ -73,6 +73,12 @@ pub struct PrintingInfo {
     /// TCGplayer product id, used to deep-link a printing to its product page.
     #[ts(type = "number | null")]
     pub tcgplayer_product_id: Option<i64>,
+    /// True when this row is a user_printings entry — the "Missing
+    /// Variant" escape hatch. Renders with an italic + (user) tag in
+    /// the UI.
+    pub is_user_added: bool,
+    /// Free-text variant description carried by user_printings rows.
+    pub description: Option<String>,
 }
 
 /// The full card-detail payload.
@@ -136,11 +142,16 @@ pub fn get_card_detail(
     };
 
     let printings: Vec<PrintingInfo> = {
+        // UNION ALL of shared.printings and user_printings so the
+        // missing-variant escape hatch (decision pokedumpster-x7k)
+        // shows up alongside catalog rows on /card and CardModal. The
+        // binder browse query (binder.rs) deliberately does NOT do
+        // this — VariantModal stays catalog-only.
         let mut stmt = conn.prepare(
             "SELECT p.printing_id, p.variant, p.language, p.badge_overlay, \
                     p.image_override, p.deprecated_at, \
                     (SELECT count(*) FROM collection c \
-                       WHERE c.printing_id = p.printing_id), \
+                       WHERE c.printing_id = p.printing_id) AS owned_count, \
                     COALESCE( \
                        (SELECT lp.price FROM latest_prices lp \
                           WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
@@ -150,9 +161,25 @@ pub fn get_card_detail(
                        (SELECT mp.price FROM manual_prices mp \
                           WHERE mp.printing_id = p.printing_id \
                           ORDER BY mp.observed_at DESC LIMIT 1) \
-                    ), \
-                    p.tcgplayer_product_id \
-             FROM printings p WHERE p.card_id = ?1 ORDER BY p.variant",
+                    ) AS market_price, \
+                    p.tcgplayer_product_id, \
+                    0 AS is_user_added, \
+                    NULL AS description \
+             FROM printings p WHERE p.card_id = ?1 \
+             UNION ALL \
+             SELECT up.printing_id, up.variant, 'en' AS language, \
+                    NULL AS badge_overlay, NULL AS image_override, \
+                    NULL AS deprecated_at, \
+                    (SELECT count(*) FROM collection c \
+                       WHERE c.printing_id = up.printing_id) AS owned_count, \
+                    (SELECT mp.price FROM manual_prices mp \
+                       WHERE mp.printing_id = up.printing_id \
+                       ORDER BY mp.observed_at DESC LIMIT 1) AS market_price, \
+                    NULL AS tcgplayer_product_id, \
+                    1 AS is_user_added, \
+                    up.description \
+             FROM user_printings up WHERE up.card_id = ?1 \
+             ORDER BY is_user_added, variant, printing_id",
         )?;
         let rows = stmt.query_map([&card.card_id], |r| {
             Ok(PrintingInfo {
@@ -165,6 +192,8 @@ pub fn get_card_detail(
                 owned_count: r.get(6)?,
                 market_price: r.get(7)?,
                 tcgplayer_product_id: r.get(8)?,
+                is_user_added: r.get::<_, i64>(9)? != 0,
+                description: r.get(10)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>()?
@@ -242,6 +271,12 @@ pub fn get_card_prices(
            FROM printings p \
            JOIN manual_prices mp ON mp.printing_id = p.printing_id \
           WHERE p.card_id = ?1 \
+         UNION ALL \
+         SELECT up.printing_id, up.variant, NULL AS sub_type_name, \
+                'manual' AS price_type, mp.observed_at AS observed_at, mp.price \
+           FROM user_printings up \
+           JOIN manual_prices mp ON mp.printing_id = up.printing_id \
+          WHERE up.card_id = ?1 \
           ORDER BY printing_id, price_type, observed_at",
     )?;
 

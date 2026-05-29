@@ -124,6 +124,13 @@ pub async fn serve(
     host: IpAddr,
     port: u16,
 ) -> anyhow::Result<()> {
+    // Idempotent shared-catalog migration on startup. `pkdump setup`
+    // and `pkdump data refresh` normally own shared schema, but a
+    // binary upgrade can ship a data-only migration (e.g. seeding a
+    // new variant) that must be applied before the server starts
+    // serving requests. open_shared runs pending migrations and is a
+    // no-op when nothing is pending.
+    drop(pkdump_db::open_shared(&shared_db)?);
     let conn = pkdump_db::connect_user(&user_db, &shared_db)?;
     let state = AppState {
         conn: Arc::new(Mutex::new(conn)),

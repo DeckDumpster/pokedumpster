@@ -12,6 +12,7 @@ pub mod manual_prices;
 pub mod orders;
 pub mod sealed;
 pub mod sets;
+pub mod user_printings;
 pub mod variants;
 pub mod wishlist;
 
@@ -35,6 +36,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(wishlist::routes())
         .merge(batches::routes())
         .merge(manual_prices::routes())
+        .merge(user_printings::routes())
         .merge(import::routes())
         .merge(export::routes())
 }

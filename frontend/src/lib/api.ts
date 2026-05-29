@@ -36,6 +36,8 @@ import type { CommitResult } from './types/CommitResult';
 import type { Variant } from './types/Variant';
 import type { ManualPrice } from './types/ManualPrice';
 import type { NewManualPrice } from './types/NewManualPrice';
+import type { CreateMissingVariant } from './types/CreateMissingVariant';
+import type { CreateMissingVariantResult } from './types/CreateMissingVariantResult';
 import type { Bundle } from './types/Bundle';
 import type { BundleDetail } from './types/BundleDetail';
 
@@ -205,5 +207,13 @@ export const api = {
 	/** Delete a manual-price entry. */
 	deleteManualPrice: (id: number) =>
 		send<void>('DELETE', `/api/manual-prices/${id}`),
+
+	// --- Missing-variant escape hatch ---
+	/** Create a user_printing + N copies + optional first manual price. */
+	addMissingVariant: (input: CreateMissingVariant) =>
+		send<CreateMissingVariantResult>('POST', '/api/user-printings', input),
+	/** Remove a user_printing (only if no collection rows reference it). */
+	deleteUserPrinting: (printingId: string) =>
+		send<void>('DELETE', `/api/user-printings/${encodeURIComponent(printingId)}`),
 
 };

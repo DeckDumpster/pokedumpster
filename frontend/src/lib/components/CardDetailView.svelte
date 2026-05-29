@@ -8,6 +8,7 @@
 	import type { PriceSeries } from '$lib/types/PriceSeries';
 	import PriceChart from './PriceChart.svelte';
 	import ManualPriceModal from './ManualPriceModal.svelte';
+	import MissingVariantModal from './MissingVariantModal.svelte';
 
 	// The card-detail body, shared by the /card/[set]/[number] route and the
 	// collection-page modal. Self-contained: it fetches its own data.
@@ -38,6 +39,7 @@
 	let error = $state<string | null>(null);
 	let busy = $state(false);
 	let priceModalFor = $state<{ printing_id: string; label: string } | null>(null);
+	let missingVariantOpen = $state(false);
 
 	const STATUSES = ['owned', 'ordered', 'listed', 'sold', 'removed', 'traded', 'gifted', 'lost'];
 
@@ -378,18 +380,30 @@
 	{#if error}<p class="error">{error}</p>{/if}
 
 	<section>
-		<h2>Printings</h2>
+		<div class="printings-head">
+			<h2>Printings</h2>
+			<button
+				class="add-missing"
+				onclick={() => (missingVariantOpen = true)}
+				title="Add a copy whose variant isn't yet in the catalog"
+			>+ Missing variant</button>
+		</div>
 		<ul class="printings">
 			{#each detail.printings
 				.filter((p) => !p.deprecated || p.owned_count > 0)
 				.slice()
 				.sort((a, b) => variantSortCmp(a.variant, b.variant)) as p (p.printing_id)}
-				<li class:dim={p.deprecated}>
+				<li class:dim={p.deprecated} class:user-added={p.is_user_added}>
 					<div class="vlabel">
 						<a class="facet variant" href={facetHref(variantLabel(p.variant))}>
 							{variantLabel(p.variant)}
 						</a>
-						{#if variantProvenance(p.variant)}
+						{#if p.is_user_added}
+							<span class="user-tag" title="User-added via the missing-variant escape hatch">user</span>
+						{/if}
+						{#if p.is_user_added && p.description}
+							<span class="provenance">{p.description}</span>
+						{:else if variantProvenance(p.variant)}
 							<span class="provenance">{variantProvenance(p.variant)}</span>
 						{/if}
 					</div>
@@ -500,6 +514,18 @@
 		label={priceModalFor.label}
 		onClose={() => (priceModalFor = null)}
 		onChange={() => api.cardPrices(setCode, number).then((s) => (priceSeries = s))}
+	/>
+{/if}
+
+{#if missingVariantOpen && detail}
+	<MissingVariantModal
+		cardId={detail.card.card_id}
+		cardLabel="{detail.card.name} #{detail.card.number}"
+		onClose={() => (missingVariantOpen = false)}
+		onCreated={() => {
+			missingVariantOpen = false;
+			load();
+		}}
 	/>
 {/if}
 
@@ -918,5 +944,45 @@
 			flex: 1;
 			min-width: 0;
 		}
+	}
+
+	/* Printings section header now carries the 'missing variant' button. */
+	.printings-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.75rem;
+	}
+	.add-missing {
+		background: #16213e;
+		border: 1px dashed #0f3460;
+		color: #888;
+		border-radius: 6px;
+		padding: 0.3rem 0.6rem;
+		font: inherit;
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.add-missing:hover {
+		border-color: #e94560;
+		border-style: solid;
+		color: #e94560;
+	}
+
+	/* User-added printings (the missing-variant escape hatch) render
+	   with an italic variant label and a small 'user' tag next to it. */
+	.printings li.user-added .vlabel .variant {
+		font-style: italic;
+	}
+	.user-tag {
+		font-size: 0.62rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: #888;
+		border: 1px solid #0f3460;
+		border-radius: 3px;
+		padding: 0 0.3rem;
+		margin-left: 0.4rem;
+		vertical-align: middle;
 	}
 </style>

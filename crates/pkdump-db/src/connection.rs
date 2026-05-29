@@ -127,7 +127,11 @@ mod tests {
         seed_shared(&shared_path);
 
         // A fresh in-memory "user" connection with the catalog attached.
-        let user = Connection::open_in_memory().unwrap();
+        // Apply user migrations too so the FK-existence helpers can see
+        // the user_printings table (the "Missing Variant" escape hatch
+        // is one of the FK targets `printing_exists` checks).
+        let mut user = Connection::open_in_memory().unwrap();
+        crate::run_user_migrations(&mut user).unwrap();
         attach_shared_readonly(&user, &shared_path).unwrap();
 
         // Catalog tables are reachable unqualified via the temp views.

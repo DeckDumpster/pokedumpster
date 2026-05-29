@@ -53,11 +53,16 @@ const COLS: &str = "id, printing_id, price, observed_at, note, created_at";
 
 /// Insert a manual price; returns its id.
 ///
-/// Validates the printing_id resolves against the attached shared catalog
-/// — the app-layer FK check, since SQLite cannot enforce cross-database FKs.
+/// Validates the printing_id resolves against either the attached shared
+/// catalog (`printings`) or the user DB (`user_printings`) — the
+/// app-layer FK check, since SQLite cannot enforce cross-database FKs.
 pub fn insert(conn: &Connection, new: &NewManualPrice) -> Result<i64> {
     let exists: Option<i64> = conn
-        .prepare("SELECT 1 FROM printings WHERE printing_id = ?1")?
+        .prepare(
+            "SELECT 1 FROM printings WHERE printing_id = ?1 \
+             UNION ALL \
+             SELECT 1 FROM user_printings WHERE printing_id = ?1",
+        )?
         .query_row(params![new.printing_id], |r| r.get(0))
         .optional()?;
     if exists.is_none() {

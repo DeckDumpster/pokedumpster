@@ -8,4 +8,14 @@ export type PrintingInfo = { printing_id: string, variant: string, language: str
 /**
  * TCGplayer product id, used to deep-link a printing to its product page.
  */
-tcgplayer_product_id: number | null, };
+tcgplayer_product_id: number | null, 
+/**
+ * True when this row is a user_printings entry — the "Missing
+ * Variant" escape hatch. Renders with an italic + (user) tag in
+ * the UI.
+ */
+is_user_added: boolean, 
+/**
+ * Free-text variant description carried by user_printings rows.
+ */
+description: string | null, };

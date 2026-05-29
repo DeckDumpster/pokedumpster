@@ -33,5 +33,7 @@
   { "code": "stamp_trick_or_trade",    "label": "Trick or Trade Stamp",     "short": "TOT",    "rank": 4, "color": "#e7732f", "provenance": "Trick or Trade BOOster Bundle — Halloween booster bundle stamped with a jack-o-lantern Pikachu, released annually." },
 
   { "code": "peelable_ditto",          "label": "Peelable Ditto",           "short": "DITTO",  "rank": 5, "color": "#d8a4d4", "provenance": "Peelable Ditto — a Ditto-disguised card whose sticker layer peels off to reveal the underlying Pokémon." },
-  { "code": "black_dot_error",         "label": "Black Dot Error",          "short": "ERROR",  "rank": 5, "color": "#222222", "provenance": "Black-dot misprint — production error from a specific print run; collectible specifically as an error variant." }
+  { "code": "black_dot_error",         "label": "Black Dot Error",          "short": "ERROR",  "rank": 5, "color": "#222222", "provenance": "Black-dot misprint — production error from a specific print run; collectible specifically as an error variant." },
+
+  { "code": "missing_variant",         "label": "Missing Variant",          "short": "MISS",   "rank": 999, "color": "#777777", "provenance": "User-curated catch-all for copies whose variant is not yet modelled in the catalog (misprints, undocumented promos, etc.). Each user_printings row carries its own free-text description." }
 ]

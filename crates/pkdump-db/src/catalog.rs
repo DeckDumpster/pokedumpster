@@ -17,10 +17,17 @@ pub fn card_exists(conn: &Connection, card_id: &str) -> Result<bool> {
         .exists([card_id])?)
 }
 
-/// Whether a printing with this id exists in the catalog.
+/// Whether a printing with this id exists — either in the shared
+/// catalog or in the user-DB `user_printings` table (the "Missing
+/// Variant" escape hatch, decision pokedumpster-x7k). Both count as
+/// valid FK targets for `collection.printing_id` and friends.
 pub fn printing_exists(conn: &Connection, printing_id: &str) -> Result<bool> {
     Ok(conn
-        .prepare("SELECT 1 FROM printings WHERE printing_id = ?1")?
+        .prepare(
+            "SELECT 1 FROM printings WHERE printing_id = ?1 \
+             UNION ALL \
+             SELECT 1 FROM user_printings WHERE printing_id = ?1",
+        )?
         .exists([printing_id])?)
 }
 

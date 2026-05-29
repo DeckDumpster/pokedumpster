@@ -225,6 +225,9 @@ pub struct CollectionRow {
     /// the printing isn't linked to a product, or no snapshot exists).
     pub market_price: Option<f64>,
     pub image_small: Option<String>,
+    /// Free-text description carried by user_printings rows (the
+    /// "Missing Variant" escape hatch). NULL for catalog printings.
+    pub variant_description: Option<String>,
 }
 
 /// SELECT-list columns shared by every collection-row query.
@@ -244,10 +247,26 @@ const ROW_COLUMNS_SQL: &str = "c.id, c.printing_id, c.condition, c.language, \
            WHERE mp.printing_id = p.printing_id \
            ORDER BY mp.observed_at DESC LIMIT 1) \
      ) AS market_price, \
-     cd.image_small";
+     cd.image_small, p.variant_description";
 
+// `p` is a UNION of shared.printings and the user-DB user_printings
+// table (decision pokedumpster-x7k) so the collection list includes
+// copies of "Missing Variant" entries the user has logged via the
+// escape hatch. tcgplayer_product_id and sub_type_name are NULL for
+// user rows — the price-COALESCE then falls through to manual_prices,
+// which is the only source for these.
 const ROW_FROM: &str = "FROM collection c \
-     JOIN printings p ON c.printing_id = p.printing_id \
+     JOIN ( \
+        SELECT printing_id, card_id, variant, \
+               tcgplayer_product_id, sub_type_name, \
+               NULL AS variant_description \
+          FROM printings \
+        UNION ALL \
+        SELECT printing_id, card_id, variant, \
+               NULL AS tcgplayer_product_id, NULL AS sub_type_name, \
+               description AS variant_description \
+          FROM user_printings \
+     ) p ON c.printing_id = p.printing_id \
      JOIN cards cd ON p.card_id = cd.card_id \
      JOIN sets s ON cd.set_code = s.set_code";
 
@@ -282,6 +301,7 @@ fn collection_row_from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionRow>
         attacks: r.get(26)?,
         market_price: r.get(27)?,
         image_small: r.get(28)?,
+        variant_description: r.get(29)?,
     })
 }
 
@@ -345,11 +365,17 @@ pub fn list_by_batch(conn: &Connection, batch_id: i64) -> Result<Vec<CollectionR
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// List every copy the user owns of any printing of a given card.
+/// List every copy the user owns of any printing of a given card. The
+/// inner UNION ALL covers both catalog `printings` and user-DB
+/// `user_printings` (the missing-variant escape hatch).
 pub fn list_for_card(conn: &Connection, card_id: &str) -> Result<Vec<CollectionEntry>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLUMNS} FROM collection \
-         WHERE printing_id IN (SELECT printing_id FROM printings WHERE card_id = ?1) \
+         WHERE printing_id IN ( \
+            SELECT printing_id FROM printings WHERE card_id = ?1 \
+            UNION ALL \
+            SELECT printing_id FROM user_printings WHERE card_id = ?1 \
+         ) \
          ORDER BY id"
     ))?;
     let rows = stmt.query_map([card_id], from_row)?;
@@ -494,7 +520,9 @@ pub fn change_printing(conn: &Connection, id: i64, new_printing_id: &str) -> Res
     let card_of = |printing_id: &str| -> Result<Option<String>> {
         Ok(conn
             .query_row(
-                "SELECT card_id FROM printings WHERE printing_id = ?1",
+                "SELECT card_id FROM printings WHERE printing_id = ?1 \
+                 UNION ALL \
+                 SELECT card_id FROM user_printings WHERE printing_id = ?1",
                 [printing_id],
                 |r| r.get(0),
             )

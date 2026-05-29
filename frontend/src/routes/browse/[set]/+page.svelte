@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { replaceState } from '$app/navigation';
+	import { replaceState, afterNavigate } from '$app/navigation';
 	import { api } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
@@ -158,8 +158,21 @@
 		}
 	}
 
+	// SvelteKit's replaceState reads from the kit router's internal page
+	// store, which isn't initialised until *after* hydration completes
+	// — onMount is too early on a hard refresh and the call blows up
+	// with "Cannot read properties of undefined (reading '$set')".
+	// afterNavigate fires on the initial navigation once the router has
+	// settled, which is the right hook for this gate. On a client-side
+	// nav from /browse the router is already up, so afterNavigate fires
+	// promptly and there's no observable delay.
+	let routerReady = $state(false);
+	afterNavigate(() => {
+		routerReady = true;
+	});
+
 	function syncUrl() {
-		if (typeof window === 'undefined') return;
+		if (typeof window === 'undefined' || !routerReady) return;
 		const url = new URL(window.location.href);
 		const set = (k: string, v: string, dflt: string) => {
 			if (v === dflt) url.searchParams.delete(k);
@@ -503,30 +516,12 @@
 				{#if slot.section !== prevSection && slot.section !== 'base'}
 					<div class="divider">{sectionLabel[slot.section]}</div>
 				{/if}
-				<div class="slotwrap" class:missing={!ownedAny(slot)}>
-					<button class="slot" onclick={() => (selectedSlot = slot)}>
-						{#if slot.image_large}
-							<img src={slot.image_large} alt={slot.name} loading="lazy" />
-						{:else}
-							<div class="noart">{slot.name}</div>
-						{/if}
-					</button>
-					{#if view === 'card'}
-						<div class="meta">
-							<span class="num">#{slot.number}</span>
-							<span class="name" title={slot.name}>{slot.name}</span>
-							{#if slot.rarity}
-								<span class="rarity" title={slot.rarity}>{slot.rarity}</span>
-							{/if}
-							{#if ownedTotal(slot) > 0}
-								<span class="own" title="Owned copies">×{ownedTotal(slot)}</span>
-							{/if}
-						</div>
-					{/if}
-					<!-- One colored pip per variant, sibling to the slot so the
-					     pip buttons aren't nested inside the slot button (invalid
-					     HTML). Empty when unowned, filled with the variant's
-					     color when owned, count badge when owned > 1. -->
+				<!-- One colored pip per variant. In binder view pips sit alone
+				     below the image; in card view they share a row with the
+				     metadata (#, name, ×owned). The pip buttons live OUTSIDE
+				     the slot button so they don't produce nested-button
+				     invalid HTML. -->
+				{#snippet pips(slot: BinderSlot)}
 					<div class="vchips">
 						{#each slot.printings
 							.filter((p) => !p.deprecated)
@@ -548,6 +543,27 @@
 							</button>
 						{/each}
 					</div>
+				{/snippet}
+				<div class="slotwrap" class:missing={!ownedAny(slot)}>
+					<button class="slot" onclick={() => (selectedSlot = slot)}>
+						{#if slot.image_large}
+							<img src={slot.image_large} alt={slot.name} loading="lazy" />
+						{:else}
+							<div class="noart">{slot.name}</div>
+						{/if}
+					</button>
+					{#if view === 'card'}
+						<div class="meta">
+							<span class="num">#{slot.number}</span>
+							<span class="name" title={slot.name}>{slot.name}</span>
+							{#if ownedTotal(slot) > 0}
+								<span class="own" title="Owned copies">×{ownedTotal(slot)}</span>
+							{/if}
+							{@render pips(slot)}
+						</div>
+					{:else}
+						{@render pips(slot)}
+					{/if}
 				</div>
 			{/each}
 		</div>
@@ -935,21 +951,22 @@
 		padding: 0.5rem;
 		text-align: center;
 	}
-	/* 'Card view' metadata footer: collector #, name, rarity, owned count.
-	   Sits between the image and the variant pips so the pip row stays
-	   the bottom-of-tile interaction zone. */
+	/* 'Card view' metadata row: collector #, name, owned count, pips —
+	   all on one line. The pips snippet drops in at the right edge as
+	   a flex-end cluster so taller tiles still feel binder-like. */
 	.meta {
-		display: grid;
-		grid-template-columns: auto 1fr auto;
-		align-items: baseline;
-		gap: 0.35rem;
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
 		font-size: 0.78rem;
 		line-height: 1.2;
 		color: #ccc;
+		min-width: 0;
 	}
 	.meta .num {
 		color: #888;
 		font-variant-numeric: tabular-nums;
+		flex-shrink: 0;
 	}
 	.meta .name {
 		color: #e0e0e0;
@@ -957,26 +974,21 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		min-width: 0;
-	}
-	.meta .rarity {
-		grid-column: 2;
-		color: #888;
-		font-size: 0.7rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		flex: 1;
 	}
 	.meta .own {
-		grid-column: 3;
-		grid-row: 1 / span 2;
 		color: #9fe7a0;
 		font-variant-numeric: tabular-nums;
 		font-weight: 600;
-		align-self: center;
+		flex-shrink: 0;
+	}
+	/* When pips share the meta row, anchor them to the right edge so
+	   the name column gets all available slack. */
+	.meta .vchips {
+		flex-shrink: 0;
 	}
 	.slotwrap.missing .meta .name,
-	.slotwrap.missing .meta .num,
-	.slotwrap.missing .meta .rarity {
+	.slotwrap.missing .meta .num {
 		color: #888;
 	}
 	/* Color-coded variant chips centered below the card. Empty (border-

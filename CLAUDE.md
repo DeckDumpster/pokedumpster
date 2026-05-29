@@ -100,8 +100,9 @@ Cargo workspace, five crates (`crates/`):
 - **pkdump-core** — domain types + pure logic (variant code parsing,
   override matching, import format adapters). No IO.
 - **pkdump-db** — rusqlite persistence. Owns the shared/user DB split,
-  refinery migrations (`migrations/{shared,user}/`), the variants display
-  table, and the binder-page query.
+  the schema files (`src/schema_{shared,user}.sql`, re-applied idempotently
+  on every open — single-instance project, no migration history), the
+  variants display table, and the binder-page query.
 - **pkdump-ingest** — upstream catalog ingestion (pokemon-tcg-data,
   pokemontcg.io, TCGCSV). Variant expansion lives here. Touched only by
   `pkdump setup` / `pkdump data refresh` — never at request time.
@@ -209,10 +210,11 @@ default block-buffering hides multi-minute progress behind `tee`. See the
   binder/deck assignment.
 - **Edition 2024**, toolchain pinned in `rust-toolchain.toml`. `cargo
   fmt` and `cargo clippy` clean before every commit.
-- **Migrations** — refinery, two dirs under `crates/pkdump-db/migrations/`.
-  refinery owns version history; there is no hand-rolled `schema_version`
-  table. The current shared schema is at V2 (variants table + FK on
-  `printings.variant`).
+- **Schema** — single-instance project (pokedumpster-luo). The full
+  schema for each database lives in `crates/pkdump-db/src/schema_{shared,user}.sql`
+  and is re-applied with `CREATE … IF NOT EXISTS` on every open. No
+  migration history, no refinery. Schema changes: edit the file + apply
+  the diff manually to the one prod box (`podman exec` + `sqlite3`).
 - **Workspace dependencies** are declared in the root `Cargo.toml`
   `[workspace.dependencies]`; crates opt in with `dep.workspace = true`.
 - **Tests that demonstrate bugs must fail** until the bug is fixed.
@@ -259,4 +261,5 @@ default block-buffering hides multi-minute progress behind `tee`. See the
   session.
 - Backups live at `~/pkdump-backups/<instance>/daily/`. Restore by
   copying the snapshot in place of `collection.sqlite` and starting the
-  server — refinery migrates the schema forward on first open.
+  server — the schema init runs on first open and is a no-op against
+  the already-shaped DB.

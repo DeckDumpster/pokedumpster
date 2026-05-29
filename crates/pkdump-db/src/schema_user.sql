@@ -1,11 +1,23 @@
--- <user>.sqlite — a single user's mutable PokeDumpster collection.
--- The only data worth backing up; the catalog is reproducible.
--- See PLAN.md §3.3. Cross-database references (printing_id -> shared.printings,
--- card_id -> shared.cards, product_id -> shared.sealed_products) are NOT
--- declared as SQL foreign keys — SQLite cannot enforce them across an
--- ATTACHed database, so they are validated in the repository layer (§3.5).
+-- The full per-user collection schema, applied on every open of the
+-- user database (default collection.sqlite). Single-instance project
+-- (pokedumpster-luo): no migration history, no refinery. New installs
+-- build to this exact shape; the existing prod DB already matches it so
+-- every CREATE IF NOT EXISTS is a no-op.
 
-CREATE TABLE binders (
+-- ---------------------------------------------------------------------
+-- Settings (key/value)
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------
+-- Containers: binders, decks
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS binders (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     name              TEXT NOT NULL,
     description       TEXT,
@@ -17,7 +29,7 @@ CREATE TABLE binders (
     updated_at        TEXT NOT NULL
 );
 
-CREATE TABLE decks (
+CREATE TABLE IF NOT EXISTS decks (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     name              TEXT NOT NULL,
     description       TEXT,
@@ -32,7 +44,11 @@ CREATE TABLE decks (
     updated_at        TEXT NOT NULL
 );
 
-CREATE TABLE orders (
+-- ---------------------------------------------------------------------
+-- Orders and batches
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS orders (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     order_number       TEXT,
     source             TEXT NOT NULL,          -- 'tcgplayer'|'ebay'|'pokemoncenter'|'lgs'|'other'
@@ -49,7 +65,7 @@ CREATE TABLE orders (
     UNIQUE(source, order_number)
 );
 
-CREATE TABLE batches (
+CREATE TABLE IF NOT EXISTS batches (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_type  TEXT NOT NULL,                 -- 'manual_id'|'binder_click'|'csv_manabox'|'order_tcg'|...
     name        TEXT,
@@ -58,10 +74,15 @@ CREATE TABLE batches (
     binder_id   INTEGER REFERENCES binders(id),
     created_at  TEXT NOT NULL
 );
-CREATE INDEX idx_batches_type ON batches(batch_type);
+CREATE INDEX IF NOT EXISTS idx_batches_type ON batches(batch_type);
 
--- One row per physical card owned (strict — no quantity aggregation).
-CREATE TABLE collection (
+-- ---------------------------------------------------------------------
+-- The collection: one row per physical card. App-layer FKs into the
+-- shared catalog (`printing_id` -> shared.printings) since SQLite has no
+-- cross-database FK enforcement.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS collection (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     printing_id     TEXT NOT NULL,             -- -> shared.printings (app-layer FK)
     condition       TEXT NOT NULL DEFAULT 'Near Mint'
@@ -88,13 +109,16 @@ CREATE TABLE collection (
     -- A physical card is in at most one container.
     CHECK (binder_id IS NULL OR deck_id IS NULL)
 );
-CREATE INDEX idx_collection_printing ON collection(printing_id);
-CREATE INDEX idx_collection_binder   ON collection(binder_id);
-CREATE INDEX idx_collection_deck     ON collection(deck_id);
-CREATE INDEX idx_collection_status   ON collection(status);
+CREATE INDEX IF NOT EXISTS idx_collection_printing ON collection(printing_id);
+CREATE INDEX IF NOT EXISTS idx_collection_binder   ON collection(binder_id);
+CREATE INDEX IF NOT EXISTS idx_collection_deck     ON collection(deck_id);
+CREATE INDEX IF NOT EXISTS idx_collection_status   ON collection(status);
 
--- Append-only audit of status transitions.
-CREATE TABLE status_log (
+-- ---------------------------------------------------------------------
+-- Lifecycle logs (audit trail for status + container moves)
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS status_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     collection_id INTEGER NOT NULL REFERENCES collection(id) ON DELETE CASCADE,
     from_status   TEXT,
@@ -102,10 +126,9 @@ CREATE TABLE status_log (
     changed_at    TEXT NOT NULL,
     note          TEXT
 );
-CREATE INDEX idx_status_log_collection ON status_log(collection_id);
+CREATE INDEX IF NOT EXISTS idx_status_log_collection ON status_log(collection_id);
 
--- Append-only audit of binder/deck reassignments.
-CREATE TABLE movement_log (
+CREATE TABLE IF NOT EXISTS movement_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     collection_id   INTEGER NOT NULL REFERENCES collection(id) ON DELETE CASCADE,
     from_binder_id  INTEGER REFERENCES binders(id),
@@ -115,9 +138,13 @@ CREATE TABLE movement_log (
     changed_at      TEXT NOT NULL,
     note            TEXT
 );
-CREATE INDEX idx_movement_log_collection ON movement_log(collection_id);
+CREATE INDEX IF NOT EXISTS idx_movement_log_collection ON movement_log(collection_id);
 
-CREATE TABLE wishlist (
+-- ---------------------------------------------------------------------
+-- Wishlist
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS wishlist (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     card_id       TEXT NOT NULL,               -- -> shared.cards (app-layer FK)
     printing_id   TEXT,                        -- NULL = any printing
@@ -128,9 +155,13 @@ CREATE TABLE wishlist (
     source        TEXT NOT NULL DEFAULT 'manual',
     fulfilled_at  TEXT
 );
-CREATE INDEX idx_wishlist_card ON wishlist(card_id);
+CREATE INDEX IF NOT EXISTS idx_wishlist_card ON wishlist(card_id);
 
-CREATE TABLE sealed_collection (
+-- ---------------------------------------------------------------------
+-- Sealed collection
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS sealed_collection (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id     INTEGER NOT NULL,           -- -> shared.sealed_products (app-layer FK)
     quantity       INTEGER NOT NULL DEFAULT 1,
@@ -145,10 +176,33 @@ CREATE TABLE sealed_collection (
         CHECK (status IN ('owned', 'listed', 'sold', 'traded', 'gifted', 'opened')),
     added_at       TEXT NOT NULL
 );
-CREATE INDEX idx_sealed_collection_product ON sealed_collection(product_id);
-CREATE INDEX idx_sealed_collection_status  ON sealed_collection(status);
+CREATE INDEX IF NOT EXISTS idx_sealed_collection_product ON sealed_collection(product_id);
+CREATE INDEX IF NOT EXISTS idx_sealed_collection_status  ON sealed_collection(status);
 
-CREATE TABLE settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+-- ---------------------------------------------------------------------
+-- Manual prices (hand-entered fallback for printings TCGplayer doesn't price)
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS manual_prices (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    printing_id  TEXT NOT NULL,
+    price        REAL NOT NULL,
+    observed_at  TEXT NOT NULL,
+    note         TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_manual_prices_printing ON manual_prices(printing_id, observed_at DESC);
+
+-- ---------------------------------------------------------------------
+-- User-created printings (for upstream-missing variants — the "Missing
+-- Variant" escape hatch on card detail).
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS user_printings (
+    printing_id  TEXT PRIMARY KEY,
+    card_id      TEXT NOT NULL,
+    variant      TEXT NOT NULL DEFAULT 'missing_variant',
+    description  TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_user_printings_card ON user_printings(card_id);

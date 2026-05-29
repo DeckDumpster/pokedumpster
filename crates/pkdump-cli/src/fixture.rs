@@ -7,9 +7,9 @@
 //! * `collection.sqlite` — per-user mutable data (binders, decks, batches,
 //!   orders, sealed, wishlist, views, collection).
 //!
-//! Both databases are built through PokeDumpster's own code so refinery's
-//! migration history is populated and the running server can open them
-//! unchanged. The intents harness snapshots/restores these before each test.
+//! Both databases are built through PokeDumpster's own code so the schema
+//! init runs and the running server can open them unchanged. The intents
+//! harness snapshots/restores these before each test.
 //!
 //! The data is small, deterministic, and Pokémon-authentic; intent YAML/hint
 //! files reference it by the stable names documented in
@@ -43,8 +43,8 @@ pub fn run(args: FixtureArgs) -> anyhow::Result<()> {
     let shared_path = args.out.join("shared.sqlite");
     let user_path = args.out.join("collection.sqlite");
 
-    // Clean rebuild — refinery would otherwise refuse to re-run migrations
-    // against a stale schema, and stale rows would break determinism.
+    // Clean rebuild — stale rows would break determinism, even though
+    // the new IF NOT EXISTS schema would otherwise let us reuse the file.
     for p in [&shared_path, &user_path] {
         if p.exists() {
             std::fs::remove_file(p)?;

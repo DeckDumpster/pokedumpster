@@ -4,6 +4,12 @@
 //! ingest pipelines. A per-user collection database `ATTACH`es the catalog
 //! read-only and exposes its tables through `TEMP VIEW`s so queries can join
 //! user and catalog data unqualified (PLAN.md §3.1).
+//!
+//! Schema management: single-instance project (pokedumpster-luo). The full
+//! schema lives in `schema_shared.sql` / `schema_user.sql` and is re-applied
+//! with `CREATE … IF NOT EXISTS` on every open. No migration history, no
+//! refinery — future schema changes edit those files and manually apply
+//! the diff to the one prod box.
 
 use std::path::Path;
 use std::time::Duration;
@@ -11,10 +17,13 @@ use std::time::Duration;
 use rusqlite::Connection;
 
 use crate::error::Result;
-use crate::migrations;
 
-/// Open the shared catalog database, creating it if absent, applying any
-/// pending migrations. Read-write — for `pkdump setup` and ingest only.
+const SCHEMA_SHARED: &str = include_str!("schema_shared.sql");
+const SCHEMA_USER: &str = include_str!("schema_user.sql");
+
+/// Open the shared catalog database, creating it if absent, and apply the
+/// schema (idempotent — every CREATE is IF NOT EXISTS). Read-write — for
+/// `pkdump setup` and ingest only.
 ///
 /// PRAGMAs tuned for the variant-expansion write workload, which opens
 /// ~20k per-card transactions: WAL keeps writes sequential, synchronous
@@ -22,6 +31,11 @@ use crate::migrations;
 /// and a 64MB page cache keeps the printings + indices hot through the
 /// full expansion pass. Without these, throughput collapses ~3× once
 /// the table exceeds the default ~2MB cache (pokedumpster-rqr).
+///
+/// After schema init, reconciles every shipped seed file (variants,
+/// (group, sub_type) → variant map, bundles) so a freshly-opened DB is
+/// always ready for FK-referencing inserts. Cheap and idempotent on the
+/// existing prod DB. See pokedumpster-luo.
 pub fn open_shared(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -30,18 +44,16 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL; \
          PRAGMA synchronous = NORMAL; \
-         PRAGMA cache_size = -65536;",
+         PRAGMA cache_size = -65536; \
+         PRAGMA foreign_keys = ON;",
     )?;
     conn.busy_timeout(Duration::from_secs(5))?;
-    // Foreign keys must be OFF during migrations: table-rebuild migrations
-    // (drop column + CREATE NEW / COPY / DROP / RENAME) trip the FK
-    // checker on DROP TABLE for any rebuilt parent table, and SQLite's
-    // `defer_foreign_keys` only defers DML checks, not DDL. After the
-    // migration commits, all FK targets exist again (the rename restored
-    // them), so turning enforcement back on is safe.
-    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
-    migrations::run_shared_migrations(&mut conn)?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    conn.execute_batch(SCHEMA_SHARED)?;
+    // Reconcile shipped seeds — variants must run first (sub_type_map
+    // FKs into it). All three are idempotent upserts.
+    crate::variants::reconcile(&mut conn)?;
+    crate::sub_type_map::reconcile(&mut conn)?;
+    crate::bundles::reconcile(&mut conn)?;
     Ok(conn)
 }
 
@@ -52,6 +64,9 @@ pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<(
     let uri = format!("file:{}?mode=ro", shared_path.display());
     conn.execute("ATTACH DATABASE ?1 AS shared", [uri])?;
 
+    // Skip sqlite_* internals and the legacy refinery_schema_history
+    // table left behind on the prod DB by the pre-luo migration system.
+    // It's harmless dead weight; new installs never get it.
     let names: Vec<String> = {
         let mut stmt = conn.prepare(
             "SELECT name FROM shared.sqlite_master \
@@ -72,18 +87,25 @@ pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<(
     Ok(())
 }
 
-/// Open a per-user collection database — applying any pending user-schema
-/// migrations — with the shared catalog attached read-only.
+/// Open a per-user collection database — applying the user schema — with
+/// the shared catalog attached read-only.
 pub fn connect_user(user_path: &Path, shared_path: &Path) -> Result<Connection> {
     if let Some(parent) = user_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let mut conn = Connection::open(user_path)?;
+    let conn = Connection::open(user_path)?;
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
     conn.busy_timeout(Duration::from_secs(5))?;
-    migrations::run_user_migrations(&mut conn)?;
+    conn.execute_batch(SCHEMA_USER)?;
     attach_shared_readonly(&conn, shared_path)?;
     Ok(conn)
+}
+
+/// Apply the user schema to an arbitrary connection. Used by tests that
+/// open an in-memory user DB without going through `connect_user`.
+pub fn init_user_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(SCHEMA_USER)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -107,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn open_shared_creates_and_migrates() {
+    fn open_shared_creates_schema() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_shared(&dir.path().join("shared.sqlite")).unwrap();
         let n: i64 = conn
@@ -118,6 +140,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+        // Re-opening is idempotent.
+        let conn2 = open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let n2: i64 = conn2
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cards'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n2, 1);
     }
 
     #[test]
@@ -127,11 +159,11 @@ mod tests {
         seed_shared(&shared_path);
 
         // A fresh in-memory "user" connection with the catalog attached.
-        // Apply user migrations too so the FK-existence helpers can see
+        // Apply the user schema too so the FK-existence helpers can see
         // the user_printings table (the "Missing Variant" escape hatch
         // is one of the FK targets `printing_exists` checks).
-        let mut user = Connection::open_in_memory().unwrap();
-        crate::run_user_migrations(&mut user).unwrap();
+        let user = Connection::open_in_memory().unwrap();
+        init_user_schema(&user).unwrap();
         attach_shared_readonly(&user, &shared_path).unwrap();
 
         // Catalog tables are reachable unqualified via the temp views.

@@ -1,16 +1,22 @@
 <script lang="ts">
 	import { variantLabel, variantSortCmp, variantProvenance } from '$lib/variants.svelte';
+	import { CONDITIONS } from '$lib/conditions';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
 
 	let {
 		slot,
 		setCode,
+		condition = $bindable('Near Mint'),
 		onAdd,
 		onRemove,
 		onClose
 	}: {
 		slot: BinderSlot;
 		setCode: string;
+		/** Bindable. Drives the condition used when the user clicks "+".
+		 *  Parent owns it so the picked tier sticks across modal opens
+		 *  within the same /browse/[set] session. */
+		condition?: string;
 		onAdd: (printingId: string, variant: string) => void;
 		onRemove: (printingId: string, variant: string) => void;
 		onClose: () => void;
@@ -44,6 +50,16 @@
 		<h3>#{slot.number} · {slot.name}</h3>
 		<button class="x" onclick={onClose} aria-label="Close">×</button>
 	</header>
+
+	<!-- Condition for new adds. Bound to the parent so the choice persists
+	     across modal opens within the same page visit; both the modal "+"
+	     and any inline pip "+" on the page use this same value. -->
+	<label class="cond">
+		<span>Condition</span>
+		<select bind:value={condition}>
+			{#each CONDITIONS as c (c)}<option value={c}>{c}</option>{/each}
+		</select>
+	</label>
 
 	<ul>
 		{#each visible as p (p.printing_id)}
@@ -200,6 +216,27 @@
 	}
 	.full:hover {
 		color: #e94560;
+	}
+	/* Condition picker row — sits between the header and the printings list. */
+	.cond {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		margin: 0.75rem 0 0;
+		font-size: 0.85rem;
+		color: #ccc;
+	}
+	.cond > span {
+		color: #888;
+	}
+	.cond select {
+		flex: 1;
+		background: #1a1a2e;
+		border: 1px solid #0f3460;
+		color: #e0e0e0;
+		border-radius: 6px;
+		padding: 0.3rem 0.5rem;
+		font: inherit;
 	}
 
 	/* On narrow screens the modal becomes a bottom sheet (PLAN §6.9). */

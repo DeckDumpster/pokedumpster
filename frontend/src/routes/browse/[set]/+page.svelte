@@ -108,6 +108,13 @@
 
 	let selectedSlot = $state<BinderSlot | null>(null);
 
+	// Default condition for new copies on this page. Sticky across modal
+	// opens within the same visit (the modal binds to this), defaults back
+	// to NM on full reload. Both addCopy (modal "+") and addToSlot
+	// (inline pip "+") consume it, so flipping the picker in the modal
+	// also tags subsequent pip clicks until the user changes it back.
+	let condition = $state('Near Mint');
+
 	// One binder-browse session per set visit groups its adds under a batch
 	// (PLAN §6.7). The batch is created lazily on the first add so merely
 	// looking at a set never leaves an empty batch behind.
@@ -241,7 +248,8 @@
 			await api.addCopy({
 				printing_id: printingId,
 				source: 'binder_click',
-				batch_id: sessionBatchId
+				batch_id: sessionBatchId,
+				condition
 			});
 		} catch (e) {
 			printing.owned_count -= 1; // revert
@@ -616,6 +624,7 @@
 	<VariantModal
 		slot={selectedSlot}
 		setCode={binder.set.set_code}
+		bind:condition
 		onAdd={addCopy}
 		onRemove={removeCopy}
 		onClose={() => (selectedSlot = null)}

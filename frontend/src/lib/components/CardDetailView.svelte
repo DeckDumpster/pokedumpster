@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import { variantLabel, variantSortCmp, variantProvenance } from '$lib/variants.svelte';
+	import { CONDITIONS } from '$lib/conditions';
 	import type { CardDetail } from '$lib/types/CardDetail';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
@@ -106,6 +107,8 @@
 		withBusy(() => api.changePrinting(copyId, printingId));
 	const changeStatus = (copyId: number, status: string) =>
 		withBusy(() => api.setCopyStatus(copyId, status));
+	const changeCondition = (copyId: number, condition: string) =>
+		withBusy(() => api.updateCopy(copyId, { condition }));
 
 	function assignValue(copy: { binder_id: number | null; deck_id: number | null }): string {
 		if (copy.binder_id != null) return `b:${copy.binder_id}`;
@@ -484,7 +487,15 @@
 									{/each}
 								</select>
 							</td>
-							<td data-label="Condition">{copy.condition}</td>
+							<td data-label="Condition">
+							<select
+								value={copy.condition}
+								disabled={busy}
+								onchange={(e) => changeCondition(copy.id, e.currentTarget.value)}
+							>
+								{#each CONDITIONS as c (c)}<option value={c}>{c}</option>{/each}
+							</select>
+						</td>
 							<td data-label="Status">
 								<select
 									value={copy.status}

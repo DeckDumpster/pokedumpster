@@ -6,6 +6,7 @@ import type { CardDetail } from './types/CardDetail';
 import type { PriceSeries } from './types/PriceSeries';
 import type { CatalogSearchRow } from './types/CatalogSearchRow';
 import type { NewCopy } from './types/NewCopy';
+import type { CopyEdit } from './types/CopyEdit';
 import type { SetSummary } from './types/SetSummary';
 import type { SetAnalytics } from './types/SetAnalytics';
 import type { BinderPage } from './types/BinderPage';
@@ -128,6 +129,12 @@ export const api = {
 	/** Change a copy's printing (correct a mis-logged variant). */
 	changePrinting: (id: number, printingId: string) =>
 		send<CollectionRow>('PUT', `/api/collection/${id}/printing`, { printing_id: printingId }),
+
+	/** Patch an arbitrary set of editable fields on a copy (condition,
+	 *  language, purchase/sale price, notes, tags, grading). Pass only
+	 *  the fields you want to change — omitted fields stay as-is. */
+	updateCopy: (id: number, edit: Partial<CopyEdit>) =>
+		send<CollectionRow>('PUT', `/api/collection/${id}`, edit),
 
 	// --- Binders ---
 	binders: () => getJson<Binder[]>('/api/binders'),

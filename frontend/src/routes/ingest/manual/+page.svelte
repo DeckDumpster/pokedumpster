@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
+	import { CONDITIONS } from '$lib/conditions';
 	import type { CardDetail } from '$lib/types/CardDetail';
 
 	let setCode = $state('');
@@ -10,14 +11,6 @@
 	let error = $state<string | null>(null);
 	let busy = $state(false);
 	let log = $state<string[]>([]);
-
-	const conditions = [
-		'Near Mint',
-		'Lightly Played',
-		'Moderately Played',
-		'Heavily Played',
-		'Damaged'
-	];
 
 	async function lookup() {
 		error = null;
@@ -79,7 +72,7 @@
 	<label>
 		Condition
 		<select bind:value={condition}>
-			{#each conditions as c (c)}<option value={c}>{c}</option>{/each}
+			{#each CONDITIONS as c (c)}<option value={c}>{c}</option>{/each}
 		</select>
 	</label>
 	<button type="submit" disabled={busy}>Look up</button>

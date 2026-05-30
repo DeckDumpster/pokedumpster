@@ -8,5 +8,10 @@
     "comment": "Prismatic Evolutions (sv8pt5): same Poke Ball / Master Ball pattern gimmick as 151.",
     "match": { "set": "sv8pt5", "rarity": ["Common", "Uncommon", "Rare"] },
     "add": ["pokeball_rh", "masterball_rh"]
+  },
+  {
+    "comment": "Legendary Collection (base6): every card was printed with a reverse-holo treatment, but TCGCSV's published feed is missing the Reverse Holofoil sub_type for 8 cards (Dark Blastoise, Muk, Jynx, Kakuna, Meowth, Abra, Eevee, Squirtle as of 2026-05-30). Idempotent: cards that already have reverse_holo via TCGCSV are no-ops; the gap cards get a printing with NULL product_id, falling through to manual_prices. See pokedumpster-28f.",
+    "match": { "set": "base6" },
+    "add": ["reverse_holo"]
   }
 ]

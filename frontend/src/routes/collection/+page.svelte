@@ -4,6 +4,7 @@
 	import { replaceState } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { variantLabel, variantTag, variants } from '$lib/variants.svelte';
+	import { conditionMultiplier } from '$lib/conditions';
 
 	// Foil shimmer treatment for holo / reverse-holo / pattern-RH /
 	// cosmos_holo variants — ranks 1..3 in the variants table. Stamps
@@ -232,8 +233,11 @@
 		return haystacks.some((h) => h != null && h.toLowerCase().includes(q));
 	}
 	const filtered = $derived(rows.filter((r) => rowMatches(r, search)));
+	// Header total is the sum of *condition-adjusted* market values across
+	// the filtered rows, so it equals the sum of the per-row Value cells
+	// shown below (which also apply the multiplier).
 	const totalValue = $derived(
-		filtered.reduce((s, r) => s + (r.market_price ?? 0), 0)
+		filtered.reduce((s, r) => s + (r.market_price ?? 0) * conditionMultiplier(r.condition), 0)
 	);
 
 	function price(p: number | null): string {
@@ -291,6 +295,11 @@
 		const map = new Map<string, AggRow>();
 		for (const r of input) {
 			const key = `${r.printing_id}|${r.condition}|${r.status}`;
+			// market_price is always NM market from the API; condition-adjust
+			// it here so the Value column reflects the copy's actual worth,
+			// not the NM headline (pokedumpster-qtp).
+			const condValue =
+				r.market_price != null ? r.market_price * conditionMultiplier(r.condition) : null;
 			const existing = map.get(key);
 			if (existing) {
 				existing.ids.push(r.id);
@@ -298,8 +307,8 @@
 				if (r.purchase_price != null) {
 					existing.paid_total = (existing.paid_total ?? 0) + r.purchase_price;
 				}
-				if (r.market_price != null) {
-					existing.market_total = (existing.market_total ?? 0) + r.market_price;
+				if (condValue != null) {
+					existing.market_total = (existing.market_total ?? 0) + condValue;
 				}
 			} else {
 				map.set(key, {
@@ -307,8 +316,8 @@
 					ids: [r.id],
 					qty: 1,
 					paid_total: r.purchase_price,
-					market_unit: r.market_price,
-					market_total: r.market_price,
+					market_unit: condValue,
+					market_total: condValue,
 					printing_id: r.printing_id,
 					card_id: r.card_id,
 					set_code: r.set_code,

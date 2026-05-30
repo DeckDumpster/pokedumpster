@@ -2,7 +2,7 @@
 	import { api } from '$lib/api';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import { variantLabel, variantSortCmp, variantProvenance } from '$lib/variants.svelte';
-	import { CONDITIONS } from '$lib/conditions';
+	import { CONDITIONS, conditionMultiplier } from '$lib/conditions';
 	import type { CardDetail } from '$lib/types/CardDetail';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
@@ -144,6 +144,16 @@
 	}
 	function price(p: number | null): string {
 		return p == null ? '—' : `$${p.toFixed(2)}`;
+	}
+
+	/** Per-copy estimated value: the copy's printing market price scaled
+	 *  by the copy's condition multiplier. Null when we don't have a
+	 *  market price for the printing (e.g. user_printings entries that
+	 *  haven't had a manual price set). */
+	function copyValue(copy: { printing_id: string; condition: string }): number | null {
+		const p = detail?.printings.find((x) => x.printing_id === copy.printing_id);
+		if (!p || p.market_price == null) return null;
+		return p.market_price * conditionMultiplier(copy.condition);
 	}
 
 	// Pokémon energy-type icons, served from /static/energy. "Free" (a
@@ -469,7 +479,7 @@
 		{:else}
 			<table>
 				<thead>
-					<tr><th>Variant</th><th>Condition</th><th>Status</th><th>Location</th><th>Paid</th></tr>
+					<tr><th>Variant</th><th>Condition</th><th>Status</th><th>Location</th><th>Paid</th><th>Value</th></tr>
 				</thead>
 				<tbody>
 					{#each detail.copies as copy (copy.id)}
@@ -517,6 +527,9 @@
 								</select>
 							</td>
 							<td data-label="Paid">{price(copy.purchase_price)}</td>
+							<td data-label="Value" title="NM market × condition multiplier"
+								>{price(copyValue(copy))}</td
+							>
 						</tr>
 					{/each}
 				</tbody>

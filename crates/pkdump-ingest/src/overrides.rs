@@ -219,13 +219,23 @@ fn preload_cross_group_products(
                 continue;
             };
             (v.to_string(), None, Some(sub))
-        } else if TTBB_GROUP_IDS.contains(&group_id) && !name.contains('(') {
-            // Plain-name TTBB reprints — e.g. "Phantump 016/196",
-            // "Sprigatito - 012/193". No parenthetical to parse; the
-            // distinguishing feature is the Halloween Pikachu stamp on
-            // the artwork. All three TTBB years share the same stamp
-            // graphic, so they share one variant code; the year is
-            // recoverable via the printing's tcgcsv group_id if needed.
+        } else if TTBB_GROUP_IDS.contains(&group_id)
+            && trailing_paren_lower(&name).is_none_or(|p| p.ends_with("copyright date"))
+        {
+            // TTBB reprints — e.g. "Phantump 016/196", "Sprigatito -
+            // 012/193". The distinguishing feature is the Halloween
+            // Pikachu stamp on the artwork. All three TTBB years share
+            // the same stamp graphic, so they share one variant code; the
+            // year is recoverable via the printing's tcgcsv group_id.
+            //
+            // Most are bare-name (no parenthetical). The exception is a
+            // handful of cards reprinted in TTBB from two original print
+            // runs that TCGCSV disambiguates by copyright line, e.g.
+            // "Gengar (2022 Copyright Date)". That's still a Halloween
+            // stamp — the copyright date is a print-run detail our variant
+            // taxonomy doesn't model — so it routes to the same code. No
+            // card carries both a plain and a copyright-dated TTBB product
+            // in one group, so there's no printing-id collision.
             let sub = sub_type_first(conn, product_id)?;
             ("stamp_trick_or_trade".to_string(), None, sub)
         } else if let Some(set_kw) = trailing_paren_lower(&name)
@@ -1305,6 +1315,56 @@ mod tests {
             leaked, 0,
             "TTBB stamp must not bleed onto same-name+number card in another set"
         );
+    }
+
+    #[test]
+    fn ttbb_copyright_date_reprint_attaches_as_stamp_trick_or_trade() {
+        // A few cards are reprinted in TTBB from two original print runs;
+        // TCGCSV disambiguates by copyright line, e.g. "Gengar (2022
+        // Copyright Date)" 066/196 (group 23266). It's still a Halloween
+        // stamp, so it must bridge to the base card as stamp_trick_or_trade
+        // rather than being skipped for carrying a parenthetical. A skipped
+        // product leaves the bundle binder with a broken orphan slot whose
+        // "full card details" link 404s (pokedumpster).
+        let (_d, mut conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('swsh11', 'Lost Origin', 'Sword & Shield', 196)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('swsh11-66', 'swsh11', '66', 66, 'Gengar', 'Rare')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (515661, 23266, 'Gengar (2022 Copyright Date)', '066/196', NULL, '2026-06-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prices \
+               (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+             VALUES (515661, 'Normal', 'tcgplayer', 'market', 0.5, '2026-06-01')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let row: (String, Option<i64>) = conn
+            .query_row(
+                "SELECT variant, tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'swsh11-66-stamp_trick_or_trade'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("stamp_trick_or_trade".into(), Some(515661)));
     }
 
     #[test]

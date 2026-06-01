@@ -225,11 +225,23 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
                WHERE mp.printing_id = p.printing_id \
                ORDER BY mp.observed_at DESC LIMIT 1) \
         )";
+    // "Full set" market value = the minimum cost to own one of every card,
+    // i.e. the CHEAPEST printing per card summed across cards — NOT the sum
+    // of every printing. WOTC sets print each card in three runs (1st
+    // Edition, Shadowless, Unlimited), and modern cards come in normal +
+    // reverse holo; summing all printings triple-counts each card and is
+    // dominated by the priciest run (a near-complete Base Set read as ~$28k
+    // off the 1st-Edition holos). Taking the per-card minimum collapses to
+    // the Unlimited run for WOTC and the base printing for modern sets —
+    // the run a set collector actually completes. (pokedumpster)
     let market_value: f64 = conn.query_row(
         &format!(
-            "SELECT COALESCE(SUM({price_expr}), 0) \
-             FROM printings p JOIN cards c ON p.card_id = c.card_id \
-             WHERE c.set_code = ?1 AND p.deprecated_at IS NULL"
+            "SELECT COALESCE(SUM(card_min), 0) FROM ( \
+               SELECT MIN({price_expr}) AS card_min \
+               FROM printings p JOIN cards c ON p.card_id = c.card_id \
+               WHERE c.set_code = ?1 AND p.deprecated_at IS NULL \
+               GROUP BY p.card_id \
+             )"
         ),
         [set_code],
         |r| r.get(0),
@@ -520,5 +532,57 @@ mod tests {
         assert_eq!(rare.owned_cards, 1);
 
         assert!(analytics(&conn, "nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn market_value_takes_cheapest_printing_per_card_not_sum_of_runs() {
+        // A WOTC-style card with three print runs (Unlimited / Shadowless /
+        // 1st Edition) must contribute only its CHEAPEST run to the full-set
+        // value — not the sum of all three. Otherwise a set's "Full set"
+        // figure is dominated by 1st-Edition holos (Base Set read ~$28k).
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) VALUES ('base1', 'Base', 'Base')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+                 VALUES ('base1-4', 'base1', '4', 4, 'Charizard', 'Rare Holo')",
+                [],
+            )
+            .unwrap();
+            // Three print-run printings of the one card, priced 300 /
+            // 800 / 10000 (Unlimited / Shadowless / 1st Edition).
+            for (variant, product, price) in [
+                ("unlimited_holo", 401, 300.0),
+                ("shadowless_holo", 402, 800.0),
+                ("first_ed_holo", 403, 10000.0),
+            ] {
+                c.execute(
+                    "INSERT INTO printings \
+                       (printing_id, card_id, variant, tcgplayer_product_id, sub_type_name) \
+                     VALUES (?1, 'base1-4', ?2, ?3, 'Holofoil')",
+                    rusqlite::params![format!("base1-4-{variant}"), variant, product],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO prices \
+                       (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+                     VALUES (?1, 'Holofoil', 'tcgplayer', 'market', ?2, '2026-06-01')",
+                    rusqlite::params![product, price],
+                )
+                .unwrap();
+            }
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+
+        let a = analytics(&conn, "base1").unwrap().unwrap();
+        assert_eq!(a.total_printings, 3);
+        // Cheapest run only, not 300 + 800 + 10000 = 11100.
+        assert_eq!(a.market_value, 300.0);
     }
 }

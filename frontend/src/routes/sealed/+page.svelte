@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import { money, count } from '$lib/format';
 	import type { SealedEntry } from '$lib/types/SealedEntry';
 	import type { SealedProduct } from '$lib/types/SealedProduct';
 
@@ -121,8 +122,8 @@
 				<tr class:dim={!ACTIVE.has(e.status)}>
 					<td>{e.name}</td>
 					<td>{e.category}</td>
-					<td>{e.quantity}</td>
-					<td>{e.purchase_price != null ? `$${e.purchase_price.toFixed(2)}` : '—'}</td>
+					<td>{count(e.quantity)}</td>
+					<td>{money(e.purchase_price)}</td>
 					<td>
 						<select
 							value={e.status}

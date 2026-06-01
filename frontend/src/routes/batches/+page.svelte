@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import { count } from '$lib/format';
 	import type { Batch } from '$lib/types/Batch';
 
 	let batches = $state<Batch[]>([]);
@@ -50,7 +51,7 @@
 				<tr>
 					<td><a href="/batches/{batch.id}">{batch.batch_type}</a></td>
 					<td>{batch.name ?? '—'}</td>
-					<td>{batch.card_count}</td>
+					<td>{count(batch.card_count)}</td>
 					<td>{batch.created_at.slice(0, 16).replace('T', ' ')}</td>
 				</tr>
 			{/each}

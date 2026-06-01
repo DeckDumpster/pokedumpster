@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import { api } from '$lib/api';
+	import { count } from '$lib/format';
 	import type { SetSummary } from '$lib/types/SetSummary';
 
 	let containers = $state<SetSummary[]>([]);
@@ -173,7 +174,7 @@
 						<span class="ghmeta">
 							{g.sets.length} {g.sets.length === 1 ? 'set' : 'sets'}
 							{#if g.total_cards > 0 && g.series !== 'Bundles'}
-								· {g.owned_cards} / {g.total_cards} cards ({groupPct(g)}%)
+								· {count(g.owned_cards)} / {count(g.total_cards)} cards ({groupPct(g)}%)
 							{/if}
 						</span>
 					</button>
@@ -192,11 +193,11 @@
 									<div class="series">{set.series}</div>
 									{#if set.base_total_cards != null && set.base_owned_cards != null}
 										<div class="count">
-											Base {set.base_owned_cards} / {set.base_total_cards}
+											Base {count(set.base_owned_cards)} / {count(set.base_total_cards)}
 										</div>
 										<div class="bar base"><span style:width="{basePct(set)}%"></span></div>
 									{/if}
-									<div class="count">Master {set.owned_cards} / {set.total_cards}</div>
+									<div class="count">Master {count(set.owned_cards)} / {count(set.total_cards)}</div>
 									<div class="bar"><span style:width="{pct(set)}%"></span></div>
 								</a>
 							{/each}

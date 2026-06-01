@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
+	import { money } from '$lib/format';
 	import type { OrderDetail } from '$lib/types/OrderDetail';
 
 	let detail = $state<OrderDetail | null>(null);
@@ -42,9 +43,6 @@
 		}
 	}
 
-	function money(v: number | null): string {
-		return v == null ? '—' : `$${v.toFixed(2)}`;
-	}
 </script>
 
 <svelte:head><title>Order — PokeDumpster</title></svelte:head>

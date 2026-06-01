@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import { money, count } from '$lib/format';
 	import type { Order } from '$lib/types/Order';
 
 	let orders = $state<Order[]>([]);
@@ -17,9 +18,6 @@
 		}
 	});
 
-	function money(v: number | null): string {
-		return v == null ? '—' : `$${v.toFixed(2)}`;
-	}
 </script>
 
 <svelte:head><title>Orders — PokeDumpster</title></svelte:head>
@@ -46,7 +44,7 @@
 					<td><a href="/orders/{order.id}">{order.source}</a></td>
 					<td>{order.seller_name ?? '—'}</td>
 					<td>{order.order_date ?? order.created_at.slice(0, 10)}</td>
-					<td>{order.card_count}</td>
+					<td>{count(order.card_count)}</td>
 					<td>{money(order.total)}</td>
 				</tr>
 			{/each}

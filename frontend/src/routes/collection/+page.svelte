@@ -5,6 +5,7 @@
 	import { api } from '$lib/api';
 	import { variantLabel, variantTag, variants } from '$lib/variants.svelte';
 	import { conditionMultiplier } from '$lib/conditions';
+	import { money, count } from '$lib/format';
 
 	// Foil shimmer treatment for holo / reverse-holo / pattern-RH /
 	// cosmos_holo variants — ranks 1..3 in the variants table. Stamps
@@ -240,9 +241,6 @@
 		filtered.reduce((s, r) => s + (r.market_price ?? 0) * conditionMultiplier(r.condition), 0)
 	);
 
-	function price(p: number | null): string {
-		return p == null ? '—' : `$${p.toFixed(2)}`;
-	}
 
 	function toggleSelectMode() {
 		selectMode = !selectMode;
@@ -719,8 +717,8 @@
 			</div>
 		{/if}
 		<p class="countline muted">
-			{filtered.length}
-			cards{#if totalValue > 0}, ${totalValue.toFixed(2)}{/if}
+			{count(filtered.length)}
+			cards{#if totalValue > 0}, {money(totalValue)}{/if}
 		</p>
 	</div>
 </header>
@@ -948,14 +946,14 @@
 						<td class="num">{a.number}</td>
 						<td class="num">
 							{#if a.market_unit != null}
-								<span class="pricebox">${a.market_unit.toFixed(2)}</span>
+								<span class="pricebox">{money(a.market_unit)}</span>
 							{:else}
 								<span class="pricedash">—</span>
 							{/if}
 						</td>
 						<td class="num">
 							{#if a.market_total != null}
-								<span class="pricebox">${a.market_total.toFixed(2)}</span>
+								<span class="pricebox">{money(a.market_total)}</span>
 							{:else}
 								<span class="pricedash">—</span>
 							{/if}

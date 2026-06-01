@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { money } from '$lib/format';
 	import type { WishlistEntry } from '$lib/types/WishlistEntry';
 
 	let wishes = $state<WishlistEntry[]>([]);
@@ -68,9 +69,6 @@
 		}
 	}
 
-	function money(v: number | null): string {
-		return v == null ? '—' : `$${v.toFixed(2)}`;
-	}
 </script>
 
 <svelte:head><title>Wishlist — PokeDumpster</title></svelte:head>

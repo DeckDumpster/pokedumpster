@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import { count } from '$lib/format';
 	import type { Binder } from '$lib/types/Binder';
 
 	let binders = $state<Binder[]>([]);
@@ -62,7 +63,7 @@
 		{#each binders as binder (binder.id)}
 			<a class="tile" href="/binders/{binder.id}">
 				<div class="name">{binder.name}</div>
-				<div class="count">{binder.card_count} cards</div>
+				<div class="count">{count(binder.card_count)} cards</div>
 			</a>
 		{/each}
 	</div>

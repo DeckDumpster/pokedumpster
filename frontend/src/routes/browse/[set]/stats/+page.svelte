@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
+	import { money, count } from '$lib/format';
 	import type { SetAnalytics } from '$lib/types/SetAnalytics';
 
 	let stats = $state<SetAnalytics | null>(null);
@@ -36,9 +37,6 @@
 
 	function pct(owned: number, total: number): number {
 		return total > 0 ? Math.round((owned / total) * 100) : 0;
-	}
-	function money(n: number): string {
-		return `$${n.toFixed(2)}`;
 	}
 
 	// Rarity glyphs live under static/rarity/ — same convention the
@@ -168,7 +166,7 @@
 				<div class="metric">
 					<div class="metriclabel">
 						<span>{label}</span>
-						<span class="metricval">{owned} / {total} · {pct(owned, total)}%</span>
+						<span class="metricval">{count(owned)} / {count(total)} · {pct(owned, total)}%</span>
 					</div>
 					<div class="bar"><span style:width="{pct(owned, total)}%"></span></div>
 				</div>
@@ -206,19 +204,19 @@
 			<h2>Duplicates</h2>
 			<div class="figs">
 				<div class="fig">
-					<span class="figval">{duplicates.total_copies}</span>
+					<span class="figval">{count(duplicates.total_copies)}</span>
 					<span class="figlabel">Total copies</span>
 				</div>
 				<div class="fig">
-					<span class="figval">{duplicates.extra_copies}</span>
+					<span class="figval">{count(duplicates.extra_copies)}</span>
 					<span class="figlabel">Extra copies</span>
 				</div>
 				<div class="fig">
-					<span class="figval">{duplicates.cards_with_dupes}</span>
+					<span class="figval">{count(duplicates.cards_with_dupes)}</span>
 					<span class="figlabel">Cards with dupes</span>
 				</div>
 				<div class="fig">
-					<span class="figval">{duplicates.most_owned}</span>
+					<span class="figval">{count(duplicates.most_owned)}</span>
 					<span class="figlabel">Most owned</span>
 				</div>
 			</div>
@@ -286,8 +284,8 @@
 								{/if}
 							</td>
 							<td>{canonicalRarity(r.rarity)}</td>
-							<td>{r.owned_cards}</td>
-							<td>{r.total_cards}</td>
+							<td>{count(r.owned_cards)}</td>
+							<td>{count(r.total_cards)}</td>
 							<td class="pcol">
 								<div class="pcell">
 									<div class="bar small">

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Chart, registerables, type ChartConfiguration } from 'chart.js';
 	import { variantLabel } from '$lib/variants.svelte';
+	import { money } from '$lib/format';
 	import type { PriceSeries } from '$lib/types/PriceSeries';
 
 	Chart.register(...registerables);
@@ -43,7 +44,7 @@
 						grid: { color: '#0f3460' },
 						ticks: {
 							color: '#888',
-							callback: (v) => '$' + Number(v).toFixed(2)
+							callback: (v) => money(Number(v))
 						}
 					}
 				},
@@ -52,7 +53,7 @@
 					tooltip: {
 						callbacks: {
 							label: (ctx) =>
-								`${ctx.dataset.label}: $${Number(ctx.parsed.y).toFixed(2)}`
+								`${ctx.dataset.label}: ${money(Number(ctx.parsed.y))}`
 						}
 					}
 				}

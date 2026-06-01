@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import { count } from '$lib/format';
 	import type { Deck } from '$lib/types/Deck';
 
 	let decks = $state<Deck[]>([]);
@@ -72,7 +73,7 @@
 					<span class="state state-{deck.state}">{deck.state}</span>
 					{#if deck.owner}· {deck.owner}{/if}
 				</div>
-				<div class="count">{deck.card_count} cards</div>
+				<div class="count">{count(deck.card_count)} cards</div>
 			</a>
 		{/each}
 	</div>

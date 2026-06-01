@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { variantLabel, variantSortCmp, variantProvenance } from '$lib/variants.svelte';
 	import { CONDITIONS } from '$lib/conditions';
+	import { money } from '$lib/format';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
 
 	let {
@@ -71,7 +72,7 @@
 					{/if}
 				</div>
 				<span class="price">
-					{p.market_price != null ? `$${p.market_price.toFixed(2)}` : ''}
+					{p.market_price != null ? money(p.market_price) : ''}
 				</span>
 				<div class="stepper">
 					<button

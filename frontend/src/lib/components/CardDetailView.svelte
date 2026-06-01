@@ -3,6 +3,7 @@
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import { variantLabel, variantSortCmp, variantProvenance } from '$lib/variants.svelte';
 	import { CONDITIONS, conditionMultiplier } from '$lib/conditions';
+	import { money as price } from '$lib/format';
 	import type { CardDetail } from '$lib/types/CardDetail';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
@@ -141,9 +142,6 @@
 		} catch {
 			return [];
 		}
-	}
-	function price(p: number | null): string {
-		return p == null ? '—' : `$${p.toFixed(2)}`;
 	}
 
 	/** Per-copy estimated value: the copy's printing market price scaled

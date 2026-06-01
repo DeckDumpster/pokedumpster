@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { money } from '$lib/format';
 	import type { ManualPrice } from '$lib/types/ManualPrice';
 
 	// Per-printing manual price entry. The user can append timestamped
@@ -60,9 +61,6 @@
 		});
 	}
 
-	function fmtPrice(n: number): string {
-		return `$${n.toFixed(2)}`;
-	}
 
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
@@ -174,7 +172,7 @@
 			{#each entries as e (e.id)}
 				<li>
 					<span class="when">{formatTimestamp(e.observed_at)}</span>
-					<span class="price">{fmtPrice(e.price)}</span>
+					<span class="price">{money(e.price)}</span>
 					<span class="note">{e.note ?? ''}</span>
 					<button
 						class="del"

@@ -121,6 +121,17 @@ fn parse_set_total(raw: &str) -> Option<i64> {
     total.trim().parse::<i64>().ok()
 }
 
+/// The lowercased text of the LAST parenthetical in a product name, e.g.
+/// "Duraludon (Surging Sparks)" → Some("surging sparks"). `None` when the
+/// name has no parenthetical. Mirrors the accent fold parse_stamp_tag uses
+/// so set names with "Pokémon" match the catalog either way.
+fn trailing_paren_lower(name: &str) -> Option<String> {
+    let lower = name.to_lowercase().replace(['é', 'è', 'ê'], "e");
+    let open = lower.rfind('(')?;
+    let close = lower[open..].find(')')?;
+    Some(lower[open + 1..open + close].trim().to_string())
+}
+
 /// Preload every cross-group MCAP product into a map keyed by normalized
 /// collector number, so per-card matching is an in-memory lookup. Tries
 /// the stamp parser first (Black Bolt Stamped, Prerelease, etc.); if
@@ -152,6 +163,22 @@ fn preload_cross_group_products(
             r.get::<_, Option<String>>(3)?,
         ))
     })?;
+
+    // (lowercased set name, printed_total) → present. Lets the resolution
+    // loop recognize SV-era Build & Battle / Prerelease promos that TCGCSV
+    // names by their *set* — "Duraludon (Surging Sparks)" 129/191 — rather
+    // than by a stamp suffix. Validating the parenthetical against a real
+    // set name AND the collector /total against that set's printed_total
+    // keeps it from firing on retailer-exclusive or holo-treatment
+    // parentheticals ("(Toys R Us Promo)", "(Cosmos Foil)", …) that don't
+    // name a set. See pokedumpster.
+    let set_name_total: std::collections::HashSet<(String, i64)> = {
+        let mut s = conn.prepare(
+            "SELECT lower(name), printed_total FROM sets WHERE printed_total IS NOT NULL",
+        )?;
+        let rows = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
 
     let mut by_number: HashMap<String, Vec<CrossGroupProduct>> = HashMap::new();
     for row in rows {
@@ -201,6 +228,19 @@ fn preload_cross_group_products(
             // recoverable via the printing's tcgcsv group_id if needed.
             let sub = sub_type_first(conn, product_id)?;
             ("stamp_trick_or_trade".to_string(), None, sub)
+        } else if let Some(set_kw) = trailing_paren_lower(&name)
+            .zip(parse_set_total(&num))
+            .filter(|(kw, total)| set_name_total.contains(&(kw.clone(), *total)))
+            .map(|(kw, _)| kw)
+        {
+            // SV-era Build & Battle / Prerelease promo named by its set,
+            // e.g. "Duraludon (Surging Sparks)" 129/191. The parenthetical
+            // is a real set name and the /total matches that set's
+            // printed_total — a set-logo stamp on the base card. Route to
+            // the same `stamp_prerelease` code as the older "(Prerelease)"
+            // promos; the set name becomes the disambiguating keyword.
+            let sub = sub_type_first(conn, product_id)?;
+            ("stamp_prerelease".to_string(), Some(set_kw), sub)
         } else {
             continue;
         };
@@ -1523,6 +1563,70 @@ mod tests {
         assert_eq!(
             leaked, 0,
             "bare-numbered SVP promo must not bridge to a base set"
+        );
+    }
+
+    #[test]
+    fn set_named_prerelease_promo_resolves_via_set_name_and_total() {
+        // SV-era Build & Battle / Prerelease promos are named by their set
+        // in MCAP — "Duraludon (Surging Sparks)" 129/191 — not by a stamp
+        // suffix. They resolve to the base card as stamp_prerelease when the
+        // parenthetical is a real set name AND the /total matches that set's
+        // printed_total. A look-alike retailer parenthetical with the same
+        // /total must NOT bridge (pokedumpster).
+        let (_d, mut conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('sv8', 'Surging Sparks', 'Scarlet & Violet', 191)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('sv8-129', 'sv8', '129', 129, 'Duraludon', 'Common'), \
+                    ('sv8-130', 'sv8', '130', 130, 'Klefki', 'Common')",
+            [],
+        )
+        .unwrap();
+        // Set-named prerelease promo — must bridge to sv8-129.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (663168, 2374, 'Duraludon (Surging Sparks)', '129/191', NULL, '2026-06-01')",
+            [],
+        )
+        .unwrap();
+        // Same set's printed_total, but the parenthetical is a retailer tag,
+        // not a set name — must NOT bridge.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (999001, 2374, 'Klefki - 130/191 (Toys R Us Promo)', '130/191', NULL, '2026-06-01')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let resolved: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'sv8-129-stamp_prerelease'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 663168);
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM printings WHERE tcgplayer_product_id = 999001",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            leaked, 0,
+            "retailer-tagged parenthetical must not bridge as a set-named prerelease"
         );
     }
 

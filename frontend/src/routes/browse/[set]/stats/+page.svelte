@@ -232,7 +232,13 @@
 				Bar height = physical copies owned · colour = rarity tier · hover for details.
 			</p>
 			<div class="histo" style:--max={maxCopies}>
-				{#each stats.copy_counts as c (c.number)}
+				<!-- Index-keyed, not number-keyed: bundles aggregate cards
+				     across sets, so card numbers repeat (e.g. #37 as both
+				     Rare and Common). A number key collides and Svelte
+				     throws a duplicate-key error that blanks the whole
+				     page. The list is rebuilt wholesale per load with no
+				     per-item state, so the index is a safe stable key. -->
+				{#each stats.copy_counts as c, i (i)}
 					<span
 						class="histo-col"
 						class:owned={c.copies > 0}

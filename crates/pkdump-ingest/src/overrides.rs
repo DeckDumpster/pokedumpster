@@ -37,7 +37,16 @@ use crate::tcgcsv::normalize_collector_number;
 ///   specials add a Cosmos Holo treatment too. Routed via two new
 ///   variant codes (`stamp_trick_or_trade`, `cosmos_holo_trick_or_trade`)
 ///   — see pokedumpster-vz2 / pokedumpster-bn9.
-const CROSS_GROUP_SOURCE_GROUPS: &[i64] = &[2374, 1840, 3179, 23266, 23561];
+/// - 22872 "SV: Scarlet & Violet Promo Cards" (svp) — Prerelease and
+///   Prerelease[Staff] promos that carry the *base* set's collector
+///   number (e.g. "Sinistcha - 022/167 (Prerelease)" = sv6-22) and are
+///   physically the base card plus a stamp. Bare SVP-namespaced promos
+///   (e.g. "Aegislash - 060") carry no `/total`, so the printed_total
+///   matcher rejects them and they stay svp cards. See pokedumpster-zq4.
+/// - 2289 "Blister Exclusives" — Cosmos Holo promos numbered against
+///   their base set (e.g. "Beheeyem - 62/99 (Cosmos Holo)"). Resolve via
+///   the card-name + printed_total fallback as `cosmos_holo`.
+const CROSS_GROUP_SOURCE_GROUPS: &[i64] = &[2374, 1840, 3179, 23266, 23561, 22872, 2289];
 
 /// Subset of `CROSS_GROUP_SOURCE_GROUPS` whose bare-name products resolve
 /// via the `tcgcsv_sub_type_variant_map` lookup instead of via a
@@ -1449,5 +1458,111 @@ mod tests {
             )
             .unwrap();
         assert!(dropped.is_some(), "dropped variant got soft-deprecated");
+    }
+
+    #[test]
+    fn sv_promo_prerelease_resolves_to_base_card_but_bare_promo_does_not() {
+        // Group 22872 ("SV: Scarlet & Violet Promo Cards" = svp) hosts two
+        // kinds of product: base-set-numbered Prerelease promos that ARE
+        // the base card with a stamp (e.g. "Sinistcha - 022/167
+        // (Prerelease)" = sv6-22), and SVP-namespaced promos with bare
+        // numbers (e.g. "Aegislash - 060") that are their own svp cards.
+        // The cross-group scan must bridge the former and leave the latter
+        // alone (pokedumpster-zq4).
+        let (_d, mut conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('sv6', 'Twilight Masquerade', 'Scarlet & Violet', 167)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('sv6-22', 'sv6', '22', 22, 'Sinistcha', 'Rare')",
+            [],
+        )
+        .unwrap();
+        // Base-set-numbered Prerelease promo — must bridge to sv6-22.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (553715, 22872, 'Sinistcha - 022/167 (Prerelease)', '022/167', NULL, '2026-05-31')",
+            [],
+        )
+        .unwrap();
+        // SVP-namespaced bare-number promo, same set/number space — must NOT
+        // bridge (no /total, so set_total is None and the matcher rejects it).
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (526610, 22872, 'Aegislash - 060 (Prerelease)', '060', NULL, '2026-05-31')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let resolved: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'sv6-22-stamp_prerelease'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 553715);
+        // The bare-number Aegislash promo has no base card here and must
+        // not have manufactured a bridged printing against sv6.
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM printings WHERE tcgplayer_product_id = 526610",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            leaked, 0,
+            "bare-numbered SVP promo must not bridge to a base set"
+        );
+    }
+
+    #[test]
+    fn blister_exclusive_cosmos_holo_resolves_to_base_card() {
+        // Group 2289 ("Blister Exclusives") hosts Cosmos Holo promos
+        // numbered against their base set (e.g. "Beheeyem - 62/99
+        // (Cosmos Holo)" = a 99-card set). Bridges via the card-name +
+        // printed_total fallback as `cosmos_holo` (pokedumpster-zq4).
+        let (_d, mut conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('bw4', 'Next Destinies', 'Black & White', 99)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('bw4-62', 'bw4', '62', 62, 'Beheeyem', 'Uncommon')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (91396, 2289, 'Beheeyem - 62/99 (Cosmos Holo)', '062/099', 'cosmos_holo', '2026-05-31')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let resolved: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'bw4-62-cosmos_holo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 91396);
     }
 }

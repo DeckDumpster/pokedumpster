@@ -9,6 +9,7 @@ mod error;
 pub mod overrides;
 pub mod pokemon_tcg_data;
 pub mod pokemontcg;
+pub mod standalone_promos;
 pub mod symbols;
 pub mod tcgcsv;
 

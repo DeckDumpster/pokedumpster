@@ -1,0 +1,23 @@
+[
+  {
+    "comment": "English Ancient Mew — the Pokémon 2000 movie promo, distributed sealed. No parent set; lives only in TCGCSV's Miscellaneous Cards & Products catch-all (group 2374).",
+    "product_id": 108589,
+    "number": "1",
+    "name": "Ancient Mew",
+    "variant": "holo"
+  },
+  {
+    "comment": "Ancient Mew — Japanese Exclusive Print. Same catch-all, distinct product + price.",
+    "product_id": 482427,
+    "number": "1a",
+    "name": "Ancient Mew (Japanese Exclusive Print)",
+    "variant": "holo"
+  },
+  {
+    "comment": "Pikachu (10th Anniversary) — setless promo numbered 012 with no /total.",
+    "product_id": 187219,
+    "number": "012",
+    "name": "Pikachu (10th Anniversary)",
+    "variant": "normal"
+  }
+]

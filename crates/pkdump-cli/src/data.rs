@@ -162,6 +162,10 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     let n_synth = tcgcsv::synthesize_cards_for_bridges(&mut conn)?;
     println!("  {n_synth} cards synthesized");
 
+    // Curated standalone promos (Ancient Mew, etc.) — see setup.rs step 5b.
+    let n_promo = pkdump_ingest::standalone_promos::synthesize_standalone_promos(&mut conn)?;
+    println!("  {n_promo} standalone promos synthesized");
+
     // 5. Variant expansion. TCGCSV is authoritative for which printings a
     //    card has; the overlay still applies for cards TCGCSV can't model
     //    (cross-group stamped promos, etc.). Each printing carries its

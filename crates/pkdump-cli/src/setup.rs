@@ -16,7 +16,7 @@ use rusqlite::Connection;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{overrides, pokemon_tcg_data, symbols, tcgcsv};
+use pkdump_ingest::{overrides, pokemon_tcg_data, standalone_promos, symbols, tcgcsv};
 
 /// Arguments for `pkdump setup`.
 #[derive(clap::Args)]
@@ -114,6 +114,12 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     println!("Synthesizing cards for bridged groups...");
     let n_synth = tcgcsv::synthesize_cards_for_bridges(&mut conn)?;
     println!("  {n_synth} cards synthesized");
+
+    // 5b. Curated standalone promos (Ancient Mew, etc.) — setless cards
+    //     that can't bridge onto a base card. expand_all_printings skips
+    //     the promo set, so this owns those printings end to end.
+    let n_promo = standalone_promos::synthesize_standalone_promos(&mut conn)?;
+    println!("  {n_promo} standalone promos synthesized");
 
     // 6. Variant expansion. TCGCSV-derived first (each printing carries
     //    its sub_type_name + tcgplayer_product_id), overlay on top for

@@ -362,12 +362,18 @@ fn variants_from_tcgcsv(
 /// `deprecated_at` is set, never deleted (PLAN.md §4.4). Idempotent.
 pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]) -> Result<usize> {
     let cards: Vec<CardRow> = {
+        // Skip the curated standalone-promo set. Those cards have no TCGCSV
+        // group bridge, so this pass would only ever hand them a `normal`
+        // placeholder and then deprecate the real printing that
+        // synthesize_standalone_promos attaches afterward. That synth step
+        // owns the set end to end. See pokedumpster (MCAP epic).
         let mut stmt = conn.prepare(
             "SELECT c.card_id, c.set_code, c.number, c.rarity, \
                     LOWER(c.name), LOWER(s.name), s.printed_total \
-               FROM cards c JOIN sets s ON s.set_code = c.set_code",
+               FROM cards c JOIN sets s ON s.set_code = c.set_code \
+              WHERE c.set_code <> ?1",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map([crate::standalone_promos::PROMO_SET_CODE], |r| {
             Ok(CardRow {
                 card_id: r.get(0)?,
                 set_code: r.get(1)?,

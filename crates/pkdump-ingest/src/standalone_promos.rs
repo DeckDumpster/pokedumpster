@@ -46,7 +46,25 @@ fn load() -> Result<Vec<StandalonePromo>> {
 /// printing matches a `latest_prices` key and shows a market price.
 /// Idempotent: cards upsert, printings upsert on `printing_id`.
 pub fn synthesize_standalone_promos(conn: &mut Connection) -> Result<usize> {
-    let promos = load()?;
+    // Only synthesize promos whose product actually exists in this catalog
+    // (TCGCSV present). Skipping the rest keeps an offline/fixture build —
+    // and any future curated entry that predates its TCGCSV row — from
+    // materializing a phantom, priceless card or an empty promo set.
+    let promos: Vec<StandalonePromo> = load()?
+        .into_iter()
+        .filter(|p| {
+            conn.query_row(
+                "SELECT 1 FROM tcgcsv_products WHERE product_id = ?1",
+                [p.product_id],
+                |_| Ok(()),
+            )
+            .is_ok()
+        })
+        .collect();
+    if promos.is_empty() {
+        return Ok(0);
+    }
+
     let tx = conn.transaction()?;
 
     // Set shell. INSERT OR IGNORE so a real upstream row (should one ever

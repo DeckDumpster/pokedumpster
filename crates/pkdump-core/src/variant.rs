@@ -60,21 +60,42 @@ pub const KNOWN_VARIANTS: &[&str] = &[
     "stamp_staff",
 ];
 
-/// Extract the pattern variant carried by a TCGplayer product name. Returns
-/// `None` for the card's base product (covers normal / reverse_holo / holo
-/// via its own sub_types); returns `Some(variant)` for separately-keyed
-/// pattern products (Master Ball, Energy Symbol, etc.).
+/// Extract the pattern/treatment variant carried by a TCGplayer product
+/// name. Returns `None` for the card's base product (covers normal /
+/// reverse_holo / holo via its own sub_types); returns `Some(variant)` for
+/// separately-keyed pattern or foil-treatment products (Master Ball, Cosmos
+/// Holo, Water Web Holo, etc.).
 ///
-/// Only the trailing parenthetical is consulted — a card whose own name
-/// contains a pattern token ("Team Rocket's Spidops", "Pokémon Center
-/// Tin") would otherwise be misidentified as a pattern product. Match
-/// order is significant: more-specific tokens first so e.g.
-/// "Master Ball" doesn't fall through to a "Ball" rule.
+/// EVERY parenthetical is consulted, left to right, and the first that names
+/// a treatment wins. MCAP products in particular stack a foil treatment with
+/// a retailer tag — "(Reverse Cosmos Holo) (Costco Exclusive)" — and we want
+/// the physical foil, not the store. A card whose own name contains a
+/// pattern token ("Team Rocket's Spidops") is unaffected: `treatment_for`
+/// only fires on the exact treatment phrases, which a Pokémon name won't
+/// carry inside parens. Match order within a paren is significant — more
+/// specific tokens first so "Reverse Cosmos Holo" doesn't fall through to
+/// the "Cosmos Holo" rule, and "Master Ball" doesn't hit a bare "Ball" rule.
 pub fn variant_from_product_name(name: &str) -> Option<&'static str> {
     let lower = name.to_lowercase();
-    let open = lower.rfind('(')?;
-    let close = lower[open..].find(')').map(|i| open + i)?;
-    let inner = lower[open + 1..close].trim();
+    let mut rest = lower.as_str();
+    while let Some(open) = rest.find('(') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find(')') else { break };
+        let inner = after[..close].trim();
+        if let Some(v) = treatment_for(inner) {
+            return Some(v);
+        }
+        rest = &after[close + 1..];
+    }
+    None
+}
+
+/// Map the trimmed, lowercased text inside one parenthetical to a treatment
+/// variant code. Returns `None` when the text isn't a recognized treatment
+/// (a retailer tag, an event name, a card-name forme, etc.). Ordering is
+/// specific-before-general.
+fn treatment_for(inner: &str) -> Option<&'static str> {
+    // Ball / symbol reverse-holo patterns.
     if inner.contains("master ball") {
         Some("masterball_rh")
     } else if inner.contains("quick ball") {
@@ -91,17 +112,38 @@ pub fn variant_from_product_name(name: &str) -> Option<&'static str> {
         Some("energy_symbol_rh")
     } else if inner.contains("team rocket") {
         Some("team_rocket_rh")
+    // Cosmos family — specific variants before the bare "cosmos holo".
+    } else if inner.contains("reverse cosmos") {
+        Some("reverse_cosmos_holo")
+    } else if inner.contains("pixel") {
+        // "Pixel Holo" / "Pixel Cosmos Holo" — same pixelated treatment.
+        Some("pixel_holo")
     } else if inner.contains("cosmo holo") || inner.contains("cosmos holo") {
         // MCAP (group 2374) hosts cosmos-holo reprints of numbered-set
         // cards, e.g. "Erika's Tangela - 007/217 (Cosmo Holo)" — the
         // cross-group matcher in pkdump-ingest attaches them to the
         // base card as a fourth variant.
         Some("cosmos_holo")
-    } else if inner.contains("cracked ice holo") {
-        // A distinct foiling treatment (etched ice pattern), most
-        // commonly found alongside a regular Holofoil version of the
-        // same card — without this pattern the two collapse onto the
-        // same `holo` variant and one is silently hidden.
+    } else if inner.contains("cosmo foil") || inner.contains("cosmos foil") {
+        Some("cosmos_foil")
+    // Other named foil treatments hosted in MCAP.
+    } else if inner.contains("water web") {
+        Some("water_web_holo")
+    } else if inner.contains("sheen holo") {
+        Some("sheen_holo")
+    } else if inner.contains("mirage holo") {
+        Some("mirage_holo")
+    } else if inner.contains("line holo") {
+        Some("line_holo")
+    } else if inner.contains("sparkle holo") {
+        Some("sparkle_holo")
+    } else if inner.contains("energy holo") {
+        Some("energy_holo")
+    } else if inner.contains("metal card") {
+        // "Metal Card" / "Celebrations Metal Card" / "GameStop Metal Card".
+        Some("metal_card")
+    } else if inner.contains("cracked ice") {
+        // Etched ice-pattern foil ("Cracked Ice" / "Cracked Ice Holo").
         Some("cracked_ice_holo")
     } else if inner.contains("peelable ditto") {
         // Pokemon GO has three cards (Bidoof, Numel, Spinarak) with
@@ -341,6 +383,58 @@ mod tests {
             variant_from_product_name("Team Rocket's Spidops (Energy Symbol Pattern)"),
             Some("energy_symbol_rh")
         );
+    }
+
+    #[test]
+    fn variant_from_product_name_picks_foil_treatments_and_scans_all_parens() {
+        // Named foil treatments hosted in MCAP.
+        assert_eq!(
+            variant_from_product_name("Charcadet - 026/182 (Cosmos Foil)"),
+            Some("cosmos_foil")
+        );
+        assert_eq!(
+            variant_from_product_name("Alolan Ninetales - 28/147 (Water Web Holo)"),
+            Some("water_web_holo")
+        );
+        assert_eq!(
+            variant_from_product_name("Blacksmith - 88/106 (Sheen Holo)"),
+            Some("sheen_holo")
+        );
+        // Metal-card collectibles fold together regardless of the prefix.
+        assert_eq!(
+            variant_from_product_name("Pikachu (Celebrations Metal Card)"),
+            Some("metal_card")
+        );
+        // Double parenthetical: the FOIL wins over the retailer tag, and the
+        // foil is the FIRST paren (so all parens must be scanned, not just
+        // the trailing one).
+        assert_eq!(
+            variant_from_product_name(
+                "Bulbasaur - 001/165 (Reverse Cosmos Holo) (Costco Exclusive)"
+            ),
+            Some("reverse_cosmos_holo")
+        );
+        assert_eq!(
+            variant_from_product_name("Archaludon (Cosmos Holo) (Gamestop Exclusive)"),
+            Some("cosmos_holo")
+        );
+        // "Reverse Cosmos" must not fall through to plain "cosmos holo".
+        assert_eq!(
+            variant_from_product_name("Foo (Reverse Cosmos Holo)"),
+            Some("reverse_cosmos_holo")
+        );
+        // Pixel Cosmos Holo folds into pixel_holo, ahead of the cosmos rule.
+        assert_eq!(
+            variant_from_product_name("Rayquaza - SWSH029 (Pixel Cosmos Holo)"),
+            Some("pixel_holo")
+        );
+        // A pure retailer/event tag is NOT a foil treatment → None here
+        // (the MCAP `promo` fallback in pkdump-ingest handles those).
+        assert_eq!(
+            variant_from_product_name("Bulbasaur - 1/165 (Best Buy Exclusive)"),
+            None
+        );
+        assert_eq!(variant_from_product_name("Ancient Mew"), None);
     }
 
     #[test]

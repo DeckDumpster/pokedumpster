@@ -53,6 +53,11 @@ const CROSS_GROUP_SOURCE_GROUPS: &[i64] = &[2374, 1840, 3179, 23266, 23561, 2287
 /// name-pattern parser.
 const DECK_EXCLUSIVES_GROUP_ID: i64 = 1840;
 
+/// TCGplayer's "Miscellaneous Cards & Products" catch-all. Numbered
+/// reprints here whose parenthetical isn't a recognized foil/stamp fall
+/// back to the generic `promo` variant (retailer/event distribution).
+const MCAP_GROUP_ID: i64 = 2374;
+
 /// TCGCSV groups for the Trick or Trade BOOster Bundles. Bare-name
 /// products in these groups (no parenthetical) carry the year-agnostic
 /// Halloween Pikachu stamp on the card artwork → `stamp_trick_or_trade`.
@@ -251,6 +256,17 @@ fn preload_cross_group_products(
             // promos; the set name becomes the disambiguating keyword.
             let sub = sub_type_first(conn, product_id)?;
             ("stamp_prerelease".to_string(), Some(set_kw), sub)
+        } else if group_id == MCAP_GROUP_ID && name.contains('(') {
+            // MCAP fallback: a numbered reprint with a parenthetical the
+            // treatment/stamp parsers didn't recognize — a retailer or
+            // event promo with no special foil (Toys R Us, Best Buy,
+            // Build-A-Bear, SDCC, Movie Promo, …). Model foil-treatment-
+            // only: collapse the distributor to one generic `promo`
+            // variant. Still gated by the card-name + printed_total match
+            // below, so only products that resolve to a real base card
+            // actually become printings.
+            let sub = sub_type_first(conn, product_id)?;
+            ("promo".to_string(), None, sub)
         } else {
             continue;
         };
@@ -450,13 +466,25 @@ pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]
         // ambiguous — the same number appears in many sets.
         if let Some(candidates) = cross_group_by_number.get(&normalize_collector_number(&c.number))
         {
+            // Promo-namespace numbers (SWSH028, SM42, …) normalize to an
+            // alpha-prefixed token unique within a Black Star Promo set, so
+            // they carry no "/total". For those the (already number-equal)
+            // candidate matches on card name alone — there's no printed_total
+            // to compare. Pure-digit numbers stay strict (name + total) since
+            // the same number recurs across many sets.
+            let promo_namespace = normalize_collector_number(&c.number)
+                .chars()
+                .any(|ch| ch.is_ascii_alphabetic());
             for product in candidates {
                 let matches = match &product.set_keyword {
                     Some(kw) => c.set_name_lower.contains(kw),
                     None => {
                         product.card_name_lower == c.name_lower
-                            && product.set_total.is_some()
-                            && product.set_total == c.printed_total
+                            && if product.set_total.is_some() {
+                                product.set_total == c.printed_total
+                            } else {
+                                promo_namespace
+                            }
                     }
                 };
                 if matches {
@@ -1683,17 +1711,138 @@ mod tests {
             )
             .unwrap();
         assert_eq!(resolved, 663168);
-        let leaked: i64 = conn
+        // The retailer-tagged Klefki must NOT be mistaken for a set-named
+        // prerelease...
+        let as_prerelease: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM printings WHERE tcgplayer_product_id = 999001",
+                "SELECT COUNT(*) FROM printings WHERE printing_id = 'sv8-130-stamp_prerelease'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(
-            leaked, 0,
-            "retailer-tagged parenthetical must not bridge as a set-named prerelease"
+            as_prerelease, 0,
+            "retailer tag must not become a prerelease stamp"
         );
+        // ...it bridges as the generic `promo` variant instead (phase 2).
+        let as_promo: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings WHERE printing_id = 'sv8-130-promo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(as_promo, 999001);
+    }
+
+    #[test]
+    fn mcap_promo_namespace_reprint_bridges_to_black_star_promo_set() {
+        // "Duraludon - SWSH028 (EB Games Exclusive)" carries a promo-set
+        // number (no /total) and must bridge to the swshp card SWSH028 via
+        // number + card-name (there's no printed_total to match). A
+        // same-number card with a DIFFERENT name must not catch it
+        // (pokedumpster MCAP epic, phase 3).
+        let (_d, mut conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('swshp', 'SWSH Black Star Promos', 'Sword & Shield', 307)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('swshp-SWSH028', 'swshp', 'SWSH028', 28, 'Duraludon', 'Promo'), \
+                    ('swshp-SWSH099', 'swshp', 'SWSH099', 99, 'Pikachu', 'Promo')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (624648, 2374, 'Duraludon - SWSH028 (EB Games Exclusive)', 'SWSH028', NULL, '2026-06-02')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let resolved: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'swshp-SWSH028-promo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 624648);
+        // Pikachu (same set, different number/name) gains nothing.
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM printings WHERE printing_id = 'swshp-SWSH099-promo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leaked, 0);
+    }
+
+    #[test]
+    fn mcap_foil_treatment_and_retailer_promo_bridge_to_base_card() {
+        // MCAP numbered reprints: a named foil treatment bridges as that
+        // foil variant; a pure retailer/event tag with no foil collapses
+        // to the generic `promo` variant. Both resolve via card-name +
+        // printed_total (pokedumpster MCAP epic, phase 2).
+        let (_d, mut conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('sv3pt5', '151', 'Scarlet & Violet', 165)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('sv3pt5-1', 'sv3pt5', '1', 1, 'Bulbasaur', 'Common'), \
+                    ('sv3pt5-9', 'sv3pt5', '9', 9, 'Blastoise ex', 'Double Rare')",
+            [],
+        )
+        .unwrap();
+        // Foil-treatment reprint (double paren: foil first, retailer second).
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (587935, 2374, 'Bulbasaur - 001/165 (Reverse Cosmos Holo) (Costco Exclusive)', '001/165', NULL, '2026-06-02')",
+            [],
+        )
+        .unwrap();
+        // Pure-retailer reprint, no special foil → generic promo.
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (517558, 2374, 'Bulbasaur - 001/165 (Best Buy Exclusive)', '001/165', NULL, '2026-06-02')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let foil: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'sv3pt5-1-reverse_cosmos_holo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(foil, 587935);
+        let promo: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'sv3pt5-1-promo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(promo, 517558);
     }
 
     #[test]

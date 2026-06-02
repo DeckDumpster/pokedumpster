@@ -11,6 +11,17 @@
   { "code": "cosmos_holo",         "label": "Cosmos Holo",                  "short": "COSMOS", "rank": 1, "color": "#c0d0f0", "provenance": "Classic cosmos-pattern holofoil — older era Pokémon TCG products and reprint runs." },
   { "code": "cosmos_holo_trick_or_trade", "label": "Cosmos Holo (Trick or Trade)", "short": "TOT",    "rank": 1, "color": "#e88a3a", "provenance": "Trick or Trade BOOster Bundle 2024 — Cosmos Holo treatment exclusive to this Halloween bundle." },
   { "code": "cracked_ice_holo",    "label": "Cracked Ice Holo",             "short": "CRACK",  "rank": 1, "color": "#9ed4f0", "provenance": "Cracked-ice holofoil — themed deck and preconstructed product runs." },
+  { "code": "cosmos_foil",         "label": "Cosmos Foil",                  "short": "CFOIL",  "rank": 1, "tiebreak": 5, "color": "#aeb8e8", "provenance": "Cosmos-foil treatment on retailer/blister promo reprints hosted in TCGplayer's Miscellaneous Cards & Products group." },
+  { "code": "reverse_cosmos_holo", "label": "Reverse Cosmos Holo",          "short": "RCOSM",  "rank": 2, "tiebreak": 5, "color": "#9fb0e0", "provenance": "Reverse-holo cosmos treatment on promo reprints (e.g. Costco/Best Buy exclusives)." },
+  { "code": "pixel_holo",          "label": "Pixel Holo",                   "short": "PIXEL",  "rank": 1, "tiebreak": 6, "color": "#7fd6c0", "provenance": "Pixelated holo treatment (incl. Pixel Cosmos Holo) on promo reprints." },
+  { "code": "water_web_holo",      "label": "Water Web Holo",               "short": "WWEB",   "rank": 1, "tiebreak": 7, "color": "#6fc6e0", "provenance": "Water-web holofoil treatment on promo reprints." },
+  { "code": "sheen_holo",          "label": "Sheen Holo",                   "short": "SHEEN",  "rank": 1, "tiebreak": 8, "color": "#d6c6f0", "provenance": "Sheen holofoil treatment on promo reprints." },
+  { "code": "mirage_holo",         "label": "Mirage Holo",                  "short": "MIRGE",  "rank": 1, "tiebreak": 9, "color": "#c0a8e8", "provenance": "Mirage holofoil treatment on promo reprints." },
+  { "code": "line_holo",           "label": "Line Holo",                    "short": "LINE",   "rank": 1, "tiebreak": 10, "color": "#a8c0e0", "provenance": "Line holofoil treatment on promo reprints." },
+  { "code": "sparkle_holo",        "label": "Sparkle Holo",                 "short": "SPRKL",  "rank": 1, "tiebreak": 11, "color": "#f0d890", "provenance": "Sparkle holofoil treatment on promo reprints." },
+  { "code": "energy_holo",         "label": "Energy Holo",                  "short": "EHOLO",  "rank": 1, "tiebreak": 12, "color": "#e0b070", "provenance": "Energy holofoil treatment on promo reprints." },
+  { "code": "metal_card",          "label": "Metal Card",                   "short": "METAL",  "rank": 1, "tiebreak": 13, "color": "#b8bcc4", "provenance": "Metal-card collectible reprint (e.g. Celebrations, GameStop metal cards)." },
+  { "code": "promo",               "label": "Promo",                        "short": "PROMO",  "rank": 4, "tiebreak": 5, "color": "#9aa0a8", "provenance": "Retailer / event / distribution promo reprint with no special foil treatment (Toys R Us, Best Buy, Build-A-Bear, SDCC, movie promos, etc.) — modelled foil-treatment-only, so the distributor is provenance rather than a separate printing." },
 
   { "code": "reverse_holo",        "label": "Reverse Holo",                 "short": "R",      "rank": 2, "color": "#a0c4f0", "provenance": "Pulled from boosters — every booster pack contains one reverse-holo card." },
 

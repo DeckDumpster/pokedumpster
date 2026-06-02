@@ -310,7 +310,26 @@ pub fn parse_product_card_name(product_name: &str) -> &str {
     let dash = product_name.find(" - ").unwrap_or(product_name.len());
     let paren = product_name.find(" (").unwrap_or(product_name.len());
     let cut = dash.min(paren);
-    product_name[..cut].trim()
+    let name = product_name[..cut].trim();
+    // Some MCAP products separate the collector number with a bare space
+    // instead of " - " — "Gengar 094/165 (Cosmos Holo)". Strip that trailing
+    // number token so the base name matches the catalog card.
+    if let Some((head, last)) = name.rsplit_once(' ')
+        && is_collector_number_token(last)
+    {
+        return head.trim();
+    }
+    name
+}
+
+/// Whether a whitespace-separated token looks like a trailing collector
+/// number (e.g. "094/165", "14/181"). Conservative: must contain a digit
+/// and either a slash or be all digits — so name words like "ex", "V", or
+/// "GX" are never stripped.
+fn is_collector_number_token(tok: &str) -> bool {
+    let has_digit = tok.bytes().any(|b| b.is_ascii_digit());
+    let slash_or_all_digits = tok.contains('/') || tok.bytes().all(|b| b.is_ascii_digit());
+    has_digit && slash_or_all_digits && !tok.is_empty()
 }
 
 /// Predicate part of an overlay rule. A `None` field matches anything; every
@@ -640,6 +659,18 @@ mod tests {
             "Team Rocket's Mimikyu"
         );
         assert_eq!(parse_product_card_name("Bulbasaur"), "Bulbasaur");
+        // Space-separated collector number (no " - "): strip the number.
+        assert_eq!(
+            parse_product_card_name("Gengar 094/165 (Cosmos Holo)"),
+            "Gengar"
+        );
+        assert_eq!(
+            parse_product_card_name("Dragonite 149/165 (Cosmos Holo)"),
+            "Dragonite"
+        );
+        // A name word with a digit that isn't a collector number is kept
+        // (no slash, not all-digits) — e.g. "Porygon2" stays intact.
+        assert_eq!(parse_product_card_name("Cool Porygon2"), "Cool Porygon2");
     }
 
     #[test]

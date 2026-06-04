@@ -160,7 +160,7 @@
 	// Column sort for the table view — persisted across reloads in
 	// localStorage so refreshes don't snap back to the default (mirrors
 	// the view-mode persistence above).
-	const SORT_KEYS = ['name', 'type', 'etype', 'rarity', 'set', 'number', 'market', 'value', 'qty'];
+	const SORT_KEYS = ['name', 'type', 'etype', 'rarity', 'set', 'number', 'nm', 'market', 'value', 'qty'];
 	function readStoredSort(): { key: string; dir: 'asc' | 'desc' } {
 		if (typeof window === 'undefined') return { key: 'name', dir: 'asc' };
 		const k = localStorage.getItem('collection.sortKey');
@@ -186,7 +186,8 @@
 		} else {
 			sortKey = key;
 			// Counts and money default to high→low; everything else low→high.
-			sortDir = key === 'qty' || key === 'market' || key === 'value' ? 'desc' : 'asc';
+			sortDir =
+				key === 'qty' || key === 'nm' || key === 'market' || key === 'value' ? 'desc' : 'asc';
 		}
 	}
 
@@ -267,7 +268,11 @@
 		ids: number[];
 		qty: number;
 		paid_total: number | null;
-		/** Per-copy market price (every row in the group shares a printing). */
+		/** Per-copy raw Near Mint market price (every row in the group shares
+		    a printing, so this is condition-independent). */
+		nm_unit: number | null;
+		/** Per-copy condition-adjusted market price (nm_unit × the copy's
+		    condition multiplier). */
 		market_unit: number | null;
 		/** Sum across all copies in the group — market_unit × qty. */
 		market_total: number | null;
@@ -314,6 +319,7 @@
 					ids: [r.id],
 					qty: 1,
 					paid_total: r.purchase_price,
+					nm_unit: r.market_price,
 					market_unit: condValue,
 					market_total: condValue,
 					printing_id: r.printing_id,
@@ -489,6 +495,8 @@
 				return numberKey(a.number);
 			case 'rarity':
 				return rarityRank(a.rarity);
+			case 'nm':
+				return a.nm_unit ?? -1;
 			case 'market':
 				return a.market_unit ?? -1;
 			case 'value':
@@ -796,7 +804,8 @@
 			{@render sortBtn('rarity', 'Rarity')}
 			{@render sortBtn('set', 'Set')}
 			{@render sortBtn('number', '#')}
-			{@render sortBtn('market', 'Price')}
+			{@render sortBtn('nm', 'NM')}
+			{@render sortBtn('market', 'Adj.')}
 		</div>
 		<div class="cardgrid">
 			{#each sorted as a (a.key)}
@@ -831,8 +840,8 @@
 			{/each}
 		</div>
 	{:else}
-		{#snippet sortable(key: string, label: string, extra: string)}
-			<th class="sortable {extra}" onclick={() => sortBy(key)}>
+		{#snippet sortable(key: string, label: string, extra: string, title?: string)}
+			<th class="sortable {extra}" {title} onclick={() => sortBy(key)}>
 				{label}
 				{#if sortKey === key}
 					<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>
@@ -856,8 +865,14 @@
 					{@render sortable('rarity', 'Rarity', 'center')}
 					{@render sortable('set', 'Set', 'center')}
 					{@render sortable('number', '#', 'num')}
-					{@render sortable('market', 'Price', 'num')}
-					{@render sortable('value', 'Value', 'num')}
+					{@render sortable('nm', 'NM', 'num', 'Near Mint market price (per copy)')}
+					{@render sortable(
+						'market',
+						'Adj.',
+						'num',
+						'Condition-adjusted price (per copy)'
+					)}
+					{@render sortable('value', 'Value', 'num', 'Condition-adjusted value (× qty)')}
 				</tr>
 			</thead>
 			<tbody>
@@ -945,6 +960,13 @@
 						</td>
 						<td class="num">{a.number}</td>
 						<td class="num">
+							{#if a.nm_unit != null}
+								<span class="pricebox">{money(a.nm_unit)}</span>
+							{:else}
+								<span class="pricedash">—</span>
+							{/if}
+						</td>
+						<td class="num">
 							{#if a.market_unit != null}
 								<span class="pricebox">{money(a.market_unit)}</span>
 							{:else}
@@ -1023,6 +1045,7 @@
 							{/if}
 						</td>
 						<td class="num">{c.number}</td>
+						<td class="num"><span class="pricedash">—</span></td>
 						<td class="num"><span class="pricedash">—</span></td>
 						<td class="num"><span class="pricedash">—</span></td>
 					</tr>

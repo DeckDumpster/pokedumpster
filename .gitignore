@@ -34,3 +34,4 @@
 
 # OS
 .DS_Store
+crates/pkdump-db/tests/.ptcg_cache.sqlite

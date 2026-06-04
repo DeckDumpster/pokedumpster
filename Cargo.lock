@@ -1035,6 +1035,7 @@ dependencies = [
  "chrono",
  "csv",
  "pkdump-core",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

@@ -2,7 +2,7 @@
 	import { onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { replaceState } from '$app/navigation';
-	import { api } from '$lib/api';
+	import { api, SearchQueryError } from '$lib/api';
 	import { variantLabel, variantTag, variants } from '$lib/variants.svelte';
 	import { conditionMultiplier } from '$lib/conditions';
 	import { money, count } from '$lib/format';
@@ -17,13 +17,60 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
+	import type { SearchRow } from '$lib/types/SearchRow';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
-	import type { CatalogSearchRow } from '$lib/types/CatalogSearchRow';
 
-	let rows = $state<CollectionRow[]>([]);
+	// Server-side search results (one row per printing, owned or not). The
+	// page's existing rendering is per-copy, so owned printings are flattened
+	// back into CollectionRow[] (`rows`); unowned printings (owned_count === 0)
+	// drive the dimmed "missing" tiles via `unownedCatalog`.
+	let searchRows = $state<SearchRow[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	// A query-language parse error, shown under the search box with a caret.
+	let searchError = $state<{ message: string; position: number } | null>(null);
+
+	const rows = $derived<CollectionRow[]>(
+		searchRows.flatMap((sr) =>
+			sr.copies.map((cp) => ({
+				id: cp.id,
+				printing_id: sr.printing_id,
+				condition: cp.condition,
+				language: cp.language,
+				purchase_price: cp.purchase_price,
+				sale_price: null,
+				acquired_at: cp.acquired_at,
+				source: '',
+				notes: null,
+				status: cp.status,
+				graded: cp.graded,
+				binder_id: cp.binder_id,
+				deck_id: cp.deck_id,
+				variant: sr.variant,
+				card_id: sr.card_id,
+				set_code: sr.set_code,
+				set_name: sr.set_name,
+				set_ptcgo_code: sr.set_ptcgo_code,
+				set_symbol_url: sr.set_symbol_url,
+				number: sr.number,
+				name: sr.name,
+				rarity: sr.rarity,
+				artist: sr.artist,
+				supertype: sr.supertype,
+				subtypes: sr.subtypes,
+				types: sr.types,
+				attacks: sr.attacks,
+				market_price: sr.market_price,
+				image_small: sr.image_small,
+				variant_description: sr.variant_description
+			}))
+		)
+	);
+	// Printings the user doesn't own — surfaced when "All cards" is on or the
+	// query uses is:missing. Rendered as dimmed tiles (SearchRow carries every
+	// field the missing-tile markup reads).
+	const unownedCatalog = $derived(searchRows.filter((sr) => sr.owned_count === 0));
 
 	// Debounced search. Initial value comes from ?q= so clickable facets
 	// on the card-detail page (artist, set, energy type, rarity, …) can
@@ -31,14 +78,15 @@
 	const initialQuery =
 		typeof window !== 'undefined' ? (page.url.searchParams.get('q') ?? '') : '';
 	let searchRaw = $state(initialQuery);
-	let search = $state(initialQuery.trim().toLowerCase());
+	// The committed (debounced) query sent to the server. Empty = owned default.
+	let query = $state(initialQuery.trim());
 	let debounce: ReturnType<typeof setTimeout>;
 	let searchInput = $state<HTMLInputElement | undefined>();
 	function onSearch(value: string) {
 		searchRaw = value;
 		clearTimeout(debounce);
 		debounce = setTimeout(() => {
-			search = value.trim().toLowerCase();
+			query = value.trim();
 			// Reflect the active query in the URL so refreshes + back-button
 			// keep state. SvelteKit's replaceState (not window.history's)
 			// keeps the router's internal state aligned with the URL —
@@ -47,7 +95,7 @@
 			// SvelteKit unable to re-render this route.
 			if (typeof window !== 'undefined') {
 				const url = new URL(window.location.href);
-				if (search) url.searchParams.set('q', searchRaw.trim());
+				if (query) url.searchParams.set('q', searchRaw.trim());
 				else url.searchParams.delete('q');
 				replaceState(url, {});
 			}
@@ -67,46 +115,20 @@
 			if (q !== searchRaw) {
 				clearTimeout(debounce);
 				searchRaw = q;
-				search = q.trim().toLowerCase();
+				query = q.trim();
 				// Close any open modal so the filtered list is visible.
 				selectedCard = null;
 			}
 		});
 	});
 
-	// "All cards" toggle widens the search from owned-only to the full
-	// catalog. Catalog results render as grid tiles next to (or instead of)
-	// owned ones, with unowned tiles dimmed via .missing — the same visual
-	// treatment /browse/[set] uses for unowned binder slots. The toggle is
-	// grid-only; flipping it on forces grid view since the table columns
-	// (Qty, Paid, etc.) are owned-collection-shaped.
+	// "All cards" toggle widens the server search from owned-only to the whole
+	// catalog (include_unowned=1). Unowned printings come back with
+	// owned_count === 0 and render as dimmed "missing" tiles — the same visual
+	// treatment /browse/[set] uses for unowned binder slots.
 	const initialAllCards =
 		typeof window !== 'undefined' && page.url.searchParams.get('all') === '1';
 	let allCards = $state(initialAllCards);
-	let catalogRows = $state<CatalogSearchRow[]>([]);
-	let catalogLoading = $state(false);
-	$effect(() => {
-		void search;
-		if (!allCards) {
-			catalogRows = [];
-			return;
-		}
-		if (!search) {
-			catalogRows = [];
-			return;
-		}
-		catalogLoading = true;
-		api
-			.cardsCatalog(search, 60)
-			.then((r) => {
-				catalogRows = r;
-				catalogLoading = false;
-			})
-			.catch((e) => {
-				error = e instanceof Error ? e.message : String(e);
-				catalogLoading = false;
-			});
-	});
 	function toggleAllCards() {
 		allCards = !allCards;
 		// Persist so refresh + back-button keep the choice (matches how
@@ -119,15 +141,32 @@
 		}
 	}
 
-	// Catalog rows the user doesn't currently own — what gets *added* to
-	// the existing grid/table loops when the toggle is on so unowned cards
-	// appear inline with owned ones (dimmed via .missing). Owned catalog
-	// matches are already represented in `rows`/`filtered`/`sorted`, so we
-	// skip them here to avoid double-rendering.
-	const ownedCardIds = $derived(new Set(rows.map((r) => r.card_id)));
-	const unownedCatalog = $derived(
-		allCards ? catalogRows.filter((c) => !ownedCardIds.has(c.card_id)) : []
-	);
+	/** Run the server-side search for the current query + toggle. */
+	async function runSearch() {
+		loading = true;
+		error = null;
+		searchError = null;
+		try {
+			searchRows = await api.collectionSearch(query, undefined, undefined, allCards);
+		} catch (e) {
+			if (e instanceof SearchQueryError) {
+				searchError = { message: e.message, position: e.position };
+				searchRows = [];
+			} else {
+				error = e instanceof Error ? e.message : String(e);
+			}
+		} finally {
+			loading = false;
+		}
+	}
+
+	// Re-search whenever the committed query or the All-cards toggle changes
+	// (also fires once on mount).
+	$effect(() => {
+		void query;
+		void allCards;
+		runSearch();
+	});
 
 	// --- Multi-select bulk operations. ---
 	let binders = $state<Binder[]>([]);
@@ -191,50 +230,25 @@
 		}
 	}
 
-	/** Close the modal and re-fetch — the modal may have mutated copies. */
+	/** Close the modal and re-run the search — the modal may have mutated copies. */
 	async function closeCard() {
 		selectedCard = null;
-		try {
-			rows = await api.collection();
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		}
+		await runSearch();
 	}
 
 	onMount(async () => {
+		// The $effect above runs the initial search; here we only load the
+		// binder/deck lists used by the bulk-assign menus.
 		try {
-			[rows, binders, decks] = await Promise.all([
-				api.collection(),
-				api.binders(),
-				api.decks()
-			]);
+			[binders, decks] = await Promise.all([api.binders(), api.decks()]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
-		} finally {
-			loading = false;
 		}
 	});
 
-	// Free-text substring across the user-facing facets — name, artist,
-	// set name, ptcgo code, rarity, energy types, supertype/subtypes,
-	// variant. Drives both typed queries and clickable facets that arrive
-	// via ?q=.
-	function rowMatches(r: CollectionRow, q: string): boolean {
-		if (!q) return true;
-		const haystacks: (string | null | undefined)[] = [
-			r.name,
-			r.artist,
-			r.rarity,
-			r.set_code,
-			r.set_ptcgo_code,
-			r.supertype,
-			r.subtypes,
-			r.types,
-			variantLabel(r.variant)
-		];
-		return haystacks.some((h) => h != null && h.toLowerCase().includes(q));
-	}
-	const filtered = $derived(rows.filter((r) => rowMatches(r, search)));
+	// The server applies the query now; `filtered` is just the owned copies it
+	// returned (kept as a name so the rest of the page is unchanged).
+	const filtered = $derived(rows);
 	// Header total is the sum of *condition-adjusted* market values across
 	// the filtered rows, so it equals the sum of the per-row Value cells
 	// shown below (which also apply the multiplier).
@@ -520,7 +534,8 @@
 
 
 	function groupChecked(ids: number[]): boolean {
-		return ids.every((id) => selected.has(id));
+		// An unowned printing has no copies — never "checked" (empty .every is true).
+		return ids.length > 0 && ids.every((id) => selected.has(id));
 	}
 	function toggleGroup(ids: number[]) {
 		const all = groupChecked(ids);
@@ -561,16 +576,18 @@
 		}
 	}
 
-	// The header checkbox in the table selects/clears every aggregated row.
+	// The header checkbox in the table selects/clears every owned aggregated
+	// row (unowned printings have no copies to select).
+	const ownedSorted = $derived(sorted.filter((a) => a.ids.length > 0));
 	const tableAllSelected = $derived(
-		sorted.length > 0 && sorted.every((a) => groupChecked(a.ids))
+		ownedSorted.length > 0 && ownedSorted.every((a) => groupChecked(a.ids))
 	);
 	function toggleTableAll() {
 		if (tableAllSelected) {
 			selected = new Set();
 		} else {
 			const next = new Set<number>();
-			for (const a of sorted) for (const id of a.ids) next.add(id);
+			for (const a of ownedSorted) for (const id of a.ids) next.add(id);
 			selected = next;
 		}
 	}
@@ -580,9 +597,9 @@
 		filtered.length > 0 && filtered.every((r) => selected.has(r.id))
 	);
 
-	/** Re-fetch the collection after a bulk mutation, then drop the selection. */
+	/** Re-run the search after a bulk mutation, then drop the selection. */
 	async function refresh() {
-		rows = await api.collection();
+		await runSearch();
 		selected = new Set();
 	}
 
@@ -660,8 +677,9 @@
 		<div class="searchwrap">
 			<input
 				class="search"
+				class:error={searchError !== null}
 				type="text"
-				placeholder={allCards ? 'Search all cards…' : 'Search cards…'}
+				placeholder={allCards ? 'Search all cards… (t:fire hp>=200)' : 'Search… (t:fire hp>=200)'}
 				value={searchRaw}
 				oninput={(e) => onSearch(e.currentTarget.value)}
 				bind:this={searchInput}
@@ -683,9 +701,16 @@
 			<input type="checkbox" checked={allCards} onchange={toggleAllCards} />
 			All cards
 		</label>
+		<a class="helplink" href="/search-help" title="Search syntax help">?</a>
 	</div>
+	{#if searchError}
+		<div class="row searcherr" role="alert">
+			<span class="errmsg">{searchError.message}</span>
+			<span class="errpos">position {searchError.position}</span>
+		</div>
+	{/if}
 	<div class="row row2">
-		{#if rows.length > 0}
+		{#if searchRows.length > 0}
 			<div class="viewtoggle" role="group" aria-label="View">
 				<button
 					class:on={view === 'grid'}
@@ -774,9 +799,11 @@
 		</div>
 	{/if}
 
-	{#if rows.length === 0 && (!allCards || !search)}
+	{#if searchRows.length === 0}
 		<p class="muted">
-			{#if allCards}Start typing to search the full catalog.{:else}Your collection is empty. Add cards from a set's binder view.{/if}
+			{#if searchError}Fix the query above to see results.{:else if query}No cards match
+				<code>{query}</code>.{:else if allCards}No cards in the catalog.{:else}Your collection is
+				empty. Add cards from a set's binder view, or turn on “All cards”.{/if}
 		</p>
 	{:else if view === 'grid'}
 		<!-- Grid lacks the table's sortable column headers, so it gets a
@@ -1139,6 +1166,34 @@
 		border-radius: 6px;
 		color: #e0e0e0;
 		font: inherit;
+	}
+	.search.error {
+		border-color: #e94560;
+	}
+	.searcherr {
+		gap: 0.6rem;
+		font-size: 0.82rem;
+		color: #ff8a8a;
+	}
+	.errpos {
+		color: #9aa0bd;
+	}
+	.helplink {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.5rem;
+		height: 1.5rem;
+		border: 1px solid #0f3460;
+		border-radius: 50%;
+		color: #9aa0bd;
+		text-decoration: none;
+		font-size: 0.85rem;
+		flex-shrink: 0;
+	}
+	.helplink:hover {
+		color: #ffd66b;
+		border-color: #ffd66b;
 	}
 	.searchclear {
 		position: absolute;

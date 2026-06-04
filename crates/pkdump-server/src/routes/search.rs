@@ -32,6 +32,9 @@ struct SearchParams {
     q: String,
     sort: Option<String>,
     dir: Option<String>,
+    /// `1` widens the result to the whole catalog (owned + unowned), backing
+    /// the collection page's "All cards" toggle.
+    include_unowned: Option<String>,
 }
 
 /// Run a search. An empty `q` is the default view (all owned printings).
@@ -50,6 +53,9 @@ async fn collection_search(
         })?;
         search::compile(&ast, &state.flags)
     };
+    if p.include_unowned.as_deref() == Some("1") {
+        compiled.set_catalog_wide(true);
+    }
     compiled.override_order(p.sort.as_deref(), p.dir.as_deref());
 
     let rows = blocking(&state, move |c| search::search(c, &compiled)).await?;

@@ -87,11 +87,17 @@ export const api = {
 	 * An empty `q` returns the default owned view. Throws {@link SearchQueryError}
 	 * (with a caret `position`) when the query fails to parse.
 	 */
-	collectionSearch: async (q: string, sort?: string, dir?: string): Promise<SearchRow[]> => {
+	collectionSearch: async (
+		q: string,
+		sort?: string,
+		dir?: string,
+		includeUnowned = false
+	): Promise<SearchRow[]> => {
 		const params = new URLSearchParams();
 		if (q) params.set('q', q);
 		if (sort) params.set('sort', sort);
 		if (dir) params.set('dir', dir);
+		if (includeUnowned) params.set('include_unowned', '1');
 		const res = await fetch(`/api/collection/search?${params.toString()}`);
 		if (res.status === 400) {
 			const body = (await res.json()) as { error: string; position: number };

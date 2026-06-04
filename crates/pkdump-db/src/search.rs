@@ -134,6 +134,15 @@ impl CompiledSearch {
         !self.where_sql.contains("1=0")
     }
 
+    /// Force catalog-wide mode (every printing, owned or not) even when no
+    /// `is:missing`/`is:owned` flag is present — backs the "All cards" toggle,
+    /// which shows owned and unowned printings together.
+    pub fn set_catalog_wide(&mut self, on: bool) {
+        if on {
+            self.catalog_wide = true;
+        }
+    }
+
     /// Override the sort produced by `order:`/`direction:` modifiers with
     /// explicit values (e.g. from a column-header click in the UI).
     pub fn override_order(&mut self, sort: Option<&str>, dir: Option<&str>) {

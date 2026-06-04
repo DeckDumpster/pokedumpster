@@ -19,6 +19,7 @@ pub mod import;
 pub mod manual_prices;
 pub mod orders;
 pub mod sealed;
+pub mod search;
 pub mod search_meta;
 pub mod sets;
 pub mod sub_type_map;

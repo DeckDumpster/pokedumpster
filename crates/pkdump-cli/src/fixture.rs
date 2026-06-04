@@ -206,6 +206,7 @@ fn seed_catalog(conn: &Connection) -> anyhow::Result<()> {
     seed_set_cards(conn, "base1", &base_set_cards())?;
     seed_set_cards(conn, "sv3pt5", &set_151_cards())?;
     seed_set_cards(conn, "sv8", &surging_sparks_cards())?;
+    enrich_card_facets(conn)?;
 
     // --- Sealed products ----------------------------------------------
     // (product_id, set_code, name, category, card_count, product_size,
@@ -325,6 +326,72 @@ fn seed_set_cards(conn: &Connection, set_code: &str, cards: &[CardEntry]) -> any
             let _ = (ci, pi);
         }
     }
+    Ok(())
+}
+
+/// Backfill the Pokémon-specific facet columns the `card()` helper doesn't
+/// carry — energy `types` (the headline search facet), plus a little
+/// `subtypes`/`attacks` on flagship cards — keyed by name so the UI search
+/// tests (and `/collection` screenshots) can exercise `t:`, `sub:`, `dmg:`,
+/// `has:attack`, etc. against believable data.
+fn enrich_card_facets(conn: &Connection) -> anyhow::Result<()> {
+    // (name, energy type)
+    let types: &[(&str, &str)] = &[
+        ("Charizard", "Fire"),
+        ("Charizard ex", "Fire"),
+        ("Charmander", "Fire"),
+        ("Magmar", "Fire"),
+        ("Blastoise", "Water"),
+        ("Squirtle", "Water"),
+        ("Milotic ex", "Water"),
+        ("Venusaur", "Grass"),
+        ("Bulbasaur", "Grass"),
+        ("Exeggcute", "Grass"),
+        ("Alolan Exeggutor ex", "Grass"),
+        ("Pikachu", "Lightning"),
+        ("Pikachu ex", "Lightning"),
+        ("Raichu", "Lightning"),
+        ("Alakazam ex", "Psychic"),
+        ("Mew", "Psychic"),
+        ("Mew ex", "Psychic"),
+        ("Latias ex", "Psychic"),
+        ("Hitmonchan", "Fighting"),
+        ("Ditto", "Colorless"),
+        ("Snorlax", "Colorless"),
+    ];
+    for (name, ty) in types {
+        conn.execute(
+            "UPDATE cards SET types = ?1 WHERE name = ?2",
+            rusqlite::params![format!("[\"{ty}\"]"), name],
+        )?;
+    }
+
+    // Stage subtypes for the evolved Base Set holos, and Basic+ex for the ex
+    // cards — enough to demonstrate sub: queries.
+    for name in ["Charizard", "Blastoise", "Venusaur"] {
+        conn.execute(
+            "UPDATE cards SET subtypes = '[\"Stage 2\"]' WHERE name = ?1",
+            rusqlite::params![name],
+        )?;
+    }
+    conn.execute(
+        "UPDATE cards SET subtypes = '[\"Basic\",\"ex\"]' WHERE name LIKE '% ex'",
+        [],
+    )?;
+
+    // A couple of attacks so dmg:/has:attack/o: have something to match.
+    conn.execute(
+        "UPDATE cards SET attacks = '[{\"name\":\"Fire Spin\",\"damage\":\"100\",\
+            \"cost\":[\"Fire\",\"Fire\",\"Fire\",\"Fire\"],\"text\":\"Discard 2 Energy.\"}]' \
+         WHERE name = 'Charizard'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE cards SET attacks = '[{\"name\":\"Thunder Jolt\",\"damage\":\"30\",\
+            \"cost\":[\"Lightning\"],\"text\":\"Flip a coin.\"}]' \
+         WHERE name = 'Pikachu'",
+        [],
+    )?;
     Ok(())
 }
 

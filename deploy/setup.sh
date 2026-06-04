@@ -99,8 +99,11 @@ sed \
 mkdir -p "$SYSTEMD_USER_DIR"
 for PREFIX in pkdump-backup pkdump-refresh; do
     for EXT in service timer; do
-        cp "$REPO_DIR/deploy/${PREFIX}.${EXT}" \
-           "${SYSTEMD_USER_DIR}/${PREFIX}@.${EXT}"
+        # Substitute {{REPO_DIR}} with this checkout so ExecStart resolves
+        # (single-clone deployment — the clone is not named per-instance).
+        sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
+            "$REPO_DIR/deploy/${PREFIX}.${EXT}" \
+            > "${SYSTEMD_USER_DIR}/${PREFIX}@.${EXT}"
     done
 done
 

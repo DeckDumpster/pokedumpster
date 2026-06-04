@@ -139,10 +139,17 @@ pub async fn serve(
     // new variant) that must be applied before the server starts
     // serving requests. open_shared runs pending migrations and is a
     // no-op when nothing is pending.
-    drop(pkdump_db::open_shared(&shared_db)?);
+    {
+        let mut shared = pkdump_db::open_shared(&shared_db)?;
+        // Seed the search query metadata (keywords, rarity ranks, is:-flags)
+        // on every startup. Unlike the upstream catalog, these are pure
+        // embedded data (include_str!), so reconciling here — not just at
+        // `pkdump setup`/`data refresh` — means a fresh deploy never serves an
+        // empty keyword registry (which would reject every keyword query).
+        pkdump_db::search_meta::reconcile(&mut shared)?;
+    }
     let conn = pkdump_db::connect_user(&user_db, &shared_db)?;
-    // Load the search keyword registry + is:-flag definitions once. They only
-    // change on `pkdump setup`/`data refresh`, so a restart picks up edits.
+    // Load the search keyword registry + is:-flag definitions once.
     let registry = Arc::new(pkdump_db::search_meta::load_registry(&conn)?);
     let flags = Arc::new(pkdump_db::search_meta::load_flags(&conn)?);
     let state = AppState {

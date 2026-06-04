@@ -10,6 +10,7 @@ pub mod import;
 pub mod manual_prices;
 pub mod orders;
 pub mod sealed;
+pub mod search;
 pub mod sets;
 pub mod user_printings;
 pub mod variants;
@@ -23,7 +24,11 @@ use crate::AppState;
 /// binders, decks, sealed products, orders, wishlist, batches.
 pub fn api_router() -> Router<AppState> {
     Router::new()
-        .nest("/collection", collection::routes())
+        .nest(
+            "/collection",
+            collection::routes().merge(search::collection_routes()),
+        )
+        .merge(search::vocabulary_routes())
         .merge(card::routes())
         .merge(sets::routes())
         .merge(binders::routes())

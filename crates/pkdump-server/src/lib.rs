@@ -16,15 +16,19 @@ use axum::{Router, routing::get};
 use rusqlite::Connection;
 use tower_http::services::{ServeDir, ServeFile};
 
+use pkdump_core::query::KeywordRegistry;
 use pkdump_db::DbError;
+use pkdump_db::search_meta::SearchFlag;
 
 mod routes;
 
-/// Shared application state: the single user-database connection, guarded by
-/// a mutex.
+/// Shared application state: the single user-database connection (guarded by
+/// a mutex) plus the immutable search registry/flags loaded once at startup.
 #[derive(Clone)]
 pub struct AppState {
     conn: Arc<Mutex<Connection>>,
+    registry: Arc<KeywordRegistry>,
+    flags: Arc<Vec<SearchFlag>>,
 }
 
 /// An error rendered as an HTTP response. `DbError::NotFound` → 404,
@@ -34,6 +38,11 @@ pub struct AppError(StatusCode, String);
 impl AppError {
     fn internal(msg: impl Into<String>) -> Self {
         AppError(StatusCode::INTERNAL_SERVER_ERROR, msg.into())
+    }
+
+    /// A 400 with a body the frontend parses for `{error, position}`.
+    fn bad_request(body: impl Into<String>) -> Self {
+        AppError(StatusCode::BAD_REQUEST, body.into())
     }
 }
 
@@ -132,8 +141,14 @@ pub async fn serve(
     // no-op when nothing is pending.
     drop(pkdump_db::open_shared(&shared_db)?);
     let conn = pkdump_db::connect_user(&user_db, &shared_db)?;
+    // Load the search keyword registry + is:-flag definitions once. They only
+    // change on `pkdump setup`/`data refresh`, so a restart picks up edits.
+    let registry = Arc::new(pkdump_db::search_meta::load_registry(&conn)?);
+    let flags = Arc::new(pkdump_db::search_meta::load_flags(&conn)?);
     let state = AppState {
         conn: Arc::new(Mutex::new(conn)),
+        registry,
+        flags,
     };
     let addr = SocketAddr::new(host, port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -155,10 +170,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shared = dir.path().join("shared.sqlite");
         {
-            let c = pkdump_db::open_shared(&shared).unwrap();
+            let mut c = pkdump_db::open_shared(&shared).unwrap();
+            pkdump_db::search_meta::reconcile(&mut c).unwrap();
             c.execute(
-                "INSERT INTO sets (set_code, name, series) \
-                 VALUES ('sv3pt5', '151', 'Scarlet & Violet')",
+                "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+                 VALUES ('sv3pt5', 'MEW', '151', 'Scarlet & Violet')",
                 [],
             )
             .unwrap();
@@ -176,6 +192,8 @@ mod tests {
             .unwrap();
         }
         let conn = pkdump_db::connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let registry = Arc::new(pkdump_db::search_meta::load_registry(&conn).unwrap());
+        let flags = Arc::new(pkdump_db::search_meta::load_flags(&conn).unwrap());
         let static_dir = dir.path().join("static");
         std::fs::create_dir_all(&static_dir).unwrap();
         std::fs::write(
@@ -185,6 +203,8 @@ mod tests {
         .unwrap();
         let state = AppState {
             conn: Arc::new(Mutex::new(conn)),
+            registry,
+            flags,
         };
         let data_dir = dir.path().to_path_buf();
         (dir, app(state, static_dir, data_dir))
@@ -328,5 +348,92 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn search_owned_and_missing() {
+        let (_d, router) = test_app();
+
+        // Add a copy so the default (owned) search returns it.
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/collection")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"printing_id":"sv3pt5-1-normal","source":"manual_id"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Empty query → owned default view includes the owned printing.
+        let owned = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/collection/search")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(owned.status(), StatusCode::OK);
+        let body = body_string(owned).await;
+        assert!(body.contains("sv3pt5-1-normal"), "owned search: {body}");
+        assert!(body.contains("\"owned\":true"), "owned flag: {body}");
+
+        // A card-level filter that excludes it returns nothing in owned mode.
+        let none = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/collection/search?q=t:fire")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(none.status(), StatusCode::OK);
+        assert_eq!(body_string(none).await.trim(), "[]");
+    }
+
+    #[tokio::test]
+    async fn search_rejects_unknown_keyword_with_position() {
+        let (_d, router) = test_app();
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/collection/search?q=xyz:1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = body_string(resp).await;
+        assert!(body.contains("position"), "expected position in {body}");
+        assert!(body.contains("xyz"), "expected keyword in {body}");
+    }
+
+    #[tokio::test]
+    async fn search_keywords_endpoint_serves_registry() {
+        let (_d, router) = test_app();
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/search/keywords")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("energy_type"), "keywords: {body}");
+        assert!(body.contains("holo"), "flags: {body}");
     }
 }

@@ -2,6 +2,8 @@
 // the Rust structs by ts-rs (see frontend/src/lib/types/).
 
 import type { CollectionRow } from './types/CollectionRow';
+import type { SearchRow } from './types/SearchRow';
+import type { SearchVocabulary } from './types/SearchVocabulary';
 import type { CardDetail } from './types/CardDetail';
 import type { PriceSeries } from './types/PriceSeries';
 import type { CatalogSearchRow } from './types/CatalogSearchRow';
@@ -63,9 +65,46 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
 /** A NewCopy with only the fields the caller cares to set. */
 export type NewCopyInput = Partial<NewCopy> & { printing_id: string; source: string };
 
+/**
+ * A query-language parse error from `/api/collection/search`. `position` is the
+ * byte offset into the query where parsing failed, for caret placement.
+ */
+export class SearchQueryError extends Error {
+	position: number;
+	constructor(message: string, position: number) {
+		super(message);
+		this.name = 'SearchQueryError';
+		this.position = position;
+	}
+}
+
 export const api = {
 	/** Every copy in the collection, as display rows. */
 	collection: () => getJson<CollectionRow[]>('/api/collection'),
+
+	/**
+	 * Scryfall-style collection search — one row per printing (owned or not).
+	 * An empty `q` returns the default owned view. Throws {@link SearchQueryError}
+	 * (with a caret `position`) when the query fails to parse.
+	 */
+	collectionSearch: async (q: string, sort?: string, dir?: string): Promise<SearchRow[]> => {
+		const params = new URLSearchParams();
+		if (q) params.set('q', q);
+		if (sort) params.set('sort', sort);
+		if (dir) params.set('dir', dir);
+		const res = await fetch(`/api/collection/search?${params.toString()}`);
+		if (res.status === 400) {
+			const body = (await res.json()) as { error: string; position: number };
+			throw new SearchQueryError(body.error, body.position);
+		}
+		if (!res.ok) {
+			throw new Error(`${res.status} ${res.statusText} — /api/collection/search`);
+		}
+		return (await res.json()) as SearchRow[];
+	},
+
+	/** The data-driven keyword + flag vocabulary, for autocomplete and help. */
+	searchKeywords: () => getJson<SearchVocabulary>('/api/search/keywords'),
 
 	/** Full card detail: the card, its printings, and owned copies. */
 	card: (setCode: string, number: string) =>

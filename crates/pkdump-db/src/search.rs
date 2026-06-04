@@ -133,6 +133,34 @@ impl CompiledSearch {
     pub fn is_supported(&self) -> bool {
         !self.where_sql.contains("1=0")
     }
+
+    /// Override the sort produced by `order:`/`direction:` modifiers with
+    /// explicit values (e.g. from a column-header click in the UI).
+    pub fn override_order(&mut self, sort: Option<&str>, dir: Option<&str>) {
+        if let Some(s) = sort {
+            self.order_by = Some(s.to_ascii_lowercase());
+        }
+        if let Some(d) = dir {
+            self.order_dir = if d.eq_ignore_ascii_case("desc") {
+                Dir::Desc
+            } else {
+                Dir::Asc
+            };
+        }
+    }
+}
+
+/// The default search — every owned printing, no filter. Used for the empty
+/// query (the collection page's initial view), where there is no AST to parse.
+pub fn compile_all() -> CompiledSearch {
+    CompiledSearch {
+        where_sql: "1=1".to_string(),
+        params: Vec::new(),
+        has_status_filter: false,
+        catalog_wide: false,
+        order_by: None,
+        order_dir: Dir::Asc,
+    }
 }
 
 /// Compile a parsed query into SQL. `flags` is the `is:`-flag registry loaded

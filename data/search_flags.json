@@ -1,0 +1,16 @@
+[
+  {"flag":"holo","kind":"variant_match","match":"holo","help":"Any holofoil printing"},
+  {"flag":"reverse","kind":"variant_match","match":"reverse","help":"Reverse-holo printings"},
+  {"flag":"firstedition","kind":"variant_match","match":"first_ed","help":"1st Edition printings"},
+  {"flag":"shadowless","kind":"variant_match","match":"shadowless","help":"Shadowless printings"},
+  {"flag":"pokeball","kind":"variant_match","match":"pokeball","help":"Poké Ball pattern reverse holo"},
+  {"flag":"masterball","kind":"variant_match","match":"masterball","help":"Master Ball pattern reverse holo"},
+  {"flag":"stamp","kind":"variant_match","match":"stamp","help":"Stamped printings (prerelease, staff, winner…)"},
+  {"flag":"promo","kind":"variant_match","match":"promo","help":"Promo printings"},
+  {"flag":"normal","kind":"variant_match","match":"normal","help":"Non-foil 'normal' printings"},
+  {"flag":"graded","kind":"computed","predicate":"graded","help":"Graded copies"},
+  {"flag":"dupe","kind":"computed","predicate":"dupe","help":"Printings you own 2 or more copies of"},
+  {"flag":"missing","kind":"computed","predicate":"missing","help":"Catalog printings you don't own (catalog-wide search)"},
+  {"flag":"unowned","kind":"computed","predicate":"missing","help":"Alias of is:missing"},
+  {"flag":"owned","kind":"computed","predicate":"owned","help":"Printings you own at least one copy of"}
+]

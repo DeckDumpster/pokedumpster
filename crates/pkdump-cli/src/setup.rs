@@ -107,6 +107,17 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let n_bundles = pkdump_db::bundles::reconcile(&mut conn)?;
     println!("  {n_bundles} bundles registered");
 
+    // 4d. Reconcile the search query language metadata (keywords, rarity
+    //     ranks, is:-flag definitions) from data/search_*.json. Local +
+    //     idempotent; powers the collection search bar's parser/compiler
+    //     and autocomplete (decision D1/D2).
+    println!("Reconciling search query metadata...");
+    let sm = pkdump_db::search_meta::reconcile(&mut conn)?;
+    println!(
+        "  {} keywords, {} rarities, {} flags",
+        sm.keywords, sm.rarities, sm.flags
+    );
+
     // 5. Synthesize card rows for bridged TCGCSV groups whose upstream
     //    pokemontcg.io entry doesn't exist yet (e.g. MEP). Idempotent
     //    INSERT OR IGNORE — when upstream catches up, the real cards

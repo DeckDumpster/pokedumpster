@@ -52,8 +52,11 @@ pub fn run(args: FixtureArgs) -> anyhow::Result<()> {
     }
 
     println!("Building shared catalog at {}", shared_path.display());
-    let shared = pkdump_db::open_shared(&shared_path)?;
+    let mut shared = pkdump_db::open_shared(&shared_path)?;
     seed_catalog(&shared)?;
+    // Seed the search query language metadata so fixture-backed search
+    // tests have the keyword registry, rarity ranks, and flag definitions.
+    pkdump_db::search_meta::reconcile(&mut shared)?;
     let (sets, cards, printings, prices) = catalog_counts(&shared)?;
     println!("  {sets} sets, {cards} cards, {printings} printings, {prices} prices");
     drop(shared);

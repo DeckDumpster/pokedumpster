@@ -138,6 +138,15 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     let n_bundles = pkdump_db::bundles::reconcile(&mut conn)?;
     println!("  {n_bundles} bundles registered");
 
+    // 1d. Reconcile the search query language metadata from
+    //     data/search_*.json (local + idempotent).
+    println!("Reconciling search query metadata...");
+    let sm = pkdump_db::search_meta::reconcile(&mut conn)?;
+    println!(
+        "  {} keywords, {} rarities, {} flags",
+        sm.keywords, sm.rarities, sm.flags
+    );
+
     // 2. pokemontcg.io tail — pick up sets released since the last refresh.
     println!("Filling newest sets from pokemontcg.io...");
     let added = import_tail(&mut conn)?;

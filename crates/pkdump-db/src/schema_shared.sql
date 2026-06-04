@@ -89,6 +89,39 @@ CREATE INDEX IF NOT EXISTS idx_printings_card ON printings(card_id);
 CREATE INDEX IF NOT EXISTS idx_printings_tcg  ON printings(tcgplayer_product_id);
 
 -- ---------------------------------------------------------------------
+-- Search query language metadata (data-model-is-the-product; decision D1/D2).
+-- Seeded from data/search_keywords.json, data/rarities.json,
+-- data/search_flags.json by pkdump_db::search_meta::reconcile at
+-- `pkdump setup` / `pkdump data refresh`. No FK references these — they are
+-- the registry the parser/compiler and the autocomplete/help endpoints read.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS search_keywords (
+    canonical   TEXT PRIMARY KEY,   -- 'energy_type'
+    aliases     TEXT NOT NULL,      -- JSON array, e.g. ["t","type"]
+    operators   TEXT NOT NULL,      -- JSON array, e.g. [":","=","!="]
+    kind        TEXT NOT NULL,      -- value class the compiler dispatches on
+    target      TEXT,               -- column or JSON path, e.g. 'cards.types'
+    value_enum  TEXT,               -- optional value-set reference
+    semantics   TEXT,               -- compiler semantics tag ('exists','rank',…)
+    help        TEXT                -- one-line help / autocomplete description
+);
+
+CREATE TABLE IF NOT EXISTS rarities (
+    name   TEXT PRIMARY KEY,        -- 'Illustration Rare'
+    rank   INTEGER NOT NULL,        -- curated ordinal for r>= / r<
+    grp    TEXT                     -- group alias: 'secret','ultra','common'…
+);
+
+CREATE TABLE IF NOT EXISTS search_flags (
+    flag       TEXT PRIMARY KEY,    -- 'holo'
+    kind       TEXT NOT NULL,       -- 'variant_match' | 'computed'
+    match_str  TEXT,                -- substring for variant_match flags
+    predicate  TEXT,                -- predicate id for computed flags
+    help       TEXT
+);
+
+-- ---------------------------------------------------------------------
 -- TCGCSV catalog
 -- ---------------------------------------------------------------------
 

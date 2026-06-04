@@ -1,11 +1,12 @@
-# Scenario: Facet checkboxes narrow the collection
+# Scenario: The search bar autocompletes keywords and is: flags
 #
 # Related:
-#   issues: []
+#   issues: [pokedumpster-cx1]
 #   pull_requests: []
 
 description: >
-  The Collection sidebar shows facet sections — Rarity, Set, and Variant —
-  each built from the distinct values present in my collection. Ticking a
-  facet checkbox immediately narrows the table to rows matching that
-  value, and the toolbar count updates to the filtered subset.
+  As I type in the Collection search bar, a dropdown suggests completions
+  from the query vocabulary. Typing a bare token like "t" lists matching
+  keywords (e.g. the energy-type keyword) with their descriptions; typing
+  "is:" lists the boolean flags I can use (is:holo, is:graded, …). The
+  suggestions come from the server's keyword registry, not a hardcoded list.

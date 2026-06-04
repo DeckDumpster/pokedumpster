@@ -1,14 +1,13 @@
 start_page: /collection
 involves:
-  - "sidebar facet sections: 'Rarity', 'Set', 'Variant'"
-  - "each facet is a list of checkboxes built from distinct values in the loaded rows"
-  - "ticking a checkbox filters the table; toolbar count updates"
+  - "search input [data-testid=search-input]"
+  - "autocomplete dropdown [data-testid=search-autocomplete]"
+  - "keyword suggestions for a bare token; is:-flag values after a colon"
 fixture_data:
-  facet: "Rarity"
-  facet_value: "Rare Holo"
+  bare_token: "t"
+  flag_prefix: "is:"
 notes: >
-  Navigate to /collection and wait for the table. In the sidebar's
-  "Rarity" facet section, tick the "Rare Holo" checkbox. The table
-  narrows to rows whose rarity is Rare Holo (the Base Set holo rares),
-  and the toolbar "{filtered} of {total} cards" count drops to the
-  filtered subset. Unticking the checkbox restores the full table.
+  Navigate to /collection, focus [data-testid=search-input]. Type "t" — the
+  [data-testid=search-autocomplete] dropdown appears listing keyword
+  completions including the energy-type keyword ("Energy type" hint).
+  Replace it with "is:" — the dropdown lists flag values such as "is:holo".

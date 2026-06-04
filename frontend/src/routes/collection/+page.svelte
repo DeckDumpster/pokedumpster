@@ -18,6 +18,7 @@
 	import Pokeball from '$lib/components/Pokeball.svelte';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { SearchRow } from '$lib/types/SearchRow';
+	import type { SearchVocabulary } from '$lib/types/SearchVocabulary';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
 
@@ -82,8 +83,89 @@
 	let query = $state(initialQuery.trim());
 	let debounce: ReturnType<typeof setTimeout>;
 	let searchInput = $state<HTMLInputElement | undefined>();
+
+	// --- Autocomplete: keyword aliases for a bare token, is:/has: values
+	//     after the colon. Vocabulary comes from the data-driven registry
+	//     (api.searchKeywords); nothing here is hardcoded. (pokedumpster-cx1) ---
+	type AcItem = { insert: string; label: string; hint: string };
+	const HAS_VALUES = ['ability', 'flavor', 'attack', 'weakness', 'resistance', 'retreat'];
+	let vocab = $state<SearchVocabulary | null>(null);
+	let acFocused = $state(false);
+	let acDismissed = $state(false);
+	let acIndex = $state(0);
+
+	// The trailing whitespace-delimited token (what the caret is completing)
+	// and the text before it.
+	function tokenInfo(raw: string): { prefix: string; token: string } {
+		const m = raw.match(/(\S*)$/);
+		const token = m ? m[0] : '';
+		return { prefix: raw.slice(0, raw.length - token.length), token };
+	}
+
+	const suggestions = $derived.by<AcItem[]>(() => {
+		const v = vocab;
+		if (!v) return [];
+		const { token } = tokenInfo(searchRaw);
+		if (!token) return [];
+		const neg = token.startsWith('-') ? '-' : '';
+		const bare = neg ? token.slice(1) : token;
+		const colon = bare.indexOf(':');
+		if (colon >= 0) {
+			const kw = bare.slice(0, colon).toLowerCase();
+			const partial = bare.slice(colon + 1).toLowerCase();
+			let pool: { v: string; h: string }[] = [];
+			if (kw === 'is') pool = v.flags.map((f) => ({ v: f.flag, h: f.help ?? '' }));
+			else if (kw === 'has') pool = HAS_VALUES.map((x) => ({ v: x, h: '' }));
+			else return [];
+			return pool
+				.filter((x) => x.v.toLowerCase().startsWith(partial))
+				.slice(0, 8)
+				.map((x) => ({ insert: `${neg}${kw}:${x.v}`, label: `${kw}:${x.v}`, hint: x.h }));
+		}
+		const lower = bare.toLowerCase();
+		const items: AcItem[] = [];
+		for (const k of v.keywords) {
+			const alias = k.aliases.find((a) => a.toLowerCase().startsWith(lower));
+			if (alias) {
+				const op = k.operators.includes(':') ? ':' : (k.operators[0] ?? ':');
+				items.push({ insert: `${neg}${alias}${op}`, label: `${alias}${op}`, hint: k.help ?? '' });
+			}
+		}
+		return items.slice(0, 8);
+	});
+
+	const acOpen = $derived(acFocused && !acDismissed && suggestions.length > 0);
+
+	function acceptSuggestion(item: AcItem) {
+		const { prefix } = tokenInfo(searchRaw);
+		acDismissed = false;
+		acIndex = 0;
+		onSearch(prefix + item.insert);
+		searchInput?.focus();
+	}
+
+	function onSearchKeydown(e: KeyboardEvent) {
+		if (!acOpen) return;
+		const n = suggestions.length;
+		if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			acIndex = (acIndex + 1) % n;
+		} else if (e.key === 'ArrowUp') {
+			e.preventDefault();
+			acIndex = (acIndex - 1 + n) % n;
+		} else if (e.key === 'Enter') {
+			e.preventDefault();
+			acceptSuggestion(suggestions[Math.min(acIndex, n - 1)]);
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			acDismissed = true;
+		}
+	}
 	function onSearch(value: string) {
 		searchRaw = value;
+		// Typing reopens the autocomplete and resets the highlight.
+		acDismissed = false;
+		acIndex = 0;
 		clearTimeout(debounce);
 		debounce = setTimeout(() => {
 			query = value.trim();
@@ -240,7 +322,11 @@
 		// The $effect above runs the initial search; here we only load the
 		// binder/deck lists used by the bulk-assign menus.
 		try {
-			[binders, decks] = await Promise.all([api.binders(), api.decks()]);
+			[binders, decks, vocab] = await Promise.all([
+				api.binders(),
+				api.decks(),
+				api.searchKeywords()
+			]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		}
@@ -680,9 +766,16 @@
 				class:error={searchError !== null}
 				data-testid="search-input"
 				type="text"
+				role="combobox"
+				aria-expanded={acOpen}
+				aria-controls="search-ac"
+				autocomplete="off"
 				placeholder={allCards ? 'Search all cards… (t:fire hp>=200)' : 'Search… (t:fire hp>=200)'}
 				value={searchRaw}
 				oninput={(e) => onSearch(e.currentTarget.value)}
+				onkeydown={onSearchKeydown}
+				onfocus={() => (acFocused = true)}
+				onblur={() => setTimeout(() => (acFocused = false), 120)}
 				bind:this={searchInput}
 			/>
 			{#if searchRaw}
@@ -696,6 +789,28 @@
 						searchInput?.focus();
 					}}
 				>×</button>
+			{/if}
+			{#if acOpen}
+				<ul class="acmenu" id="search-ac" data-testid="search-autocomplete" role="listbox">
+					{#each suggestions as s, i (s.label)}
+						<li>
+							<button
+								type="button"
+								class="acitem"
+								class:active={i === acIndex}
+								role="option"
+								aria-selected={i === acIndex}
+								onmousedown={(e) => {
+									e.preventDefault();
+									acceptSuggestion(s);
+								}}
+							>
+								<span class="ackey">{s.label}</span>
+								{#if s.hint}<span class="achint">{s.hint}</span>{/if}
+							</button>
+						</li>
+					{/each}
+				</ul>
 			{/if}
 		</div>
 		<label class="alltoggle" title="Search the full card catalog, not just your collection">
@@ -1204,6 +1319,52 @@
 	.helplink:hover {
 		color: #ffd66b;
 		border-color: #ffd66b;
+	}
+	.acmenu {
+		position: absolute;
+		top: calc(100% + 2px);
+		left: 0;
+		right: 0;
+		z-index: 60;
+		margin: 0;
+		padding: 0.25rem;
+		list-style: none;
+		background: #16213e;
+		border: 1px solid #0f3460;
+		border-radius: 6px;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+		max-height: 16rem;
+		overflow-y: auto;
+	}
+	.acitem {
+		display: flex;
+		align-items: baseline;
+		gap: 0.6rem;
+		width: 100%;
+		text-align: left;
+		background: none;
+		border: none;
+		border-radius: 4px;
+		padding: 0.35rem 0.5rem;
+		color: #e0e0e0;
+		font: inherit;
+		cursor: pointer;
+	}
+	.acitem.active,
+	.acitem:hover {
+		background: #0f3460;
+	}
+	.ackey {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		color: #ffd66b;
+		white-space: nowrap;
+	}
+	.achint {
+		color: #9aa0bd;
+		font-size: 0.82rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.searchclear {
 		position: absolute;

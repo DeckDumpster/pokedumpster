@@ -1,14 +1,11 @@
 start_page: /collection
 involves:
-  - "sidebar search input, placeholder 'Search cards…'"
-  - "toolbar '{filtered} of {total} cards' count"
-  - "empty filter result — table renders with no body rows"
+  - "search input [data-testid=search-input]"
+  - "inline error row [data-testid=search-error] with message + position"
 fixture_data:
-  no_match_term: "Zubat"
-  total_cards: 26
+  bad_query: "xyz:1"
 notes: >
-  Navigate to /collection and wait for the table. Type a term that
-  matches no card in the fixture, e.g. "Zubat" (not in the catalog).
-  After the 200 ms debounce the table body has no rows and the toolbar
-  count reads "0 of 26 cards". Clear the search input; the full table
-  returns with no error text shown.
+  Navigate to /collection. Type "xyz:1" into [data-testid=search-input].
+  After the debounce the server returns HTTP 400 and the page shows
+  [data-testid=search-error] containing "unknown keyword" and "position".
+  Clearing the input hides the error and restores results.

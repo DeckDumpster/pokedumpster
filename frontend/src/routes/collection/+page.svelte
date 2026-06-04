@@ -678,6 +678,7 @@
 			<input
 				class="search"
 				class:error={searchError !== null}
+				data-testid="search-input"
 				type="text"
 				placeholder={allCards ? 'Search all cards… (t:fire hp>=200)' : 'Search… (t:fire hp>=200)'}
 				value={searchRaw}
@@ -698,13 +699,20 @@
 			{/if}
 		</div>
 		<label class="alltoggle" title="Search the full card catalog, not just your collection">
-			<input type="checkbox" checked={allCards} onchange={toggleAllCards} />
+			<input
+				type="checkbox"
+				data-testid="all-cards-toggle"
+				checked={allCards}
+				onchange={toggleAllCards}
+			/>
 			All cards
 		</label>
-		<a class="helplink" href="/search-help" title="Search syntax help">?</a>
+		<a class="helplink" data-testid="search-help-link" href="/search-help" title="Search syntax help"
+			>?</a
+		>
 	</div>
 	{#if searchError}
-		<div class="row searcherr" role="alert">
+		<div class="row searcherr" data-testid="search-error" role="alert">
 			<span class="errmsg">{searchError.message}</span>
 			<span class="errpos">position {searchError.position}</span>
 		</div>
@@ -714,12 +722,14 @@
 			<div class="viewtoggle" role="group" aria-label="View">
 				<button
 					class:on={view === 'grid'}
+					data-testid="view-grid"
 					onclick={() => (view = 'grid')}
 					aria-label="Grid view"
 					title="Grid"
 				>▦</button>
 				<button
 					class:on={view === 'table'}
+					data-testid="view-table"
 					onclick={() => (view = 'table')}
 					aria-label="Table view"
 					title="Table"

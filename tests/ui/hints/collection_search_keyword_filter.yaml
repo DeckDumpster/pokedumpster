@@ -1,0 +1,14 @@
+start_page: /collection
+involves:
+  - "search input [data-testid=search-input]"
+  - "view toggle [data-testid=view-table] for text-based assertions"
+  - "table rows showing card names (.cardname)"
+fixture_data:
+  query: "t:fire"
+  present_card: "Charizard"
+  absent_card: "Pikachu"
+notes: >
+  Navigate to /collection (loads owned cards). Switch to table view via
+  [data-testid=view-table]. Type "t:fire" into [data-testid=search-input]
+  (debounced ~200ms). The table updates server-side to Fire cards —
+  Charizard/Charmander/Magmar — and excludes Lightning cards like Pikachu.

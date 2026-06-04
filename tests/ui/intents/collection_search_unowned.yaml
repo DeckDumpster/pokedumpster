@@ -1,11 +1,11 @@
-# Scenario: Bulk "Add to wishlist" surfaces cards I want to acquire
+# Scenario: "All cards" surfaces unowned printings as dimmed tiles
 #
 # Related:
-#   issues: []
+#   issues: [pokedumpster-idf.10]
 #   pull_requests: []
 
 description: >
-  In multi-select mode on the Collection page I can check one or more
-  copy rows and click the bulk "Add to wishlist" button. PokeDumpster
-  adds one wish per distinct card among the selection, so this lets me
-  flag cards I want more of straight from the collection view.
+  With the "All cards" toggle on, a query like "t:water" returns both the
+  Water cards I own and the ones I'm missing. The unowned printings render
+  as dimmed "missing" tiles alongside the owned ones, so I can see the gaps
+  in my collection and click one to add it.

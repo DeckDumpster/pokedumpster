@@ -1,11 +1,12 @@
-# Scenario: A search term that matches no card yields an empty table
+# Scenario: An invalid query shows a parse error with its position
 #
 # Related:
-#   issues: []
+#   issues: [pokedumpster-idf.10]
 #   pull_requests: []
 
 description: >
-  When I type a search term that matches no card name, the collection
-  table renders with no body rows and the toolbar count reads "0 of N
-  cards". Clearing the search input restores the full table without any
-  error state lingering.
+  When I type a query the parser can't understand — like "xyz:1" with an
+  unknown keyword — the Collection page shows an inline error beneath the
+  search box naming the problem ("unknown keyword") and the character
+  position, instead of silently returning nothing. Clearing the box
+  removes the error and restores my collection.

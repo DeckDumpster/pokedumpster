@@ -1,11 +1,11 @@
-# Scenario: Saved views can be re-applied from the sidebar
+# Scenario: The search help link opens the data-driven syntax reference
 #
 # Related:
-#   issues: []
+#   issues: [pokedumpster-idf.10]
 #   pull_requests: []
 
 description: >
-  The Collection sidebar shows a Saved views `<select>` listing my saved
-  filter configurations. Choosing a view applies its stored search term
-  and facet selections to the table; choosing "— none —" clears the
-  active view marker.
+  Next to the Collection search bar is a "?" help link. Clicking it takes
+  me to a Search syntax page that documents the query language —
+  operators, examples, and the full keyword and is:-flag tables rendered
+  from the server's keyword registry (e.g. an "Energy type" keyword).

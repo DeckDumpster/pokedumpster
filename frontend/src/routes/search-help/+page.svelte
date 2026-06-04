@@ -43,7 +43,7 @@
 
 <svelte:head><title>Search Help — PokeDumpster</title></svelte:head>
 
-<div class="wrap">
+<div class="wrap" data-testid="search-help">
 	<h1>Search syntax</h1>
 	<p class="lead">
 		The collection search bar speaks a Scryfall-style query language: combine keywords with

@@ -121,6 +121,20 @@ pub struct CompiledSearch {
     order_dir: Dir,
 }
 
+impl CompiledSearch {
+    /// The compiled WHERE clause. A `1=0` sentinel anywhere in it marks a
+    /// keyword/flag that parsed but could not be compiled — the corpus and
+    /// generative tests assert it is absent for supported queries.
+    pub fn where_sql(&self) -> &str {
+        &self.where_sql
+    }
+
+    /// Whether every clause compiled to real SQL (no `1=0` sentinel).
+    pub fn is_supported(&self) -> bool {
+        !self.where_sql.contains("1=0")
+    }
+}
+
 /// Compile a parsed query into SQL. `flags` is the `is:`-flag registry loaded
 /// from the DB (`search_meta::load_flags`).
 pub fn compile(ast: &Ast, flags: &[SearchFlag]) -> CompiledSearch {

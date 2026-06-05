@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
-	import { replaceState } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { api, SearchQueryError } from '$lib/api';
 	import { variantLabel, variantTag, variants } from '$lib/variants.svelte';
 	import { conditionMultiplier } from '$lib/conditions';
@@ -170,16 +170,19 @@
 		debounce = setTimeout(() => {
 			query = value.trim();
 			// Reflect the active query in the URL so refreshes + back-button
-			// keep state. SvelteKit's replaceState (not window.history's)
-			// keeps the router's internal state aligned with the URL —
-			// raw window.history.replaceState corrupts the history entry
-			// so a later popstate from a navigated-away page can leave
-			// SvelteKit unable to re-render this route.
+			// keep state. goto(replaceState:true), NOT $app/navigation's
+			// replaceState: the latter only repaints the address bar and
+			// stashes the *stale* page.url as the entry's restore key, so a
+			// forward nav (card facet link) + Back drops the ?q=. goto
+			// updates page.url so Back restores it. keepFocus so the search
+			// box doesn't blur mid-type.
 			if (typeof window !== 'undefined') {
 				const url = new URL(window.location.href);
 				if (query) url.searchParams.set('q', searchRaw.trim());
 				else url.searchParams.delete('q');
-				replaceState(url, {});
+				if (url.href !== window.location.href) {
+					void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
+				}
 			}
 		}, 200);
 	}
@@ -214,12 +217,15 @@
 	function toggleAllCards() {
 		allCards = !allCards;
 		// Persist so refresh + back-button keep the choice (matches how
-		// search ?q= is reflected).
+		// search ?q= is reflected). goto(replaceState:true) so the param
+		// survives a forward nav + Back — see the onSearch note.
 		if (typeof window !== 'undefined') {
 			const url = new URL(window.location.href);
 			if (allCards) url.searchParams.set('all', '1');
 			else url.searchParams.delete('all');
-			replaceState(url, {});
+			if (url.href !== window.location.href) {
+				void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
+			}
 		}
 	}
 

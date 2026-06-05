@@ -1,0 +1,11 @@
+# Scenario: Back button after leaving /collection preserves the active search
+
+# Related: collection_search_keyword_filter, browse_back_preserves_page_param
+
+description: >
+  I type a query into the collection search box so the URL reflects it as
+  ?q=. I then navigate to a card detail page and press the browser Back
+  button. The collection list reappears with the search still applied —
+  the ?q= survives the round trip and the search box still holds the query.
+  Regression guard for pokedumpster-k7v (replaceState dropped the param on a
+  forward-then-back); the URL-sync now uses goto(replaceState:true).

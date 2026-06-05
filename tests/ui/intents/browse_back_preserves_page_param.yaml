@@ -1,0 +1,14 @@
+# Scenario: Back button after card-detail nav preserves the browse page/filters
+
+# Related: browse_url_state_persists, browse_pagination_next_prev,
+#          browse_slot_click_opens_variant_modal
+
+description: >
+  I page through a set's binder with the pager until I'm on a deeper page
+  (page 3), open a card's variant modal, and follow its "Full card details"
+  link to the card page. When I press the browser Back button I land back on
+  the binder still showing page 3 — the ?page= (and other GET) parameters
+  survive the round trip, rather than snapping back to page 1. Regression
+  guard for the replaceState-vs-goto history-restore bug (pokedumpster-k7v):
+  reaching the deep page via the pager (which rewrites the URL client-side)
+  must persist exactly like landing on it by a direct link.

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { replaceState, afterNavigate } from '$app/navigation';
+	import { goto, afterNavigate } from '$app/navigation';
 	import { api } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
@@ -194,13 +194,18 @@
 		set('q', search, '');
 		set('missing', missingOnly ? '1' : '0', '0');
 		set('view', view, 'binder');
-		// SvelteKit's replaceState (NOT window.history's): keeps the
-		// router state aligned with the URL. Raw window.history.replaceState
-		// strips SvelteKit's internal history-entry state, so navigating
-		// forward to a card page and then back here leaves the router
-		// unable to tell that the popped entry belongs to it — the URL
-		// changes but the route component doesn't re-render.
-		replaceState(url, {});
+		// Persist via goto(replaceState:true), NOT $app/navigation's
+		// replaceState. replaceState(url, …) only repaints the address bar;
+		// it stashes page.url.href (SvelteKit's *current* URL, still stale)
+		// as the entry's restore key, so navigating forward to a card page
+		// and pressing Back restores the pre-param URL — the page/filter
+		// reverts to its default. goto updates page.url properly, so the
+		// correct URL is what Back restores. keepFocus so the search input
+		// doesn't blur mid-type; noScroll so paging keeps its own scroll
+		// handling. Same route + no url-dependent load() → no data refetch.
+		if (url.href !== window.location.href) {
+			void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
+		}
 	}
 
 	$effect(() => {

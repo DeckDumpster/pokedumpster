@@ -338,3 +338,57 @@ on the `/*` ARN. (`GetBucketLocation` is required — bottomless calls it on sta
 ```bash
 CLEANUP=1 spikes/sqld-attach-namespaces/run-bottomless-s3.sh   # creds from ~/.pkdump-s3-spike.env
 ```
+
+---
+
+# Credential strategy validation: bottomless behind aws-sigv4-proxy — `run-sigv4-proxy.sh` (pokedumpster-8ch.9)
+
+Validates the chosen credential strategy (decision pokedumpster-8ch.1): an egress
+**signing sidecar** so sqld never holds real AWS credentials. ✅ PASS against real S3.
+
+## Architecture proven
+
+```
+sqld/bottomless ──path-style S3, DUMMY creds──▶ aws-sigv4-proxy ──assumes role/pokedump-data,
+  (LIBSQL_BOTTOMLESS_ENDPOINT=http://proxy:8080)   (--role-arn, auto-refreshing temp creds)
+                                                   re-signs SigV4──▶ real S3 (us-west-2)
+```
+Replicate → destroy local volume → restart → all 5 rows restored, **with sqld holding only
+`dummy`/`dummy` credentials.** The proxy owns the real, rotating creds; sqld needs no restart
+and no AWS key.
+
+## The gotcha that cost the spike (save the next person)
+
+Initial run: sqld failed at startup with `Bucket checking error: service error`; the proxy log
+showed bottomless's `HEAD /bucket/` returning **403** from S3 — even though a plain `curl` HEAD
+through the proxy returned 200. Root cause, isolated by header bisection:
+
+- **`X-Amz-User-Agent` must be stripped at the proxy.** The Rust SDK (`aws-sdk-rust`) adds it to
+  every request; it is an `x-amz-*` header, so S3 requires it be part of the signature; the proxy
+  forwards it **unsigned** → `SignatureDoesNotMatch` (403). Stripping it fixed everything.
+
+Working proxy invocation:
+```
+aws-sigv4-proxy --name s3 --region us-west-2 --host s3.us-west-2.amazonaws.com \
+  --role-arn arn:aws:iam::ACCT:role/pokedump-data --unsigned-payload \
+  -s Authorization -s X-Amz-Date -s X-Amz-Content-Sha256 -s X-Amz-User-Agent
+```
+(The first three strips remove bottomless's *dummy* SigV4 headers so the proxy signs clean;
+`--unsigned-payload` avoids hashing streamed PUT bodies.) sqld gets `LIBSQL_BOTTOMLESS_ENDPOINT`
+pointed at the proxy and throwaway `LIBSQL_BOTTOMLESS_AWS_*` creds.
+
+## What this confirms / still open
+
+- ✅ The assume-role + sidecar strategy works: no standing AWS key in sqld; the proxy holds and
+  auto-refreshes the assumed-role creds via the SDK chain.
+- ⚠️ **Not yet observed:** an actual credential *refresh* across the ~1h STS expiry (the spike runs
+  in <1 min). The proxy uses the auto-refreshing SDK provider so it *should* roll over without sqld
+  restart — confirm in the real deployment (a long-running soak) before fully trusting it.
+
+## Reproduce
+
+```bash
+CLEANUP runs automatically; KEEP=1 to leave the proxy + sqld up:
+spikes/sqld-attach-namespaces/run-sigv4-proxy.sh
+```
+Needs `~/.pkdump-s3-spike.env` with `S3_ROLE_ARN` set; auto-pulls the `aws-sigv4-proxy` + `aws-cli` images.

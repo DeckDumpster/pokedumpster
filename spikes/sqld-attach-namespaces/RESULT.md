@@ -192,3 +192,54 @@ spikes/sqld-attach-namespaces/run-rust-client.sh          # build + run + teardo
 KEEP=1 spikes/sqld-attach-namespaces/run-rust-client.sh   # leave container up
 ```
 First run needs network (`cargo build` pulls libsql + deps).
+
+---
+
+# Follow-up #3: bottomless S3 backup/restore (`run-bottomless.sh`) — pokedumpster-13w
+
+Validates the backup-simplification payoff against a fully local MinIO (no
+external creds; nothing leaves the box). Flow: replicate → destroy sqld's local
+volume → restart → prove auto-restore.
+
+## Verdict: ✅ PASS
+
+Seeded 5 rows; gracefully stopped sqld; **destroyed its data volume** (total
+local loss); started a fresh sqld with an empty volume against the SAME bucket;
+all 5 rows returned automatically on startup. Bucket after shutdown:
+
+```
+ns-:default-<uuid>/.meta
+ns-:default-<uuid>/000000000001-000000000004-<ts>.zstd   (snapshot + WAL, zstd)
+```
+
+## How it works
+
+Restore triggers on startup when the local main DB file is empty → bottomless
+pulls the newest generation from the bucket. A wiped/replaced disk self-heals on
+boot. Config: `--enable-bottomless-replication` plus `LIBSQL_BOTTOMLESS_ENDPOINT`,
+`LIBSQL_BOTTOMLESS_BUCKET`, and — **this build requires the prefixed forms** —
+`LIBSQL_BOTTOMLESS_AWS_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` / `_DEFAULT_REGION`
+(generic `AWS_*` alone errors: "LIBSQL_BOTTOMLESS_AWS_DEFAULT_REGION was not set").
+
+## Caveats / risks (weigh before relying on it)
+
+- **Durability window.** The bucket was still EMPTY 8s after the writes — the
+  generation only appeared on graceful shutdown. bottomless batches; a HARD
+  crash between flushes can lose the most recent writes. Fine for a hobby
+  collection (a coarse RPO is acceptable), but this is lagged replication, not
+  synchronous durability. Measure/tune the flush cadence before trusting it as
+  the sole backup; keep nightly `sqlite .backup` snapshots as belt-and-suspenders.
+- **Namespaces untested.** Ran in SINGLE-DB mode for a clean proof. The
+  generation key `ns-:default-...` is namespace-shaped (encouraging), but
+  per-namespace bottomless WITH `--enable-namespaces` (the real multitenant
+  config) is NOT yet validated — the top remaining risk for this path.
+- **Longevity.** bottomless is the OLD replication path; libsql is moving to
+  libsql_wal (`--migrate-bottomless` flag exists). Future uncertain.
+
+## Reproduce
+
+```bash
+spikes/sqld-attach-namespaces/run-bottomless.sh          # replicate / lose / restore
+KEEP=1 spikes/sqld-attach-namespaces/run-bottomless.sh   # leave MinIO + sqld up
+```
+Auto-pulls the `minio` + `minio/mc` images.

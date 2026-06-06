@@ -392,3 +392,54 @@ CLEANUP runs automatically; KEEP=1 to leave the proxy + sqld up:
 spikes/sqld-attach-namespaces/run-sigv4-proxy.sh
 ```
 Needs `~/.pkdump-s3-spike.env` with `S3_ROLE_ARN` set; auto-pulls the `aws-sigv4-proxy` + `aws-cli` images.
+
+---
+
+# GATE spike (8ch.2.1): is there a lighter backup-first path than the sqld migration? — `run-litestream.sh`
+
+Question: do we actually need the libsql/sqld migration (8ch.2: async ripple +
+`cat.`-qualify sweep across 17 modules) to get backup/restore for the
+**single-user** phase? Two findings:
+
+## Finding 1 — the literal "embedded libsql + bottomless VFS" path is DEAD
+
+The standalone `bottomless` crate is stuck at **0.1.1**; bottomless is now
+maintained only *inside* sqld (the server replicator we spiked). There is no
+maintained embedded-VFS build of it. So option (A) as written is not viable.
+
+## Finding 2 — Litestream gives backup-first with ZERO DB-layer change ✅ PASS
+
+`run-litestream.sh`: a **plain SQLite DB** (the current rusqlite stack, untouched)
+→ **Litestream v0.5.11** → **real AWS S3** (us-west-2) → simulate total loss →
+restore → all 5 rows recovered. Litestream is a sidecar that watches the SQLite
+file's WAL; it needs **no libsql, no sqld, no ATTACH/TEMP-VIEW changes, no async**.
+
+- Uploaded one `.ltx` (LTX-format) file; restore reconstructed the DB exactly.
+- **Assume-role temp creds (session token) honored directly** — no signing
+  sidecar needed (Litestream uses the AWS SDK and reads `AWS_SESSION_TOKEN`).
+- Gotcha: **pin `region` in the Litestream config** — otherwise it calls
+  `s3:GetBucketLocation` (which the role doesn't grant) and 403s. Pinning region
+  skips that lookup and keeps the IAM policy tight (no GetBucketLocation needed).
+
+## Conclusion / gate resolution
+
+For **phase-1 backup-first (single user)**: keep the entire current
+rusqlite/SQLite/ATTACH/TEMP-VIEW stack **unchanged** and add **Litestream** to
+continuously replicate `collection.sqlite` → S3 (the shared catalog is
+reproducible and not backed up). This **eliminates 8ch.2** (no libsql/sqld, no
+sweep, no async) and **reshapes 8ch.3/8ch.4** (a Litestream sidecar/timer
+instead of a sqld server + bottomless) for phase-1.
+
+The sqld + namespaces + bottomless + sigv4-proxy apparatus (all validated above)
+is **not wasted** — it is the **multitenancy** substrate (Litestream is per-file,
+single-DB; it does not do per-tenant namespaces). Both paths are now proven; each
+has its phase: **Litestream for single-user backup now; sqld/bottomless for the
+multitenant future.**
+
+## Reproduce
+
+```bash
+spikes/sqld-attach-namespaces/run-litestream.sh   # auto-cleans the S3 prefix
+```
+Needs `~/.pkdump-s3-spike.env` (with `S3_ROLE_ARN`) and host `sqlite3`; auto-pulls
+the `litestream` + `aws-cli` images.

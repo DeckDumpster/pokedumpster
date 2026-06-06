@@ -1,0 +1,19 @@
+# Litestream config for the PokeDumpster backup sidecar (pokedumpster-8ch.3).
+#
+# Continuously replicates the per-user collection DB to S3. The shared catalog
+# (shared.sqlite) is reproducible via `pkdump setup` and is NOT backed up.
+#
+# This file is INSTANCE-AGNOSTIC: the S3 target and DB path come from the
+# environment (set by the Quadlet unit's EnvironmentFile), so the single clone
+# can serve every instance. Litestream expands ${VARS} in the config by default.
+#
+# `region` is PINNED so Litestream does NOT call s3:GetBucketLocation — the
+# backup IAM role deliberately does not grant that action (validated in
+# spikes/sqld-attach-namespaces/RESULT.md, "GATE spike").
+dbs:
+  - path: ${LITESTREAM_DB_PATH}
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_S3_BUCKET}
+        path: ${LITESTREAM_S3_PATH}
+        region: ${LITESTREAM_S3_REGION}

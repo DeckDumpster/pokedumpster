@@ -36,14 +36,20 @@ for PREFIX in pkdump-backup pkdump-refresh; do
     systemctl --user disable --now "${PREFIX}@${INSTANCE}.timer" 2>/dev/null || true
 done
 
-rm -f "$QUADLET_FILE"
+# Stop the Litestream backup sidecar (pokedumpster-8ch.3).
+systemctl --user stop "pkdump-litestream-${INSTANCE}.service" 2>/dev/null || true
+
+rm -f "$QUADLET_FILE" \
+      "$HOME/.config/containers/systemd/pkdump-litestream-${INSTANCE}.container"
 systemctl --user daemon-reload
 
 podman rmi "pkdump:${INSTANCE}" 2>/dev/null || true
 
 if [ "$PURGE" = true ]; then
     podman volume rm "pkdump-${INSTANCE}-data" 2>/dev/null || true
-    echo "==> ${INSTANCE} removed (data volume purged)."
+    # Litestream config + AWS creds for this instance (holds secrets).
+    rm -rf "$HOME/.config/pkdump/${INSTANCE}"
+    echo "==> ${INSTANCE} removed (data volume + backup config purged)."
 else
     echo "==> ${INSTANCE} removed. Data volume kept — add --purge to delete it."
 fi

@@ -107,6 +107,34 @@ for PREFIX in pkdump-backup pkdump-refresh; do
     done
 done
 
+# --- Install the Litestream backup sidecar (pokedumpster-8ch.3) -------------
+# Quadlet sidecar that continuously replicates the collection DB to S3. Instance
+# + repo path are sed-substituted (single-clone deployment).
+echo "==> Installing Litestream backup sidecar..."
+sed -e "s|{{INSTANCE}}|${INSTANCE}|g" \
+    -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
+    "$REPO_DIR/deploy/pkdump-litestream.container" \
+    > "${QUADLET_DIR}/pkdump-litestream-${INSTANCE}.container"
+
+# Scaffold the per-instance config (S3 target + AWS creds). Secrets NEVER live in
+# the repo; this only writes a template and never clobbers existing config.
+LS_CONF_DIR="${HOME}/.config/pkdump/${INSTANCE}"
+mkdir -p "${LS_CONF_DIR}/aws"
+chmod 700 "${LS_CONF_DIR}" "${LS_CONF_DIR}/aws"
+if [ ! -f "${LS_CONF_DIR}/litestream.env" ]; then
+    cat > "${LS_CONF_DIR}/litestream.env" <<EOF
+# Litestream S3 target + AWS profile for instance '${INSTANCE}'. Fill CHANGE_ME.
+LITESTREAM_S3_BUCKET=CHANGE_ME
+LITESTREAM_S3_REGION=us-west-2
+LITESTREAM_S3_PATH=${INSTANCE}/collection
+LITESTREAM_DB_PATH=/data/collection.sqlite
+AWS_PROFILE=pkdump
+EOF
+    chmod 600 "${LS_CONF_DIR}/litestream.env"
+    echo "    Wrote config template: ${LS_CONF_DIR}/litestream.env (fill CHANGE_ME)"
+    echo "    Add AWS creds to ${LS_CONF_DIR}/aws/{config,credentials} (assume-role profile or scoped key)"
+fi
+
 systemctl --user daemon-reload
 
 # --- Optional data volume seeding ------------------------------------------
@@ -177,4 +205,5 @@ echo "    Port:              podman port systemd-${SERVICE_NAME}"
 echo "    Logs:              journalctl --user -u ${SERVICE_NAME} -f"
 echo "    Backup timer:      systemctl --user enable --now pkdump-backup@${INSTANCE}.timer"
 echo "    Refresh timer:     systemctl --user enable --now pkdump-refresh@${INSTANCE}.timer"
+echo "    Litestream backup: edit ~/.config/pkdump/${INSTANCE}/{litestream.env,aws/}, then: systemctl --user start pkdump-litestream-${INSTANCE}.service"
 echo "    Teardown:          bash deploy/teardown.sh ${INSTANCE}"

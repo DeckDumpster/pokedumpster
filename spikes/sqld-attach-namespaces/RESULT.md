@@ -81,3 +81,54 @@ This is actually a clean fit for our model: only the shared catalog needs
 spikes/sqld-attach-namespaces/run.sh          # full run + teardown (prints VERDICT)
 KEEP=1 spikes/sqld-attach-namespaces/run.sh   # leave container up on :18080 / admin :19090
 ```
+
+---
+
+# Follow-up: TEMP-VIEW spike (`run-temp-view.sh` / `temp_view_spike.py`)
+
+Resolves follow-up #1: does our "ATTACH + TEMP VIEWs once per connection, then
+query unqualified" pattern (`crates/pkdump-db`) port to sqld?
+
+## Findings (clean, isolated connections)
+
+| Behavior | Result |
+|---|---|
+| ATTACH is **connection-scoped** (sticks after COMMIT; attach once per conn) | ✅ YES |
+| `CREATE TEMP VIEW` supported | ❌ NO — *"unsupported statement"* (TEMP objects can't be replicated) |
+| `CREATE TEMPORARY VIEW` supported | ❌ NO — same |
+| `CREATE VIEW` (permanent) referencing `cat.*` | ❌ NO — SQLite: *"view cannot reference objects in database cat"* |
+| Qualified `cat.cards` reference (no view layer) | ✅ YES |
+
+## What this means
+
+**The TEMP-VIEW indirection does NOT port** — sqld rejects TEMP/TEMPORARY views
+(they're non-replicable), and core SQLite forbids a *permanent* view from
+referencing an attached database. So there is no view layer that lets catalog
+tables be referenced unqualified.
+
+**But the foundation is solid:** ATTACH is *connection-scoped*. You attach the
+catalog **once** at connection open (`BEGIN; ATTACH "catalog" AS cat; COMMIT`),
+and every subsequent query on that connection sees `cat.*` — even outside a
+transaction.
+
+## Recommended pattern for a libSQL/sqld port
+
+1. **At connection open:** issue `BEGIN; ATTACH "catalog" AS cat; COMMIT` once
+   (replaces today's "create TEMP VIEWs at open" step).
+2. **In queries:** reference catalog tables **qualified** as `cat.<table>`
+   (replaces the unqualified TEMP-VIEW names).
+
+## Migration-cost note (revises the earlier estimate)
+
+This is a **modest, real refactor** of `crates/pkdump-db`, not a verbatim port:
+the TEMP-VIEW setup becomes ATTACH-at-open, and catalog-table references in the
+binder-page query and friends must be `cat.`-qualified. Bounded and mechanical,
+but it touches every query that joins the catalog — factor it into the libSQL
+decision.
+
+## Reproduce
+
+```bash
+spikes/sqld-attach-namespaces/run-temp-view.sh          # findings + guidance
+KEEP=1 spikes/sqld-attach-namespaces/run-temp-view.sh   # leave container up
+```

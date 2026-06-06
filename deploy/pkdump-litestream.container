@@ -5,9 +5,10 @@ Description=PokeDumpster Litestream backup sidecar ({{INSTANCE}})
 # deployment (all instances share one checkout; only the data volume differs).
 After=pkdump-{{INSTANCE}}.service network-online.target
 Wants=network-online.target
-# Don't start (and crash-loop) until the operator has provided AWS credentials.
-# Auto-starts on boot once this file exists.
-ConditionPathExists=%h/.config/pkdump/{{INSTANCE}}/aws/credentials
+# Don't start (and crash-loop) until the operator has configured backups.
+# Auto-starts on boot once the (non-secret) aws/config role profile exists;
+# the bootstrap key itself comes from a podman secret (below).
+ConditionPathExists=%h/.config/pkdump/{{INSTANCE}}/aws/config
 
 [Container]
 Image=docker.io/litestream/litestream:latest
@@ -22,10 +23,14 @@ User=0
 Volume=pkdump-{{INSTANCE}}-data:/data:Z
 # Instance-agnostic config, mounted read-only from the single clone.
 Volume={{REPO_DIR}}/deploy/litestream.yml:/etc/litestream.yml:ro
-# AWS creds dir (per-instance, user-provided, never in the repo). Holds an
-# assume-role profile (role_arn + source_profile) so the SDK auto-refreshes
-# temporary creds — project standard; never long-lived static keys (8ch.4).
-Volume=%h/.config/pkdump/{{INSTANCE}}/aws:/aws:ro
+# Assume-role profile (role_arn + source_profile) — non-secret, a regular file
+# the SDK reads to auto-refresh temporary creds (never long-lived static keys).
+Volume=%h/.config/pkdump/{{INSTANCE}}/aws/config:/aws/config:ro
+# The bootstrap key (the ONLY secret) is a podman secret mounted as a file —
+# kept out of plaintext dotfiles. Create it once per instance:
+#   printf '[bootstrap]\naws_access_key_id=...\naws_secret_access_key=...\n' \
+#     | podman secret create pkdump-{{INSTANCE}}-s3-bootstrap -
+Secret=pkdump-{{INSTANCE}}-s3-bootstrap,type=mount,target=/aws/credentials
 Environment=AWS_CONFIG_FILE=/aws/config
 Environment=AWS_SHARED_CREDENTIALS_FILE=/aws/credentials
 

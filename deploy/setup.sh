@@ -131,24 +131,20 @@ LITESTREAM_DB_PATH=/data/collection.sqlite
 AWS_PROFILE=pkdump
 EOF
     chmod 600 "${LS_CONF_DIR}/litestream.env"
-    # Assume-role credentials (project standard — auto-refreshing temporary creds,
-    # NEVER long-lived static keys). The bootstrap key may ONLY sts:AssumeRole.
-    cat > "${LS_CONF_DIR}/aws/config" <<EOF
-[profile pkdump]
-role_arn = CHANGE_ME_arn:aws:iam::ACCOUNT:role/your-backup-role
-source_profile = bootstrap
-region = us-west-2
-EOF
-    chmod 600 "${LS_CONF_DIR}/aws/config"
-    # NOTE: aws/credentials is intentionally NOT created — the sidecar unit gates
-    # auto-start on its existence, so it won't crash-loop while unconfigured. The
-    # operator creates it with the bootstrap key (assume-role only; never static).
-    echo "    Wrote templates under ${LS_CONF_DIR} (litestream.env + aws/config)."
-    echo "    To enable backups: fill CHANGE_ME, then create ${LS_CONF_DIR}/aws/credentials:"
-    echo "        [bootstrap]"
-    echo "        aws_access_key_id     = <key that may ONLY sts:AssumeRole the role>"
-    echo "        aws_secret_access_key = <secret>"
-    echo "    The sidecar auto-starts once that credentials file exists."
+    # NOTE: aws/config + the bootstrap key are NOT created here. aws/config gates
+    # the sidecar auto-start (so it won't crash-loop unconfigured), and the key is
+    # the only secret — it lives in a podman secret, never a plaintext dotfile.
+    echo "    Wrote ${LS_CONF_DIR}/litestream.env (fill CHANGE_ME)."
+    echo "    To ENABLE backups (assume-role; the bootstrap key never touches the repo):"
+    echo "      1. Fill litestream.env (bucket/path)."
+    echo "      2. Create ${LS_CONF_DIR}/aws/config (role profile — gates auto-start):"
+    echo "           [profile pkdump]"
+    echo "           role_arn = arn:aws:iam::ACCOUNT:role/your-backup-role"
+    echo "           source_profile = bootstrap"
+    echo "           region = us-west-2"
+    echo "      3. Store the bootstrap key in a podman secret (NOT a file):"
+    echo "           printf '[bootstrap]\\naws_access_key_id=K\\naws_secret_access_key=S\\n' | podman secret create pkdump-${INSTANCE}-s3-bootstrap -"
+    echo "    Sidecar auto-starts once aws/config exists + the secret is present."
 fi
 
 systemctl --user daemon-reload

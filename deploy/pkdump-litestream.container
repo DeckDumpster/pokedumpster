@@ -12,6 +12,10 @@ ConditionPathExists=%h/.config/pkdump/{{INSTANCE}}/aws/credentials
 [Container]
 Image=docker.io/litestream/litestream:latest
 Exec=replicate -config /etc/litestream.yml
+# Run as container-root so (under rootless Podman) it maps to the invoking user
+# — matching the app's ownership of collection.sqlite + the mounted creds.
+# Litestream 0.5 WRITES bookkeeping tables to the DB, so it needs read+write.
+User=0
 
 # Same data volume as the app — read the live collection DB + its WAL (RW: the
 # replica manages WAL checkpointing).

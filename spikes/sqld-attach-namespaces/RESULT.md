@@ -243,3 +243,60 @@ spikes/sqld-attach-namespaces/run-bottomless.sh          # replicate / lose / re
 KEEP=1 spikes/sqld-attach-namespaces/run-bottomless.sh   # leave MinIO + sqld up
 ```
 Auto-pulls the `minio` + `minio/mc` images.
+
+---
+
+# Follow-up #4: per-namespace JWT auth + per-namespace bottomless (`run-jwt-backup.sh`)
+
+The final spike (decision pokedumpster-181): closes the auth front-door AND the
+per-namespace-backup risk in one fully-local run (MinIO).
+
+## PART 1 — Auth scoping: ✅ PASS
+
+Per-namespace `jwt_key` (set via the admin config endpoint) enforces auth
+**independently per namespace**. Matrix (Ed25519 tokens, claim `{"a":"rw"}`):
+
+| request | result |
+|---|---|
+| no token → tenantA | DENY ✓ |
+| tokenA → tenantA | ALLOW ✓ |
+| tokenA → tenantB | **DENY ✓ (scoped)** |
+| tokenB → tenantB | ALLOW ✓ |
+
+Model confirmed: a namespace is **OPEN until its `jwt_key` is set** (no global
+`--auth-jwt-key-file` needed); each tenant gets its own key; a token only works
+on its own namespace. ⇒ set `jwt_key` on EVERY tenant namespace or it's
+unprotected. Token sent as `Authorization: Bearer <jwt>`; key configured as
+URL-safe-base64 of the raw Ed25519 public key.
+
+## PART 2 — per-namespace backup/restore: ✅ PASS, with a DR caveat
+
+- bottomless + namespaces **requires `LIBSQL_BOTTOMLESS_DATABASE_ID`** (startup
+  errors "bottomless replication with namespaces requires a DB ID" without it;
+  single-DB mode auto-generated one).
+- Each namespace replicates to its OWN prefix:
+  `ns-<dbid>:tenantA-<uuid>/…`, `ns-<dbid>:tenantB-<uuid>/…`. ✓
+- After destroying the volume + restart: **the namespace REGISTRY (meta-store)
+  is NOT restored by bottomless** — both namespaces were absent. Re-creating them
+  via the admin API then triggered restore-on-open of each namespace's data from
+  its generation (A=2 rows, B=3 rows, matched by namespace NAME).
+
+### DR-runbook implication (important)
+
+bottomless backs up per-namespace DATA but NOT the namespace list or their
+configs (`jwt_key`, `allow_attach`). Disaster recovery =
+(1) start sqld with the SAME `LIBSQL_BOTTOMLESS_DATABASE_ID` + bucket,
+(2) re-declare every namespace and re-apply its config,
+(3) data restores on first open.
+So the app/deploy must own the source of truth for "which namespaces exist and
+their config." For PokeDumpster that's just the user list + the catalog's
+`allow_attach` — fully reconstructable — but it's a real operational requirement,
+and extra reason to keep nightly `sqlite .backup` snapshots as belt-and-suspenders.
+
+## Reproduce
+
+```bash
+spikes/sqld-attach-namespaces/run-jwt-backup.sh
+KEEP=1 spikes/sqld-attach-namespaces/run-jwt-backup.sh
+```
+Needs PyJWT + cryptography (host) and the `minio`/`minio/mc` images (auto-pulled).

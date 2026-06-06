@@ -26,16 +26,19 @@ def cell(c):
     return str(c.get("value"))
 
 
-def pipeline(base, host, sqls, path):
+def pipeline(base, host, sqls, path, auth=None):
     body = {
         "baton": None,
         "requests": [{"type": "execute", "stmt": {"sql": s}} for s in sqls]
         + [{"type": "close"}],
     }
+    headers = {"Content-Type": "application/json", "Host": host}
+    if auth:
+        headers["Authorization"] = f"Bearer {auth}"
     req = urllib.request.Request(
         base + path,
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Host": host},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -47,13 +50,14 @@ def main():
     ap.add_argument("--base", default="http://127.0.0.1:8080")
     ap.add_argument("--host", required=True, help="namespace host, e.g. tenant1.localhost")
     ap.add_argument("--sql", action="append", required=True, help="repeatable; runs in order")
+    ap.add_argument("--auth", default=None, help="JWT to send as 'Authorization: Bearer <token>'")
     a = ap.parse_args()
 
     # Prefer Hrana v3, fall back to v2 on 404.
     last_err = None
     for path in ("/v3/pipeline", "/v2/pipeline"):
         try:
-            resp = pipeline(a.base, a.host, a.sql, path)
+            resp = pipeline(a.base, a.host, a.sql, path, auth=a.auth)
             break
         except urllib.error.HTTPError as e:
             last_err = e

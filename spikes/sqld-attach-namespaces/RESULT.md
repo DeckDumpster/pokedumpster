@@ -443,3 +443,52 @@ spikes/sqld-attach-namespaces/run-litestream.sh   # auto-cleans the S3 prefix
 ```
 Needs `~/.pkdump-s3-spike.env` (with `S3_ROLE_ARN`) and host `sqlite3`; auto-pulls
 the `litestream` + `aws-cli` images.
+
+---
+
+# Deploy validation (8ch.7): Litestream sidecar + assume-role creds — `run-litestream-deploy.sh`
+
+Validates the actual deploy artifacts (`deploy/litestream.yml` + the Quadlet unit's
+invocation) and the **project credential standard**: assume-role via `~/.aws/config`
+(SDK auto-refresh), **never static keys** (user preference; see bd memory
+`aws-s3-credential-strategy-...`). ✅ PASS against real AWS S3.
+
+## What it proved
+
+The fixture collection DB (26 rows) replicated to S3 and restored **26/26 rows**
+after total deletion — with Litestream invoked exactly as the Quadlet sidecar
+would (same image, `replicate -config /etc/litestream.yml`, same mounts/env), and
+credentials supplied ONLY as an assume-role profile:
+
+```
+~/.aws/config:       [profile pkdump] role_arn=...:role/pokedump-data
+                     source_profile=bootstrap  region=us-west-2
+~/.aws/credentials:  [bootstrap] <key that may only sts:AssumeRole>
+```
+Litestream's AWS SDK assumed the role itself (log showed `snapshot complete` +
+`ltx file uploaded`, zero credential errors). No `AWS_SESSION_TOKEN`, no static
+S3 key — the SDK refreshes the assumed-role creds on its own (1h soak skipped at
+this single-user phase, per decision).
+
+## Refinement applied to 8ch.3 (found during validation)
+
+The sidecar unit had `WantedBy=default.target` → it would crash-loop on a fresh,
+unconfigured setup. Fixed: `ConditionPathExists=%h/.config/pkdump/<inst>/aws/credentials`
+so it **auto-starts on boot only once the operator has provided the bootstrap
+credentials**; `setup.sh` no longer writes a `credentials` template (so the gate
+is meaningful) — it documents the file the operator must create.
+
+## Residual (not exercised live)
+
+The validation invoked the litestream container directly (mirroring the unit), not
+through a full `setup.sh --test` systemd instance — the unit install is mechanical
+(sed + Quadlet) and was structurally validated (`bash -n` + sed preview). A full
+systemd-instance smoke test (build image, `systemctl --user start` the generated
+service) remains optional follow-up; the backup/restore + credential model — the
+load-bearing parts — are proven.
+
+## Reproduce
+
+```bash
+spikes/sqld-attach-namespaces/run-litestream-deploy.sh   # auto-cleans the S3 prefix
+```

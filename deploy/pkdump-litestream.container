@@ -5,6 +5,9 @@ Description=PokeDumpster Litestream backup sidecar ({{INSTANCE}})
 # deployment (all instances share one checkout; only the data volume differs).
 After=pkdump-{{INSTANCE}}.service network-online.target
 Wants=network-online.target
+# Don't start (and crash-loop) until the operator has provided AWS credentials.
+# Auto-starts on boot once this file exists.
+ConditionPathExists=%h/.config/pkdump/{{INSTANCE}}/aws/credentials
 
 [Container]
 Image=docker.io/litestream/litestream:latest
@@ -16,8 +19,8 @@ Volume=pkdump-{{INSTANCE}}-data:/data:Z
 # Instance-agnostic config, mounted read-only from the single clone.
 Volume={{REPO_DIR}}/deploy/litestream.yml:/etc/litestream.yml:ro
 # AWS creds dir (per-instance, user-provided, never in the repo). Holds an
-# assume-role profile OR a scoped static key — the credential-refresh choice is
-# pokedumpster-8ch.4; this unit is agnostic to which.
+# assume-role profile (role_arn + source_profile) so the SDK auto-refreshes
+# temporary creds — project standard; never long-lived static keys (8ch.4).
 Volume=%h/.config/pkdump/{{INSTANCE}}/aws:/aws:ro
 Environment=AWS_CONFIG_FILE=/aws/config
 Environment=AWS_SHARED_CREDENTIALS_FILE=/aws/credentials

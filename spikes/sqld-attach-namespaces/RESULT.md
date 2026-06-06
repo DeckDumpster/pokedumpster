@@ -132,3 +132,63 @@ decision.
 spikes/sqld-attach-namespaces/run-temp-view.sh          # findings + guidance
 KEEP=1 spikes/sqld-attach-namespaces/run-temp-view.sh   # leave container up
 ```
+
+---
+
+# Follow-up #2: Rust `libsql` client (`run-rust-client.sh` / `rust-client/`)
+
+Validates the actual client path (`libsql` v0.9.30, `remote`+`tls` features)
+that `crates/pkdump-db` would use.
+
+## Findings
+
+| Mode | Result |
+|---|---|
+| A — ATTACH at connection open, query in a separate later call | ❌ `no such table: cat.cards` |
+| B — ATTACH + join inside ONE `conn.transaction()` | ✅ 3 rows |
+
+The libsql **remote `Connection` does not pin a single Hrana stream across
+top-level calls** — so the connection-scoped ATTACH measured at the raw-Hrana
+layer (held baton, S0 above) does NOT survive the client abstraction. ATTACH
+only holds within an explicit `transaction()`.
+
+## Pattern (supersedes "attach once at open")
+
+```rust
+let tx = conn.transaction().await?;
+tx.execute(r#"ATTACH "catalog" AS cat"#, ()).await?;     // read-only catalog
+let rows = tx.query("... JOIN cat.cards ...", ()).await?; // cat.-qualified
+tx.commit().await?;
+```
+
+## Migration cost — the three escalations, stated honestly
+
+1. ATTACH works (needs `allow_attach` on the catalog ns).
+2. TEMP views don't port → `cat.`-qualify catalog references.
+3. **attach-at-open doesn't persist via the libsql remote client → every
+   catalog-querying path becomes attach-inside-a-transaction.**
+
+Net: the `pkdump-db` connection/query layer needs real restructuring — a
+"with catalog attached" transaction wrapper around catalog reads, plus `cat.`
+qualification throughout. Bounded and mechanical, but it touches the read path
+broadly; one extra ATTACH per transaction (pipelined in-batch; modest).
+
+There is **no libsql mode that gives both persistent attach AND ATTACH**:
+embedded-replica mode pins a local connection but forbids ATTACH entirely.
+Per-transaction attach (remote client) is the path.
+
+## Gotchas captured
+
+- `libsql` needs the **`tls`** feature even for plain `http://` (else it panics
+  "you must provide your own http connector").
+- Client routes to a namespace by URL host, so `tenant1.localhost` must resolve;
+  it maps to `::1` here, so sqld must be published dual-stack
+  (`-p 127.0.0.1:18080:8080 -p '[::1]:18080:8080'`).
+
+## Reproduce
+
+```bash
+spikes/sqld-attach-namespaces/run-rust-client.sh          # build + run + teardown
+KEEP=1 spikes/sqld-attach-namespaces/run-rust-client.sh   # leave container up
+```
+First run needs network (`cargo build` pulls libsql + deps).

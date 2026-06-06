@@ -300,3 +300,41 @@ spikes/sqld-attach-namespaces/run-jwt-backup.sh
 KEEP=1 spikes/sqld-attach-namespaces/run-jwt-backup.sh
 ```
 Needs PyJWT + cryptography (host) and the `minio`/`minio/mc` images (auto-pulled).
+
+---
+
+# Real-S3 validation (AWS S3, us-west-2) — `run-bottomless-s3.sh`
+
+The MinIO proof (#3) re-run against **actual AWS S3**. ✅ PASS: replicated to the
+real bucket, destroyed the local volume, restarted, all 5 rows auto-restored.
+Generation layout identical to MinIO: `ns-<dbid>:default-<uuid>/{.meta,<wal>.zstd}`.
+
+## Credentials: assumed-role temp creds WORK
+
+Authenticated via **STS assume-role** (a user that can only `sts:AssumeRole` →
+`role/pokedump-data` which holds the S3 policy). bottomless **honors the session
+token** when passed as `AWS_SESSION_TOKEN` (+ `LIBSQL_BOTTOMLESS_AWS_SESSION_TOKEN`)
+alongside the prefixed key/secret/region. **Long-lived IAM user keys are not
+required** — good, since static user keys are discouraged.
+
+## Production credential caveat (resolve during hardening)
+
+STS temp creds **expire** (assume-role default 1h) and bottomless takes STATIC env
+creds with no auto-refresh — fine for this <1 min spike, NOT for a long-running
+server. For prod, pick one:
+- **IAM Roles Anywhere** — keyless for off-EC2/on-prem (X.509 trust anchor); the
+  modern "no static keys" answer and the best fit for the self-hosted box.
+- A **refresh sidecar/timer** that re-assumes the role and rotates sqld's creds
+  before expiry.
+- A **narrowly-scoped static key** (S3 on the one bucket only) — simplest; accepts
+  a long-lived but low-blast-radius key.
+
+Least-privilege policy used (attached to the role): `s3:ListBucket` +
+`s3:GetBucketLocation` on the bucket ARN, `s3:GetObject/PutObject/DeleteObject`
+on the `/*` ARN. (`GetBucketLocation` is required — bottomless calls it on startup.)
+
+## Reproduce
+
+```bash
+CLEANUP=1 spikes/sqld-attach-namespaces/run-bottomless-s3.sh   # creds from ~/.pkdump-s3-spike.env
+```

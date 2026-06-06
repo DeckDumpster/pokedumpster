@@ -103,8 +103,10 @@ else
 fi
 
 if [ "${CLEANUP:-0}" = 1 ]; then
-  c "CLEANUP: removing test prefix from bucket"
-  AWS s3 rm --recursive "s3://${S3_BUCKET}/ns-${DBID}:default" 2>&1 | tail -3 || true
+  c "CLEANUP: stop sqld (halt replication), then remove test prefix from bucket"
+  podman rm -f "$SQLD" >/dev/null 2>&1 || true   # else the running server re-uploads mid-delete
+  # glob form: bare-prefix `s3 rm` misses keys that continue with '-' (not '/').
+  AWS s3 rm "s3://${S3_BUCKET}/" --recursive --exclude "*" --include "ns-${DBID}:*" 2>&1 | tail -10 || true
 fi
 [ "${KEEP:-0}" = 1 ] && echo && echo "KEEP=1: sqld left up on ${BASE}."
 exit ${RC:-0}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
 	import { api } from '$lib/api';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import { variantLabel, variantSortCmp, variantProvenance } from '$lib/variants.svelte';
@@ -93,6 +94,16 @@
 		]);
 	});
 
+	// Transient "Saved" confirmation after a successful inline edit, so the
+	// silent auto-save is visible (pokedumpster-3tc).
+	let saved = $state(false);
+	let savedTimer: ReturnType<typeof setTimeout> | undefined;
+	function flashSaved() {
+		saved = true;
+		clearTimeout(savedTimer);
+		savedTimer = setTimeout(() => (saved = false), 1400);
+	}
+
 	async function withBusy(fn: () => Promise<unknown>) {
 		busy = true;
 		error = null;
@@ -100,6 +111,7 @@
 			await fn();
 			onMutate?.();
 			await load();
+			flashSaved();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -587,12 +599,51 @@
 	/>
 {/if}
 
+{#if saved}
+	<div class="savedToast" role="status" aria-live="polite" transition:fade={{ duration: 150 }}>
+		<span class="savedCheck" aria-hidden="true">✓</span> Saved
+	</div>
+{/if}
+
 <style>
 	.muted {
 		color: #888;
 	}
 	.error {
 		color: #e94560;
+	}
+	/* Transient auto-save confirmation. Fixed to the viewport with a z-index
+	   above the card modal (101) so it shows in both the modal and the page. */
+	.savedToast {
+		position: fixed;
+		bottom: 1.25rem;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 200;
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		background: #16331f;
+		border: 1px solid #2f9e54;
+		color: #7be0a0;
+		padding: 0.5rem 0.9rem;
+		border-radius: 999px;
+		font-size: 0.9rem;
+		font-weight: 600;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+		pointer-events: none;
+	}
+	.savedCheck {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.1rem;
+		height: 1.1rem;
+		border-radius: 50%;
+		background: #2f9e54;
+		color: #fff;
+		font-size: 0.75rem;
+		line-height: 1;
 	}
 	.detail {
 		display: flex;

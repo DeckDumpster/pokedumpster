@@ -620,7 +620,39 @@
 		}
 	}
 
-	const aggregated = $derived(aggregate(filtered));
+	// Unowned printings become qty-0 AggRows so a single sort covers owned +
+	// unowned together (pokedumpster-ffq). They carry the catalog market price
+	// (no condition to adjust → nm_unit === market_unit) so price sorts are
+	// meaningful; market_total stays null (you own none → Value shows "—").
+	function unownedRow(sr: SearchRow): AggRow {
+		return {
+			key: `missing|${sr.printing_id}`,
+			ids: [],
+			qty: 0,
+			paid_total: null,
+			nm_unit: sr.market_price,
+			market_unit: sr.market_price,
+			market_total: null,
+			printing_id: sr.printing_id,
+			card_id: sr.card_id,
+			set_code: sr.set_code,
+			set_ptcgo_code: sr.set_ptcgo_code,
+			set_symbol_url: sr.set_symbol_url,
+			number: sr.number,
+			name: sr.name,
+			rarity: sr.rarity,
+			supertype: sr.supertype,
+			subtypes: sr.subtypes,
+			types: sr.types,
+			attacks: sr.attacks,
+			variant: sr.variant,
+			condition: '',
+			status: 'unowned',
+			image_small: sr.image_small
+		};
+	}
+
+	const aggregated = $derived([...aggregate(filtered), ...unownedCatalog.map(unownedRow)]);
 	const sorted = $derived.by(() => {
 		const out = [...aggregated];
 		out.sort((a, b) => {
@@ -975,34 +1007,35 @@
 		</div>
 		<div class="cardgrid">
 			{#each sorted as a (a.key)}
-				<button
-					class="cardtile"
-					class:picked={selectMode && groupChecked(a.ids)}
-					class:foil={isFoilVariant(a.variant)}
-					title="{a.name} · {variantLabel(a.variant)}{a.qty > 1 ? ` ×${a.qty}` : ''}"
-					onclick={() => openGroup(a)}
-				>
-					{#if a.image_small}
-						<img src={a.image_small} alt={a.name} loading="lazy" />
-					{:else}
-						<div class="tilenoart">{a.name}</div>
-					{/if}
-					{#if a.qty > 1}<span class="qtybadge">×{a.qty}</span>{/if}
-					{#if selectMode && groupChecked(a.ids)}<span class="tick">✓</span>{/if}
-				</button>
-			{/each}
-			{#each unownedCatalog as c (c.printing_id)}
-				<button
-					class="cardtile missing"
-					title="{c.name} · {(c.set_ptcgo_code ?? c.set_code).toUpperCase()} #{c.number} · click to add"
-					onclick={() => (selectedCard = { set: c.set_code, number: c.number })}
-				>
-					{#if c.image_small}
-						<img src={c.image_small} alt={c.name} loading="lazy" />
-					{:else}
-						<div class="tilenoart">{c.name}</div>
-					{/if}
-				</button>
+				{#if a.ids.length === 0}
+					<button
+						class="cardtile missing"
+						title="{a.name} · {(a.set_ptcgo_code ?? a.set_code).toUpperCase()} #{a.number} · click to add"
+						onclick={() => (selectedCard = { set: a.set_code, number: a.number })}
+					>
+						{#if a.image_small}
+							<img src={a.image_small} alt={a.name} loading="lazy" />
+						{:else}
+							<div class="tilenoart">{a.name}</div>
+						{/if}
+					</button>
+				{:else}
+					<button
+						class="cardtile"
+						class:picked={selectMode && groupChecked(a.ids)}
+						class:foil={isFoilVariant(a.variant)}
+						title="{a.name} · {variantLabel(a.variant)}{a.qty > 1 ? ` ×${a.qty}` : ''}"
+						onclick={() => openGroup(a)}
+					>
+						{#if a.image_small}
+							<img src={a.image_small} alt={a.name} loading="lazy" />
+						{:else}
+							<div class="tilenoart">{a.name}</div>
+						{/if}
+						{#if a.qty > 1}<span class="qtybadge">×{a.qty}</span>{/if}
+						{#if selectMode && groupChecked(a.ids)}<span class="tick">✓</span>{/if}
+					</button>
+				{/if}
 			{/each}
 		</div>
 	{:else}
@@ -1043,6 +1076,86 @@
 			</thead>
 			<tbody>
 				{#each sorted as a (a.key)}
+					{#if a.ids.length === 0}
+						<tr
+							class="missing"
+							onclick={() => (selectedCard = { set: a.set_code, number: a.number })}
+						>
+							{#if selectMode}<td class="cbcol"></td>{/if}
+							<td class="num qty"><span class="pricedash">—</span></td>
+							<td class="colflex">
+								<div class="namecell">
+									{#if a.image_small}
+										<img class="cardthumb" src={a.image_small} alt="" loading="lazy" />
+									{/if}
+									<span class="cardname">{a.name}</span>
+								</div>
+							</td>
+							<td>{a.supertype ?? ''}</td>
+							<td class="center">
+								<span class="etypes">
+									{#each parseJsonStrArr(a.types) as t (t)}
+										<img class="energy" src={energyIcon(t)} alt={t} title={t} />
+									{/each}
+								</span>
+							</td>
+							<td>
+								{#each parseAttacks(a.attacks) as att, i (i)}
+									<span class="attackline" title={att.name}>
+										{#each att.cost as cc, j (j)}
+											<img class="energy" src={energyIcon(cc)} alt={cc} title={cc} />
+										{/each}
+									</span>
+								{/each}
+							</td>
+							<td class="center">
+								{#if a.rarity}
+									{@const src = rarityIconSrc(a.rarity)}
+									{#if src}
+										<img
+											class="rarityicon"
+											class:basic={isBasicRarity(a.rarity)}
+											{src}
+											alt={a.rarity}
+											title={a.rarity}
+											onerror={(e) =>
+												((e.currentTarget as HTMLImageElement).style.display = 'none')}
+										/>
+									{/if}
+								{/if}
+							</td>
+							<td class="center">
+								{#if a.set_symbol_url}
+									<img
+										class="setsym"
+										src={a.set_symbol_url}
+										alt="{(a.set_ptcgo_code ?? a.set_code).toUpperCase()}/{a.set_code}"
+										title="{(a.set_ptcgo_code ?? a.set_code).toUpperCase()}/{a.set_code}"
+									/>
+								{:else}
+									<span title={a.set_code}>
+										{(a.set_ptcgo_code ?? a.set_code).toUpperCase()}
+									</span>
+								{/if}
+							</td>
+							<td class="num">{a.number}</td>
+							<td class="num">
+								{#if a.nm_unit != null}
+									<span class="pricebox">{money(a.nm_unit)}</span>
+								{:else}
+									<span class="pricedash">—</span>
+								{/if}
+							</td>
+							<td class="num">
+								{#if a.market_unit != null}
+									<span class="pricebox">{money(a.market_unit)}</span>
+								{:else}
+									<span class="pricedash">—</span>
+								{/if}
+							</td>
+							<td class="num"><span class="pricedash">—</span></td>
+						</tr>
+					{:else}
 					<tr class:picked={selectMode && groupChecked(a.ids)} onclick={() => openGroup(a)}>
 						{#if selectMode}
 							<td class="cbcol" onclick={(e) => e.stopPropagation()}>
@@ -1147,74 +1260,7 @@
 							{/if}
 						</td>
 					</tr>
-				{/each}
-				{#each unownedCatalog as c (c.printing_id)}
-					<tr
-						class="missing"
-						onclick={() => (selectedCard = { set: c.set_code, number: c.number })}
-					>
-						{#if selectMode}<td class="cbcol"></td>{/if}
-						<td class="num qty"><span class="pricedash">—</span></td>
-						<td class="colflex">
-							<div class="namecell">
-								{#if c.image_small}
-									<img class="cardthumb" src={c.image_small} alt="" loading="lazy" />
-								{/if}
-								<span class="cardname">{c.name}</span>
-							</div>
-						</td>
-						<td>{c.supertype ?? ''}</td>
-						<td class="center">
-							<span class="etypes">
-								{#each parseJsonStrArr(c.types) as t (t)}
-									<img class="energy" src={energyIcon(t)} alt={t} title={t} />
-								{/each}
-							</span>
-						</td>
-						<td>
-							{#each parseAttacks(c.attacks) as att, i (i)}
-								<span class="attackline" title={att.name}>
-									{#each att.cost as cc, j (j)}
-										<img class="energy" src={energyIcon(cc)} alt={cc} title={cc} />
-									{/each}
-								</span>
-							{/each}
-						</td>
-						<td class="center">
-							{#if c.rarity}
-								{@const src = rarityIconSrc(c.rarity)}
-								{#if src}
-									<img
-										class="rarityicon"
-										class:basic={isBasicRarity(c.rarity)}
-										{src}
-										alt={c.rarity}
-										title={c.rarity}
-										onerror={(e) =>
-											((e.currentTarget as HTMLImageElement).style.display = 'none')}
-									/>
-								{/if}
-							{/if}
-						</td>
-						<td class="center">
-							{#if c.set_symbol_url}
-								<img
-									class="setsym"
-									src={c.set_symbol_url}
-									alt="{(c.set_ptcgo_code ?? c.set_code).toUpperCase()}/{c.set_code}"
-									title="{(c.set_ptcgo_code ?? c.set_code).toUpperCase()}/{c.set_code}"
-								/>
-							{:else}
-								<span title={c.set_code}>
-									{(c.set_ptcgo_code ?? c.set_code).toUpperCase()}
-								</span>
-							{/if}
-						</td>
-						<td class="num">{c.number}</td>
-						<td class="num"><span class="pricedash">—</span></td>
-						<td class="num"><span class="pricedash">—</span></td>
-						<td class="num"><span class="pricedash">—</span></td>
-					</tr>
+					{/if}
 				{/each}
 			</tbody>
 		</table>

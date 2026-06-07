@@ -762,35 +762,42 @@ fn row_from(r: &rusqlite::Row) -> rusqlite::Result<SearchRow> {
 }
 
 fn attach_copies(conn: &Connection, rows: &mut [SearchRow]) -> Result<()> {
+    // Chunk the IN-clause so a catalog-wide result (is:missing returns one row
+    // per unowned printing — tens of thousands on the real catalog) never
+    // exceeds SQLite's SQLITE_MAX_VARIABLE_NUMBER. 900 stays under even the
+    // legacy 999 limit.
+    const CHUNK: usize = 900;
     let ids: Vec<String> = rows.iter().map(|r| r.printing_id.clone()).collect();
-    let placeholders = vec!["?"; ids.len()].join(", ");
-    let sql = format!(
-        "SELECT printing_id, id, condition, language, status, graded, purchase_price, \
-                acquired_at, binder_id, deck_id \
-         FROM collection WHERE printing_id IN ({placeholders}) ORDER BY id"
-    );
-    let mut stmt = conn.prepare(&sql)?;
     let mut by_printing: HashMap<String, Vec<CopySummary>> = HashMap::new();
-    let mapped = stmt.query_map(params_from_iter(ids.iter()), |r| {
-        let printing_id: String = r.get(0)?;
-        Ok((
-            printing_id,
-            CopySummary {
-                id: r.get(1)?,
-                condition: r.get(2)?,
-                language: r.get(3)?,
-                status: r.get(4)?,
-                graded: r.get(5)?,
-                purchase_price: r.get(6)?,
-                acquired_at: r.get(7)?,
-                binder_id: r.get(8)?,
-                deck_id: r.get(9)?,
-            },
-        ))
-    })?;
-    for entry in mapped {
-        let (printing_id, copy) = entry?;
-        by_printing.entry(printing_id).or_default().push(copy);
+    for chunk in ids.chunks(CHUNK) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!(
+            "SELECT printing_id, id, condition, language, status, graded, purchase_price, \
+                    acquired_at, binder_id, deck_id \
+             FROM collection WHERE printing_id IN ({placeholders}) ORDER BY id"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mapped = stmt.query_map(params_from_iter(chunk.iter()), |r| {
+            let printing_id: String = r.get(0)?;
+            Ok((
+                printing_id,
+                CopySummary {
+                    id: r.get(1)?,
+                    condition: r.get(2)?,
+                    language: r.get(3)?,
+                    status: r.get(4)?,
+                    graded: r.get(5)?,
+                    purchase_price: r.get(6)?,
+                    acquired_at: r.get(7)?,
+                    binder_id: r.get(8)?,
+                    deck_id: r.get(9)?,
+                },
+            ))
+        })?;
+        for entry in mapped {
+            let (printing_id, copy) = entry?;
+            by_printing.entry(printing_id).or_default().push(copy);
+        }
     }
     for row in rows.iter_mut() {
         if let Some(copies) = by_printing.remove(&row.printing_id) {
@@ -949,6 +956,54 @@ mod tests {
         assert_eq!(rows[0].printing_id, "base1-2-holo");
         assert!(!rows[0].owned);
         assert_eq!(rows[0].owned_count, 0);
+        assert!(rows[0].copies.is_empty());
+    }
+
+    // Regression for pokedumpster-2gd: attach_copies built one bound parameter
+    // per result row, so a catalog-wide result (is:missing returns one row per
+    // unowned printing — tens of thousands on the real catalog) blew past
+    // SQLite's SQLITE_MAX_VARIABLE_NUMBER -> "too many SQL variables" -> 500.
+    // The UI fixture is too small to trip the limit. Drive attach_copies past
+    // it directly here; one of the synthetic rows matches an owned copy so we
+    // also prove copies still attach correctly across chunk boundaries.
+    #[test]
+    fn attach_copies_handles_more_rows_than_sqlite_variable_limit() {
+        let f = fixture();
+        let blank = |pid: &str| SearchRow {
+            printing_id: pid.to_string(),
+            card_id: String::new(),
+            set_code: String::new(),
+            set_name: String::new(),
+            set_ptcgo_code: None,
+            set_symbol_url: None,
+            number: String::new(),
+            name: String::new(),
+            rarity: None,
+            artist: None,
+            supertype: None,
+            subtypes: None,
+            types: None,
+            attacks: None,
+            market_price: None,
+            image_small: None,
+            variant: String::new(),
+            variant_description: None,
+            owned: false,
+            owned_count: 0,
+            copies: Vec::new(),
+        };
+        // 40_000 > the 32_766 default limit, and well past the legacy 999.
+        let mut rows: Vec<SearchRow> = (0..40_000).map(|i| blank(&format!("p{i}"))).collect();
+        // A real owned printing dropped in the middle, far past chunk 1.
+        rows[20_000] = blank("base1-4-holo");
+
+        attach_copies(&f.conn, &mut rows).unwrap();
+
+        assert_eq!(
+            rows[20_000].copies.len(),
+            2,
+            "owned copies attach across chunks"
+        );
         assert!(rows[0].copies.is_empty());
     }
 

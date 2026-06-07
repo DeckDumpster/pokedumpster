@@ -485,12 +485,20 @@
 			<p class="muted">You don't own this card yet.</p>
 		{:else}
 			<table>
+				<colgroup>
+					<col style="width: 19%" />
+					<col style="width: 19%" />
+					<col style="width: 15%" />
+					<col style="width: 21%" />
+					<col style="width: 13%" />
+					<col style="width: 13%" />
+				</colgroup>
 				<thead>
-					<tr><th>Variant</th><th>Condition</th><th>Status</th><th>Location</th><th>Paid</th><th>Value</th><th>Notes</th></tr>
+					<tr><th>Variant</th><th>Condition</th><th>Status</th><th>Location</th><th>Paid</th><th>Value</th></tr>
 				</thead>
 				<tbody>
 					{#each detail.copies as copy (copy.id)}
-						<tr>
+						<tr class="copyrow">
 							<td data-label="Variant">
 								<select
 									value={copy.printing_id}
@@ -537,13 +545,15 @@
 							<td data-label="Value" title="NM market × condition multiplier"
 								>{price(copyValue(copy))}</td
 							>
-							<td data-label="Notes">
+						</tr>
+						<tr class="noterow">
+							<td colspan="6">
 								<input
 									class="noteinput"
 									type="text"
 									value={copy.notes ?? ''}
 									disabled={busy}
-									placeholder="e.g. red mark near holo"
+									placeholder="Notes — e.g. red mark near holo, two visible bumps"
 									title="Condition notes for this copy"
 									onchange={(e) => changeNotes(copy.id, e.currentTarget.value)}
 								/>
@@ -883,9 +893,20 @@
 
 	table {
 		width: 100%;
-		max-width: 820px;
+		max-width: 640px;
+		/* Fixed layout so the wide Location select (long binder/deck names)
+		   can't force the table past its container — it overflowed the
+		   760px card modal otherwise, clipping the rightmost columns and
+		   the notes input (pokedumpster-8ad). Columns share the table width
+		   per the colgroup; selects fill their cell and clip overflow. */
+		table-layout: fixed;
 		border-collapse: collapse;
 		font-size: 0.9rem;
+	}
+	td select {
+		width: 100%;
+		max-width: 100%;
+		box-sizing: border-box;
 	}
 	th {
 		text-align: left;
@@ -907,15 +928,24 @@
 		padding: 0.15rem;
 		font: inherit;
 	}
+	/* Keep each copy and its note visually together: drop the divider between
+	   the copy row and its note row; the note row carries the separator. */
+	.copyrow td {
+		border-bottom: none;
+	}
+	.noterow td {
+		padding-top: 0;
+		padding-bottom: 0.5rem;
+	}
 	.noteinput {
 		background: #1a1a2e;
 		border: 1px solid #0f3460;
 		color: #e0e0e0;
 		border-radius: 6px;
-		padding: 0.15rem 0.35rem;
+		padding: 0.25rem 0.45rem;
 		font: inherit;
-		min-width: 12rem;
 		width: 100%;
+		box-sizing: border-box;
 	}
 	.noteinput::placeholder {
 		color: #555;

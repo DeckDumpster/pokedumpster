@@ -307,11 +307,15 @@ fn seed_set_cards(conn: &Connection, set_code: &str, cards: &[CardEntry]) -> any
 
         for (pi, p) in printings.iter().enumerate() {
             let printing_id = format!("{card_id}-{}", p.variant);
+            // sub_type_name links a printing to its prices row (the market_price
+            // join in search.rs keys on it). Production ingest populates it; the
+            // fixture must too, or every price reads back null (pokedumpster-qm9).
             conn.execute(
                 "INSERT INTO printings \
-                   (printing_id, card_id, variant, language, tcgplayer_product_id) \
-                 VALUES (?1, ?2, ?3, 'en', ?4)",
-                rusqlite::params![printing_id, card_id, p.variant, p.product_id],
+                   (printing_id, card_id, variant, language, tcgplayer_product_id, \
+                    sub_type_name) \
+                 VALUES (?1, ?2, ?3, 'en', ?4, ?5)",
+                rusqlite::params![printing_id, card_id, p.variant, p.product_id, p.sub_type],
             )?;
 
             if let (Some(pid), Some(sub)) = (p.product_id, p.sub_type) {

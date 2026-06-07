@@ -4,29 +4,47 @@
  * Regression guard for pokedumpster-ffq (coverage filed as pokedumpster-2o1):
  * in All-cards mode the client-side sort once touched only the aggregated
  * owned rows; unowned printings rendered in a separate trailing {#each} block
- * in raw server order, so changing the sort reordered only the cards you own.
- * The fix folds unowned printings into the same `sorted` list (qty 0), so every
- * sort column interleaves owned + unowned in both grid and table views.
+ * in raw server order, so changing the sort — e.g. Adj. price — reordered only
+ * the cards you own. The fix folds unowned printings into the same `sorted`
+ * list (qty 0), so every sort column interleaves owned + unowned in both grid
+ * and table views.
  *
- * We sort by Name: the committed fixture leaves prices null (the Adj./NM
- * columns render "—" for every row), so a price sort can't differentiate, but
- * every row carries a name and the alphabetic order genuinely interleaves
- * owned and unowned cards. The regression is sort-key-agnostic — under the old
- * code the unowned rows trailed in their own block regardless of key.
+ * We sort by the Adj. (condition-adjusted price) column — the exact field from
+ * the bug report. The fixture mixes cheap and expensive cards across both
+ * ownership states (owned Base Set holos at $100-$320, unowned SIRs at
+ * $130-$280, plus sub-$1 commons of each), so the price order genuinely
+ * interleaves them. Asserts (a) owned + unowned interleave in DOM order and
+ * (b) the Adj. column is globally price-sorted — proof the two are one list.
  */
 import type { ReplayHarness } from '../replay';
 
-/** Per-row ownership ('missing' = dimmed unowned) + card name, in DOM order. */
-async function readRows(
-  h: ReplayHarness,
-  rowSelector: string,
-): Promise<{ owned: boolean; name: string }[]> {
-  return h.page.locator(rowSelector).evaluateAll((els) =>
-    els.map((el) => ({
-      owned: !el.classList.contains('missing'),
-      name: (el.querySelector('.cardname')?.textContent ?? '').trim(),
-    })),
+interface Row {
+  owned: boolean;
+  /** Adj. column value, or null for a "—" cell. */
+  price: number | null;
+}
+
+/** Read each table row's ownership + Adj. price (the second-to-last cell, so
+ *  robust to a leading select-mode checkbox column), in DOM order. */
+async function readTableRows(h: ReplayHarness): Promise<Row[]> {
+  return h.page.locator('table.dd tbody tr').evaluateAll((els) =>
+    els.map((el) => {
+      const cell = el.querySelector('td:nth-last-child(2)'); // Adj. (Value is last)
+      const txt = (cell?.textContent ?? '').trim();
+      const num = Number(txt.replace(/[^0-9.]/g, ''));
+      return {
+        owned: !el.classList.contains('missing'),
+        price: txt === '' || txt === '—' || Number.isNaN(num) ? null : num,
+      };
+    }),
   );
+}
+
+/** Read each grid tile's ownership (tiles don't expose price), in DOM order. */
+async function readGridOwnership(h: ReplayHarness): Promise<boolean[]> {
+  return h.page
+    .locator('.cardgrid .cardtile')
+    .evaluateAll((els) => els.map((el) => !el.classList.contains('missing')));
 }
 
 /**
@@ -34,17 +52,14 @@ async function readRows(
  * layout rendered all owned rows, then all unowned rows as a separate block —
  * so an owned row never followed a missing row. Require both directions.
  */
-function assertInterleaved(
-  rows: { owned: boolean }[],
-  label: string,
-): void {
-  const seq = rows.map((r) => (r.owned ? 'O' : 'M'));
-  const owned = seq.filter((s) => s === 'O').length;
-  const missing = seq.filter((s) => s === 'M').length;
-  if (owned === 0 || missing === 0) {
+function assertInterleaved(owned: boolean[], label: string): void {
+  const seq = owned.map((o) => (o ? 'O' : 'M'));
+  const nOwned = seq.filter((s) => s === 'O').length;
+  const nMissing = seq.filter((s) => s === 'M').length;
+  if (nOwned === 0 || nMissing === 0) {
     throw new Error(
       `${label}: expected both owned and unowned rows after sort ` +
-        `(owned=${owned}, missing=${missing}); All-cards setup wrong`,
+        `(owned=${nOwned}, missing=${nMissing}); All-cards setup wrong`,
     );
   }
   const firstMissing = seq.indexOf('M');
@@ -61,19 +76,23 @@ function assertInterleaved(
   }
 }
 
-/** Names must be globally ordered (asc or desc) — proof the sort engaged and
- *  spans owned + unowned together, not a per-block order. */
-function assertNameSorted(
-  rows: { name: string }[],
-  label: string,
-): void {
-  const names = rows.map((r) => r.name.toLowerCase());
-  const asc = names.every((n, i) => i === 0 || names[i - 1]! <= n);
-  const desc = names.every((n, i) => i === 0 || names[i - 1]! >= n);
+/** The Adj. column must be globally ordered (asc or desc) — proof the sort
+ *  engaged and spans owned + unowned together, not a per-block order. */
+function assertPriceSorted(rows: Row[], label: string): void {
+  const prices = rows.map((r) => r.price);
+  if (prices.some((p) => p === null)) {
+    throw new Error(
+      `${label}: some rows show no Adj. price ("—") — the fixture price join ` +
+        `regressed (see pokedumpster-qm9). Prices: ${prices.join(', ')}`,
+    );
+  }
+  const nums = prices as number[];
+  const asc = nums.every((p, i) => i === 0 || nums[i - 1]! <= p);
+  const desc = nums.every((p, i) => i === 0 || nums[i - 1]! >= p);
   if (!asc && !desc) {
     throw new Error(
-      `${label}: rows not globally name-sorted after clicking Name — ` +
-        `owned + unowned are not one sorted list. Names: ${names.join(', ')}`,
+      `${label}: Adj. column not globally price-sorted — owned + unowned are ` +
+        `not one sorted list. Prices: ${nums.join(', ')}`,
     );
   }
 }
@@ -92,28 +111,30 @@ export async function steps(h: ReplayHarness) {
   await h.click_by_test_id('view-table');
   await h.wait_for_visible('table.dd tbody tr.missing', 4000);
   await h.page
-    .locator('th.sortable', { hasText: 'Name' })
+    .locator('th.sortable', { hasText: 'Adj.' })
     .first()
     .click({ timeout: 1000 });
   await h.page.waitForTimeout(100);
-  const tableRows = await readRows(h, 'table.dd tbody tr');
-  assertInterleaved(tableRows, 'table view');
-  assertNameSorted(tableRows, 'table view');
+  const tableRows = await readTableRows(h);
+  assertInterleaved(
+    tableRows.map((r) => r.owned),
+    'table view',
+  );
+  assertPriceSorted(tableRows, 'table view');
   await h.screenshot('table_sorted');
 
   // ── Grid view ───────────────────────────────────────────────────────
-  // Sort state is shared with the table; click the grid Name button to
+  // Sort state is shared with the table; click the grid Adj. button to
   // exercise the grid sort path too (direction may flip — interleave holds
-  // either way). Grid tiles don't expose the card name, so we assert
-  // ownership interleave only here.
+  // either way). Grid tiles don't expose the price, so we assert ownership
+  // interleave only here.
   await h.click_by_test_id('view-grid');
   await h.wait_for_visible('.cardgrid .cardtile.missing', 4000);
   await h.page
-    .locator('.gridsort .sortbtn', { hasText: 'Name' })
+    .locator('.gridsort .sortbtn', { hasText: 'Adj.' })
     .first()
     .click({ timeout: 1000 });
   await h.page.waitForTimeout(100);
-  const gridRows = await readRows(h, '.cardgrid .cardtile');
-  assertInterleaved(gridRows, 'grid view');
+  assertInterleaved(await readGridOwnership(h), 'grid view');
   await h.screenshot('grid_sorted');
 }

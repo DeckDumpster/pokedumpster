@@ -5,12 +5,15 @@
 		setCode,
 		number,
 		onClose,
-		onNavigate
+		onNavigate,
+		onMutate
 	}: {
 		setCode: string;
 		number: string;
 		onClose: () => void;
 		onNavigate?: (set: string, number: string) => void;
+		/** Forwarded to CardDetailView — fired when a copy is mutated. */
+		onMutate?: () => void;
 	} = $props();
 </script>
 
@@ -38,7 +41,7 @@
 		<button class="x" onclick={onClose} aria-label="Close">×</button>
 	</div>
 	<div class="body">
-		<CardDetailView {setCode} {number} {onNavigate} />
+		<CardDetailView {setCode} {number} {onNavigate} {onMutate} />
 	</div>
 </div>
 

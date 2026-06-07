@@ -318,10 +318,18 @@
 		}
 	}
 
-	/** Close the modal and re-run the search — the modal may have mutated copies. */
+	// Set by the modal's onMutate when a copy is added/removed/edited while
+	// the modal is open. Closing only re-runs the search when this is set —
+	// merely viewing a card (then closing) leaves the list untouched.
+	let cardDirty = $state(false);
+
+	/** Close the modal, re-running the search only if the modal mutated copies. */
 	async function closeCard() {
 		selectedCard = null;
-		await runSearch();
+		if (cardDirty) {
+			cardDirty = false;
+			await runSearch();
+		}
 	}
 
 	onMount(async () => {
@@ -983,7 +991,7 @@
 					{#if selectMode && groupChecked(a.ids)}<span class="tick">✓</span>{/if}
 				</button>
 			{/each}
-			{#each unownedCatalog as c (c.card_id)}
+			{#each unownedCatalog as c (c.printing_id)}
 				<button
 					class="cardtile missing"
 					title="{c.name} · {(c.set_ptcgo_code ?? c.set_code).toUpperCase()} #{c.number} · click to add"
@@ -1140,7 +1148,7 @@
 						</td>
 					</tr>
 				{/each}
-				{#each unownedCatalog as c (c.card_id)}
+				{#each unownedCatalog as c (c.printing_id)}
 					<tr
 						class="missing"
 						onclick={() => (selectedCard = { set: c.set_code, number: c.number })}
@@ -1219,6 +1227,7 @@
 		setCode={selectedCard.set}
 		number={selectedCard.number}
 		onClose={closeCard}
+		onMutate={() => (cardDirty = true)}
 		onNavigate={(s, n) => (selectedCard = { set: s, number: n })}
 	/>
 {/if}

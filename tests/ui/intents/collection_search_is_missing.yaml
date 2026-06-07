@@ -1,0 +1,15 @@
+# Scenario: "is:missing" surfaces every unowned printing without crashing
+#
+# Related:
+#   issues: [pokedumpster-f5j]
+#   pull_requests: []
+
+description: >
+  Searching the collection for "is:missing" lists every printing I don't
+  own as a dimmed "missing" tile. Cards with several unowned printings
+  (e.g. a base-set card with both a normal and a holo printing) each
+  contribute multiple tiles, and the grid renders them all — the page
+  must not get stuck on "Loading…" or blank out. This is a regression
+  guard: the missing tiles were once keyed by card_id, so two unowned
+  printings of one card collided on a duplicate key and crashed the
+  render. They are now keyed by the unique printing_id.

@@ -1,0 +1,15 @@
+start_page: /collection
+involves:
+  - "search box [data-testid=search-input]"
+  - "grid view [data-testid=view-grid]"
+  - "dimmed unowned grid tiles (.cardtile.missing)"
+fixture_data:
+  query: "is:missing"
+notes: >
+  Navigate to /collection, ensure grid view via [data-testid=view-grid],
+  then type "is:missing" into [data-testid=search-input]. The grid fills
+  with dimmed .cardtile.missing tiles — one per unowned printing. The
+  committed fixture has several cards with two unowned printings each
+  (base1-46/58/88/98, sv3pt5-151), so the result contains duplicate
+  card_ids; the tiles must key on printing_id or the keyed {#each}
+  throws each_key_duplicate and nothing renders.

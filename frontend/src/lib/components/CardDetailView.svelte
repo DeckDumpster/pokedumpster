@@ -18,6 +18,7 @@
 		setCode,
 		number,
 		onNavigate,
+		onMutate,
 		manageBreadcrumbs = false
 	}: {
 		setCode: string;
@@ -26,6 +27,11 @@
 		 *  collection modal to support evolution-chain links without
 		 *  closing/reopening. Falls back to a full-page nav if absent. */
 		onNavigate?: (set: string, number: string) => void;
+		/** Fired after any successful copy mutation (add/remove/status/
+		 *  condition/variant/assign). The collection modal uses this to
+		 *  decide whether closing needs a re-fetch — viewing a card without
+		 *  touching it leaves the list untouched, so no reload. */
+		onMutate?: () => void;
 		/** When true, override the layout breadcrumb trail to "Browse ›
 		 *  <set name> › <card name> #<number>". The /card route page
 		 *  sets this; the CardModal wrapper (used inside /collection) does
@@ -92,6 +98,7 @@
 		error = null;
 		try {
 			await fn();
+			onMutate?.();
 			await load();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);

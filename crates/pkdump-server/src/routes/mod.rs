@@ -1,5 +1,6 @@
 //! HTTP route modules. One module per API resource (PLAN.md §5.2).
 
+pub mod backup;
 pub mod batches;
 pub mod binders;
 pub mod card;
@@ -42,4 +43,5 @@ pub fn api_router() -> Router<AppState> {
         .merge(user_printings::routes())
         .merge(import::routes())
         .merge(export::routes())
+        .merge(backup::routes())
 }

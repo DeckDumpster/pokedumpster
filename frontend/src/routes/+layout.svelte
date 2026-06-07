@@ -3,8 +3,26 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { breadcrumbs, type Crumb } from '$lib/breadcrumbs.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
+	import { api } from '$lib/api';
+	import type { BackupStatus } from '$lib/types/BackupStatus';
 
 	let { children } = $props();
+
+	// Layer 3 backup-staleness banner (pokedumpster-ivq.5). Passive visibility:
+	// the host-side checker writes a freshness marker the server surfaces here.
+	// Fire-and-forget — never block render, never error-page on a check failure.
+	let backup = $state<BackupStatus | null>(null);
+	$effect(() => {
+		api.backupStatus()
+			.then((s) => (backup = s))
+			.catch(() => {});
+	});
+	const backupAgeLabel = $derived.by(() => {
+		const secs = backup?.age_seconds;
+		if (secs == null) return '';
+		const hours = Number(secs) / 3600;
+		return hours >= 48 ? `${Math.floor(hours / 24)} days` : `${Math.floor(hours)} hours`;
+	});
 
 	// /collection paints its own DD-style chrome (brand + sticky search +
 	// burger) and runs edge-to-edge; suppress the breadcrumb header and
@@ -58,6 +76,13 @@
 	</header>
 {/if}
 
+{#if backup?.stale}
+	<div class="backup-banner" role="alert">
+		⚠️ Off-box backup is stale — last confirmed {backupAgeLabel} ago. Check the
+		Litestream sidecar and <code>pkdump-backup-check</code>.
+	</div>
+{/if}
+
 <main class:flush>
 	{@render children()}
 </main>
@@ -77,6 +102,19 @@
 		background: #16213e;
 		border-bottom: 2px solid #0f3460;
 		font-size: 0.95rem;
+	}
+	.backup-banner {
+		padding: 0.6rem 1.25rem;
+		background: #5a1e1e;
+		color: #ffd9d9;
+		border-bottom: 2px solid #e94560;
+		font-size: 0.9rem;
+		text-align: center;
+	}
+	.backup-banner code {
+		background: rgba(0, 0, 0, 0.3);
+		padding: 0.05rem 0.35rem;
+		border-radius: 3px;
 	}
 	.logo {
 		display: inline-flex;

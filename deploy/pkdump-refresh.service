@@ -1,5 +1,8 @@
 [Unit]
 Description=PokeDumpster catalog refresh (%i)
+# Layer 2 (pokedumpster-ivq.3): push the journal tail to Pushover if a refresh
+# run fails (this is a discrete oneshot, so OnFailure fires reliably here).
+OnFailure=pkdump-alert@%n.service
 
 [Service]
 Type=oneshot

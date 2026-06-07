@@ -9,6 +9,13 @@ Wants=network-online.target
 # Auto-starts on boot once the (non-secret) aws/config role profile exists;
 # the bootstrap key itself comes from a podman secret (below).
 ConditionPathExists=%h/.config/pkdump/{{INSTANCE}}/aws/config
+# Layer 2 (pokedumpster-ivq.3): the sidecar runs continuously and does NOT exit
+# on auth errors (the canonical silent failure — Layer 1 catches that). But a
+# hard crash-loop SHOULD page: bound the restarts so systemd reaches `failed`
+# and fires the alert. (Quadlet passes [Unit]/[Service] keys through verbatim.)
+StartLimitIntervalSec=300
+StartLimitBurst=5
+OnFailure=pkdump-alert@%n.service
 
 [Container]
 Image=docker.io/litestream/litestream:latest

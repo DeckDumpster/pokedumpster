@@ -1,0 +1,14 @@
+[Unit]
+Description=PokeDumpster backup freshness check timer (%i)
+
+[Timer]
+# Every 6h. The off-box monitor (healthchecks.io) expects a ping each run;
+# configure its period ~6h with a grace of a few hours so a single missed run
+# (or a dead box) alerts. More frequent than the daily snapshot cadence so a
+# creds-break (which makes the freshness query itself fail) is caught within 6h.
+OnCalendar=*-*-* 00,06,12,18:00:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

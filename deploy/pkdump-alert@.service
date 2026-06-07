@@ -1,0 +1,17 @@
+[Unit]
+Description=PokeDumpster failure alert for %i
+# Layer 2 (pokedumpster-ivq.3). Fired via OnFailure= from the units that matter
+# (the Litestream sidecar, the nightly refresh, the backup-freshness check).
+# Pushes the failed unit's journal tail to Pushover the moment it fails — fast,
+# detailed, on-box. Does NOT catch never-ran / box-down: that is Layer 1's job.
+#
+# %i is the FULL failed unit name (passed as pkdump-alert@%n.service), so this
+# instance template alerts for any unit. {{REPO_DIR}} is sed-substituted by
+# deploy/setup.sh (single-clone deployment).
+
+[Service]
+Type=oneshot
+# Pushover creds are host-wide; '-' makes the file optional so the unit installs
+# cleanly before alerts.env exists (alert.sh then no-ops on unset creds).
+EnvironmentFile=-%h/.config/pkdump/alerts.env
+ExecStart=/bin/sh -c 'journalctl --user -u %i -n 20 --no-pager | bash {{REPO_DIR}}/deploy/alert.sh "PokeDumpster unit FAILED: %i"'

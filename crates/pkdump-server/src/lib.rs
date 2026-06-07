@@ -29,6 +29,9 @@ pub struct AppState {
     conn: Arc<Mutex<Connection>>,
     registry: Arc<KeywordRegistry>,
     flags: Arc<Vec<SearchFlag>>,
+    /// The data dir — read by `/api/backup-status` for the `.backup-last-ok`
+    /// freshness marker the host-side Layer 1 checker writes (ivq.5).
+    data_dir: Arc<PathBuf>,
 }
 
 /// An error rendered as an HTTP response. `DbError::NotFound` → 404,
@@ -156,6 +159,7 @@ pub async fn serve(
         conn: Arc::new(Mutex::new(conn)),
         registry,
         flags,
+        data_dir: Arc::new(data_dir.clone()),
     };
     let addr = SocketAddr::new(host, port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -208,12 +212,13 @@ mod tests {
             "<!doctype html><title>PokeDumpster</title>",
         )
         .unwrap();
+        let data_dir = dir.path().to_path_buf();
         let state = AppState {
             conn: Arc::new(Mutex::new(conn)),
             registry,
             flags,
+            data_dir: Arc::new(data_dir.clone()),
         };
-        let data_dir = dir.path().to_path_buf();
         (dir, app(state, static_dir, data_dir))
     }
 
@@ -237,6 +242,51 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn backup_status_no_marker_is_not_stale() {
+        // No `.backup-last-ok` on the data dir (dev/test/unarmed Layer 1):
+        // status reports unknown, never stale (the off-box monitor owns the
+        // never-configured case, not the in-app banner).
+        let (_d, router) = test_app();
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/backup-status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("\"last_ok_epoch\":null"), "body: {body}");
+        assert!(body.contains("\"stale\":false"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn backup_status_old_marker_is_stale() {
+        // A marker that exists but is far past the threshold flips `stale`.
+        let (dir, router) = test_app();
+        let old = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            - 100 * 3600; // 100h ago — well past the 12h default threshold
+        std::fs::write(dir.path().join(".backup-last-ok"), old.to_string()).unwrap();
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/backup-status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(body.contains("\"stale\":true"), "body: {body}");
     }
 
     #[tokio::test]

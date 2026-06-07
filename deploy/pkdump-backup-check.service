@@ -1,0 +1,14 @@
+[Unit]
+Description=PokeDumpster backup freshness check (%i)
+# Layer 1 dead-man's switch (pokedumpster-ivq.2). Verifies the Litestream S3
+# replica is fresh, then pings the off-box monitor. %i is the instance name.
+# {{REPO_DIR}} is sed-substituted by deploy/setup.sh (single-clone deployment).
+After=network-online.target
+Wants=network-online.target
+# If the checker itself errors out, also fire the Pushover alert unit.
+OnFailure=pkdump-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/backup-check.sh %i'
+TimeoutStartSec=120

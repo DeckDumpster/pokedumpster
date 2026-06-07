@@ -133,25 +133,35 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `deploy.sh <name>` | Rebuild image and restart one instance |
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
 | `restore-litestream.sh [--yes] [--at=<RFC3339>] <inst> [user]` | Restore the collection from the S3 backup (latest or point-in-time) — see [RESTORE.md](RESTORE.md) |
+| `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer) |
+| `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
+| `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin) |
 | `mac-setup.sh` / `mac-deploy.sh` / `mac-teardown.sh` | macOS equivalents (no systemd) |
 
 ## Systemd timers
 
-`setup.sh` installs a templated `--user` unit alongside the instance:
+`setup.sh` installs these `--user` units alongside the instance:
 
 - `pkdump-refresh@<instance>` — nightly `pkdump data refresh` inside the
   running container (via `podman exec`), 06:00 + jitter.
+- `pkdump-backup-check@<instance>` — backup-freshness dead-man's switch
+  (Layer 1, every 6h). See [Backup-failure alarming](#backup-failure-alarming).
+- `pkdump-diskcheck` — host-wide low-disk alert (Layer 4, daily). Not
+  per-instance; enable once.
 
-It is `%i`-templated, so one copy serves every instance. The instance name is
-the part after `@`. Enable it per-instance:
+The `@`-templated units are `%i`-templated, so one copy serves every instance —
+the instance name is the part after `@`. Enable per-instance:
 
 ```bash
 systemctl --user enable --now pkdump-refresh@prod.timer
+systemctl --user enable --now pkdump-backup-check@prod.timer   # after arming alerts.env
+systemctl --user enable --now pkdump-diskcheck.timer           # host-wide, once
 systemctl --user list-timers 'pkdump-*'        # check schedule
 ```
 
-Backups are **not** a timer — the Litestream sidecar replicates continuously
-(see below). `teardown.sh` disables the refresh timer.
+Backups themselves are **not** a timer — the Litestream sidecar replicates
+continuously (see below). `teardown.sh` disables the refresh + backup-check
+timers for the instance (the host-wide disk timer is left alone).
 
 ## Backup & restore — Litestream → S3
 
@@ -170,6 +180,53 @@ bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod
 
 **Full disaster-recovery procedure: [RESTORE.md](RESTORE.md)** — latest restore,
 point-in-time, total-box rebuild, verification, and troubleshooting.
+
+## Backup-failure alarming
+
+Motivated by a Jun 2026 incident where the (then local) backup unit failed every
+night for ~11 days with nobody watching, and a key rotation that left the
+Litestream sidecar showing systemd `active` while silently *not* replicating.
+**Liveness is not freshness** — the monitor verifies that data actually lands in
+S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
+
+- **Layer 1 — freshness dead-man's switch (primary).** `backup-check.sh` runs
+  every 6h (`pkdump-backup-check@<inst>.timer`), lists the S3 replica's
+  snapshots, and pings an **off-box** monitor (healthchecks.io) only when the
+  newest snapshot is fresh. A broken-creds / stalled / dead-box / disabled-timer
+  state stops the pings → the monitor alerts. This is the layer that catches the
+  silent modes. It also writes a `.backup-last-ok` marker for Layer 3.
+- **Layer 2 — `OnFailure` push.** The Litestream sidecar, the refresh run, and
+  the backup-check itself fire `pkdump-alert@.service` on failure, pushing the
+  failed unit's journal tail to Pushover. Catches hard crashes fast; does *not*
+  catch never-ran (that's Layer 1).
+- **Layer 4 — low-disk alert.** `diskcheck.sh` (daily, host-wide) pushes when the
+  disk crosses `PKDUMP_DISK_THRESHOLD` (default 90%).
+- **Layer 3 — in-app banner.** The app shows a staleness banner when the
+  `.backup-last-ok` marker goes old (`/api/backup-status`). Passive visibility;
+  no paging.
+
+### Arming it
+
+Secrets never live in the repo — `setup.sh` scaffolds two env files:
+
+```bash
+# Host-wide: Pushover creds + disk threshold (Layers 2 + 4, and L1's detail push)
+$EDITOR ~/.config/pkdump/alerts.env          # PUSHOVER_TOKEN, PUSHOVER_USER
+
+# Per-instance: the healthchecks.io ping URL (Layer 1)
+$EDITOR ~/.config/pkdump/<inst>/alerts.env   # PKDUMP_BACKUP_PING_URL
+
+# Then enable the timers:
+systemctl --user enable --now pkdump-backup-check@<inst>.timer
+systemctl --user enable --now pkdump-diskcheck.timer
+```
+
+Create a healthchecks.io check (period ~6h, grace ~3h) and wire its Pushover
+integration. With `PKDUMP_BACKUP_PING_URL` empty, Layer 1 is a no-op (dev/test
+boxes are unaffected). Verify end-to-end: run the check once
+(`systemctl --user start pkdump-backup-check@<inst>.service`) and confirm the
+monitor goes green, then simulate a failure (e.g. revoke the bootstrap key or
+rename the volume) and confirm the alert fires within the grace window.
 
 ## Expanding to GitHub later
 

@@ -41,6 +41,7 @@ import type { ManualPrice } from './types/ManualPrice';
 import type { NewManualPrice } from './types/NewManualPrice';
 import type { CreateMissingVariant } from './types/CreateMissingVariant';
 import type { CreateMissingVariantResult } from './types/CreateMissingVariantResult';
+import type { BackupStatus } from './types/BackupStatus';
 async function getJson<T>(url: string): Promise<T> {
 	const res = await fetch(url);
 	if (!res.ok) {
@@ -238,6 +239,10 @@ export const api = {
 
 	// --- Variants display metadata (backs $lib/variants.svelte) ---
 	variants: () => getJson<Variant[]>('/api/variants'),
+
+	// --- Backup freshness (Layer 3 staleness banner, pokedumpster-ivq.5) ---
+	/** Off-box backup freshness from the host-side checker's marker. */
+	backupStatus: () => getJson<BackupStatus>('/api/backup-status'),
 
 	// --- Manual prices ---
 	/** All manual-price entries for one printing, newest first. */

@@ -105,6 +105,44 @@ for EXT in service timer; do
         > "${SYSTEMD_USER_DIR}/pkdump-refresh@.${EXT}"
 done
 
+# --- Install the backup-failure alarming units (pokedumpster-ivq) -----------
+# Layer 1: backup-freshness dead-man's switch (per-instance @ template).
+# Layer 2: OnFailure -> Pushover journal-tail push (instance-by-failed-unit).
+# Layer 4: host-wide low-disk check (not per-instance).
+echo "==> Installing backup-failure alarming units..."
+for EXT in service timer; do
+    sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
+        "$REPO_DIR/deploy/pkdump-backup-check.${EXT}" \
+        > "${SYSTEMD_USER_DIR}/pkdump-backup-check@.${EXT}"
+done
+sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
+    "$REPO_DIR/deploy/pkdump-alert@.service" \
+    > "${SYSTEMD_USER_DIR}/pkdump-alert@.service"
+for EXT in service timer; do
+    sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
+        "$REPO_DIR/deploy/pkdump-diskcheck.${EXT}" \
+        > "${SYSTEMD_USER_DIR}/pkdump-diskcheck.${EXT}"
+done
+
+# Scaffold the host-wide alert config (Pushover creds + disk threshold). Secrets
+# NEVER live in the repo; this only writes a template and never clobbers it.
+ALERTS_ENV="${HOME}/.config/pkdump/alerts.env"
+if [ ! -f "$ALERTS_ENV" ]; then
+    mkdir -p "${HOME}/.config/pkdump"
+    cat > "$ALERTS_ENV" <<'EOF'
+# Host-wide alert config for PokeDumpster (pokedumpster-ivq). Fill CHANGE_ME.
+# Pushover push channel (Layers 2 + 4, and Layer 1's fast detail push).
+# Create an app at https://pushover.net/apps/build for the token.
+PUSHOVER_TOKEN=CHANGE_ME
+PUSHOVER_USER=CHANGE_ME
+# Low-disk alert (Layer 4): percent-used trigger + filesystem to watch.
+PKDUMP_DISK_THRESHOLD=90
+PKDUMP_DISK_PATH=
+EOF
+    chmod 600 "$ALERTS_ENV"
+    echo "    Wrote ${ALERTS_ENV} (fill PUSHOVER_TOKEN/USER)."
+fi
+
 # --- Install the Litestream backup sidecar (pokedumpster-8ch.3) -------------
 # Quadlet sidecar that continuously replicates the collection DB to S3. Instance
 # + repo path are sed-substituted (single-clone deployment).
@@ -143,6 +181,21 @@ EOF
     echo "      3. Store the bootstrap key in a podman secret (NOT a file):"
     echo "           printf '[bootstrap]\\naws_access_key_id=K\\naws_secret_access_key=S\\n' | podman secret create pkdump-${INSTANCE}-s3-bootstrap -"
     echo "    Sidecar auto-starts once aws/config exists + the secret is present."
+fi
+
+# Per-instance alert config: the healthchecks.io ping URL for THIS instance's
+# backup-freshness dead-man's switch (pokedumpster-ivq.2). Empty = Layer 1 off.
+if [ ! -f "${LS_CONF_DIR}/alerts.env" ]; then
+    cat > "${LS_CONF_DIR}/alerts.env" <<EOF
+# Per-instance backup-alarming config for '${INSTANCE}'. Empty PING_URL = Layer 1
+# disabled. Create a check at https://healthchecks.io (period ~6h, grace ~3h),
+# wire its Pushover integration, and paste its ping URL here.
+PKDUMP_BACKUP_PING_URL=
+# Alert when the newest S3 snapshot is older than this (hours; daily snapshots).
+PKDUMP_BACKUP_MAX_AGE_HOURS=36
+EOF
+    chmod 600 "${LS_CONF_DIR}/alerts.env"
+    echo "    Wrote ${LS_CONF_DIR}/alerts.env (paste the healthchecks.io ping URL to arm Layer 1)."
 fi
 
 systemctl --user daemon-reload
@@ -214,6 +267,10 @@ echo "    Start:             systemctl --user start ${SERVICE_NAME}"
 echo "    Port:              podman port systemd-${SERVICE_NAME}"
 echo "    Logs:              journalctl --user -u ${SERVICE_NAME} -f"
 echo "    Refresh timer:     systemctl --user enable --now pkdump-refresh@${INSTANCE}.timer"
+echo "    Backup-check (L1): edit ~/.config/pkdump/${INSTANCE}/alerts.env (ping URL), then:"
+echo "                       systemctl --user enable --now pkdump-backup-check@${INSTANCE}.timer"
+echo "    Disk alert (L4):   edit ~/.config/pkdump/alerts.env (Pushover), then:"
+echo "                       systemctl --user enable --now pkdump-diskcheck.timer"
 echo "    Restore (DR):      deploy/RESTORE.md  (off-box S3 via deploy/restore-litestream.sh)"
 echo "    Litestream backup: edit ~/.config/pkdump/${INSTANCE}/{litestream.env,aws/}, then: systemctl --user start pkdump-litestream-${INSTANCE}.service"
 echo "    Teardown:          bash deploy/teardown.sh ${INSTANCE}"

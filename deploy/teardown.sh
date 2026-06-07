@@ -31,8 +31,9 @@ QUADLET_FILE="$HOME/.config/containers/systemd/${SERVICE_NAME}.container"
 echo "==> Stopping ${SERVICE_NAME}..."
 systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
 
-# Stop and disable the per-instance refresh timer.
+# Stop and disable the per-instance refresh + backup-check timers (ivq).
 systemctl --user disable --now "pkdump-refresh@${INSTANCE}.timer" 2>/dev/null || true
+systemctl --user disable --now "pkdump-backup-check@${INSTANCE}.timer" 2>/dev/null || true
 
 # Stop the Litestream backup sidecar (pokedumpster-8ch.3).
 systemctl --user stop "pkdump-litestream-${INSTANCE}.service" 2>/dev/null || true

@@ -1,0 +1,10 @@
+[Unit]
+Description=PokeDumpster low-disk check timer
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

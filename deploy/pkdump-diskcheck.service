@@ -1,0 +1,10 @@
+[Unit]
+Description=PokeDumpster low-disk check
+# Layer 4 (pokedumpster-ivq.4). Host-wide (disk is not per-instance), so this is
+# NOT a template. {{REPO_DIR}} is sed-substituted by deploy/setup.sh.
+OnFailure=pkdump-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/diskcheck.sh'
+TimeoutStartSec=60

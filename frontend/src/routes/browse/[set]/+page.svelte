@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { goto, afterNavigate } from '$app/navigation';
+	import { goto, afterNavigate, beforeNavigate } from '$app/navigation';
 	import { api } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
@@ -174,8 +174,45 @@
 	// nav from /browse the router is already up, so afterNavigate fires
 	// promptly and there's no observable delay.
 	let routerReady = $state(false);
-	afterNavigate(() => {
+
+	// Scroll restoration on Back. The binder data loads client-side (async),
+	// so on a popstate return the page is briefly 0px tall and the router's
+	// native scroll restoration lands at the top before the slots render. We
+	// stash window.scrollY per URL as we leave, then re-apply it once the data
+	// has rendered (pokedumpster-3m3).
+	const SCROLL_KEY = 'browse-scroll';
+	const urlKey = (u: URL) => u.pathname + u.search;
+	function readScroll(): Record<string, number> {
+		try {
+			return JSON.parse(sessionStorage.getItem(SCROLL_KEY) ?? '{}') as Record<string, number>;
+		} catch {
+			return {};
+		}
+	}
+	let pendingScroll: number | null = null;
+
+	beforeNavigate((nav) => {
+		if (typeof window === 'undefined' || !nav.from) return;
+		const store = readScroll();
+		store[urlKey(nav.from.url)] = window.scrollY;
+		sessionStorage.setItem(SCROLL_KEY, JSON.stringify(store));
+	});
+
+	afterNavigate((nav) => {
 		routerReady = true;
+		if (typeof window === 'undefined') return;
+		pendingScroll =
+			nav.type === 'popstate' && nav.to ? (readScroll()[urlKey(nav.to.url)] ?? null) : null;
+	});
+
+	// Re-apply the saved scroll once the binder finishes loading (the slots are
+	// in the DOM, so the page is tall enough to scroll to). One frame of slack
+	// lets layout settle first.
+	$effect(() => {
+		if (loading || pendingScroll == null) return;
+		const y = pendingScroll;
+		pendingScroll = null;
+		requestAnimationFrame(() => window.scrollTo(0, y));
 	});
 
 	function syncUrl() {

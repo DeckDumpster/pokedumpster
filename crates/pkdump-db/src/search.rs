@@ -1007,6 +1007,76 @@ mod tests {
         assert!(rows[0].copies.is_empty());
     }
 
+    // Full-path companion to attach_copies_handles_more_rows_than_sqlite_variable_limit
+    // and the headline backend guard for pokedumpster-2o1. The committed UI
+    // fixture has a handful of printings, so neither the IN-clause cliff nor any
+    // other per-row variable build is exercised at fixture scale — both
+    // All-cards bugs shipped to prod invisibly. Build a catalog with more
+    // unowned printings than SQLite's default SQLITE_MAX_VARIABLE_NUMBER
+    // (32766) and run the real `is:missing` query end to end (build_full_sql +
+    // attach_copies). Regresses loudly with "too many SQL variables" -> 500 if
+    // any stage stops chunking.
+    #[test]
+    fn is_missing_survives_prod_scale_catalog() {
+        const N: usize = 35_000; // > 32_766 default SQLITE_MAX_VARIABLE_NUMBER
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let mut c = open_shared(&shared).unwrap();
+            search_meta::reconcile(&mut c).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, ptcgo_code, name, series, set_sort_order, release_date)
+                 VALUES ('big','BIG','Big Set','Test',1,'2024/01/01')",
+                [],
+            )
+            .unwrap();
+            let tx = c.transaction().unwrap();
+            {
+                let mut card_stmt = tx
+                    .prepare(
+                        "INSERT INTO cards (card_id,set_code,number,number_sortable,name,supertype)
+                         VALUES (?1,'big',?2,?3,?4,'Pokémon')",
+                    )
+                    .unwrap();
+                let mut pr_stmt = tx
+                    .prepare(
+                        "INSERT INTO printings (printing_id,card_id,variant)
+                         VALUES (?1,?2,'normal')",
+                    )
+                    .unwrap();
+                for i in 0..N {
+                    let card_id = format!("big-{i}");
+                    card_stmt
+                        .execute(rusqlite::params![
+                            card_id,
+                            i.to_string(),
+                            i as i64,
+                            format!("Mon {i}")
+                        ])
+                        .unwrap();
+                    pr_stmt
+                        .execute(rusqlite::params![format!("{card_id}-normal"), card_id])
+                        .unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+        // No collection rows at all → every printing is missing.
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let registry = search_meta::load_registry(&conn).unwrap();
+        let flags = search_meta::load_flags(&conn).unwrap();
+        let compiled = compile(&parse("is:missing", &registry).unwrap(), &flags);
+        assert!(compiled.catalog_wide);
+
+        let rows = search(&conn, &compiled).unwrap();
+        assert_eq!(
+            rows.len(),
+            N,
+            "every unowned printing surfaces — no 'too many SQL variables' 500"
+        );
+        assert!(rows.iter().all(|r| !r.owned));
+    }
+
     #[test]
     fn owned_row_carries_copies_and_count() {
         let f = fixture();

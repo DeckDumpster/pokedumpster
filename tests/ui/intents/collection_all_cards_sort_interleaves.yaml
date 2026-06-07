@@ -1,0 +1,17 @@
+# Scenario: All-cards sort interleaves owned + unowned printings
+#
+# Related:
+#   issues: [pokedumpster-ffq, pokedumpster-2o1]
+#   pull_requests: []
+
+description: >
+  With "All cards" turned on, the collection shows every catalog printing —
+  the ones I own as normal rows and the ones I don't as dimmed "missing"
+  rows. Sorting by a column (e.g. the Adj. price) must order owned and
+  unowned printings together as one list, not sort only the cards I own and
+  leave the unowned ones in a separate block at the end. This is a
+  regression guard for both grid and table views: the unowned printings used
+  to render in their own trailing {#each} block in raw server order, so
+  changing the sort reordered only owned rows. After clicking the Adj.
+  column an owned row must appear after a dimmed missing row and a missing
+  row after an owned row — proof the two are interleaved by the sort key.

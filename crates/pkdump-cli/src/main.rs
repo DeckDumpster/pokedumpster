@@ -4,6 +4,7 @@
 //! `ingest` subcommand arrives with a later task.
 
 mod data;
+mod db;
 mod fixture;
 mod serve;
 mod setup;
@@ -31,6 +32,8 @@ enum Command {
     Serve(serve::ServeArgs),
     /// Build the deterministic test fixture for the intents UI harness.
     SeedFixture(fixture::FixtureArgs),
+    /// Database maintenance — snapshot/restore for the UI test harness.
+    Db(db::DbArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -39,5 +42,6 @@ fn main() -> anyhow::Result<()> {
         Command::Data(args) => data::run(args),
         Command::Serve(args) => serve::run(args),
         Command::SeedFixture(args) => fixture::run(args),
+        Command::Db(args) => db::run(args),
     }
 }

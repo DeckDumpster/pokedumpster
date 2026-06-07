@@ -31,6 +31,8 @@ mod connection;
 mod error;
 mod paths;
 
-pub use connection::{attach_shared_readonly, connect_user, init_user_schema, open_shared};
+pub use connection::{
+    attach_shared_readonly, connect_user, init_user_schema, open_shared, restore_db, snapshot_db,
+};
 pub use error::{DbError, Result};
 pub use paths::{current_user, pkdump_home, shared_db_path, user_db_path};

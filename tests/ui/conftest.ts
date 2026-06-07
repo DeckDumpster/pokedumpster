@@ -39,32 +39,17 @@ const log = {
 export const INSTANCE_NAME = process.env.UI_TEST_INSTANCE ?? "integration-test";
 export const EXPLICIT_BASE_URL = process.env.UI_TEST_BASE_URL ?? null;
 
-// DB paths inside the container. PokeDumpster sets PKDUMP_HOME=/data, so the
-// per-user collection DB and the shared catalog DB both live under /data.
-// The shared DB is ATTACHed read-only to the user DB at runtime.
-const CONTAINER_DB = "/data/collection.sqlite";
+// Snapshot/restore is delegated to the in-image `pkdump db` subcommand, which
+// resolves the collection + shared DB paths from $PKDUMP_HOME/$PKDUMP_USER (set
+// to /data + collection in the container) and writes sibling `.bak` files.
+// This replaces the old `python3 sqlite3.backup()` + `cp` approach: the runtime
+// image (debian-slim) ships neither python3 nor the sqlite3 CLI
+// (pokedumpster-0g3), and the `cp` restore was WAL-unaware — it copied only the
+// main DB file, leaving the live `-wal` in place so a prior test's writes
+// replayed across the isolation boundary (pokedumpster-lxm). `pkdump db` uses
+// SQLite's online backup API, which is WAL-correct and dependency-free.
 const CONTAINER_DB_BACKUP = "/data/collection.sqlite.bak";
-const CONTAINER_SHARED_DB = "/data/shared.sqlite";
 const CONTAINER_SHARED_DB_BACKUP = "/data/shared.sqlite.bak";
-
-// Backup uses sqlite3.backup() for a safe snapshot with open server
-// connections. Restore uses cp — fast and safe because the server opens fresh
-// connections (with fresh ATTACH) per request, so no stale handles.
-// Both collection.sqlite and shared.sqlite are backed up and restored, since
-// tests may write to shared tables (e.g. price seeding).
-const BACKUP_CMD =
-  `python3 -c "import sqlite3, os; ` +
-  `s=sqlite3.connect('${CONTAINER_DB}'); ` +
-  `d=sqlite3.connect('${CONTAINER_DB_BACKUP}'); ` +
-  `s.backup(d); s.close(); d.close(); ` +
-  `p='${CONTAINER_SHARED_DB}'; ` +
-  `b='${CONTAINER_SHARED_DB_BACKUP}'; ` +
-  `exec('if os.path.exists(p):\\n s=sqlite3.connect(p)\\n d=sqlite3.connect(b)\\n s.backup(d)\\n s.close()\\n d.close()')` +
-  `"`;
-
-const RESTORE_CMD =
-  `cp ${CONTAINER_DB_BACKUP} ${CONTAINER_DB}` +
-  ` && { [ -f ${CONTAINER_SHARED_DB_BACKUP} ] && cp ${CONTAINER_SHARED_DB_BACKUP} ${CONTAINER_SHARED_DB}; true; }`;
 
 /** Skip-style error: surfaces a reason when the environment is not ready. */
 export class SkipError extends Error {
@@ -191,9 +176,9 @@ export async function snapshotDb(
   await execFileAsync("podman", [
     "exec",
     containerName,
-    "bash",
-    "-c",
-    BACKUP_CMD,
+    "pkdump",
+    "db",
+    "snapshot",
   ]);
   return containerName;
 }
@@ -211,9 +196,9 @@ export async function restoreDb(containerName: string | null): Promise<void> {
   await execFileAsync("podman", [
     "exec",
     containerName,
-    "bash",
-    "-c",
-    RESTORE_CMD,
+    "pkdump",
+    "db",
+    "restore",
   ]);
 }
 

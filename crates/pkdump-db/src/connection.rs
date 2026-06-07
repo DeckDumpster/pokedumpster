@@ -15,6 +15,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::Connection;
+use rusqlite::backup::Backup;
 
 use crate::error::Result;
 
@@ -108,6 +109,51 @@ pub fn init_user_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Snapshot a live SQLite database to `dest`, overwriting it.
+///
+/// WAL-correct: uses SQLite's online backup API, which captures a
+/// transactionally-consistent view — including any committed WAL frames —
+/// even while the server holds the database open. Backs the UI test
+/// harness's per-test isolation, replacing the old in-container
+/// `python3 sqlite3.backup()` (pokedumpster-0g3).
+pub fn snapshot_db(live: &Path, dest: &Path) -> Result<()> {
+    // A leftover -wal/-shm beside a stale snapshot would shadow the bytes we
+    // copy in; start from a clean destination.
+    remove_db_files(dest);
+    let src = Connection::open(live)?;
+    src.busy_timeout(Duration::from_secs(10))?;
+    let mut dst = Connection::open(dest)?;
+    let backup = Backup::new(&src, &mut dst)?;
+    backup.run_to_completion(256, Duration::from_millis(50), None)?;
+    Ok(())
+}
+
+/// Restore a live SQLite database from a snapshot taken by [`snapshot_db`].
+///
+/// WAL-correct: copies the snapshot *into* the live database through the
+/// online backup API, committing every page as a fresh transaction. This is
+/// what makes it safe while the server holds the database open — a plain
+/// `cp` of the main file leaves the live `-wal`/`-shm` in place, so the next
+/// read replays a prior test's frames on top of the restored bytes and sees
+/// the mutated state (pokedumpster-lxm).
+pub fn restore_db(snapshot: &Path, live: &Path) -> Result<()> {
+    let src = Connection::open(snapshot)?;
+    let mut dst = Connection::open(live)?;
+    dst.busy_timeout(Duration::from_secs(10))?;
+    let backup = Backup::new(&src, &mut dst)?;
+    backup.run_to_completion(256, Duration::from_millis(50), None)?;
+    Ok(())
+}
+
+/// Best-effort removal of a SQLite database file and its WAL sidecars.
+fn remove_db_files(path: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut p = path.as_os_str().to_owned();
+        p.push(suffix);
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,6 +231,55 @@ mod tests {
             [],
         );
         assert!(write.is_err(), "shared catalog must be read-only");
+    }
+
+    #[test]
+    fn restore_is_wal_correct_with_live_connection() {
+        // Reproduces pokedumpster-lxm: the server holds a long-lived WAL
+        // connection; a prior test's write lands in the WAL. A WAL-unaware
+        // restore (cp of the main file only) leaves that frame in place, so
+        // the next read still sees the mutation. WAL-correct restore must
+        // overwrite it.
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("collection.sqlite");
+
+        // The "server" — a persistent connection in WAL mode.
+        let server = Connection::open(&live).unwrap();
+        server
+            .execute_batch(
+                "PRAGMA journal_mode = WAL; \
+                 CREATE TABLE t (name TEXT PRIMARY KEY, copies INTEGER); \
+                 INSERT INTO t VALUES ('Blastoise', 1);",
+            )
+            .unwrap();
+
+        // Snapshot the clean state (Blastoise = 1).
+        let bak = dir.path().join("collection.sqlite.bak");
+        snapshot_db(&live, &bak).unwrap();
+
+        // A test mutates through the live connection — the write lands in the
+        // WAL, not (yet) the main database file.
+        server
+            .execute("UPDATE t SET copies = 2 WHERE name = 'Blastoise'", [])
+            .unwrap();
+        let mutated: i64 = server
+            .query_row("SELECT copies FROM t WHERE name = 'Blastoise'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(mutated, 2);
+
+        // Restore, then read back through the *same* live connection.
+        restore_db(&bak, &live).unwrap();
+        let restored: i64 = server
+            .query_row("SELECT copies FROM t WHERE name = 'Blastoise'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            restored, 1,
+            "live connection must see the restored snapshot, not the WAL mutation"
+        );
     }
 
     #[test]

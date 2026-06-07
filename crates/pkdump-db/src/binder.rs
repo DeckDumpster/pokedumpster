@@ -245,7 +245,15 @@ pub fn get_binder_page(
                           WHERE mp.printing_id = p.printing_id \
                           ORDER BY mp.observed_at DESC LIMIT 1) \
                     ) \
-             FROM printings p JOIN cards cd ON p.card_id = cd.card_id \
+             FROM ( \
+                SELECT card_id, printing_id, variant, deprecated_at, \
+                       tcgplayer_product_id, sub_type_name FROM printings \
+                UNION ALL \
+                SELECT card_id, printing_id, variant, NULL AS deprecated_at, \
+                       NULL AS tcgplayer_product_id, NULL AS sub_type_name \
+                  FROM user_printings \
+             ) p \
+             JOIN cards cd ON p.card_id = cd.card_id \
              WHERE cd.set_code = ?1 ORDER BY cd.number_sortable, p.variant",
         )?;
         let rows = stmt.query_map([set_code], |r| {
@@ -410,6 +418,61 @@ mod tests {
         }
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
         (dir, conn)
+    }
+
+    // Regression for pokedumpster-3s2: a card owned only
+    // through a custom variant (user_printings — the "Missing Variant" escape
+    // hatch) must still highlight as owned in the binder, count toward
+    // base_owned, and surface the custom variant as its own slot printing. The
+    // binder query was catalog-only (printings, no user_printings), so the slot
+    // stayed unowned. User-reported on card/base2/9.
+    #[test]
+    fn slot_owns_card_via_custom_variant() {
+        use crate::user_printings::{self, NewUserPrinting};
+        let (_d, mut conn) = binder_conn();
+
+        // A custom variant on card #2, and one owned copy of it. Card #2 has no
+        // owned catalog printing.
+        let up = user_printings::insert(
+            &conn,
+            &NewUserPrinting {
+                card_id: "sv3pt5-2".into(),
+                description: Some("inverted holo misprint".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(up.variant, "missing_variant");
+        collection::add(
+            &mut conn,
+            &NewCopy {
+                printing_id: up.printing_id.clone(),
+                source: "manual_id".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let p = get_binder_page(&conn, "sv3pt5", &BinderQuery::default())
+            .unwrap()
+            .unwrap();
+        let slot = p
+            .slots
+            .iter()
+            .find(|s| s.card_id == "sv3pt5-2")
+            .expect("card #2 slot present");
+        let custom = slot
+            .printings
+            .iter()
+            .find(|pr| pr.printing_id == up.printing_id)
+            .expect("custom variant surfaces as a slot printing");
+        assert_eq!(custom.variant, "missing_variant");
+        assert_eq!(custom.owned_count, 1, "the custom-variant copy is counted");
+        assert!(
+            slot.printings.iter().any(|pr| pr.owned_count > 0),
+            "slot reads as owned"
+        );
+        // base_owned counts the card even though only its custom variant is owned.
+        assert_eq!(p.base_owned, 1);
     }
 
     #[test]

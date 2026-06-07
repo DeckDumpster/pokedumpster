@@ -12,8 +12,10 @@
 //! - `cards::get_card_detail` / `cards::get_card_prices` UNION ALL
 //!   user_printings with shared.printings so the card-detail surfaces
 //!   see them.
-//! - `binder::get_binder_page` does NOT — the binder browse view stays
-//!   catalog-only per the feature design.
+//! - `binder::get_binder_page` UNION ALLs them too, so a card owned only
+//!   through a custom variant still highlights as owned in the binder and
+//!   the variant shows as its own slot pip (was catalog-only until a user
+//!   hit the gap on card/base2/9).
 //! - `manual_prices::insert` accepts a user_printing as a valid parent
 //!   so price entry plugs into the same gap-fill rule.
 

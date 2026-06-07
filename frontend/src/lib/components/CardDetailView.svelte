@@ -117,6 +117,8 @@
 		withBusy(() => api.setCopyStatus(copyId, status));
 	const changeCondition = (copyId: number, condition: string) =>
 		withBusy(() => api.updateCopy(copyId, { condition }));
+	const changeNotes = (copyId: number, notes: string) =>
+		withBusy(() => api.updateCopy(copyId, { notes }));
 
 	function assignValue(copy: { binder_id: number | null; deck_id: number | null }): string {
 		if (copy.binder_id != null) return `b:${copy.binder_id}`;
@@ -484,7 +486,7 @@
 		{:else}
 			<table>
 				<thead>
-					<tr><th>Variant</th><th>Condition</th><th>Status</th><th>Location</th><th>Paid</th><th>Value</th></tr>
+					<tr><th>Variant</th><th>Condition</th><th>Status</th><th>Location</th><th>Paid</th><th>Value</th><th>Notes</th></tr>
 				</thead>
 				<tbody>
 					{#each detail.copies as copy (copy.id)}
@@ -535,6 +537,17 @@
 							<td data-label="Value" title="NM market × condition multiplier"
 								>{price(copyValue(copy))}</td
 							>
+							<td data-label="Notes">
+								<input
+									class="noteinput"
+									type="text"
+									value={copy.notes ?? ''}
+									disabled={busy}
+									placeholder="e.g. red mark near holo"
+									title="Condition notes for this copy"
+									onchange={(e) => changeNotes(copy.id, e.currentTarget.value)}
+								/>
+							</td>
 						</tr>
 					{/each}
 				</tbody>
@@ -870,7 +883,7 @@
 
 	table {
 		width: 100%;
-		max-width: 640px;
+		max-width: 820px;
 		border-collapse: collapse;
 		font-size: 0.9rem;
 	}
@@ -893,6 +906,19 @@
 		border-radius: 6px;
 		padding: 0.15rem;
 		font: inherit;
+	}
+	.noteinput {
+		background: #1a1a2e;
+		border: 1px solid #0f3460;
+		color: #e0e0e0;
+		border-radius: 6px;
+		padding: 0.15rem 0.35rem;
+		font: inherit;
+		min-width: 12rem;
+		width: 100%;
+	}
+	.noteinput::placeholder {
+		color: #555;
 	}
 	.tcgp {
 		font-size: 0.8rem;

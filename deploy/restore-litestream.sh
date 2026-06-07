@@ -7,8 +7,8 @@
 # WHEN TO USE
 #   The per-user collection DB on the data volume is lost or corrupt and you
 #   want to recover from the off-box S3 replica written by the Litestream
-#   sidecar (deploy/pkdump-litestream.container). For recovering from a LOCAL
-#   nightly snapshot instead (credential-independent), use deploy/restore.sh.
+#   sidecar (deploy/pkdump-litestream.container). This is the only backup now;
+#   the local snapshot scripts were removed (S3-only). See deploy/RESTORE.md.
 #
 # WHAT IT DOES
 #   1. Stops the app service + the Litestream sidecar (so nothing writes/replicates).
@@ -20,25 +20,30 @@
 #   rebuild it with `deploy/seed.sh <instance>`.
 #
 # CREDENTIALS
-#   Uses the instance's assume-role profile under ~/.config/pkdump/<instance>/aws
-#   (the same creds the sidecar uses) — auto-refreshing temporary credentials via
-#   role assumption, never long-lived static keys.
+#   Assume-role profile in ~/.config/pkdump/<instance>/aws/config + the bootstrap
+#   key from podman secret pkdump-<instance>-s3-bootstrap (same as the sidecar) —
+#   auto-refreshing temporary credentials via role assumption, never static keys.
 #
 # USAGE
-#   bash deploy/restore-litestream.sh [--yes] <instance> [user]
-#     --yes, -y   skip the confirmation prompt (scripted use)
-#   Example:
+#   bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] <instance> [user]
+#     --yes, -y      skip the confirmation prompt (scripted use)
+#     --at=<time>    point-in-time restore, e.g. --at=2026-06-01T12:00:00Z
+#                    (default: latest; within the 6-month retention window)
+#   Examples:
 #     bash deploy/restore-litestream.sh prod
+#     bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod
 # ────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 YES=false
+AT=""
 POSITIONAL=()
 for arg in "$@"; do
     case $arg in
         --yes|-y) YES=true ;;
+        --at=*) AT="${arg#--at=}" ;;
         *) POSITIONAL+=("$arg") ;;
     esac
 done
@@ -61,11 +66,13 @@ LS_IMG="docker.io/litestream/litestream:latest"
 
 echo "==> PokeDumpster Litestream restore"
 echo "    Instance: ${INSTANCE}   User DB: ${USER_DB}.sqlite   Volume: ${VOLUME}"
+[ -n "$AT" ] && echo "    Point-in-time: ${AT}"
 
 # --- Validate --------------------------------------------------------------
 command -v sqlite3 >/dev/null 2>&1 || { echo "ERROR: sqlite3 not found on host. Install: sudo apt install sqlite3"; exit 1; }
 [ -f "${CONF_DIR}/litestream.env" ] || { echo "ERROR: ${CONF_DIR}/litestream.env not found — is the sidecar configured?"; exit 1; }
-[ -f "${CONF_DIR}/aws/credentials" ] || { echo "ERROR: ${CONF_DIR}/aws/credentials not found (assume-role bootstrap key)."; exit 1; }
+[ -f "${CONF_DIR}/aws/config" ] || { echo "ERROR: ${CONF_DIR}/aws/config not found — is the sidecar configured?"; exit 1; }
+podman secret inspect "pkdump-${INSTANCE}-s3-bootstrap" >/dev/null 2>&1 || { echo "ERROR: podman secret 'pkdump-${INSTANCE}-s3-bootstrap' not found."; exit 1; }
 podman volume exists "$VOLUME" 2>/dev/null || { echo "ERROR: data volume '${VOLUME}' not found."; exit 1; }
 
 # S3 target comes from the instance's env file (bucket / path / region / AWS_PROFILE).
@@ -98,10 +105,14 @@ TMP="${MOUNTPOINT}/${USER_DB}.sqlite.restore-tmp"
 # path on the volume, then atomically rename into place.
 echo "==> Restoring ${USER_DB}.sqlite from S3 via litestream..."
 rm -f "$TMP"
+RESTORE_FLAGS=(restore -config /etc/litestream.yml)
+[ -n "$AT" ] && RESTORE_FLAGS+=(-timestamp "$AT")     # point-in-time restore
+RESTORE_FLAGS+=(-o "/data/${USER_DB}.sqlite.restore-tmp" "/data/${USER_DB}.sqlite")
 podman run --rm --user 0:0 \
     -v "${VOLUME}:/data" \
     -v "${LS_YML}:/etc/litestream.yml:ro" \
-    -v "${CONF_DIR}/aws:/aws:ro" \
+    -v "${CONF_DIR}/aws/config:/aws/config:ro" \
+    --secret "pkdump-${INSTANCE}-s3-bootstrap,type=mount,target=/aws/credentials" \
     -e AWS_CONFIG_FILE=/aws/config \
     -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
     -e AWS_PROFILE="${AWS_PROFILE:-pkdump}" \
@@ -109,8 +120,7 @@ podman run --rm --user 0:0 \
     -e LITESTREAM_S3_REGION="$LITESTREAM_S3_REGION" \
     -e LITESTREAM_S3_PATH="$LITESTREAM_S3_PATH" \
     -e LITESTREAM_DB_PATH="/data/${USER_DB}.sqlite" \
-    "$LS_IMG" restore -config /etc/litestream.yml \
-        -o "/data/${USER_DB}.sqlite.restore-tmp" "/data/${USER_DB}.sqlite"
+    "$LS_IMG" "${RESTORE_FLAGS[@]}"
 
 # --- Atomic swap -----------------------------------------------------------
 rm -f "${DEST}-wal" "${DEST}-shm"

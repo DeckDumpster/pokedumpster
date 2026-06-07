@@ -97,14 +97,12 @@ sed \
 # instances can run side by side. Enable them after setup if desired.
 
 mkdir -p "$SYSTEMD_USER_DIR"
-for PREFIX in pkdump-backup pkdump-refresh; do
-    for EXT in service timer; do
-        # Substitute {{REPO_DIR}} with this checkout so ExecStart resolves
-        # (single-clone deployment — the clone is not named per-instance).
-        sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
-            "$REPO_DIR/deploy/${PREFIX}.${EXT}" \
-            > "${SYSTEMD_USER_DIR}/${PREFIX}@.${EXT}"
-    done
+# Substitute {{REPO_DIR}} with this checkout so ExecStart resolves
+# (single-clone deployment — the clone is not named per-instance).
+for EXT in service timer; do
+    sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
+        "$REPO_DIR/deploy/pkdump-refresh.${EXT}" \
+        > "${SYSTEMD_USER_DIR}/pkdump-refresh@.${EXT}"
 done
 
 # --- Install the Litestream backup sidecar (pokedumpster-8ch.3) -------------
@@ -215,7 +213,7 @@ fi
 echo "    Start:             systemctl --user start ${SERVICE_NAME}"
 echo "    Port:              podman port systemd-${SERVICE_NAME}"
 echo "    Logs:              journalctl --user -u ${SERVICE_NAME} -f"
-echo "    Backup timer:      systemctl --user enable --now pkdump-backup@${INSTANCE}.timer"
 echo "    Refresh timer:     systemctl --user enable --now pkdump-refresh@${INSTANCE}.timer"
+echo "    Restore (DR):      deploy/RESTORE.md  (off-box S3 via deploy/restore-litestream.sh)"
 echo "    Litestream backup: edit ~/.config/pkdump/${INSTANCE}/{litestream.env,aws/}, then: systemctl --user start pkdump-litestream-${INSTANCE}.service"
 echo "    Teardown:          bash deploy/teardown.sh ${INSTANCE}"

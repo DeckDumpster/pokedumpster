@@ -1,9 +1,9 @@
 ---
 name: deploy
-description: Set up, deploy, seed, back up, or tear down a PokeDumpster container instance via the deploy/ scripts.
+description: Set up, deploy, seed, restore, or tear down a PokeDumpster container instance via the deploy/ scripts.
 user-invocable: true
 disable-model-invocation: false
-argument-hint: "<action> <instance> [port]   (action: setup | deploy | seed | backup | restore | teardown | status)"
+argument-hint: "<action> <instance> [port]   (action: setup | deploy | seed | restore | teardown | status)"
 ---
 
 # Deploy
@@ -27,8 +27,7 @@ is `prod`.
 | `setup` | `deploy/setup.sh <instance> [port]` | Build the image, install the Quadlet unit + timers. Add `--test` to seed the data volume from `tests/ui/fixtures/` (offline), or `--init` to clone the seed volume. |
 | `seed` | `deploy/seed.sh <instance>` | Populate the catalog by running `pkdump setup` in a one-off container. `deploy/seed.sh --volume [--force]` builds the reusable seed volume instead. |
 | `deploy` | `deploy/deploy.sh <instance>` | Rebuild the image and restart the instance (delegates to `setup.sh` if the instance does not exist). |
-| `backup` | `deploy/backup.sh <instance>` | WAL-safe `sqlite3 .backup` of the instance's per-user `collection.sqlite`. |
-| `restore` | `deploy/restore.sh <instance> <snapshot>` | Restore a backup snapshot (stops, swaps, restarts). |
+| `restore` | `deploy/restore-litestream.sh <instance>` | Restore the collection from the S3 backup (latest, or `--at=<RFC3339>` for point-in-time). Stops, restores, restarts, verifies. See `deploy/RESTORE.md`. |
 | `teardown` | `deploy/teardown.sh <instance> [--purge]` | Stop and remove the instance. `--purge` also deletes the data volume. |
 | `status` | — | Report instance health (see below). |
 
@@ -44,7 +43,7 @@ is `prod`.
 ### 3. Run the script
 
 Image builds take minutes — run `setup`/`deploy` in the **background** and
-monitor the output file. Quick actions (`teardown`, `backup`, `status`) run
+monitor the output file. Quick actions (`teardown`, `restore`, `status`) run
 in the foreground.
 
 ### 4. After `setup`
@@ -79,6 +78,7 @@ single most useful next command (start it, seed it, view logs with
 - Never build for `prod` from a dirty or non-default branch without saying so.
 - `deploy/ci.sh` is its own thing — for the test loop use `/run-tests`, not
   this skill.
-- The nightly `pkdump-backup` / `pkdump-refresh` timers are installed by
-  `setup.sh`; enable them per instance with
-  `systemctl --user enable --now pkdump-backup@<instance>.timer`.
+- The `pkdump-refresh` timer (nightly catalog refresh) is installed by
+  `setup.sh`; enable it with
+  `systemctl --user enable --now pkdump-refresh@<instance>.timer`. Backups are
+  the Litestream sidecar (S3), not a timer — recovery via `deploy/RESTORE.md`.

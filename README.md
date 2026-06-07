@@ -67,11 +67,12 @@ A rootless-Podman + systemd-user deployment lives under `deploy/`:
 deploy/setup.sh prod          # first-time bring-up (image + Quadlet unit + timers)
 deploy/seed.sh prod           # populate the catalog (pkdump setup in a one-off container)
 deploy/deploy.sh prod         # rebuild image + restart
-deploy/backup.sh prod         # WAL-safe snapshot of the user DB
-systemctl --user enable --now pkdump-backup@prod.timer   # nightly backups
+deploy/restore-litestream.sh prod   # restore the collection from S3 (see deploy/RESTORE.md)
 ```
 
-See `deploy/README.md` for the full flow. From other devices, reach the
+Off-box backup is the `pkdump-litestream-prod` sidecar (continuous S3
+replication, 6-month point-in-time recovery). See `deploy/README.md` for the
+full flow and `deploy/RESTORE.md` for the disaster-recovery runbook. From other devices, reach the
 instance over WireGuard — no application-level authentication.
 
 ## Project layout

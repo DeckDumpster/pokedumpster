@@ -10,6 +10,13 @@
 # `region` is PINNED so Litestream does NOT call s3:GetBucketLocation — the
 # backup IAM role deliberately does not grant that action (validated in
 # spikes/sqld-attach-namespaces/RESULT.md, "GATE spike").
+# Point-in-time recovery window: daily snapshots kept for 6 months (180 days).
+# This is the ONLY backup now (no local snapshots) — so the retention IS the
+# recovery horizon. Litestream 0.5 durations are h-only (no d/w); 4320h = 180d.
+snapshot:
+  interval: 24h
+  retention: 4320h
+
 dbs:
   - path: ${LITESTREAM_DB_PATH}
     replicas:

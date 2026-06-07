@@ -132,52 +132,44 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `setup.sh <name> [port] [--init] [--test]` | Create an instance. `--test` seeds from the committed fixture; `--init` clones the seed volume |
 | `deploy.sh <name>` | Rebuild image and restart one instance |
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
-| `backup.sh [instance] [user]` | Online `sqlite3 .backup` snapshot of `<user>.sqlite` |
-| `restore.sh [--yes] <file> [instance] [user]` | Restore a `<user>.sqlite` snapshot |
+| `restore-litestream.sh [--yes] [--at=<RFC3339>] <inst> [user]` | Restore the collection from the S3 backup (latest or point-in-time) — see [RESTORE.md](RESTORE.md) |
 | `mac-setup.sh` / `mac-deploy.sh` / `mac-teardown.sh` | macOS equivalents (no systemd) |
 
 ## Systemd timers
 
-`setup.sh` installs two templated `--user` units alongside the instance:
+`setup.sh` installs a templated `--user` unit alongside the instance:
 
-- `pkdump-backup@<instance>` — nightly `sqlite3 .backup` of the per-user
-  collection DB (via `backup.sh`), 02:00 + jitter.
 - `pkdump-refresh@<instance>` — nightly `pkdump data refresh` inside the
   running container (via `podman exec`), 06:00 + jitter.
 
-The units are `%i`-templated, so one copy serves every instance. The
-instance name is the part after `@`. Enable them per-instance:
+It is `%i`-templated, so one copy serves every instance. The instance name is
+the part after `@`. Enable it per-instance:
 
 ```bash
-systemctl --user enable --now pkdump-backup@prod.timer
 systemctl --user enable --now pkdump-refresh@prod.timer
-
 systemctl --user list-timers 'pkdump-*'        # check schedule
-journalctl --user -u pkdump-backup@prod.service # check last run
 ```
 
-`backup.sh` resolves its repo clone from the unit's `WorkingDirectory`,
-which defaults to `~/pokedumpster-<instance>`. If your `prod` clone lives
-elsewhere (e.g. `/opt/pokedumpster-prod`), edit the `WorkingDirectory` /
-`ExecStart` paths in `pkdump-backup.service` before enabling the timer, or
-drop in a `systemctl --user edit pkdump-backup@prod` override.
+Backups are **not** a timer — the Litestream sidecar replicates continuously
+(see below). `teardown.sh` disables the refresh timer.
 
-`teardown.sh` disables and removes the per-instance timers.
+## Backup & restore — Litestream → S3
 
-## Backup & restore
+Backups are off-box only (no local disk): the `pkdump-litestream-<inst>` sidecar
+continuously replicates `collection.sqlite` to S3 with **6-month point-in-time
+recovery**. The shared catalog is not backed up (reproducible via `seed.sh`).
+Credentials are assume-role (auto-refresh) via a podman secret.
 
 ```bash
-# Manual backup (the nightly timer runs this automatically)
-bash deploy/backup.sh prod
+# Restore the latest backup onto a live instance:
+bash deploy/restore-litestream.sh prod
 
-# Restore a snapshot
-bash deploy/restore.sh ~/pkdump-backups/prod/daily/pkdump-prod-20260519-020000.sqlite prod
+# Point-in-time restore (within the 6-month window):
+bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod
 ```
 
-Backups land under `~/pkdump-backups/<instance>/` (override with
-`PKDUMP_BACKUP_DIR`) with `daily/` (7), `weekly/` (8), `monthly/` (12)
-retention tiers. Only `collection.sqlite` is backed up — the shared catalog
-is reproducible with `pkdump setup`.
+**Full disaster-recovery procedure: [RESTORE.md](RESTORE.md)** — latest restore,
+point-in-time, total-box rebuild, verification, and troubleshooting.
 
 ## Expanding to GitHub later
 

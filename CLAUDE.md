@@ -123,8 +123,8 @@ Two SQLite databases under the data dir:
   (WAL + `synchronous=NORMAL` + 64MB cache) so variant expansion stays
   fast (see `crates/pkdump-db/src/connection.rs`).
 - **&lt;user&gt;.sqlite** (default `collection.sqlite`) — per-user mutable
-  collection. The only thing worth backing up; `deploy/backup.sh` produces
-  WAL-safe snapshots.
+  collection. The only thing worth backing up; replicated off-box to S3 by the
+  Litestream sidecar (6-month PITR — see `deploy/RESTORE.md`).
 
 At runtime the user DB `ATTACH`es the shared DB read-only and exposes
 catalog tables through TEMP VIEWs so queries can join unqualified.
@@ -137,15 +137,14 @@ Rootless Podman + systemd-user, scripts in `deploy/`:
 deploy/setup.sh prod        # one-time: build image, install Quadlet unit + timers
 deploy/seed.sh prod         # populate the catalog (pkdump setup in a one-off container)
 deploy/deploy.sh prod       # rebuild + restart
-deploy/backup.sh prod       # WAL-safe snapshot of the user DB
-deploy/restore.sh prod <snapshot>
+deploy/restore-litestream.sh prod   # restore the collection from S3 (see deploy/RESTORE.md)
 deploy/teardown.sh prod [--purge]
 ```
 
 The image runs `pkdump serve`; the data volume holds both `shared.sqlite`
-and the per-user collection DB. Nightly snapshots come from
-`pkdump-backup@<instance>.timer` (enable with `systemctl --user enable
---now`). Nightly catalog refresh comes from
+and the per-user collection DB. Off-box backup is the
+`pkdump-litestream-<instance>` sidecar (continuous S3 replication, 6-month PITR;
+no local snapshots). Nightly catalog refresh comes from
 `pkdump-refresh@<instance>.timer`.
 
 There's a `deploy` skill in this repo that wraps these scripts for AI use.
@@ -259,7 +258,7 @@ default block-buffering hides multi-minute progress behind `tee`. See the
 - `pkdump-prod` listens on `8090` by default (set via the Quadlet unit).
 - `bd dolt push` exports issues + memories to the Dolt remote at end of
   session.
-- Backups live at `~/pkdump-backups/<instance>/daily/`. Restore by
-  copying the snapshot in place of `collection.sqlite` and starting the
-  server — the schema init runs on first open and is a no-op against
-  the already-shaped DB.
+- Backups are off-box on S3 via the Litestream sidecar (6-month PITR; no local
+  snapshots). To recover, follow `deploy/RESTORE.md` (or
+  `deploy/restore-litestream.sh <instance>`). The schema init runs on first open
+  and is a no-op against an already-shaped restored DB.

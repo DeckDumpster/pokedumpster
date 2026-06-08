@@ -1,0 +1,16 @@
+start_page: /collection
+involves:
+  - "open the owned Charizard (BS #4) card modal from a grid tile"
+  - "Pokédex link in the modal: a.facet[title='Find every card of Pokédex #6']"
+  - "lands on /collection?q=pokedex:6&all=1 via client-side nav (no reload)"
+  - "an unowned dex-6 card (Charizard ex, sv3pt5/199) renders as .cardtile.missing"
+fixture_data:
+  start_card: Charizard
+  pokedex: 6
+  unowned_same_dex: "Charizard ex (sv3pt5/199)"
+notes: >
+  Charizard (base1/4) is owned and shares National Pokédex #6 with Charizard
+  ex (sv3pt5/199), which the fixture does NOT own. Open the Charizard tile's
+  modal, click the Pokédex #6 link, then assert a .cardtile.missing appears
+  WITHOUT reloading — proof the all=1 param took effect on the client-side
+  nav. Before the fix only owned tiles showed (no .missing) until reload.

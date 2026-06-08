@@ -197,6 +197,7 @@
 	// change triggers the resync.
 	$effect(() => {
 		const q = page.url.searchParams.get('q') ?? '';
+		const all = page.url.searchParams.get('all') === '1';
 		untrack(() => {
 			if (q !== searchRaw) {
 				clearTimeout(debounce);
@@ -204,6 +205,14 @@
 				query = q.trim();
 				// Close any open modal so the filtered list is visible.
 				selectedCard = null;
+			}
+			// The "All cards" param has to resync from the URL too. A
+			// client-side facet nav (e.g. a card-modal link carrying &all=1)
+			// updates the URL without remounting, so `initialAllCards` never
+			// re-runs — without this, the catalog stayed owned-only until a
+			// manual reload even though the URL already said all=1.
+			if (all !== allCards) {
+				allCards = all;
 			}
 		});
 	});

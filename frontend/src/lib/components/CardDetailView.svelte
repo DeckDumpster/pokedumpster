@@ -94,24 +94,26 @@
 		]);
 	});
 
-	// Transient "Saved" confirmation after a successful inline edit, so the
-	// silent auto-save is visible (pokedumpster-3tc).
-	let saved = $state(false);
+	// Inline per-control save confirmation: after a successful edit, flash a ✓
+	// next to the exact control that changed (pokedumpster-25r). The key is
+	// `${copyId}:${field}`.
+	let savedKey = $state<string | null>(null);
 	let savedTimer: ReturnType<typeof setTimeout> | undefined;
-	function flashSaved() {
-		saved = true;
+	function flashSaved(key: string | undefined) {
+		if (!key) return;
+		savedKey = key;
 		clearTimeout(savedTimer);
-		savedTimer = setTimeout(() => (saved = false), 1400);
+		savedTimer = setTimeout(() => (savedKey = null), 1600);
 	}
 
-	async function withBusy(fn: () => Promise<unknown>) {
+	async function withBusy(fn: () => Promise<unknown>, savedAt?: string) {
 		busy = true;
 		error = null;
 		try {
 			await fn();
 			onMutate?.();
 			await load();
-			flashSaved();
+			flashSaved(savedAt);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -124,13 +126,13 @@
 	const removeCopy = (printingId: string) =>
 		withBusy(() => api.removeCopyByPrinting(printingId));
 	const changeVariant = (copyId: number, printingId: string) =>
-		withBusy(() => api.changePrinting(copyId, printingId));
+		withBusy(() => api.changePrinting(copyId, printingId), `${copyId}:variant`);
 	const changeStatus = (copyId: number, status: string) =>
-		withBusy(() => api.setCopyStatus(copyId, status));
+		withBusy(() => api.setCopyStatus(copyId, status), `${copyId}:status`);
 	const changeCondition = (copyId: number, condition: string) =>
-		withBusy(() => api.updateCopy(copyId, { condition }));
+		withBusy(() => api.updateCopy(copyId, { condition }), `${copyId}:condition`);
 	const changeNotes = (copyId: number, notes: string) =>
-		withBusy(() => api.updateCopy(copyId, { notes }));
+		withBusy(() => api.updateCopy(copyId, { notes }), `${copyId}:notes`);
 
 	function assignValue(copy: { binder_id: number | null; deck_id: number | null }): string {
 		if (copy.binder_id != null) return `b:${copy.binder_id}`;
@@ -143,7 +145,7 @@
 			: value.startsWith('d:')
 				? { deck_id: Number(value.slice(2)) }
 				: {};
-		return withBusy(() => api.moveCopy(copyId, body));
+		return withBusy(() => api.moveCopy(copyId, body), `${copyId}:location`);
 	}
 
 	function parseStrArr(raw: string | null): string[] {
@@ -174,6 +176,22 @@
 		if (!p || p.market_price == null) return null;
 		return p.market_price * conditionMultiplier(copy.condition);
 	}
+
+	// Price chart: by default only plot the variants the user owns, so an
+	// unowned chase printing (e.g. a $10k 1st-edition NM) doesn't dwarf the
+	// lines that matter (pokedumpster-vgo). A toggle reveals the rest; if the
+	// user owns no priced variant, fall back to showing all so the chart isn't
+	// empty.
+	let showAllPrices = $state(false);
+	const ownedPrintingIds = $derived(
+		new Set((detail?.printings ?? []).filter((p) => p.owned_count > 0).map((p) => p.printing_id))
+	);
+	const ownedSeries = $derived(priceSeries.filter((s) => ownedPrintingIds.has(s.printing_id)));
+	const chartSeries = $derived(
+		showAllPrices || ownedSeries.length === 0 ? priceSeries : ownedSeries
+	);
+	// Show the toggle only when there's something hidden to reveal.
+	const hasHiddenSeries = $derived(ownedSeries.length > 0 && priceSeries.length > ownedSeries.length);
 
 	// Pokémon energy-type icons, served from /static/energy. "Free" (a
 	// zero-energy attack cost rendered on the card art as a clear circle)
@@ -487,8 +505,16 @@
 	</section>
 
 	<section>
-		<h2>Price history</h2>
-		<PriceChart series={priceSeries} />
+		<div class="prices-head">
+			<h2>Price history</h2>
+			{#if hasHiddenSeries}
+				<label class="showall">
+					<input type="checkbox" bind:checked={showAllPrices} />
+					Show all variants
+				</label>
+			{/if}
+		</div>
+		<PriceChart series={chartSeries} />
 	</section>
 
 	<section>
@@ -496,6 +522,11 @@
 		{#if detail.copies.length === 0}
 			<p class="muted">You don't own this card yet.</p>
 		{:else}
+			{#snippet savedTick(key: string)}
+				{#if savedKey === key}<span class="cellSaved" transition:fade={{ duration: 120 }}
+						>✓</span
+					>{/if}
+			{/snippet}
 			<table>
 				<colgroup>
 					<col style="width: 19%" />
@@ -523,6 +554,7 @@
 										<option value={p.printing_id}>{variantLabel(p.variant)}</option>
 									{/each}
 								</select>
+								{@render savedTick(`${copy.id}:variant`)}
 							</td>
 							<td data-label="Condition">
 							<select
@@ -532,6 +564,7 @@
 							>
 								{#each CONDITIONS as c (c)}<option value={c}>{c}</option>{/each}
 							</select>
+							{@render savedTick(`${copy.id}:condition`)}
 						</td>
 							<td data-label="Status">
 								<select
@@ -541,6 +574,7 @@
 								>
 									{#each STATUSES as s (s)}<option value={s}>{s}</option>{/each}
 								</select>
+								{@render savedTick(`${copy.id}:status`)}
 							</td>
 							<td data-label="Location">
 								<select
@@ -552,6 +586,7 @@
 									{#each binders as b (b.id)}<option value="b:{b.id}">Binder: {b.name}</option>{/each}
 									{#each decks as d (d.id)}<option value="d:{d.id}">Deck: {d.name}</option>{/each}
 								</select>
+								{@render savedTick(`${copy.id}:location`)}
 							</td>
 							<td data-label="Paid">{price(copy.purchase_price)}</td>
 							<td data-label="Value" title="NM market × condition multiplier"
@@ -569,6 +604,7 @@
 									title="Condition notes for this copy"
 									onchange={(e) => changeNotes(copy.id, e.currentTarget.value)}
 								/>
+								{@render savedTick(`${copy.id}:notes`)}
 							</td>
 						</tr>
 					{/each}
@@ -599,12 +635,6 @@
 	/>
 {/if}
 
-{#if saved}
-	<div class="savedToast" role="status" aria-live="polite" transition:fade={{ duration: 150 }}>
-		<span class="savedCheck" aria-hidden="true">✓</span> Saved
-	</div>
-{/if}
-
 <style>
 	.muted {
 		color: #888;
@@ -612,38 +642,25 @@
 	.error {
 		color: #e94560;
 	}
-	/* Transient auto-save confirmation. Fixed to the viewport with a z-index
-	   above the card modal (101) so it shows in both the modal and the page. */
-	.savedToast {
-		position: fixed;
-		bottom: 1.25rem;
-		left: 50%;
-		transform: translateX(-50%);
-		z-index: 200;
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
-		background: #16331f;
-		border: 1px solid #2f9e54;
-		color: #7be0a0;
-		padding: 0.5rem 0.9rem;
-		border-radius: 999px;
-		font-size: 0.9rem;
-		font-weight: 600;
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-		pointer-events: none;
-	}
-	.savedCheck {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 1.1rem;
-		height: 1.1rem;
+	/* Inline per-control save confirmation: a small green ✓ that flashes in
+	   the top-right corner of the control just edited (pokedumpster-25r). */
+	.cellSaved {
+		position: absolute;
+		top: 2px;
+		right: 2px;
+		width: 15px;
+		height: 15px;
 		border-radius: 50%;
 		background: #2f9e54;
 		color: #fff;
-		font-size: 0.75rem;
+		font-size: 0.62rem;
 		line-height: 1;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		/* Ring so it reads as a badge sitting over the select's corner. */
+		box-shadow: 0 0 0 2px #1a1a2e;
+		pointer-events: none;
 	}
 	.detail {
 		display: flex;
@@ -970,6 +987,8 @@
 	td {
 		padding: 0.4rem 0.6rem;
 		border-bottom: 1px solid #0f3460;
+		/* Anchor the inline save-confirmation ✓ to each cell. */
+		position: relative;
 	}
 	select {
 		background: #1a1a2e;
@@ -1094,6 +1113,22 @@
 		align-items: baseline;
 		justify-content: space-between;
 		gap: 0.75rem;
+	}
+	/* Price-history header with the owned-only / show-all toggle. */
+	.prices-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.75rem;
+	}
+	.showall {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		color: #888;
+		font-size: 0.8rem;
+		cursor: pointer;
+		white-space: nowrap;
 	}
 	.add-missing {
 		background: #16213e;

@@ -79,9 +79,13 @@
 	<p class="muted">No price history yet.</p>
 {:else if oneShot}
 	<p class="muted">Only one price snapshot so far — the chart will grow as the daily refresh runs.</p>
-	<div class="wrap"><canvas bind:this={canvas}></canvas></div>
+	<div class="wrap" data-testid="price-chart" data-series-count={series.length}>
+		<canvas bind:this={canvas}></canvas>
+	</div>
 {:else}
-	<div class="wrap"><canvas bind:this={canvas}></canvas></div>
+	<div class="wrap" data-testid="price-chart" data-series-count={series.length}>
+		<canvas bind:this={canvas}></canvas>
+	</div>
 {/if}
 
 <style>

@@ -162,6 +162,17 @@
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
 			loading = false;
+			// A pager action asked to re-center at the top — do it now that the
+			// new page's slots are in the DOM. rAF gives layout one frame to
+			// settle so the scroll lands (mirrors the popstate restore above).
+			if (scrollTopPending && typeof window !== 'undefined') {
+				scrollTopPending = false;
+				// Instant jump (not smooth): a page advance swaps the whole grid,
+				// so animating a scroll through replaced content is both odd and
+				// leaves the page moving while the next interaction fires. Mirrors
+				// the popstate scroll restore below.
+				requestAnimationFrame(() => window.scrollTo(0, 0));
+			}
 		}
 	}
 
@@ -190,6 +201,9 @@
 		}
 	}
 	let pendingScroll: number | null = null;
+	// Set by a pager action; consumed in load()'s finally to re-center the
+	// viewport at the top of the grid once the new page has rendered.
+	let scrollTopPending = false;
 
 	beforeNavigate((nav) => {
 		if (typeof window === 'undefined' || !nav.from) return;
@@ -335,13 +349,16 @@
 		pageNum = 1;
 	}
 
-	/** Bottom-pager click: change page and jump back to the top of the grid
-	 *  so the user doesn't have to scroll up themselves. */
+	/** Pager click / arrow key: change page and re-center the viewport at the
+	 *  top of the grid so paging from the bottom row lands on the top row
+	 *  rather than leaving the user scrolled to the bottom. The scroll is
+	 *  deferred to load()'s finally (after the new slots render) — scrolling
+	 *  immediately here is unreliable because load() swaps the grid content
+	 *  mid-animation, which cancels the scroll (pokedumpster-not). */
 	function gotoPage(n: number) {
+		if (n === pageNum) return;
 		pageNum = n;
-		if (typeof window !== 'undefined') {
-			window.scrollTo({ top: 0, behavior: 'smooth' });
-		}
+		scrollTopPending = true;
 	}
 
 	// Reschedule the debounced `search` update whenever the raw input changes.
@@ -565,12 +582,12 @@
 		<div class="toppager">
 			<button
 				disabled={binder.page <= 1}
-				onclick={() => (pageNum = binder!.page - 1)}
+				onclick={() => gotoPage(binder!.page - 1)}
 			>← Prev</button>
 			<span class="pageno">Page {binder.page} of {binder.total_pages}</span>
 			<button
 				disabled={binder.page >= binder.total_pages}
-				onclick={() => (pageNum = binder!.page + 1)}
+				onclick={() => gotoPage(binder!.page + 1)}
 			>Next →</button>
 		</div>
 	</div>

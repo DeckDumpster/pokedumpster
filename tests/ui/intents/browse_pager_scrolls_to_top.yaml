@@ -1,0 +1,11 @@
+# Scenario: Advancing a page in binder browse re-centers the viewport at the top
+#
+# Related:
+#   issues: [pokedumpster-not]
+#   pull_requests: []
+
+description: >
+  When I advance from one page to the next in the binder/set browse view —
+  including via the top pager — the viewport re-centers near the top of the
+  card grid, so I go visually from the bottom row back to the top row rather
+  than staying scrolled at the bottom of the new page.

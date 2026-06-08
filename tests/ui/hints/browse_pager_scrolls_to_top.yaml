@@ -1,0 +1,15 @@
+start_page: /browse/sv8?cols=1
+involves:
+  - "binder browse for Surging Sparks at cols=1 -> 3 cards/page, 3 pages, tall enough to scroll"
+  - "top pager .toppager button 'Next →' (sets the page)"
+  - "after paging, window.scrollY returns near the top of the grid"
+fixture_data:
+  set: sv8
+  pages: 3
+notes: >
+  cols=1 makes sv8's 9 cards span 3 pages and the page tall enough to scroll.
+  Scroll to the bottom, then advance via the TOP pager's Next button using a
+  dispatched click (so Playwright doesn't auto-scroll it into view first).
+  Assert window.scrollY returns near 0 once page 2 has rendered. Before the
+  fix the top pager changed the page without scrolling, leaving the viewport
+  at the bottom.

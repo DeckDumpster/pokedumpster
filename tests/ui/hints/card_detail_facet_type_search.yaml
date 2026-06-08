@@ -1,0 +1,13 @@
+start_page: /card/base1/4
+involves:
+  - "card detail page for Charizard (base1 #4), Fire type"
+  - "element/type link a.facet[title='Find all Fire cards']"
+  - "lands on /collection with q=type:Fire and all=1"
+fixture_data:
+  start_card: Charizard
+  type: Fire
+  other_fire_card: "Charmander"
+notes: >
+  Charizard is a Fire card. Click the Element type icon link; assert the URL
+  carries q=type and all=1, then assert a different Fire card (Charmander)
+  appears in the results.

@@ -1,0 +1,10 @@
+# Scenario: Clicking a card's Retreat cost runs a retreat: catalog search
+#
+# Related:
+#   issues: [pokedumpster-cww]
+#   pull_requests: []
+
+description: >
+  When I click a card's Retreat cost on the card page, the browser navigates
+  to the collection search filtered to cards with the same retreat cost
+  across the whole catalog — a `retreat:` DSL query.

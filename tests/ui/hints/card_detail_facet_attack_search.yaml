@@ -1,0 +1,12 @@
+start_page: /card/base1/4
+involves:
+  - "card detail page for Charizard (base1 #4) with the 'Fire Spin' attack"
+  - "attack name link a.facet.attackName with text 'Fire Spin'"
+  - "lands on /collection with q=attack:... and all=1"
+fixture_data:
+  start_card: Charizard
+  attack: "Fire Spin"
+notes: >
+  Charizard (base1/4) has the Fire Spin attack in the fixture. Wait for the
+  Attacks section, click the 'Fire Spin' attack name link; assert the URL
+  carries q=attack and all=1, then assert the Charizard tile appears.

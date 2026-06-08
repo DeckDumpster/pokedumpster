@@ -6,7 +6,6 @@ import type { SearchRow } from './types/SearchRow';
 import type { SearchVocabulary } from './types/SearchVocabulary';
 import type { CardDetail } from './types/CardDetail';
 import type { PriceSeries } from './types/PriceSeries';
-import type { CatalogSearchRow } from './types/CatalogSearchRow';
 import type { NewCopy } from './types/NewCopy';
 import type { CopyEdit } from './types/CopyEdit';
 import type { SetSummary } from './types/SetSummary';
@@ -121,19 +120,6 @@ export const api = {
 	cardPrices: (setCode: string, number: string) =>
 		getJson<PriceSeries[]>(
 			`/api/card/${encodeURIComponent(setCode)}/${encodeURIComponent(number)}/prices`
-		),
-
-	/** Resolve a card name to its newest printing — drives the evolution links. */
-	cardByName: (name: string) =>
-		getJson<{ set_code: string; number: string }>(
-			`/api/cards/by-name/${encodeURIComponent(name)}`
-		),
-
-	/** Global catalog search — backs the "All cards" toggle on /collection so
-	 *  the user can find and add cards they don't own. */
-	cardsCatalog: (q: string, limit = 50) =>
-		getJson<CatalogSearchRow[]>(
-			`/api/cards/catalog?q=${encodeURIComponent(q)}&limit=${limit}`
 		),
 
 	/** Every set + bundle, with card and owned-card counts. Bundles

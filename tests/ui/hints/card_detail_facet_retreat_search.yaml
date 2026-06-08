@@ -1,0 +1,13 @@
+start_page: /card/base1/4
+involves:
+  - "card detail page for Charizard (base1 #4), Retreat cost 3"
+  - "retreat link a.facet.retreat[title='Find all cards with a retreat cost of 3']"
+  - "lands on /collection with q=retreat:3 and all=1"
+fixture_data:
+  start_card: Charizard
+  retreat: 3
+  same_retreat: "Blastoise"
+notes: >
+  Charizard has a retreat cost of 3, as does Blastoise in the fixture. Click
+  the Retreat icons link; assert the URL carries q=retreat and all=1, then
+  assert Blastoise appears.

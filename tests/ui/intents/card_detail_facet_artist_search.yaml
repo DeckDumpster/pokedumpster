@@ -1,0 +1,12 @@
+# Scenario: Clicking a card's artist runs an artist: catalog search
+#
+# Related:
+#   issues: [pokedumpster-xj6]
+#   pull_requests: []
+
+description: >
+  When I click a card's artist name on the card page, the browser navigates
+  to the collection search pre-filtered to that artist across the whole
+  catalog — an `artist:` DSL query, not a bare card-name search. Every card
+  by that artist appears, including printings I don't own. This guards the
+  bug where the artist facet emitted a bare name query and found nothing.

@@ -1,0 +1,14 @@
+start_page: /card/base1/58
+involves:
+  - "card detail page for Pikachu (base1 #58), which 'Evolves into' Raichu"
+  - "the label reads 'Evolves into' (not 'Evolves to')"
+  - "evolution link a.evolink with text 'Raichu'"
+  - "lands on /collection with q=name:Raichu and all=1"
+fixture_data:
+  start_card: Pikachu
+  evolves_into: "Raichu"
+notes: >
+  Pikachu (base1/58) evolves into Raichu in the fixture. Assert the 'Evolves
+  into' label is present (grammar fix), click the Raichu evolution link;
+  assert the URL carries q=name and all=1, then assert the Raichu tile
+  appears.

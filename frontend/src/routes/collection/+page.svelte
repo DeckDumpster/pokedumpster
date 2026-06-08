@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api, SearchQueryError } from '$lib/api';
+	import { facetHref } from '$lib/facets';
 	import { variantLabel, variantTag, variants } from '$lib/variants.svelte';
 	import { CONDITIONS, conditionMultiplier } from '$lib/conditions';
 	import { money, count } from '$lib/format';
@@ -683,6 +684,22 @@
 		else selectedCard = { set: a.set_code, number: a.number };
 	}
 
+	// Table view: only the Name cell opens the modal; every other column is a
+	// DSL-appropriate facet search (rarity:, set:, type:, …) reusing the same
+	// builder as the card-page links (pokedumpster-ozm). In select mode the
+	// whole row still toggles selection, so these handlers no-op and let the
+	// click bubble to the row's selection handler.
+	function openCardCell(e: MouseEvent, a: AggRow) {
+		if (selectMode) return;
+		e.stopPropagation();
+		selectedCard = { set: a.set_code, number: a.number };
+	}
+	function facetCell(e: MouseEvent, field: string, value: string | null | undefined) {
+		if (selectMode) return;
+		e.stopPropagation();
+		if (value) void goto(facetHref(field, value));
+	}
+
 	// Non-owned statuses surface as a small badge next to the card name —
 	// the column itself is gone (no point spamming "owned" on every row).
 	function statusBadge(status: string): string | null {
@@ -1106,13 +1123,10 @@
 			<tbody>
 				{#each sorted as a (a.key)}
 					{#if a.ids.length === 0}
-						<tr
-							class="missing"
-							onclick={() => (selectedCard = { set: a.set_code, number: a.number })}
-						>
+						<tr class="missing">
 							{#if selectMode}<td class="cbcol"></td>{/if}
 							<td class="num qty"><span class="pricedash">—</span></td>
-							<td class="colflex">
+							<td class="colflex namecol" title="Open card" onclick={(e) => openCardCell(e, a)}>
 								<div class="namecell">
 									{#if a.image_small}
 										<img class="cardthumb" src={a.image_small} alt="" loading="lazy" />
@@ -1120,8 +1134,8 @@
 									<span class="cardname">{a.name}</span>
 								</div>
 							</td>
-							<td>{a.supertype ?? ''}</td>
-							<td class="center">
+							<td class="fac" title="Find all {a.supertype ?? ''} cards" onclick={(e) => facetCell(e, 'supertype', a.supertype)}>{a.supertype ?? ''}</td>
+							<td class="center fac" title="Find cards of this type" onclick={(e) => facetCell(e, 'type', parseJsonStrArr(a.types)[0])}>
 								<span class="etypes">
 									{#each parseJsonStrArr(a.types) as t (t)}
 										<img class="energy" src={energyIcon(t)} alt={t} title={t} />
@@ -1137,7 +1151,7 @@
 									</span>
 								{/each}
 							</td>
-							<td class="center">
+							<td class="center fac" title="Find all {a.rarity ?? ''} cards" onclick={(e) => facetCell(e, 'rarity', a.rarity)}>
 								{#if a.rarity}
 									{@const src = rarityIconSrc(a.rarity)}
 									{#if src}
@@ -1153,7 +1167,7 @@
 									{/if}
 								{/if}
 							</td>
-							<td class="center">
+							<td class="center fac" title="Find all cards in this set" onclick={(e) => facetCell(e, 'set', a.set_code)}>
 								{#if a.set_symbol_url}
 									<img
 										class="setsym"
@@ -1185,7 +1199,7 @@
 							<td class="num"><span class="pricedash">—</span></td>
 						</tr>
 					{:else}
-					<tr class:picked={selectMode && groupChecked(a.ids)} onclick={() => openGroup(a)}>
+					<tr class:picked={selectMode && groupChecked(a.ids)} onclick={() => { if (selectMode) toggleGroup(a.ids); }}>
 						{#if selectMode}
 							<td class="cbcol" onclick={(e) => e.stopPropagation()}>
 								<input
@@ -1196,7 +1210,7 @@
 							</td>
 						{/if}
 						<td class="num qty">{a.qty}</td>
-						<td class="colflex">
+						<td class="colflex namecol" title="Open card" onclick={(e) => openCardCell(e, a)}>
 							<div class="namecell">
 								{#if a.image_small}
 									<span class="thumbwrap" class:foil={isFoilVariant(a.variant)}>
@@ -1214,13 +1228,13 @@
 								>
 							</div>
 						</td>
-						<td>
+						<td class="fac" title="Find all {a.supertype ?? ''} cards" onclick={(e) => facetCell(e, 'supertype', a.supertype)}>
 							<span class="typecell">
 								<span class="typeMain">{typeMain(a)}</span>
 								{#if typeSub(a)}<span class="typeSub">{typeSub(a)}</span>{/if}
 							</span>
 						</td>
-						<td class="center">
+						<td class="center fac" title="Find cards of this type" onclick={(e) => facetCell(e, 'type', parseJsonStrArr(a.types)[0])}>
 							<span class="etypes">
 								{#each parseJsonStrArr(a.types) as t (t)}
 									<img class="energy" src={energyIcon(t)} alt={t} title={t} />
@@ -1236,7 +1250,7 @@
 								</span>
 							{/each}
 						</td>
-						<td class="center">
+						<td class="center fac" title="Find all {a.rarity ?? ''} cards" onclick={(e) => facetCell(e, 'rarity', a.rarity)}>
 							{#if a.rarity}
 								{@const src = rarityIconSrc(a.rarity)}
 								{#if src}
@@ -1252,7 +1266,7 @@
 								{/if}
 							{/if}
 						</td>
-						<td class="center">
+						<td class="center fac" title="Find all cards in this set" onclick={(e) => facetCell(e, 'set', a.set_code)}>
 							{#if a.set_symbol_url}
 								<img
 									class="setsym"
@@ -1303,7 +1317,6 @@
 		number={selectedCard.number}
 		onClose={closeCard}
 		onMutate={() => (cardDirty = true)}
-		onNavigate={(s, n) => (selectedCard = { set: s, number: n })}
 	/>
 {/if}
 
@@ -1863,6 +1876,14 @@
 	}
 	table.dd tbody tr.picked {
 		background: rgba(233, 69, 96, 0.14);
+	}
+	/* Only the Name cell opens the card; the other columns are facet
+	   searches (pokedumpster-ozm). Highlight whichever cell the pointer is
+	   over so the per-column click target reads clearly. */
+	table.dd tbody td.namecol:hover,
+	table.dd tbody td.fac:hover {
+		background: rgba(233, 69, 96, 0.2);
+		color: #e0e0e0;
 	}
 	/* Match the .cardtile.missing treatment so unowned catalog rows read
 	   the same way in table view as in grid view. */

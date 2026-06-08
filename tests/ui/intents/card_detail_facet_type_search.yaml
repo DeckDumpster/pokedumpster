@@ -1,0 +1,11 @@
+# Scenario: Clicking a card's energy type runs a type: catalog search
+#
+# Related:
+#   issues: [pokedumpster-xj6]
+#   pull_requests: []
+
+description: >
+  When I click a card's energy type on the card page, the browser navigates
+  to the collection search filtered to that type across the whole catalog —
+  a `type:` DSL query. Other Pokémon sharing the type appear, owned or not,
+  rather than cards merely named after the type.

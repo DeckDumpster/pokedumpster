@@ -1,0 +1,12 @@
+# Scenario: The card page shows the Pokédex number and it searches pokedex:
+#
+# Related:
+#   issues: [pokedumpster-owh]
+#   pull_requests: []
+
+description: >
+  The card page shows the Pokémon's National Pokédex number. Clicking it
+  navigates to the collection search filtered to that Pokédex number across
+  the whole catalog — a `pokedex:` DSL query. For #151 every Mew printing
+  appears, including Mew ex, proving it matched by Pokédex number and not by
+  the card I started on.

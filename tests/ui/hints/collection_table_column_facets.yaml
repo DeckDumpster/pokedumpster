@@ -1,0 +1,14 @@
+start_page: /collection
+involves:
+  - "collection page switched to table view via data-testid=view-table"
+  - "table td.fac cells (Class/Type/Rarity/Set) navigate to a facet search"
+  - "the Set cell has a constant title 'Find all cards in this set'"
+  - "table td.namecol cell opens the card modal ([role=dialog])"
+fixture_data:
+  facet_cell_title: "Find all cards in this set"
+notes: >
+  Navigate to /collection, switch to table view. First click a Set column
+  cell (td.fac[title='Find all cards in this set']) and assert the URL
+  carries q=set and all=1 — a facet search, NOT a modal. Then, in the
+  filtered table, click a Name cell (td.namecol) and assert the card modal
+  ([role=dialog]) opens.

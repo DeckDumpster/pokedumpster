@@ -1,0 +1,13 @@
+start_page: /card/base1/24
+involves:
+  - "card detail page for Raichu (base1 #24), which 'Evolves from' Pikachu"
+  - "evolution link a.evolink with text 'Pikachu'"
+  - "lands on /collection with q=name:Pikachu and all=1"
+fixture_data:
+  start_card: Raichu
+  evolves_from: "Pikachu"
+notes: >
+  Raichu (base1/24) evolves from Pikachu in the fixture. Assert the 'Evolves
+  from' label is present, click the Pikachu evolution link; assert the URL
+  carries q=name and all=1, then assert a Pikachu tile appears (the fixture
+  has Pikachu in base1 and sv3pt5).

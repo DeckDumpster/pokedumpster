@@ -1,0 +1,15 @@
+start_page: /card/base1/4
+involves:
+  - "card detail page for Charizard (base1 #4), artist Mitsuhiro Arita"
+  - "artist link a.facet[title='Find all cards by Mitsuhiro Arita']"
+  - "lands on /collection with q=artist:... and all=1 (catalog-wide)"
+  - "result grid .cardtile tiles titled by card name"
+fixture_data:
+  start_card: Charizard
+  artist: "Mitsuhiro Arita"
+  also_by_artist: "Venusaur"
+notes: >
+  Charizard base1/4 is by Mitsuhiro Arita, who in the fixture also drew
+  base1 Venusaur, Bulbasaur and Pikachu. Click the artist link; assert the
+  URL carries q=artist and all=1, then assert both Charizard and Venusaur
+  tiles appear — a bare name search for the artist would return nothing.

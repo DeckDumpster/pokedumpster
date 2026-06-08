@@ -1,0 +1,14 @@
+start_page: /card/sv3pt5/131
+involves:
+  - "card detail page for Mew (sv3pt5 #131), National Pokédex #151"
+  - "Pokédex link a.facet[title='Find every card of Pokédex #151']"
+  - "lands on /collection with q=pokedex:151 and all=1"
+fixture_data:
+  start_card: Mew
+  pokedex: 151
+  other_151: "Mew ex"
+notes: >
+  Mew (sv3pt5/131) has National Pokédex #151, shared by Mew ex (sv3pt5/201)
+  in the fixture. Click the Pokédex number link; assert the URL carries
+  q=pokedex and all=1, then assert Mew ex appears — proof the search matched
+  by Pokédex number, not the card name.

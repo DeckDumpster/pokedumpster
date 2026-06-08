@@ -1,0 +1,11 @@
+# Scenario: "Evolves into" link (correct grammar) runs a name: search
+#
+# Related:
+#   issues: [pokedumpster-anj]
+#   pull_requests: []
+
+description: >
+  A card that evolves shows an "Evolves into" link — the correct grammar,
+  not "Evolves to". Clicking it navigates to the collection search by the
+  evolution's name across the whole catalog — a `name:` DSL query listing
+  every printing of it.

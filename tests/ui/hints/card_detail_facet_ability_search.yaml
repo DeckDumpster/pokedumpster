@@ -1,0 +1,12 @@
+start_page: /card/base1/2
+involves:
+  - "card detail page for Blastoise (base1 #2) with the 'Rain Dance' ability"
+  - "ability name link a.facet.abilityName with text 'Rain Dance'"
+  - "lands on /collection with q=ability:... and all=1"
+fixture_data:
+  start_card: Blastoise
+  ability: "Rain Dance"
+notes: >
+  Blastoise (base1/2) has the Rain Dance ability in the fixture. Wait for the
+  Abilities section, click the 'Rain Dance' ability name link; assert the URL
+  carries q=ability and all=1, then assert the Blastoise tile appears.

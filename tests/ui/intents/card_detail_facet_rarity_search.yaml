@@ -1,0 +1,10 @@
+# Scenario: Clicking a card's rarity runs a rarity: catalog search
+#
+# Related:
+#   issues: [pokedumpster-xj6]
+#   pull_requests: []
+
+description: >
+  When I click a card's rarity on the card page, the browser navigates to
+  the collection search filtered to that rarity across the whole catalog —
+  a `rarity:` DSL query, not a card-name search for the rarity text.

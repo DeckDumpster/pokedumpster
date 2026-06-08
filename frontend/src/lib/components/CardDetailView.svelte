@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import { api } from '$lib/api';
+	import { facetHref } from '$lib/facets';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import { variantLabel, variantSortCmp, variantProvenance } from '$lib/variants.svelte';
 	import { CONDITIONS, conditionMultiplier } from '$lib/conditions';
@@ -18,16 +19,11 @@
 	let {
 		setCode,
 		number,
-		onNavigate,
 		onMutate,
 		manageBreadcrumbs = false
 	}: {
 		setCode: string;
 		number: string;
-		/** Switch this view to a different (set, number) — wired by the
-		 *  collection modal to support evolution-chain links without
-		 *  closing/reopening. Falls back to a full-page nav if absent. */
-		onNavigate?: (set: string, number: string) => void;
 		/** Fired after any successful copy mutation (add/remove/status/
 		 *  condition/variant/assign). The collection modal uses this to
 		 *  decide whether closing needs a re-fetch — viewing a card without
@@ -233,13 +229,6 @@
 		return `/rarity/${rarity.toLowerCase().replace(/[ ._]/g, '-')}.svg`;
 	}
 
-	/** Link a metadata cell (artist, set, rarity, type, variant, …) to a
-	 *  pre-filled /collection?q= search. Stays scoped to the user's
-	 *  collection — toggle "All cards" manually to widen to the catalog. */
-	function facetHref(value: string): string {
-		return `/collection?q=${encodeURIComponent(value)}`;
-	}
-
 	type AttackData = {
 		name?: string;
 		cost?: string[];
@@ -248,19 +237,6 @@
 	};
 	type AbilityData = { name?: string; type?: string; text?: string };
 	type WrData = { type?: string; value?: string };
-
-	// Evolution-link navigation. Resolves a card name to its newest printing
-	// via /api/cards/by-name, then switches the modal (or navigates the
-	// route page) to that card.
-	async function gotoCard(name: string) {
-		try {
-			const ref = await api.cardByName(name);
-			if (onNavigate) onNavigate(ref.set_code, ref.number);
-			else window.location.assign(`/card/${ref.set_code}/${ref.number}`);
-		} catch (e) {
-			error = `No card named "${name}" in catalog`;
-		}
-	}
 </script>
 
 <svelte:head>
@@ -296,14 +272,14 @@
 				{/if}
 				<a
 					class="facet"
-					href={facetHref((card.set_ptcgo_code ?? card.set_code).toUpperCase())}
-					title="Filter collection by {(card.set_ptcgo_code ?? card.set_code).toUpperCase()}"
+					href={facetHref('set', card.set_code)}
+					title="Find all cards in {card.set_name}"
 				>
 					<span>{(card.set_ptcgo_code ?? card.set_code).toUpperCase()}</span>
 				</a>
 				· #{card.number}{#if card.rarity}
 					·
-					<a class="facet" href={facetHref(card.rarity)} title="Filter collection by {card.rarity}">
+					<a class="facet" href={facetHref('rarity', card.rarity)} title="Find all {card.rarity} cards">
 						{#if rarityIconSrc(card.rarity)}
 							<img class="raritysym" src={rarityIconSrc(card.rarity)} alt="" />
 						{/if}
@@ -312,10 +288,10 @@
 			</p>
 			<dl>
 				{#if card.supertype}<dt>Type</dt><dd>
-						<a class="facet" href={facetHref(card.supertype)}>{card.supertype}</a>{#if parseStrArr(card.subtypes).length}
+						<a class="facet" href={facetHref('supertype', card.supertype)}>{card.supertype}</a>{#if parseStrArr(card.subtypes).length}
 							·
 							{#each parseStrArr(card.subtypes) as st (st)}
-								<a class="facet" href={facetHref(st)}>{st}</a>
+								<a class="facet" href={facetHref('subtype', st)}>{st}</a>
 							{/each}
 						{/if}
 					</dd>{/if}
@@ -324,7 +300,7 @@
 					<dt>Element</dt>
 					<dd class="enr">
 						{#each parseStrArr(card.types) as t (t)}
-							<a class="facet" href={facetHref(t)} title="Filter collection by {t}">
+							<a class="facet" href={facetHref('type', t)} title="Find all {t} cards">
 								<img class="energy" src={energyIcon(t)} alt={t} title={t} />
 							</a>
 						{/each}
@@ -332,24 +308,36 @@
 				{/if}
 				{#if card.regulation_mark}<dt>Regulation</dt><dd>{card.regulation_mark}</dd>{/if}
 				{#if card.artist}<dt>Artist</dt><dd>
-						<a class="facet" href={facetHref(card.artist)}>{card.artist}</a>
+						<a class="facet" href={facetHref('artist', card.artist)} title="Find all cards by {card.artist}">{card.artist}</a>
 					</dd>{/if}
+				{#if parseStrArr(card.national_pokedex_numbers).length}
+					<dt>Pokédex</dt>
+					<dd>
+						{#each parseStrArr(card.national_pokedex_numbers) as dex, i (dex)}
+							{#if i > 0},
+							{/if}
+							<a class="facet" href={facetHref('pokedex', dex)} title="Find every card of Pokédex #{dex}">
+								#{dex}
+							</a>
+						{/each}
+					</dd>
+				{/if}
 
 				{#if card.evolves_from}
 					<dt>Evolves from</dt>
 					<dd>
-						<button class="evolink" onclick={() => gotoCard(card.evolves_from!)}>
+						<a class="facet evolink" href={facetHref('name', card.evolves_from)}>
 							{card.evolves_from}
-						</button>
+						</a>
 					</dd>
 				{/if}
 				{#if parseStrArr(card.evolves_to).length}
-					<dt>Evolves to</dt>
+					<dt>Evolves into</dt>
 					<dd>
 						{#each parseStrArr(card.evolves_to) as name, i (name)}
 							{#if i > 0},
 							{/if}
-							<button class="evolink" onclick={() => gotoCard(name)}>{name}</button>
+							<a class="facet evolink" href={facetHref('name', name)}>{name}</a>
 						{/each}
 					</dd>
 				{/if}
@@ -362,7 +350,9 @@
 						<div class="abilityBlock">
 							<div class="abilityHead">
 								{#if ab.type}<span class="abilityType">{ab.type}</span>{/if}
-								<span class="abilityName">{ab.name ?? ''}</span>
+								{#if ab.name}
+									<a class="facet abilityName" href={facetHref('ability', ab.name)} title="Find all cards with the “{ab.name}” ability">{ab.name}</a>
+								{/if}
 							</div>
 							{#if ab.text}<p class="cardText">{ab.text}</p>{/if}
 						</div>
@@ -381,7 +371,11 @@
 										<img class="energy" src={energyIcon(c)} alt={c} title={c} />
 									{/each}
 								</span>
-								<span class="attackName">{att.name ?? ''}</span>
+								{#if att.name}
+									<a class="facet attackName" href={facetHref('attack', att.name)} title="Find all cards with the “{att.name}” attack">{att.name}</a>
+								{:else}
+									<span class="attackName"></span>
+								{/if}
 								{#if att.damage}<span class="attackDamage">{att.damage}</span>{/if}
 							</div>
 							{#if att.text}<p class="cardText">{att.text}</p>{/if}
@@ -398,10 +392,14 @@
 					<h3>Weakness</h3>
 					{#if parseObjArr<WrData>(card.weaknesses).length > 0}
 						{#each parseObjArr<WrData>(card.weaknesses) as w (w.type)}
-							<span class="wr">
-								{#if w.type}<img class="energy" src={energyIcon(w.type)} alt={w.type} title={w.type} />{/if}
-								{w.value ?? ''}
-							</span>
+							{#if w.type}
+								<a class="facet wr" href={facetHref('weakness', w.type)} title="Find all cards weak to {w.type}">
+									<img class="energy" src={energyIcon(w.type)} alt={w.type} title={w.type} />
+									{w.value ?? ''}
+								</a>
+							{:else}
+								<span class="wr">{w.value ?? ''}</span>
+							{/if}
 						{/each}
 					{:else}
 						<span class="wr-empty">—</span>
@@ -411,10 +409,14 @@
 					<h3>Resistance</h3>
 					{#if parseObjArr<WrData>(card.resistances).length > 0}
 						{#each parseObjArr<WrData>(card.resistances) as r (r.type)}
-							<span class="wr">
-								{#if r.type}<img class="energy" src={energyIcon(r.type)} alt={r.type} title={r.type} />{/if}
-								{r.value ?? ''}
-							</span>
+							{#if r.type}
+								<a class="facet wr" href={facetHref('resistance', r.type)} title="Find all cards resistant to {r.type}">
+									<img class="energy" src={energyIcon(r.type)} alt={r.type} title={r.type} />
+									{r.value ?? ''}
+								</a>
+							{:else}
+								<span class="wr">{r.value ?? ''}</span>
+							{/if}
 						{/each}
 					{:else}
 						<span class="wr-empty">—</span>
@@ -423,11 +425,15 @@
 				<div class="combatCell">
 					<h3>Retreat</h3>
 					{#if parseStrArr(card.retreat_cost).length > 0}
-						<span class="retreat">
+						<a
+							class="facet retreat"
+							href={facetHref('retreat', String(parseStrArr(card.retreat_cost).length))}
+							title="Find all cards with a retreat cost of {parseStrArr(card.retreat_cost).length}"
+						>
 							{#each parseStrArr(card.retreat_cost) as c, i (i)}
 								<img class="energy" src={energyIcon(c)} alt={c} title={c} />
 							{/each}
-						</span>
+						</a>
 					{:else}
 						<span class="wr-empty">—</span>
 					{/if}
@@ -463,7 +469,7 @@
 									aria-label="User-added variant"
 								></span>
 							{/if}
-							<a class="facet variant" href={facetHref(variantLabel(p.variant))}>
+							<a class="facet variant" href={facetHref('variant', p.variant)} title="Find all {variantLabel(p.variant)} printings">
 								{variantLabel(p.variant)}
 							</a>
 						</div>

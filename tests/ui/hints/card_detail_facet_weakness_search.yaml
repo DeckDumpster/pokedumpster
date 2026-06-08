@@ -1,0 +1,13 @@
+start_page: /card/base1/4
+involves:
+  - "card detail page for Charizard (base1 #4), Weakness Water"
+  - "weakness link a.facet.wr[title='Find all cards weak to Water']"
+  - "lands on /collection with q=weakness:Water and all=1"
+fixture_data:
+  start_card: Charizard
+  weakness: Water
+  other_water_weak: "Charmander"
+notes: >
+  Charizard is weak to Water, as are the fixture's other Fire cards
+  (Charmander, Magmar, Charizard ex). Click the Weakness icon link; assert
+  the URL carries q=weakness and all=1, then assert Charmander appears.

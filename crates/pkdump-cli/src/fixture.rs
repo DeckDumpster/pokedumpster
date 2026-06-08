@@ -396,6 +396,121 @@ fn enrich_card_facets(conn: &Connection) -> anyhow::Result<()> {
          WHERE name = 'Pikachu'",
         [],
     )?;
+
+    // National Pokédex numbers — drives the card-detail "Pokédex" row and the
+    // pokedex: facet. Mew + Mew ex share #151 so pokedex:151 returns two cards.
+    let dex: &[(&str, &str)] = &[
+        ("Bulbasaur", "[1]"),
+        ("Venusaur", "[3]"),
+        ("Charmander", "[4]"),
+        ("Charizard", "[6]"),
+        ("Charizard ex", "[6]"),
+        ("Squirtle", "[7]"),
+        ("Blastoise", "[9]"),
+        ("Pikachu", "[25]"),
+        ("Pikachu ex", "[25]"),
+        ("Raichu", "[26]"),
+        ("Alakazam ex", "[65]"),
+        ("Exeggcute", "[102]"),
+        ("Alolan Exeggutor ex", "[103]"),
+        ("Hitmonchan", "[107]"),
+        ("Magmar", "[126]"),
+        ("Ditto", "[132]"),
+        ("Snorlax", "[143]"),
+        ("Mew", "[151]"),
+        ("Mew ex", "[151]"),
+        ("Milotic ex", "[350]"),
+        ("Latias ex", "[380]"),
+    ];
+    for (name, nums) in dex {
+        conn.execute(
+            "UPDATE cards SET national_pokedex_numbers = ?1 WHERE name = ?2",
+            rusqlite::params![nums, name],
+        )?;
+    }
+
+    // Type weaknesses — drives the weakness: facet (cards sharing a weakness).
+    // All four Fire Pokémon take Water weakness, so weakness:Water returns them.
+    let weak: &[(&str, &str)] = &[
+        ("Charizard", "Water"),
+        ("Charizard ex", "Water"),
+        ("Charmander", "Water"),
+        ("Magmar", "Water"),
+        ("Blastoise", "Lightning"),
+        ("Squirtle", "Lightning"),
+        ("Milotic ex", "Lightning"),
+        ("Venusaur", "Fire"),
+        ("Bulbasaur", "Fire"),
+        ("Exeggcute", "Fire"),
+        ("Alolan Exeggutor ex", "Fire"),
+        ("Pikachu", "Fighting"),
+        ("Pikachu ex", "Fighting"),
+        ("Raichu", "Fighting"),
+        ("Snorlax", "Fighting"),
+        ("Ditto", "Fighting"),
+        ("Alakazam ex", "Psychic"),
+        ("Mew", "Psychic"),
+        ("Mew ex", "Psychic"),
+        ("Latias ex", "Psychic"),
+    ];
+    for (name, ty) in weak {
+        conn.execute(
+            "UPDATE cards SET weaknesses = ?1 WHERE name = ?2",
+            rusqlite::params![format!("[{{\"type\":\"{ty}\",\"value\":\"×2\"}}]"), name],
+        )?;
+    }
+
+    // Retreat costs (N colourless) — drives the retreat: facet (same cost
+    // count). Charizard + Blastoise both retreat for 3, so retreat:3 pairs them.
+    let retreat: &[(&str, usize)] = &[
+        ("Charizard", 3),
+        ("Blastoise", 3),
+        ("Snorlax", 4),
+        ("Charizard ex", 2),
+        ("Venusaur", 2),
+        ("Pikachu", 1),
+        ("Pikachu ex", 1),
+        ("Raichu", 1),
+        ("Charmander", 1),
+        ("Squirtle", 1),
+        ("Bulbasaur", 1),
+        ("Mew", 1),
+        ("Mew ex", 1),
+        ("Ditto", 1),
+    ];
+    for (name, n) in retreat {
+        let arr = format!("[{}]", vec!["\"Colorless\""; *n].join(","));
+        conn.execute(
+            "UPDATE cards SET retreat_cost = ?1 WHERE name = ?2",
+            rusqlite::params![arr, name],
+        )?;
+    }
+
+    // Abilities — drives the ability: facet. Classic Base Set powers.
+    conn.execute(
+        "UPDATE cards SET abilities = '[{\"name\":\"Rain Dance\",\"type\":\"Pokémon Power\",\
+            \"text\":\"As often as you like during your turn, you may attach 1 Water Energy \
+            card to 1 of your Water Pokémon.\"}]' WHERE name = 'Blastoise'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE cards SET abilities = '[{\"name\":\"Energy Trans\",\"type\":\"Pokémon Power\",\
+            \"text\":\"Move 1 Grass Energy card from 1 of your Pokémon to another.\"}]' \
+         WHERE name = 'Venusaur'",
+        [],
+    )?;
+
+    // Evolution chains — extracted from raw_json by the card-detail query, so
+    // set just the evolves keys. Pikachu ⇄ Raichu is fully present in the
+    // fixture, exercising the name: search both links resolve to.
+    conn.execute(
+        "UPDATE cards SET raw_json = '{\"evolvesTo\":[\"Raichu\"]}' WHERE name = 'Pikachu'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE cards SET raw_json = '{\"evolvesFrom\":\"Pikachu\"}' WHERE name = 'Raichu'",
+        [],
+    )?;
     Ok(())
 }
 

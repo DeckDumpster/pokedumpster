@@ -1,0 +1,11 @@
+# Scenario: In the collection table, only Name opens the card; other columns search
+#
+# Related:
+#   issues: [pokedumpster-ozm]
+#   pull_requests: []
+
+description: >
+  In the collection table view, clicking a row's Name cell opens that card's
+  detail modal, but clicking any other column runs the matching catalog
+  facet search instead of opening the card. Clicking the Set cell navigates
+  to a `set:` search; clicking a Name cell opens the modal.

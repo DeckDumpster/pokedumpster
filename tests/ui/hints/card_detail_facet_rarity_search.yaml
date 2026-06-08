@@ -1,0 +1,13 @@
+start_page: /card/base1/4
+involves:
+  - "card detail page for Charizard (base1 #4), rarity Rare Holo"
+  - "rarity link a.facet[title='Find all Rare Holo cards']"
+  - "lands on /collection with q=rarity:... and all=1"
+fixture_data:
+  start_card: Charizard
+  rarity: "Rare Holo"
+  other_rare_holo: "Blastoise"
+notes: >
+  Charizard base1/4 is Rare Holo, as are base1 Blastoise and Venusaur.
+  Click the rarity link in the sub-line; assert the URL carries q=rarity and
+  all=1, then assert another Rare Holo card (Blastoise) appears.

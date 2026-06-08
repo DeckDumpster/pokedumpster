@@ -1,0 +1,12 @@
+# Scenario: "Evolves from" link runs a name: search for the pre-evolution
+#
+# Related:
+#   issues: [pokedumpster-anj]
+#   pull_requests: []
+
+description: >
+  A Stage card shows an "Evolves from" link naming its pre-evolution.
+  Clicking it navigates to the collection search by that name across the
+  whole catalog — a `name:` DSL query listing every printing of the
+  pre-evolution. This mirrors how evolution works (by name, across all
+  sets) instead of jumping to one arbitrary newest printing.

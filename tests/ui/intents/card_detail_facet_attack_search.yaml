@@ -1,0 +1,10 @@
+# Scenario: Clicking a Pokémon's attack runs an attack: catalog search
+#
+# Related:
+#   issues: [pokedumpster-cww]
+#   pull_requests: []
+
+description: >
+  When I click one of a Pokémon's attacks on the card page, the browser
+  navigates to the collection search filtered to that attack across the
+  whole catalog — an `attack:` DSL query.

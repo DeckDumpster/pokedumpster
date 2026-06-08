@@ -1,0 +1,10 @@
+# Scenario: Clicking a card's Weakness runs a weakness: catalog search
+#
+# Related:
+#   issues: [pokedumpster-cww]
+#   pull_requests: []
+
+description: >
+  When I click a card's Weakness type on the card page, the browser
+  navigates to the collection search filtered to cards sharing that type
+  weakness across the whole catalog — a `weakness:` DSL query.

@@ -1,0 +1,12 @@
+# Scenario: Multi-select copies on the card page and bulk-set their condition
+#
+# Related:
+#   issues: [pokedumpster-0qu]
+#   pull_requests: []
+
+description: >
+  On a card's detail page, when I own more than one copy the "Your copies"
+  table lets me multi-select copies (a checkbox per row plus a select-all)
+  and bulk-set their condition (and status / location) in one action —
+  instead of editing each copy's dropdown one row at a time, which is
+  tedious when grading a stack of the same card.

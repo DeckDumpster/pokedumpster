@@ -42,7 +42,12 @@
 	let priceSeries = $state<PriceSeries[]>([]);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
-	let busy = $state(false);
+	// Per-control in-flight keys (e.g. "123:condition", "add:base1-4-holo").
+	// Only the control being saved is disabled, so edits to different copies
+	// or fields run concurrently instead of serializing behind one another's
+	// save + reload (pokedumpster-gxug).
+	let savingKeys = $state<Set<string>>(new Set());
+	const isSaving = (key: string) => savingKeys.has(key);
 	let priceModalFor = $state<{ printing_id: string; label: string } | null>(null);
 	let missingVariantOpen = $state(false);
 
@@ -102,25 +107,31 @@
 		savedTimer = setTimeout(() => (savedKey = null), 1600);
 	}
 
-	async function withBusy(fn: () => Promise<unknown>, savedAt?: string) {
-		busy = true;
+	// `key` identifies the control being saved ("<copyId>:<field>" or
+	// "add:/remove:<printingId>"). It scopes the disabled state (so only that
+	// control locks while it saves) and the inline ✓. Concurrent edits to
+	// other controls run in parallel; each does its own reload and converges.
+	async function withBusy(fn: () => Promise<unknown>, key: string) {
+		savingKeys = new Set(savingKeys).add(key);
 		error = null;
 		try {
 			await fn();
 			onMutate?.();
 			await load();
-			flashSaved(savedAt);
+			flashSaved(key);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
-			busy = false;
+			const next = new Set(savingKeys);
+			next.delete(key);
+			savingKeys = next;
 		}
 	}
 
 	const addCopy = (printingId: string) =>
-		withBusy(() => api.addCopy({ printing_id: printingId, source: 'manual' }));
+		withBusy(() => api.addCopy({ printing_id: printingId, source: 'manual' }), `add:${printingId}`);
 	const removeCopy = (printingId: string) =>
-		withBusy(() => api.removeCopyByPrinting(printingId));
+		withBusy(() => api.removeCopyByPrinting(printingId), `remove:${printingId}`);
 	const changeVariant = (copyId: number, printingId: string) =>
 		withBusy(() => api.changePrinting(copyId, printingId), `${copyId}:variant`);
 	const changeStatus = (copyId: number, status: string) =>
@@ -135,14 +146,73 @@
 		if (copy.deck_id != null) return `d:${copy.deck_id}`;
 		return '';
 	}
-	function assignCopy(copyId: number, value: string) {
-		const body = value.startsWith('b:')
-			? { binder_id: Number(value.slice(2)) }
-			: value.startsWith('d:')
-				? { deck_id: Number(value.slice(2)) }
-				: {};
-		return withBusy(() => api.moveCopy(copyId, body), `${copyId}:location`);
+	/** "b:3" → assign binder 3, "d:5" → assign deck 5, "" → unassign. */
+	function assignBody(value: string): { binder_id?: number; deck_id?: number } {
+		if (value.startsWith('b:')) return { binder_id: Number(value.slice(2)) };
+		if (value.startsWith('d:')) return { deck_id: Number(value.slice(2)) };
+		return {};
 	}
+	function assignCopy(copyId: number, value: string) {
+		return withBusy(() => api.moveCopy(copyId, assignBody(value)), `${copyId}:location`);
+	}
+
+	// --- Multi-select copies for bulk edit. The user often grades a stack of
+	//     the same card and wants to set condition/status/location across many
+	//     copies at once instead of row by row (pokedumpster-0qu). Only shown
+	//     when the card has more than one owned copy. ---
+	let selectedCopies = $state<Set<number>>(new Set());
+	const copyIds = $derived((detail?.copies ?? []).map((c) => c.id));
+	const multiCopy = $derived(copyIds.length > 1);
+	const allCopiesChecked = $derived(
+		copyIds.length > 0 && copyIds.every((id) => selectedCopies.has(id))
+	);
+	// Drop any selection that no longer maps to a live copy (e.g. after a
+	// reload removed one), so a bulk action never targets a stale id.
+	$effect(() => {
+		const live = new Set(copyIds);
+		if ([...selectedCopies].some((id) => !live.has(id))) {
+			selectedCopies = new Set([...selectedCopies].filter((id) => live.has(id)));
+		}
+	});
+	function toggleCopy(id: number) {
+		const next = new Set(selectedCopies);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		selectedCopies = next;
+	}
+	function toggleAllCopies() {
+		selectedCopies = allCopiesChecked ? new Set() : new Set(copyIds);
+	}
+
+	/** Apply an edit to every selected copy at once, then reload. */
+	async function bulkCopies(fn: (id: number) => Promise<unknown>) {
+		const live = new Set(copyIds);
+		const ids = [...selectedCopies].filter((id) => live.has(id));
+		if (!ids.length) return;
+		savingKeys = new Set(savingKeys).add('bulk');
+		error = null;
+		try {
+			await Promise.all(ids.map(fn));
+			onMutate?.();
+			await load();
+			flashSaved('bulk');
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			const next = new Set(savingKeys);
+			next.delete('bulk');
+			savingKeys = next;
+		}
+	}
+	const bulkCondition = (c: string) => {
+		if (c) void bulkCopies((id) => api.updateCopy(id, { condition: c }));
+	};
+	const bulkStatus = (s: string) => {
+		if (s) void bulkCopies((id) => api.setCopyStatus(id, s));
+	};
+	const bulkLocation = (value: string) => {
+		if (value !== '__none__') void bulkCopies((id) => api.moveCopy(id, assignBody(value)));
+	};
 
 	function parseStrArr(raw: string | null): string[] {
 		if (!raw) return [];
@@ -503,14 +573,14 @@
 					<div class="stepper">
 						<button
 							class="step"
-							disabled={busy || p.owned_count <= 0}
+							disabled={isSaving(`remove:${p.printing_id}`) || p.owned_count <= 0}
 							onclick={() => removeCopy(p.printing_id)}
 							aria-label="Remove one {variantLabel(p.variant)}"
 						>−</button>
 						<span class="count" class:has={p.owned_count > 0}>{p.owned_count}</span>
 						<button
 							class="step"
-							disabled={busy || p.deprecated}
+							disabled={isSaving(`add:${p.printing_id}`) || p.deprecated}
 							onclick={() => addCopy(p.printing_id)}
 							aria-label="Add one {variantLabel(p.variant)}"
 						>+</button>
@@ -543,8 +613,48 @@
 						>✓</span
 					>{/if}
 			{/snippet}
+			{#if multiCopy && selectedCopies.size > 0}
+				<div class="copybulk">
+					<span class="count">{selectedCopies.size} selected</span>
+					<select
+						data-testid="bulk-condition"
+						disabled={isSaving('bulk')}
+						onchange={(e) => {
+							bulkCondition(e.currentTarget.value);
+							e.currentTarget.selectedIndex = 0;
+						}}
+					>
+						<option value="">Set condition…</option>
+						{#each CONDITIONS as c (c)}<option value={c}>{c}</option>{/each}
+					</select>
+					<select
+						disabled={isSaving('bulk')}
+						onchange={(e) => {
+							bulkStatus(e.currentTarget.value);
+							e.currentTarget.selectedIndex = 0;
+						}}
+					>
+						<option value="">Set status…</option>
+						{#each STATUSES as s (s)}<option value={s}>{s}</option>{/each}
+					</select>
+					<select
+						disabled={isSaving('bulk')}
+						onchange={(e) => {
+							bulkLocation(e.currentTarget.value);
+							e.currentTarget.selectedIndex = 0;
+						}}
+					>
+						<option value="__none__">Assign to…</option>
+						<option value="">Unassigned</option>
+						{#each binders as b (b.id)}<option value="b:{b.id}">Binder: {b.name}</option>{/each}
+						{#each decks as d (d.id)}<option value="d:{d.id}">Deck: {d.name}</option>{/each}
+					</select>
+					<button class="bulkclear" onclick={() => (selectedCopies = new Set())}>Clear</button>
+				</div>
+			{/if}
 			<table>
 				<colgroup>
+					{#if multiCopy}<col style="width: 4%" />{/if}
 					<col style="width: 19%" />
 					<col style="width: 19%" />
 					<col style="width: 15%" />
@@ -553,15 +663,36 @@
 					<col style="width: 13%" />
 				</colgroup>
 				<thead>
-					<tr><th>Variant</th><th>Condition</th><th>Status</th><th>Location</th><th>Paid</th><th>Value</th></tr>
+					<tr>
+						{#if multiCopy}<th class="selcol"
+								><input
+									type="checkbox"
+									checked={allCopiesChecked}
+									onchange={toggleAllCopies}
+									title="Select all copies"
+									aria-label="Select all copies"
+								/></th
+							>{/if}
+						<th>Variant</th><th>Condition</th><th>Status</th><th>Location</th><th>Paid</th><th
+							>Value</th
+						>
+					</tr>
 				</thead>
 				<tbody>
 					{#each detail.copies as copy (copy.id)}
-						<tr class="copyrow">
+						<tr class="copyrow" class:picked={selectedCopies.has(copy.id)}>
+							{#if multiCopy}<td class="selcol"
+									><input
+										type="checkbox"
+										checked={selectedCopies.has(copy.id)}
+										onchange={() => toggleCopy(copy.id)}
+										aria-label="Select copy"
+									/></td
+								>{/if}
 							<td data-label="Variant">
 								<select
 									value={copy.printing_id}
-									disabled={busy}
+									disabled={isSaving(`${copy.id}:variant`)}
 									onchange={(e) => changeVariant(copy.id, e.currentTarget.value)}
 								>
 									{#each visiblePrintings
@@ -575,7 +706,7 @@
 							<td data-label="Condition">
 							<select
 								value={copy.condition}
-								disabled={busy}
+								disabled={isSaving(`${copy.id}:condition`)}
 								onchange={(e) => changeCondition(copy.id, e.currentTarget.value)}
 							>
 								{#each CONDITIONS as c (c)}<option value={c}>{c}</option>{/each}
@@ -585,7 +716,7 @@
 							<td data-label="Status">
 								<select
 									value={copy.status}
-									disabled={busy}
+									disabled={isSaving(`${copy.id}:status`)}
 									onchange={(e) => changeStatus(copy.id, e.currentTarget.value)}
 								>
 									{#each STATUSES as s (s)}<option value={s}>{s}</option>{/each}
@@ -595,7 +726,7 @@
 							<td data-label="Location">
 								<select
 									value={assignValue(copy)}
-									disabled={busy}
+									disabled={isSaving(`${copy.id}:location`)}
 									onchange={(e) => assignCopy(copy.id, e.currentTarget.value)}
 								>
 									<option value="">Unassigned</option>
@@ -610,12 +741,12 @@
 							>
 						</tr>
 						<tr class="noterow">
-							<td colspan="6">
+							<td colspan={multiCopy ? 7 : 6}>
 								<input
 									class="noteinput"
 									type="text"
 									value={copy.notes ?? ''}
-									disabled={busy}
+									disabled={isSaving(`${copy.id}:notes`)}
 									placeholder="Notes — e.g. red mark near holo, two visible bumps"
 									title="Condition notes for this copy"
 									onchange={(e) => changeNotes(copy.id, e.currentTarget.value)}
@@ -1014,6 +1145,52 @@
 		padding: 0.15rem;
 		font: inherit;
 	}
+	/* Multi-select copies: bulk-edit bar + checkbox column (pokedumpster-0qu). */
+	.copybulk {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin-bottom: 0.6rem;
+		padding: 0.5rem 0.6rem;
+		background: rgba(233, 69, 96, 0.1);
+		border: 1px solid #0f3460;
+		border-radius: 8px;
+		max-width: 640px;
+	}
+	.copybulk .count {
+		color: #e0e0e0;
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+	.copybulk select {
+		max-width: 12rem;
+	}
+	.bulkclear {
+		margin-left: auto;
+		background: none;
+		border: 1px solid #0f3460;
+		color: #aaa;
+		border-radius: 6px;
+		padding: 0.2rem 0.6rem;
+		cursor: pointer;
+		font: inherit;
+	}
+	.bulkclear:hover {
+		color: #e0e0e0;
+		border-color: #e94560;
+	}
+	.selcol {
+		text-align: center;
+		width: 1.5rem;
+	}
+	.selcol input {
+		cursor: pointer;
+	}
+	.copyrow.picked td {
+		background: rgba(233, 69, 96, 0.12);
+	}
+
 	/* Keep each copy and its note visually together: drop the divider between
 	   the copy row and its note row; the note row carries the separator. */
 	.copyrow td {

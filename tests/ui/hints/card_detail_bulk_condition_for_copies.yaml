@@ -1,0 +1,15 @@
+start_page: /card/base1/4
+involves:
+  - "card detail page for Charizard (base1 #4), which has TWO copies in the fixture"
+  - "select-all checkbox in the copies table head: table thead input[type=checkbox]"
+  - "bulk bar with a 'Set condition…' select: [data-testid=bulk-condition]"
+  - "after applying, every copy's Condition select shows the new value"
+fixture_data:
+  start_card: Charizard
+  copies: 2
+  new_condition: "Moderately Played"
+notes: >
+  Charizard (base1/4) has two copies in the fixture (one owned, one ordered),
+  so the multi-select UI (checkbox column + select-all + bulk bar) appears.
+  Check select-all, choose 'Moderately Played' in the bulk 'Set condition…'
+  dropdown, then assert BOTH copies' Condition selects read 'Moderately Played'.

@@ -183,18 +183,18 @@
 	// user owns no priced variant, fall back to showing all so the chart isn't
 	// empty.
 	let showAllPrices = $state(false);
-	// The variants the add-list actually shows: owned, or non-deprecated. The
-	// chart mirrors this so "show all" never plots a deprecated phantom — e.g.
-	// sv10/231's deprecated team_rocket_rh shares a tcgplayer_product_id with
-	// its holo, so get_card_prices joins the same prices to both and emits a
-	// duplicate line for a variant you can't even add (pokedumpster-3b4).
-	const visiblePrintingIds = $derived(
-		new Set(
-			(detail?.printings ?? [])
-				.filter((p) => !p.deprecated || p.owned_count > 0)
-				.map((p) => p.printing_id)
-		)
+	// The single source of truth for which variants are "real" to the user:
+	// non-deprecated, or deprecated but owned. The add-list, the per-copy
+	// Variant dropdown, and the price chart all key off this so a deprecated
+	// phantom (e.g. sv10/231's team_rocket_rh, which shares a
+	// tcgplayer_product_id with its holo) never appears anywhere it can't be
+	// acted on (pokedumpster-3b4, pokedumpster-9em). A copy's own printing
+	// always has owned_count > 0, so it's never filtered out from under the
+	// select.
+	const visiblePrintings = $derived(
+		(detail?.printings ?? []).filter((p) => !p.deprecated || p.owned_count > 0)
 	);
+	const visiblePrintingIds = $derived(new Set(visiblePrintings.map((p) => p.printing_id)));
 	const ownedPrintingIds = $derived(
 		new Set((detail?.printings ?? []).filter((p) => p.owned_count > 0).map((p) => p.printing_id))
 	);
@@ -450,8 +450,7 @@
 			>+ Missing variant</button>
 		</div>
 		<ul class="printings">
-			{#each detail.printings
-				.filter((p) => !p.deprecated || p.owned_count > 0)
+			{#each visiblePrintings
 				.slice()
 				.sort((a, b) => variantSortCmp(a.variant, b.variant)) as p (p.printing_id)}
 				<li class:dim={p.deprecated} class:user-added={p.is_user_added}>
@@ -559,7 +558,7 @@
 									disabled={busy}
 									onchange={(e) => changeVariant(copy.id, e.currentTarget.value)}
 								>
-									{#each detail.printings
+									{#each visiblePrintings
 										.slice()
 										.sort((a, b) => variantSortCmp(a.variant, b.variant)) as p (p.printing_id)}
 										<option value={p.printing_id}>{variantLabel(p.variant)}</option>

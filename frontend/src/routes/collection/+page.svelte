@@ -4,7 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { api, SearchQueryError } from '$lib/api';
 	import { variantLabel, variantTag, variants } from '$lib/variants.svelte';
-	import { conditionMultiplier } from '$lib/conditions';
+	import { CONDITIONS, conditionMultiplier } from '$lib/conditions';
 	import { money, count } from '$lib/format';
 
 	// Foil shimmer treatment for holo / reverse-holo / pattern-RH /
@@ -767,6 +767,25 @@
 		}
 	}
 
+	// Set condition on every selected copy in one batch, then refresh once —
+	// far quicker than opening each card modal in turn (pokedumpster-4s8). The
+	// updates are independent, so fire them together.
+	async function bulkSetCondition(condition: string) {
+		if (!condition) return;
+		const ids = [...selected];
+		if (!ids.length) return;
+		busy = true;
+		error = null;
+		try {
+			await Promise.all(ids.map((id) => api.updateCopy(id, { condition })));
+			await refresh();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = false;
+		}
+	}
+
 	async function bulkWishlist() {
 		// One wish per distinct card — selecting two copies of a card wishes it once.
 		const seen = new Set<string>();
@@ -946,6 +965,16 @@
 		<div class="bulkbar">
 			<span class="count">{selected.size} selected</span>
 			<button disabled={busy} onclick={bulkDelete}>Delete</button>
+			<select
+				disabled={busy}
+				onchange={(e) => {
+					bulkSetCondition(e.currentTarget.value);
+					e.currentTarget.selectedIndex = 0;
+				}}
+			>
+				<option value="">Set condition…</option>
+				{#each CONDITIONS as c (c)}<option value={c}>{c}</option>{/each}
+			</select>
 			<select
 				disabled={busy || binders.length === 0}
 				onchange={(e) => {

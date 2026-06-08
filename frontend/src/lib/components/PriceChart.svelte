@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Chart, registerables, type ChartConfiguration } from 'chart.js';
+	import { untrack } from 'svelte';
 	import { variantLabel } from '$lib/variants.svelte';
 	import { money } from '$lib/format';
 	import type { PriceSeries } from '$lib/types/PriceSeries';
@@ -9,6 +10,10 @@
 	let { series }: { series: PriceSeries[] } = $props();
 
 	let canvas = $state<HTMLCanvasElement | undefined>();
+	// Number of times the Chart.js chart has been (re)built. Exposed as
+	// data-builds so a test can assert an unrelated edit (e.g. changing a
+	// copy's condition) does NOT rebuild the chart.
+	let builds = $state(0);
 
 	// Distinct line color per series; cycles if there are more printings than
 	// palette entries (Pokémon cards almost always have <= 4 printings).
@@ -61,9 +66,22 @@
 		};
 	}
 
+	// Content signature of the plotted data. The chart is rebuilt only when
+	// this changes — so a parent reload that produces an identical dataset
+	// (e.g. editing a copy's condition re-fetches the catalog price history,
+	// which is unchanged) doesn't destroy + recreate the chart, which would
+	// replay Chart.js's entry animation and read as a jarring "refresh"
+	// (pokedumpster-i5d).
+	const sig = $derived(JSON.stringify(series.map((s) => [s.printing_id, s.variant, s.points])));
+
 	$effect(() => {
-		if (!canvas) return;
-		const chart = new Chart(canvas, buildConfig(series));
+		// Depend on the canvas + the content signature only; read `series`
+		// itself untracked so a new-but-identical array reference is a no-op.
+		void sig;
+		const el = canvas;
+		if (!el) return;
+		const chart = new Chart(el, buildConfig(untrack(() => series)));
+		builds = untrack(() => builds) + 1;
 		return () => chart.destroy();
 	});
 
@@ -79,11 +97,11 @@
 	<p class="muted">No price history yet.</p>
 {:else if oneShot}
 	<p class="muted">Only one price snapshot so far — the chart will grow as the daily refresh runs.</p>
-	<div class="wrap" data-testid="price-chart" data-series-count={series.length}>
+	<div class="wrap" data-testid="price-chart" data-series-count={series.length} data-builds={builds}>
 		<canvas bind:this={canvas}></canvas>
 	</div>
 {:else}
-	<div class="wrap" data-testid="price-chart" data-series-count={series.length}>
+	<div class="wrap" data-testid="price-chart" data-series-count={series.length} data-builds={builds}>
 		<canvas bind:this={canvas}></canvas>
 	</div>
 {/if}

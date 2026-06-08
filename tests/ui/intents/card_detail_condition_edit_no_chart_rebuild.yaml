@@ -1,0 +1,12 @@
+# Scenario: Editing a copy's condition does not rebuild the price chart
+#
+# Related:
+#   issues: [pokedumpster-i5d]
+#   pull_requests: []
+
+description: >
+  On the card detail page, editing an owned copy's condition updates the
+  copy but must NOT rebuild/refresh the price chart — the catalog price
+  history is unchanged, so destroying and recreating the chart (which
+  replays its entry animation) is jarring and wrong. The chart's build
+  counter stays the same across the edit.

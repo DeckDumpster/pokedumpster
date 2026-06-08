@@ -183,15 +183,26 @@
 	// user owns no priced variant, fall back to showing all so the chart isn't
 	// empty.
 	let showAllPrices = $state(false);
+	// The variants the add-list actually shows: owned, or non-deprecated. The
+	// chart mirrors this so "show all" never plots a deprecated phantom — e.g.
+	// sv10/231's deprecated team_rocket_rh shares a tcgplayer_product_id with
+	// its holo, so get_card_prices joins the same prices to both and emits a
+	// duplicate line for a variant you can't even add (pokedumpster-3b4).
+	const visiblePrintingIds = $derived(
+		new Set(
+			(detail?.printings ?? [])
+				.filter((p) => !p.deprecated || p.owned_count > 0)
+				.map((p) => p.printing_id)
+		)
+	);
 	const ownedPrintingIds = $derived(
 		new Set((detail?.printings ?? []).filter((p) => p.owned_count > 0).map((p) => p.printing_id))
 	);
+	const allSeries = $derived(priceSeries.filter((s) => visiblePrintingIds.has(s.printing_id)));
 	const ownedSeries = $derived(priceSeries.filter((s) => ownedPrintingIds.has(s.printing_id)));
-	const chartSeries = $derived(
-		showAllPrices || ownedSeries.length === 0 ? priceSeries : ownedSeries
-	);
+	const chartSeries = $derived(showAllPrices || ownedSeries.length === 0 ? allSeries : ownedSeries);
 	// Show the toggle only when there's something hidden to reveal.
-	const hasHiddenSeries = $derived(ownedSeries.length > 0 && priceSeries.length > ownedSeries.length);
+	const hasHiddenSeries = $derived(ownedSeries.length > 0 && allSeries.length > ownedSeries.length);
 
 	// Pokémon energy-type icons, served from /static/energy. "Free" (a
 	// zero-energy attack cost rendered on the card art as a clear circle)
@@ -1071,6 +1082,16 @@
 		}
 		table {
 			max-width: 100%;
+			/* Drop the table formatting context entirely on mobile: the rows
+			   stack as blocks below, and leaving the <table> as display:table
+			   with table-layout:fixed + the <colgroup> wraps the block tbody in
+			   an anonymous cell pinned to column 1 (~19%), collapsing the whole
+			   thing into an unusable strip (pokedumpster-9i5). */
+			display: block;
+			table-layout: auto;
+		}
+		colgroup {
+			display: none;
 		}
 		thead {
 			display: none;
@@ -1104,6 +1125,9 @@
 		td select {
 			flex: 1;
 			min-width: 0;
+			/* Override the desktop fixed-table width:100% so the select shares
+			   the row with its data-label instead of overflowing. */
+			width: auto;
 		}
 	}
 

@@ -106,6 +106,7 @@ pub fn parse(input: &str) -> Result<Vec<ParsedRow>> {
                 condition: condition.clone(),
                 language: language.clone(),
                 purchase_price,
+                acquired_at: None,
                 tags: Vec::new(),
             });
         }

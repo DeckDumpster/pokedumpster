@@ -3,4 +3,4 @@
 /**
  * A row that resolved cleanly to a catalog printing — ready to commit.
  */
-export type ResolvedRow = { source_line: number, printing_id: string, card_name: string, set_code: string, number: string, variant: string, condition: string, language: string, purchase_price: number | null, tags: Array<string>, };
+export type ResolvedRow = { source_line: number, printing_id: string, card_name: string, set_code: string, number: string, variant: string, condition: string, language: string, purchase_price: number | null, acquired_at: string | null, tags: Array<string>, };

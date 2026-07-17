@@ -112,6 +112,7 @@ pub fn parse(input: &str) -> Result<Vec<ParsedRow>> {
                 condition: condition.clone(),
                 language: language.clone(),
                 purchase_price,
+                acquired_at: None,
                 tags: tags.clone(),
             });
         }
@@ -123,11 +124,14 @@ pub fn parse(input: &str) -> Result<Vec<ParsedRow>> {
 /// vocabulary is translated; any other value passes through verbatim, so
 /// PokeDumpster's own CSV export (which writes variant codes directly)
 /// round-trips every variant, not just the three ManaBox knows.
-fn map_variant(foil: &str) -> String {
+///
+/// Shared with the Collectr importer, whose `Variance` column speaks the
+/// same foil vocabulary (`Holofoil`, `Normal`, `Reverse Holofoil`).
+pub(crate) fn map_variant(foil: &str) -> String {
     match foil.trim().to_lowercase().as_str() {
         "" | "non-foil" | "nonfoil" => "normal".to_string(),
         "foil" | "holofoil" | "etched" => "holo".to_string(),
-        "reverseholofoil" => "reverse_holo".to_string(),
+        "reverseholofoil" | "reverse holofoil" | "reverse holo" => "reverse_holo".to_string(),
         other => other.to_string(),
     }
 }

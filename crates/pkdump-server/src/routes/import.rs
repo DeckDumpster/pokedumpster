@@ -5,7 +5,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde::Deserialize;
 
-use pkdump_db::import::{self, CommitResult, ImportFormat, ResolutionReport};
+use pkdump_db::import::{
+    self, CombinedCommitResult, CombinedReport, CommitResult, ImportFormat, ResolutionReport,
+};
 
 use crate::{AppError, AppState, blocking};
 
@@ -14,6 +16,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/import/csv/preview", post(preview))
         .route("/import/csv/commit", post(commit))
+        // Collectr yields singles + sealed in one file; its own endpoints
+        // return both resolutions separately (the garden wall).
+        .route("/import/collectr/preview", post(preview_collectr))
+        .route("/import/collectr/commit", post(commit_collectr))
 }
 
 /// An import request: the CSV text and which format to parse it as.
@@ -44,6 +50,30 @@ async fn commit(
     let format = ImportFormat::parse(&req.format)?;
     let result = blocking(&state, move |c| {
         import::commit(c, format, &req.content, req.name.as_deref())
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+/// Preview a Collectr import — singles and sealed resolved separately, plus
+/// any skipped (non-Pokémon) rows. Writes nothing. The `format` field is
+/// ignored; this endpoint is Collectr-specific.
+async fn preview_collectr(
+    State(state): State<AppState>,
+    Json(req): Json<ImportRequest>,
+) -> Result<Json<CombinedReport>, AppError> {
+    let report = blocking(&state, move |c| import::preview_collectr(c, &req.content)).await?;
+    Ok(Json(report))
+}
+
+/// Commit a Collectr import: singles to `collection` under a batch, sealed
+/// to `sealed_collection`, kept strictly apart.
+async fn commit_collectr(
+    State(state): State<AppState>,
+    Json(req): Json<ImportRequest>,
+) -> Result<Json<CombinedCommitResult>, AppError> {
+    let result = blocking(&state, move |c| {
+        import::commit_collectr(c, &req.content, req.name.as_deref())
     })
     .await?;
     Ok(Json(result))

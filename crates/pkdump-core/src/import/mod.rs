@@ -2,6 +2,7 @@
 //! `ParsedRow`s — one per physical copy — which the catalog resolver in
 //! `pkdump-db` then matches against the card catalogue. Pure: no IO.
 
+pub mod collectr;
 pub mod manabox;
 pub mod pokedumpster;
 pub mod tcgplayer;
@@ -26,6 +27,9 @@ pub struct ParsedRow {
     pub condition: String,
     pub language: String,
     pub purchase_price: Option<f64>,
+    /// Acquisition date as written (ISO `YYYY-MM-DD`), if the source carries
+    /// one (e.g. Collectr's "Date Added"). `None` → the importer stamps now.
+    pub acquired_at: Option<String>,
     /// Misprint / altered flags, merged.
     pub tags: Vec<String>,
 }

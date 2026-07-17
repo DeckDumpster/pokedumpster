@@ -951,7 +951,9 @@
 				>⋯</button>
 				{#if menuOpen}
 					<div class="menu" role="menu">
-						<a class="menuItem" href="/api/export/csv" download onclick={closeMenu}>Export CSV</a>
+						<a class="menuItem" href="/api/export/csv" download onclick={closeMenu}>Export CSV (ManaBox)</a>
+						<a class="menuItem" href="/api/export/collectr/singles.csv" download onclick={closeMenu}>Export cards (Collectr)</a>
+						<a class="menuItem" href="/api/export/collectr/sealed.csv" download onclick={closeMenu}>Export sealed (Collectr)</a>
 						<button
 							class="menuItem"
 							onclick={() => {

@@ -36,6 +36,8 @@ import type { BatchDetail } from './types/BatchDetail';
 import type { NewBatch } from './types/NewBatch';
 import type { ResolutionReport } from './types/ResolutionReport';
 import type { CommitResult } from './types/CommitResult';
+import type { CombinedReport } from './types/CombinedReport';
+import type { CombinedCommitResult } from './types/CombinedCommitResult';
 import type { Variant } from './types/Variant';
 import type { ManualPrice } from './types/ManualPrice';
 import type { NewManualPrice } from './types/NewManualPrice';
@@ -228,6 +230,17 @@ export const api = {
 		send<ResolutionReport>('POST', '/api/import/csv/preview', { format, content }),
 	importCommit: (format: string, content: string, name?: string) =>
 		send<CommitResult>('POST', '/api/import/csv/commit', { format, content, name }),
+
+	// Collectr yields singles + sealed in one file; the combined endpoints
+	// return each resolution separately (the garden wall).
+	importCollectrPreview: (content: string) =>
+		send<CombinedReport>('POST', '/api/import/collectr/preview', { format: 'collectr', content }),
+	importCollectrCommit: (content: string, name?: string) =>
+		send<CombinedCommitResult>('POST', '/api/import/collectr/commit', {
+			format: 'collectr',
+			content,
+			name
+		}),
 
 	// --- Variants display metadata (backs $lib/variants.svelte) ---
 	variants: () => getJson<Variant[]>('/api/variants'),

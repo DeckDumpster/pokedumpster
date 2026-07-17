@@ -112,7 +112,13 @@ pub struct CommitResult {
 
 /// Resolve a set hint to a catalog `set_code`: exact code, then ptcgo code,
 /// then set name (the explicit name field, then the hint read as a name).
-fn resolve_set(conn: &Connection, hint: &str, name: Option<&str>) -> Result<Option<String>> {
+///
+/// Shared with the sealed import pipeline ([`crate::sealed_import`]).
+pub(crate) fn resolve_set(
+    conn: &Connection,
+    hint: &str,
+    name: Option<&str>,
+) -> Result<Option<String>> {
     let by = |sql: &str, value: &str| -> Result<Option<String>> {
         Ok(conn
             .prepare(sql)?

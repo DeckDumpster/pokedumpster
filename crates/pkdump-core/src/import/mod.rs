@@ -30,6 +30,35 @@ pub struct ParsedRow {
     pub tags: Vec<String>,
 }
 
+/// A sealed product parsed from an import file, before catalog resolution.
+///
+/// Deliberately *separate* from [`ParsedRow`]: sealed products and single
+/// cards are treated apart end-to-end (the garden wall). Unlike singles —
+/// which are strictly one row per physical card — sealed items keep a
+/// `quantity` because `sealed_collection` aggregates by count.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ParsedSealedRow {
+    /// 1-based source line (counting the header), for preview diagnostics.
+    pub source_line: usize,
+    /// Product name as written in the file (matched against the catalog).
+    pub name: String,
+    /// Set code (or name) as written, used to narrow the catalog match.
+    pub set_hint: String,
+    /// Set name as written, a resolution fallback. May be empty.
+    pub set_name: Option<String>,
+    /// Optional product-category hint (e.g. `booster_box`), if the source
+    /// carries one. Collectr does not, so this is usually `None`.
+    pub category_hint: Option<String>,
+    /// Number of sealed items — kept, not expanded 1:1.
+    pub quantity: u32,
+    pub condition: String,
+    /// Per-unit purchase price (Collectr's "Average Cost Paid").
+    pub purchase_price: Option<f64>,
+    /// Acquisition date as written (ISO `YYYY-MM-DD`), if present.
+    pub purchase_date: Option<String>,
+    pub notes: Option<String>,
+}
+
 /// Anything that can go wrong parsing an import file.
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {

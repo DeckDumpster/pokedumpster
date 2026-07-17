@@ -318,4 +318,54 @@ mod tests {
         let csv = collectr_singles_csv(&conn).unwrap();
         assert_eq!(csv.lines().count(), 1); // header only
     }
+
+    /// The garden-wall guarantee, end to end: a Collectr file imports into
+    /// the right tables, exports back out as two Collectr files, and those
+    /// files re-parse to exactly the same singles/sealed split — cards never
+    /// leak into the sealed file, sealed never leaks into the cards file.
+    #[test]
+    fn collectr_round_trip_holds_the_garden_wall() {
+        use pkdump_core::import::collectr;
+
+        let (_d, mut conn) = db();
+        let csv = "\
+Portfolio Name,Category,Set,Product Name,Card Number,Rarity,Variance,Grade,Card Condition,Average Cost Paid,Quantity,Market Price (As of 2026-07-17),Price Override,Watchlist,Date Added,Notes
+Main,Pokemon,151,Charizard ex,6/165,Double Rare,Holofoil,Ungraded,Near Mint,4.50,2,5.00,0,false,2026-04-14,
+Sealed Pokemon TCG,Pokemon,151,151 Elite Trainer Box,,,Normal,Ungraded,Near Mint,49.99,3,60.00,0,false,2026-02-28,
+Main,Lorcana,Foo,Bar,1,Promo,Holofoil,Ungraded,Near Mint,0,1,1.00,0,false,2026-01-01,";
+
+        // Import: two card copies, one sealed row (qty kept), Lorcana skipped.
+        let imported = crate::import::commit_collectr(&mut conn, csv, Some("collectr")).unwrap();
+        assert_eq!(imported.singles.added, 2);
+        assert_eq!(imported.sealed.added, 1);
+        assert_eq!(imported.skipped, 1);
+
+        // Export each half back out as its own Collectr file.
+        let singles_csv = collectr_singles_csv(&conn).unwrap();
+        let sealed_csv = collectr_sealed_csv(&conn).unwrap();
+
+        // The cards file re-parses to only singles; re-resolves cleanly.
+        let re_singles = collectr::parse(&singles_csv).unwrap();
+        assert_eq!(re_singles.singles.len(), 2);
+        assert!(
+            re_singles.sealed.is_empty(),
+            "a card leaked into the sealed stream"
+        );
+        let re_singles_report = crate::import::resolve(&conn, &re_singles.singles).unwrap();
+        assert_eq!(re_singles_report.matched.len(), 2);
+        assert!(re_singles_report.unmatched.is_empty());
+
+        // The sealed file re-parses to only sealed; quantity survives.
+        let re_sealed = collectr::parse(&sealed_csv).unwrap();
+        assert_eq!(re_sealed.sealed.len(), 1);
+        assert!(
+            re_sealed.singles.is_empty(),
+            "a sealed product leaked into the card stream"
+        );
+        assert_eq!(re_sealed.sealed[0].quantity, 3);
+        let re_sealed_report =
+            crate::sealed_import::resolve_sealed(&conn, &re_sealed.sealed).unwrap();
+        assert_eq!(re_sealed_report.matched.len(), 1);
+        assert_eq!(re_sealed_report.matched[0].product_id, 7001);
+    }
 }

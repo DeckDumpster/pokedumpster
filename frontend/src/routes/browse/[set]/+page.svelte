@@ -3,6 +3,7 @@
 	import { goto, afterNavigate, beforeNavigate } from '$app/navigation';
 	import { api } from '$lib/api';
 	import VariantModal from '$lib/components/VariantModal.svelte';
+	import TcgExportModal from '$lib/components/TcgExportModal.svelte';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import { variantColor, variantLabel, variantSortCmp } from '$lib/variants.svelte';
 	import type { BinderPage } from '$lib/types/BinderPage';
@@ -107,6 +108,8 @@
 	}
 
 	let selectedSlot = $state<BinderSlot | null>(null);
+	// "Buy missing" → TCGplayer Mass Entry export modal.
+	let showTcgExport = $state(false);
 
 	// Default condition for new copies on this page. Sticky across modal
 	// opens within the same visit (the modal binds to this), defaults back
@@ -575,6 +578,13 @@
 					>
 				</div>
 			</details>
+			<!-- One-click: collect every missing card as a TCGplayer Mass
+			     Entry list. Real sets only — bundles span many home sets. -->
+			<button
+				class="buymissing"
+				onclick={() => (showTcgExport = true)}
+				title="Build a TCGplayer Mass Entry list of every card you're missing"
+			>🛒 Buy missing</button>
 		{/if}
 		<span class="spacer"></span>
 		<!-- Top pager — entire row hidden on mobile (the bottom pager
@@ -688,6 +698,10 @@
 		onRemove={removeCopy}
 		onClose={() => (selectedSlot = null)}
 	/>
+{/if}
+
+{#if showTcgExport && binder}
+	<TcgExportModal setCode={binder.set.set_code} onClose={() => (showTcgExport = false)} />
 {/if}
 
 <style>
@@ -875,6 +889,21 @@
 	}
 	.viewtoggle button.active {
 		background: #e94560;
+		color: #fff;
+	}
+	/* "Buy missing" → TCGplayer export. */
+	.buymissing {
+		background: #16213e;
+		border: 1px solid #0f3460;
+		border-radius: 6px;
+		color: #e0e0e0;
+		padding: 0.3rem 0.7rem;
+		font: inherit;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.buymissing:hover {
+		border-color: #e94560;
 		color: #fff;
 	}
 	/* Cards-per-row stepper. */

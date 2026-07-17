@@ -11,6 +11,7 @@ import type { CopyEdit } from './types/CopyEdit';
 import type { SetSummary } from './types/SetSummary';
 import type { SetAnalytics } from './types/SetAnalytics';
 import type { BinderPage } from './types/BinderPage';
+import type { MissingExport } from './types/MissingExport';
 import type { Binder } from './types/Binder';
 import type { BinderDetail } from './types/BinderDetail';
 import type { NewBinder } from './types/NewBinder';
@@ -135,6 +136,11 @@ export const api = {
 		const q = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]));
 		return getJson<BinderPage>(`/api/sets/${encodeURIComponent(setCode)}/binder?${q}`);
 	},
+
+	/** Missing cards in a set as TCGplayer Mass Entry lines (the "Buy
+	 *  missing" flow). 404s for bundle codes. */
+	tcgExport: (code: string) =>
+		getJson<MissingExport>(`/api/sets/${encodeURIComponent(code)}/tcg-export`),
 
 	/** Add a copy to the collection; returns the created display row. */
 	addCopy: (copy: NewCopyInput) => send<CollectionRow>('POST', '/api/collection', copy),

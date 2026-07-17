@@ -11,7 +11,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 
 use pkdump_db::DbError;
-use pkdump_db::binder::{self, BinderPage, BinderQuery};
+use pkdump_db::binder::{self, BinderPage, BinderQuery, MissingExport};
 use pkdump_db::bundles;
 use pkdump_db::sets::{self, SetAnalytics, SetSummary};
 
@@ -23,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/sets", get(list))
         .route("/sets/{code}/binder", get(binder_page))
         .route("/sets/{code}/analytics", get(analytics))
+        .route("/sets/{code}/tcg-export", get(tcg_export))
 }
 
 async fn list(State(state): State<AppState>) -> Result<Json<Vec<SetSummary>>, AppError> {
@@ -50,6 +51,24 @@ async fn analytics(
     })
     .await?;
     Ok(Json(stats))
+}
+
+/// Every missing card in a set as TCGplayer Mass Entry lines. Bundles are
+/// out of scope (their slots are reprints of cards in other sets with their
+/// own codes), so a bundle code resolves to `404`.
+async fn tcg_export(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+) -> Result<Json<MissingExport>, AppError> {
+    let export = blocking(&state, move |c| {
+        if bundles::is_bundle(c, &code)? {
+            return Err(DbError::NotFound(format!("set {code}")));
+        }
+        binder::missing_for_export(c, &code)?
+            .ok_or_else(|| DbError::NotFound(format!("set {code}")))
+    })
+    .await?;
+    Ok(Json(export))
 }
 
 #[derive(Deserialize)]

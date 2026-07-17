@@ -72,6 +72,36 @@ pub struct BinderSlot {
     pub external_set: Option<ExternalSet>,
 }
 
+/// The set of cards a user is missing, ready for a TCGplayer Mass Entry
+/// paste. Built by [`missing_for_export`]; the front-end filters by scope
+/// (base vs master) and per-card secret-rare confirmation before assembling
+/// the final paste text.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct MissingExport {
+    pub set_code: String,
+    pub set_name: String,
+    /// TCGplayer set abbreviation (== `sets.ptcgo_code`, which the ingest
+    /// pipeline links to TCGplayer's `group.abbreviation`). `None` means the
+    /// whole set has no usable code, so every line is unmappable.
+    pub ptcgo_code: Option<String>,
+    pub cards: Vec<MissingCard>,
+}
+
+/// One card the user owns no copy of, with its ready-to-paste Mass Entry
+/// line (or `None` when the set lacks a `ptcgo_code` to anchor it).
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct MissingCard {
+    pub card_id: String,
+    pub number: String,
+    pub name: String,
+    /// `base` | `secret` | `subset` | `promo`.
+    pub section: String,
+    /// `"1 <Name> [<CODE>] <Number>"`, or `None` when unmappable (no code).
+    pub mass_entry_line: Option<String>,
+}
+
 /// A single rendered binder page with master-set progress.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
@@ -378,6 +408,65 @@ pub fn get_binder_page(
     }))
 }
 
+/// Every card in `set_code` the user owns zero copies of, with a TCGplayer
+/// Mass Entry line per card. `None` if the set is unknown.
+///
+/// "Missing" mirrors the binder's `need` filter: a card counts as owned if
+/// any of its printings — catalog or the user-printings escape hatch — has a
+/// collection row. One line per card (the user picks holo/normal in
+/// TCGplayer's cart review), so variants are intentionally collapsed.
+pub fn missing_for_export(conn: &Connection, set_code: &str) -> Result<Option<MissingExport>> {
+    let set: Option<(String, Option<String>, Option<i64>)> = conn
+        .prepare("SELECT name, ptcgo_code, printed_total FROM sets WHERE set_code = ?1")?
+        .query_row([set_code], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .optional()?;
+    let Some((set_name, ptcgo_code, printed_total)) = set else {
+        return Ok(None);
+    };
+    let printed_total = printed_total.unwrap_or(i64::MAX);
+
+    let mut stmt = conn.prepare(
+        "SELECT cd.card_id, cd.number, cd.number_sortable, cd.name \
+         FROM cards cd \
+         WHERE cd.set_code = ?1 \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM ( \
+                SELECT printing_id FROM printings WHERE card_id = cd.card_id \
+                UNION ALL \
+                SELECT printing_id FROM user_printings WHERE card_id = cd.card_id \
+             ) p \
+             JOIN collection c ON c.printing_id = p.printing_id \
+           ) \
+         ORDER BY cd.number_sortable",
+    )?;
+    let cards = stmt
+        .query_map([set_code], |r| {
+            let card_id: String = r.get(0)?;
+            let number: String = r.get(1)?;
+            let number_sortable: i64 = r.get(2)?;
+            let name: String = r.get(3)?;
+            let section = section_of(number_sortable, printed_total).to_string();
+            let mass_entry_line = ptcgo_code
+                .as_ref()
+                .map(|code| format!("1 {name} [{code}] {number}"));
+            Ok(MissingCard {
+                card_id,
+                number,
+                name,
+                section,
+                mass_entry_line,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    Ok(Some(MissingExport {
+        set_code: set_code.to_string(),
+        set_name,
+        ptcgo_code,
+        cards,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,6 +711,86 @@ mod tests {
     }
 
     #[test]
+    fn missing_export_lines_and_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            // 'tst' has a ptcgo_code (mappable); 'noab' has none (unmappable).
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, ptcgo_code, printed_total) \
+                 VALUES ('tst', 'Test Set', 'S&V', 'TST', 2)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, printed_total) \
+                 VALUES ('noab', 'No Abbr', 'S&V', 1)",
+                [],
+            )
+            .unwrap();
+            // tst: base 1,2; secret 3; subset GG01.
+            let cards = [
+                ("tst", "tst-1", "1", 1_i64, "Bulbasaur"),
+                ("tst", "tst-2", "2", 2, "Ivysaur"),
+                ("tst", "tst-3", "3", 3, "Venusaur"),
+                ("tst", "tst-GG01", "GG01", 1_001, "Pikachu"),
+                ("noab", "noab-1", "1", 1, "Mew"),
+            ];
+            for (set, id, num, ns, name) in cards {
+                c.execute(
+                    "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![id, set, num, ns, name],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO printings (printing_id, card_id, variant) VALUES (?1, ?2, 'normal')",
+                    rusqlite::params![format!("{id}-normal"), id],
+                )
+                .unwrap();
+            }
+        }
+        let mut conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+
+        // Own card #1 of tst — it must drop out of the missing list.
+        collection::add(
+            &mut conn,
+            &NewCopy {
+                printing_id: "tst-1-normal".into(),
+                source: "manual_id".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let exp = missing_for_export(&conn, "tst").unwrap().unwrap();
+        assert_eq!(exp.ptcgo_code.as_deref(), Some("TST"));
+        let nums: Vec<&str> = exp.cards.iter().map(|c| c.number.as_str()).collect();
+        assert_eq!(nums, ["2", "3", "GG01"], "owned #1 excluded, rest ordered");
+        let venusaur = exp.cards.iter().find(|c| c.number == "3").unwrap();
+        assert_eq!(venusaur.section, "secret");
+        assert_eq!(
+            venusaur.mass_entry_line.as_deref(),
+            Some("1 Venusaur [TST] 3")
+        );
+        assert_eq!(
+            exp.cards
+                .iter()
+                .find(|c| c.number == "GG01")
+                .unwrap()
+                .section,
+            "subset"
+        );
+
+        // No ptcgo_code → every line is None so the UI can warn.
+        let noab = missing_for_export(&conn, "noab").unwrap().unwrap();
+        assert!(noab.ptcgo_code.is_none());
+        assert_eq!(noab.cards.len(), 1);
+        assert!(noab.cards[0].mass_entry_line.is_none());
+    }
+
+    #[test]
     fn unknown_set_is_none() {
         let (_d, conn) = binder_conn();
         assert!(
@@ -629,5 +798,6 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert!(missing_for_export(&conn, "nope").unwrap().is_none());
     }
 }

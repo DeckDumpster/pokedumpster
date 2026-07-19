@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { SvelteSet } from 'svelte/reactivity';
 	import { api } from '$lib/api';
 	import type { ResolutionReport } from '$lib/types/ResolutionReport';
 	import type { CommitResult } from '$lib/types/CommitResult';
@@ -20,18 +21,67 @@
 
 	const isCollectr = $derived(format === 'collectr');
 
-	// How many rows a commit would add — drives the Import button.
-	const matchCount = $derived(
-		isCollectr
-			? (combined?.singles.matched.length ?? 0) + (combined?.sealed.matched.length ?? 0)
-			: (report?.matched.length ?? 0)
+	// --- Per-row include/exclude (pokedumpster-oq3i.4) -----------------------
+	// Selection is keyed by CSV `source_line`: a single line with quantity > 1
+	// expands to several matched rows, and selecting/deselecting the line acts
+	// on all of them together (they're one physical CSV row).
+	const selSingles = new SvelteSet<number>();
+	const selSealed = new SvelteSet<number>();
+
+	const singlesMatched = $derived(
+		(isCollectr ? combined?.singles.matched : report?.matched) ?? []
 	);
+	const sealedMatched = $derived(combined?.sealed.matched ?? []);
+
+	// Committed-copy counts (row-level, not line-level).
+	const selSinglesCount = $derived(
+		singlesMatched.filter((r) => selSingles.has(r.source_line)).length
+	);
+	const selSealedCount = $derived(
+		sealedMatched.filter((r) => selSealed.has(r.source_line)).length
+	);
+	const totalSelected = $derived(selSinglesCount + selSealedCount);
+
+	// How many currently-selected matched rows duplicate something you own —
+	// drives the "Deselect already-owned" convenience button.
+	const ownedSinglesSelected = $derived(
+		singlesMatched.filter((r) => r.already_owned > 0 && selSingles.has(r.source_line)).length
+	);
+	const ownedSealedSelected = $derived(
+		sealedMatched.filter((r) => r.already_owned > 0 && selSealed.has(r.source_line)).length
+	);
+
+	type Keyed = { source_line: number };
+	type Owned = Keyed & { already_owned: number };
+
+	function toggle(set: SvelteSet<number>, line: number) {
+		if (set.has(line)) set.delete(line);
+		else set.add(line);
+	}
+	function setAll(set: SvelteSet<number>, rows: Keyed[], on: boolean) {
+		if (on) for (const r of rows) set.add(r.source_line);
+		else set.clear();
+	}
+	function deselectOwned(set: SvelteSet<number>, rows: Owned[]) {
+		for (const r of rows) if (r.already_owned > 0) set.delete(r.source_line);
+	}
+
+	// Default: every matched row selected (both panes).
+	function initSelection() {
+		selSingles.clear();
+		selSealed.clear();
+		const sm = isCollectr ? combined?.singles.matched : report?.matched;
+		for (const r of sm ?? []) selSingles.add(r.source_line);
+		for (const r of combined?.sealed.matched ?? []) selSealed.add(r.source_line);
+	}
 
 	function clearResults() {
 		report = null;
 		combined = null;
 		result = null;
 		combinedResult = null;
+		selSingles.clear();
+		selSealed.clear();
 	}
 
 	async function onFile(e: Event) {
@@ -53,6 +103,7 @@
 			} else {
 				report = await api.importPreview(format, content);
 			}
+			initSelection();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 			clearResults();
@@ -62,14 +113,24 @@
 	}
 
 	async function commit() {
-		if (!content.trim()) return;
+		if (!content.trim() || totalSelected === 0) return;
 		busy = true;
 		error = null;
 		try {
 			if (isCollectr) {
-				combinedResult = await api.importCollectrCommit(content, fileName ?? undefined);
+				combinedResult = await api.importCollectrCommitSelected(
+					content,
+					[...selSingles],
+					[...selSealed],
+					fileName ?? undefined
+				);
 			} else {
-				result = await api.importCommit(format, content, fileName ?? undefined);
+				result = await api.importCommitSelected(
+					format,
+					content,
+					[...selSingles],
+					fileName ?? undefined
+				);
 			}
 			report = null;
 			combined = null;
@@ -125,8 +186,10 @@
 
 	<div class="actions">
 		<button onclick={preview} disabled={busy || !content.trim()}>Preview</button>
-		<button class="commit" onclick={commit} disabled={busy || matchCount === 0}>
-			{matchCount > 0 ? `Import ${matchCount} ${matchCount === 1 ? 'item' : 'items'}` : 'Import'}
+		<button class="commit" onclick={commit} disabled={busy || totalSelected === 0}>
+			{totalSelected > 0
+				? `Import ${totalSelected} ${totalSelected === 1 ? 'item' : 'items'}`
+				: 'Import'}
 		</button>
 	</div>
 </div>
@@ -136,9 +199,7 @@
 {#if result}
 	<div class="result">
 		Imported <strong>{result.added}</strong>
-		{result.added === 1 ? 'card' : 'cards'}{result.skipped > 0
-			? ` · ${result.skipped} row${result.skipped === 1 ? '' : 's'} skipped`
-			: ''}.
+		{result.added === 1 ? 'card' : 'cards'}.
 		<a href="/batches/{result.batch_id}">View batch →</a>
 	</div>
 {/if}
@@ -148,9 +209,7 @@
 		Imported <strong>{combinedResult.singles.added}</strong>
 		{combinedResult.singles.added === 1 ? 'card' : 'cards'}
 		and <strong>{combinedResult.sealed.added}</strong>
-		sealed {combinedResult.sealed.added === 1 ? 'product' : 'products'}{combinedResult.skipped > 0
-			? ` · ${combinedResult.skipped} non-Pokémon row${combinedResult.skipped === 1 ? '' : 's'} skipped`
-			: ''}.
+		sealed {combinedResult.sealed.added === 1 ? 'product' : 'products'}.
 		<a href="/batches/{combinedResult.singles.batch_id}">View card batch →</a>
 	</div>
 {/if}
@@ -162,43 +221,72 @@
 			{#if report.unmatched.length}
 				· <span class="miss">{report.unmatched.length} unmatched</span>
 			{/if}
+			· <span class="sel">{selSinglesCount} selected</span>
 		</p>
 
-		{#if report.unmatched.length}
-			<h2>Unmatched rows</h2>
+		{#if report.matched.length}
+			<h2>Matched rows</h2>
+			<div class="seltools">
+				<button onclick={() => setAll(selSingles, singlesMatched, true)}>Select all</button>
+				<button onclick={() => setAll(selSingles, singlesMatched, false)}>Select none</button>
+				{#if ownedSinglesSelected}
+					<button class="warn" onclick={() => deselectOwned(selSingles, singlesMatched)}>
+						Deselect {ownedSinglesSelected} already-owned
+					</button>
+				{/if}
+			</div>
 			<table>
 				<thead>
-					<tr><th>Line</th><th>Set</th><th>#</th><th>Variant</th><th>Reason</th></tr>
+					<tr>
+						<th class="chk"></th>
+						<th>Line</th><th>Card</th><th>Set</th><th>#</th><th>Variant</th><th>Condition</th>
+					</tr>
 				</thead>
 				<tbody>
-					{#each report.unmatched as row, i (i)}
-						<tr>
+					{#each report.matched as row, i (i)}
+						<tr class:off={!selSingles.has(row.source_line)}>
+							<td class="chk">
+								<input
+									type="checkbox"
+									checked={selSingles.has(row.source_line)}
+									onchange={() => toggle(selSingles, row.source_line)}
+								/>
+							</td>
 							<td>{row.source_line}</td>
-							<td>{row.set_hint}</td>
+							<td>
+								{row.card_name}
+								{#if row.already_owned > 0}
+									<span class="badge" title="You already own {row.already_owned} of this printing">
+										owned ×{row.already_owned}
+									</span>
+								{/if}
+							</td>
+							<td>{row.set_code}</td>
 							<td>{row.number}</td>
 							<td>{row.variant}</td>
-							<td class="reason">{row.reason}</td>
+							<td>{row.condition}</td>
 						</tr>
 					{/each}
 				</tbody>
 			</table>
 		{/if}
 
-		{#if report.matched.length}
-			<h2>Matched rows</h2>
+		{#if report.unmatched.length}
+			<h2>Unmatched rows</h2>
+			<p class="subhint">Can't be imported until matched — coming with conflict resolution.</p>
 			<table>
 				<thead>
-					<tr><th>Line</th><th>Card</th><th>Set</th><th>#</th><th>Variant</th><th>Condition</th></tr>
+					<tr><th class="chk"></th><th>Line</th><th>Set</th><th>#</th><th>Variant</th><th>Reason</th></tr>
 				</thead>
 				<tbody>
-					{#each report.matched as row, i (i)}
-						<tr>
+					{#each report.unmatched as row, i (i)}
+						<tr class="off">
+							<td class="chk"><input type="checkbox" disabled title="Unresolved — can't import" /></td>
 							<td>{row.source_line}</td>
-							<td>{row.card_name}</td>
-							<td>{row.set_code}</td>
+							<td>{row.set_hint}</td>
 							<td>{row.number}</td>
 							<td>{row.variant}</td>
-							<td>{row.condition}</td>
+							<td class="reason">{row.reason}</td>
 						</tr>
 					{/each}
 				</tbody>
@@ -218,18 +306,45 @@
 					{#if combined.singles.unmatched.length}
 						· <span class="miss">{combined.singles.unmatched.length} unmatched</span>
 					{/if}
+					· <span class="sel">{selSinglesCount} selected</span>
 				</span>
 			</h2>
 			{#if combined.singles.matched.length}
+				<div class="seltools">
+					<button onclick={() => setAll(selSingles, singlesMatched, true)}>Select all</button>
+					<button onclick={() => setAll(selSingles, singlesMatched, false)}>Select none</button>
+					{#if ownedSinglesSelected}
+						<button class="warn" onclick={() => deselectOwned(selSingles, singlesMatched)}>
+							Deselect {ownedSinglesSelected} already-owned
+						</button>
+					{/if}
+				</div>
 				<table>
 					<thead>
-						<tr><th>Line</th><th>Card</th><th>Set</th><th>#</th><th>Variant</th><th>Cond.</th></tr>
+						<tr>
+							<th class="chk"></th>
+							<th>Line</th><th>Card</th><th>Set</th><th>#</th><th>Variant</th><th>Cond.</th>
+						</tr>
 					</thead>
 					<tbody>
 						{#each combined.singles.matched as row, i (i)}
-							<tr>
+							<tr class:off={!selSingles.has(row.source_line)}>
+								<td class="chk">
+									<input
+										type="checkbox"
+										checked={selSingles.has(row.source_line)}
+										onchange={() => toggle(selSingles, row.source_line)}
+									/>
+								</td>
 								<td>{row.source_line}</td>
-								<td>{row.card_name}</td>
+								<td>
+									{row.card_name}
+									{#if row.already_owned > 0}
+										<span class="badge" title="You already own {row.already_owned} of this printing">
+											owned ×{row.already_owned}
+										</span>
+									{/if}
+								</td>
 								<td>{row.set_code}</td>
 								<td>{row.number}</td>
 								<td>{row.variant}</td>
@@ -243,11 +358,12 @@
 				<h3>Unmatched cards</h3>
 				<table>
 					<thead>
-						<tr><th>Line</th><th>Set</th><th>#</th><th>Variant</th><th>Reason</th></tr>
+						<tr><th class="chk"></th><th>Line</th><th>Set</th><th>#</th><th>Variant</th><th>Reason</th></tr>
 					</thead>
 					<tbody>
 						{#each combined.singles.unmatched as row, i (i)}
-							<tr>
+							<tr class="off">
+								<td class="chk"><input type="checkbox" disabled title="Unresolved — can't import" /></td>
 								<td>{row.source_line}</td>
 								<td>{row.set_hint}</td>
 								<td>{row.number}</td>
@@ -268,18 +384,42 @@
 					{#if combined.sealed.unmatched.length}
 						· <span class="miss">{combined.sealed.unmatched.length} unmatched</span>
 					{/if}
+					· <span class="sel">{selSealedCount} selected</span>
 				</span>
 			</h2>
 			{#if combined.sealed.matched.length}
+				<div class="seltools">
+					<button onclick={() => setAll(selSealed, sealedMatched, true)}>Select all</button>
+					<button onclick={() => setAll(selSealed, sealedMatched, false)}>Select none</button>
+					{#if ownedSealedSelected}
+						<button class="warn" onclick={() => deselectOwned(selSealed, sealedMatched)}>
+							Deselect {ownedSealedSelected} already-owned
+						</button>
+					{/if}
+				</div>
 				<table>
 					<thead>
-						<tr><th>Line</th><th>Product</th><th>Set</th><th>Qty</th><th>Cond.</th></tr>
+						<tr><th class="chk"></th><th>Line</th><th>Product</th><th>Set</th><th>Qty</th><th>Cond.</th></tr>
 					</thead>
 					<tbody>
 						{#each combined.sealed.matched as row, i (i)}
-							<tr>
+							<tr class:off={!selSealed.has(row.source_line)}>
+								<td class="chk">
+									<input
+										type="checkbox"
+										checked={selSealed.has(row.source_line)}
+										onchange={() => toggle(selSealed, row.source_line)}
+									/>
+								</td>
 								<td>{row.source_line}</td>
-								<td>{row.name}</td>
+								<td>
+									{row.name}
+									{#if row.already_owned > 0}
+										<span class="badge" title="You already own {row.already_owned} of this product">
+											owned ×{row.already_owned}
+										</span>
+									{/if}
+								</td>
 								<td>{row.set_code ?? ''}</td>
 								<td>{row.quantity}</td>
 								<td>{row.condition}</td>
@@ -292,11 +432,12 @@
 				<h3>Unmatched sealed</h3>
 				<table>
 					<thead>
-						<tr><th>Line</th><th>Product</th><th>Set</th><th>Reason</th></tr>
+						<tr><th class="chk"></th><th>Line</th><th>Product</th><th>Set</th><th>Reason</th></tr>
 					</thead>
 					<tbody>
 						{#each combined.sealed.unmatched as row, i (i)}
-							<tr>
+							<tr class="off">
+								<td class="chk"><input type="checkbox" disabled title="Unresolved — can't import" /></td>
 								<td>{row.source_line}</td>
 								<td>{row.name}</td>
 								<td>{row.set_hint}</td>
@@ -366,6 +507,11 @@
 		border-radius: 6px;
 		padding: 0.5rem 0.7rem;
 		max-width: 640px;
+	}
+	.subhint {
+		font-size: 0.78rem;
+		color: #8a8aa0;
+		margin: 0 0 0.3rem;
 	}
 	.error {
 		color: #e94560;
@@ -437,6 +583,33 @@
 	.summary {
 		font-size: 0.95rem;
 	}
+	.seltools {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+		margin: 0 0 0.5rem;
+	}
+	.seltools button {
+		padding: 0.28rem 0.6rem;
+		font-size: 0.75rem;
+		background: #16213e;
+		border: 1px solid #0f3460;
+		border-radius: 5px;
+		color: #cfd6e6;
+		cursor: pointer;
+	}
+	.seltools button:hover {
+		border-color: #e94560;
+		color: #fff;
+	}
+	.seltools button.warn {
+		border-color: #e9a045;
+		color: #e9a045;
+	}
+	.seltools button.warn:hover {
+		background: #e9a045;
+		color: #16213e;
+	}
 	.pane {
 		margin: 1.4rem 0;
 		padding: 0 0 0.4rem;
@@ -459,6 +632,9 @@
 	.miss {
 		color: #e94560;
 	}
+	.sel {
+		color: #8fb7e0;
+	}
 	table {
 		width: 100%;
 		border-collapse: collapse;
@@ -475,6 +651,29 @@
 	td {
 		padding: 0.35rem 0.6rem;
 		border-bottom: 1px solid #0f3460;
+	}
+	th.chk,
+	td.chk {
+		width: 1.6rem;
+		padding-right: 0;
+		text-align: center;
+	}
+	td.chk input {
+		cursor: pointer;
+	}
+	tr.off td:not(.chk) {
+		opacity: 0.45;
+	}
+	.badge {
+		display: inline-block;
+		margin-left: 0.4rem;
+		padding: 0.05rem 0.4rem;
+		font-size: 0.68rem;
+		border-radius: 999px;
+		background: #3a2f16;
+		color: #e9a045;
+		border: 1px solid #e9a045;
+		vertical-align: middle;
 	}
 	.reason {
 		color: #e9a045;

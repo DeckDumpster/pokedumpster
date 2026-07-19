@@ -39,6 +39,12 @@ pub struct ResolvedSealedRow {
     pub purchase_price: Option<f64>,
     pub purchase_date: Option<String>,
     pub notes: Option<String>,
+    /// How many `owned` units of this product already sit in
+    /// `sealed_collection` (duplicate flag for the import preview). Filled by
+    /// [`crate::import::annotate_owned_sealed`] after resolution; `0` straight
+    /// out of [`resolve_sealed`]. (pokedumpster-oq3i.4)
+    #[ts(type = "number")]
+    pub already_owned: u32,
 }
 
 /// A sealed row that could not be resolved, with a human-readable reason.
@@ -223,6 +229,7 @@ pub fn resolve_sealed(
             purchase_price: row.purchase_price,
             purchase_date: row.purchase_date.clone(),
             notes: row.notes.clone(),
+            already_owned: 0, // filled by import::annotate_owned_sealed() (oq3i.4)
         };
 
         let key = (row.set_hint.clone(), row.set_name.clone());

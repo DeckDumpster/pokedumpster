@@ -198,9 +198,13 @@ pub fn resolve(conn: &Connection, rows: &[ParsedRow]) -> Result<ResolutionReport
             continue;
         };
 
+        // The catalog stores collector numbers unpadded ('90'); Collectr
+        // zero-pads them ('090'). Normalize both to the same canonical form
+        // so an exact `number =` lookup lands.
+        let lookup_number = import::normalize_collector_number(&row.number);
         let card: Option<(String, String)> = conn
             .prepare("SELECT card_id, name FROM cards WHERE set_code = ?1 AND number = ?2")?
-            .query_row((&set_code, &row.number), |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row((&set_code, &lookup_number), |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
         let Some((card_id, card_name)) = card else {
             unmatched.push(UnmatchedRow {
@@ -452,6 +456,20 @@ NOPE,Mystery,1,normal,1,near_mint,en,";
                 [],
             )
             .unwrap();
+            // A card stored at the unpadded number '90' — the leading-zero
+            // regression fixture (Collectr writes '090').
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('sv3pt5-90', 'sv3pt5', '90', 90, 'Simisage')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id, card_id, variant) \
+                 VALUES ('sv3pt5-90-normal', 'sv3pt5-90', 'normal')",
+                [],
+            )
+            .unwrap();
         }
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
         (dir, conn)
@@ -494,6 +512,29 @@ NOPE,Mystery,1,normal,1,near_mint,en,";
         let cards = collection::list_by_batch(&conn, result.batch_id).unwrap();
         assert_eq!(cards.len(), 2);
         assert!(cards.iter().all(|c| c.source == "csv_manabox"));
+    }
+
+    #[test]
+    fn zero_padded_number_resolves_against_unpadded_catalog() {
+        // Collectr writes '090'; the catalog stores '90'. An exact WHERE
+        // number='090' misses — the resolver must normalize both sides.
+        let (_d, conn) = db();
+        let rows = vec![ParsedRow {
+            source_line: 2,
+            set_hint: "sv3pt5".into(),
+            set_name: None,
+            number: "090".into(),
+            variant: "normal".into(),
+            condition: "Near Mint".into(),
+            language: "English".into(),
+            purchase_price: None,
+            acquired_at: None,
+            tags: Vec::new(),
+        }];
+        let report = resolve(&conn, &rows).unwrap();
+        assert_eq!(report.matched.len(), 1, "{:?}", report.unmatched);
+        assert_eq!(report.matched[0].card_name, "Simisage");
+        assert_eq!(report.matched[0].printing_id, "sv3pt5-90-normal");
     }
 
     #[test]

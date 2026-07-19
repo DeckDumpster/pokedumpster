@@ -115,3 +115,44 @@ pub(crate) fn map_language(raw: &str) -> String {
 pub(crate) fn is_true(s: &str) -> bool {
     matches!(s.trim().to_lowercase().as_str(), "true" | "1" | "yes")
 }
+
+/// Reduce a purely-numeric collector number to its canonical unpadded form,
+/// so a zero-padded source token (Collectr's `090`) matches the catalog's
+/// stored `90`. Only all-ASCII-digit tokens are stripped — alphanumeric
+/// numbers (`SWSH123`, `GG01`, `TG01`, `SVP`) are returned unchanged — and at
+/// least one digit is always kept (`000` → `0`). The canonical normalizer,
+/// shared by the Collectr parser and the catalog resolver so both sides of a
+/// `number =` lookup agree.
+pub fn normalize_collector_number(raw: &str) -> String {
+    let s = raw.trim();
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+        let stripped = s.trim_start_matches('0');
+        return if stripped.is_empty() {
+            "0".to_string()
+        } else {
+            stripped.to_string()
+        };
+    }
+    s.to_string()
+}
+
+#[cfg(test)]
+mod number_tests {
+    use super::normalize_collector_number;
+
+    #[test]
+    fn strips_leading_zeros_only_on_all_digit_tokens() {
+        // Zero-padded numerics collapse to the catalog's unpadded form.
+        assert_eq!(normalize_collector_number("090"), "90");
+        assert_eq!(normalize_collector_number("009"), "9");
+        assert_eq!(normalize_collector_number("026"), "26");
+        assert_eq!(normalize_collector_number("176"), "176");
+        // All-zero keeps a single digit rather than collapsing to empty.
+        assert_eq!(normalize_collector_number("000"), "0");
+        // Alphanumeric collector numbers are left exactly as written.
+        assert_eq!(normalize_collector_number("GG01"), "GG01");
+        assert_eq!(normalize_collector_number("TG01"), "TG01");
+        assert_eq!(normalize_collector_number("SWSH123"), "SWSH123");
+        assert_eq!(normalize_collector_number("SVP"), "SVP");
+    }
+}

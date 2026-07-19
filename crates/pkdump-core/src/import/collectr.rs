@@ -159,21 +159,25 @@ pub fn parse(input: &str) -> Result<CollectrParsed> {
     Ok(out)
 }
 
-/// Collectr writes collector numbers as `number/total` (`221/217`) and
-/// occasionally with a set-abbrev prefix (`SVP 176`). Reduce to the bare
-/// collector number the catalog stores.
+/// Collectr writes collector numbers as `number/total` (`221/217`),
+/// occasionally with a set-abbrev prefix (`SVP 176`), and zero-padded to
+/// three digits (`090/086`). Reduce to the bare, unpadded collector number
+/// the catalog stores.
 fn normalize_number(raw: &str) -> String {
     let s = raw.trim();
     let s = s.split('/').next().unwrap_or(s).trim();
     // "SVP 176" → "176": drop an alphabetic prefix before a numeric tail.
-    if let Some((prefix, tail)) = s.rsplit_once(' ')
+    let s = if let Some((prefix, tail)) = s.rsplit_once(' ')
         && !tail.is_empty()
         && tail.chars().all(|c| c.is_ascii_digit())
         && prefix.chars().any(|c| c.is_ascii_alphabetic())
     {
-        return tail.to_string();
-    }
-    s.to_string()
+        tail
+    } else {
+        s
+    };
+    // "090" → "90": strip zero-padding, but only on all-digit tokens.
+    super::normalize_collector_number(s)
 }
 
 /// Parse a Collectr price cell. Empty → `None`; a literal `0` is kept as
@@ -252,8 +256,20 @@ Sealed Pokemon TCG,Pokemon,Chaos Rising,Chaos Rising Booster Box,,,Normal,Ungrad
         assert_eq!(out.singles[1], out.singles[2]); // both expanded copies identical
 
         let meloetta = &out.singles[3];
-        assert_eq!(meloetta.number, "026");
+        assert_eq!(meloetta.number, "26"); // 026 → 26 (zero-padding stripped)
         assert_eq!(meloetta.variant, "normal"); // Variance Normal → normal
+    }
+
+    #[test]
+    fn strips_zero_padding_but_not_alphanumeric() {
+        // Collectr zero-pads to three digits; the catalog stores unpadded.
+        assert_eq!(normalize_number("090/086"), "90");
+        assert_eq!(normalize_number("009"), "9");
+        assert_eq!(normalize_number("SVP 176"), "176");
+        // Alphanumeric collector numbers must survive untouched.
+        assert_eq!(normalize_number("GG01"), "GG01");
+        assert_eq!(normalize_number("SWSH123"), "SWSH123");
+        assert_eq!(normalize_number("TG01/TG30"), "TG01");
     }
 
     #[test]

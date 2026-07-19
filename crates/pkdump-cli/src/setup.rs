@@ -154,6 +154,12 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
         s.processed, s.cached, s.overrides, s.failed
     );
 
+    // Materialize latest_prices so the per-row market-price lookup on the
+    // collection/search/binder pages is an indexed point read (vi37).
+    println!("Refreshing materialized latest_prices...");
+    let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
+    println!("  {n_latest} latest-price rows materialized");
+
     println!("Setup complete: {}", db_path.display());
     Ok(())
 }

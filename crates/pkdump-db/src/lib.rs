@@ -17,6 +17,7 @@ pub mod collectr_export;
 pub mod decks;
 pub mod export;
 pub mod import;
+pub mod latest_prices;
 pub mod manual_prices;
 pub mod orders;
 pub mod sealed;

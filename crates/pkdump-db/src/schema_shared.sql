@@ -198,16 +198,30 @@ CREATE TABLE IF NOT EXISTS prices_cardmarket (
     UNIQUE(card_id, variant, observed_at)
 );
 
-CREATE VIEW IF NOT EXISTS latest_prices AS
-SELECT p.* FROM prices p
-JOIN (SELECT tcgplayer_product_id, sub_type_name, source, price_type,
-             MAX(observed_at) AS observed_at
-      FROM prices GROUP BY 1, 2, 3, 4) m
-  ON p.tcgplayer_product_id = m.tcgplayer_product_id
- AND p.sub_type_name = m.sub_type_name
- AND p.source = m.source
- AND p.price_type = m.price_type
- AND p.observed_at = m.observed_at;
+-- latest_prices is MATERIALIZED (a table, not a view — pokedumpster-vi37).
+-- It was a view that GROUP BY'd the whole (multi-million-row) prices table;
+-- every collection/search/binder row does a per-row market-price lookup, so
+-- that view turned a page load into ~1.2s. As an indexed table the lookup is
+-- a point read (~60ms for the whole collection). Rebuilt at ingest by
+-- `pkdump_ingest::latest_prices::refresh_latest_prices` (pkdump setup /
+-- data refresh), right after prices are appended.
+--
+-- An existing DB that still has the old VIEW is migrated by
+-- `refresh_latest_prices`, which drops the view (only when it really is a
+-- view — `DROP VIEW` on a table errors) before rebuilding. This CREATE is a
+-- no-op while the old view still exists, so schema re-application stays
+-- idempotent. Applied only by open_shared (ingest, read-write); the request
+-- path attaches shared read-only and never runs it.
+CREATE TABLE IF NOT EXISTS latest_prices (
+    tcgplayer_product_id  INTEGER NOT NULL,
+    sub_type_name         TEXT NOT NULL,
+    source                TEXT NOT NULL,
+    price_type            TEXT NOT NULL,
+    price                 REAL NOT NULL,
+    observed_at           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_latest_prices_lookup
+    ON latest_prices(tcgplayer_product_id, sub_type_name, price_type);
 
 CREATE TABLE IF NOT EXISTS price_fetch_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,

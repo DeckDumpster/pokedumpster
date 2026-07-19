@@ -421,6 +421,7 @@ mod tests {
                 )
                 .unwrap();
             }
+            crate::latest_prices::refresh_latest_prices(&c).unwrap();
         }
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
         let detail = get_card_detail(&conn, "sv3pt5", "6").unwrap().unwrap();

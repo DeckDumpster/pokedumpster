@@ -199,6 +199,13 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
         s.processed, s.cached, s.overrides, s.failed
     );
 
+    // 6. Rebuild the materialized latest-prices table so the per-row
+    //    market-price lookup on the collection/search/binder pages stays a
+    //    point read rather than a GROUP BY over all of prices (vi37).
+    println!("Refreshing materialized latest_prices...");
+    let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
+    println!("  {n_latest} latest-price rows materialized");
+
     println!("Refresh complete: {}", db_path.display());
     Ok(())
 }

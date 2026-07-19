@@ -57,6 +57,9 @@ pub fn run(args: FixtureArgs) -> anyhow::Result<()> {
     // Seed the search query language metadata so fixture-backed search
     // tests have the keyword registry, rarity ranks, and flag definitions.
     pkdump_db::search_meta::reconcile(&mut shared)?;
+    // Materialize latest_prices from the seeded prices (vi37) so fixture-backed
+    // pages show market values without re-running a full catalog refresh.
+    pkdump_db::latest_prices::refresh_latest_prices(&shared)?;
     let (sets, cards, printings, prices) = catalog_counts(&shared)?;
     println!("  {sets} sets, {cards} cards, {printings} printings, {prices} prices");
     drop(shared);

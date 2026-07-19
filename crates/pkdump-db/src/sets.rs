@@ -488,6 +488,7 @@ mod tests {
                 )
                 .unwrap();
             }
+            crate::latest_prices::refresh_latest_prices(&c).unwrap();
         }
         let mut conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
         // Own card 1 ($1) twice and card 3 ($3) once.
@@ -577,6 +578,7 @@ mod tests {
                 )
                 .unwrap();
             }
+            crate::latest_prices::refresh_latest_prices(&c).unwrap();
         }
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
 

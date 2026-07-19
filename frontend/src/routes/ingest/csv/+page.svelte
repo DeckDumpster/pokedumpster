@@ -171,7 +171,7 @@
 					<tr><th>Line</th><th>Set</th><th>#</th><th>Variant</th><th>Reason</th></tr>
 				</thead>
 				<tbody>
-					{#each report.unmatched as row (row.source_line + row.set_hint + row.number + row.variant)}
+					{#each report.unmatched as row, i (i)}
 						<tr>
 							<td>{row.source_line}</td>
 							<td>{row.set_hint}</td>
@@ -191,7 +191,7 @@
 					<tr><th>Line</th><th>Card</th><th>Set</th><th>#</th><th>Variant</th><th>Condition</th></tr>
 				</thead>
 				<tbody>
-					{#each report.matched as row (row.source_line + row.printing_id)}
+					{#each report.matched as row, i (i)}
 						<tr>
 							<td>{row.source_line}</td>
 							<td>{row.card_name}</td>
@@ -226,7 +226,7 @@
 						<tr><th>Line</th><th>Card</th><th>Set</th><th>#</th><th>Variant</th><th>Cond.</th></tr>
 					</thead>
 					<tbody>
-						{#each combined.singles.matched as row (row.source_line + row.printing_id)}
+						{#each combined.singles.matched as row, i (i)}
 							<tr>
 								<td>{row.source_line}</td>
 								<td>{row.card_name}</td>
@@ -246,7 +246,7 @@
 						<tr><th>Line</th><th>Set</th><th>#</th><th>Variant</th><th>Reason</th></tr>
 					</thead>
 					<tbody>
-						{#each combined.singles.unmatched as row (row.source_line + row.set_hint + row.number + row.variant)}
+						{#each combined.singles.unmatched as row, i (i)}
 							<tr>
 								<td>{row.source_line}</td>
 								<td>{row.set_hint}</td>
@@ -276,7 +276,7 @@
 						<tr><th>Line</th><th>Product</th><th>Set</th><th>Qty</th><th>Cond.</th></tr>
 					</thead>
 					<tbody>
-						{#each combined.sealed.matched as row (row.source_line + row.product_id)}
+						{#each combined.sealed.matched as row, i (i)}
 							<tr>
 								<td>{row.source_line}</td>
 								<td>{row.name}</td>
@@ -295,7 +295,7 @@
 						<tr><th>Line</th><th>Product</th><th>Set</th><th>Reason</th></tr>
 					</thead>
 					<tbody>
-						{#each combined.sealed.unmatched as row (row.source_line + row.name)}
+						{#each combined.sealed.unmatched as row, i (i)}
 							<tr>
 								<td>{row.source_line}</td>
 								<td>{row.name}</td>
@@ -318,7 +318,7 @@
 						<tr><th>Line</th><th>Category</th><th>Name</th><th>Reason</th></tr>
 					</thead>
 					<tbody>
-						{#each combined.skipped as row (row.source_line)}
+						{#each combined.skipped as row, i (i)}
 							<tr>
 								<td>{row.source_line}</td>
 								<td>{row.category}</td>

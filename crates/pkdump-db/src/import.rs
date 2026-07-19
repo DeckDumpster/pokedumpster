@@ -128,7 +128,10 @@ pub struct CommitResult {
 }
 
 /// Resolve a set hint to a catalog `set_code`: exact code, then ptcgo code,
-/// then set name (the explicit name field, then the hint read as a name).
+/// then set name (the explicit name field, then the hint read as a name),
+/// and finally the external set-name alias table (`set_aliases`) so an
+/// import platform's own label (Collectr's "Scarlet & Violet Promo") lands
+/// on the catalog code ('svp'). Aliases are data — see [`crate::set_aliases`].
 ///
 /// Shared with the sealed import pipeline ([`crate::sealed_import`]).
 pub(crate) fn resolve_set(
@@ -162,10 +165,20 @@ pub(crate) fn resolve_set(
     {
         return Ok(Some(c));
     }
-    by(
+    if let Some(c) = by(
         "SELECT set_code FROM sets WHERE name = ?1 COLLATE NOCASE",
         hint,
-    )
+    )? {
+        return Ok(Some(c));
+    }
+    // Fallback: an external platform's set label, mapped by the alias table.
+    let alias_sql = "SELECT set_code FROM set_aliases WHERE alias = ?1";
+    if let Some(n) = name
+        && let Some(c) = by(alias_sql, n)?
+    {
+        return Ok(Some(c));
+    }
+    by(alias_sql, hint)
 }
 
 /// Resolve parsed rows against the catalog, partitioning them into matched
@@ -535,6 +548,68 @@ NOPE,Mystery,1,normal,1,near_mint,en,";
         assert_eq!(report.matched.len(), 1, "{:?}", report.unmatched);
         assert_eq!(report.matched[0].card_name, "Simisage");
         assert_eq!(report.matched[0].printing_id, "sv3pt5-90-normal");
+    }
+
+    #[test]
+    fn set_alias_plus_leading_zero_resolves_promo_card() {
+        // Collectr sends set 'Mega Evolution Promos' (aliased to mep) and a
+        // zero-padded number '009'; the catalog has mep #9 Alakazam. Both the
+        // alias fallback and the leading-zero fix must fire together.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let mut c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) \
+                 VALUES ('mep', 'ME Black Star Promos', 'SV')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('mep-9', 'mep', '9', 9, 'Alakazam')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id, card_id, variant) \
+                 VALUES ('mep-9-normal', 'mep-9', 'normal')",
+                [],
+            )
+            .unwrap();
+            // Now that the mep set exists, the JSON seed writes its alias.
+            let n = crate::set_aliases::reconcile(&mut c).unwrap();
+            assert!(n >= 1, "expected the mep alias to seed once its set exists");
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+
+        // resolve_set consults the alias table as a fallback.
+        assert_eq!(
+            resolve_set(
+                &conn,
+                "Mega Evolution Promos",
+                Some("Mega Evolution Promos")
+            )
+            .unwrap(),
+            Some("mep".to_string())
+        );
+
+        let rows = vec![ParsedRow {
+            source_line: 2,
+            set_hint: "Mega Evolution Promos".into(),
+            set_name: Some("Mega Evolution Promos".into()),
+            number: "009".into(),
+            variant: "normal".into(),
+            condition: "Near Mint".into(),
+            language: "English".into(),
+            purchase_price: None,
+            acquired_at: None,
+            tags: Vec::new(),
+        }];
+        let report = resolve(&conn, &rows).unwrap();
+        assert_eq!(report.matched.len(), 1, "{:?}", report.unmatched);
+        assert_eq!(report.matched[0].set_code, "mep");
+        assert_eq!(report.matched[0].card_name, "Alakazam");
     }
 
     #[test]

@@ -34,9 +34,9 @@ const SCHEMA_USER: &str = include_str!("schema_user.sql");
 /// the table exceeds the default ~2MB cache (pokedumpster-rqr).
 ///
 /// After schema init, reconciles every shipped seed file (variants,
-/// (group, sub_type) → variant map, bundles) so a freshly-opened DB is
-/// always ready for FK-referencing inserts. Cheap and idempotent on the
-/// existing prod DB. See pokedumpster-luo.
+/// (group, sub_type) → variant map, bundles, set-name aliases) so a
+/// freshly-opened DB is always ready for FK-referencing inserts. Cheap and
+/// idempotent on the existing prod DB. See pokedumpster-luo.
 pub fn open_shared(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -55,6 +55,7 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
     crate::variants::reconcile(&mut conn)?;
     crate::sub_type_map::reconcile(&mut conn)?;
     crate::bundles::reconcile(&mut conn)?;
+    crate::set_aliases::reconcile(&mut conn)?;
     Ok(conn)
 }
 

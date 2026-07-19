@@ -23,6 +23,7 @@ pub mod sealed;
 pub mod sealed_import;
 pub mod search;
 pub mod search_meta;
+pub mod set_aliases;
 pub mod sets;
 pub mod sub_type_map;
 pub mod user_printings;

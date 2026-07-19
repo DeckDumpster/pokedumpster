@@ -81,15 +81,22 @@ struct Candidate {
 
 /// Normalize a product name for tolerant matching across platforms: fold
 /// case, straighten curly apostrophes, drop the accent on `é` (Pokémon),
-/// and collapse runs of whitespace. Mirrors the spirit of the shared
-/// column-value mappings in `pkdump-core::import`.
-fn normalize_name(name: &str) -> String {
+/// fold hyphens/dashes to spaces (catalog "Super-Premium" vs Collectr
+/// "Super Premium"), and collapse runs of whitespace. Mirrors the spirit
+/// of the shared column-value mappings in `pkdump-core::import`.
+///
+/// Shared with the singles resolver ([`crate::import`]) for its global
+/// name fallback.
+pub(crate) fn normalize_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut prev_ws = false;
     for c in name.chars() {
         let c = match c {
             '\u{2019}' | '\u{2018}' | '`' | '\u{02bc}' => '\'',
             'é' | 'É' | 'è' | 'ë' => 'e',
+            // Fold hyphens and dashes to spaces so they collapse like any
+            // other separator.
+            '-' | '\u{2010}' | '\u{2011}' | '\u{2013}' | '\u{2014}' => ' ',
             other => other,
         };
         if c.is_whitespace() {
@@ -116,6 +123,24 @@ fn candidates_in_set(conn: &Connection, set_code: &str) -> Result<Vec<Candidate>
          FROM sealed_products WHERE set_code = ?1 COLLATE NOCASE",
     )?;
     let rows = stmt.query_map([set_code], |r| {
+        Ok(Candidate {
+            product_id: r.get(0)?,
+            name: r.get(1)?,
+            category: r.get(2)?,
+            set_code: r.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Load every sealed catalog product — across all sets, and including the
+/// many products with a NULL `set_code` (UPCs, Tin Displays). The candidate
+/// pool for the global name fallback when set resolution fails or a product
+/// isn't found in its stated set (pokedumpster-oq3i.3).
+fn all_candidates(conn: &Connection) -> Result<Vec<Candidate>> {
+    let mut stmt =
+        conn.prepare("SELECT product_id, name, category, set_code FROM sealed_products")?;
+    let rows = stmt.query_map([], |r| {
         Ok(Candidate {
             product_id: r.get(0)?,
             name: r.get(1)?,
@@ -175,6 +200,9 @@ pub fn resolve_sealed(
     // each set's candidate list.
     let mut set_cache: HashMap<(String, Option<String>), Option<String>> = HashMap::new();
     let mut cand_cache: HashMap<String, Vec<Candidate>> = HashMap::new();
+    // The global candidate pool (all sets, incl. NULL set_code) is loaded
+    // lazily the first time a row needs the fallback.
+    let mut all_cache: Option<Vec<Candidate>> = None;
 
     for row in rows {
         let line = row.source_line as u32;
@@ -183,6 +211,18 @@ pub fn resolve_sealed(
             name: row.name.clone(),
             set_hint: row.set_hint.clone(),
             reason,
+        };
+        let resolved = |c: &Candidate| ResolvedSealedRow {
+            source_line: line,
+            product_id: c.product_id,
+            name: c.name.clone(),
+            category: c.category.clone(),
+            set_code: c.set_code.clone(),
+            quantity: row.quantity,
+            condition: row.condition.clone(),
+            purchase_price: row.purchase_price,
+            purchase_date: row.purchase_date.clone(),
+            notes: row.notes.clone(),
         };
 
         let key = (row.set_hint.clone(), row.set_name.clone());
@@ -194,38 +234,51 @@ pub fn resolve_sealed(
                 c
             }
         };
-        let Some(set_code) = set_code else {
-            unmatched.push(miss(format!("unknown set '{}'", row.set_hint)));
-            continue;
-        };
 
-        if !cand_cache.contains_key(&set_code) {
-            let c = candidates_in_set(conn, &set_code)?;
-            cand_cache.insert(set_code.clone(), c);
+        // First, try to match within the stated set (when it resolved). A
+        // hit or a genuine in-set ambiguity short-circuits; only an outright
+        // miss falls through to the global search.
+        if let Some(sc) = &set_code {
+            if !cand_cache.contains_key(sc) {
+                let c = candidates_in_set(conn, sc)?;
+                cand_cache.insert(sc.clone(), c);
+            }
+            match match_name(&row.name, &cand_cache[sc]) {
+                Match::One(c) => {
+                    matched.push(resolved(c));
+                    continue;
+                }
+                Match::Ambiguous(names) => {
+                    unmatched.push(miss(format!(
+                        "ambiguous in {sc}: matches {}",
+                        names.join(", ")
+                    )));
+                    continue;
+                }
+                Match::None => {}
+            }
         }
-        let candidates = &cand_cache[&set_code];
 
-        match match_name(&row.name, candidates) {
-            Match::One(c) => matched.push(ResolvedSealedRow {
-                source_line: line,
-                product_id: c.product_id,
-                name: c.name.clone(),
-                category: c.category.clone(),
-                set_code: c.set_code.clone(),
-                quantity: row.quantity,
-                condition: row.condition.clone(),
-                purchase_price: row.purchase_price,
-                purchase_date: row.purchase_date.clone(),
-                notes: row.notes.clone(),
-            }),
+        // Fallback: the stated set didn't resolve, or the product wasn't in
+        // it. Search the whole sealed catalog, NULL-set-code products
+        // included (UPCs, Tin Displays, cross-set promos).
+        if all_cache.is_none() {
+            all_cache = Some(all_candidates(conn)?);
+        }
+        let all = all_cache.as_ref().unwrap();
+        match match_name(&row.name, all) {
+            Match::One(c) => matched.push(resolved(c)),
             Match::Ambiguous(names) => unmatched.push(miss(format!(
-                "ambiguous in {set_code}: matches {}",
+                "ambiguous across all sets: matches {}",
                 names.join(", ")
             ))),
-            Match::None => unmatched.push(miss(format!(
-                "no sealed product '{}' in {set_code}",
-                row.name
-            ))),
+            Match::None => unmatched.push(miss(match &set_code {
+                Some(sc) => format!("no sealed product '{}' in {sc} or any set", row.name),
+                None => format!(
+                    "no sealed product '{}' in any set (set '{}' unknown)",
+                    row.name, row.set_hint
+                ),
+            })),
         }
     }
     Ok(SealedResolutionReport { matched, unmatched })
@@ -352,7 +405,15 @@ mod tests {
         let report = resolve_sealed(&conn, &rows).unwrap();
         assert!(report.matched.is_empty());
         assert_eq!(report.unmatched.len(), 2);
-        assert!(report.unmatched[0].reason.contains("unknown set"));
+        // Unknown set: the global fallback still finds nothing, and the
+        // reason names both the missing product and the unresolved set.
+        assert!(
+            report.unmatched[0].reason.contains("any set"),
+            "{:?}",
+            report.unmatched[0]
+        );
+        assert!(report.unmatched[0].reason.contains("No Such Set"));
+        // Known set, no such product anywhere: still a specific miss.
         assert!(report.unmatched[1].reason.contains("no sealed product"));
     }
 
@@ -369,5 +430,86 @@ mod tests {
         let report = resolve_sealed(&conn, &rows).unwrap();
         assert_eq!(report.matched.len(), 1, "{:?}", report.unmatched);
         assert_eq!(report.matched[0].product_id, 6004);
+    }
+
+    /// A catalog with NULL-set-code products (UPCs, Tin Displays), reachable
+    /// only through the global name fallback (pokedumpster-oq3i.3).
+    fn null_set_db() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+                 VALUES ('sv8pt5', 'PRE', 'Prismatic Evolutions', 'SV')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO sealed_products (product_id, set_code, name, category, fetched_at) VALUES \
+                   (654213, NULL, 'Mega Charizard X ex Ultra Premium Collection', 'upc', '2026-02-01'), \
+                   (656997, NULL, 'Team Rocket’s Moltres ex Ultra-Premium Collection', 'upc', '2026-02-01'), \
+                   (622770, 'sv8pt5', 'Prismatic Evolutions Super-Premium Collection', 'spc', '2026-02-01')",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        (dir, conn)
+    }
+
+    fn misc_sealed(name: &str) -> ParsedSealedRow {
+        ParsedSealedRow {
+            source_line: 2,
+            name: name.to_string(),
+            set_hint: "Miscellaneous Cards & Products".to_string(),
+            set_name: Some("Miscellaneous Cards & Products".to_string()),
+            category_hint: None,
+            quantity: 1,
+            condition: "Near Mint".to_string(),
+            purchase_price: None,
+            purchase_date: None,
+            notes: None,
+        }
+    }
+
+    #[test]
+    fn null_set_code_product_resolves_by_global_name() {
+        // Set 'Miscellaneous Cards & Products' doesn't resolve; the product
+        // lives at NULL set_code and is only reachable via the global search.
+        let (_d, conn) = null_set_db();
+        let report = resolve_sealed(
+            &conn,
+            &[misc_sealed("Mega Charizard X ex Ultra Premium Collection")],
+        )
+        .unwrap();
+        assert_eq!(report.matched.len(), 1, "{:?}", report.unmatched);
+        assert_eq!(report.matched[0].product_id, 654213);
+        assert_eq!(report.matched[0].set_code, None);
+    }
+
+    #[test]
+    fn global_fallback_folds_hyphens_and_apostrophes() {
+        let (_d, conn) = null_set_db();
+        // Collectr "Super Premium" (space) vs catalog "Super-Premium" (hyphen).
+        let r1 = resolve_sealed(
+            &conn,
+            &[misc_sealed("Prismatic Evolutions Super Premium Collection")],
+        )
+        .unwrap();
+        assert_eq!(r1.matched.len(), 1, "{:?}", r1.unmatched);
+        assert_eq!(r1.matched[0].product_id, 622770);
+
+        // Straight apostrophe + spaced "Ultra Premium" vs catalog U+2019 +
+        // hyphenated "Ultra-Premium".
+        let r2 = resolve_sealed(
+            &conn,
+            &[misc_sealed(
+                "Team Rocket's Moltres ex Ultra Premium Collection",
+            )],
+        )
+        .unwrap();
+        assert_eq!(r2.matched.len(), 1, "{:?}", r2.unmatched);
+        assert_eq!(r2.matched[0].product_id, 656997);
     }
 }

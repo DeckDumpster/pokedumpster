@@ -59,6 +59,17 @@ CREATE INDEX IF NOT EXISTS idx_cards_set    ON cards(set_code, number_sortable);
 CREATE INDEX IF NOT EXISTS idx_cards_name   ON cards(name);
 CREATE INDEX IF NOT EXISTS idx_cards_rarity ON cards(rarity);
 
+-- External set-name aliases: an import platform's set label (Collectr's
+-- "Scarlet & Violet Promo") mapped to our catalog set_code ('svp'). The
+-- data model owns import synonyms — the resolver consults this table as a
+-- fallback rather than hard-coding names. Seeded from data/set_aliases.json
+-- at `pkdump setup` (see crate::set_aliases). NOCASE so a case-insensitive
+-- label still matches its single canonical row.
+CREATE TABLE IF NOT EXISTS set_aliases (
+    alias    TEXT PRIMARY KEY COLLATE NOCASE,     -- 'Scarlet & Violet Promo'
+    set_code TEXT NOT NULL REFERENCES sets(set_code)
+);
+
 -- ---------------------------------------------------------------------
 -- Variants and printings
 -- ---------------------------------------------------------------------

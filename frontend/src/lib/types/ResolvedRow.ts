@@ -3,4 +3,10 @@
 /**
  * A row that resolved cleanly to a catalog printing — ready to commit.
  */
-export type ResolvedRow = { source_line: number, printing_id: string, card_name: string, set_code: string, number: string, variant: string, condition: string, language: string, purchase_price: number | null, acquired_at: string | null, tags: Array<string>, };
+export type ResolvedRow = { source_line: number, printing_id: string, card_name: string, set_code: string, number: string, variant: string, condition: string, language: string, purchase_price: number | null, acquired_at: string | null, tags: Array<string>, 
+/**
+ * How many copies of this printing are already `owned` in the collection
+ * (duplicate flag for the import preview). Filled by [`annotate_owned`]
+ * after resolution; `0` straight out of [`resolve`]. (pokedumpster-oq3i.4)
+ */
+already_owned: number, };

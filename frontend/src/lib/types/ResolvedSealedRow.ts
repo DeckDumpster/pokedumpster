@@ -3,4 +3,11 @@
 /**
  * A sealed row that resolved cleanly to a catalog product — ready to commit.
  */
-export type ResolvedSealedRow = { source_line: number, product_id: number, name: string, category: string, set_code: string | null, quantity: number, condition: string, purchase_price: number | null, purchase_date: string | null, notes: string | null, };
+export type ResolvedSealedRow = { source_line: number, product_id: number, name: string, category: string, set_code: string | null, quantity: number, condition: string, purchase_price: number | null, purchase_date: string | null, notes: string | null, 
+/**
+ * How many `owned` units of this product already sit in
+ * `sealed_collection` (duplicate flag for the import preview). Filled by
+ * [`crate::import::annotate_owned_sealed`] after resolution; `0` straight
+ * out of [`resolve_sealed`]. (pokedumpster-oq3i.4)
+ */
+already_owned: number, };

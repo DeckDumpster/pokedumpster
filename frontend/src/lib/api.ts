@@ -230,6 +230,14 @@ export const api = {
 		send<ResolutionReport>('POST', '/api/import/csv/preview', { format, content }),
 	importCommit: (format: string, content: string, name?: string) =>
 		send<CommitResult>('POST', '/api/import/csv/commit', { format, content, name }),
+	/** Commit only the selected matched rows (by source_line). (oq3i.4) */
+	importCommitSelected: (format: string, content: string, include: number[], name?: string) =>
+		send<CommitResult>('POST', '/api/import/csv/commit-selected', {
+			format,
+			content,
+			include,
+			name
+		}),
 
 	// Collectr yields singles + sealed in one file; the combined endpoints
 	// return each resolution separately (the garden wall).
@@ -239,6 +247,20 @@ export const api = {
 		send<CombinedCommitResult>('POST', '/api/import/collectr/commit', {
 			format: 'collectr',
 			content,
+			name
+		}),
+	/** Commit only the selected Collectr rows — separate include lists per
+	 *  pane so singles and sealed stay apart. (oq3i.4) */
+	importCollectrCommitSelected: (
+		content: string,
+		includeSingles: number[],
+		includeSealed: number[],
+		name?: string
+	) =>
+		send<CombinedCommitResult>('POST', '/api/import/collectr/commit-selected', {
+			content,
+			include_singles: includeSingles,
+			include_sealed: includeSealed,
 			name
 		}),
 

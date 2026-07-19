@@ -1,7 +1,7 @@
 //! CSV import: resolve `pkdump-core`-parsed rows against the catalog into
 //! a preview report, then commit the matched rows (PLAN.md §9).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -93,6 +93,11 @@ pub struct ResolvedRow {
     pub purchase_price: Option<f64>,
     pub acquired_at: Option<String>,
     pub tags: Vec<String>,
+    /// How many copies of this printing are already `owned` in the collection
+    /// (duplicate flag for the import preview). Filled by [`annotate_owned`]
+    /// after resolution; `0` straight out of [`resolve`]. (pokedumpster-oq3i.4)
+    #[ts(type = "number")]
+    pub already_owned: u32,
 }
 
 /// A row that could not be resolved, with a human-readable reason.
@@ -243,9 +248,87 @@ pub fn resolve(conn: &Connection, rows: &[ParsedRow]) -> Result<ResolutionReport
             purchase_price: row.purchase_price,
             acquired_at: row.acquired_at.clone(),
             tags: row.tags.clone(),
+            already_owned: 0, // filled by annotate_owned() (oq3i.4)
         });
     }
     Ok(ResolutionReport { matched, unmatched })
+}
+
+/// Annotate each matched single-card row with how many `owned` copies of the
+/// same printing already sit in the collection, so the import preview can flag
+/// duplicates the user may want to deselect. Purely additive: runs *after*
+/// [`resolve`], mutating the report in place. (pokedumpster-oq3i.4)
+pub fn annotate_owned(conn: &Connection, report: &mut ResolutionReport) -> Result<()> {
+    if report.matched.is_empty() {
+        return Ok(());
+    }
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT printing_id, COUNT(*) FROM collection \
+         WHERE status = 'owned' GROUP BY printing_id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    for row in rows {
+        let (printing_id, n) = row?;
+        counts.insert(printing_id, n as u32);
+    }
+    for m in &mut report.matched {
+        m.already_owned = counts.get(&m.printing_id).copied().unwrap_or(0);
+    }
+    Ok(())
+}
+
+/// Annotate each matched sealed row with how many `owned` units of the same
+/// product already sit in `sealed_collection` (quantity summed). Mirror of
+/// [`annotate_owned`] for the sealed half. (pokedumpster-oq3i.4)
+pub fn annotate_owned_sealed(conn: &Connection, report: &mut SealedResolutionReport) -> Result<()> {
+    if report.matched.is_empty() {
+        return Ok(());
+    }
+    let mut counts: HashMap<i64, u32> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT product_id, COALESCE(SUM(quantity), 0) FROM sealed_collection \
+         WHERE status = 'owned' GROUP BY product_id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+    for row in rows {
+        let (product_id, n) = row?;
+        counts.insert(product_id, n as u32);
+    }
+    for m in &mut report.matched {
+        m.already_owned = counts.get(&m.product_id).copied().unwrap_or(0);
+    }
+    Ok(())
+}
+
+/// Keep only the matched rows whose `source_line` is in `include`; drop all
+/// unmatched. Used by the selected-commit path so the user's per-row choices
+/// in the preview are honored server-side (after a fresh re-resolve).
+fn filter_report(report: &ResolutionReport, include: &[u32]) -> ResolutionReport {
+    let keep: HashSet<u32> = include.iter().copied().collect();
+    ResolutionReport {
+        matched: report
+            .matched
+            .iter()
+            .filter(|r| keep.contains(&r.source_line))
+            .cloned()
+            .collect(),
+        unmatched: Vec::new(),
+    }
+}
+
+/// Sealed mirror of [`filter_report`].
+fn filter_sealed(report: &SealedResolutionReport, include: &[u32]) -> SealedResolutionReport {
+    let keep: HashSet<u32> = include.iter().copied().collect();
+    SealedResolutionReport {
+        matched: report
+            .matched
+            .iter()
+            .filter(|r| keep.contains(&r.source_line))
+            .cloned()
+            .collect(),
+        unmatched: Vec::new(),
+    }
 }
 
 /// A JSON array literal for tag strings. Tags are simple identifiers
@@ -258,7 +341,9 @@ fn tags_json(tags: &[String]) -> String {
 /// Preview an import: parse and resolve without writing anything.
 pub fn preview(conn: &Connection, format: ImportFormat, content: &str) -> Result<ResolutionReport> {
     let rows = parse(format, content)?;
-    resolve(conn, &rows)
+    let mut report = resolve(conn, &rows)?;
+    annotate_owned(conn, &mut report)?;
+    Ok(report)
 }
 
 /// Commit an import: parse, resolve, then add every matched row under a
@@ -271,6 +356,27 @@ pub fn commit(
 ) -> Result<CommitResult> {
     let rows = parse(format, content)?;
     let report = resolve(conn, &rows)?;
+    commit_matched(
+        conn,
+        &report,
+        format.source(),
+        format.batch_type(),
+        batch_name,
+    )
+}
+
+/// Commit only the selected matched rows of a single-card import. Re-resolves
+/// server-side (never trusts the preview) then keeps only the rows whose
+/// `source_line` the user left selected. (pokedumpster-oq3i.4)
+pub fn commit_selected(
+    conn: &mut Connection,
+    format: ImportFormat,
+    content: &str,
+    include: &[u32],
+    batch_name: Option<&str>,
+) -> Result<CommitResult> {
+    let rows = parse(format, content)?;
+    let report = filter_report(&resolve(conn, &rows)?, include);
     commit_matched(
         conn,
         &report,
@@ -381,8 +487,10 @@ pub struct CombinedCommitResult {
 /// sealed independently. Writes nothing.
 pub fn preview_collectr(conn: &Connection, content: &str) -> Result<CombinedReport> {
     let parsed = collectr::parse(content)?;
-    let singles = resolve(conn, &parsed.singles)?;
-    let sealed = sealed_import::resolve_sealed(conn, &parsed.sealed)?;
+    let mut singles = resolve(conn, &parsed.singles)?;
+    annotate_owned(conn, &mut singles)?;
+    let mut sealed = sealed_import::resolve_sealed(conn, &parsed.sealed)?;
+    annotate_owned_sealed(conn, &mut sealed)?;
     Ok(CombinedReport {
         singles,
         sealed,
@@ -401,6 +509,40 @@ pub fn commit_collectr(
     let parsed = collectr::parse(content)?;
     let singles_report = resolve(conn, &parsed.singles)?;
     let sealed_report = sealed_import::resolve_sealed(conn, &parsed.sealed)?;
+
+    let singles = commit_matched(
+        conn,
+        &singles_report,
+        "csv_collectr",
+        "csv_collectr",
+        batch_name,
+    )?;
+    let sealed = sealed_import::commit_sealed(conn, &sealed_report, "csv_collectr")?;
+
+    Ok(CombinedCommitResult {
+        singles,
+        sealed,
+        skipped: parsed.skipped.len() as u32,
+    })
+}
+
+/// Commit only the selected rows of a Collectr import. Re-resolves both halves
+/// server-side, keeps only the `source_line`s the user selected in each pane,
+/// then writes singles and sealed to their own tables (garden wall intact).
+/// (pokedumpster-oq3i.4)
+pub fn commit_collectr_selected(
+    conn: &mut Connection,
+    content: &str,
+    include_singles: &[u32],
+    include_sealed: &[u32],
+    batch_name: Option<&str>,
+) -> Result<CombinedCommitResult> {
+    let parsed = collectr::parse(content)?;
+    let singles_report = filter_report(&resolve(conn, &parsed.singles)?, include_singles);
+    let sealed_report = filter_sealed(
+        &sealed_import::resolve_sealed(conn, &parsed.sealed)?,
+        include_sealed,
+    );
 
     let singles = commit_matched(
         conn,
@@ -497,6 +639,48 @@ NOPE,Mystery,1,normal,1,near_mint,en,";
     }
 
     #[test]
+    fn preview_flags_already_owned_copies() {
+        let (_d, mut conn) = db();
+        // Nothing owned yet — every matched row reads 0.
+        let report = preview(&conn, ImportFormat::Manabox, CSV).unwrap();
+        assert!(report.matched.iter().all(|r| r.already_owned == 0));
+
+        // Own one copy of the normal printing, then re-preview.
+        collection::add(
+            &mut conn,
+            &NewCopy {
+                printing_id: "sv3pt5-6-normal".into(),
+                source: "manual_id".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let report = preview(&conn, ImportFormat::Manabox, CSV).unwrap();
+        assert!(
+            report
+                .matched
+                .iter()
+                .all(|r| r.printing_id != "sv3pt5-6-normal" || r.already_owned == 1),
+            "matched normal rows should report already_owned == 1"
+        );
+    }
+
+    #[test]
+    fn commit_selected_adds_only_included_lines() {
+        let (_d, mut conn) = db();
+        // Selecting nothing adds nothing.
+        let none = commit_selected(&mut conn, ImportFormat::Manabox, CSV, &[], None).unwrap();
+        assert_eq!(none.added, 0);
+
+        // Line 2 is the pair of matched 'normal' copies; including it adds both.
+        let some =
+            commit_selected(&mut conn, ImportFormat::Manabox, CSV, &[2], Some("sel.csv")).unwrap();
+        assert_eq!(some.added, 2);
+        let cards = collection::list_by_batch(&conn, some.batch_id).unwrap();
+        assert_eq!(cards.len(), 2);
+    }
+
+    #[test]
     fn unknown_format_is_rejected() {
         assert!(ImportFormat::parse("nonsense").is_err());
         // Collectr is now a recognized format.
@@ -586,5 +770,47 @@ Sealed Pokemon TCG,Pokemon,151,151 Elite Trainer Box,,,Normal,Ungraded,Near Mint
         let sealed = crate::sealed::list(&conn).unwrap();
         assert_eq!(sealed.len(), 1);
         assert_eq!(sealed[0].quantity, 3);
+    }
+
+    #[test]
+    fn collectr_preview_annotates_owned_on_both_sides() {
+        let (_d, mut conn) = sealed_db();
+        // Own one Charizard copy and the ETB up front.
+        collection::add(
+            &mut conn,
+            &NewCopy {
+                printing_id: "sv3pt5-6-normal".into(),
+                source: "manual_id".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::sealed::add(
+            &conn,
+            &crate::sealed::NewSealed {
+                product_id: 7001,
+                quantity: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let report = preview_collectr(&conn, COLLECTR_CSV).unwrap();
+        assert!(report.singles.matched.iter().all(|r| r.already_owned == 1));
+        assert_eq!(report.sealed.matched[0].already_owned, 2);
+    }
+
+    #[test]
+    fn collectr_commit_selected_honors_each_pane() {
+        let (_d, mut conn) = sealed_db();
+        // Take the sealed line (4) only; leave the singles line (3) out.
+        let r = commit_collectr_selected(&mut conn, COLLECTR_CSV, &[], &[4], None).unwrap();
+        assert_eq!(r.singles.added, 0);
+        assert_eq!(r.sealed.added, 1);
+
+        // Now take only the singles line.
+        let r = commit_collectr_selected(&mut conn, COLLECTR_CSV, &[3], &[], None).unwrap();
+        assert_eq!(r.singles.added, 2);
+        assert_eq!(r.sealed.added, 0);
     }
 }

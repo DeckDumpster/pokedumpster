@@ -129,6 +129,7 @@ pub fn parse(input: &str) -> Result<Vec<ParsedRow>> {
                 source_line: line,
                 set_hint: set_hint.to_string(),
                 set_name: None,
+                name: None,
                 number: number.clone(),
                 variant: variant.clone(),
                 condition: condition.clone(),

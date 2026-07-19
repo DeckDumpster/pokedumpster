@@ -19,6 +19,11 @@ pub struct ParsedRow {
     pub set_hint: String,
     /// Set name as written, used as a resolution fallback. May be empty.
     pub set_name: Option<String>,
+    /// Card name as written, used only as a global-search fallback when the
+    /// set+number lookup fails (e.g. Collectr's "Miscellaneous Cards &
+    /// Products" catch-all, where the stated set doesn't resolve). `None`
+    /// when the format carries no reliable name column.
+    pub name: Option<String>,
     /// Collector number, verbatim.
     pub number: String,
     /// PokeDumpster variant code (the flat enum) the foil column mapped to.

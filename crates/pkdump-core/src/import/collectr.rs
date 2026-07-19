@@ -143,6 +143,7 @@ pub fn parse(input: &str) -> Result<CollectrParsed> {
             source_line: line,
             set_hint: set.to_string(),
             set_name: Some(set.to_string()),
+            name: (!name.is_empty()).then(|| name.clone()),
             number: normalize_number(number_raw),
             variant,
             condition,

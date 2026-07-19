@@ -1,0 +1,14 @@
+# Scenario: Committing a Collectr import writes cards and sealed separately
+#
+# Related:
+#   issues: [pokedumpster-0i9y]
+#
+# Prerequisites:
+#   Same fixture catalog as collectr_import_split_preview.
+
+description: >
+  After previewing a Collectr export, when I click Import the matched single
+  cards and sealed products are both committed, and I see a confirmation
+  banner reporting how many cards and how many sealed products were added
+  (with the non-Pokémon rows counted as skipped) and a link to view the card
+  batch.

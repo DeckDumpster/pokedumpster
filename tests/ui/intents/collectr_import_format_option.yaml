@@ -1,0 +1,10 @@
+# Scenario: Collectr appears as an import format with a cards+sealed hint
+#
+# Related:
+#   issues: [pokedumpster-0i9y]
+
+description: >
+  When I open the CSV Import page and choose "Collectr" from the Format
+  dropdown, I see a note explaining that a Collectr export mixes single cards
+  and sealed products and that they'll be imported separately, with
+  non-Pokémon rows skipped.

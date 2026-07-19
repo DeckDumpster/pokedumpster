@@ -1,0 +1,18 @@
+# Scenario: A Collectr export previews as separate cards / sealed / skipped panes
+#
+# Related:
+#   issues: [pokedumpster-0i9y]
+#
+# Prerequisites:
+#   Fixture catalog contains Base Set (Charizard #4 holo, Bulbasaur #46 normal),
+#   plus sealed products "151 Elite Trainer Box" and "Surging Sparks Booster
+#   Pack". The pasted CSV also contains an unresolvable card, an unresolvable
+#   sealed product, and a non-Pokémon (Lorcana) row.
+
+description: >
+  When I paste a Collectr export that mixes single cards, sealed products, and
+  a non-Pokémon row and click Preview, the result is shown as three separate
+  sections — Single cards, Sealed products, and Skipped — each reporting its
+  own matched/unmatched counts. Cards and sealed never appear in the same
+  table, and the Lorcana row is reported as skipped rather than silently
+  dropped.

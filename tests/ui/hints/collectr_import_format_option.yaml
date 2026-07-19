@@ -1,0 +1,12 @@
+start_page: /ingest/csv
+involves:
+  - "Format select (ManaBox / TCGplayer / PokeDumpster / Collectr)"
+  - "explanatory hint paragraph shown only for Collectr"
+fixture_data:
+  format: "Collectr (cards + sealed)"
+notes: >
+  Navigate to /ingest/csv and wait for the "Import CSV" heading. The Format
+  <select> has no test id but is the only select on the page; choose the
+  option labelled "Collectr (cards + sealed)". A hint paragraph appears with
+  the text "A Collectr export mixes single cards and sealed products". Assert
+  that text is present.

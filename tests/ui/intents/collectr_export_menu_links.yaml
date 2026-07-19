@@ -1,0 +1,10 @@
+# Scenario: The collection menu offers separate Collectr card and sealed exports
+#
+# Related:
+#   issues: [pokedumpster-0i9y]
+
+description: >
+  When I open the overflow menu on the collection page, I see two distinct
+  Collectr export downloads — "Export cards (Collectr)" and "Export sealed
+  (Collectr)" — alongside the ManaBox export, so cards and sealed can each be
+  taken out to Collectr as their own file.

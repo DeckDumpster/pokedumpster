@@ -1,0 +1,9 @@
+start_page: /collection
+involves:
+  - "overflow burger button in the collection header (aria-label Menu, '⋯')"
+  - "dropdown menu with export links"
+notes: >
+  Navigate to /collection and wait for the header burger button (CSS selector
+  .burger, aria-label "Menu"). Click it to open the overflow menu. The menu
+  lists "Export CSV (ManaBox)", "Export cards (Collectr)", and "Export sealed
+  (Collectr)" as download links. Assert both Collectr links are present.

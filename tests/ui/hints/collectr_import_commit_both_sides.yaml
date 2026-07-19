@@ -1,0 +1,18 @@
+start_page: /ingest/csv
+involves:
+  - "Format select set to Collectr"
+  - "…or paste CSV text textarea"
+  - "Preview button, then Import button (.commit)"
+  - "result banner reporting cards + sealed products added, with 'View card batch →'"
+fixture_data:
+  csv: >
+    Same Collectr CSV as collectr_import_split_preview (3 matched card copies,
+    2 matched sealed products, 1 skipped Lorcana row).
+notes: >
+  Navigate to /ingest/csv, wait for "Import CSV". Choose "Collectr (cards +
+  sealed)". Paste the CSV into the textarea. Click "Preview" and wait for the
+  "Single cards" pane. Click the Import button (the red commit button, CSS
+  selector .commit; its label reads "Import 5 items"). Wait for the result
+  banner containing "Imported". Assert the banner text "sealed products" is
+  present (proving both halves committed) and that a "View card batch →" link
+  appears.

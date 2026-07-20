@@ -3,4 +3,12 @@
 /**
  * A sealed-collection row joined to its catalog product.
  */
-export type SealedEntry = { id: number, product_id: number, quantity: number, condition: string | null, purchase_price: number | null, sale_price: number | null, purchase_date: string | null, source: string | null, seller_name: string | null, notes: string | null, status: string, added_at: string, name: string, category: string, set_code: string | null, image_url: string | null, };
+export type SealedEntry = { id: number, product_id: number, quantity: number, condition: string | null, purchase_price: number | null, sale_price: number | null, purchase_date: string | null, source: string | null, seller_name: string | null, notes: string | null, status: string, added_at: string, name: string, category: string, set_code: string | null, image_url: string | null, 
+/**
+ * Latest TCGplayer sealed market price for this product (NULL when no
+ * snapshot exists). Sealed products are keyed by TCGplayer productId, so
+ * the join is `latest_sealed_prices.tcgplayer_product_id =
+ * sealed_collection.product_id`. Falls back to the day's mid price when
+ * TCGCSV omits a market price for the product (common for sealed).
+ */
+market_price: number | null, };

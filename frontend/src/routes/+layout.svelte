@@ -24,10 +24,10 @@
 		return hours >= 48 ? `${Math.floor(hours / 24)} days` : `${Math.floor(hours)} hours`;
 	});
 
-	// /collection paints its own DD-style chrome (brand + sticky search +
-	// burger) and runs edge-to-edge; suppress the breadcrumb header and
-	// the default main padding there.
-	const pagesWithOwnChrome = ['/collection'];
+	// /collection and /sealed paint their own DD-style chrome (brand +
+	// sticky search + burger) and run edge-to-edge; suppress the breadcrumb
+	// header and the default main padding there.
+	const pagesWithOwnChrome = ['/collection', '/sealed'];
 	const flush = $derived(pagesWithOwnChrome.includes(page.url.pathname));
 	// The home page renders its own capabilities list and doesn't need
 	// the shared breadcrumb chrome above it.

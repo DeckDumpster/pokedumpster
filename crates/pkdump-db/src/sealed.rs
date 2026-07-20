@@ -43,6 +43,12 @@ pub struct SealedEntry {
     pub category: String,
     pub set_code: Option<String>,
     pub image_url: Option<String>,
+    /// Latest TCGplayer sealed market price for this product (NULL when no
+    /// snapshot exists). Sealed products are keyed by TCGplayer productId, so
+    /// the join is `latest_sealed_prices.tcgplayer_product_id =
+    /// sealed_collection.product_id`. Falls back to the day's mid price when
+    /// TCGCSV omits a market price for the product (common for sealed).
+    pub market_price: Option<f64>,
 }
 
 /// Fields for adding a sealed product to the collection.
@@ -81,7 +87,10 @@ pub struct SealedEdit {
 const ENTRY_COLS: &str = "sc.id, sc.product_id, sc.quantity, sc.condition, \
      sc.purchase_price, sc.sale_price, sc.purchase_date, sc.source, \
      sc.seller_name, sc.notes, sc.status, sc.added_at, \
-     sp.name, sp.category, sp.set_code, sp.image_url";
+     sp.name, sp.category, sp.set_code, sp.image_url, \
+     (SELECT COALESCE(lsp.market_price, lsp.mid_price) \
+        FROM latest_sealed_prices lsp \
+        WHERE lsp.tcgplayer_product_id = sc.product_id LIMIT 1) AS market_price";
 
 const ENTRY_FROM: &str = "FROM sealed_collection sc \
      JOIN sealed_products sp ON sc.product_id = sp.product_id";
@@ -104,6 +113,7 @@ fn entry_from_row(r: &rusqlite::Row) -> rusqlite::Result<SealedEntry> {
         category: r.get(13)?,
         set_code: r.get(14)?,
         image_url: r.get(15)?,
+        market_price: r.get(16)?,
     })
 }
 
@@ -273,6 +283,85 @@ mod tests {
         assert_eq!(list(&conn).unwrap().len(), 1);
         assert!(delete(&conn, id).unwrap());
         assert!(get(&conn, id).unwrap().is_none());
+    }
+
+    /// The list/get queries surface a market price via `latest_sealed_prices`
+    /// joined on `tcgplayer_product_id = product_id`, preferring the market
+    /// price and falling back to the mid price. Products with no snapshot
+    /// report `None` (no silent zero).
+    #[test]
+    fn market_price_join_prefers_market_then_mid() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            // 5001 has a full snapshot; 5002 has only a mid price (market
+            // NULL, as TCGCSV often reports for sealed); 5003 has no snapshot.
+            c.execute(
+                "INSERT INTO sealed_products (product_id, name, category, fetched_at) VALUES \
+                   (5001, '151 Elite Trainer Box', 'elite_trainer_box', '2026-05-18'), \
+                   (5002, 'Obsidian Flames Booster Box', 'booster_box', '2026-05-18'), \
+                   (5003, 'Paldea Evolved Bundle', 'bundle', '2026-05-18')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO sealed_prices \
+                   (tcgplayer_product_id, low_price, mid_price, high_price, market_price, observed_at) \
+                 VALUES \
+                   (5001, 40.0, 48.0, 60.0, 52.5, '2026-05-01'), \
+                   (5001, 41.0, 49.0, 61.0, 99.9, '2026-05-18'), \
+                   (5002, 100.0, 120.0, 140.0, NULL, '2026-05-18')",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+
+        let full = add(
+            &conn,
+            &NewSealed {
+                product_id: 5001,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mid_only = add(
+            &conn,
+            &NewSealed {
+                product_id: 5002,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let no_price = add(
+            &conn,
+            &NewSealed {
+                product_id: 5003,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Latest snapshot's market price wins (99.9 from 2026-05-18, not 52.5).
+        assert_eq!(get(&conn, full).unwrap().unwrap().market_price, Some(99.9));
+        // Market NULL → falls back to the day's mid price.
+        assert_eq!(
+            get(&conn, mid_only).unwrap().unwrap().market_price,
+            Some(120.0)
+        );
+        // No snapshot → None (not 0).
+        assert_eq!(get(&conn, no_price).unwrap().unwrap().market_price, None);
+
+        // The list query surfaces the same values.
+        let by_id: std::collections::HashMap<i64, Option<f64>> = list(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.id, e.market_price))
+            .collect();
+        assert_eq!(by_id[&full], Some(99.9));
+        assert_eq!(by_id[&mid_only], Some(120.0));
+        assert_eq!(by_id[&no_price], None);
     }
 
     #[test]

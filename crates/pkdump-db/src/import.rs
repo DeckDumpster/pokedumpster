@@ -258,6 +258,81 @@ fn global_card_fallback(conn: &Connection, want_name: &str, number: &str) -> Res
     }
 }
 
+/// Reduce a collector number to a comparable "core" so the catalog's
+/// inconsistent promo numbering still matches. Some promo cards are stored
+/// with a redundant lowercase set-code prefix ("svp 176", "svp193") and
+/// others bare ("163") — upstream data we can't renumber without orphaning
+/// owned printings. Strip a leading copy of the set code (case-insensitive,
+/// optional following space), then unpad leading zeros on a purely-numeric
+/// result. Genuinely alphanumeric numbers like "GG01" are left intact.
+fn number_core(number: &str, set_code: &str) -> String {
+    let lower = number.trim().to_lowercase();
+    let sc = set_code.to_lowercase();
+    let tail = lower
+        .strip_prefix(&sc)
+        .map(str::trim_start)
+        .unwrap_or(&lower);
+    import::normalize_collector_number(tail)
+}
+
+/// A set resolved but its exact number lookup missed: retry against that set's
+/// cards on the number *core*, disambiguating by name when a core collides
+/// (bare vs prefixed forms, or shared-number artwork variants).
+fn set_scoped_number_match(
+    conn: &Connection,
+    set_code: &str,
+    lookup_number: &str,
+    want_name: Option<&str>,
+) -> Result<CardMatch> {
+    let want_core = number_core(lookup_number, set_code);
+    let mut stmt = conn.prepare("SELECT card_id, name, number FROM cards WHERE set_code = ?1")?;
+    let hits: Vec<(String, String)> = stmt
+        .query_map([set_code], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, _, number)| number_core(number, set_code) == want_core)
+        .map(|(id, name, _)| (id, name))
+        .collect();
+
+    match hits.as_slice() {
+        [] => Ok(CardMatch::None),
+        [(card_id, card_name)] => Ok(CardMatch::One {
+            card_id: card_id.clone(),
+            card_name: card_name.clone(),
+            set_code: set_code.to_string(),
+        }),
+        many => {
+            // Number core collides — disambiguate by the row's card name.
+            if let Some(want) = want_name {
+                let want_n =
+                    crate::sealed_import::normalize_name(&strip_trailing_descriptors(want));
+                let named: Vec<&(String, String)> = many
+                    .iter()
+                    .filter(|(_, name)| crate::sealed_import::normalize_name(name) == want_n)
+                    .collect();
+                if let [(card_id, card_name)] = named.as_slice() {
+                    return Ok(CardMatch::One {
+                        card_id: card_id.clone(),
+                        card_name: card_name.clone(),
+                        set_code: set_code.to_string(),
+                    });
+                }
+            }
+            Ok(CardMatch::Ambiguous(
+                many.iter()
+                    .map(|(_, name)| format!("{name} #{want_core}"))
+                    .collect(),
+            ))
+        }
+    }
+}
+
 /// Resolve parsed rows against the catalog, partitioning them into matched
 /// printings and unmatched rows with reasons.
 pub fn resolve(conn: &Connection, rows: &[ParsedRow]) -> Result<ResolutionReport> {
@@ -304,44 +379,70 @@ pub fn resolve(conn: &Connection, rows: &[ParsedRow]) -> Result<ResolutionReport
         // all sets (the "Miscellaneous Cards & Products" catch-all, stamped
         // promos, and anything whose stated set didn't resolve). Only rows
         // that carry a card name can use it.
+        // Set resolved but the exact number missed: retry within the set on
+        // the number core before going global — this rescues the catalog's
+        // inconsistent promo prefixes (e.g. svp 'Umbreon ex' stored as
+        // "svp 176" vs Collectr's "SVP 176").
+        let scoped = match (&direct, &set_code) {
+            (None, Some(sc)) => {
+                set_scoped_number_match(conn, sc, &lookup_number, row.name.as_deref())?
+            }
+            _ => CardMatch::None,
+        };
+
         let (card_id, card_name, resolved_set) = match direct {
             Some((id, name)) => (id, name, set_code.clone().expect("set_code present")),
-            None => match row.name.as_deref() {
-                Some(want) => match global_card_fallback(conn, want, &lookup_number)? {
-                    CardMatch::One {
-                        card_id,
-                        card_name,
-                        set_code,
-                    } => (card_id, card_name, set_code),
-                    CardMatch::Ambiguous(cands) => {
-                        unmatched.push(unmatched_row(format!(
-                            "'{want}' #{lookup_number} is ambiguous: matches {}",
-                            cands.join(", ")
-                        )));
-                        continue;
-                    }
-                    CardMatch::None => {
-                        unmatched.push(unmatched_row(match &set_code {
-                            Some(sc) => format!(
-                                "card #{lookup_number} not found in {sc}; \
+            None => match scoped {
+                CardMatch::One {
+                    card_id,
+                    card_name,
+                    set_code,
+                } => (card_id, card_name, set_code),
+                CardMatch::Ambiguous(cands) => {
+                    unmatched.push(unmatched_row(format!(
+                        "#{lookup_number} in {} is ambiguous: matches {}",
+                        set_code.as_deref().unwrap_or("?"),
+                        cands.join(", ")
+                    )));
+                    continue;
+                }
+                CardMatch::None => match row.name.as_deref() {
+                    Some(want) => match global_card_fallback(conn, want, &lookup_number)? {
+                        CardMatch::One {
+                            card_id,
+                            card_name,
+                            set_code,
+                        } => (card_id, card_name, set_code),
+                        CardMatch::Ambiguous(cands) => {
+                            unmatched.push(unmatched_row(format!(
+                                "'{want}' #{lookup_number} is ambiguous: matches {}",
+                                cands.join(", ")
+                            )));
+                            continue;
+                        }
+                        CardMatch::None => {
+                            unmatched.push(unmatched_row(match &set_code {
+                                Some(sc) => format!(
+                                    "card #{lookup_number} not found in {sc}; \
                                  no '{want}' #{lookup_number} in any set"
-                            ),
-                            None => format!(
-                                "no card '{want}' #{lookup_number} in any set \
+                                ),
+                                None => format!(
+                                    "no card '{want}' #{lookup_number} in any set \
                                  (set '{}' unknown)",
-                                row.set_hint
-                            ),
+                                    row.set_hint
+                                ),
+                            }));
+                            continue;
+                        }
+                    },
+                    None => {
+                        unmatched.push(unmatched_row(match &set_code {
+                            Some(sc) => format!("card #{lookup_number} not found in {sc}"),
+                            None => format!("unknown set '{}'", row.set_hint),
                         }));
                         continue;
                     }
                 },
-                None => {
-                    unmatched.push(unmatched_row(match &set_code {
-                        Some(sc) => format!("card #{lookup_number} not found in {sc}"),
-                        None => format!("unknown set '{}'", row.set_hint),
-                    }));
-                    continue;
-                }
             },
         };
 
@@ -1068,6 +1169,62 @@ NOPE,Mystery,1,normal,1,near_mint,en,";
         assert_eq!(some.added, 2);
         let cards = collection::list_by_batch(&conn, some.batch_id).unwrap();
         assert_eq!(cards.len(), 2);
+    }
+
+    #[test]
+    fn set_prefixed_catalog_number_matches_bare_import_number() {
+        // svp stores some promo numbers with a redundant 'svp ' prefix
+        // ('svp 176' = Umbreon ex) and others bare ('163' = Cinderace ex) —
+        // upstream inconsistency we can't renumber. A Collectr 'SVP 176'
+        // (normalized to '176') must still resolve to the prefixed card.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) \
+                 VALUES ('svp', 'Scarlet & Violet Black Star Promos', 'SV')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) VALUES \
+                   ('svp-svp 176', 'svp', 'svp 176', 176, 'Umbreon ex'), \
+                   ('svp-163', 'svp', '163', 163, 'Cinderace ex')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id, card_id, variant) VALUES \
+                   ('svp-svp 176-holo', 'svp-svp 176', 'holo'), \
+                   ('svp-163-holo', 'svp-163', 'holo')",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+
+        let row = |name: &str, num: &str| ParsedRow {
+            source_line: 2,
+            set_hint: "svp".into(),
+            set_name: None,
+            name: Some(name.into()),
+            number: num.into(),
+            variant: "holo".into(),
+            condition: "Near Mint".into(),
+            language: "English".into(),
+            purchase_price: None,
+            acquired_at: None,
+            tags: Vec::new(),
+        };
+        // Prefixed catalog number vs bare import number — the reported bug.
+        let r = resolve(&conn, &[row("Umbreon ex - 176", "176")]).unwrap();
+        assert_eq!(r.matched.len(), 1, "{:?}", r.unmatched);
+        assert_eq!(r.matched[0].printing_id, "svp-svp 176-holo");
+        // Bare catalog number still resolves directly (regression guard).
+        let r2 = resolve(&conn, &[row("Cinderace ex", "163")]).unwrap();
+        assert_eq!(r2.matched.len(), 1, "{:?}", r2.unmatched);
+        assert_eq!(r2.matched[0].printing_id, "svp-163-holo");
     }
 
     #[test]

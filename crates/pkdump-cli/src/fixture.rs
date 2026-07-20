@@ -69,6 +69,11 @@ pub fn run(args: FixtureArgs) -> anyhow::Result<()> {
     seed_user(&mut user)?;
     let copies: i64 = user.query_row("SELECT count(*) FROM collection", [], |r| r.get(0))?;
     println!("  {copies} collection copies seeded");
+    // Reconstruct value-history snapshots from the seeded prices + copies so
+    // fixture-backed value-chart tests have data (deterministic: fixed prices,
+    // fixed acquired_at). (pokedumpster-e1vo)
+    let snaps = pkdump_db::value_history::backfill(&mut user)?;
+    println!("  {snaps} value-history snapshot rows");
 
     println!("Fixture ready: {}", args.out.display());
     Ok(())

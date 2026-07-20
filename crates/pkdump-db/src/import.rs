@@ -457,7 +457,7 @@ fn filter_sealed(report: &SealedResolutionReport, include: &[u32]) -> SealedReso
 
 /// A JSON array literal for tag strings. Tags are simple identifiers
 /// (`misprint`, `altered`) so no escaping is needed.
-fn tags_json(tags: &[String]) -> String {
+pub(crate) fn tags_json(tags: &[String]) -> String {
     let items: Vec<String> = tags.iter().map(|t| format!("\"{t}\"")).collect();
     format!("[{}]", items.join(","))
 }
@@ -492,22 +492,43 @@ pub fn commit(
 /// Commit only the selected matched rows of a single-card import. Re-resolves
 /// server-side (never trusts the preview) then keeps only the rows whose
 /// `source_line` the user left selected. (pokedumpster-oq3i.4)
+///
+/// When `park_unmatched` is set, the rows that didn't resolve at all are parked
+/// in the dead-letter queue under this commit's batch, to resolve later
+/// (pokedumpster-oq3i.5).
 pub fn commit_selected(
     conn: &mut Connection,
     format: ImportFormat,
     content: &str,
     include: &[u32],
     batch_name: Option<&str>,
+    park_unmatched: bool,
 ) -> Result<CommitResult> {
     let rows = parse(format, content)?;
-    let report = filter_report(&resolve(conn, &rows)?, include);
-    commit_matched(
+    let full = resolve(conn, &rows)?;
+    let report = filter_report(&full, include);
+    let result = commit_matched(
         conn,
         &report,
         format.source(),
         format.batch_type(),
         batch_name,
-    )
+    )?;
+    if park_unmatched {
+        crate::unresolved::park_report(
+            conn,
+            format.source(),
+            Some(result.batch_id),
+            &rows,
+            &full,
+            &[],
+            &SealedResolutionReport {
+                matched: Vec::new(),
+                unmatched: Vec::new(),
+            },
+        )?;
+    }
+    Ok(result)
 }
 
 /// Add every matched single-card row under a fresh batch. Shared by the
@@ -660,13 +681,13 @@ pub fn commit_collectr_selected(
     include_singles: &[u32],
     include_sealed: &[u32],
     batch_name: Option<&str>,
+    park_unmatched: bool,
 ) -> Result<CombinedCommitResult> {
     let parsed = collectr::parse(content)?;
-    let singles_report = filter_report(&resolve(conn, &parsed.singles)?, include_singles);
-    let sealed_report = filter_sealed(
-        &sealed_import::resolve_sealed(conn, &parsed.sealed)?,
-        include_sealed,
-    );
+    let singles_full = resolve(conn, &parsed.singles)?;
+    let sealed_full = sealed_import::resolve_sealed(conn, &parsed.sealed)?;
+    let singles_report = filter_report(&singles_full, include_singles);
+    let sealed_report = filter_sealed(&sealed_full, include_sealed);
 
     let singles = commit_matched(
         conn,
@@ -676,6 +697,20 @@ pub fn commit_collectr_selected(
         batch_name,
     )?;
     let sealed = sealed_import::commit_sealed(conn, &sealed_report, "csv_collectr")?;
+
+    if park_unmatched {
+        // Both halves' misses go to the queue under the singles batch (the
+        // import's provenance handle).
+        crate::unresolved::park_report(
+            conn,
+            "csv_collectr",
+            Some(singles.batch_id),
+            &parsed.singles,
+            &singles_full,
+            &parsed.sealed,
+            &sealed_full,
+        )?;
+    }
 
     Ok(CombinedCommitResult {
         singles,
@@ -1016,12 +1051,20 @@ NOPE,Mystery,1,normal,1,near_mint,en,";
     fn commit_selected_adds_only_included_lines() {
         let (_d, mut conn) = db();
         // Selecting nothing adds nothing.
-        let none = commit_selected(&mut conn, ImportFormat::Manabox, CSV, &[], None).unwrap();
+        let none =
+            commit_selected(&mut conn, ImportFormat::Manabox, CSV, &[], None, false).unwrap();
         assert_eq!(none.added, 0);
 
         // Line 2 is the pair of matched 'normal' copies; including it adds both.
-        let some =
-            commit_selected(&mut conn, ImportFormat::Manabox, CSV, &[2], Some("sel.csv")).unwrap();
+        let some = commit_selected(
+            &mut conn,
+            ImportFormat::Manabox,
+            CSV,
+            &[2],
+            Some("sel.csv"),
+            false,
+        )
+        .unwrap();
         assert_eq!(some.added, 2);
         let cards = collection::list_by_batch(&conn, some.batch_id).unwrap();
         assert_eq!(cards.len(), 2);
@@ -1151,12 +1194,12 @@ Sealed Pokemon TCG,Pokemon,151,151 Elite Trainer Box,,,Normal,Ungraded,Near Mint
     fn collectr_commit_selected_honors_each_pane() {
         let (_d, mut conn) = sealed_db();
         // Take the sealed line (4) only; leave the singles line (3) out.
-        let r = commit_collectr_selected(&mut conn, COLLECTR_CSV, &[], &[4], None).unwrap();
+        let r = commit_collectr_selected(&mut conn, COLLECTR_CSV, &[], &[4], None, false).unwrap();
         assert_eq!(r.singles.added, 0);
         assert_eq!(r.sealed.added, 1);
 
         // Now take only the singles line.
-        let r = commit_collectr_selected(&mut conn, COLLECTR_CSV, &[3], &[], None).unwrap();
+        let r = commit_collectr_selected(&mut conn, COLLECTR_CSV, &[3], &[], None, false).unwrap();
         assert_eq!(r.singles.added, 2);
         assert_eq!(r.sealed.added, 0);
     }

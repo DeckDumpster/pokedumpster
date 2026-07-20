@@ -1,16 +1,20 @@
 //! `/api/import` — CSV collection import (PLAN.md §5.2, §9).
 
-use axum::extract::State;
-use axum::routing::post;
+use axum::extract::{Path, State};
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use pkdump_db::import::{
     self, CombinedCommitResult, CombinedReport, CommitResult, ImportFormat, ResolutionReport,
 };
+use pkdump_db::unresolved::{self, UnresolvedRow};
 
 /// A selected-row single-card commit: `include` lists the `source_line`s the
 /// user left checked in the preview. (pokedumpster-oq3i.4)
+///
+/// `park_unmatched` sends the leftover unmatched rows to the dead-letter queue
+/// (pokedumpster-oq3i.5).
 #[derive(Deserialize)]
 struct SelectedCommitRequest {
     format: String,
@@ -19,6 +23,8 @@ struct SelectedCommitRequest {
     name: Option<String>,
     #[serde(default)]
     include: Vec<u32>,
+    #[serde(default)]
+    park_unmatched: bool,
 }
 
 /// A selected-row Collectr commit — separate include lists per pane so the
@@ -32,6 +38,8 @@ struct CollectrSelectedRequest {
     include_singles: Vec<u32>,
     #[serde(default)]
     include_sealed: Vec<u32>,
+    #[serde(default)]
+    park_unmatched: bool,
 }
 
 use crate::{AppError, AppState, blocking};
@@ -52,6 +60,10 @@ pub fn routes() -> Router<AppState> {
             "/import/collectr/commit-selected",
             post(commit_collectr_selected),
         )
+        // Dead-letter (unresolved) queue (pokedumpster-oq3i.5).
+        .route("/import/unresolved", get(list_unresolved))
+        .route("/import/unresolved/{id}/resolve", post(resolve_unresolved))
+        .route("/import/unresolved/{id}/dismiss", post(dismiss_unresolved))
 }
 
 /// An import request: the CSV text and which format to parse it as.
@@ -94,7 +106,14 @@ async fn commit_selected(
 ) -> Result<Json<CommitResult>, AppError> {
     let format = ImportFormat::parse(&req.format)?;
     let result = blocking(&state, move |c| {
-        import::commit_selected(c, format, &req.content, &req.include, req.name.as_deref())
+        import::commit_selected(
+            c,
+            format,
+            &req.content,
+            &req.include,
+            req.name.as_deref(),
+            req.park_unmatched,
+        )
     })
     .await?;
     Ok(Json(result))
@@ -112,6 +131,7 @@ async fn commit_collectr_selected(
             &req.include_singles,
             &req.include_sealed,
             req.name.as_deref(),
+            req.park_unmatched,
         )
     })
     .await?;
@@ -140,4 +160,81 @@ async fn commit_collectr(
     })
     .await?;
     Ok(Json(result))
+}
+
+// --- Dead-letter (unresolved) queue (pokedumpster-oq3i.5) ---
+
+/// A manual resolution: exactly one of `printing_id` (single) or `product_id`
+/// (sealed) identifies the catalog item the parked row should become.
+#[derive(Deserialize)]
+struct ResolveRequest {
+    #[serde(default)]
+    printing_id: Option<String>,
+    #[serde(default)]
+    product_id: Option<i64>,
+}
+
+/// The outcome of resolving a parked row: which side it landed on and the id
+/// of the created collection / sealed row.
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct UnresolvedResolveResult {
+    /// `single` | `sealed`.
+    pub kind: String,
+    /// The created `collection.id` (single) or `sealed_collection.id` (sealed).
+    #[ts(type = "number")]
+    pub id: i64,
+}
+
+/// List the open dead-letter queue.
+async fn list_unresolved(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<UnresolvedRow>>, AppError> {
+    let rows = blocking(&state, move |c| unresolved::list_open(c)).await?;
+    Ok(Json(rows))
+}
+
+/// Resolve one parked row to a chosen printing (single) or product (sealed).
+async fn resolve_unresolved(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<ResolveRequest>,
+) -> Result<Json<UnresolvedResolveResult>, AppError> {
+    let result = match (req.printing_id, req.product_id) {
+        (Some(printing_id), None) => {
+            let row = blocking(&state, move |c| {
+                unresolved::resolve_single(c, id, &printing_id)
+            })
+            .await?;
+            UnresolvedResolveResult {
+                kind: "single".to_string(),
+                id: row.id,
+            }
+        }
+        (None, Some(product_id)) => {
+            let entry = blocking(&state, move |c| {
+                unresolved::resolve_sealed(c, id, product_id)
+            })
+            .await?;
+            UnresolvedResolveResult {
+                kind: "sealed".to_string(),
+                id: entry.id,
+            }
+        }
+        _ => {
+            return Err(AppError::bad_request(
+                "resolve needs exactly one of printing_id or product_id",
+            ));
+        }
+    };
+    Ok(Json(result))
+}
+
+/// Dismiss one parked row without writing a copy.
+async fn dismiss_unresolved(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<()>, AppError> {
+    blocking(&state, move |c| unresolved::dismiss(c, id)).await?;
+    Ok(Json(()))
 }

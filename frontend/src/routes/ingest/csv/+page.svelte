@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { SvelteSet } from 'svelte/reactivity';
 	import { api } from '$lib/api';
+	import MatchPicker from '$lib/components/MatchPicker.svelte';
 	import type { ResolutionReport } from '$lib/types/ResolutionReport';
 	import type { CommitResult } from '$lib/types/CommitResult';
 	import type { CombinedReport } from '$lib/types/CombinedReport';
@@ -19,7 +20,25 @@
 	let busy = $state(false);
 	let error = $state<string | null>(null);
 
+	// Which unmatched row's inline picker is open, keyed `${pane}:${index}`.
+	// Panes: 'r' = single-format report, 'cs' = Collectr singles, 'cx' = sealed.
+	let matchOpen = $state<string | null>(null);
+	// After a commit with misses: offer to park them for later. (oq3i.5)
+	let parkPrompt = $state<number | null>(null);
+	let parkResult = $state<number | null>(null);
+	// Open dead-letter count, for the nav badge.
+	let openCount = $state(0);
+
 	const isCollectr = $derived(format === 'collectr');
+
+	function refreshOpenCount() {
+		api.unresolvedList()
+			.then((r) => (openCount = r.length))
+			.catch(() => {});
+	}
+	$effect(() => {
+		refreshOpenCount();
+	});
 
 	// --- Per-row include/exclude (pokedumpster-oq3i.4) -----------------------
 	// Selection is keyed by CSV `source_line`: a single line with quantity > 1
@@ -80,6 +99,9 @@
 		combined = null;
 		result = null;
 		combinedResult = null;
+		parkPrompt = null;
+		parkResult = null;
+		matchOpen = null;
 		selSingles.clear();
 		selSealed.clear();
 	}
@@ -117,6 +139,10 @@
 		busy = true;
 		error = null;
 		try {
+			// Misses still showing after any inline matches — offered for parking.
+			const misses = isCollectr
+				? (combined?.singles.unmatched.length ?? 0) + (combined?.sealed.unmatched.length ?? 0)
+				: (report?.unmatched.length ?? 0);
 			if (isCollectr) {
 				combinedResult = await api.importCollectrCommitSelected(
 					content,
@@ -134,6 +160,69 @@
 			}
 			report = null;
 			combined = null;
+			parkPrompt = misses > 0 ? misses : null;
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = false;
+		}
+	}
+
+	// --- Inline manual match of an unmatched preview row (oq3i.5) -------------
+	// A quick match: adds one copy immediately and drops the row from the
+	// preview. For full metadata fidelity (price/date/tags/quantity), import and
+	// then park the misses — the /ingest/unresolved queue replays those.
+	function matchKey(pane: string, i: number): string {
+		return `${pane}:${i}`;
+	}
+
+	async function matchSingle(pane: 'r' | 'cs', i: number, printingId: string) {
+		busy = true;
+		error = null;
+		try {
+			await api.addCopy({ printing_id: printingId, source: 'manual_id' });
+			if (pane === 'r' && report) {
+				report.unmatched = report.unmatched.filter((_, idx) => idx !== i);
+			} else if (pane === 'cs' && combined) {
+				combined.singles.unmatched = combined.singles.unmatched.filter((_, idx) => idx !== i);
+			}
+			matchOpen = null;
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function matchSealed(i: number, productId: number) {
+		busy = true;
+		error = null;
+		try {
+			await api.addSealed({ product_id: productId, source: 'manual_id' });
+			if (combined) {
+				combined.sealed.unmatched = combined.sealed.unmatched.filter((_, idx) => idx !== i);
+			}
+			matchOpen = null;
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function parkMisses() {
+		busy = true;
+		error = null;
+		try {
+			if (isCollectr) {
+				const r = await api.importCollectrCommitSelected(content, [], [], fileName ?? undefined, true);
+				parkResult = r.singles.skipped + r.sealed.skipped;
+			} else {
+				const r = await api.importCommitSelected(format, content, [], fileName ?? undefined, true);
+				parkResult = r.skipped;
+			}
+			parkPrompt = null;
+			refreshOpenCount();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -149,6 +238,14 @@
 	Bring in a collection from ManaBox, a TCGplayer export, or Collectr. Other ways to add cards:
 	<a href="/ingest/manual">manual entry</a> · <a href="/ingest/order">paste an order</a>.
 </p>
+
+{#if openCount > 0}
+	<p class="queuelink">
+		<a href="/ingest/unresolved">
+			⚠ {openCount} unresolved import {openCount === 1 ? 'row' : 'rows'} to review →
+		</a>
+	</p>
+{/if}
 
 <div class="form">
 	<label>
@@ -214,6 +311,27 @@
 	</div>
 {/if}
 
+{#if parkPrompt}
+	<div class="parkprompt">
+		<span>
+			<strong>{parkPrompt}</strong>
+			{parkPrompt === 1 ? 'row' : 'rows'} couldn't be matched — park {parkPrompt === 1
+				? 'it'
+				: 'them'} to resolve later?
+		</span>
+		<button onclick={parkMisses} disabled={busy}>Park to resolve later</button>
+		<button class="ghost" onclick={() => (parkPrompt = null)} disabled={busy}>Not now</button>
+	</div>
+{/if}
+
+{#if parkResult != null}
+	<div class="result">
+		Parked <strong>{parkResult}</strong>
+		{parkResult === 1 ? 'row' : 'rows'}.
+		<a href="/ingest/unresolved">Resolve them →</a>
+	</div>
+{/if}
+
 {#if report}
 	<section class="preview">
 		<p class="summary">
@@ -273,21 +391,41 @@
 
 		{#if report.unmatched.length}
 			<h2>Unmatched rows</h2>
-			<p class="subhint">Can't be imported until matched — coming with conflict resolution.</p>
+			<p class="subhint">Match each to a catalog card, or import and park them to resolve later.</p>
 			<table>
 				<thead>
-					<tr><th class="chk"></th><th>Line</th><th>Set</th><th>#</th><th>Variant</th><th>Reason</th></tr>
+					<tr><th>Match</th><th>Line</th><th>Set</th><th>#</th><th>Variant</th><th>Reason</th></tr>
 				</thead>
 				<tbody>
 					{#each report.unmatched as row, i (i)}
-						<tr class="off">
-							<td class="chk"><input type="checkbox" disabled title="Unresolved — can't import" /></td>
+						<tr>
+							<td>
+								<button
+									class="matchbtn"
+									onclick={() =>
+										(matchOpen = matchOpen === matchKey('r', i) ? null : matchKey('r', i))}
+								>
+									{matchOpen === matchKey('r', i) ? 'Close' : 'Match…'}
+								</button>
+							</td>
 							<td>{row.source_line}</td>
 							<td>{row.set_hint}</td>
 							<td>{row.number}</td>
 							<td>{row.variant}</td>
 							<td class="reason">{row.reason}</td>
 						</tr>
+						{#if matchOpen === matchKey('r', i)}
+							<tr class="pickrow">
+								<td colspan="6">
+									<MatchPicker
+										kind="single"
+										busy={busy}
+										onPickSingle={(pid) => matchSingle('r', i, pid)}
+										onCancel={() => (matchOpen = null)}
+									/>
+								</td>
+							</tr>
+						{/if}
 					{/each}
 				</tbody>
 			</table>
@@ -358,18 +496,38 @@
 				<h3>Unmatched cards</h3>
 				<table>
 					<thead>
-						<tr><th class="chk"></th><th>Line</th><th>Set</th><th>#</th><th>Variant</th><th>Reason</th></tr>
+						<tr><th>Match</th><th>Line</th><th>Set</th><th>#</th><th>Variant</th><th>Reason</th></tr>
 					</thead>
 					<tbody>
 						{#each combined.singles.unmatched as row, i (i)}
-							<tr class="off">
-								<td class="chk"><input type="checkbox" disabled title="Unresolved — can't import" /></td>
+							<tr>
+								<td>
+									<button
+										class="matchbtn"
+										onclick={() =>
+											(matchOpen = matchOpen === matchKey('cs', i) ? null : matchKey('cs', i))}
+									>
+										{matchOpen === matchKey('cs', i) ? 'Close' : 'Match…'}
+									</button>
+								</td>
 								<td>{row.source_line}</td>
 								<td>{row.set_hint}</td>
 								<td>{row.number}</td>
 								<td>{row.variant}</td>
 								<td class="reason">{row.reason}</td>
 							</tr>
+							{#if matchOpen === matchKey('cs', i)}
+								<tr class="pickrow">
+									<td colspan="6">
+										<MatchPicker
+											kind="single"
+											busy={busy}
+											onPickSingle={(pid) => matchSingle('cs', i, pid)}
+											onCancel={() => (matchOpen = null)}
+										/>
+									</td>
+								</tr>
+							{/if}
 						{/each}
 					</tbody>
 				</table>
@@ -432,17 +590,38 @@
 				<h3>Unmatched sealed</h3>
 				<table>
 					<thead>
-						<tr><th class="chk"></th><th>Line</th><th>Product</th><th>Set</th><th>Reason</th></tr>
+						<tr><th>Match</th><th>Line</th><th>Product</th><th>Set</th><th>Reason</th></tr>
 					</thead>
 					<tbody>
 						{#each combined.sealed.unmatched as row, i (i)}
-							<tr class="off">
-								<td class="chk"><input type="checkbox" disabled title="Unresolved — can't import" /></td>
+							<tr>
+								<td>
+									<button
+										class="matchbtn"
+										onclick={() =>
+											(matchOpen = matchOpen === matchKey('cx', i) ? null : matchKey('cx', i))}
+									>
+										{matchOpen === matchKey('cx', i) ? 'Close' : 'Match…'}
+									</button>
+								</td>
 								<td>{row.source_line}</td>
 								<td>{row.name}</td>
 								<td>{row.set_hint}</td>
 								<td class="reason">{row.reason}</td>
 							</tr>
+							{#if matchOpen === matchKey('cx', i)}
+								<tr class="pickrow">
+									<td colspan="5">
+										<MatchPicker
+											kind="sealed"
+											initialQuery={row.name}
+											busy={busy}
+											onPickSealed={(prod) => matchSealed(i, prod)}
+											onCancel={() => (matchOpen = null)}
+										/>
+									</td>
+								</tr>
+							{/if}
 						{/each}
 					</tbody>
 				</table>
@@ -677,5 +856,71 @@
 	}
 	.reason {
 		color: #e9a045;
+	}
+	.queuelink a {
+		display: inline-block;
+		padding: 0.4rem 0.8rem;
+		background: #3a2f16;
+		border: 1px solid #e9a045;
+		border-radius: 6px;
+		color: #e9a045;
+		text-decoration: none;
+		font-size: 0.88rem;
+	}
+	.queuelink a:hover {
+		background: #e9a045;
+		color: #16213e;
+	}
+	.parkprompt {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		flex-wrap: wrap;
+		margin: 1rem 0;
+		padding: 0.7rem 1rem;
+		background: #16213e;
+		border: 1px solid #e9a045;
+		border-radius: 8px;
+		font-size: 0.9rem;
+	}
+	.parkprompt strong {
+		color: #e9a045;
+	}
+	.parkprompt button {
+		padding: 0.4rem 0.9rem;
+		background: #e9a045;
+		border: none;
+		border-radius: 6px;
+		color: #16213e;
+		cursor: pointer;
+		font-weight: 600;
+	}
+	.parkprompt button.ghost {
+		background: transparent;
+		border: 1px solid #0f3460;
+		color: #cfd6e6;
+		font-weight: 400;
+	}
+	.parkprompt button:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+	.matchbtn {
+		padding: 0.22rem 0.6rem;
+		font-size: 0.75rem;
+		background: #16213e;
+		border: 1px solid #0f3460;
+		border-radius: 5px;
+		color: #cfd6e6;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.matchbtn:hover {
+		border-color: #e94560;
+		color: #fff;
+	}
+	.pickrow td {
+		background: #12182e;
+		padding: 0.2rem 0.4rem;
 	}
 </style>

@@ -81,9 +81,9 @@ pub struct BinderSlot {
 pub struct MissingExport {
     pub set_code: String,
     pub set_name: String,
-    /// TCGplayer set abbreviation (== `sets.ptcgo_code`, which the ingest
-    /// pipeline links to TCGplayer's `group.abbreviation`). `None` means the
-    /// whole set has no usable code, so every line is unmappable.
+    /// The set code used in the Mass Entry lines: TCGplayer's own
+    /// `group.abbreviation` when known, else the PTCGO code. `None` means the
+    /// set has no usable code, so every line is unmappable (the UI warns).
     pub ptcgo_code: Option<String>,
     pub cards: Vec<MissingCard>,
 }
@@ -416,17 +416,51 @@ pub fn get_binder_page(
 /// collection row. One line per card (the user picks holo/normal in
 /// TCGplayer's cart review), so variants are intentionally collapsed.
 pub fn missing_for_export(conn: &Connection, set_code: &str) -> Result<Option<MissingExport>> {
-    let set: Option<(String, Option<String>, Option<i64>)> = conn
-        .prepare("SELECT name, ptcgo_code, printed_total FROM sets WHERE set_code = ?1")?
-        .query_row([set_code], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    struct SetInfo {
+        name: String,
+        ptcgo_code: Option<String>,
+        printed_total: Option<i64>,
+        tcg_abbrev: Option<String>,
+    }
+    let set: Option<SetInfo> = conn
+        .prepare(
+            "SELECT s.name, s.ptcgo_code, s.printed_total, \
+                    (SELECT g.abbreviation FROM tcgplayer_groups g \
+                      WHERE g.set_code = s.set_code AND g.abbreviation IS NOT NULL \
+                      ORDER BY (g.role = 'primary') DESC LIMIT 1) \
+             FROM sets s WHERE s.set_code = ?1",
+        )?
+        .query_row([set_code], |r| {
+            Ok(SetInfo {
+                name: r.get(0)?,
+                ptcgo_code: r.get(1)?,
+                printed_total: r.get(2)?,
+                tcg_abbrev: r.get(3)?,
+            })
+        })
         .optional()?;
-    let Some((set_name, ptcgo_code, printed_total)) = set else {
+    let Some(SetInfo {
+        name: set_name,
+        ptcgo_code,
+        printed_total,
+        tcg_abbrev,
+    }) = set
+    else {
         return Ok(None);
     };
     let printed_total = printed_total.unwrap_or(i64::MAX);
+    // Mass Entry is a TCGplayer feature, so the bracketed set code must be
+    // TCGplayer's own abbreviation (from the ingested tcgplayer_groups), not
+    // the Pokémon-TCGO code — they only sometimes coincide. Fall back to the
+    // PTCGO code when TCGplayer has no abbreviation.
+    let entry_set_code = tcg_abbrev.or(ptcgo_code);
 
     let mut stmt = conn.prepare(
-        "SELECT cd.card_id, cd.number, cd.number_sortable, cd.name \
+        "SELECT cd.card_id, cd.number, cd.number_sortable, cd.name, \
+                (SELECT tp.collector_number FROM printings p \
+                   JOIN tcgcsv_products tp ON tp.product_id = p.tcgplayer_product_id \
+                  WHERE p.card_id = cd.card_id AND p.tcgplayer_product_id IS NOT NULL \
+                    AND tp.collector_number IS NOT NULL LIMIT 1) AS tcg_number \
          FROM cards cd \
          WHERE cd.set_code = ?1 \
            AND NOT EXISTS ( \
@@ -445,10 +479,15 @@ pub fn missing_for_export(conn: &Connection, set_code: &str) -> Result<Option<Mi
             let number: String = r.get(1)?;
             let number_sortable: i64 = r.get(2)?;
             let name: String = r.get(3)?;
+            let tcg_number: Option<String> = r.get(4)?;
             let section = section_of(number_sortable, printed_total).to_string();
-            let mass_entry_line = ptcgo_code
-                .as_ref()
-                .map(|code| format!("1 {name} [{code}] {number}"));
+            // Use TCGplayer's own collector number ("183/132") so Mass Entry
+            // resolves the exact printing; fall back to the bare catalog
+            // number only when the card has no linked TCGplayer product.
+            let mass_entry_line = entry_set_code.as_ref().map(|code| {
+                let num = tcg_number.as_deref().unwrap_or(number.as_str());
+                format!("1 {name} [{code}] {num}")
+            });
             Ok(MissingCard {
                 card_id,
                 number,
@@ -459,10 +498,12 @@ pub fn missing_for_export(conn: &Connection, set_code: &str) -> Result<Option<Mi
         })?
         .collect::<rusqlite::Result<_>>()?;
 
+    // Expose the code actually used in the lines (TCGplayer abbrev, or the
+    // PTCGO fallback) so the UI's "no code → unmappable" warning stays honest.
     Ok(Some(MissingExport {
         set_code: set_code.to_string(),
         set_name,
-        ptcgo_code,
+        ptcgo_code: entry_set_code,
         cards,
     }))
 }
@@ -788,6 +829,55 @@ mod tests {
         assert!(noab.ptcgo_code.is_none());
         assert_eq!(noab.cards.len(), 1);
         assert!(noab.cards[0].mass_entry_line.is_none());
+    }
+
+    #[test]
+    fn mass_entry_uses_tcgplayer_number_and_abbreviation() {
+        // TCGplayer Mass Entry needs its OWN set abbreviation + full number
+        // ("MEG" + "138/132"), not the PTCGO code + bare catalog number
+        // ("MEG"/"138") — the reported "could not be found" bug.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, ptcgo_code, printed_total) \
+                 VALUES ('me1', 'Mega Evolution', 'ME', 'MEG', 132)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO tcgplayer_groups (group_id, set_code, name, abbreviation, fetched_at, role) \
+                 VALUES (24380, 'me1', 'ME01: Mega Evolution', 'MEG', '2026-01-01', 'primary')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('me1-138', 'me1', '138', 138, 'Vulpix')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO tcgcsv_products (product_id, group_id, name, collector_number, fetched_at) \
+                 VALUES (555, 24380, 'Vulpix - 138/132', '138/132', '2026-01-01')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id, card_id, variant, tcgplayer_product_id) \
+                 VALUES ('me1-138-holo', 'me1-138', 'holo', 555)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let exp = missing_for_export(&conn, "me1").unwrap().unwrap();
+        let vulpix = exp.cards.iter().find(|c| c.number == "138").unwrap();
+        assert_eq!(
+            vulpix.mass_entry_line.as_deref(),
+            Some("1 Vulpix [MEG] 138/132")
+        );
     }
 
     #[test]

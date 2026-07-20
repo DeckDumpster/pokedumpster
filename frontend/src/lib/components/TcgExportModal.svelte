@@ -81,12 +81,43 @@
 	}
 
 	let copyTimer: ReturnType<typeof setTimeout> | undefined;
+
+	// navigator.clipboard only exists in a secure context (HTTPS/localhost).
+	// The app is reached over WireGuard at an HTTP IP, so fall back to
+	// selecting the textarea + execCommand, and finally to just selecting it
+	// so the user can Ctrl+C.
+	function legacyCopy(text: string): boolean {
+		const ta = document.getElementById('tcg-lines');
+		if (!(ta instanceof HTMLTextAreaElement)) return false;
+		ta.focus();
+		ta.select();
+		try {
+			return document.execCommand('copy');
+		} catch {
+			return false;
+		}
+	}
+
 	async function copy() {
 		if (!lines) return;
-		await navigator.clipboard.writeText(lines);
-		copied = true;
-		clearTimeout(copyTimer);
-		copyTimer = setTimeout(() => (copied = false), 1600);
+		let ok = false;
+		try {
+			if (navigator.clipboard?.writeText) {
+				await navigator.clipboard.writeText(lines);
+				ok = true;
+			}
+		} catch {
+			// secure-context API present but blocked — fall through.
+		}
+		if (!ok) ok = legacyCopy(lines);
+		if (ok) {
+			copied = true;
+			clearTimeout(copyTimer);
+			copyTimer = setTimeout(() => (copied = false), 1600);
+		} else {
+			// Last resort: leave the text selected so the user can copy manually.
+			legacyCopy(lines);
+		}
 	}
 </script>
 

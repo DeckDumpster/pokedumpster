@@ -14,6 +14,7 @@ pub mod cards;
 pub mod catalog;
 pub mod collection;
 pub mod collectr_export;
+pub mod conditions;
 pub mod decks;
 pub mod export;
 pub mod import;

@@ -56,6 +56,7 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
     crate::sub_type_map::reconcile(&mut conn)?;
     crate::bundles::reconcile(&mut conn)?;
     crate::set_aliases::reconcile(&mut conn)?;
+    crate::conditions::reconcile(&mut conn)?;
     Ok(conn)
 }
 

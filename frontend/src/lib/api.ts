@@ -41,6 +41,7 @@ import type { CombinedCommitResult } from './types/CombinedCommitResult';
 import type { UnresolvedRow } from './types/UnresolvedRow';
 import type { UnresolvedResolveResult } from './types/UnresolvedResolveResult';
 import type { Variant } from './types/Variant';
+import type { Condition } from './types/Condition';
 import type { ManualPrice } from './types/ManualPrice';
 import type { NewManualPrice } from './types/NewManualPrice';
 import type { CreateMissingVariant } from './types/CreateMissingVariant';
@@ -295,6 +296,9 @@ export const api = {
 
 	// --- Variants display metadata (backs $lib/variants.svelte) ---
 	variants: () => getJson<Variant[]>('/api/variants'),
+
+	// --- Card-condition value multipliers (backs $lib/conditions.svelte) ---
+	conditions: () => getJson<Condition[]>('/api/conditions'),
 
 	// --- Backup freshness (Layer 3 staleness banner, pokedumpster-ivq.5) ---
 	/** Off-box backup freshness from the host-side checker's marker. */

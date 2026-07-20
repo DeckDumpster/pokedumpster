@@ -5,6 +5,7 @@ pub mod batches;
 pub mod binders;
 pub mod card;
 pub mod collection;
+pub mod conditions;
 pub mod decks;
 pub mod export;
 pub mod import;
@@ -36,6 +37,7 @@ pub fn api_router() -> Router<AppState> {
         .merge(decks::routes())
         .merge(sealed::routes())
         .merge(variants::routes())
+        .merge(conditions::routes())
         .merge(orders::routes())
         .merge(wishlist::routes())
         .merge(batches::routes())

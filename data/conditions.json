@@ -1,0 +1,7 @@
+[
+  { "name": "Near Mint",         "multiplier": 1.00, "rank": 0 },
+  { "name": "Lightly Played",    "multiplier": 0.85, "rank": 1 },
+  { "name": "Moderately Played", "multiplier": 0.65, "rank": 2 },
+  { "name": "Heavily Played",    "multiplier": 0.45, "rank": 3 },
+  { "name": "Damaged",           "multiplier": 0.25, "rank": 4 }
+]

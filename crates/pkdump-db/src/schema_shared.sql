@@ -70,6 +70,19 @@ CREATE TABLE IF NOT EXISTS set_aliases (
     set_code TEXT NOT NULL REFERENCES sets(set_code)
 );
 
+-- Card-condition value multipliers (data-model-is-the-product; pokedumpster-e1vo).
+-- The standard TCGplayer raw-card multipliers applied to a copy's Near-Mint
+-- market price to estimate its value at its recorded condition. Seeded from
+-- data/conditions.json by pkdump_db::conditions::reconcile. Read by the
+-- frontend via /api/conditions (backs $lib/conditions.svelte) AND by the
+-- Rust value-history snapshot/backfill — one source instead of a hardcoded
+-- multiplier map duplicated in TypeScript.
+CREATE TABLE IF NOT EXISTS conditions (
+    name        TEXT PRIMARY KEY,   -- 'Near Mint' (matches collection.condition)
+    multiplier  REAL NOT NULL,      -- 1.00, 0.85, 0.65, 0.45, 0.25
+    rank        INTEGER NOT NULL    -- display/sort order, best first
+);
+
 -- ---------------------------------------------------------------------
 -- Variants and printings
 -- ---------------------------------------------------------------------

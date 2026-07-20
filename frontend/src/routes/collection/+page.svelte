@@ -5,7 +5,8 @@
 	import { api, SearchQueryError } from '$lib/api';
 	import { facetHref } from '$lib/facets';
 	import { variantLabel, variantTag, variants } from '$lib/variants.svelte';
-	import { CONDITIONS, conditionMultiplier } from '$lib/conditions';
+	import { CONDITIONS } from '$lib/conditions';
+	import { conditionMultiplier } from '$lib/conditions.svelte';
 	import { money, count } from '$lib/format';
 
 	// Foil shimmer treatment for holo / reverse-holo / pattern-RH /

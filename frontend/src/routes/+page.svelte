@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Pokeball from '$lib/components/Pokeball.svelte';
+	import { api } from '$lib/api';
 
 	const sections = [
 		{ href: '/collection', label: 'Collection', desc: 'Browse every card you own.' },
@@ -12,6 +13,15 @@
 		{ href: '/recent', label: 'Recent', desc: 'Latest collection activity.' },
 		{ href: '/ingest/csv', label: 'Import', desc: 'Bulk-import via CSV.' }
 	];
+
+	// Open dead-letter count — shows the "Unresolved" card only when there's a
+	// backlog to work through. (pokedumpster-oq3i.5)
+	let openCount = $state(0);
+	$effect(() => {
+		api.unresolvedList()
+			.then((r) => (openCount = r.length))
+			.catch(() => {});
+	});
 </script>
 
 <svelte:head><title>PokeDumpster</title></svelte:head>
@@ -31,6 +41,12 @@
 			<span class="cap-desc">{s.desc}</span>
 		</a>
 	{/each}
+	{#if openCount > 0}
+		<a class="cap alert" href="/ingest/unresolved">
+			<span class="cap-label">Unresolved <span class="badge">{openCount}</span></span>
+			<span class="cap-desc">Import rows waiting to be matched.</span>
+		</a>
+	{/if}
 </nav>
 
 <style>
@@ -84,5 +100,21 @@
 	.cap-desc {
 		font-size: 0.85rem;
 		color: #aab;
+	}
+	.cap.alert {
+		border-color: #e9a045;
+	}
+	.cap.alert .cap-label {
+		color: #e9a045;
+	}
+	.badge {
+		display: inline-block;
+		margin-left: 0.3rem;
+		padding: 0.02rem 0.45rem;
+		font-size: 0.75rem;
+		border-radius: 999px;
+		background: #e9a045;
+		color: #16213e;
+		font-weight: 700;
 	}
 </style>

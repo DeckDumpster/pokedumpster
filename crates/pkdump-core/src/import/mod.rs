@@ -7,11 +7,15 @@ pub mod manabox;
 pub mod pokedumpster;
 pub mod tcgplayer;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A single physical copy parsed from an import file, before catalog
 /// resolution. `Quantity` columns are already expanded 1:1 — no aggregation.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+///
+/// `Deserialize` is derived so a parked (unresolved) row's parsed form can be
+/// stored as JSON in `import_unresolved.raw` and replayed on manual resolution
+/// (pokedumpster-oq3i.5), preserving per-row metadata losslessly.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParsedRow {
     /// 1-based source line (counting the header), for preview diagnostics.
     pub source_line: usize,
@@ -45,7 +49,10 @@ pub struct ParsedRow {
 /// cards are treated apart end-to-end (the garden wall). Unlike singles —
 /// which are strictly one row per physical card — sealed items keep a
 /// `quantity` because `sealed_collection` aggregates by count.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+///
+/// `Deserialize` is derived for the same replay-from-`import_unresolved` reason
+/// as [`ParsedRow`] (pokedumpster-oq3i.5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParsedSealedRow {
     /// 1-based source line (counting the header), for preview diagnostics.
     pub source_line: usize,

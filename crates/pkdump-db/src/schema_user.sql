@@ -206,3 +206,34 @@ CREATE TABLE IF NOT EXISTS user_printings (
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_user_printings_card ON user_printings(card_id);
+
+-- ---------------------------------------------------------------------
+-- Import dead-letter queue (unresolved import rows). A persistent backlog
+-- of import rows that didn't resolve to a catalog item: the user manually
+-- matches each to a printing/product (replaying `raw`) or dismisses it.
+-- One global queue, filterable by the import (`batch_id`). (pokedumpster-oq3i.5)
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS import_unresolved (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind          TEXT NOT NULL CHECK (kind IN ('single','sealed')),
+    source        TEXT NOT NULL,          -- 'csv_collectr' | 'csv_manabox' | ...
+    batch_id      INTEGER REFERENCES batches(id),  -- import that parked it (nullable)
+    source_line   INTEGER,                -- original CSV line
+    raw           TEXT NOT NULL,          -- JSON of ParsedRow/ParsedSealedRow (replay source)
+    set_hint      TEXT,
+    number        TEXT,                   -- singles only
+    name          TEXT,                   -- display hint (card/product name)
+    variant       TEXT,                   -- singles only
+    quantity      INTEGER,                -- sealed only (default 1)
+    reason        TEXT NOT NULL,          -- resolver's unmatched reason
+    status        TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open','resolved','dismissed')),
+    resolved_printing_id   TEXT,          -- picked printing (kind='single')
+    resolved_product_id    INTEGER,       -- picked product (kind='sealed')
+    resolved_collection_id INTEGER,       -- collection row created on resolve
+    resolved_sealed_id     INTEGER,       -- sealed_collection row created on resolve
+    parked_at     TEXT NOT NULL,
+    resolved_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_import_unresolved_status ON import_unresolved(status);

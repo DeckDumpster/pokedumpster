@@ -38,6 +38,8 @@ import type { ResolutionReport } from './types/ResolutionReport';
 import type { CommitResult } from './types/CommitResult';
 import type { CombinedReport } from './types/CombinedReport';
 import type { CombinedCommitResult } from './types/CombinedCommitResult';
+import type { UnresolvedRow } from './types/UnresolvedRow';
+import type { UnresolvedResolveResult } from './types/UnresolvedResolveResult';
 import type { Variant } from './types/Variant';
 import type { ManualPrice } from './types/ManualPrice';
 import type { NewManualPrice } from './types/NewManualPrice';
@@ -230,13 +232,21 @@ export const api = {
 		send<ResolutionReport>('POST', '/api/import/csv/preview', { format, content }),
 	importCommit: (format: string, content: string, name?: string) =>
 		send<CommitResult>('POST', '/api/import/csv/commit', { format, content, name }),
-	/** Commit only the selected matched rows (by source_line). (oq3i.4) */
-	importCommitSelected: (format: string, content: string, include: number[], name?: string) =>
+	/** Commit only the selected matched rows (by source_line). (oq3i.4)
+	 *  `parkUnmatched` sends the leftover misses to the dead-letter queue. (oq3i.5) */
+	importCommitSelected: (
+		format: string,
+		content: string,
+		include: number[],
+		name?: string,
+		parkUnmatched = false
+	) =>
 		send<CommitResult>('POST', '/api/import/csv/commit-selected', {
 			format,
 			content,
 			include,
-			name
+			name,
+			park_unmatched: parkUnmatched
 		}),
 
 	// Collectr yields singles + sealed in one file; the combined endpoints
@@ -255,14 +265,33 @@ export const api = {
 		content: string,
 		includeSingles: number[],
 		includeSealed: number[],
-		name?: string
+		name?: string,
+		parkUnmatched = false
 	) =>
 		send<CombinedCommitResult>('POST', '/api/import/collectr/commit-selected', {
 			content,
 			include_singles: includeSingles,
 			include_sealed: includeSealed,
-			name
+			name,
+			park_unmatched: parkUnmatched
 		}),
+
+	// --- Import dead-letter (unresolved) queue (oq3i.5) ---
+	/** Open rows in the unresolved import queue. */
+	unresolvedList: () => getJson<UnresolvedRow[]>('/api/import/unresolved'),
+	/** Resolve a parked single to a chosen printing. */
+	unresolvedResolveSingle: (id: number, printingId: string) =>
+		send<UnresolvedResolveResult>('POST', `/api/import/unresolved/${id}/resolve`, {
+			printing_id: printingId
+		}),
+	/** Resolve a parked sealed row to a chosen product. */
+	unresolvedResolveSealed: (id: number, productId: number) =>
+		send<UnresolvedResolveResult>('POST', `/api/import/unresolved/${id}/resolve`, {
+			product_id: productId
+		}),
+	/** Dismiss a parked row without writing a copy. */
+	unresolvedDismiss: (id: number) =>
+		send<void>('POST', `/api/import/unresolved/${id}/dismiss`),
 
 	// --- Variants display metadata (backs $lib/variants.svelte) ---
 	variants: () => getJson<Variant[]>('/api/variants'),

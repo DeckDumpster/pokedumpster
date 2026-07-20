@@ -237,3 +237,23 @@ CREATE TABLE IF NOT EXISTS import_unresolved (
     resolved_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_import_unresolved_status ON import_unresolved(status);
+
+-- ---------------------------------------------------------------------
+-- Collection value history (pokedumpster-e1vo). One row per
+-- (date, dimension, bucket): the total market value, cost basis, and card
+-- count of the owned collection on that date, for the whole collection
+-- ('all', bucket NULL), per set ('set', bucket = set_code), or per binder
+-- ('binder', bucket = binder-id-as-text). Written idempotently — a full
+-- delete-then-insert per (date, dimension) — by the nightly snapshot and
+-- the one-time backfill. Read by GET /api/collection/value-history.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS collection_value_snapshot (
+    date          TEXT NOT NULL,             -- 'YYYY-MM-DD'
+    dimension     TEXT NOT NULL,             -- 'all' | 'set' | 'binder'
+    bucket        TEXT,                      -- NULL for 'all'; set_code / binder id
+    market_value  REAL NOT NULL,
+    cost_basis    REAL NOT NULL,
+    card_count    INTEGER NOT NULL,
+    PRIMARY KEY (date, dimension, bucket)
+);

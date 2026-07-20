@@ -35,6 +35,11 @@ enum DataCommand {
     /// after editing data/variants.json or data/tcgcsv_sub_type_variants
     /// .json, or after a migration that adds a new bridge.
     Expand(RefreshArgs),
+    /// One-time: reconstruct collection value history from `shared.prices`
+    /// × each copy's acquisition + status history, into the user DB's
+    /// `collection_value_snapshot` table. The nightly `refresh` records
+    /// today going forward; this seeds the past. Idempotent.
+    BackfillValueHistory(RefreshArgs),
 }
 
 /// Arguments for `pkdump data refresh`.
@@ -51,7 +56,30 @@ pub fn run(args: DataArgs) -> anyhow::Result<()> {
         DataCommand::Refresh(args) => refresh(args),
         DataCommand::NormalizeSymbols(args) => normalize_symbols(args),
         DataCommand::Expand(args) => expand_only(args),
+        DataCommand::BackfillValueHistory(args) => backfill_value_history(args),
     }
+}
+
+/// Execute `pkdump data backfill-value-history` — a one-time reconstruction
+/// of the collection's value over time. Unlike `refresh`/`setup` (which open
+/// the *shared* catalog read-write), value snapshots live in the *user* DB,
+/// so this opens a user connection (`connect_user`) with the shared catalog
+/// attached read-only — collection value needs the user's copies.
+fn backfill_value_history(args: RefreshArgs) -> anyhow::Result<()> {
+    let shared_db = match args.db {
+        Some(p) => p,
+        None => pkdump_db::shared_db_path()?,
+    };
+    let user_db = pkdump_db::user_db_path(&pkdump_db::current_user())?;
+    println!(
+        "Backfilling value history into {} (catalog {})",
+        user_db.display(),
+        shared_db.display()
+    );
+    let mut conn = pkdump_db::connect_user(&user_db, &shared_db)?;
+    let rows = pkdump_db::value_history::backfill(&mut conn)?;
+    println!("Value-history backfill complete: {rows} snapshot rows.");
+    Ok(())
 }
 
 /// Execute `pkdump data expand` — reconcile JSON-driven lookups and
@@ -205,6 +233,21 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     println!("Refreshing materialized latest_prices...");
     let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
     println!("  {n_latest} latest-price rows materialized");
+
+    // 7. Snapshot today's collection value into the user DB (value-history
+    //    chart, pokedumpster-e1vo). Value snapshots live in the *user* DB, so
+    //    this opens a separate user connection with the just-refreshed shared
+    //    catalog attached — it reads the materialized latest_prices written
+    //    directly above, so it must run after that step.
+    use std::io::Write;
+    println!("Snapshotting today's collection value...");
+    std::io::stdout().flush().ok();
+    let user_db = pkdump_db::user_db_path(&pkdump_db::current_user())?;
+    let mut user_conn = pkdump_db::connect_user(&user_db, &db_path)?;
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let n_snap = pkdump_db::value_history::snapshot_today(&mut user_conn, &today)?;
+    println!("  {n_snap} value-snapshot rows written for {today}");
+    std::io::stdout().flush().ok();
 
     println!("Refresh complete: {}", db_path.display());
     Ok(())

@@ -1,6 +1,6 @@
 //! `/api/collection` — collection CRUD endpoints (PLAN.md §5.2).
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use pkdump_db::DbError;
 use pkdump_db::collection::{self, CollectionRow, CopyEdit, NewCopy};
+use pkdump_db::value_history::{self, ValueSeries};
 
 use crate::{AppError, AppState, blocking};
 
@@ -17,6 +18,7 @@ pub fn routes() -> Router<AppState> {
         .route("/", get(list).post(create))
         .route("/bulk", post(bulk_create))
         .route("/bulk-delete", post(bulk_delete))
+        .route("/value-history", get(value_history))
         .route("/by-printing/{printing_id}", delete(delete_by_printing))
         .route("/{id}", get(get_one).put(update_one).delete(delete_one))
         .route("/{id}/move", put(move_copy))
@@ -196,6 +198,27 @@ async fn change_printing(
     })
     .await?;
     Ok(Json(row))
+}
+
+#[derive(Deserialize)]
+struct ValueHistoryParams {
+    dimension: Option<String>,
+}
+
+/// Collection value over time. `dimension` is `all` (default), `set`, or
+/// `binder`; an absent or unrecognized value falls back to `all`. Returns one
+/// series for `all`, one per bucket (sorted by latest value, desc) otherwise.
+async fn value_history(
+    State(state): State<AppState>,
+    Query(p): Query<ValueHistoryParams>,
+) -> Result<Json<Vec<ValueSeries>>, AppError> {
+    let dimension = match p.dimension.as_deref() {
+        Some("set") => "set",
+        Some("binder") => "binder",
+        _ => "all",
+    };
+    let series = blocking(&state, move |c| value_history::value_history(c, dimension)).await?;
+    Ok(Json(series))
 }
 
 async fn bulk_delete(

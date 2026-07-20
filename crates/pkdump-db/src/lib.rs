@@ -30,6 +30,7 @@ pub mod sets;
 pub mod sub_type_map;
 pub mod unresolved;
 pub mod user_printings;
+pub mod value_history;
 pub mod variants;
 pub mod wishlist;
 

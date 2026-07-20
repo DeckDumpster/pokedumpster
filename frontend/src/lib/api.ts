@@ -42,6 +42,21 @@ import type { UnresolvedRow } from './types/UnresolvedRow';
 import type { UnresolvedResolveResult } from './types/UnresolvedResolveResult';
 import type { Variant } from './types/Variant';
 import type { Condition } from './types/Condition';
+
+// Collection value-history shapes (pokedumpster-e1vo). These match the backend
+// (e1vo.1) LOCKED contract exactly; once that lands they are replaced by the
+// ts-rs-generated ./types/ValuePoint + ./types/ValueSeries.
+export interface ValuePoint {
+	date: string;
+	market_value: number;
+	cost_basis: number;
+	card_count: number;
+}
+export interface ValueSeries {
+	bucket: string | null;
+	label: string | null;
+	points: ValuePoint[];
+}
 import type { ManualPrice } from './types/ManualPrice';
 import type { NewManualPrice } from './types/NewManualPrice';
 import type { CreateMissingVariant } from './types/CreateMissingVariant';
@@ -299,6 +314,10 @@ export const api = {
 
 	// --- Card-condition value multipliers (backs $lib/conditions.svelte) ---
 	conditions: () => getJson<Condition[]>('/api/conditions'),
+
+	// --- Collection value over time (pokedumpster-e1vo) ---
+	valueHistory: (dimension: 'all' | 'set' | 'binder') =>
+		getJson<ValueSeries[]>(`/api/collection/value-history?dimension=${dimension}`),
 
 	// --- Backup freshness (Layer 3 staleness banner, pokedumpster-ivq.5) ---
 	/** Off-box backup freshness from the host-side checker's marker. */

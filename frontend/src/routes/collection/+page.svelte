@@ -17,6 +17,7 @@
 		return rank >= 1 && rank <= 3;
 	}
 	import CardModal from '$lib/components/CardModal.svelte';
+	import ValueHistoryModal from '$lib/components/ValueHistoryModal.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { SearchRow } from '$lib/types/SearchRow';
@@ -291,6 +292,8 @@
 
 	// Burger menu (Export CSV, Select) lives in the sticky top bar.
 	let menuOpen = $state(false);
+	// Collection value-over-time chart modal (pokedumpster-e1vo).
+	let valueOpen = $state(false);
 	function closeMenu() {
 		menuOpen = false;
 	}
@@ -968,10 +971,15 @@
 				{/if}
 			</div>
 		{/if}
-		<p class="countline muted">
+		<button
+			type="button"
+			class="countline muted"
+			onclick={() => (valueOpen = true)}
+			title="Collection value over time"
+		>
 			{count(filtered.length)}
 			cards{#if totalValue > 0}, {money(totalValue)}{/if}
-		</p>
+		</button>
 	</div>
 </header>
 <div class="topbarSpacer" aria-hidden="true"></div>
@@ -1332,6 +1340,10 @@
 	/>
 {/if}
 
+{#if valueOpen}
+	<ValueHistoryModal onClose={() => (valueOpen = false)} />
+{/if}
+
 <style>
 	.muted {
 		color: #888;
@@ -1519,6 +1531,15 @@
 	.countline {
 		margin: 0 0 0 auto;
 		font-size: 0.85rem;
+		background: none;
+		border: none;
+		padding: 0;
+		font-family: inherit;
+		cursor: pointer;
+	}
+	.countline:hover {
+		color: #e0e0e0;
+		text-decoration: underline;
 	}
 	.tableScroll {
 		overflow-x: auto;

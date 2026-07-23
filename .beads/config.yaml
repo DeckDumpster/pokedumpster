@@ -53,4 +53,4 @@
 # - github.org
 # - github.repo
 
-# sync.remote: "file:///home/ryangantt/.beads-remotes/pokedumpster"
+sync.remote: "git+ssh://git@github.com/rgantt/pokedumpster.git"

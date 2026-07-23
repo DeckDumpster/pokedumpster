@@ -98,7 +98,9 @@ pub struct MissingCard {
     pub name: String,
     /// `base` | `secret` | `subset` | `promo`.
     pub section: String,
-    /// `"1 <Name> [<CODE>] <Number>"`, or `None` when unmappable (no code).
+    /// `"1 <Name> - <###/###> [<CODE>]"` (or `"1 <Name> [<CODE>]"` when the
+    /// card has no TCGplayer collector number), or `None` when unmappable
+    /// (the set has no code).
     pub mass_entry_line: Option<String>,
 }
 
@@ -179,6 +181,34 @@ fn section_of(number_sortable: i64, printed_total: i64) -> &'static str {
         "subset"
     } else {
         "promo"
+    }
+}
+
+/// Build a card's TCGplayer Mass Entry line.
+///
+/// The reliable format for a card with multiple printings in one set (same
+/// name, different numbers — e.g. a base copy plus its secret-rare reprint)
+/// reproduces TCGplayer's *own product name*, which embeds the padded
+/// collector fraction, and appends the set code in brackets:
+///
+/// ```text
+/// 1 Mega Zeraora ex - 027/084 [PBL]
+///   {name} - {collector_number} [{set_code}]
+/// ```
+///
+/// The number must be the padded `###/###` fraction *with the set total*
+/// (`027/084`, `101/084` for a secret rare) — that is what disambiguates
+/// the multiple printings. Our previous line put the set code before a
+/// trailing number (`... [PBL] 027/084`); that parses, but TCGplayer fails
+/// to resolve multi-printing cards from it, hence "could not be found".
+///
+/// When the card has no linked TCGplayer product (no collector number),
+/// drop the number entirely (`1 {name} [{code}]`) — valid for the
+/// single-printing case, which is the only one that lacks a number anyway.
+fn mass_entry_line(name: &str, code: &str, collector_number: Option<&str>) -> String {
+    match collector_number {
+        Some(num) => format!("1 {name} - {num} [{code}]"),
+        None => format!("1 {name} [{code}]"),
     }
 }
 
@@ -481,19 +511,18 @@ pub fn missing_for_export(conn: &Connection, set_code: &str) -> Result<Option<Mi
             let name: String = r.get(3)?;
             let tcg_number: Option<String> = r.get(4)?;
             let section = section_of(number_sortable, printed_total).to_string();
-            // Use TCGplayer's own collector number ("183/132") so Mass Entry
-            // resolves the exact printing; fall back to the bare catalog
-            // number only when the card has no linked TCGplayer product.
-            let mass_entry_line = entry_set_code.as_ref().map(|code| {
-                let num = tcg_number.as_deref().unwrap_or(number.as_str());
-                format!("1 {name} [{code}] {num}")
-            });
+            // Reproduce TCGplayer's own product name ("Name - 027/084")
+            // followed by [SET]; the padded collector fraction is what lets
+            // Mass Entry resolve cards that have several printings in the set.
+            let line = entry_set_code
+                .as_ref()
+                .map(|code| mass_entry_line(&name, code, tcg_number.as_deref()));
             Ok(MissingCard {
                 card_id,
                 number,
                 name,
                 section,
-                mass_entry_line,
+                mass_entry_line: line,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -811,9 +840,10 @@ mod tests {
         assert_eq!(nums, ["2", "3", "GG01"], "owned #1 excluded, rest ordered");
         let venusaur = exp.cards.iter().find(|c| c.number == "3").unwrap();
         assert_eq!(venusaur.section, "secret");
+        // No linked TCGplayer product → number-less fallback line.
         assert_eq!(
             venusaur.mass_entry_line.as_deref(),
-            Some("1 Venusaur [TST] 3")
+            Some("1 Venusaur [TST]")
         );
         assert_eq!(
             exp.cards
@@ -832,10 +862,21 @@ mod tests {
     }
 
     #[test]
-    fn mass_entry_uses_tcgplayer_number_and_abbreviation() {
-        // TCGplayer Mass Entry needs its OWN set abbreviation + full number
-        // ("MEG" + "138/132"), not the PTCGO code + bare catalog number
-        // ("MEG"/"138") — the reported "could not be found" bug.
+    fn mass_entry_line_shapes() {
+        // Product-name form (with collector fraction) then [SET].
+        assert_eq!(
+            mass_entry_line("Mega Zeraora ex", "PBL", Some("027/084")),
+            "1 Mega Zeraora ex - 027/084 [PBL]"
+        );
+        // No collector number → number-less form (single-printing case).
+        assert_eq!(mass_entry_line("Pineco", "SV01", None), "1 Pineco [SV01]");
+    }
+
+    #[test]
+    fn mass_entry_uses_tcgplayer_abbreviation_and_product_name_form() {
+        // TCGplayer needs its OWN set abbreviation ("MEG", not the PTCGO code)
+        // and its product-name form ("Vulpix - 138/132 [MEG]"), NOT the set
+        // code before a trailing number — the reported "could not be found".
         let dir = tempfile::tempdir().unwrap();
         let shared = dir.path().join("shared.sqlite");
         {
@@ -876,7 +917,56 @@ mod tests {
         let vulpix = exp.cards.iter().find(|c| c.number == "138").unwrap();
         assert_eq!(
             vulpix.mass_entry_line.as_deref(),
-            Some("1 Vulpix [MEG] 138/132")
+            Some("1 Vulpix - 138/132 [MEG]")
+        );
+    }
+
+    #[test]
+    fn mass_entry_secret_rare_uses_padded_fraction_and_name_form() {
+        // Regression for the PBL "could not be found" report: a secret rare
+        // must render in TCGplayer's product-name form with the padded
+        // fraction — "1 Fomantis - 085/084 [PBL]", NOT "[PBL] 085/084".
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, ptcgo_code, printed_total) \
+                 VALUES ('pbl', 'Pitch Black', 'ME', 'PBL', 84)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO tcgplayer_groups (group_id, set_code, name, abbreviation, fetched_at, role) \
+                 VALUES (25000, 'pbl', 'PBL: Pitch Black', 'PBL', '2026-01-01', 'primary')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('pbl-85', 'pbl', '85', 85, 'Fomantis')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO tcgcsv_products (product_id, group_id, name, collector_number, fetched_at) \
+                 VALUES (777, 25000, 'Fomantis - 085/084', '085/084', '2026-01-01')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id, card_id, variant, tcgplayer_product_id) \
+                 VALUES ('pbl-85-holo', 'pbl-85', 'holo', 777)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let exp = missing_for_export(&conn, "pbl").unwrap().unwrap();
+        let fomantis = exp.cards.iter().find(|c| c.number == "85").unwrap();
+        assert_eq!(
+            fomantis.mass_entry_line.as_deref(),
+            Some("1 Fomantis - 085/084 [PBL]")
         );
     }
 

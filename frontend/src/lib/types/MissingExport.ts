@@ -9,8 +9,8 @@ import type { MissingCard } from "./MissingCard";
  */
 export type MissingExport = { set_code: string, set_name: string, 
 /**
- * TCGplayer set abbreviation (== `sets.ptcgo_code`, which the ingest
- * pipeline links to TCGplayer's `group.abbreviation`). `None` means the
- * whole set has no usable code, so every line is unmappable.
+ * The set code used in the Mass Entry lines: TCGplayer's own
+ * `group.abbreviation` when known, else the PTCGO code. `None` means the
+ * set has no usable code, so every line is unmappable (the UI warns).
  */
 ptcgo_code: string | null, cards: Array<MissingCard>, };

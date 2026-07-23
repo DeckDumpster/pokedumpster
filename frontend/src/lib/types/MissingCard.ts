@@ -10,6 +10,8 @@ export type MissingCard = { card_id: string, number: string, name: string,
  */
 section: string, 
 /**
- * `"1 <Name> [<CODE>] <Number>"`, or `None` when unmappable (no code).
+ * `"1 <Name> - <###/###> [<CODE>]"` (or `"1 <Name> [<CODE>]"` when the
+ * card has no TCGplayer collector number), or `None` when unmappable
+ * (the set has no code).
  */
 mass_entry_line: string | null, };

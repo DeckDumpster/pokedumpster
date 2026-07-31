@@ -16,6 +16,10 @@ pub fn routes() -> Router<AppState> {
         // files (the garden wall), each a valid Collectr import on its own.
         .route("/export/collectr/singles.csv", get(export_collectr_singles))
         .route("/export/collectr/sealed.csv", get(export_collectr_sealed))
+        // The whole user database as one portable envelope. Restored with
+        // `pkdump import --json` — deliberately not over HTTP, since it
+        // replaces the entire collection.
+        .route("/export/json", get(export_json))
 }
 
 /// Stream the collection as a ManaBox-shaped CSV download.
@@ -40,6 +44,25 @@ async fn export_collectr_sealed(State(state): State<AppState>) -> Result<Respons
     })
     .await?;
     Ok(csv_download(csv, "pokedumpster-collectr-sealed.csv"))
+}
+
+/// Stream the whole user database as a versioned JSON envelope download.
+async fn export_json(State(state): State<AppState>) -> Result<Response, AppError> {
+    let json = blocking(&state, |c| pkdump_db::json_backup::export(c)).await?;
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/json; charset=utf-8".to_string(),
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"pokedumpster-collection.json\"".to_string(),
+            ),
+        ],
+        json,
+    )
+        .into_response())
 }
 
 /// Wrap CSV text in an attachment download response.

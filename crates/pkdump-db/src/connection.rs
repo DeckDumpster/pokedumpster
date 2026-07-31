@@ -90,9 +90,11 @@ pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<(
     Ok(())
 }
 
-/// Open a per-user collection database — applying the user schema — with
-/// the shared catalog attached read-only.
-pub fn connect_user(user_path: &Path, shared_path: &Path) -> Result<Connection> {
+/// Open a per-user collection database — applying the user schema — without
+/// the shared catalog. For work that touches only user tables (the JSON
+/// backup), which must also run on a box where `pkdump setup` has not built
+/// a catalog yet.
+pub fn open_user(user_path: &Path) -> Result<Connection> {
     if let Some(parent) = user_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -100,6 +102,13 @@ pub fn connect_user(user_path: &Path, shared_path: &Path) -> Result<Connection> 
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.execute_batch(SCHEMA_USER)?;
+    Ok(conn)
+}
+
+/// Open a per-user collection database — applying the user schema — with
+/// the shared catalog attached read-only.
+pub fn connect_user(user_path: &Path, shared_path: &Path) -> Result<Connection> {
+    let conn = open_user(user_path)?;
     attach_shared_readonly(&conn, shared_path)?;
     Ok(conn)
 }

@@ -35,6 +35,12 @@ enum DataCommand {
     /// after editing data/variants.json or data/tcgcsv_sub_type_variants
     /// .json, or after a migration that adds a new bridge.
     Expand(RefreshArgs),
+    /// Re-apply `data/overrides/upstream_card_corrections.json` to cards
+    /// already in the catalog. `upsert_card` only corrects rows as they
+    /// are ingested and `refresh` skips sets it already has, so a
+    /// correction added (or edited) after the fact needs this pass to
+    /// reach the existing row. No network; idempotent.
+    ApplyCorrections(ApplyCorrectionsArgs),
     /// One-time: reconstruct collection value history from `shared.prices`
     /// × each copy's acquisition + status history, into the user DB's
     /// `collection_value_snapshot` table. The nightly `refresh` records
@@ -50,14 +56,60 @@ pub struct RefreshArgs {
     db: Option<PathBuf>,
 }
 
+/// Arguments for `pkdump data apply-corrections`.
+#[derive(clap::Args)]
+pub struct ApplyCorrectionsArgs {
+    /// Shared catalog database path (default: ~/.pkdump/shared.sqlite).
+    #[arg(long, value_name = "PATH")]
+    db: Option<PathBuf>,
+    /// Report the rows that would change without writing them.
+    #[arg(long)]
+    dry_run: bool,
+}
+
 /// Execute `pkdump data`.
 pub fn run(args: DataArgs) -> anyhow::Result<()> {
     match args.command {
         DataCommand::Refresh(args) => refresh(args),
         DataCommand::NormalizeSymbols(args) => normalize_symbols(args),
         DataCommand::Expand(args) => expand_only(args),
+        DataCommand::ApplyCorrections(args) => apply_corrections(args),
         DataCommand::BackfillValueHistory(args) => backfill_value_history(args),
     }
+}
+
+/// Execute `pkdump data apply-corrections` — heal already-ingested rows
+/// against the upstream-correction registry.
+fn apply_corrections(args: ApplyCorrectionsArgs) -> anyhow::Result<()> {
+    let db_path = match args.db {
+        Some(p) => p,
+        None => pkdump_db::shared_db_path()?,
+    };
+    println!("Opening shared catalog at {}", db_path.display());
+    let conn = pkdump_db::open_shared(&db_path)?;
+
+    let rows = if args.dry_run {
+        pokemon_tcg_data::pending_corrections(&conn)?
+    } else {
+        pokemon_tcg_data::apply_corrections_to_db(&conn)?
+    };
+    let verb = if args.dry_run {
+        "would change"
+    } else {
+        "healed"
+    };
+    for r in &rows {
+        println!(
+            "  {} number {} -> {} (sortable {} -> {})",
+            r.card_id,
+            r.current_number,
+            r.corrected_number,
+            r.current_number_sortable,
+            r.corrected_number_sortable
+        );
+    }
+    println!("{} row(s) {verb}.", rows.len());
+    Ok(())
 }
 
 /// Execute `pkdump data backfill-value-history` — a one-time reconstruction
@@ -179,6 +231,21 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     println!("Filling newest sets from pokemontcg.io...");
     let added = import_tail(&mut conn)?;
     println!("  added {added} set(s) not yet in the catalog");
+
+    // 2b. Re-apply the upstream-correction registry to rows already in the
+    //     catalog. `upsert_card` above only corrects the sets import_tail
+    //     just added — a correction registered after a card landed would
+    //     otherwise never reach its row. Runs before variant expansion so
+    //     downstream phases see the corrected numbers.
+    println!("Re-applying upstream card corrections...");
+    let healed = pokemon_tcg_data::apply_corrections_to_db(&conn)?;
+    for h in &healed {
+        println!(
+            "  {} number {} -> {}",
+            h.card_id, h.current_number, h.corrected_number
+        );
+    }
+    println!("  {} row(s) healed", healed.len());
 
     // 2. TCGCSV groups, sealed products, single-card products, prices —
     //    raw ingest of everything TCGCSV publishes. Variant expansion in

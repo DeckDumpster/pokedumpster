@@ -59,6 +59,27 @@ the collector number. Two residual classes survived that work:
 The rest of the unmodeled group-2374 products are foil-only collapse
 siblings — the card is already represented by another product, by design.
 
+## Upstream card corrections
+
+`data/overrides/upstream_card_corrections.json` is the registry of cards
+pokemontcg.io ships with a field that contradicts its own `id`/image — today
+just `number` (e.g. `zsv10pt5-80` Antique Cover Fossil ships `number="60"`,
+colliding with Escavalier at binder slot 60). `raw_json` is preserved
+verbatim; only the materialized column is corrected.
+
+Corrections are applied in two places:
+
+- `upsert_card` — every card as it is ingested (`pkdump setup`, and the
+  newest-sets tail in `pkdump data refresh`).
+- `pkdump data apply-corrections` — already-ingested rows. `refresh`'s tail
+  fetch skips sets the catalog already has, so a correction added or edited
+  after a card landed never reaches its row through ingest. This subcommand
+  UPDATEs `number` + recomputes `number_sortable` for every registered
+  `card_id` present in the catalog; it is idempotent and takes `--dry-run`
+  to report the rows it would change. `pkdump data refresh` runs it as a
+  phase, so the nightly heals anything added since the last run — a manual
+  invocation is only needed to heal immediately.
+
 ## Set-code bridging
 
 `tcgplayer_groups.abbreviation` is matched against `sets.ptcgo_code` to link

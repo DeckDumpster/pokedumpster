@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "pokedumpster",
-  "project_id": "328a6f13-0014-48be-aca6-b3c834954df1"
-}

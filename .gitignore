@@ -36,3 +36,7 @@
 .DS_Store
 crates/pkdump-db/tests/.ptcg_cache.sqlite
 /screenshots/
+
+# Beads is owned by Gas Town (rig database in the town dolt server);
+# backed up via `bd dolt push` to rgantt/pokedumpster-beads.git, not tracked here.
+.beads/

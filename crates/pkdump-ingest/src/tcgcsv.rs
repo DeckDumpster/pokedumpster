@@ -87,6 +87,56 @@ pub fn is_single_card(product: &TcgProduct) -> bool {
         .any(|e| e.name.eq_ignore_ascii_case("Number"))
 }
 
+/// The first `<digits>/<digits>` fraction in a product name, e.g.
+/// `"Buck's Training - 130/146 (Prerelease)"` → `("130", "146")`. `None`
+/// when the name carries no such fraction.
+fn name_number_fraction(name: &str) -> Option<(&str, &str)> {
+    let b = name.as_bytes();
+    for slash in 0..b.len() {
+        if b[slash] != b'/' {
+            continue;
+        }
+        let mut start = slash;
+        while start > 0 && b[start - 1].is_ascii_digit() {
+            start -= 1;
+        }
+        let mut end = slash + 1;
+        while end < b.len() && b[end].is_ascii_digit() {
+            end += 1;
+        }
+        // Both halves are ASCII digits, so these are char boundaries.
+        if start < slash && end > slash + 1 {
+            return Some((&name[start..slash], &name[slash + 1..end]));
+        }
+    }
+    None
+}
+
+/// Recover a `/total` suffix that TCGplayer's `extendedData` "Number"
+/// dropped but the product *name* still spells out.
+///
+/// TCGCSV normally ships the printed form in "Number" (`"130/146"`), and
+/// cross-group promo resolution leans on the `/total` half to decide which
+/// set's card 130 a stamped promo belongs to — see the `set_total` gate in
+/// `overrides::expand_all_printings`. Two MCAP (group 2374) products carry
+/// a bare `"130"` instead: `"Buck's Training - 130/146 (Prerelease)"`
+/// (221176) and its `[Staff]` sibling (532631). With no total to match on,
+/// and no promo namespace to fall back to (the number is pure digits),
+/// both stayed unmodeled after the MCAP epic. They are the only two
+/// products with this shape across every group we ingest.
+///
+/// The name is the fallback source of truth, but only when its fraction
+/// starts with the very number upstream gave us — a fraction that
+/// disagrees belongs to some other card and must not be grafted on.
+fn restore_truncated_set_total(number: &str, name: &str) -> Option<String> {
+    if number.contains('/') {
+        return None;
+    }
+    let (num, total) = name_number_fraction(name)?;
+    (normalize_collector_number(num) == normalize_collector_number(number))
+        .then(|| format!("{num}/{total}"))
+}
+
 /// Normalize a collector number so the catalog and TCGCSV agree.
 ///
 /// pokemontcg.io stores bare numbers (`"6"`, `"H1"`, `"SWSH001"`) while
@@ -651,6 +701,10 @@ pub fn import_products(conn: &mut Connection, products: &[TcgProduct], now: &str
         if number.is_empty() {
             continue;
         }
+        // Upstream occasionally truncates the printed "130/146" down to a
+        // bare "130"; the product name still spells the full form.
+        let repaired = restore_truncated_set_total(number, &product.name);
+        let number = repaired.as_deref().unwrap_or(number);
         let rarity = product
             .extended_data
             .iter()
@@ -1285,6 +1339,82 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bridged.as_deref(), Some("mep"));
+    }
+
+    #[test]
+    fn restore_truncated_set_total_only_fires_on_agreeing_name_fraction() {
+        // The quirk: upstream "Number" lost the "/146" the name still has.
+        assert_eq!(
+            restore_truncated_set_total("130", "Buck's Training - 130/146 (Prerelease)").as_deref(),
+            Some("130/146")
+        );
+        assert_eq!(
+            restore_truncated_set_total("130", "Buck's Training - 130/146 (Prerelease) [Staff]")
+                .as_deref(),
+            Some("130/146")
+        );
+        // Zero-padding differences between the two sources still agree.
+        assert_eq!(
+            restore_truncated_set_total("7", "Erika's Tangela - 007/217 (Cosmo Holo)").as_deref(),
+            Some("007/217")
+        );
+        // Already complete — nothing to restore.
+        assert_eq!(
+            restore_truncated_set_total("012/086", "Victini (Black Bolt Stamped)"),
+            None
+        );
+        // No fraction in the name at all (bare promo namespaces).
+        assert_eq!(restore_truncated_set_total("060", "Aegislash - 060"), None);
+        // A fraction that disagrees with upstream's number belongs to some
+        // other card — never graft it on.
+        assert_eq!(
+            restore_truncated_set_total("130", "Some Promo - 045/094 (Prerelease)"),
+            None
+        );
+        // A lone slash with no digits on one side isn't a fraction.
+        assert_eq!(
+            restore_truncated_set_total("130", "Mallow & Lana - 256/S-P"),
+            None
+        );
+    }
+
+    #[test]
+    fn import_products_recovers_set_total_truncated_by_upstream() {
+        // Product 221176: extendedData Number is the bare "130" even though
+        // the name spells "130/146". Without the total, cross-group promo
+        // resolution can't tell which set's card 130 this is, so the
+        // Prerelease promo never attaches to dp6-130. Persist the fuller
+        // form the name gives us.
+        let (_d, mut conn) = shared_db();
+        let products = vec![TcgProduct {
+            product_id: 221176,
+            group_id: 2374,
+            name: "Buck's Training - 130/146 (Prerelease)".into(),
+            image_url: None,
+            url: None,
+            image_count: 1,
+            extended_data: vec![
+                ExtendedDatum {
+                    name: "Number".into(),
+                    value: "130".into(),
+                },
+                ExtendedDatum {
+                    name: "Rarity".into(),
+                    value: "Promo".into(),
+                },
+            ],
+        }];
+        import_products(&mut conn, &products, "2026-07-31").unwrap();
+        let number: String = conn
+            .query_row(
+                "SELECT collector_number FROM tcgcsv_products WHERE product_id = 221176",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(number, "130/146");
+        // The repair must not disturb the linking token either side uses.
+        assert_eq!(normalize_collector_number(&number), "130");
     }
 
     #[test]

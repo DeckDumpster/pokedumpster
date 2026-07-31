@@ -1846,6 +1846,108 @@ mod tests {
     }
 
     #[test]
+    fn mcap_prerelease_with_upstream_truncated_number_resolves_to_base_card() {
+        // The last MCAP residual that wasn't blocked on Japanese ingest:
+        // "Buck's Training - 130/146 (Prerelease)" (221176) and its
+        // [Staff] sibling (532631) are the only two products in any
+        // ingested group whose extendedData Number lost the "/total" the
+        // name still carries. Bare "130" is pure digits, so it can't fall
+        // through to the promo-namespace escape hatch either, and both
+        // products stayed unmodeled. Drive the products through
+        // `import_products` (not a hand-written row) so the number repair
+        // is part of what's under test.
+        let (_d, mut conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('dp6', 'Legends Awakened', 'Diamond & Pearl', 146)",
+            [],
+        )
+        .unwrap();
+        // Decoy: another set that also has a card 130. The card-name gate
+        // is what keeps the promo off it.
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('dp3', 'Secret Wonders', 'Diamond & Pearl', 132)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('dp6-130', 'dp6', '130', 130, 'Buck''s Training', 'Uncommon'), \
+                    ('dp3-130', 'dp3', '130', 130, 'Torterra', 'Rare Holo')",
+            [],
+        )
+        .unwrap();
+
+        let ext = |number: &str| {
+            vec![crate::tcgcsv::ExtendedDatum {
+                name: "Number".into(),
+                value: number.into(),
+            }]
+        };
+        let products = vec![
+            crate::tcgcsv::TcgProduct {
+                product_id: 221176,
+                group_id: 2374,
+                name: "Buck's Training - 130/146 (Prerelease)".into(),
+                image_url: None,
+                url: None,
+                image_count: 1,
+                extended_data: ext("130"),
+            },
+            crate::tcgcsv::TcgProduct {
+                product_id: 532631,
+                group_id: 2374,
+                name: "Buck's Training - 130/146 (Prerelease) [Staff]".into(),
+                image_url: None,
+                url: None,
+                image_count: 1,
+                extended_data: ext("130"),
+            },
+        ];
+        crate::tcgcsv::import_products(&mut conn, &products, "2026-07-31").unwrap();
+        conn.execute(
+            "INSERT INTO prices \
+               (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+             VALUES (221176, 'Holofoil', 'tcgplayer', 'market', 12.0, '2026-07-31')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let prerelease: (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT sub_type_name, tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'dp6-130-stamp_prerelease' AND deprecated_at IS NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(prerelease, (Some("Holofoil".into()), Some(221176)));
+        let staff: i64 = conn
+            .query_row(
+                "SELECT tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'dp6-130-stamp_prerelease_staff' AND deprecated_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(staff, 532631);
+        // The recovered total is what keeps the promo off the other set's
+        // card 130 — and so does the card name.
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM printings WHERE card_id = 'dp3-130' \
+                   AND variant LIKE 'stamp_prerelease%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leaked, 0);
+    }
+
+    #[test]
     fn blister_exclusive_cosmos_holo_resolves_to_base_card() {
         // Group 2289 ("Blister Exclusives") hosts Cosmos Holo promos
         // numbered against their base set (e.g. "Beheeyem - 62/99

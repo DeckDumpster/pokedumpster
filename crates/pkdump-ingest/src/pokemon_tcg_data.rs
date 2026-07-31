@@ -55,6 +55,80 @@ fn apply_upstream_card_correction(card: &mut PokemonTcgCard) {
     }
 }
 
+/// A catalog row the correction registry disagrees with — either its
+/// `number` or the `number_sortable` derived from it. Produced by
+/// [`pending_corrections`], applied by [`apply_corrections_to_db`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingCorrection {
+    pub card_id: String,
+    pub current_number: String,
+    pub current_number_sortable: i64,
+    pub corrected_number: String,
+    pub corrected_number_sortable: i64,
+}
+
+/// Scan already-ingested rows for ones the correction registry disagrees
+/// with. `upsert_card` only corrects cards as they are ingested, and
+/// `pkdump data refresh` skips sets already in the catalog — so a
+/// correction added (or edited) after a card landed never reaches its
+/// row without this pass.
+///
+/// Registered `card_id`s the catalog doesn't have are skipped, as are
+/// rows that already match. Results are sorted by `card_id` so the
+/// dry-run report is stable.
+pub fn pending_corrections(conn: &Connection) -> Result<Vec<PendingCorrection>> {
+    use rusqlite::OptionalExtension;
+
+    let mut stmt = conn.prepare("SELECT number, number_sortable FROM cards WHERE card_id = ?1")?;
+    let mut pending = Vec::new();
+    for (card_id, correction) in upstream_card_corrections() {
+        let Some(corrected_number) = &correction.number else {
+            continue;
+        };
+        let row: Option<(String, i64)> = stmt
+            .query_row([card_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        // Not ingested yet — `upsert_card` will apply the correction when
+        // the card first lands.
+        let Some((current_number, current_number_sortable)) = row else {
+            continue;
+        };
+        let corrected_number_sortable = pkdump_core::number_sortable(corrected_number);
+        if current_number == *corrected_number
+            && current_number_sortable == corrected_number_sortable
+        {
+            continue;
+        }
+        pending.push(PendingCorrection {
+            card_id: card_id.clone(),
+            current_number,
+            current_number_sortable,
+            corrected_number: corrected_number.clone(),
+            corrected_number_sortable,
+        });
+    }
+    pending.sort_by(|a, b| a.card_id.cmp(&b.card_id));
+    Ok(pending)
+}
+
+/// Re-apply the correction registry to rows already in the catalog,
+/// returning the rows that changed. Idempotent — a second run finds
+/// nothing pending and writes nothing. `raw_json` is left untouched, the
+/// same convention `upsert_card` follows.
+pub fn apply_corrections_to_db(conn: &Connection) -> Result<Vec<PendingCorrection>> {
+    let pending = pending_corrections(conn)?;
+    let mut stmt =
+        conn.prepare("UPDATE cards SET number = ?2, number_sortable = ?3 WHERE card_id = ?1")?;
+    for p in &pending {
+        stmt.execute(rusqlite::params![
+            p.card_id,
+            p.corrected_number,
+            p.corrected_number_sortable,
+        ])?;
+    }
+    Ok(pending)
+}
+
 const REPO_TARBALL: &str =
     "https://codeload.github.com/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master";
 
@@ -384,6 +458,111 @@ mod tests {
             )
             .unwrap();
         assert_eq!(number2, "60");
+    }
+
+    #[test]
+    fn apply_corrections_heals_already_ingested_rows() {
+        // The row landed before the override existed (or via a path that
+        // bypassed upsert_card), so it carries upstream's wrong number.
+        // `pkdump data refresh` never re-upserts it — import_tail skips
+        // sets already in the catalog — so the heal has to come from the
+        // registry re-application pass.
+        let dbdir = tempfile::tempdir().unwrap();
+        let conn = pkdump_db::open_shared(&dbdir.path().join("shared.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, total, printed_total) \
+             VALUES ('zsv10pt5', 'Black Bolt', 'Scarlet & Violet', 172, 86)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, raw_json) \
+             VALUES ('zsv10pt5-80', 'zsv10pt5', '60', 60, 'Antique Cover Fossil', '{}')",
+            [],
+        )
+        .unwrap();
+        // A card with no registry entry — must be left alone.
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, raw_json) \
+             VALUES ('zsv10pt5-60', 'zsv10pt5', '60', 60, 'Escavalier', '{}')",
+            [],
+        )
+        .unwrap();
+
+        let pending = pending_corrections(&conn).unwrap();
+        assert_eq!(pending.len(), 1, "only the registered card is pending");
+        assert_eq!(pending[0].card_id, "zsv10pt5-80");
+        assert_eq!(pending[0].current_number, "60");
+        assert_eq!(pending[0].corrected_number, "80");
+
+        let applied = apply_corrections_to_db(&conn).unwrap();
+        assert_eq!(applied.len(), 1);
+
+        let (number, sortable): (String, i64) = conn
+            .query_row(
+                "SELECT number, number_sortable FROM cards WHERE card_id = 'zsv10pt5-80'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(number, "80", "correction must heal the existing row");
+        assert_eq!(sortable, 80, "number_sortable must be recomputed");
+
+        // Unregistered card untouched.
+        let other: String = conn
+            .query_row(
+                "SELECT number FROM cards WHERE card_id = 'zsv10pt5-60'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(other, "60");
+
+        // Second run is a no-op — nothing pending, nothing written.
+        assert!(
+            apply_corrections_to_db(&conn).unwrap().is_empty(),
+            "re-applying corrections must be idempotent"
+        );
+    }
+
+    #[test]
+    fn apply_corrections_recomputes_stale_sortable() {
+        // A half-heal (number fixed by hand, number_sortable left behind)
+        // still counts as pending — the derived column is part of what the
+        // correction owns.
+        let dbdir = tempfile::tempdir().unwrap();
+        let conn = pkdump_db::open_shared(&dbdir.path().join("shared.sqlite")).unwrap();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, total, printed_total) \
+             VALUES ('zsv10pt5', 'Black Bolt', 'Scarlet & Violet', 172, 86)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, raw_json) \
+             VALUES ('zsv10pt5-80', 'zsv10pt5', '80', 60, 'Antique Cover Fossil', '{}')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(apply_corrections_to_db(&conn).unwrap().len(), 1);
+        let sortable: i64 = conn
+            .query_row(
+                "SELECT number_sortable FROM cards WHERE card_id = 'zsv10pt5-80'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sortable, 80);
+    }
+
+    #[test]
+    fn pending_corrections_skips_cards_not_in_catalog() {
+        // An empty catalog has nothing to heal — the correction still
+        // applies to the card at ingest time, so this is not an error.
+        let dbdir = tempfile::tempdir().unwrap();
+        let conn = pkdump_db::open_shared(&dbdir.path().join("shared.sqlite")).unwrap();
+        assert!(pending_corrections(&conn).unwrap().is_empty());
     }
 
     #[test]

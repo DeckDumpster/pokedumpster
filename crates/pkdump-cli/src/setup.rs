@@ -118,6 +118,19 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
         sm.keywords, sm.rarities, sm.flags
     );
 
+    // 4e. Auto-discover sets TCGCSV has published and pokemontcg.io
+    //     hasn't — a numbered expansion group that bridges to nothing
+    //     becomes a set + cards on its own (pd-558b1e4f). Local: it reads
+    //     the TCGCSV products imported in step 3, so `--skip-prices`
+    //     simply leaves it with nothing to find.
+    println!("Discovering new sets from unbridged TCGCSV groups...");
+    for d in pkdump_ingest::set_discovery::discover_new_sets(&mut conn)? {
+        println!(
+            "  {} ({}) — {} from group {}, {} cards",
+            d.set_code, d.series, d.name, d.group_id, d.cards
+        );
+    }
+
     // 5. Synthesize card rows for bridged TCGCSV groups whose upstream
     //    pokemontcg.io entry doesn't exist yet (e.g. MEP). Idempotent
     //    INSERT OR IGNORE — when upstream catches up, the real cards
@@ -165,13 +178,17 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
 }
 
 /// Fetch the pokemontcg.io set list and import any set the repo did not have.
+///
+/// A set row with no `ptcgio_fetched_at` was synthesized locally (a bridge
+/// entry, or TCGCSV set discovery running ahead of upstream) and counts as
+/// missing — importing it is how the real cards supersede the stubs.
 fn import_tail(conn: &mut Connection) -> anyhow::Result<usize> {
     let client = PokemonTcgClient::new()?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut added = 0;
     for set in client.fetch_sets()? {
         let exists: bool = conn
-            .prepare("SELECT 1 FROM sets WHERE set_code = ?1")?
+            .prepare("SELECT 1 FROM sets WHERE set_code = ?1 AND ptcgio_fetched_at IS NOT NULL")?
             .exists([&set.id])?;
         if exists {
             continue;

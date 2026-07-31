@@ -24,7 +24,13 @@ CREATE TABLE IF NOT EXISTS sets (
     ptcgio_fetched_at TEXT,
     is_subset         INTEGER NOT NULL DEFAULT 0,
     parent_set_code   TEXT REFERENCES sets(set_code),
-    symbol_source_url TEXT
+    symbol_source_url TEXT,
+    -- Set of the TCGCSV group this row was auto-synthesized from, when
+    -- pokemontcg.io had not published the set yet (pd-558b1e4f). NULL for
+    -- every upstream-managed and bridge-declared set. Provenance only:
+    -- once upstream publishes, `ptcgio_fetched_at` goes non-NULL and the
+    -- row is upstream's, this column just records where it started.
+    discovered_from_group_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS cards (

@@ -135,6 +135,9 @@ pub fn list_bundle_summaries(conn: &Connection) -> Result<Vec<SetSummary>> {
             base_total_cards: None,
             base_owned_cards: None,
             kind: "bundle".to_string(),
+            // A bundle is defined by data/bundles.json, not by upstream —
+            // there is nothing for pokemontcg.io to supersede.
+            synthesized: false,
         });
     }
     Ok(out)

@@ -190,7 +190,14 @@
 										<img class="symbol" src={set.symbol_url} alt="" />
 									{/if}
 									<div class="title">{set.name}</div>
-									<div class="series">{set.series}</div>
+									<div class="series">
+										{set.series}
+										{#if set.synthesized}
+											<span class="provisional" title="Built from TCGCSV — pokemontcg.io has not published this set yet, so its card list and art are provisional."
+												>TCGCSV</span
+											>
+										{/if}
+									</div>
 									{#if set.base_total_cards != null && set.base_owned_cards != null}
 										<div class="count">
 											Base {count(set.base_owned_cards)} / {count(set.base_total_cards)}
@@ -420,6 +427,15 @@
 		font-size: 0.8rem;
 		color: #888;
 		margin: 0.1rem 0 0.5rem;
+	}
+	.provisional {
+		display: inline-block;
+		padding: 0 0.3rem;
+		border: 1px solid #0f3460;
+		border-radius: 3px;
+		font-size: 0.7rem;
+		color: #e7732f;
+		vertical-align: 1px;
 	}
 	.count {
 		font-size: 0.85rem;

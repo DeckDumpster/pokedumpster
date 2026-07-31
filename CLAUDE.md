@@ -204,6 +204,28 @@ Long Rust loops that write to disk MUST flush stdout per progress line —
 default block-buffering hides multi-minute progress behind `tee`. See the
 `PROGRESS_EVERY` block in `expand_all_printings`.
 
+### New-set discovery
+
+pokemontcg.io publishes new sets weeks-to-months late and goes down for
+days; TCGCSV has the group the day the set lists. `pkdump-ingest/src/
+set_discovery.rs` closes that gap: after the TCGCSV import, a group that
+bridges to no set, whose name carries a numbered era prefix ("ME05: Pitch
+Black"), and that has enough distinct collector numbers gets a
+synthesized `sets` row + cards, so the binder is browseable that night.
+Policy (product floor, denylist, era→series overrides) lives in
+`data/overrides/tcgcsv_set_discovery.json`.
+
+Derived set codes follow pokemontcg.io's convention (`ME05` → `me5`), so
+upstream's eventual publish lands on the same row and supersedes the
+synthesized data — `import_tail` treats a set row with NULL
+`ptcgio_fetched_at` as not-yet-imported for exactly that reason. Sets in
+that state carry `sets.discovered_from_group_id` and surface as
+`SetSummary.synthesized`, which badges the `/browse` tile.
+
+Groups the rule deliberately misses — unnumbered specials ("SV: Black
+Bolt"), energy umbrellas, promo catch-alls — still take a hand-authored
+entry in `data/overrides/tcgcsv_set_bridges.json`.
+
 ### Other patterns
 
 - **No fallback logic.** Errors propagate. No silent defaults, no

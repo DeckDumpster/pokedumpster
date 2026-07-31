@@ -26,4 +26,11 @@ base_total_cards: number | null, base_owned_cards: number | null,
  * `"set"` for real catalogued sets, `"bundle"` for TTBB-style
  * logical-set containers.
  */
-kind: string, };
+kind: string, 
+/**
+ * The set was built locally from TCGCSV — either a bridge entry or
+ * TCGCSV set discovery (pd-558b1e4f) — because pokemontcg.io hasn't
+ * published it yet. Its cards, art and totals are provisional. Goes
+ * false on its own the refresh after upstream lands the real set.
+ */
+synthesized: boolean, };

@@ -1,0 +1,13 @@
+{
+  "comment": "Policy for TCGCSV-driven new-set discovery (pd-558b1e4f). pokemontcg.io publishes new sets weeks-to-months after release and goes down for days at a time; TCGCSV has the group the day the set lists. Discovery closes that gap: a TCGCSV group that bridges to no catalog set, whose name carries a numbered era prefix ('ME05: Pitch Black', 'SV10: Destined Rivals', 'SWSH12: Silver Tempest'), and that has at least `min_unique_card_numbers` distinct collector numbers among its single-card products, gets a synthesized `sets` row + synthesized cards so the binder is browseable immediately. The derived set_code follows pokemontcg.io's own convention (ME05 -> me5, SWSH01 -> swsh1), so when upstream finally publishes the set its upsert lands on the same row and supersedes the synth data silently. Discovery is strictly additive: it never touches a set_code that already exists and it never re-links a group another set already owns. Groups it deliberately misses (energy umbrellas 'MEE: Mega Evolution Energies', promo catch-alls 'ME: Mega Evolution Promo', unnumbered specials 'SV: Black Bolt') are still handled the old way, by a hand-authored entry in tcgcsv_set_bridges.json.",
+  "min_unique_card_numbers": 50,
+  "min_unique_card_numbers_comment": "Real numbered expansions ship 120-300 distinct collector numbers (ME05 Pitch Black: 120, ME04 Chaos Rising: 122, SV: Black Bolt: 172). The umbrella and collection groups that must never become binder tiles sit far below: 'MEE: Mega Evolution Energies' 8, 'ME: 30th Celebration' 19, 'First Partner Collection 2026' 0. 50 sits in the empty middle. A set that lists on TCGCSV with only a partial product run simply waits for the next nightly refresh to cross the line.",
+  "deny_group_ids": [
+    {
+      "group_id": 2374,
+      "comment": "MCAP — 'Miscellaneous Cards & Products', TCGplayer's cross-set catch-all. 181 distinct collector numbers, but they belong to other sets' cards (variant expansion scans this group for cross-group products). It fails the numbered-prefix rule already; denylisted as well because a tile for it would be the single worst false positive."
+    }
+  ],
+  "series_by_era": {},
+  "series_by_era_comment": "Optional era-code -> series overrides, consulted before the automatic derivation. Normally empty: the series is read off whichever already-linked TCGCSV group shares the era prefix ('ME05' takes its series from 'ME04: Chaos Rising' -> Mega Evolution), so a new set in an existing era needs no touch at all. Only the first set of a brand-new era has no sibling to learn from; it lands under the bare era code (visibly wrong, easily fixed) until an entry is added here."
+}

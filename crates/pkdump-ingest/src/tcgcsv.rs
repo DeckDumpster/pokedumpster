@@ -337,6 +337,17 @@ fn load_set_bridges() -> Result<Vec<SetBridge>> {
 /// so any tier may offer the same set to several groups — the first
 /// group (by id, deterministic) takes it. Groups are processed in id
 /// order so the assignment is stable across re-runs.
+///
+/// The Japanese catalog is excluded from both tiers. Only English
+/// (category 3) groups reach this function — `japan::import_groups` owns
+/// the category-85 bridge — but `sets` holds last night's `jp-` rows by
+/// the time a refresh runs the English pass, and Japanese sets carry the
+/// same abbreviations and names their English counterparts do: "SM06"
+/// (`jp-23685`, "SM6: Forbidden Light") is the ptcgo_code of no English
+/// set, so English group 2209 ("SM - Forbidden Light", abbreviation
+/// "SM06") would take the Japanese set on tier 1 and never reach the
+/// tier-2 name match that bridges it correctly. 19 English groups
+/// resolve onto a `jp-` set without this filter.
 fn resolve_group_set_links(
     conn: &Connection,
     groups: &[TcgGroup],
@@ -349,9 +360,10 @@ fn resolve_group_set_links(
     {
         let mut stmt = conn.prepare(
             "SELECT set_code, ptcgo_code, name FROM sets \
-             ORDER BY release_date, set_code",
+              WHERE set_code NOT LIKE ?1 || '%' \
+              ORDER BY release_date, set_code",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map([crate::japan::SET_CODE_PREFIX], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
@@ -1254,6 +1266,49 @@ mod tests {
             )
             .unwrap();
         assert_eq!(again.as_deref(), Some("swsh8"));
+    }
+
+    #[test]
+    fn import_groups_never_bridges_an_english_group_to_a_japanese_set() {
+        // A refresh runs the English TCGCSV pass *before* the Japanese one,
+        // but `sets` already holds the previous night's `jp-` rows — and
+        // those carry the abbreviations and names their English
+        // counterparts do. "SM06" is the ptcgo_code of no English set, so
+        // without the `jp-` filter in `resolve_group_set_links` the English
+        // "SM - Forbidden Light" group takes the Japanese set on tier 1 and
+        // never reaches the tier-2 name match that bridges it correctly —
+        // leaving the English set with no group, hence no products and no
+        // prices, and the Japanese set with an English group's products.
+        // 19 real English groups resolve this way against live TCGCSV.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
+             VALUES ('jp-23685', 'SM06', 'SM6: Forbidden Light', \
+                     'Pokémon JP — Sun & Moon Era', '2018/04/06'), \
+                    ('sm6', 'FLI', 'Forbidden Light', 'Sun & Moon', '2018/05/04')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![TcgGroup {
+            group_id: 2209,
+            name: "SM - Forbidden Light".into(),
+            abbreviation: Some("SM06".into()),
+            published_on: None,
+        }];
+        import_groups(&mut conn, &groups, "2026-07-31").unwrap();
+
+        let set_code: Option<String> = conn
+            .query_row(
+                "SELECT set_code FROM tcgplayer_groups WHERE group_id = 2209",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            set_code.as_deref(),
+            Some("sm6"),
+            "an English group must bridge to the English set, not the Japanese one"
+        );
     }
 
     #[test]

@@ -44,15 +44,21 @@ the collector number. Two residual classes survived that work:
   promo-namespace escape hatch either — both products stayed unmodeled.
   Fixed by `tcgcsv::restore_truncated_set_total`, which recovers the total
   from the name at ingest time when the name's numerator agrees with the
-  number upstream gave us. These two are the only products with this shape
-  across every group we ingest (2374, 1840, 2289, 3179, 22872, 23266, 23561),
-  so the repair is deliberately narrow.
+  number upstream gave us. The repair is deliberately narrow: a scan of all
+  217 live English groups (2026-07-31) finds four products with this shape —
+  these two, plus 183200 (`"Leafeon - 11/116 (Regional Championship Promo)"`)
+  and 489693 (`"Upper Energy - 102/111 (League Promo)"`) in group 1539,
+  "League & Championship Cards". The two extra ones are benign:
+  `normalize_collector_number` strips the `/total`, so the token every join
+  uses is unchanged, and the group is not a cross-group promo source.
 
 - **Japanese-namespace promos — still open.** 16 single-card products in
   group 2374 sit in Japanese numbering namespaces (`S-P`, `ADV-P`, `SM-P`,
   and the 11th Movie Commemoration Set's `NNN/009`). They have no English
-  base card to bridge to and cannot resolve until the Pokémon Japan ingest
-  (TCGCSV category 85) carries those base sets. The two
+  base card to bridge to. This was blocked on the Pokémon Japan ingest
+  (TCGCSV category 85) carrying those base sets; that landed in
+  pd-90a7a2ad, so the blocker is gone and the bridge itself is what's left
+  to build — see pd-dnpf. The two
   `"…Movie Commemoration Set"` entries without a `Number` are sealed sets and
   are correctly skipped as non-cards.
 
@@ -86,3 +92,10 @@ Corrections are applied in two places:
 TCGCSV groups to catalog sets. Mismatches leave `tcgplayer_groups.set_code`
 NULL; corrections will go in `data/overrides/set_aliases.json` when that
 consumer is built.
+
+The auto-linker skips `jp-` sets. Japanese sets carry the abbreviations and
+names of their English counterparts ("SM06" is `jp-23685`, "SM6: Forbidden
+Light"), and a refresh runs the English TCGCSV pass against a catalog that
+already holds the previous night's Japanese rows — so without the filter 19
+English groups bridge onto a Japanese set, leaving the English set with no
+group and therefore no products or prices.

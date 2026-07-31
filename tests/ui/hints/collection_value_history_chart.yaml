@@ -1,0 +1,19 @@
+start_page: /collection
+involves:
+  - "header total button `button.countline`, text '{N} cards, {$X}'"
+  - "dialog `[role=dialog][aria-label='Collection value over time']`"
+  - "chart container `[data-testid=value-history-chart]` with data-series-count"
+  - "Escape closes the dialog"
+fixture_data:
+  header_text: "24 cards, $1,021.42"
+  dialog_title: "Collection value over time"
+  all_dimension_series_count: 1
+  snapshot_date: "2024-01-15"
+notes: >
+  Navigate to /collection and wait for the card grid (`.cardtile`). Click
+  the header total button (`button.countline`). Wait for the dialog
+  labelled "Collection value over time". The 'Total' tab is selected on
+  open and GET /api/collection/value-history?dimension=all returns a
+  single series with bucket=null, so the chart container renders with
+  data-series-count="1". Assert the chart container is visible, then
+  press Escape and assert the dialog is gone.

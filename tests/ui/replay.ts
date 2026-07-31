@@ -15,6 +15,20 @@ const log = {
   info: (...a: unknown[]) => console.log(...a),
 };
 
+/**
+ * Per-action Playwright budget, and the default for the `wait_for_*` helpers.
+ *
+ * This was hard-coded to 500ms at every call site, which is below the floor
+ * the app actually clears: card tiles load their art from images.pokemontcg.io,
+ * so the renderer stays busy for a beat after first paint and a plain
+ * `page.click` on the collection toolbar acks in 230-500ms — right on the old
+ * wall, failing roughly one run in ten. 5s matches the value the qa-finish
+ * skill has always documented for these helpers. Raising it only ever turns a
+ * flaky pass into a stable one; a genuinely failing step still fails, it just
+ * takes longer to say so.
+ */
+const ACTION_TIMEOUT_MS = 5_000;
+
 /** One recorded replay step, with its captured evidence. */
 export interface ReplayStep {
   number: number;
@@ -88,35 +102,35 @@ export class ReplayHarness {
     await this.page
       .getByText(text, { exact: opts.exact ?? false })
       .first()
-      .click({ timeout: 500 });
+      .click({ timeout: ACTION_TIMEOUT_MS });
     await this.settle();
     await this.snap();
   }
 
   async click_by_selector(selector: string): Promise<void> {
     this.record("click_by_selector", selector);
-    await this.page.click(selector, { timeout: 500 });
+    await this.page.click(selector, { timeout: ACTION_TIMEOUT_MS });
     await this.settle();
     await this.snap();
   }
 
   async click_by_test_id(testId: string): Promise<void> {
     this.record("click_by_test_id", testId);
-    await this.page.getByTestId(testId).click({ timeout: 500 });
+    await this.page.getByTestId(testId).click({ timeout: ACTION_TIMEOUT_MS });
     await this.settle();
     await this.snap();
   }
 
   async fill_by_placeholder(placeholder: string, value: string): Promise<void> {
     this.record("fill_by_placeholder", `${placeholder}=${value}`);
-    await this.page.getByPlaceholder(placeholder).fill(value, { timeout: 500 });
+    await this.page.getByPlaceholder(placeholder).fill(value, { timeout: ACTION_TIMEOUT_MS });
     await this.settle();
     await this.snap();
   }
 
   async fill_by_selector(selector: string, value: string): Promise<void> {
     this.record("fill_by_selector", `${selector}=${value}`);
-    await this.page.fill(selector, value, { timeout: 500 });
+    await this.page.fill(selector, value, { timeout: ACTION_TIMEOUT_MS });
     await this.settle();
     await this.snap();
   }
@@ -126,7 +140,7 @@ export class ReplayHarness {
     const target = opts.selector ?? "active element";
     this.record("press_key", `${key} on ${target}`);
     if (opts.selector) {
-      await this.page.press(opts.selector, key, { timeout: 500 });
+      await this.page.press(opts.selector, key, { timeout: ACTION_TIMEOUT_MS });
     } else {
       await this.page.keyboard.press(key);
     }
@@ -136,14 +150,14 @@ export class ReplayHarness {
 
   async set_input_files(selector: string, filePath: string): Promise<void> {
     this.record("set_input_files", `${selector} <- ${filePath}`);
-    await this.page.setInputFiles(selector, filePath, { timeout: 500 });
+    await this.page.setInputFiles(selector, filePath, { timeout: ACTION_TIMEOUT_MS });
     await this.settle();
     await this.snap();
   }
 
   async select_by_label(selector: string, label: string): Promise<void> {
     this.record("select_by_label", `${selector}=${label}`);
-    await this.page.selectOption(selector, { label }, { timeout: 500 });
+    await this.page.selectOption(selector, { label }, { timeout: ACTION_TIMEOUT_MS });
     await this.settle();
     await this.snap();
   }
@@ -158,7 +172,7 @@ export class ReplayHarness {
 
   // ── Waiting ────────────────────────────────────────────────────────
 
-  async wait_for_visible(selector: string, timeoutMs = 500): Promise<void> {
+  async wait_for_visible(selector: string, timeoutMs = ACTION_TIMEOUT_MS): Promise<void> {
     this.record("wait_for_visible", selector);
     await this.page.waitForSelector(selector, {
       state: "visible",
@@ -167,7 +181,7 @@ export class ReplayHarness {
     await this.snap();
   }
 
-  async wait_for_hidden(selector: string, timeoutMs = 500): Promise<void> {
+  async wait_for_hidden(selector: string, timeoutMs = ACTION_TIMEOUT_MS): Promise<void> {
     this.record("wait_for_hidden", selector);
     await this.page.waitForSelector(selector, {
       state: "hidden",
@@ -176,7 +190,7 @@ export class ReplayHarness {
     await this.snap();
   }
 
-  async wait_for_text(text: string, timeoutMs = 500): Promise<void> {
+  async wait_for_text(text: string, timeoutMs = ACTION_TIMEOUT_MS): Promise<void> {
     this.record("wait_for_text", text);
     await this.page
       .getByText(text)

@@ -172,7 +172,7 @@ pub async fn serve(
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::Request;
+    use axum::http::{Request, header};
     use tower::ServiceExt;
 
     /// A test router whose catalog holds one printing (`sv3pt5-1-normal`) and
@@ -492,5 +492,36 @@ mod tests {
         let body = body_string(resp).await;
         assert!(body.contains("energy_type"), "keywords: {body}");
         assert!(body.contains("holo"), "flags: {body}");
+    }
+
+    #[tokio::test]
+    async fn export_json_serves_a_downloadable_envelope() {
+        let (_d, router) = test_app();
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/export/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers()[header::CONTENT_DISPOSITION]
+                .to_str()
+                .unwrap()
+                .contains("pokedumpster-collection.json")
+        );
+
+        let envelope: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(
+            envelope["format"],
+            serde_json::Value::from(pkdump_db::json_backup::FORMAT)
+        );
+        // Collection data is in; catalog data (served from the attached
+        // read-only shared database) is not.
+        assert!(envelope.get("collection").is_some());
+        assert!(envelope.get("printings").is_none());
     }
 }

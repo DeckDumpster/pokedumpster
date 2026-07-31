@@ -5,7 +5,9 @@
 
 mod data;
 mod db;
+mod export;
 mod fixture;
+mod import;
 mod serve;
 mod setup;
 
@@ -34,6 +36,10 @@ enum Command {
     SeedFixture(fixture::FixtureArgs),
     /// Database maintenance — snapshot/restore for the UI test harness.
     Db(db::DbArgs),
+    /// Write the collection out in a portable format.
+    Export(export::ExportArgs),
+    /// Load a portable export back into the collection.
+    Import(import::ImportArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -43,5 +49,7 @@ fn main() -> anyhow::Result<()> {
         Command::Serve(args) => serve::run(args),
         Command::SeedFixture(args) => fixture::run(args),
         Command::Db(args) => db::run(args),
+        Command::Export(args) => export::run(args),
+        Command::Import(args) => import::run(args),
     }
 }

@@ -82,6 +82,11 @@ cargo run --bin pkdump -- serve  # start the HTTP server
 cargo run --bin pkdump -- data refresh   # incremental catalog refresh
 cargo run --bin pkdump -- seed-fixture   # build the deterministic UI-test fixture
 
+# Portable collection backup — every user table in one versioned JSON
+# envelope. A whole-database restore, not a merge (--force to overwrite).
+cargo run --bin pkdump -- export --json -o collection.json
+cargo run --bin pkdump -- import --json collection.json
+
 # Frontend — SvelteKit (Svelte 5, vite, adapter-static)
 cd frontend && npm install && npm run build
 cd frontend && npm run check     # svelte-check / TypeScript
@@ -110,7 +115,7 @@ Cargo workspace, five crates (`crates/`):
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).
 - **pkdump-cli** — the `pkdump` binary; clap command tree
-  (`setup`, `data`, `serve`, `seed-fixture`).
+  (`setup`, `data`, `serve`, `seed-fixture`, `db`, `export`, `import`).
 
 Frontend: SvelteKit (Svelte 5 runes mode) in `frontend/`, built static,
 served by `pkdump-server`. Generated TypeScript bindings live under

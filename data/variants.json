@@ -24,6 +24,7 @@
   { "code": "promo",               "label": "Promo",                        "short": "PROMO",  "rank": 4, "tiebreak": 5, "color": "#9aa0a8", "provenance": "Retailer / event / distribution promo reprint with no special foil treatment (Toys R Us, Best Buy, Build-A-Bear, SDCC, movie promos, etc.) — modelled foil-treatment-only, so the distributor is provenance rather than a separate printing." },
 
   { "code": "reverse_holo",        "label": "Reverse Holo",                 "short": "R",      "rank": 2, "color": "#a0c4f0", "provenance": "Pulled from boosters — every booster pack contains one reverse-holo card." },
+  { "code": "mirror_holo",         "label": "Mirror Holo",                  "short": "MIR",    "rank": 2, "tiebreak": 1, "color": "#b8d4f5", "provenance": "The Japanese reverse holo — a mirror-foil parallel printed alongside the regular card. TCGCSV tags it \"(Mirror Holofoil)\" on a product sharing the base card's collector number." },
 
   { "code": "pokeball_rh",         "label": "Poké Ball Reverse Holo",       "short": "BALL",   "rank": 3, "color": "#e94560", "provenance": "Booster-pack pattern reverse holo — appears on Common/Uncommon/Rare cards in 151, Prismatic Evolutions, and other modern sets that use the ball-pattern gimmick." },
   { "code": "masterball_rh",       "label": "Master Ball Reverse Holo",     "short": "BALL",   "rank": 3, "color": "#9c5fb5", "provenance": "Master Ball pattern reverse holo — rarer booster pull than the Poké Ball pattern in the same sets." },

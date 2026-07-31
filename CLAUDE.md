@@ -109,7 +109,8 @@ Cargo workspace, five crates (`crates/`):
   on every open — single-instance project, no migration history), the
   variants display table, and the binder-page query.
 - **pkdump-ingest** — upstream catalog ingestion (pokemon-tcg-data,
-  pokemontcg.io, TCGCSV). Variant expansion lives here. Touched only by
+  pokemontcg.io, TCGCSV). Variant expansion lives here, as does the
+  Pokémon Japan pipeline (`japan.rs`). Touched only by
   `pkdump setup` / `pkdump data refresh` — never at request time.
 - **pkdump-server** — Axum HTTP app; JSON API under `/api` + serves the
   SvelteKit static build. One route module per resource
@@ -225,6 +226,39 @@ that state carry `sets.discovered_from_group_id` and surface as
 Groups the rule deliberately misses — unnumbered specials ("SV: Black
 Bolt"), energy umbrellas, promo catch-alls — still take a hand-authored
 entry in `data/overrides/tcgcsv_set_bridges.json`.
+
+Discovery must run *after* the Japanese import: every category-85 group
+is bridged to a `jp-` set, which is what keeps 450 Japanese groups out of
+the unbridged pool discovery works from.
+
+### The Japanese catalog
+
+`pkdump-ingest/src/japan.rs` owns TCGCSV categoryId 85 (Pokémon Japan),
+which has no pokemontcg.io counterpart — every Japanese set and card is
+synthesized from TCGCSV alone. Rules that keep it from colliding with the
+English catalog (category 3):
+
+- **`set_code` is `jp-<tcgcsv_group_id>`.** Abbreviations are empty on
+  ~40% of the 450 Japanese groups and duplicated across the rest.
+- **Japanese groups never run through `tcgcsv::import_groups`.** Its
+  abbreviation/name auto-linker would let JP "Pokemon Jungle" claim the
+  English `base2` and "SV2a: Pokemon Card 151" claim `sv3pt5`.
+- **Cards are discriminated by `CardType`, not `Number`.** ~2.4k vintage
+  Japanese products (Mystery of the Fossils, City Gym Decks, …) carry no
+  collector number; those take the synthetic number `p<product_id>`.
+  Do not invent a 1..N sequence — TCGCSV lists those groups
+  alphabetically, not in set order.
+- Series buckets come from `data/japan_series.json` (era date ranges),
+  never from a match arm.
+
+Everything downstream is shared: JP products land in the same
+`tcgcsv_products` / `prices` tables, so `import_prices`,
+`expand_all_printings`, and `latest_prices` need no Japanese special case.
+The exception is `set_discovery::series_from_sibling_group`, which reads a
+new set's series off a same-era sibling group and has to skip Japanese
+ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
+"BW9: Megalo Cannon"), and a JP sibling would hand an English set a
+"Pokémon JP — …" series.
 
 ### Other patterns
 

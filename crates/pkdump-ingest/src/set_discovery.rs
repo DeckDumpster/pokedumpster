@@ -154,15 +154,28 @@ fn release_date_from_published_on(published_on: Option<&str>) -> Option<String> 
 /// takes "Mega Evolution" from `"ME04: Chaos Rising"`. The highest-numbered
 /// sibling wins (series names get rebranded mid-era far less often than
 /// they get invented, and the newest sibling is the closest neighbour).
+///
+/// Japanese groups are excluded. Discovery only ever synthesizes English
+/// sets (every category-85 group is already bridged to a `jp-` set, so
+/// none reach this code path as a *subject*), but JP group names collide
+/// hard on the era pattern — "SV9: Battle Partners", "BW9: Megalo Cannon",
+/// "SM7: Sky-Splitting Charisma" all parse — and JP frequently carries the
+/// higher number, being months ahead of the international calendar. Left
+/// in, a Japanese sibling would hand a newly discovered English set a
+/// "Pokémon JP — …" series. The `jp-` prefix is the only marker the
+/// catalog has for this today; pd-zych replaces it with a real column.
 fn series_from_sibling_group(conn: &Connection, era: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare(
         "SELECT g.name, s.series \
            FROM tcgplayer_groups g \
            JOIN sets s ON s.set_code = g.set_code \
-          WHERE g.set_code IS NOT NULL",
+          WHERE g.set_code IS NOT NULL \
+            AND g.set_code NOT LIKE ?1 || '%'",
     )?;
     let rows: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .query_map([crate::japan::SET_CODE_PREFIX], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
         .collect::<rusqlite::Result<_>>()?;
     let mut best: Option<(u32, String)> = None;
     for (name, series) in rows {
@@ -348,6 +361,51 @@ mod tests {
                 ],
             })
             .collect()
+    }
+
+    #[test]
+    fn sibling_series_ignores_the_japanese_catalog() {
+        // Japanese group names parse as the same eras the English ones
+        // do, and Japan runs months ahead — "SV9: Battle Partners"
+        // (January 2025) outranks English "SV08: Surging Sparks"
+        // (November 2024) on the "sv" era. Left in the pool it would
+        // hand a discovered English set the series "Pokémon JP —
+        // Scarlet & Violet Era".
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series) \
+             VALUES ('sv8', 'Surging Sparks', 'Scarlet & Violet')",
+            [],
+        )
+        .unwrap();
+        import_groups(
+            &mut conn,
+            &[TcgGroup {
+                group_id: 24001,
+                name: "SV08: Surging Sparks".into(),
+                abbreviation: Some("SSP".into()),
+                published_on: Some("2024-11-08T00:00:00".into()),
+            }],
+            "2026-07-31",
+        )
+        .unwrap();
+        crate::japan::import_groups(
+            &mut conn,
+            &[TcgGroup {
+                group_id: 24173,
+                name: "SV9: Battle Partners".into(),
+                abbreviation: Some("SV9".into()),
+                published_on: Some("2025-01-24T00:00:00".into()),
+            }],
+            "2026-07-31",
+        )
+        .unwrap();
+
+        assert_eq!(
+            series_from_sibling_group(&conn, "sv").unwrap().as_deref(),
+            Some("Scarlet & Violet"),
+            "the English sibling must win even though Japan numbers higher"
+        );
     }
 
     #[test]

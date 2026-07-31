@@ -12,7 +12,7 @@ use rusqlite::Connection;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{overrides, pokemon_tcg_data, symbols, tcgcsv};
+use pkdump_ingest::{japan, overrides, pokemon_tcg_data, symbols, tcgcsv};
 
 /// The `pkdump data` subcommand group.
 #[derive(clap::Args)]
@@ -269,11 +269,28 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
         r.0, r.1, r.2, r.3
     );
 
-    // 2b. Auto-discover sets TCGCSV has published and pokemontcg.io
+    // 2b. Pokémon Japan (TCGCSV categoryId 85) — sets and cards are
+    //     synthesized straight from TCGCSV, there being no pokemontcg.io
+    //     counterpart. Runs after the English pass so the two never
+    //     contend for a set_code. See `pkdump_ingest::japan`.
+    println!("Importing the Pokémon Japan catalog (TCGCSV category 85)...");
+    let j = japan::import_all(
+        &mut conn,
+        &chrono::Utc::now().to_rfc3339(),
+        &chrono::Utc::now().format("%Y-%m-%d").to_string(),
+    )?;
+    println!(
+        "  {} groups, {} cards, {} card products, {} sealed products, {} price rows",
+        j.groups, j.cards, j.card_products, j.sealed_products, j.price_rows
+    );
+
+    // 2c. Auto-discover sets TCGCSV has published and pokemontcg.io
     //     hasn't — a numbered expansion group that bridges to nothing
     //     becomes a set + cards on its own, no hand-authored bridge and
     //     no waiting on upstream (pd-558b1e4f). Reads the products just
-    //     imported, so it has to run after import_tcgcsv.
+    //     imported, so it has to run after import_tcgcsv — and after the
+    //     Japanese import, which bridges every category-85 group and so
+    //     keeps them out of the unbridged pool discovery works from.
     println!("Discovering new sets from unbridged TCGCSV groups...");
     for d in pkdump_ingest::set_discovery::discover_new_sets(&mut conn)? {
         println!(

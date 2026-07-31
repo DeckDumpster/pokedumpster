@@ -32,5 +32,26 @@
   {"name":"Rare Secret","rank":7,"grp":"secret"},
   {"name":"Rare Rainbow","rank":7,"grp":"secret"},
   {"name":"Hyper Rare","rank":7,"grp":"secret"},
-  {"name":"Black White Rare","rank":7,"grp":"secret"}
+  {"name":"Black White Rare","rank":7,"grp":"secret"},
+
+  {"name":"Common Holo","rank":0,"grp":"common"},
+  {"name":"Ultra-Rare Common","rank":0,"grp":"common"},
+  {"name":"Ultra-Rare Uncommon","rank":1,"grp":"uncommon"},
+  {"name":"Holo Rare","rank":3,"grp":"holo"},
+  {"name":"Rare Holo LEGEND","rank":4,"grp":"ultra"},
+  {"name":"Triple Rare","rank":4,"grp":"ultra"},
+  {"name":"ACE Rare","rank":4,"grp":"ultra"},
+  {"name":"Prism Rare","rank":4,"grp":"ultra"},
+  {"name":"Kagayaku","rank":4,"grp":"ultra"},
+  {"name":"Shining","rank":5,"grp":"special"},
+  {"name":"Super Rare","rank":5,"grp":"ultra"},
+  {"name":"Super Rare Holo","rank":5,"grp":"ultra"},
+  {"name":"Mega Ultra Rare","rank":5,"grp":"ultra"},
+  {"name":"Art Rare","rank":5,"grp":"special"},
+  {"name":"Character Rare","rank":5,"grp":"special"},
+  {"name":"Trainer Rare","rank":5,"grp":"special"},
+  {"name":"Mega Attack Rare","rank":5,"grp":"special"},
+  {"name":"Special Art Rare","rank":6,"grp":"special"},
+  {"name":"Character Super Rare","rank":6,"grp":"special"},
+  {"name":"Shiny Secret Rare","rank":7,"grp":"secret"}
 ]

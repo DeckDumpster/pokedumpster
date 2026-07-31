@@ -17,6 +17,10 @@ use rusqlite::{Connection, params};
 use crate::error::Result;
 
 const KEYWORDS_SEED: &str = include_str!("../../../data/search_keywords.json");
+// `rarities.json` ranks both catalogs. The Japanese tiers TCGCSV ships
+// (Holo Rare, Art Rare, Special Art Rare, Character Rare, …) are ranked
+// against their nearest English equivalent so `r>=` / `r<` span English
+// and Japanese cards alike.
 const RARITIES_SEED: &str = include_str!("../../../data/rarities.json");
 const FLAGS_SEED: &str = include_str!("../../../data/search_flags.json");
 

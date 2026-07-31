@@ -165,6 +165,12 @@ CREATE TABLE IF NOT EXISTS tcgplayer_groups (
     role         TEXT NOT NULL DEFAULT 'primary'
 );
 
+-- Variant expansion resolves a card's products by walking
+-- `tcgcsv_products` → `tcgplayer_groups` → `set_code`, once per card.
+-- Without this index that's a full group scan per card, and the Japanese
+-- catalog (categoryId 85) nearly doubles both sides of the join.
+CREATE INDEX IF NOT EXISTS idx_tcgplayer_groups_set ON tcgplayer_groups(set_code);
+
 CREATE TABLE IF NOT EXISTS tcgcsv_products (
     product_id        INTEGER PRIMARY KEY,
     group_id          INTEGER NOT NULL,

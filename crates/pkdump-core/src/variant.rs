@@ -133,6 +133,12 @@ fn treatment_for(inner: &str) -> Option<&'static str> {
         Some("sheen_holo")
     } else if inner.contains("mirage holo") {
         Some("mirage_holo")
+    } else if inner.contains("mirror holo") {
+        // The Japanese reverse-holo treatment. TCGCSV tags it
+        // "(Mirror Holofoil)" on a product that shares the base card's
+        // collector number, so without this the two would collide on
+        // the same sub_type and one printing would be lost.
+        Some("mirror_holo")
     } else if inner.contains("line holo") {
         Some("line_holo")
     } else if inner.contains("sparkle holo") {

@@ -1402,6 +1402,55 @@ mod tests {
     }
 
     #[test]
+    fn ttbb_2022_copyright_date_reprint_attaches_as_stamp_trick_or_trade() {
+        // The other half of the copyright-date pair from pokedumpster:
+        // "Gengar (2021 Copyright Date)" 057/198 in TTBB 2022 (group
+        // 3179). Same shape as the 2023 case above but a different TTBB
+        // group and a different year in the parenthetical — the routing
+        // condition keys off the TTBB group set and the "copyright date"
+        // suffix, never off one group id or one year, and this pins that.
+        let (_d, mut conn) = fresh_shared();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, printed_total) \
+             VALUES ('swsh6', 'Chilling Reign', 'Sword & Shield', 198)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+             VALUES ('swsh6-57', 'swsh6', '57', 57, 'Gengar', 'Rare')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tcgcsv_products \
+               (product_id, group_id, name, collector_number, derived_variant, fetched_at) \
+             VALUES (283766, 3179, 'Gengar (2021 Copyright Date)', '057/198', NULL, '2026-06-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prices \
+               (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+             VALUES (283766, 'Normal', 'tcgplayer', 'market', 0.5, '2026-06-01')",
+            [],
+        )
+        .unwrap();
+
+        expand_all_printings(&mut conn, &[]).unwrap();
+
+        let row: (String, Option<i64>) = conn
+            .query_row(
+                "SELECT variant, tcgplayer_product_id FROM printings \
+                  WHERE printing_id = 'swsh6-57-stamp_trick_or_trade'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("stamp_trick_or_trade".into(), Some(283766)));
+    }
+
+    #[test]
     fn base_set_charizard_splits_into_holo_first_ed_holo_and_shadowless_holo() {
         // base1 (Base Set) is the original WotC set with three real-world
         // print runs: Unlimited (with art-frame shadow), Shadowless (no

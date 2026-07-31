@@ -159,6 +159,17 @@ fn expand_only(args: RefreshArgs) -> anyhow::Result<()> {
     let n_bundles = pkdump_db::bundles::reconcile(&mut conn)?;
     println!("  {n_bundles} bundles registered");
 
+    // Re-run set discovery too: it's local (it reads the TCGCSV products
+    // already in the DB), so editing data/overrides/tcgcsv_set_discovery
+    // .json takes effect here without a network refresh.
+    println!("Discovering new sets from unbridged TCGCSV groups...");
+    for d in pkdump_ingest::set_discovery::discover_new_sets(&mut conn)? {
+        println!(
+            "  {} ({}) — {} from group {}, {} cards",
+            d.set_code, d.series, d.name, d.group_id, d.cards
+        );
+    }
+
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
@@ -258,6 +269,19 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
         r.0, r.1, r.2, r.3
     );
 
+    // 2b. Auto-discover sets TCGCSV has published and pokemontcg.io
+    //     hasn't — a numbered expansion group that bridges to nothing
+    //     becomes a set + cards on its own, no hand-authored bridge and
+    //     no waiting on upstream (pd-558b1e4f). Reads the products just
+    //     imported, so it has to run after import_tcgcsv.
+    println!("Discovering new sets from unbridged TCGCSV groups...");
+    for d in pkdump_ingest::set_discovery::discover_new_sets(&mut conn)? {
+        println!(
+            "  {} ({}) — {} from group {}, {} cards",
+            d.set_code, d.series, d.name, d.group_id, d.cards
+        );
+    }
+
     // 3. Synthesize card rows for bridged TCGCSV groups whose upstream
     //    pokemontcg.io entry doesn't exist yet (e.g. MEP). Idempotent
     //    INSERT OR IGNORE — once pokemontcg.io publishes the real set,
@@ -321,13 +345,19 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
 }
 
 /// Fetch the pokemontcg.io set list and import any set the catalog lacks.
+///
+/// A set row that exists but carries no `ptcgio_fetched_at` was
+/// synthesized locally — from a bridge entry, or by TCGCSV set discovery
+/// while upstream was still behind. Those count as missing: importing them
+/// is exactly how the real cards supersede the synthesized stubs the day
+/// pokemontcg.io publishes the set.
 fn import_tail(conn: &mut Connection) -> anyhow::Result<usize> {
     let client = PokemonTcgClient::new()?;
     let now = chrono::Utc::now().to_rfc3339();
     let mut added = 0;
     for set in client.fetch_sets()? {
         let exists: bool = conn
-            .prepare("SELECT 1 FROM sets WHERE set_code = ?1")?
+            .prepare("SELECT 1 FROM sets WHERE set_code = ?1 AND ptcgio_fetched_at IS NOT NULL")?
             .exists([&set.id])?;
         if exists {
             continue;

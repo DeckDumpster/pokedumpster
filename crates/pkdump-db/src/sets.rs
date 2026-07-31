@@ -39,6 +39,11 @@ pub struct SetSummary {
     /// `"set"` for real catalogued sets, `"bundle"` for TTBB-style
     /// logical-set containers.
     pub kind: String,
+    /// The set was built locally from TCGCSV — either a bridge entry or
+    /// TCGCSV set discovery (pd-558b1e4f) — because pokemontcg.io hasn't
+    /// published it yet. Its cards, art and totals are provisional. Goes
+    /// false on its own the refresh after upstream lands the real set.
+    pub synthesized: bool,
 }
 
 /// List every set, newest first, with card and owned-card counts. Requires a
@@ -61,7 +66,8 @@ pub fn list_sets(conn: &Connection) -> Result<Vec<SetSummary>> {
                     JOIN printings p ON co.printing_id = p.printing_id \
                     JOIN cards cd ON p.card_id = cd.card_id \
                   WHERE cd.set_code = s.set_code \
-                    AND cd.number_sortable <= s.printed_total) END \
+                    AND cd.number_sortable <= s.printed_total) END, \
+                s.ptcgio_fetched_at IS NULL \
          FROM sets s \
          ORDER BY s.release_date DESC NULLS LAST, s.set_code",
     )?;
@@ -81,6 +87,7 @@ pub fn list_sets(conn: &Connection) -> Result<Vec<SetSummary>> {
             base_total_cards: r.get(11)?,
             base_owned_cards: r.get(12)?,
             kind: "set".to_string(),
+            synthesized: r.get(13)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

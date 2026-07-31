@@ -549,89 +549,110 @@ pub fn synthesize_cards_for_bridges(conn: &mut Connection) -> Result<usize> {
         if !b.synthesize_cards {
             continue;
         }
-        // Pull every product in the bridged group with a collector
-        // number. Order so bare-name products (no `[`, no `(`) come
-        // first — the first row per number becomes the canonical source.
-        let mut stmt = tx.prepare(
-            "SELECT product_id, name, collector_number, image_url, rarity \
-               FROM tcgcsv_products \
-              WHERE group_id = ?1 AND collector_number IS NOT NULL \
-              ORDER BY \
-                (CASE WHEN name LIKE '%[%' OR name LIKE '%(%' THEN 1 ELSE 0 END), \
-                product_id",
+        n += synthesize_cards_for_group(
+            &tx,
+            b.tcgcsv_group_id,
+            &b.set_code,
+            b.synthesize_rarity.as_deref(),
         )?;
-        // (product_id, name, collector_number, image_url, rarity).
-        type SynthRow = (i64, String, String, Option<String>, Option<String>);
-        // (name, image_url, rarity) for each product sharing a number.
-        type ProductFields = (String, Option<String>, Option<String>);
-        let rows: Vec<SynthRow> = stmt
-            .query_map([b.tcgcsv_group_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        drop(stmt);
-
-        // Group products by normalized collector number, preserving the
-        // canonical-first ordering above so the first entry per group is
-        // always the source of `name` (with image/rarity falling back to
-        // any sibling that has them).
-        let mut by_number: std::collections::BTreeMap<String, Vec<ProductFields>> =
-            std::collections::BTreeMap::new();
-        for (_product_id, name, number, image_url, rarity) in rows {
-            let normalized = normalize_collector_number(&number);
-            by_number
-                .entry(normalized)
-                .or_default()
-                .push((name, image_url, rarity));
-        }
-
-        for (number, products) in by_number {
-            let canonical = &products[0];
-            let card_name = pkdump_core::variant::parse_product_card_name(&canonical.0);
-            let image = products.iter().find_map(|(_, u, _)| u.as_deref());
-            // Bridge-level `synthesize_rarity` (e.g. "Promo" for MEP)
-            // wins over whatever TCGCSV tags individual chase cards as.
-            // Mirrors the pokemontcg.io svp convention where every
-            // Black Star Promo card carries rarity "Promo".
-            let rarity = b
-                .synthesize_rarity
-                .as_deref()
-                .or_else(|| products.iter().find_map(|(_, _, r)| r.as_deref()));
-            let card_id = format!("{}-{}", b.set_code, number);
-            let sortable = pkdump_core::number_sortable(&number);
-
-            tx.execute(
-                "INSERT OR IGNORE INTO cards \
-                   (card_id, set_code, number, number_sortable, name, rarity, \
-                    image_small, image_large) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-                rusqlite::params![
-                    card_id, b.set_code, number, sortable, card_name, rarity, image
-                ],
-            )?;
-            n += tx.changes() as usize;
-
-            // Heal a synth-owned row whose image/rarity needs updating
-            // (the canonical or fallback may have changed since last
-            // refresh, or the previous run wrote a now-known-broken
-            // URL). The `raw_json IS NULL` predicate scopes the UPDATE
-            // to synth-managed rows — pokemon_tcg_data::upsert_card
-            // always writes raw_json on upstream rows, so it's the
-            // cleanest signal that a row came from synth rather than
-            // upstream.
-            tx.execute(
-                "UPDATE cards \
-                    SET name        = ?2, \
-                        rarity      = ?3, \
-                        image_small = ?4, \
-                        image_large = ?4 \
-                  WHERE card_id = ?1 \
-                    AND raw_json IS NULL",
-                rusqlite::params![card_id, card_name, rarity, image],
-            )?;
-        }
     }
     tx.commit()?;
+    Ok(n)
+}
+
+/// Build `cards` rows for one TCGCSV group — the body shared by the
+/// bridge overlay (`synthesize_cards_for_bridges`) and the auto-discovery
+/// path (`crate::set_discovery`). See the doc comment on
+/// `synthesize_cards_for_bridges` for the sourcing and healing rules.
+///
+/// `rarity_override` forces every card's rarity (promo sets), and is what
+/// a bridge's `synthesize_rarity` supplies. Returns the number of `cards`
+/// rows freshly inserted.
+pub(crate) fn synthesize_cards_for_group(
+    tx: &Connection,
+    group_id: i64,
+    set_code: &str,
+    rarity_override: Option<&str>,
+) -> Result<usize> {
+    let mut n = 0;
+    // Pull every product in the group with a collector number. Order so
+    // bare-name products (no `[`, no `(`) come first — the first row per
+    // number becomes the canonical source.
+    let mut stmt = tx.prepare(
+        "SELECT product_id, name, collector_number, image_url, rarity \
+           FROM tcgcsv_products \
+          WHERE group_id = ?1 AND collector_number IS NOT NULL \
+          ORDER BY \
+            (CASE WHEN name LIKE '%[%' OR name LIKE '%(%' THEN 1 ELSE 0 END), \
+            product_id",
+    )?;
+    // (product_id, name, collector_number, image_url, rarity).
+    type SynthRow = (i64, String, String, Option<String>, Option<String>);
+    // (name, image_url, rarity) for each product sharing a number.
+    type ProductFields = (String, Option<String>, Option<String>);
+    let rows: Vec<SynthRow> = stmt
+        .query_map([group_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+
+    // Group products by normalized collector number, preserving the
+    // canonical-first ordering above so the first entry per group is
+    // always the source of `name` (with image/rarity falling back to
+    // any sibling that has them).
+    let mut by_number: std::collections::BTreeMap<String, Vec<ProductFields>> =
+        std::collections::BTreeMap::new();
+    for (_product_id, name, number, image_url, rarity) in rows {
+        let normalized = normalize_collector_number(&number);
+        by_number
+            .entry(normalized)
+            .or_default()
+            .push((name, image_url, rarity));
+    }
+
+    for (number, products) in by_number {
+        let canonical = &products[0];
+        let card_name = pkdump_core::variant::parse_product_card_name(&canonical.0);
+        let image = products.iter().find_map(|(_, u, _)| u.as_deref());
+        // A caller-supplied rarity (e.g. "Promo" for MEP) wins over
+        // whatever TCGCSV tags individual chase cards as. Mirrors the
+        // pokemontcg.io svp convention where every Black Star Promo
+        // card carries rarity "Promo".
+        let rarity = rarity_override.or_else(|| products.iter().find_map(|(_, _, r)| r.as_deref()));
+        let card_id = format!("{set_code}-{number}");
+        let sortable = pkdump_core::number_sortable(&number);
+
+        tx.execute(
+            "INSERT OR IGNORE INTO cards \
+               (card_id, set_code, number, number_sortable, name, rarity, \
+                image_small, image_large) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            rusqlite::params![
+                card_id, set_code, number, sortable, card_name, rarity, image
+            ],
+        )?;
+        n += tx.changes() as usize;
+
+        // Heal a synth-owned row whose image/rarity needs updating
+        // (the canonical or fallback may have changed since last
+        // refresh, or the previous run wrote a now-known-broken
+        // URL). The `raw_json IS NULL` predicate scopes the UPDATE
+        // to synth-managed rows — pokemon_tcg_data::upsert_card
+        // always writes raw_json on upstream rows, so it's the
+        // cleanest signal that a row came from synth rather than
+        // upstream.
+        tx.execute(
+            "UPDATE cards \
+                SET name        = ?2, \
+                    rarity      = ?3, \
+                    image_small = ?4, \
+                    image_large = ?4 \
+              WHERE card_id = ?1 \
+                AND raw_json IS NULL",
+            rusqlite::params![card_id, card_name, rarity, image],
+        )?;
+    }
     Ok(n)
 }
 

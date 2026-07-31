@@ -50,6 +50,7 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
     )?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.execute_batch(SCHEMA_SHARED)?;
+    add_missing_columns(&conn)?;
     // Reconcile shipped seeds — variants must run first (sub_type_map
     // FKs into it). All three are idempotent upserts.
     crate::variants::reconcile(&mut conn)?;
@@ -58,6 +59,36 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
     crate::set_aliases::reconcile(&mut conn)?;
     crate::conditions::reconcile(&mut conn)?;
     Ok(conn)
+}
+
+/// Columns added to `schema_shared.sql` after the prod database was
+/// built. `CREATE TABLE IF NOT EXISTS` is a no-op against an existing
+/// table, so a new column reaches an existing catalog only through
+/// `ALTER TABLE`. This keeps that convergence in the same place as the
+/// schema instead of in a runbook step: the declaration in
+/// `schema_shared.sql` stays the single description of the shape, and a
+/// catalog built before the column simply grows it on the next open.
+///
+/// Nullable, defaultless columns only — anything needing a backfill is a
+/// real migration and belongs in a one-off command.
+const ADDED_COLUMNS: &[(&str, &str, &str)] = &[(
+    "sets",
+    "discovered_from_group_id",
+    "ALTER TABLE sets ADD COLUMN discovered_from_group_id INTEGER",
+)];
+
+fn add_missing_columns(conn: &Connection) -> Result<()> {
+    for (table, column, ddl) in ADDED_COLUMNS {
+        let present: bool = conn
+            .prepare(&format!(
+                "SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"
+            ))?
+            .exists([column])?;
+        if !present {
+            conn.execute_batch(ddl)?;
+        }
+    }
+    Ok(())
 }
 
 /// `ATTACH` the shared catalog read-only as `shared`, then create a

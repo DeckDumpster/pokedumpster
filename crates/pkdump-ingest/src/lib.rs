@@ -6,6 +6,7 @@
 //! network — see `architecture/CARD_DATA_ACCESS.md`.
 
 mod error;
+pub mod japan;
 pub mod overrides;
 pub mod pokemon_tcg_data;
 pub mod pokemontcg;

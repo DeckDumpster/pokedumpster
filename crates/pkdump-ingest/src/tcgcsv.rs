@@ -1,8 +1,10 @@
 //! Importer for TCGCSV (`tcgcsv.com`) — the daily TCGplayer bulk dump.
 //!
 //! Provides set ("group") metadata, the sealed-product catalog, and spot
-//! prices (RESEARCH.md §2.5). categoryId 3 is Pokémon. No auth, no rate
-//! limit. PokeDumpster snapshots prices daily into a time series.
+//! prices (RESEARCH.md §2.5). categoryId 3 is English Pokémon and 85 is
+//! Pokémon Japan; the client is parameterized over the category so both
+//! flow through this one endpoint layer. No auth, no rate limit.
+//! PokeDumpster snapshots prices daily into a time series.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -14,7 +16,16 @@ use serde_json::Value;
 
 use crate::error::{IngestError, Result};
 
-const BASE_URL: &str = "https://tcgcsv.com/tcgplayer/3";
+const BASE_URL: &str = "https://tcgcsv.com/tcgplayer";
+
+/// TCGplayer's category id for English Pokémon — the catalog every
+/// pokemontcg.io-backed set bridges against.
+pub const CATEGORY_POKEMON: i64 = 3;
+
+/// TCGplayer's category id for Pokémon Japan. It has no pokemontcg.io
+/// counterpart, so its sets and cards are synthesized from TCGCSV alone —
+/// see `crate::japan`.
+pub const CATEGORY_POKEMON_JAPAN: i64 = 85;
 
 /// A TCGplayer "group" — roughly a set.
 #[derive(Debug, Clone, Deserialize)]
@@ -835,32 +846,47 @@ pub fn import_prices(
     Ok(n)
 }
 
-/// A blocking client for the TCGCSV endpoints.
+/// A blocking client for the TCGCSV endpoints of one TCGplayer category.
 pub struct TcgcsvClient {
     http: reqwest::blocking::Client,
+    category_id: i64,
 }
 
 impl TcgcsvClient {
+    /// A client for English Pokémon ([`CATEGORY_POKEMON`]).
     pub fn new() -> Result<Self> {
+        Self::for_category(CATEGORY_POKEMON)
+    }
+
+    /// A client for an arbitrary TCGplayer category — [`CATEGORY_POKEMON`]
+    /// or [`CATEGORY_POKEMON_JAPAN`].
+    pub fn for_category(category_id: i64) -> Result<Self> {
         Ok(Self {
             http: reqwest::blocking::Client::builder()
                 .user_agent("pokedumpster/0.1 (+cache-population)")
                 .timeout(Duration::from_secs(60))
                 .build()?,
+            category_id,
         })
+    }
+
+    /// The TCGplayer category this client reads.
+    pub fn category_id(&self) -> i64 {
+        self.category_id
     }
 
     fn get(&self, path: &str) -> Result<Value> {
         std::thread::sleep(Duration::from_millis(50));
+        let category = self.category_id;
         Ok(self
             .http
-            .get(format!("{BASE_URL}{path}"))
+            .get(format!("{BASE_URL}/{category}{path}"))
             .send()?
             .error_for_status()?
             .json()?)
     }
 
-    /// Every Pokémon group (set).
+    /// Every group (set) in this client's category.
     pub fn fetch_groups(&self) -> Result<Vec<TcgGroup>> {
         parse_results(&self.get("/groups")?)
     }

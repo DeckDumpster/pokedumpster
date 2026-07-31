@@ -1,13 +1,15 @@
 [
   {
-    "comment": "Global default mapping (group_id = 0). Modern sets (SV / SWSH / SM / XY / BW / HGSS / DP / EX) carry these sub_type names with their conventional meanings. WotC-era groups override per row below.",
+    "comment": "Global default mapping (group_id = 0). Modern sets (SV / SWSH / SM / XY / BW / HGSS / DP / EX) carry these sub_type names with their conventional meanings. WotC-era groups override per row below. The unsuffixed 'Unlimited' / '1st Edition' rows exist for the Japanese catalog (categoryId 85), where 6.5k products across 450 groups price under them and there is no per-group override to fall back on; every English group that uses them already maps them identically below.",
     "tcgcsv_group_id": 0,
     "entries": [
       { "sub_type": "Normal",               "variant": "normal"        },
       { "sub_type": "Holofoil",             "variant": "holo"          },
       { "sub_type": "Reverse Holofoil",     "variant": "reverse_holo"  },
+      { "sub_type": "1st Edition",          "variant": "first_ed_normal" },
       { "sub_type": "1st Edition Normal",   "variant": "first_ed_normal" },
       { "sub_type": "1st Edition Holofoil", "variant": "first_ed_holo" },
+      { "sub_type": "Unlimited",            "variant": "unlimited_normal" },
       { "sub_type": "Unlimited Holofoil",   "variant": "unlimited_holo" }
     ]
   },

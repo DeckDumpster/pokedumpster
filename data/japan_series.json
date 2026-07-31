@@ -1,0 +1,92 @@
+{
+  "comment": [
+    "Era buckets for the Pokémon Japan catalog (TCGCSV categoryId 85).",
+    "TCGCSV publishes 450 Japanese groups with no series field of their own,",
+    "so the /browse series header has to come from somewhere. It comes from",
+    "here rather than from a match arm in Rust (data-model-is-the-product).",
+    "",
+    "Resolution: a group takes the series of the LAST era whose `from` date",
+    "is <= its release date. Groups TCGCSV publishes without a real release",
+    "date (their publishedOn is a same-day placeholder timestamp) fall to",
+    "`undated_series`. A `name_overrides` entry wins over the date rule when",
+    "a group's release date sits on the wrong side of an era boundary.",
+    "",
+    "Era boundaries are the Japanese block starts, not the English ones —",
+    "Japan runs ~2-4 months ahead of the international release calendar."
+  ],
+  "undated_series": "Pokémon JP — Undated Promos",
+  "eras": [
+    {
+      "from": "1996-01-01",
+      "series": "Pokémon JP — Original Era",
+      "comment": "Expansion Pack through Leaders' Stadium + the Quick Starter gift sets."
+    },
+    {
+      "from": "1999-01-01",
+      "series": "Pokémon JP — Neo Era",
+      "comment": "Intro Pack / Southern Island through 'Darkness, and to Light...' (Neo 4)."
+    },
+    {
+      "from": "2001-08-01",
+      "series": "Pokémon JP — VS & e-Card Era",
+      "comment": "Pokemon VS, Pokemon Web, and the Pokémon-e run ending with Mysterious Mountains."
+    },
+    {
+      "from": "2003-01-01",
+      "series": "Pokémon JP — ADV Era",
+      "comment": "ADV Expansion Pack through Undone Seal (ADV5) + the ADV-P promos."
+    },
+    {
+      "from": "2004-02-01",
+      "series": "Pokémon JP — PCG Era",
+      "comment": "PCG-P promos, Flight of Legends through Offense and Defense of the Furthest Ends."
+    },
+    {
+      "from": "2006-10-27",
+      "series": "Pokémon JP — Diamond & Pearl Era",
+      "comment": "DP1 Entry Pack through Pt4: Advent of Arceus, including the Platinum sub-block."
+    },
+    {
+      "from": "2009-09-01",
+      "series": "Pokémon JP — LEGEND Era",
+      "comment": "L-P promos, L1: HeartGold/SoulSilver through CS1."
+    },
+    {
+      "from": "2010-12-01",
+      "series": "Pokémon JP — Black & White Era",
+      "comment": "BW-P promos and BW1 through BW9 + the EX Battle Boost tail."
+    },
+    {
+      "from": "2013-08-01",
+      "series": "Pokémon JP — XY Era",
+      "comment": "XY-P promos, Collection X/Y through CP6: Expansion Pack 20th Anniversary."
+    },
+    {
+      "from": "2016-11-01",
+      "series": "Pokémon JP — Sun & Moon Era",
+      "comment": "SM-P promos, SM0 through SM12a: TAG TEAM GX Tag All Stars."
+    },
+    {
+      "from": "2019-11-01",
+      "series": "Pokémon JP — Sword & Shield Era",
+      "comment": "S-P promos, S1 Sword/Shield through S12a: VSTAR Universe."
+    },
+    {
+      "from": "2023-01-01",
+      "series": "Pokémon JP — Scarlet & Violet Era",
+      "comment": "SV1S/SV1V Scarlet & Violet ex through SV11B/SV11W Black Bolt / White Flare."
+    },
+    {
+      "from": "2025-08-01",
+      "series": "Pokémon JP — Mega Evolution Era",
+      "comment": "m1L: Mega Brave / m1S: Mega Symphonia onward."
+    }
+  ],
+  "name_overrides": [
+    {
+      "name": "Scarlet & Violet Unnumbered Energies",
+      "series": "Pokémon JP — Scarlet & Violet Era",
+      "comment": "TCGCSV dates this catch-all 2025-08-01, the same day the Mega Evolution block opened, but it collects the SV-block unnumbered basic energies."
+    }
+  ]
+}

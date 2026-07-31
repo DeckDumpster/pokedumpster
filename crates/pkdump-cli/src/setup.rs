@@ -3,12 +3,14 @@
 //! Pipeline (PLAN.md §4.1):
 //!   1. bulk import the `pokemon-tcg-data` repo (sets + cards),
 //!   2. fill the tail of newest sets from the pokemontcg.io API,
-//!   3. import TCGCSV groups, sealed products, and prices,
+//!   3. import TCGCSV groups, sealed products, and prices — first for
+//!      English (category 3), then for the Pokémon Japan catalog
+//!      (category 85), whose sets and cards TCGCSV alone supplies,
 //!   4. run three-layer variant expansion into `printings`.
 //!
-//! Steps 2 and 3 hit the network; `--skip-tail` / `--skip-prices` turn them
-//! off, and `--from-dir` imports a local repo checkout instead of
-//! downloading. With all three, setup runs fully offline.
+//! Steps 2 and 3 hit the network; `--skip-tail` / `--skip-prices` /
+//! `--skip-japan` turn them off, and `--from-dir` imports a local repo
+//! checkout instead of downloading. With those, setup runs fully offline.
 
 use std::path::PathBuf;
 
@@ -16,7 +18,12 @@ use rusqlite::Connection;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{overrides, pokemon_tcg_data, standalone_promos, symbols, tcgcsv};
+use pkdump_ingest::{japan, overrides, pokemon_tcg_data, standalone_promos, symbols, tcgcsv};
+
+/// Today's date in the `prices.observed_at` convention.
+fn observed_date() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
 
 /// Arguments for `pkdump setup`.
 #[derive(clap::Args)]
@@ -33,6 +40,11 @@ pub struct SetupArgs {
     /// Skip the TCGCSV sealed-product and price import.
     #[arg(long)]
     skip_prices: bool,
+
+    /// Skip the Pokémon Japan catalog (TCGCSV categoryId 85). Roughly
+    /// doubles the TCGCSV pass when left on — 450 extra groups.
+    #[arg(long)]
+    skip_japan: bool,
 
     /// Shared catalog database path (default: ~/.pkdump/shared.sqlite).
     #[arg(long, value_name = "PATH")]
@@ -81,6 +93,25 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
         println!(
             "  {} groups, {} sealed products, {} card products, {} price rows",
             r.0, r.1, r.2, r.3
+        );
+    }
+
+    // 3b. Pokémon Japan (TCGCSV categoryId 85). No pokemontcg.io
+    //     counterpart exists, so sets and cards are synthesized straight
+    //     from TCGCSV — see `pkdump_ingest::japan`. Runs after the
+    //     English pass so the two never contend for a set_code.
+    if args.skip_prices || args.skip_japan {
+        println!("Skipping the Pokémon Japan catalog.");
+    } else {
+        println!("Importing the Pokémon Japan catalog (TCGCSV category 85)...");
+        let j = japan::import_all(
+            &mut conn,
+            &chrono::Utc::now().to_rfc3339(),
+            &observed_date(),
+        )?;
+        println!(
+            "  {} groups, {} cards, {} card products, {} sealed products, {} price rows",
+            j.groups, j.cards, j.card_products, j.sealed_products, j.price_rows
         );
     }
 
@@ -209,7 +240,7 @@ fn import_tail(conn: &mut Connection) -> anyhow::Result<usize> {
 fn import_tcgcsv(conn: &mut Connection) -> anyhow::Result<(usize, usize, usize, usize)> {
     let client = TcgcsvClient::new()?;
     let now = chrono::Utc::now().to_rfc3339();
-    let observed = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let observed = observed_date();
 
     let groups = client.fetch_groups()?;
     let n_groups = tcgcsv::import_groups(conn, &groups, &now)?;
@@ -270,6 +301,7 @@ mod tests {
             from_dir: Some(repo.path().to_path_buf()),
             skip_tail: true,
             skip_prices: true,
+            skip_japan: true,
             db: Some(db_path.clone()),
         })
         .unwrap();

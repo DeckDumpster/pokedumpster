@@ -1,0 +1,16 @@
+# Scenario: The value chart breaks the collection down by set and by binder
+#
+# Related:
+#   issues: [pd-0a30f178]
+#   pull_requests: []
+#
+# Prerequisites:
+#   The fixture collection spans three sets (Base Set, 151, Surging Sparks)
+#   and three binders (Vintage Vault, Master Set: 151, Trade Binder), and
+#   `pkdump seed-fixture` backfills a snapshot row for each.
+
+description: >
+  Inside the "Collection value over time" dialog I can switch from the
+  single Total line to a "By set" or "By binder" breakdown, and the chart
+  redraws with one line per set or per binder. This tells me which parts
+  of my collection are carrying the value.

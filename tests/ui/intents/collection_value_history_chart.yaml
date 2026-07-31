@@ -1,0 +1,17 @@
+# Scenario: Clicking the header total opens the collection value chart
+#
+# Related:
+#   issues: [pd-0a30f178]
+#   pull_requests: []
+#
+# Prerequisites:
+#   The fixture collection DB carries backfilled `collection_value_snapshot`
+#   rows (written by `pkdump seed-fixture`), so the chart has data to plot.
+
+description: >
+  When I click the "{N} cards, {$X}" total in the Collection page header,
+  a "Collection value over time" dialog opens showing my collection's
+  value plotted against time, with a market-value line and a cost-basis
+  line. This lets me see how what I own has grown without leaving the
+  page. Pressing Escape closes the dialog and puts me back on my
+  collection.

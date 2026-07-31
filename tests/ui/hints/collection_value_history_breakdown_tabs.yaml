@@ -1,0 +1,22 @@
+start_page: /collection
+involves:
+  - "header total button `button.countline` opens the value dialog"
+  - "tablist with 'Total', 'By set', 'By binder' tabs"
+  - "chart container `[data-testid=value-history-chart]` re-renders per tab"
+  - "data-series-count reflects the number of plotted lines"
+fixture_data:
+  total_series_count: 1
+  set_series_count: 3
+  binder_series_count: 3
+  sets: ["Base Set", "151", "Surging Sparks"]
+  binders: ["Vintage Vault", "Master Set: 151", "Trade Binder"]
+notes: >
+  Navigate to /collection, wait for `.cardtile`, click `button.countline`
+  and wait for the "Collection value over time" dialog. The dialog's
+  tablist holds three buttons. Click "By set" — the component refetches
+  GET /api/collection/value-history?dimension=set, which returns one
+  series per set_code, so the chart container's data-series-count becomes
+  "3" and the set names appear in the legend. Click "By binder" — the
+  binder dimension likewise returns three series, keyed by binder id with
+  the binder name as the label. Selecting a tab sets aria-selected="true"
+  on it.

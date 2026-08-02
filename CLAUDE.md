@@ -90,7 +90,13 @@ cargo run --bin pkdump -- import --json collection.json
 # Frontend — SvelteKit (Svelte 5, vite, adapter-static)
 cd frontend && npm install && npm run build
 cd frontend && npm run check     # svelte-check / TypeScript
-cd frontend && npm test          # design-token gates (WCAG AA contrast, layer split)
+cd frontend && npm test          # design-token gates (WCAG AA contrast, layer
+                                 #   split, raw-colour ratchet)
+
+# Visual regression — every route at 1440 and 768 against a throwaway
+# container instance. A pixel diff fails; approving one is explicit.
+bash tests/visual/run.sh         # check
+bash tests/visual/run.sh --update  # approve — see tests/visual/README.md
 
 # UI test harness — Playwright + intent YAMLs              (in progress)
 cd tests/ui && npm test
@@ -322,6 +328,15 @@ a colour role that gets painted on a surface, add its pairing.
 `legacy-color-map.json` maps each raw colour still left in `frontend/src` to
 the role that replaces it; migrations read the replacement off that file
 rather than inventing one.
+
+`raw-color-budget.json` is the ratchet toward zero raw colour. It records how
+many literals each file still holds; the count may only go **down**. Exceed a
+budget and the test reads it as a regression; drop below it and the test fails
+too, printing the number to write. Migrating a file means lowering its entry
+in the same commit, and deleting the entry when it reaches zero. When the
+budget is empty the target is met and any literal anywhere fails the build.
+Never raise a budget — a value that has nowhere to live needs a semantic role
+in `tokens.css`, not an exception.
 
 ### UI primitives
 

@@ -9,7 +9,7 @@
 # Steps:
 #   1. Tear down any stale `ci` container instance.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
-#   3. Frontend gate:  npm ci && npm run check && npm run build.
+#   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #   4. Container gate: build + start a `--test` instance, wait for the server
 #                      to answer on its port, then tear it down.
 #
@@ -66,10 +66,13 @@ step "cargo fmt --check"
 
 # --- 3. Frontend gate -------------------------------------------------------
 
-step "Frontend: npm ci && npm run check && npm run build"
+step "Frontend: npm ci && npm test && npm run check && npm run build"
 (
     cd "$REPO_DIR/frontend"
     npm ci
+    # Design-token gates: WCAG AA contrast for every declared pairing, plus the
+    # reference/semantic layer split. Node's built-in runner, no extra deps.
+    npm test
     npm run check
     npm run build
 )

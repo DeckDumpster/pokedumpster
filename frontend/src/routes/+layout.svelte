@@ -1,5 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	// The design-token layer — the single source of visual values for the whole
+	// app. Imported here and nowhere else; see the header of tokens.css.
+	import '$lib/styles/tokens.css';
 	import favicon from '$lib/assets/favicon.svg';
 	import { breadcrumbs, type Crumb } from '$lib/breadcrumbs.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';

@@ -21,7 +21,7 @@ the faster sub-tiers you want during normal editing.
 |-----|------|------|------|
 | `cargo` *(default)* | `cargo test` | none | ~5 s |
 | `lint` | `cargo clippy --all-targets -- -D warnings` then `cargo fmt --check` | none | ~15 s |
-| `frontend` | `cd frontend && npm run check && npm run build` | Node | ~15 s |
+| `frontend` | `cd frontend && npm test && npm run check && npm run build` | Node | ~15 s |
 | `ci` | `bash deploy/ci.sh` — the full local CI loop (Rust gates + frontend + a `--test` container smoke test + intents harness if browsers exist) | Podman | ~3–8 min |
 | `ui` | the Playwright intents harness against a running instance | container + browsers + `ANTHROPIC_API_KEY` for vision/generation modes | minutes |
 | `full` | `cargo` → `lint` → `frontend` → `ci`, in order | Podman | ~10 min |

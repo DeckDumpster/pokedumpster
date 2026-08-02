@@ -60,6 +60,12 @@
 			"size": "normal"
 		},
 		{ "fg": "--color-text", "bg": "--color-accent-surface", "size": "normal" },
+		{
+			"$note": "Badge, tone=accent, variant=soft — the accent tone's text on the accent tone's surface, as every other tone already pairs.",
+			"fg": "--color-text-accent",
+			"bg": "--color-accent-surface",
+			"size": "normal"
+		},
 
 		{ "fg": "--color-text-strong", "bg": "--color-surface-page", "size": "normal" },
 		{ "fg": "--color-text-strong", "bg": "--color-surface-panel", "size": "normal" },
@@ -119,6 +125,18 @@
 			"size": "normal"
 		},
 		{ "fg": "--color-on-accent", "bg": "--color-accent-hover", "size": "normal" },
+		{
+			"$note": "Button primary, :active. The pressed fill darkens, so the dark label is the pairing that can slip.",
+			"fg": "--color-on-accent",
+			"bg": "--color-accent-active",
+			"size": "normal"
+		},
+		{
+			"$note": "Button danger, :hover.",
+			"fg": "--color-on-danger",
+			"bg": "--color-danger-hover",
+			"size": "normal"
+		},
 		{ "fg": "--color-on-success", "bg": "--color-success", "size": "normal" },
 		{ "fg": "--color-on-warning", "bg": "--color-warning", "size": "normal" },
 		{ "fg": "--color-on-danger", "bg": "--color-danger", "size": "normal" },
@@ -143,6 +161,13 @@
 		{ "fg": "--color-info-text", "bg": "--color-surface-panel", "size": "normal" },
 		{ "fg": "--color-info-text", "bg": "--color-surface-raised", "size": "normal" },
 		{ "fg": "--color-info-text", "bg": "--color-info-surface", "size": "normal" },
+		{
+			"$note": "Button secondary — /ingest/csv's action row is a solid #0f3460 fill with body text on it.",
+			"fg": "--color-text",
+			"bg": "--color-info-surface",
+			"size": "normal"
+		},
+		{ "fg": "--color-text-strong", "bg": "--color-info-surface", "size": "normal" },
 
 		{ "fg": "--color-neutral-text", "bg": "--color-surface-page", "size": "normal" },
 		{ "fg": "--color-neutral-text", "bg": "--color-surface-panel", "size": "normal" },
@@ -178,6 +203,12 @@
 		},
 		{ "fg": "--color-control-border", "bg": "--color-surface-panel", "size": "ui" },
 
+		{
+			"$note": "ProgressBar's default tone — /browse's set-completion bars fill with the brand crimson, not with a progress role.",
+			"fg": "--color-accent",
+			"bg": "--color-progress-track",
+			"size": "ui"
+		},
 		{ "fg": "--color-progress-fill", "bg": "--color-progress-track", "size": "ui" },
 		{ "fg": "--color-progress-fill-partial", "bg": "--color-progress-track", "size": "ui" },
 		{ "fg": "--color-progress-fill-empty", "bg": "--color-progress-track", "size": "ui" },

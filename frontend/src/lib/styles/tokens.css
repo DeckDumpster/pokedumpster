@@ -222,6 +222,11 @@
 
 	/* --- State: danger ---------------------------------------------------- */
 	--color-danger: var(--pd-red-500);
+	/* Filled destructive controls darken on hover, mirroring
+	   --color-accent-active. Without this role a danger Button has no hover
+	   state at all, and "no affordance" is how a delete button ends up
+	   borrowing the brand colour again. */
+	--color-danger-hover: var(--pd-red-700);
 	--color-danger-text: var(--pd-red-300);
 	--color-danger-surface: var(--pd-red-900);
 	--color-danger-border: var(--pd-red-700);

@@ -323,6 +323,24 @@ a colour role that gets painted on a surface, add its pairing.
 the role that replaces it; migrations read the replacement off that file
 rather than inventing one.
 
+### UI primitives
+
+`frontend/src/lib/components/ui/` is the visual vocabulary — `Panel`, `Button`,
+`Field`, `Badge`, `ProgressBar`, `SectionHeader`, `EmptyState`, `Toolbar`,
+re-exported from `$lib/components/ui`. Routes render; they do not decide
+surfaces, fills, rules or spacing.
+
+Every primitive is styled from the **semantic** token layer only — no colour
+literal, no `--pd-*`. A route that needs a variant a primitive lacks **adds the
+variant to the primitive**; the moment two routes patch the same primitive at
+the call site, the system is back to taste.
+
+`frontend/tests/primitives/` has one render test per primitive (renders,
+respects its variants, emits no hardcoded colour). It renders components
+server-side under Node's built-in test runner — no jsdom, no testing-library
+— via the loader hook in `frontend/tests/support/svelte-hooks.js`, which
+compiles `.svelte` on import (`npm test` wires it in with `--import`).
+
 ### Performance
 
 - Shared catalog connection opens with WAL + `synchronous=NORMAL` +

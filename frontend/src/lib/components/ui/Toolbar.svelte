@@ -8,6 +8,12 @@
 	exists for — a translucent chrome that lets rows show through instead of
 	stamping an opaque band across the page.
 
+	A pinned bar that hosts a form control takes `surface="panel"` instead.
+	WCAG 1.4.11 names the input-field boundary as something that must clear
+	3:1, and `--color-control-border` manages only 2.61:1 against the sticky
+	fill — the saturated blue is too light a ground for it. The panel surface
+	sits a hair off the page colour, so it reads as a quieter band anyway.
+
 	No visual weight of its own unless `sticky` or `bordered` says so: a
 	toolbar is a layout, and chrome that recedes is the point.
 -->
@@ -24,6 +30,10 @@
 		wrap?: boolean;
 		/** Pins to the top of the scroll container over the content beneath. */
 		sticky?: boolean;
+		/** Fill for a `sticky` bar. `panel` is the opaque alternative for a bar
+		    that hosts a form control — see the note at the top. Ignored when
+		    the bar isn't pinned, which has no fill at all. */
+		surface?: 'sticky' | 'panel';
 		/** A rule under the row — implied by `sticky`. */
 		bordered?: boolean;
 		class?: string;
@@ -37,6 +47,7 @@
 		justify = 'start',
 		wrap = true,
 		sticky = false,
+		surface = 'sticky',
 		bordered = false,
 		class: extra = '',
 		children,
@@ -52,6 +63,7 @@
 			`j-${justify}`,
 			wrap && 'wrap',
 			sticky && 'sticky',
+			sticky && `sf-${surface}`,
 			(bordered || sticky) && 'bordered',
 			extra
 		]
@@ -118,8 +130,14 @@
 		top: 0;
 		/* Above the rows it scrolls over, below modals and their scrim. */
 		z-index: 50;
-		padding: var(--space-2) var(--space-3);
+		/* Roomier than the 6px/11px the routes hand-rolled. A pinned bar is
+		   the one row of chrome always on screen; crowding it is what made
+		   /collection's read as a strip of controls rather than a frame. */
+		padding: var(--space-3) var(--space-4);
 		background: var(--color-surface-sticky);
+	}
+	.sticky.sf-panel {
+		background: var(--color-surface-panel);
 	}
 	.bordered {
 		border-bottom: 1px solid var(--color-border);

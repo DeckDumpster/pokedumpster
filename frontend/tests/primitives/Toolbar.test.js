@@ -40,11 +40,20 @@ test('Toolbar has no chrome of its own until asked', () => {
 	assert.match(pinned, /\bbordered\b/);
 });
 
+test('Toolbar pins on the translucent chrome unless asked for the panel fill', () => {
+	assert.match(rootClass(body({ sticky: true })), /\bsf-sticky\b/);
+	assert.match(rootClass(body({ sticky: true, surface: 'panel' })), /\bsf-panel\b/);
+	// An unpinned toolbar has no fill to pick, so it carries no surface class
+	// either — `surface` on a static row would be a silent no-op otherwise.
+	assert.doesNotMatch(rootClass(body({ surface: 'panel' })), /\bsf-/);
+});
+
 test('Toolbar emits no hardcoded colour', () => {
 	assertTokenOnly('Toolbar.svelte');
 	const css = styles(Toolbar, { children: slot() });
 	// The pinned band is the translucent chrome role, not an opaque panel —
 	// content shows through instead of being stamped over.
 	assert.match(css, /\.sticky[^{]*\{[^}]*var\(--color-surface-sticky\)/);
+	assert.match(css, /\.sticky\.sf-panel[^{]*\{[^}]*var\(--color-surface-panel\)/);
 	assertTokensDeclared(css);
 });

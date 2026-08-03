@@ -115,6 +115,13 @@
 			"base": "--color-surface-panel",
 			"size": "normal"
 		},
+		{
+			"$note": "/collection's active sort pill — the wash that replaced a solid crimson fill sits on the page, not a panel.",
+			"fg": "--color-text-accent",
+			"bg": "--color-surface-selected",
+			"base": "--color-surface-page",
+			"size": "normal"
+		},
 
 		{ "fg": "--color-link", "bg": "--color-surface-page", "size": "normal" },
 		{ "fg": "--color-link", "bg": "--color-surface-panel", "size": "normal" },

@@ -19,7 +19,7 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ValueHistoryModal from '$lib/components/ValueHistoryModal.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
-	import { Button, EmptyState } from '$lib/components/ui';
+	import { Button, EmptyState, SectionHeader, Toolbar } from '$lib/components/ui';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { SearchRow } from '$lib/types/SearchRow';
 	import type { SearchVocabulary } from '$lib/types/SearchVocabulary';
@@ -408,6 +408,7 @@
 		printing_id: string;
 		card_id: string;
 		set_code: string;
+		set_name: string;
 		set_ptcgo_code: string | null;
 		set_symbol_url: string | null;
 		number: string;
@@ -454,6 +455,7 @@
 					printing_id: r.printing_id,
 					card_id: r.card_id,
 					set_code: r.set_code,
+					set_name: r.set_name,
 					set_ptcgo_code: r.set_ptcgo_code,
 					set_symbol_url: r.set_symbol_url,
 					number: r.number,
@@ -651,6 +653,7 @@
 			printing_id: sr.printing_id,
 			card_id: sr.card_id,
 			set_code: sr.set_code,
+			set_name: sr.set_name,
 			set_ptcgo_code: sr.set_ptcgo_code,
 			set_symbol_url: sr.set_symbol_url,
 			number: sr.number,
@@ -679,6 +682,51 @@
 		return out;
 	});
 
+
+	// === Grid grouping ================================================
+	//
+	// Bigger art costs scroll, and scroll is only worth paying for if what
+	// you scroll through is organised. So the grid cuts itself into labelled
+	// sections along whatever the active sort already orders on, whenever
+	// that field is a category a person browses by — set, rarity, class,
+	// energy type, or a name's initial. The continuous fields (#, NM, Adj.)
+	// group into nothing useful, so they stay one flat run.
+	//
+	// Every label is read straight off the row's own fields. No new
+	// taxonomy, no bucket table: a heading here is a value the catalog
+	// already stores, which is why this needs no schema of its own.
+	function groupLabel(a: AggRow): string | null {
+		switch (sortKey) {
+			case 'name': {
+				const c = a.name.trim().charAt(0).toUpperCase();
+				return c >= 'A' && c <= 'Z' ? c : '#';
+			}
+			case 'set':
+				return a.set_name;
+			case 'rarity':
+				return a.rarity ?? 'No rarity';
+			case 'type':
+				return a.supertype ?? 'Other';
+			case 'etype':
+				return parseJsonStrArr(a.types)[0] ?? 'No type';
+			default:
+				return null;
+		}
+	}
+
+	/** `sorted`, cut into runs of equal group label. Concatenating the runs
+	    reproduces `sorted` exactly — the grid's tile order is untouched, so
+	    owned and unowned printings still interleave by the sort key. */
+	const gridSections = $derived.by(() => {
+		const out: { label: string | null; rows: AggRow[] }[] = [];
+		for (const a of sorted) {
+			const label = groupLabel(a);
+			const last = out[out.length - 1];
+			if (last && last.label === label) last.rows.push(a);
+			else out.push({ label, rows: [a] });
+		}
+		return out;
+	});
 
 	function groupChecked(ids: number[]): boolean {
 		// An unowned printing has no copies — never "checked" (empty .every is true).
@@ -850,9 +898,29 @@
   pinned to the viewport, glyph view toggle, and Export/Select hidden
   behind a burger. The global nav is suppressed for this page by
   +layout.svelte.
+
+  One row, not two. The controls either side of the search are all small
+  and all rare — a view toggle, a menu, a count — and stacking them on
+  their own line doubled the height of the only chrome that is always on
+  screen. They ride the search's line and wrap under it on a narrow
+  viewport, which is what Toolbar's `wrap` already does.
+
+  `surface="panel"` rather than the translucent sticky fill: the search
+  input's boundary has to clear 3:1 (WCAG 1.4.11) against whatever is
+  behind it, and it manages 2.61:1 on the saturated blue. The panel is
+  the quieter ground anyway — it sits a hair off the page colour instead
+  of banding it.
 -->
-<header class="topbar">
-	<div class="row row1">
+<Toolbar
+	class="topbar"
+	direction="column"
+	align="stretch"
+	gap="sm"
+	wrap={false}
+	sticky
+	surface="panel"
+>
+	<Toolbar gap="md">
 		<a class="brand" href="/" aria-label="Home" title="Home">
 			<span class="brandmark"><Pokeball size={26} /></span>
 		</a>
@@ -921,15 +989,8 @@
 		<a class="helplink" data-testid="search-help-link" href="/search-help" title="Search syntax help"
 			>?</a
 		>
-	</div>
-	{#if searchError}
-		<div class="row searcherr" data-testid="search-error" role="alert">
-			<span class="errmsg">{searchError.message}</span>
-			<span class="errpos">position {searchError.position}</span>
-		</div>
-	{/if}
-	<div class="row row2">
 		{#if searchRows.length > 0}
+			<span class="bardiv" aria-hidden="true"></span>
 			<div class="viewtoggle" role="group" aria-label="View">
 				<button
 					class:on={view === 'grid'}
@@ -982,9 +1043,14 @@
 			{count(filtered.length)}
 			cards{#if totalValue > 0}, {money(totalValue)}{/if}
 		</button>
-	</div>
-</header>
-<div class="topbarSpacer" aria-hidden="true"></div>
+	</Toolbar>
+	{#if searchError}
+		<div class="searcherr" data-testid="search-error" role="alert">
+			<span class="errmsg">{searchError.message}</span>
+			<span class="errpos">position {searchError.position}</span>
+		</div>
+	{/if}
+</Toolbar>
 
 {#if menuOpen}
 	<div
@@ -994,6 +1060,10 @@
 	></div>
 {/if}
 
+<!-- The layout runs this route flush to the viewport edge so the bar above
+     can pin edge to edge; everything below it gets its gutter back here.
+     Card art needs a margin as much as it needs a gap. -->
+<div class="content">
 {#if loading}
 	<p class="muted">Loading…</p>
 {:else if error}
@@ -1076,12 +1146,19 @@
 		     to that field (with a sensible default direction); click the
 		     active one to toggle asc/desc. State is shared with the
 		     table view (sortKey/sortDir) so flipping the view never
-		     loses your sort. -->
-		<div class="gridsort">
+		     loses your sort.
+
+		     The buttons share a min-width so the row reads as one control
+		     rather than eight ragged pills, and the active one is a wash
+		     with an accent edge — a solid crimson slab beside 4,763 pieces
+		     of card art was the loudest thing on the page. -->
+		<div class="gridsort" role="group" aria-label="Sort">
+			<span class="gridsortlabel">Sort</span>
 			{#snippet sortBtn(key: string, label: string)}
 				<button
 					class="sortbtn"
 					class:active={sortKey === key}
+					aria-pressed={sortKey === key}
 					onclick={() => sortBy(key)}
 				>
 					{label}
@@ -1099,37 +1176,51 @@
 			{@render sortBtn('nm', 'NM')}
 			{@render sortBtn('market', 'Adj.')}
 		</div>
+		<!-- Sections are runs of `sorted`, so tile order is exactly the sort
+		     order — owned and unowned printings still interleave. -->
 		<div class="cardgrid">
-			{#each sorted as a (a.key)}
-				{#if a.ids.length === 0}
-					<button
-						class="cardtile missing"
-						title="{a.name} · {(a.set_ptcgo_code ?? a.set_code).toUpperCase()} #{a.number} · click to add"
-						onclick={() => (selectedCard = { set: a.set_code, number: a.number })}
-					>
-						{#if a.image_small}
-							<img src={a.image_small} alt={a.name} loading="lazy" />
-						{:else}
-							<div class="tilenoart">{a.name}</div>
-						{/if}
-					</button>
-				{:else}
-					<button
-						class="cardtile"
-						class:picked={selectMode && groupChecked(a.ids)}
-						class:foil={isFoilVariant(a.variant)}
-						title="{a.name} · {variantLabel(a.variant)}{a.qty > 1 ? ` ×${a.qty}` : ''}"
-						onclick={() => openGroup(a)}
-					>
-						{#if a.image_small}
-							<img src={a.image_small} alt={a.name} loading="lazy" />
-						{:else}
-							<div class="tilenoart">{a.name}</div>
-						{/if}
-						{#if a.qty > 1}<span class="qtybadge">×{a.qty}</span>{/if}
-						{#if selectMode && groupChecked(a.ids)}<span class="tick">✓</span>{/if}
-					</button>
+			{#each gridSections as sec, si (si)}
+				{#if sec.label !== null}
+					<div class="groupheader">
+						<SectionHeader
+							size="sm"
+							title={sec.label}
+							meta="{count(sec.rows.length)} {sec.rows.length === 1 ? 'card' : 'cards'}"
+							divider
+						/>
+					</div>
 				{/if}
+				{#each sec.rows as a (a.key)}
+					{#if a.ids.length === 0}
+						<button
+							class="cardtile missing"
+							title="{a.name} · {(a.set_ptcgo_code ?? a.set_code).toUpperCase()} #{a.number} · click to add"
+							onclick={() => (selectedCard = { set: a.set_code, number: a.number })}
+						>
+							{#if a.image_small}
+								<img src={a.image_small} alt={a.name} loading="lazy" />
+							{:else}
+								<div class="tilenoart">{a.name}</div>
+							{/if}
+						</button>
+					{:else}
+						<button
+							class="cardtile"
+							class:picked={selectMode && groupChecked(a.ids)}
+							class:foil={isFoilVariant(a.variant)}
+							title="{a.name} · {variantLabel(a.variant)}{a.qty > 1 ? ` ×${a.qty}` : ''}"
+							onclick={() => openGroup(a)}
+						>
+							{#if a.image_small}
+								<img src={a.image_small} alt={a.name} loading="lazy" />
+							{:else}
+								<div class="tilenoart">{a.name}</div>
+							{/if}
+							{#if a.qty > 1}<span class="qtybadge">×{a.qty}</span>{/if}
+							{#if selectMode && groupChecked(a.ids)}<span class="tick">✓</span>{/if}
+						</button>
+					{/if}
+				{/each}
 			{/each}
 		</div>
 	{:else}
@@ -1358,6 +1449,7 @@
 		</div>
 	{/if}
 {/if}
+</div>
 
 {#if selectedCard}
 	<CardModal
@@ -1382,39 +1474,15 @@
 
 	/* --- DD-style top chrome ------------------------------------------- */
 
-	.topbar {
-		/* Sticky (not fixed) so the bar takes its own height in the page
-		   flow — no manual spacer needed, and the bar can never overlap
-		   the first row of results. Horizontal table scroll is owned by
-		   .tableScroll, so the page itself doesn't scroll horizontally
-		   and the bar stays put. */
-		position: sticky;
-		top: 0;
-		z-index: 50;
-		display: flex;
-		flex-direction: column;
-		gap: 0.3rem;
-		padding: 0.4rem 0.7rem 0.45rem;
-		/* Deliberately the panel surface, not --color-surface-sticky. The
-		   translucent role would drop the search input's boundary against
-		   the bar to 2.61:1 — under WCAG 1.4.11 — and rebuilding this bar
-		   is pd-nt4k's remit, not this migration's. */
-		background: var(--color-surface-panel);
-		border-bottom: 1px solid var(--color-border);
-	}
-	.topbarSpacer {
-		display: none;
-	}
-	.row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-	}
-	/* Toggles + ⋯ hug the left; countline rides flush right via the
-	   `.countline { margin-left: auto }` rule below. Vertical alignment
-	   inherits from `.row { align-items: center }`. */
-	.row2 {
-		justify-content: flex-start;
+	/* The band itself is Toolbar `sticky surface="panel"` — position, fill,
+	   rule and padding all belong to the primitive. What is left here is
+	   what sits inside it. */
+
+	/* Everything below the pinned bar. `main.flush` strips the layout's
+	   padding for this route so the bar can pin edge to edge; the gutter
+	   comes back here, where the content is. */
+	.content {
+		padding: var(--space-5) var(--space-6) var(--space-10);
 	}
 	.brand {
 		display: inline-flex;
@@ -1431,9 +1499,14 @@
 		filter: brightness(1.2);
 	}
 	/* The input inherits the row's flex slot via its wrapper, so the
-	   wrapper carries the flex sizing rather than the input itself. */
+	   wrapper carries the flex sizing rather than the input itself. The
+	   basis is what makes the single row wrap gracefully: below ~44rem of
+	   free space the search claims the first line on its own and the small
+	   controls drop under it. The cap stops it from stretching into a
+	   1920-wide trough that no query ever fills. */
 	.searchwrap {
-		flex: 1;
+		flex: 1 1 22rem;
+		max-width: 44rem;
 		min-width: 0;
 		position: relative;
 		display: flex;
@@ -1444,7 +1517,7 @@
 		min-width: 0;
 		/* Extra right padding leaves room for the clear button without
 		   it overlapping typed text. */
-		padding: 0.45rem 2rem 0.45rem 0.6rem;
+		padding: var(--space-2) var(--space-8) var(--space-2) var(--space-3);
 		background: var(--color-control-surface);
 		border: 1px solid var(--color-control-border);
 		border-radius: var(--radius-md);
@@ -1458,8 +1531,10 @@
 		border-color: var(--color-danger);
 	}
 	.searcherr {
-		gap: 0.6rem;
-		font-size: 0.82rem;
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-3);
+		font-size: var(--text-sm);
 		color: var(--color-danger-text);
 	}
 	.errpos {
@@ -1563,6 +1638,15 @@
 	.alltoggle input {
 		cursor: pointer;
 	}
+	/* A hairline between the search cluster and the view/menu controls, so
+	   one row still reads as two groups. Decorative, hence aria-hidden. */
+	.bardiv {
+		width: 1px;
+		align-self: stretch;
+		margin: var(--space-1) var(--space-1);
+		background: var(--color-border);
+		flex-shrink: 0;
+	}
 	.countline {
 		margin: var(--space-0) var(--space-0) var(--space-0) auto;
 		font-size: var(--text-md);
@@ -1632,11 +1716,16 @@
 	.menu {
 		position: absolute;
 		top: calc(100% + 4px);
-		left: 0;
+		/* Anchored to the ⋯'s right edge, not its left: the button now rides
+		   the right-hand end of a single-row bar, and a left-anchored menu
+		   would hang off the viewport on a narrow one. */
+		right: 0;
 		z-index: 60;
 		display: flex;
 		flex-direction: column;
-		min-width: 180px;
+		/* Wide enough for "Export JSON (full backup)" on one line — the
+		   labels are the width, not a round number. */
+		min-width: 15rem;
 		background: var(--color-surface-overlay);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-lg);
@@ -1648,9 +1737,10 @@
 		border: none;
 		color: var(--color-text);
 		text-align: left;
-		padding: 0.45rem 0.7rem;
+		padding: var(--space-2) var(--space-3);
 		font: inherit;
-		font-size: 0.9rem;
+		font-size: var(--text-lg);
+		white-space: nowrap;
 		border-radius: var(--radius-sm);
 		cursor: pointer;
 		text-decoration: none;
@@ -1665,50 +1755,90 @@
 
 	.gridsort {
 		display: flex;
-		gap: 0.4rem;
+		gap: var(--space-2);
 		align-items: center;
 		flex-wrap: wrap;
-		margin: var(--space-0) var(--space-0) var(--space-2);
+		margin: var(--space-0) var(--space-0) var(--space-5);
 		font-size: var(--text-md);
 	}
-	.sortbtn {
-		background: var(--color-surface-panel);
-		border: 1px solid var(--color-border);
+	.gridsortlabel {
+		font-size: var(--text-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
 		color: var(--color-text-subtle);
-		border-radius: var(--radius-md);
-		padding: 0.3rem 0.7rem;
+		margin-right: var(--space-1);
+	}
+	.sortbtn {
+		/* One width for every pill. The labels run from "#" to "Rarity",
+		   and letting each shrink to its text turned a row of peers into a
+		   ragged line whose widths encoded nothing. */
+		min-width: 5.5rem;
+		justify-content: center;
+		background: none;
+		border: 1px solid var(--color-border-subtle);
+		color: var(--color-text-subtle);
+		border-radius: var(--radius-pill);
+		padding: var(--space-1) var(--space-3);
 		font: inherit;
+		font-size: var(--text-md);
 		cursor: pointer;
 		display: inline-flex;
 		align-items: center;
-		gap: 0.3rem;
+		gap: var(--space-1);
+		transition:
+			background-color var(--dur-fast) var(--ease-standard),
+			border-color var(--dur-fast) var(--ease-standard),
+			color var(--dur-fast) var(--ease-standard);
 	}
 	.sortbtn:hover {
 		border-color: var(--color-border-accent);
 		color: var(--color-text);
 	}
+	.sortbtn:focus-visible {
+		outline: none;
+		box-shadow: var(--shadow-focus);
+	}
+	/* The active pill is a wash and an edge, not a slab. Solid crimson next
+	   to card art read as the loudest element on a page whose whole job is
+	   to show the art; the accent still marks the pill, at a weight that
+	   loses to a Charizard. */
 	.sortbtn.active {
-		background: var(--color-accent);
+		background: var(--color-surface-selected);
 		border-color: var(--color-border-accent);
-		/* Dark ink on the crimson fill — the same pairing Button's
-		   `primary` uses. White here was 3.83:1, the app's most common AA
-		   failure. */
-		color: var(--color-on-accent);
+		color: var(--color-text-accent);
 	}
 	.sortbtn .caret {
-		/* Override the global .caret rule (--color-text-accent), which
-		   collides with the active sortbtn's crimson fill. Inheriting the
-		   button's color gives grey on inactive buttons and the on-accent
-		   ink on the active one, both readable. */
+		/* Inherit rather than take the global .caret accent: on the active
+		   pill the label is already accent-coloured, and a second tone
+		   inside one control is noise. */
 		color: inherit;
 		font-size: 0.65rem;
 		opacity: 0.9;
 	}
+	/* Fewer cards per row, bigger art, real gutters. The tile floor steps up
+	   with the viewport rather than staying at a phone-sized 130px on a
+	   1920 monitor, where it produced fourteen columns of thumbnails. */
 	.cardgrid {
+		--tile-min: 150px;
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-		gap: 0.4rem;
+		grid-template-columns: repeat(auto-fill, minmax(var(--tile-min), 1fr));
+		gap: var(--space-4);
 		margin-top: var(--space-0);
+	}
+	@media (min-width: 1200px) {
+		.cardgrid {
+			--tile-min: 176px;
+		}
+	}
+	@media (min-width: 1700px) {
+		.cardgrid {
+			--tile-min: 204px;
+		}
+	}
+	/* A section label spans the grid. SectionHeader owns its own type and
+	   rule; this only places it. */
+	.groupheader {
+		grid-column: 1 / -1;
 	}
 	.cardtile {
 		position: relative;
@@ -1841,8 +1971,8 @@
 		align-items: center;
 		gap: var(--space-2);
 		flex-wrap: wrap;
-		margin: 0.6rem 0;
-		padding: 0.6rem 0.8rem;
+		margin: var(--space-0) var(--space-0) var(--space-4);
+		padding: var(--space-3) var(--space-4);
 		background: var(--color-surface-panel);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-lg);
@@ -2132,6 +2262,9 @@
 	/* On a phone the table is just a denser version of itself — no row
 	   reflow yet (it would clash with click-to-sort headers). */
 	@media (max-width: 540px) {
+		.content {
+			padding: var(--space-3) var(--space-3) var(--space-8);
+		}
 		table.dd {
 			font-size: var(--text-sm);
 		}

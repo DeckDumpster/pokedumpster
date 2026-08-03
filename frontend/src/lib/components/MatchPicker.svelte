@@ -129,8 +129,8 @@
 
 <style>
 	.picker {
-		background: #12182e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-sunken);
+		border: 1px solid var(--color-border);
 		border-radius: 8px;
 		padding: 0.6rem;
 		margin: 0.3rem 0;
@@ -141,31 +141,31 @@
 	}
 	.bar input {
 		flex: 1;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		color: #e0e0e0;
+		color: var(--color-text);
 		padding: 0.4rem 0.5rem;
 		font: inherit;
 	}
 	.cancel {
-		background: #16213e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		color: #cfd6e6;
+		color: var(--color-text-muted);
 		padding: 0.3rem 0.7rem;
 		cursor: pointer;
 	}
 	.cancel:hover:not(:disabled) {
-		border-color: #e94560;
+		border-color: var(--color-border-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 		margin: 0.5rem 0 0.2rem;
 		font-size: 0.85rem;
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 		margin: 0.5rem 0 0.2rem;
 		font-size: 0.85rem;
 	}
@@ -184,14 +184,14 @@
 		text-align: left;
 		background: none;
 		border: none;
-		border-bottom: 1px solid #0f3460;
-		color: #e0e0e0;
+		border-bottom: 1px solid var(--color-border);
+		color: var(--color-text);
 		padding: 0.4rem 0.3rem;
 		cursor: pointer;
 		font: inherit;
 	}
 	.pick:hover:not(:disabled) {
-		background: rgba(233, 69, 96, 0.12);
+		background: var(--color-surface-selected);
 	}
 	.pick:disabled {
 		opacity: 0.5;
@@ -208,11 +208,11 @@
 		padding: 0.02rem 0.35rem;
 		border: 1px solid;
 		border-radius: 999px;
-		background: rgba(0, 0, 0, 0.25);
+		background: var(--color-surface-shade);
 	}
 	.meta {
 		flex-shrink: 0;
 		font-size: 0.78rem;
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 </style>

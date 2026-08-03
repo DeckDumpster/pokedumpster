@@ -47,7 +47,7 @@
 	.backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--color-scrim);
 		z-index: 100;
 	}
 	.modal {
@@ -71,8 +71,8 @@
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
-		background: #1a1a2e;
-		border: 2px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 2px solid var(--color-border);
 		border-radius: 12px;
 	}
 	.controls {
@@ -90,10 +90,10 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: rgba(10, 10, 30, 0.75);
-		border: 1px solid #0f3460;
+		background: var(--color-scrim);
+		border: 1px solid var(--color-border);
 		border-radius: 50%;
-		color: #e0e0e0;
+		color: var(--color-text);
 		font-size: 1.4rem;
 		line-height: 1;
 		cursor: pointer;
@@ -105,8 +105,8 @@
 	}
 	.x:hover,
 	.fulllink:hover {
-		background: #e94560;
-		color: #fff;
+		background: var(--color-accent);
+		color: var(--color-on-accent);
 	}
 	.body {
 		flex: 1;

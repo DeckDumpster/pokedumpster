@@ -61,26 +61,26 @@
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.filter {
 		display: inline-flex;
 		gap: 0.4rem;
 		align-items: center;
 		font-size: 0.85rem;
-		color: #888;
+		color: var(--color-text-subtle);
 		margin-bottom: 0.5rem;
 	}
 	select {
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
+		color: var(--color-text);
 		border-radius: 6px;
 		padding: 0.2rem;
 	}
@@ -92,19 +92,19 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 </style>

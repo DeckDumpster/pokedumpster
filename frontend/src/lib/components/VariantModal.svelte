@@ -104,7 +104,7 @@
 	.backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--color-scrim);
 		z-index: 100;
 	}
 	.modal {
@@ -118,8 +118,8 @@
 		max-width: 92vw;
 		max-height: 85vh;
 		overflow-y: auto;
-		background: #16213e;
-		border: 2px solid #0f3460;
+		background: var(--color-surface-overlay);
+		border: 2px solid var(--color-border);
 		border-radius: 12px;
 		padding: 1.25rem;
 	}
@@ -130,12 +130,12 @@
 	}
 	h3 {
 		margin: 0;
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.x {
 		background: none;
 		border: none;
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 1.4rem;
 		cursor: pointer;
 		line-height: 1;
@@ -151,7 +151,7 @@
 		gap: 0.75rem;
 		align-items: center;
 		padding: 0.45rem 0;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	li.dim {
 		opacity: 0.5;
@@ -163,22 +163,22 @@
 		min-width: 0;
 	}
 	.provenance {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.72rem;
 		line-height: 1.25;
 	}
 	.price {
 		font-size: 0.8rem;
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.stepper {
 		display: flex;
 		align-items: center;
 	}
 	.step {
-		background: #0f3460;
+		background: var(--color-info-surface);
 		border: none;
-		color: #e0e0e0;
+		color: var(--color-text);
 		width: 30px;
 		height: 30px;
 		cursor: pointer;
@@ -192,7 +192,7 @@
 		border-radius: 0 6px 6px 0;
 	}
 	.step:hover:not(:disabled) {
-		background: #e94560;
+		background: var(--color-accent);
 	}
 	.step:disabled {
 		opacity: 0.35;
@@ -204,19 +204,19 @@
 		line-height: 30px;
 		text-align: center;
 		font-size: 0.9rem;
-		color: #888;
-		background: #1a1a2e;
+		color: var(--color-text-subtle);
+		background: var(--color-surface-page);
 	}
 	.count.has {
-		color: #9fe7a0;
+		color: var(--color-success-text);
 	}
 	.full {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 		text-decoration: none;
 	}
 	.full:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	/* Condition picker row — sits between the header and the printings list. */
 	.cond {
@@ -225,16 +225,16 @@
 		gap: 0.6rem;
 		margin: 0.75rem 0 0;
 		font-size: 0.85rem;
-		color: #ccc;
+		color: var(--color-text-muted);
 	}
 	.cond > span {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.cond select {
 		flex: 1;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
+		color: var(--color-text);
 		border-radius: 6px;
 		padding: 0.3rem 0.5rem;
 		font: inherit;

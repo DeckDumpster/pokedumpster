@@ -235,7 +235,7 @@
 	.backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--color-scrim);
 		z-index: 100;
 	}
 	.modal {
@@ -251,8 +251,8 @@
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
-		background: #16213e;
-		border: 2px solid #0f3460;
+		background: var(--color-surface-overlay);
+		border: 2px solid var(--color-border);
 		border-radius: 12px;
 	}
 	.head {
@@ -260,24 +260,24 @@
 		align-items: center;
 		justify-content: space-between;
 		padding: 0.9rem 1.1rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	.head h2 {
 		margin: 0;
 		font-size: 1.05rem;
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.x {
 		background: none;
 		border: none;
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 1.4rem;
 		line-height: 1;
 		cursor: pointer;
 		padding: 0 0.2rem;
 	}
 	.x:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.body {
 		flex: 1;
@@ -288,7 +288,7 @@
 		gap: 0.85rem;
 	}
 	fieldset {
-		border: 1px solid #0f3460;
+		border: 1px solid var(--color-border);
 		border-radius: 8px;
 		padding: 0.6rem 0.8rem 0.7rem;
 		margin: 0;
@@ -297,7 +297,7 @@
 		font-size: 0.75rem;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
-		color: #8aa;
+		color: var(--color-text-subtle);
 		padding: 0 0.3rem;
 	}
 	.scope label {
@@ -305,25 +305,25 @@
 		align-items: baseline;
 		gap: 0.45rem;
 		padding: 0.2rem 0;
-		color: #e0e0e0;
+		color: var(--color-text);
 		cursor: pointer;
 	}
 	.count {
-		color: #e9a23b;
+		color: var(--color-warning-text);
 		font-size: 0.82rem;
 	}
 	.hint {
-		color: #778;
+		color: var(--color-text-subtle);
 		font-size: 0.78rem;
 	}
 	.secrets .all {
 		display: flex;
 		align-items: center;
 		gap: 0.4rem;
-		color: #aab;
+		color: var(--color-text-muted);
 		font-size: 0.85rem;
 		padding-bottom: 0.35rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 		margin-bottom: 0.35rem;
 	}
 	.secrets ul {
@@ -338,11 +338,11 @@
 		align-items: center;
 		gap: 0.45rem;
 		padding: 0.18rem 0;
-		color: #e0e0e0;
+		color: var(--color-text);
 		cursor: pointer;
 	}
 	.num {
-		color: #778;
+		color: var(--color-text-subtle);
 		font-variant-numeric: tabular-nums;
 		min-width: 2.6rem;
 	}
@@ -351,15 +351,15 @@
 		align-items: baseline;
 		gap: 0.5rem;
 		font-size: 0.8rem;
-		color: #aaa;
+		color: var(--color-text-subtle);
 	}
 	textarea {
 		width: 100%;
 		box-sizing: border-box;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
 		border-radius: 8px;
-		color: #e0e0e0;
+		color: var(--color-text);
 		font-family: ui-monospace, monospace;
 		font-size: 0.85rem;
 		padding: 0.55rem 0.65rem;
@@ -372,21 +372,21 @@
 		flex-wrap: wrap;
 	}
 	.primary {
-		background: #e94560;
+		background: var(--color-accent);
 		border: none;
 		border-radius: 8px;
-		color: #fff;
+		color: var(--color-on-accent);
 		font-size: 0.9rem;
 		padding: 0.5rem 0.95rem;
 		cursor: pointer;
 	}
 	.primary:disabled {
-		background: #43344a;
-		color: #998;
+		background: var(--color-neutral-surface);
+		color: var(--color-text-subtle);
 		cursor: not-allowed;
 	}
 	.link {
-		color: #6ab7ff;
+		color: var(--color-info-text);
 		font-size: 0.88rem;
 		text-decoration: none;
 	}
@@ -395,18 +395,18 @@
 	}
 	.warn {
 		margin: 0;
-		background: rgba(233, 162, 59, 0.12);
-		border: 1px solid rgba(233, 162, 59, 0.4);
+		background: var(--color-warning-surface);
+		border: 1px solid var(--color-warning-border);
 		border-radius: 8px;
-		color: #e9c08a;
+		color: var(--color-warning-text);
 		font-size: 0.82rem;
 		padding: 0.5rem 0.65rem;
 	}
 	.err {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #889;
+		color: var(--color-text-subtle);
 	}
 	.small {
 		font-size: 0.78rem;

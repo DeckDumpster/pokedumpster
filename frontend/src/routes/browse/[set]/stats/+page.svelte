@@ -117,29 +117,31 @@
 	const maxCopies = $derived(
 		stats ? Math.max(1, ...stats.copy_counts.map((c) => c.copies)) : 1
 	);
+	// Each tier gets one of the eight declared categorical chart roles, so the
+	// rarity ramp re-skins with the theme instead of pinning nine hexes here.
 	function rarityColor(rarity: string | null): string {
-		if (!rarity) return '#3a3a52';
+		if (!rarity) return 'var(--color-chart-unknown)';
 		switch (canonicalRarity(rarity)) {
 			case 'Common':
-				return '#6a7280';
+				return 'var(--color-chart-8)';
 			case 'Uncommon':
-				return '#5cb85c';
+				return 'var(--color-chart-4)';
 			case 'Rare':
-				return '#4a8df0';
+				return 'var(--color-chart-2)';
 			case 'Rare Holo':
 			case 'Double Rare':
-				return '#9c5fb5';
+				return 'var(--color-chart-5)';
 			case 'Illustration Rare':
-				return '#f0c878';
+				return 'var(--color-chart-3)';
 			case 'Special Illustration Rare':
 			case 'Ultra Rare':
-				return '#e94560';
+				return 'var(--color-chart-1)';
 			case 'Hyper Rare':
 			case 'Mega Attack Rare':
 			case 'Mega Hyper Rare':
-				return '#ffd24a';
+				return 'var(--color-chart-7)';
 			default:
-				return '#b88cc0';
+				return 'var(--color-chip-fallback)';
 		}
 	}
 </script>
@@ -242,7 +244,9 @@
 						class:owned={c.copies > 0}
 						class:dupe={c.copies > 1}
 						style:height="{Math.max(2, (c.copies / maxCopies) * 100)}%"
-						style:background={c.copies > 0 ? rarityColor(c.rarity) : '#1f2640'}
+						style:background={c.copies > 0
+							? rarityColor(c.rarity)
+							: 'var(--color-chart-empty)'}
 						title="#{c.number} · {c.rarity ?? 'Unknown'} · {c.copies} {c.copies === 1
 							? 'copy'
 							: 'copies'}"
@@ -310,27 +314,27 @@
 		gap: 1rem;
 	}
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 		margin: 0;
 	}
 	.series {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 		margin: 0.1rem 0 0;
 	}
 	.binderlink {
-		color: #e0e0e0;
+		color: var(--color-text);
 		font-size: 0.9rem;
 		white-space: nowrap;
 	}
 	.binderlink:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.cards {
 		display: grid;
@@ -339,8 +343,8 @@
 		margin: 1rem 0;
 	}
 	.card {
-		background: #16213e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
 		border-radius: 10px;
 		padding: 1rem 1.2rem;
 		margin-bottom: 1rem;
@@ -348,7 +352,7 @@
 	h2 {
 		font-size: 0.8rem;
 		text-transform: uppercase;
-		color: #888;
+		color: var(--color-text-subtle);
 		margin: 0 0 0.8rem;
 	}
 	.metric {
@@ -361,11 +365,11 @@
 		margin-bottom: 0.25rem;
 	}
 	.metricval {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.bar {
 		height: 8px;
-		background: #0f3460;
+		background: var(--color-progress-track);
 		border-radius: 4px;
 		overflow: hidden;
 	}
@@ -376,7 +380,7 @@
 	.bar span {
 		display: block;
 		height: 100%;
-		background: #e94560;
+		background: var(--color-accent);
 	}
 	.figs {
 		display: flex;
@@ -389,12 +393,12 @@
 	.figval {
 		font-size: 1.4rem;
 		font-weight: 700;
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.figlabel {
 		font-size: 0.75rem;
 		text-transform: uppercase;
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	table {
 		width: 100%;
@@ -404,14 +408,14 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	/* Rarity glyph in its own column, right-aligned, so every rarity
 	   name in the next column starts on the same x-position. Glyph
@@ -443,7 +447,7 @@
 		gap: 0.5rem;
 	}
 	.rpct {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.8rem;
 		min-width: 2.5rem;
 		text-align: right;
@@ -452,7 +456,7 @@
 	   sized by flex so the whole set fits regardless of card count;
 	   each column's height is set inline as a percentage of the row. */
 	.histohint {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.8rem;
 		margin: 0 0 0.6rem;
 	}
@@ -462,7 +466,7 @@
 		gap: 1px;
 		height: 120px;
 		padding: 4px 0;
-		background: #0c1426;
+		background: var(--color-surface-well);
 		border-radius: 6px;
 	}
 	.histo-col {
@@ -475,7 +479,7 @@
 		filter: brightness(1.4);
 	}
 	.histo-col.dupe {
-		outline: 1px solid rgba(255, 255, 255, 0.25);
+		outline: 1px solid var(--color-border-focus);
 		outline-offset: -1px;
 	}
 </style>

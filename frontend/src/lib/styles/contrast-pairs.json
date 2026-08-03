@@ -121,6 +121,15 @@
 		{ "fg": "--color-link-hover", "bg": "--color-surface-page", "size": "normal" },
 		{ "fg": "--color-link-hover", "bg": "--color-surface-panel", "size": "normal" },
 
+		{
+			"$note": "The backup banner's inline <code>: the shade wash darkens the danger surface it sits on, and the banner's text has to survive it.",
+			"fg": "--color-danger-text",
+			"bg": "--color-surface-shade",
+			"base": "--color-danger-surface",
+			"size": "normal"
+		},
+		{ "fg": "--color-text", "bg": "--color-surface-shade", "base": "--color-surface-panel", "size": "normal" },
+
 		{ "fg": "--color-text", "bg": "--color-surface-selected", "base": "--color-surface-panel", "size": "normal" },
 		{ "fg": "--color-text", "bg": "--color-surface-accent-wash", "base": "--color-surface-page", "size": "normal" },
 
@@ -180,6 +189,14 @@
 			"size": "normal"
 		},
 		{ "fg": "--color-text-strong", "bg": "--color-info-surface", "size": "normal" },
+		{
+			"$note": "/browse's group header keeps its body text, accent name and subtle meta while the fill lightens under the pointer — the hover fill is the pairing that can slip, not the rest state.",
+			"fg": "--color-text",
+			"bg": "--color-info-surface-hover",
+			"size": "normal"
+		},
+		{ "fg": "--color-text-accent", "bg": "--color-info-surface-hover", "size": "normal" },
+		{ "fg": "--color-text-subtle", "bg": "--color-info-surface-hover", "size": "normal" },
 
 		{ "fg": "--color-neutral-text", "bg": "--color-surface-page", "size": "normal" },
 		{ "fg": "--color-neutral-text", "bg": "--color-surface-panel", "size": "normal" },

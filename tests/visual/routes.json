@@ -66,6 +66,12 @@
 		{ "id": "ingest-csv", "path": "/ingest/csv", "about": "CSV import — the largest form surface in the app" },
 		{ "id": "ingest-order", "path": "/ingest/order", "about": "Order intake form" },
 		{ "id": "ingest-unresolved", "path": "/ingest/unresolved", "about": "Unresolved-import queue" },
-		{ "id": "search-help", "path": "/search-help", "about": "Search syntax reference — dense prose and code" }
+		{
+			"id": "search-help",
+			"path": "/search-help",
+			"about": "Search syntax reference — dense prose and code",
+			"$waitFor": "The keyword and flag tables come from an onMount fetch, which can start AFTER networkidle — so settle() returns while the page is still short and it then grows under the screenshot. Without this the route fails 'two consecutive stable screenshots' most runs at 1440 (and did so before the token migration too).",
+			"waitFor": "[data-testid=\"search-vocab\"]"
+		}
 	]
 }

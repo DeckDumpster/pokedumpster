@@ -120,13 +120,13 @@
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.lookup {
 		display: flex;
@@ -140,21 +140,21 @@
 		flex-direction: column;
 		gap: 0.25rem;
 		font-size: 0.8rem;
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	input,
 	select {
 		padding: 0.45rem;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		color: #e0e0e0;
+		color: var(--color-text);
 		font-size: 0.9rem;
 	}
 	button {
-		background: #e94560;
+		background: var(--color-accent);
 		border: none;
-		color: #fff;
+		color: var(--color-on-accent);
 		padding: 0.45rem 0.9rem;
 		border-radius: 6px;
 		cursor: pointer;
@@ -174,7 +174,7 @@
 		font-size: 1.1rem;
 	}
 	.cardhead a {
-		color: #e94560;
+		color: var(--color-text-accent);
 		text-decoration: none;
 	}
 	.resolved {
@@ -190,14 +190,14 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	tr.dim {
 		opacity: 0.5;
@@ -206,7 +206,7 @@
 		margin-top: 2rem;
 	}
 	h2 {
-		color: #e94560;
+		color: var(--color-text-accent);
 		font-size: 1.1rem;
 	}
 	.log {
@@ -216,7 +216,7 @@
 	}
 	.log li {
 		padding: 0.3rem 0;
-		border-bottom: 1px solid #0f3460;
-		color: #9fe7a0;
+		border-bottom: 1px solid var(--color-border);
+		color: var(--color-success-text);
 	}
 </style>

@@ -3,7 +3,6 @@
 	// The design-token layer — the single source of visual values for the whole
 	// app. Imported here and nowhere else; see the header of tokens.css.
 	import '$lib/styles/tokens.css';
-	import favicon from '$lib/assets/favicon.svg';
 	import { breadcrumbs, type Crumb } from '$lib/breadcrumbs.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
 	import { api } from '$lib/api';
@@ -58,7 +57,7 @@
 </script>
 
 <svelte:head>
-	<link rel="icon" href={favicon} />
+	<link rel="icon" href="/favicon.svg" />
 </svelte:head>
 
 {#if !flush && !isHome}
@@ -94,28 +93,28 @@
 	:global(body) {
 		margin: 0;
 		font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-		background: #1a1a2e;
-		color: #e0e0e0;
+		background: var(--color-surface-page);
+		color: var(--color-text);
 	}
 	header {
 		display: flex;
 		gap: 0.6rem;
 		align-items: center;
 		padding: 0.65rem 1.25rem;
-		background: #16213e;
-		border-bottom: 2px solid #0f3460;
+		background: var(--color-surface-panel);
+		border-bottom: 2px solid var(--color-border);
 		font-size: 0.95rem;
 	}
 	.backup-banner {
 		padding: 0.6rem 1.25rem;
-		background: #5a1e1e;
-		color: #ffd9d9;
-		border-bottom: 2px solid #e94560;
+		background: var(--color-danger-surface);
+		color: var(--color-danger-text);
+		border-bottom: 2px solid var(--color-border-accent);
 		font-size: 0.9rem;
 		text-align: center;
 	}
 	.backup-banner code {
-		background: rgba(0, 0, 0, 0.3);
+		background: var(--color-surface-shade);
 		padding: 0.05rem 0.35rem;
 		border-radius: 3px;
 	}
@@ -132,18 +131,18 @@
 		min-width: 0;
 	}
 	.crumbs a {
-		color: #b8c1d9;
+		color: var(--color-text-muted);
 		text-decoration: none;
 	}
 	.crumbs a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.crumbs .current {
-		color: #e0e0e0;
+		color: var(--color-text);
 		font-weight: 600;
 	}
 	.crumbs .sep {
-		color: #4a5680;
+		color: var(--color-text-decorative);
 	}
 	main {
 		padding: 1.5rem;

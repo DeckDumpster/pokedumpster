@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
+	import { EmptyState } from '$lib/components/ui';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 
 	let {
@@ -99,7 +100,15 @@
 					{#if whereOf(row)}<span class="where">{whereOf(row)}</span>{/if}
 				</label>
 			{/each}
-			{#if filtered.length === 0}<p class="muted">No matching cards.</p>{/if}
+			{#if filtered.length === 0}
+				<EmptyState
+					size="sm"
+					title={search.trim() ? 'No matching cards.' : 'Your collection is empty.'}
+					description={search.trim()
+						? 'The search matches card names only.'
+						: `Register the cards you own from a set's binder page — then they can be filed into this ${target.kind}.`}
+				/>
+			{/if}
 		</div>
 		<footer>
 			<span class="muted">{selected.size} selected</span>

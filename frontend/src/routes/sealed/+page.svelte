@@ -320,14 +320,30 @@
 	<p class="muted">Loading…</p>
 {:else if shown.length === 0}
 	{#if query}
-		<EmptyState title="No sealed products match “{searchRaw}”." />
-	{:else if showAll}
-		<EmptyState title="No sealed products yet." description="Add one from the ⋯ menu." />
+		<EmptyState
+			title="No sealed products match “{searchRaw}”."
+			description={showAll
+				? 'Nothing in your sealed inventory matches, opened or otherwise.'
+				: 'Nothing in your active inventory matches — turn on “Show disposed” to search opened and sold product too.'}
+		/>
+	{:else if entries.length === 0}
+		<EmptyState
+			title="No sealed products yet."
+			description="Sealed tracks boxes, packs and ETBs as inventory rather than as cards — each one keeps its own quantity, cost and status."
+		>
+			{#snippet action()}
+				<Button onclick={openAdd}>Add sealed product</Button>
+			{/snippet}
+		</EmptyState>
 	{:else}
 		<EmptyState
-			title="No sealed products in your active inventory."
-			description="Add one from the ⋯ menu, or turn on “Show disposed”."
-		/>
+			title="Nothing sealed in your active inventory."
+			description="Everything you've logged has been opened or sold. Turn on “Show disposed” to see it, or add product you still have."
+		>
+			{#snippet action()}
+				<Button onclick={openAdd}>Add sealed product</Button>
+			{/snippet}
+		</EmptyState>
 	{/if}
 {:else if view === 'grid'}
 	{#snippet sortBtn(key: string, label: string)}
@@ -493,7 +509,11 @@
 					</button>
 				{/each}
 				{#if addSearch.trim().length >= 2 && results.length === 0}
-					<p class="muted">No matching products.</p>
+					<EmptyState
+						size="sm"
+						title="No matching products."
+						description="Search the product name as TCGplayer lists it — “Obsidian Flames Booster Box”."
+					/>
 				{/if}
 			</div>
 		{/if}

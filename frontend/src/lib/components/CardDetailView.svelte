@@ -611,7 +611,11 @@
 	<section>
 		<SectionHeader title="Your copies ({detail.copies.length})" size="md" tone="accent" />
 		{#if detail.copies.length === 0}
-			<EmptyState size="sm" title="You don't own this card yet." />
+			<EmptyState
+				size="sm"
+				title="You don't own this card yet."
+				description="Register a printing above and each copy you own lands here as its own row, with its own condition and location."
+			/>
 		{:else}
 			{#snippet savedTick(key: string)}
 				{#if savedKey === key}<span class="cellSaved" transition:fade={{ duration: 120 }}

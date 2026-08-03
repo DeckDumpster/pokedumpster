@@ -152,6 +152,7 @@
 		{ "fg": "--color-success-text", "bg": "--color-surface-panel", "size": "normal" },
 		{ "fg": "--color-success-text", "bg": "--color-surface-raised", "size": "normal" },
 		{ "fg": "--color-success-text", "bg": "--color-success-surface", "size": "normal" },
+		{ "fg": "--color-success-text", "bg": "--color-surface-well", "size": "normal" },
 
 		{ "fg": "--color-warning-text", "bg": "--color-surface-page", "size": "normal" },
 		{ "fg": "--color-warning-text", "bg": "--color-surface-panel", "size": "normal" },

@@ -4,6 +4,7 @@
 	// an inline manual picker (reusing the search endpoints) plus Dismiss.
 	import { api } from '$lib/api';
 	import MatchPicker from '$lib/components/MatchPicker.svelte';
+	import { Button, EmptyState } from '$lib/components/ui';
 	import type { UnresolvedRow } from '$lib/types/UnresolvedRow';
 
 	let rows = $state<UnresolvedRow[]>([]);
@@ -110,7 +111,15 @@
 {#if loading}
 	<p class="muted">Loading…</p>
 {:else if rows.length === 0}
-	<p class="empty">Nothing unresolved — the queue is empty. 🎉</p>
+	<EmptyState
+		tone="success"
+		title="Nothing unresolved — the queue is empty. 🎉"
+		description="Every imported row matched a card or product. Anything a future import can't place will wait here."
+	>
+		{#snippet action()}
+			<Button variant="ghost" href="/ingest/csv">Import a CSV</Button>
+		{/snippet}
+	</EmptyState>
 {:else}
 	{#each groups as g (g.batchId ?? 'none')}
 		<section class="group">
@@ -184,13 +193,6 @@
 	}
 	.error {
 		color: #e94560;
-	}
-	.empty {
-		color: #8fb7e0;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		border-radius: 8px;
-		padding: 1rem;
 	}
 	.group {
 		margin: 1.4rem 0;

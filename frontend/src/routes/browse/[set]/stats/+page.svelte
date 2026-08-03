@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
+	import { EmptyState } from '$lib/components/ui';
 	import { money, count } from '$lib/format';
 	import type { SetAnalytics } from '$lib/types/SetAnalytics';
 
@@ -255,7 +256,11 @@
 	<section class="card">
 		<h2>Rarity split</h2>
 		{#if stats.rarities.length === 0}
-			<p class="muted">No cards catalogued.</p>
+			<EmptyState
+				size="sm"
+				title="No cards catalogued."
+				description="This set has no cards in the shared catalog, so there is nothing to break down."
+			/>
 		{:else}
 			<table>
 				<thead>

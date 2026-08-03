@@ -33,6 +33,20 @@ test('EmptyState draws the description and action only when given them', () => {
 	assert.match(full, /<button>New deck<\/button>/);
 });
 
+test('the page-level size draws a surface, the inline one does not', () => {
+	// pd-0ksp: a route whose list is empty used to render a heading, a bare
+	// control and an ocean of page fill. `md` is the frame that replaces it —
+	// if it stops drawing one, every empty route silently goes back to prose.
+	const css = styles(EmptyState, { title: 'x' });
+	const md = css.match(/\.s-md[^{]*\{([^}]*)\}/)?.[1] ?? '';
+	const sm = css.match(/\.s-sm[^{]*\{([^}]*)\}/)?.[1] ?? '';
+	assert.match(md, /border:[^;]*dashed/);
+	assert.match(md, /background:\s*var\(--color-surface-well\)/);
+	// `sm` sits inside a box that already exists (a panel, a picker list, a
+	// chart slot); a second frame there is noise.
+	assert.doesNotMatch(sm, /border|background/);
+});
+
 test('EmptyState emits no hardcoded colour', () => {
 	assertTokenOnly('EmptyState.svelte');
 	const css = styles(EmptyState, { title: 'x' });

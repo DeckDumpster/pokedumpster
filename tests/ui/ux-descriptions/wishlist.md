@@ -56,8 +56,8 @@ it, and can remove wishes. A toggle reveals already-fulfilled wishes.
 | State | Condition | Appearance |
 |-------|-----------|------------|
 | **Loading** | While the wishlist fetch runs | "Loading…" muted text |
-| **Empty (open)** | No wishes and "Show fulfilled" is off | "Nothing on your wishlist yet." |
-| **Empty (all)** | No wishes and "Show fulfilled" is on | "Nothing on your wishlist." |
+| **Empty (open)** | No wishes and "Show fulfilled" is off | EmptyState "Nothing on your wishlist yet." — the description explains what the list tracks and points at the add form above |
+| **Empty (all)** | No wishes and "Show fulfilled" is on | The same EmptyState, titled "Nothing on your wishlist." |
 | **Validation error** | "Add wish" pressed with a blank set or number | "Set code and collector number are required." (no request sent) |
 | **Inline error** | A lookup, add, or row action fails | Red error text below the toggle |
 

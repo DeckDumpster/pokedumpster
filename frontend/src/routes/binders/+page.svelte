@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { count } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { Binder } from '$lib/types/Binder';
 
 	let binders = $state<Binder[]>([]);
@@ -57,7 +58,10 @@
 {#if loading}
 	<p class="muted">Loading…</p>
 {:else if binders.length === 0}
-	<p class="muted">No binders yet. Create one above.</p>
+	<EmptyState
+		title="No binders yet."
+		description="A binder files cards you own into pages — a master set, a trade folder, whatever sits on your shelf. Name one above to create your first."
+	/>
 {:else}
 	<div class="grid">
 		{#each binders as binder (binder.id)}

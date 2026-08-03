@@ -7,6 +7,7 @@
 description: >
   When my collection has no copies, the Collection page still renders the
   sidebar and toolbar, but the content area shows the empty message
-  "Your collection is empty. Add cards from a set's binder view." The
+  "Your collection is empty." above a line naming a set's binder view as
+  where cards come from, and a Browse sets button. The
   "Export CSV" link and the "Select" button are hidden because there are
   no rows to act on.

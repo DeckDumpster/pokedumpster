@@ -60,16 +60,28 @@
 		gap: var(--space-2);
 		text-align: center;
 	}
+	/* `sm` is a sentence inside a box that already exists — a panel, a picker
+	   list, a chart slot. It draws nothing of its own. */
 	.s-sm {
 		padding: var(--space-4) var(--space-3);
 	}
+	/* `md` IS the box. A page whose list is empty otherwise renders a heading,
+	   a control and an ocean of page fill (pd-0ksp); the dashed well says
+	   "content belongs here, and there is none yet" — which is the whole
+	   message — without competing with the content that will replace it. */
 	.s-md {
-		padding: var(--space-10) var(--space-4);
+		padding: var(--space-10) var(--space-6);
+		margin: var(--space-6) auto;
+		max-width: 44rem;
+		border: 1px dashed var(--color-border-subtle);
+		border-radius: var(--radius-xl);
+		background: var(--color-surface-well);
 	}
 
 	.title {
 		margin: var(--space-0);
 		font-size: var(--text-lg);
+		font-weight: var(--weight-semibold);
 		color: var(--color-text-muted);
 	}
 	.t-success .title {

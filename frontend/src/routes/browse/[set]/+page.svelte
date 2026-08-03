@@ -7,6 +7,7 @@
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import {
 		Button,
+		EmptyState,
 		Field,
 		Panel,
 		ProgressBar,
@@ -621,7 +622,33 @@
 		{#if error}<p class="error">{error}</p>{/if}
 
 		{#if binder.slots.length === 0}
-			<p class="muted">No cards in this view.</p>
+			{#if search}
+				<EmptyState
+					title="No cards match “{search}”."
+					description="The search reads card names and collector numbers inside this set only."
+				>
+					{#snippet action()}
+						<Button variant="ghost" onclick={clearSearch}>Clear search</Button>
+					{/snippet}
+				</EmptyState>
+			{:else if missingOnly}
+				<EmptyState
+					tone="success"
+					title="Nothing missing here."
+					description="You own a printing of every card in this view. Turn off “Missing only” to see the whole set."
+				>
+					{#snippet action()}
+						<Button variant="ghost" onclick={() => ((missingOnly = false), resetPage())}>
+							Show every card
+						</Button>
+					{/snippet}
+				</EmptyState>
+			{:else}
+				<EmptyState
+					title="No cards in this view."
+					description="Every section this set has is switched off — turn Secret, Subset or Promos back on in the ⋯ menu."
+				/>
+			{/if}
 		{:else}
 			<div class="grid" style:grid-template-columns="repeat({cols}, 1fr)">
 				{#each binder.slots as slot, i (slot.card_id)}

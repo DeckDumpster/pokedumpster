@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { money } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { WishlistEntry } from '$lib/types/WishlistEntry';
 
 	let wishes = $state<WishlistEntry[]>([]);
@@ -96,7 +97,10 @@
 {#if loading}
 	<p class="muted">Loading…</p>
 {:else if wishes.length === 0}
-	<p class="muted">Nothing on your wishlist{showFulfilled ? '' : ' yet'}.</p>
+	<EmptyState
+		title="Nothing on your wishlist{showFulfilled ? '' : ' yet'}."
+		description="The wishlist is what you're hunting: a card's set and number, how badly you want it, and the most you'd pay. Add the first one above."
+	/>
 {:else}
 	<table>
 		<thead>

@@ -57,10 +57,11 @@ modal), change a product's status, and remove a product from the collection.
 | State | Condition | Appearance |
 |-------|-----------|------------|
 | **Loading** | While `api.sealedCollection()` runs on mount | "Loading…" muted text |
-| **Empty (active)** | No active products and "Show opened" is off | "No sealed products in your active inventory." |
-| **Empty (all)** | No products at all and "Show opened" is on | "No sealed products." |
+| **Empty (active)** | Products exist but none active, "Show opened" off | EmptyState "Nothing sealed in your active inventory." with an **Add sealed product** button |
+| **Empty (all)** | `entries.length === 0` — nothing logged at all | EmptyState "No sealed products yet." with an **Add sealed product** button |
+| **Filter matches nothing** | A query with no match | EmptyState "No sealed products match “&lt;query&gt;”." |
 | **Error** | A load or mutation fails | Red error text below the toggle |
-| **Modal — no results** | Search ≥ 2 chars but no products match | "No matching products." inside the modal list |
+| **Modal — no results** | Search ≥ 2 chars but no products match | Small EmptyState "No matching products." inside the modal list |
 
 ---
 

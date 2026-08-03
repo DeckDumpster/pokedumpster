@@ -19,6 +19,7 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ValueHistoryModal from '$lib/components/ValueHistoryModal.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
+	import { Button, EmptyState } from '$lib/components/ui';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { SearchRow } from '$lib/types/SearchRow';
 	import type { SearchVocabulary } from '$lib/types/SearchVocabulary';
@@ -1038,11 +1039,37 @@
 	{/if}
 
 	{#if searchRows.length === 0}
-		<p class="muted">
-			{#if searchError}Fix the query above to see results.{:else if query}No cards match
-				<code>{query}</code>.{:else if allCards}No cards in the catalog.{:else}Your collection is
-				empty. Add cards from a set's binder view, or turn on “All cards”.{/if}
-		</p>
+		{#if searchError}
+			<EmptyState
+				title="That query didn't parse."
+				description="Fix the query above to see results — the message under the box points at the character that stopped it."
+			/>
+		{:else if query}
+			<EmptyState
+				title="No cards match “{query}”."
+				description={allCards
+					? 'Nothing in the whole catalog matches. Check the spelling, or narrow one keyword at a time.'
+					: 'Nothing you own matches. Turn on “All cards” to search the catalog instead of your collection.'}
+			>
+				{#snippet action()}
+					<Button variant="ghost" href="/search-help">Search syntax</Button>
+				{/snippet}
+			</EmptyState>
+		{:else if allCards}
+			<EmptyState
+				title="No cards in the catalog."
+				description="The shared catalog has no cards in it, so there is nothing to search."
+			/>
+		{:else}
+			<EmptyState
+				title="Your collection is empty."
+				description="Add cards from a set's binder view — click a slot and that printing is registered as a copy you own. Or turn on “All cards” to browse the catalog first."
+			>
+				{#snippet action()}
+					<Button href="/browse">Browse sets</Button>
+				{/snippet}
+			</EmptyState>
+		{/if}
 	{:else if view === 'grid'}
 		<!-- Grid lacks the table's sortable column headers, so it gets a
 		     row of per-field buttons. Click an inactive button to switch

@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
+	import { EmptyState } from '$lib/components/ui';
 	import type { BatchDetail } from '$lib/types/BatchDetail';
 
 	let detail = $state<BatchDetail | null>(null);
@@ -36,7 +37,10 @@
 	{#if detail.batch.notes}<p class="notes">{detail.batch.notes}</p>{/if}
 
 	{#if detail.cards.length === 0}
-		<p class="muted">No cards in this batch.</p>
+		<EmptyState
+			title="No cards in this batch."
+			description="The run was recorded but added nothing — every copy it created has since been deleted, or it never resolved a card."
+		/>
 	{:else}
 		<table>
 			<thead>

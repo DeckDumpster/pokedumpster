@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { money, count } from '$lib/format';
+	import { Button, EmptyState } from '$lib/components/ui';
 	import type { Order } from '$lib/types/Order';
 
 	let orders = $state<Order[]>([]);
@@ -32,7 +33,14 @@
 {:else if error}
 	<p class="error">Failed to load orders: {error}</p>
 {:else if orders.length === 0}
-	<p class="muted">No orders yet. Import one from the link above.</p>
+	<EmptyState
+		title="No orders yet."
+		description="An order records what you bought, from whom and for how much, and keeps its cards marked as ordered until they arrive."
+	>
+		{#snippet action()}
+			<Button href="/ingest/order">Import an order</Button>
+		{/snippet}
+	</EmptyState>
 {:else}
 	<table>
 		<thead>

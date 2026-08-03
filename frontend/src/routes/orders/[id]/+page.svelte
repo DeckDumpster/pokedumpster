@@ -3,6 +3,7 @@
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
 	import { money } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { OrderDetail } from '$lib/types/OrderDetail';
 
 	let detail = $state<OrderDetail | null>(null);
@@ -70,23 +71,30 @@
 
 	{#if error}<p class="error">{error}</p>{/if}
 
-	<table>
-		<thead>
-			<tr><th>Name</th><th>Set</th><th>#</th><th>Variant</th><th>Paid</th><th>Status</th></tr>
-		</thead>
-		<tbody>
-			{#each detail.cards as card (card.id)}
-				<tr>
-					<td><a href="/card/{card.set_code}/{card.number}">{card.name}</a></td>
-					<td><a href="/browse/{card.set_code}">{card.set_name}</a></td>
-					<td>{card.number}</td>
-					<td>{variantLabel(card.variant)}</td>
-					<td>{money(card.purchase_price)}</td>
-					<td>{card.status}</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
+	{#if detail.cards.length === 0}
+		<EmptyState
+			title="No cards on this order."
+			description="The order was recorded without any lines — nothing here is waiting to arrive."
+		/>
+	{:else}
+		<table>
+			<thead>
+				<tr><th>Name</th><th>Set</th><th>#</th><th>Variant</th><th>Paid</th><th>Status</th></tr>
+			</thead>
+			<tbody>
+				{#each detail.cards as card (card.id)}
+					<tr>
+						<td><a href="/card/{card.set_code}/{card.number}">{card.name}</a></td>
+						<td><a href="/browse/{card.set_code}">{card.set_name}</a></td>
+						<td>{card.number}</td>
+						<td>{variantLabel(card.variant)}</td>
+						<td>{money(card.purchase_price)}</td>
+						<td>{card.status}</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	{/if}
 {/if}
 
 <style>

@@ -20,7 +20,7 @@ test('Toolbar respects its variants', () => {
 	for (const gap of ['sm', 'md', 'lg']) {
 		assert.match(rootClass(body({ gap })), new RegExp(`\\bg-${gap}\\b`));
 	}
-	for (const align of ['center', 'baseline', 'start', 'end']) {
+	for (const align of ['center', 'baseline', 'start', 'end', 'stretch']) {
 		assert.match(rootClass(body({ align })), new RegExp(`\\ba-${align}\\b`));
 	}
 	for (const justify of ['start', 'between', 'end']) {

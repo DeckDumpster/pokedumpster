@@ -120,4 +120,26 @@ export async function settle(page: Page, waitFor?: string): Promise<void> {
 	await page.evaluate(
 		() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
 	);
+
+	// A fullPage shot is taken at the document's height, so that height is part
+	// of the screenshot's identity — and it can still be moving after everything
+	// above has settled. /search-help at 1440 grows by four trailing pixels as
+	// its last table commits, which is enough for `toHaveScreenshot` to give up
+	// with "failed to take two consecutive stable screenshots" even though the
+	// two frames are pixel-identical everywhere they overlap. Wait for the
+	// height to repeat before letting it shoot.
+	await page.waitForFunction(
+		() => {
+			const w = window as unknown as { __pdH?: number; __pdN?: number };
+			const h = document.documentElement.scrollHeight;
+			if (w.__pdH === h) w.__pdN = (w.__pdN ?? 0) + 1;
+			else {
+				w.__pdH = h;
+				w.__pdN = 0;
+			}
+			return (w.__pdN ?? 0) >= 3;
+		},
+		null,
+		{ polling: 100, timeout: 5000 }
+	);
 }

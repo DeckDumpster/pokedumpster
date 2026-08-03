@@ -17,7 +17,15 @@
 		"the last migration bead needs. Only unmapped literals fail the test.",
 		"",
 		"Exact hex is preserved where it already passed AA; a `note` flags every",
-		"place the replacement is deliberately a different value."
+		"place the replacement is deliberately a different value.",
+		"",
+		"MIGRATION COMPLETE (pd-eq99, 2026-08-03). frontend/src holds no literal",
+		"outside tokens.css, so job 2 — the worklist — is discharged and this file",
+		"is now purely job 1: the record. Where the last pass landed a literal",
+		"somewhere the earlier prediction did not anticipate, the entry below was",
+		"corrected to say where it ACTUALLY went, because a record that documents",
+		"an intention rather than an outcome is worse than none. Those corrections",
+		"are the ones carrying a `note` that names a call site."
 	],
 
 	"map": {
@@ -45,8 +53,8 @@
 		},
 
 		"#0f3460": {
-			"tokens": ["--color-border", "--color-info-surface"],
-			"note": "The identity rule. Its 19 uses as a solid section-bar FILL become --color-info-surface; borders stay --color-border. Note --color-control-border is deliberately NOT this value — see tokens.css."
+			"tokens": ["--color-border", "--color-info-surface", "--color-info-surface-hover", "--color-progress-track"],
+			"note": "The identity rule. Its uses as a solid section-bar FILL became --color-info-surface; borders stayed --color-border. Two exceptions the migration found: the three hand-rolled set-completion meters in /browse, /browse/[set] and /browse/[set]/stats are progress TRACKS and took --color-progress-track (matching the ProgressBar primitive, and the pairing this manifest already declared for them); and /browse's group-header hover fill took --color-info-surface-hover, which is this exact value. Note --color-control-border is deliberately NOT this value — see tokens.css."
 		},
 		"#2a2f4a": { "tokens": ["--color-border-subtle"] },
 		"#4a5680": {
@@ -54,7 +62,10 @@
 			"note": "The breadcrumb separator glyph is --color-text-decorative."
 		},
 		"#3a3a52": { "tokens": ["--color-chart-unknown"] },
-		"#6a7280": { "tokens": ["--color-chart-unknown"] },
+		"#6a7280": {
+			"tokens": ["--color-chart-8"],
+			"note": "The Common bar in /browse/[set]/stats' rarity histogram. #3a3a52 (unknown rarity) is the one that took --color-chart-unknown; giving Common the same role would have erased the Common-vs-unknown distinction the histogram exists to show."
+		},
 
 		"#e0e0e0": { "tokens": ["--color-text"] },
 		"#fff": {
@@ -93,22 +104,31 @@
 		"#6a6a80": { "tokens": ["--color-text-disabled"] },
 
 		"#e94560": {
-			"tokens": ["--color-accent", "--color-text-accent", "--color-border-accent"],
+			"tokens": ["--color-accent", "--color-text-accent", "--color-border-accent", "--color-chart-1"],
 			"note": "175 uses. As a FILL or BORDER it is unchanged (--color-accent / --color-border-accent, still exactly #e94560). As TEXT it was 4.46:1 on the page and 4.15:1 on the panel — both documented AA failures — so foreground uses become --color-text-accent (#ff6b85, 6.25/5.82)."
 		},
 		"#ff6b85": { "tokens": ["--color-text-accent", "--color-link-hover"] },
 		"#e9456022": { "tokens": ["--color-surface-selected"] },
 
 		"#e9a045": { "tokens": ["--color-warning", "--color-warning-text"] },
-		"#e9a23b": { "tokens": ["--color-warning"] },
-		"#e7732f": { "tokens": ["--color-warning"] },
+		"#e9a23b": { "tokens": ["--color-warning", "--color-warning-text"] },
+		"#e7732f": {
+			"tokens": ["--color-warning", "--color-warning-text"],
+			"note": "The bundle-tile treatment in /browse. As the tile border it is --color-warning (a 3:1 non-text indicator); as the tile title and the `provisional` badge it is text, so --color-warning-text."
+		},
 		"#e88a3a": { "tokens": ["--color-chart-3"] },
 		"#aa7733": { "tokens": ["--color-chart-3"] },
-		"#f0c878": { "tokens": ["--color-warning-text"] },
+		"#f0c878": {
+			"tokens": ["--color-warning-text", "--color-chart-3"],
+			"note": "Warning text everywhere in CSS; its two chart-palette uses (PriceChart, the Illustration Rare bar) are --color-chart-3."
+		},
 		"#e9c08a": { "tokens": ["--color-warning-text"] },
 		"#f0e4b8": { "tokens": ["--color-warning-text"] },
 		"#ffd66b": { "tokens": ["--color-warning-text", "--color-warning-border"] },
-		"#ffd24a": { "tokens": ["--color-warning-text"] },
+		"#ffd24a": {
+			"tokens": ["--color-chart-7"],
+			"note": "Only ever the Hyper Rare bar in the rarity histogram — a categorical series, not warning text. Gold shifts to the lime step because --color-chart-3 (amber) is already spent on Illustration Rare."
+		},
 		"#3a2f16": { "tokens": ["--color-warning-surface"] },
 		"#5c3a1a": { "tokens": ["--color-warning-surface"] },
 		"#5a4a14": { "tokens": ["--color-warning-surface"] },
@@ -145,7 +165,10 @@
 		"#4a8df0": { "tokens": ["--color-info-text", "--color-chart-2"] },
 		"#5bc0de": { "tokens": ["--color-chart-6"] },
 		"#1a3a5c": { "tokens": ["--color-info-surface"] },
-		"#143b6d": { "tokens": ["--color-info-surface"] },
+		"#143b6d": {
+			"tokens": ["--color-info-surface-hover"],
+			"note": "Its only use was /browse's .grouphdr:hover. Collapsing it into --color-info-surface would have made the hover state identical to the rest state — the role exists so that affordance survives."
+		},
 		"#2a5a8c": {
 			"tokens": ["--color-info-border", "--color-info"],
 			"note": "As a solid info FILL it was 2.22:1 against the panel; --color-info is lightened to #3877ac (3.33:1) and keeps white text at 4.77:1. As a chip border it is unchanged."
@@ -155,8 +178,11 @@
 		"#9c5fb5": { "tokens": ["--color-chart-5"] },
 		"#b88cc0": { "tokens": ["--color-chip-fallback"] },
 
-		"rgba(0, 0, 0, 0.25)": { "tokens": ["--shadow-sm"] },
-		"rgba(0, 0, 0, 0.3)": { "tokens": ["--shadow-sm"] },
+		"rgba(0, 0, 0, 0.25)": {
+			"tokens": ["--color-surface-shade", "--shadow-sm"],
+			"note": "--shadow-sm is where it lives as a shadow. Its two uses as a BACKGROUND — the match picker's variant pip, the backup banner's inline <code> — are a wash that sinks a chip into whatever surface it sits on, which is --color-surface-shade."
+		},
+		"rgba(0, 0, 0, 0.3)": { "tokens": ["--color-surface-shade"] },
 		"rgba(0, 0, 0, 0.4)": { "tokens": ["--shadow-md"] },
 		"rgba(0, 0, 0, 0.55)": { "tokens": ["--color-scrim"] },
 		"rgba(0, 0, 0, 0.6)": { "tokens": ["--color-scrim", "--shadow-lg"] },

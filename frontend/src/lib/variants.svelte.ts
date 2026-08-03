@@ -61,7 +61,7 @@ export function variantSortCmp(a: string, b: string): number {
 
 /** Chip pip color for browse-slot variant chips. */
 export function variantColor(code: string): string {
-	return variants.map[code]?.color ?? '#b88cc0';
+	return variants.map[code]?.color ?? 'var(--color-chip-fallback)';
 }
 
 /** Short tag for the collection table's Variant column ('BALL', 'H', …). */

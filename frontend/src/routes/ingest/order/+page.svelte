@@ -2,7 +2,6 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
-	import { EmptyState } from '$lib/components/ui';
 	import type { PrintingInfo } from '$lib/types/PrintingInfo';
 
 	type Line = {
@@ -155,11 +154,7 @@
 		<button class="secondary" onclick={addLine}>+ Add line</button>
 	</div>
 	{#if lines.length === 0}
-		<EmptyState
-			size="sm"
-			title="No cards on this order yet."
-			description="Paste the order text above and every line is parsed for you, or add lines one at a time."
-		/>
+		<p class="muted">Add a line, or paste order text above.</p>
 	{/if}
 	{#each lines as line, i (i)}
 		<div class="line" class:ok={line.printingId}>
@@ -195,14 +190,17 @@
 <style>
 	h1,
 	h2 {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	h2 {
 		font-size: 1rem;
 		margin: 0;
 	}
+	.muted {
+		color: var(--color-text-subtle);
+	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.meta {
 		display: flex;
@@ -215,7 +213,7 @@
 		flex-direction: column;
 		gap: 0.25rem;
 		font-size: 0.8rem;
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	label.wide {
 		flex: 1;
@@ -225,10 +223,10 @@
 	select,
 	textarea {
 		padding: 0.4rem;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		color: #e0e0e0;
+		color: var(--color-text);
 		font: inherit;
 	}
 	.paste {
@@ -252,10 +250,10 @@
 		align-items: center;
 		flex-wrap: wrap;
 		padding: 0.35rem 0;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	.line.ok {
-		border-left: 3px solid #9fe7a0;
+		border-left: 3px solid var(--color-success-text);
 		padding-left: 0.4rem;
 	}
 	.set {
@@ -271,15 +269,15 @@
 		width: 80px;
 	}
 	.cardname {
-		color: #e0e0e0;
+		color: var(--color-text);
 		font-weight: 600;
 	}
 	.hint {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-style: italic;
 	}
 	.lineerr {
-		color: #e94560;
+		color: var(--color-text-accent);
 		font-size: 0.8rem;
 	}
 	button {
@@ -290,18 +288,18 @@
 		font: inherit;
 	}
 	button.primary {
-		background: #e94560;
-		color: #fff;
+		background: var(--color-accent);
+		color: var(--color-on-accent);
 		margin-top: 1rem;
 	}
 	button.secondary {
-		background: #16213e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
+		color: var(--color-text);
 	}
 	button.link {
 		background: none;
-		color: #888;
+		color: var(--color-text-subtle);
 		padding: 0.2rem 0.4rem;
 	}
 	button:disabled {

@@ -151,49 +151,49 @@
 		gap: 1rem;
 	}
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 		margin: 0;
 	}
 	.sub {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 		margin: 0.25rem 0 0;
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.actions {
 		display: flex;
 		gap: 0.5rem;
 	}
 	select {
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
+		color: var(--color-text);
 		border-radius: 6px;
 		padding: 0.15rem;
 	}
 	button {
-		background: #e94560;
+		background: var(--color-accent);
 		border: none;
-		color: #fff;
+		color: var(--color-on-accent);
 		padding: 0.4rem 0.8rem;
 		border-radius: 6px;
 		cursor: pointer;
 	}
 	button.danger {
-		background: #c0392b;
+		background: var(--color-danger);
 	}
 	button.link {
 		background: none;
-		color: #888;
+		color: var(--color-text-subtle);
 		padding: 0;
 	}
 	button.link:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	table {
 		width: 100%;
@@ -204,19 +204,19 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 </style>

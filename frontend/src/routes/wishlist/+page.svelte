@@ -136,13 +136,13 @@
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.addform {
 		display: flex;
@@ -156,14 +156,14 @@
 		flex-direction: column;
 		gap: 0.25rem;
 		font-size: 0.8rem;
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	input {
 		padding: 0.4rem;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.toggle {
 		flex-direction: row;
@@ -172,20 +172,20 @@
 		margin-bottom: 1rem;
 	}
 	button {
-		background: #e94560;
+		background: var(--color-accent);
 		border: none;
-		color: #fff;
+		color: var(--color-on-accent);
 		padding: 0.45rem 0.9rem;
 		border-radius: 6px;
 		cursor: pointer;
 	}
 	button.link {
 		background: none;
-		color: #888;
+		color: var(--color-text-subtle);
 		padding: 0;
 	}
 	button.link:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	button:disabled {
 		opacity: 0.5;
@@ -198,14 +198,14 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	tr.dim {
 		opacity: 0.5;
@@ -215,9 +215,9 @@
 		gap: 0.75rem;
 	}
 	a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 </style>

@@ -195,7 +195,7 @@
 	.backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--color-scrim);
 		z-index: 100;
 	}
 	.modal {
@@ -209,8 +209,8 @@
 		max-width: 92vw;
 		max-height: 85vh;
 		overflow-y: auto;
-		background: #16213e;
-		border: 2px solid #0f3460;
+		background: var(--color-surface-overlay);
+		border: 2px solid var(--color-border);
 		border-radius: 12px;
 		padding: 1.25rem;
 	}
@@ -221,12 +221,12 @@
 	}
 	h3 {
 		margin: 0;
-		color: #e94560;
+		color: var(--color-text-accent);
 		font-size: 1.05rem;
 	}
 	h4 {
 		margin: 1.25rem 0 0.5rem;
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.8rem;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
@@ -234,7 +234,7 @@
 	.x {
 		background: none;
 		border: none;
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 1.4rem;
 		cursor: pointer;
 		line-height: 1;
@@ -255,32 +255,32 @@
 		flex-direction: column;
 		gap: 0.25rem;
 		font-size: 0.8rem;
-		color: #aaa;
+		color: var(--color-text-subtle);
 	}
 	label em {
-		color: #666;
+		color: var(--color-text-decorative);
 		font-style: normal;
 	}
 	label.full {
 		grid-column: 1 / -1;
 	}
 	input {
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
+		color: var(--color-text);
 		padding: 0.45rem 0.55rem;
 		border-radius: 6px;
 		font: inherit;
 	}
 	input:focus {
 		outline: none;
-		border-color: #e94560;
+		border-color: var(--color-border-accent);
 	}
 	.save {
 		align-self: flex-start;
-		background: #e94560;
+		background: var(--color-accent);
 		border: none;
-		color: white;
+		color: var(--color-on-accent);
 		padding: 0.45rem 0.95rem;
 		border-radius: 6px;
 		cursor: pointer;
@@ -292,12 +292,12 @@
 		cursor: default;
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 		font-size: 0.85rem;
 		margin: 0.5rem 0 0;
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 		margin: 0;
 	}
@@ -312,18 +312,18 @@
 		gap: 0.6rem;
 		align-items: center;
 		padding: 0.4rem 0;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 		font-size: 0.85rem;
 	}
 	.when {
-		color: #aaa;
+		color: var(--color-text-subtle);
 	}
 	.price {
-		color: #9fe7a0;
+		color: var(--color-success-text);
 		font-variant-numeric: tabular-nums;
 	}
 	.note {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.8rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -332,14 +332,14 @@
 	.del {
 		background: none;
 		border: none;
-		color: #666;
+		color: var(--color-text-decorative);
 		cursor: pointer;
 		font-size: 1.1rem;
 		line-height: 1;
 		padding: 0 0.2rem;
 	}
 	.del:hover:not(:disabled) {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 
 	@media (max-width: 540px) {

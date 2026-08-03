@@ -85,13 +85,13 @@
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.newform {
 		display: flex;
@@ -101,15 +101,15 @@
 	}
 	input {
 		padding: 0.5rem;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	button {
-		background: #e94560;
+		background: var(--color-accent);
 		border: none;
-		color: #fff;
+		color: var(--color-on-accent);
 		padding: 0.5rem 1rem;
 		border-radius: 6px;
 		cursor: pointer;
@@ -124,23 +124,23 @@
 	}
 	.tile {
 		display: block;
-		background: #16213e;
-		border: 2px solid #0f3460;
+		background: var(--color-surface-panel);
+		border: 2px solid var(--color-border);
 		border-radius: 10px;
 		padding: 1rem;
 		text-decoration: none;
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.tile:hover {
-		border-color: #e94560;
+		border-color: var(--color-border-accent);
 	}
 	.name {
 		font-weight: 700;
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.meta {
 		font-size: 0.8rem;
-		color: #888;
+		color: var(--color-text-subtle);
 		margin: 0.3rem 0;
 	}
 	.state {
@@ -148,18 +148,18 @@
 		font-size: 0.7rem;
 		padding: 0.1rem 0.4rem;
 		border-radius: 4px;
-		background: #0f3460;
+		background: var(--color-info-surface);
 	}
 	.state-built {
-		background: #2d6a4f;
-		color: #d8f3dc;
+		background: var(--color-success-surface);
+		color: var(--color-success-text);
 	}
 	.state-ready {
-		background: #5a4a14;
-		color: #f0e4b8;
+		background: var(--color-warning-surface);
+		color: var(--color-warning-text);
 	}
 	.count {
 		font-size: 0.85rem;
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 </style>

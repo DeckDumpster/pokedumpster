@@ -102,14 +102,14 @@
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 		margin-bottom: 0.25rem;
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.indent {
 		padding-left: 1.5rem;
@@ -119,7 +119,7 @@
 		padding: 0;
 	}
 	.timeline > li {
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	.head {
 		display: flex;
@@ -128,29 +128,29 @@
 		width: 100%;
 		background: none;
 		border: none;
-		color: #e0e0e0;
+		color: var(--color-text);
 		cursor: pointer;
 		padding: 0.6rem 0.25rem;
 		text-align: left;
 		font: inherit;
 	}
 	.head:hover {
-		background: rgba(233, 69, 96, 0.06);
+		background: var(--color-surface-accent-wash);
 	}
 	.caret {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.type {
-		color: #e94560;
+		color: var(--color-text-accent);
 		font-weight: 600;
 	}
 	.name {
 		flex: 1;
-		color: #aaa;
+		color: var(--color-text-subtle);
 	}
 	.count,
 	.when {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 	}
 	.cards {
@@ -163,13 +163,13 @@
 		font-size: 0.9rem;
 	}
 	.cardmeta {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.8rem;
 	}
 	a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 </style>

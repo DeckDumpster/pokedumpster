@@ -65,7 +65,7 @@
 	.backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.55);
+		background: var(--color-scrim);
 		z-index: 100;
 	}
 	.modal {
@@ -76,8 +76,8 @@
 		width: min(760px, 92vw);
 		max-height: 88vh;
 		overflow: auto;
-		background: #16213e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-overlay);
+		border: 1px solid var(--color-border);
 		border-radius: 12px;
 		padding: 1rem 1.2rem 1.4rem;
 		z-index: 101;
@@ -91,18 +91,18 @@
 	h2 {
 		margin: 0;
 		font-size: 1.05rem;
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.x {
 		background: none;
 		border: none;
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 1.4rem;
 		line-height: 1;
 		cursor: pointer;
 	}
 	.x:hover {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.dims {
 		display: flex;
@@ -111,26 +111,26 @@
 	}
 	.dims button {
 		padding: 0.35rem 0.8rem;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		color: #bbb;
+		color: var(--color-text-muted);
 		cursor: pointer;
 		font-size: 0.85rem;
 	}
 	.dims button:hover {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.dims button.active {
-		background: #0f3460;
-		color: #e0e0e0;
-		border-color: #e94560;
+		background: var(--color-info-surface);
+		color: var(--color-text);
+		border-color: var(--color-border-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.9rem;
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 </style>

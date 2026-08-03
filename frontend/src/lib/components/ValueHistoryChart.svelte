@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Chart, registerables, type ChartConfiguration } from 'chart.js';
 	import { untrack } from 'svelte';
+	import { chartFill, chartPalette, token } from '$lib/styles/tokens';
 	import { money } from '$lib/format';
 	import { EmptyState } from '$lib/components/ui';
 	import type { ValueSeries } from '$lib/api';
@@ -11,21 +12,13 @@
 
 	let canvas = $state<HTMLCanvasElement | undefined>();
 
-	// Distinct line color per bucket; cycles for large breakdowns.
-	const PALETTE = [
-		'#e94560',
-		'#4a8df0',
-		'#f0c878',
-		'#5cb85c',
-		'#a64ac9',
-		'#e88a3a',
-		'#5bc0de',
-		'#c0d0f0',
-		'#aa7733',
-		'#8ac926'
-	];
-
 	function buildConfig(series: ValueSeries[], dimension: string): ChartConfiguration {
+		// Distinct line color per bucket; cycles for large breakdowns. Resolved
+		// here rather than at module scope because the token layer only exists
+		// once the document does.
+		const palette = chartPalette();
+		const grid = token('--color-chart-grid');
+		const axis = token('--color-chart-axis');
 		const dates = Array.from(new Set(series.flatMap((s) => s.points.map((p) => p.date)))).sort();
 
 		let datasets;
@@ -39,8 +32,8 @@
 				{
 					label: 'Market value',
 					data: dates.map((d) => mv.get(d) ?? null),
-					borderColor: '#e94560',
-					backgroundColor: '#e9456022',
+					borderColor: token('--color-chart-1'),
+					backgroundColor: token('--color-surface-selected'),
 					spanGaps: true,
 					tension: 0.2,
 					pointRadius: 2,
@@ -49,7 +42,7 @@
 				{
 					label: 'Cost basis',
 					data: dates.map((d) => cb.get(d) ?? null),
-					borderColor: '#8899aa',
+					borderColor: axis,
 					backgroundColor: 'transparent',
 					borderDash: [5, 4],
 					spanGaps: true,
@@ -64,8 +57,8 @@
 				return {
 					label: s.label ?? s.bucket ?? '—',
 					data: dates.map((d) => map.get(d) ?? null),
-					borderColor: PALETTE[i % PALETTE.length],
-					backgroundColor: PALETTE[i % PALETTE.length] + '33',
+					borderColor: palette[i % palette.length],
+					backgroundColor: chartFill(palette[i % palette.length]),
 					spanGaps: true,
 					tension: 0.2,
 					pointRadius: 1
@@ -82,17 +75,20 @@
 				interaction: { mode: 'index', intersect: false },
 				scales: {
 					x: {
-						grid: { color: '#0f3460' },
-						ticks: { color: '#888', maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }
+						grid: { color: grid },
+						ticks: { color: axis, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }
 					},
 					y: {
-						grid: { color: '#0f3460' },
-						ticks: { color: '#888', callback: (v) => money(Number(v)) }
+						grid: { color: grid },
+						ticks: { color: axis, callback: (v) => money(Number(v)) }
 					}
 				},
 				plugins: {
 					// A long by-set/by-binder legend gets unwieldy — hide it past 10.
-					legend: { display: dimension === 'all' || series.length <= 10, labels: { color: '#ccc' } },
+					legend: {
+						display: dimension === 'all' || series.length <= 10,
+						labels: { color: token('--color-text-muted') }
+					},
 					tooltip: {
 						callbacks: { label: (ctx) => `${ctx.dataset.label}: ${money(Number(ctx.parsed.y))}` }
 					}
@@ -137,7 +133,7 @@
 		width: 100%;
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 		margin: 0.4rem 0;
 	}

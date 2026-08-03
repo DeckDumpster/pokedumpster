@@ -171,6 +171,11 @@
 	--color-surface-sticky: var(--pd-alpha-blue-95);
 	--color-surface-selected: var(--pd-alpha-crimson-14);
 	--color-surface-accent-wash: var(--pd-alpha-crimson-08);
+	/* A darkening wash that sinks an inline chip into whatever it sits on,
+	   without the chip having to know that surface — the `<code>` span in the
+	   backup banner, the variant pip in /ingest's match picker. Distinct from
+	   --color-scrim, which dims a whole page behind a modal. */
+	--color-surface-shade: var(--pd-alpha-black-25);
 	--color-scrim: var(--pd-alpha-black-60);
 
 	/* --- Borders ---------------------------------------------------------- */
@@ -236,6 +241,11 @@
 	--color-info: var(--pd-blue-500);
 	--color-info-text: var(--pd-blue-300);
 	--color-info-surface: var(--pd-blue-900);
+	/* A solid blue section bar that is also a control — /browse's collapsible
+	   group headers — needs the fill to lighten under the pointer. Without the
+	   role the hover state has to reuse --color-info-surface and the affordance
+	   disappears, which is what the pre-token #0f3460 -> #143b6d pair was for. */
+	--color-info-surface-hover: var(--pd-blue-800);
 	--color-info-border: var(--pd-blue-600);
 	--color-on-info: var(--pd-slate-50);
 

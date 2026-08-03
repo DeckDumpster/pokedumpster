@@ -18,7 +18,8 @@
 	type Props = {
 		direction?: 'row' | 'column';
 		gap?: 'sm' | 'md' | 'lg';
-		align?: 'center' | 'baseline' | 'start' | 'end';
+		/** `stretch` is what a `column` toolbar wants — rows fill the width. */
+		align?: 'center' | 'baseline' | 'start' | 'end' | 'stretch';
 		justify?: 'start' | 'between' | 'end';
 		wrap?: boolean;
 		/** Pins to the top of the scroll container over the content beneath. */
@@ -97,6 +98,9 @@
 	}
 	.a-end {
 		align-items: flex-end;
+	}
+	.a-stretch {
+		align-items: stretch;
 	}
 
 	.j-start {

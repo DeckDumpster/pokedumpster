@@ -20,7 +20,7 @@
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import type { HTMLAttributes } from 'svelte/elements';
+	import type { HTMLInputAttributes } from 'svelte/elements';
 
 	type Props = {
 		label?: string;
@@ -43,7 +43,10 @@
 		children?: Snippet;
 		/** A control this component does not render itself. */
 		control?: Snippet;
-	} & HTMLAttributes<HTMLElement>;
+		// The control's own attributes — placeholder, min, step, required,
+		// autocomplete, oninput — spread through `...rest`, so the props type
+		// has to admit them or the promise in the header above is a lie.
+	} & Omit<HTMLInputAttributes, 'type' | 'value' | 'checked' | 'size'>;
 
 	let {
 		label = undefined,
@@ -65,6 +68,12 @@
 	const classes = $derived(
 		['field', inline && 'inline', error && 'invalid', extra].filter(Boolean).join(' ')
 	);
+
+	// `rest` is typed as the INPUT attribute set, because that is the control
+	// this component renders nine times in ten and it is what makes
+	// `placeholder`/`min`/`step` legal at a call site. A <select> and a
+	// <textarea> take the same bag of leftovers through a widened view of it.
+	const controlRest = $derived(rest as Record<string, unknown>);
 </script>
 
 <label class={classes}>
@@ -73,9 +82,9 @@
 	{#if control}
 		{@render control()}
 	{:else if as === 'select'}
-		<select class="control" bind:value {disabled} {...rest}>{@render children?.()}</select>
+		<select class="control" bind:value {disabled} {...controlRest}>{@render children?.()}</select>
 	{:else if as === 'textarea'}
-		<textarea class="control" bind:value {disabled} {...rest}></textarea>
+		<textarea class="control" bind:value {disabled} {...controlRest}></textarea>
 	{:else if type === 'checkbox'}
 		<input class="check" type="checkbox" bind:checked {disabled} {...rest} />
 	{:else if type === 'radio'}

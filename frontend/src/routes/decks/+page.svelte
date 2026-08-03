@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { count } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { Deck } from '$lib/types/Deck';
 
 	let decks = $state<Deck[]>([]);
@@ -63,7 +64,10 @@
 {#if loading}
 	<p class="muted">Loading…</p>
 {:else if decks.length === 0}
-	<p class="muted">No decks yet. Create one above.</p>
+	<EmptyState
+		title="No decks yet."
+		description="A deck holds the copies you've committed to a list, so they stop counting as loose collection. Name one above to create your first."
+	/>
 {:else}
 	<div class="grid">
 		{#each decks as deck (deck.id)}

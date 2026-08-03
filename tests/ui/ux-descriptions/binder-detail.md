@@ -62,7 +62,7 @@ button. It closes via the "×" button or the Escape key.
 | **Loading** | First load, before `detail` is set | "Loading…" muted text |
 | **Error (no data)** | The detail fetch fails and `detail` is still null | "Failed to load binder: {message}" |
 | **Inline error** | A mutation fails after the page loads | Red error text below the header; the page stays visible |
-| **Empty binder** | `detail.cards.length === 0` | "No cards in this binder. Add some with 'Add cards'." |
+| **Empty binder** | `detail.cards.length === 0` | EmptyState "No cards in this binder." with an **Add cards** button that opens the same CollectionPicker as the header control |
 
 The picker modal has its own "Loading collection…", error, and "No matching
 cards." states.

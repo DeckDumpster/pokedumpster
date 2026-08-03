@@ -2,6 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import { api } from '$lib/api';
 	import { count } from '$lib/format';
+	import { Button, EmptyState } from '$lib/components/ui';
 	import type { SetSummary } from '$lib/types/SetSummary';
 
 	let containers = $state<SetSummary[]>([]);
@@ -139,81 +140,99 @@
 		<button class="ghost" onclick={() => setAll(true)}>Collapse all</button>
 	</div>
 
-	<div class="layout">
-		<!-- Sticky series nav. Click a row to scroll-and-expand the matching
-		     section. Owned dot makes it obvious which series have your cards. -->
-		<aside class="nav">
-			<div class="nav-label">Jump to</div>
-			<ul>
-				{#each groups as g (g.series)}
-					<li>
-						<button
-							class="navlink"
-							class:owned={g.owned_cards > 0}
-							onclick={() => jumpTo(g.series)}
-						>
-							<span class="dot" aria-hidden="true"></span>
-							<span class="name">{g.series}</span>
-							<span class="setn">{g.sets.length}</span>
-						</button>
-					</li>
-				{/each}
-			</ul>
-		</aside>
+	{#if totalShown === 0}
+		{#if search.trim()}
+			<EmptyState
+				title="No sets match “{search.trim()}”."
+				description="The search reads set names, bundle names and series — try the era (“Scarlet & Violet”) or a shorter fragment."
+			>
+				{#snippet action()}
+					<Button variant="ghost" onclick={() => (search = '')}>Clear search</Button>
+				{/snippet}
+			</EmptyState>
+		{:else}
+			<EmptyState
+				title="No sets in the catalog."
+				description="The shared catalog hasn't been built yet — until it is, there are no binder pages to browse."
+			/>
+		{/if}
+	{:else}
+		<div class="layout">
+			<!-- Sticky series nav. Click a row to scroll-and-expand the matching
+			     section. Owned dot makes it obvious which series have your cards. -->
+			<aside class="nav">
+				<div class="nav-label">Jump to</div>
+				<ul>
+					{#each groups as g (g.series)}
+						<li>
+							<button
+								class="navlink"
+								class:owned={g.owned_cards > 0}
+								onclick={() => jumpTo(g.series)}
+							>
+								<span class="dot" aria-hidden="true"></span>
+								<span class="name">{g.series}</span>
+								<span class="setn">{g.sets.length}</span>
+							</button>
+						</li>
+					{/each}
+				</ul>
+			</aside>
 
-		<div class="main">
-			{#each groups as g (g.series)}
-				<section class="seriesgroup" id={anchorId(g.series)}>
-					<button
-						class="grouphdr"
-						onclick={() => toggle(g.series)}
-						aria-expanded={!collapsed[g.series]}
-					>
-						<span class="caret">{collapsed[g.series] ? '▸' : '▾'}</span>
-						<span class="ghname">{g.series}</span>
-						<span class="ghmeta">
-							{g.sets.length} {g.sets.length === 1 ? 'set' : 'sets'}
-							{#if g.total_cards > 0 && g.series !== 'Bundles'}
-								· {count(g.owned_cards)} / {count(g.total_cards)} cards ({groupPct(g)}%)
-							{/if}
-						</span>
-					</button>
-					{#if !collapsed[g.series]}
-						<div class="grid">
-							{#each g.sets as set (set.set_code)}
-								<a
-									class="tile"
-									class:bundle={set.kind === 'bundle'}
-									href="/browse/{set.set_code}"
-								>
-									{#if set.symbol_url}
-										<img class="symbol" src={set.symbol_url} alt="" />
-									{/if}
-									<div class="title">{set.name}</div>
-									<div class="series">
-										{set.series}
-										{#if set.synthesized}
-											<span class="provisional" title="Built from TCGCSV — pokemontcg.io has not published this set yet, so its card list and art are provisional."
-												>TCGCSV</span
-											>
+			<div class="main">
+				{#each groups as g (g.series)}
+					<section class="seriesgroup" id={anchorId(g.series)}>
+						<button
+							class="grouphdr"
+							onclick={() => toggle(g.series)}
+							aria-expanded={!collapsed[g.series]}
+						>
+							<span class="caret">{collapsed[g.series] ? '▸' : '▾'}</span>
+							<span class="ghname">{g.series}</span>
+							<span class="ghmeta">
+								{g.sets.length} {g.sets.length === 1 ? 'set' : 'sets'}
+								{#if g.total_cards > 0 && g.series !== 'Bundles'}
+									· {count(g.owned_cards)} / {count(g.total_cards)} cards ({groupPct(g)}%)
+								{/if}
+							</span>
+						</button>
+						{#if !collapsed[g.series]}
+							<div class="grid">
+								{#each g.sets as set (set.set_code)}
+									<a
+										class="tile"
+										class:bundle={set.kind === 'bundle'}
+										href="/browse/{set.set_code}"
+									>
+										{#if set.symbol_url}
+											<img class="symbol" src={set.symbol_url} alt="" />
 										{/if}
-									</div>
-									{#if set.base_total_cards != null && set.base_owned_cards != null}
-										<div class="count">
-											Base {count(set.base_owned_cards)} / {count(set.base_total_cards)}
+										<div class="title">{set.name}</div>
+										<div class="series">
+											{set.series}
+											{#if set.synthesized}
+												<span class="provisional" title="Built from TCGCSV — pokemontcg.io has not published this set yet, so its card list and art are provisional."
+													>TCGCSV</span
+												>
+											{/if}
 										</div>
-										<div class="bar base"><span style:width="{basePct(set)}%"></span></div>
-									{/if}
-									<div class="count">Master {count(set.owned_cards)} / {count(set.total_cards)}</div>
-									<div class="bar"><span style:width="{pct(set)}%"></span></div>
-								</a>
-							{/each}
-						</div>
-					{/if}
-				</section>
-			{/each}
+										{#if set.base_total_cards != null && set.base_owned_cards != null}
+											<div class="count">
+												Base {count(set.base_owned_cards)} / {count(set.base_total_cards)}
+											</div>
+											<div class="bar base"><span style:width="{basePct(set)}%"></span></div>
+										{/if}
+										<div class="count">Master {count(set.owned_cards)} / {count(set.total_cards)}</div>
+										<div class="bar"><span style:width="{pct(set)}%"></span></div>
+									</a>
+								{/each}
+							</div>
+						{/if}
+					</section>
+				{/each}
+			</div>
 		</div>
-	</div>
+	{/if}
 {/if}
 
 <style>

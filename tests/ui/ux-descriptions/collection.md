@@ -80,7 +80,9 @@ When loaded, the page renders an `<h1>` "Collection" followed by a two-column
 |-------|-----------|------------|
 | **Loading** | Initial mount, while four parallel fetches run | "Loading…" muted text; no layout shown |
 | **Error** | Any of the mount fetches reject | "Failed to load collection: {message}" |
-| **Empty collection** | `rows.length === 0` | Sidebar + toolbar render; content shows "Your collection is empty. Add cards from a set's binder view." The Export CSV link and Select button are hidden when there are no rows |
+| **Empty collection** | `rows.length === 0`, no query | Sidebar + toolbar render; content shows the EmptyState "Your collection is empty." with "Add cards from a set's binder view — click a slot and that printing is registered as a copy you own. Or turn on “All cards” to browse the catalog first." and a **Browse sets** button to /browse. The Export CSV link and Select button are hidden when there are no rows |
+| **Search matches nothing** | `searchRows.length === 0` with a query | EmptyState "No cards match “&lt;query&gt;”." — the description tells you to turn on “All cards” when it is off; a **Search syntax** button links to /search-help |
+| **Unparseable query** | `searchError` set | EmptyState "That query didn't parse." pointing at the error message under the search box |
 | **Empty filter result** | Rows exist but none match | The table renders with no body rows; the toolbar count reads "0 of N cards" |
 | **Inline error** | A saved-view or bulk operation fails after load | The error message is surfaced via the `error` state and shown as red text |
 

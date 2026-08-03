@@ -5,7 +5,7 @@ involves:
   - '"Create" button creates the deck and reloads the list, clearing both inputs'
   - new deck tile appears in the .grid
   - deck detail page header showing the new deck name with no owner
-  - "empty card table with the 'No cards in this deck. Add some with Add cards.' message"
+  - "empty card table with the 'No cards in this deck.' empty state + Add cards button"
 fixture_data:
   new_deck_name: "Minimal Deck"
 notes: >

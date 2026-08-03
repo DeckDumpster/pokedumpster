@@ -48,7 +48,7 @@ The page has no inputs, modals, or mutations.
 |-------|-----------|------------|
 | **Loading** | While `api.orders()` runs on mount | "Loading…" muted text |
 | **Error** | The orders fetch rejects | "Failed to load orders: {message}" |
-| **Empty** | `orders.length === 0` after load | "No orders yet. Import one from the link above." |
+| **Empty** | `orders.length === 0` after load | EmptyState "No orders yet." with an **Import an order** button to /ingest/order |
 | **Populated** | Orders exist | The orders table |
 
 ---

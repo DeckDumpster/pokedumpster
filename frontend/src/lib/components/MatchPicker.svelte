@@ -7,6 +7,7 @@
 	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import { variantTag, variantColor, variantLabel } from '$lib/variants.svelte';
+	import { EmptyState } from '$lib/components/ui';
 	import type { SearchRow } from '$lib/types/SearchRow';
 	import type { SealedProduct } from '$lib/types/SealedProduct';
 
@@ -86,7 +87,13 @@
 		<p class="muted">Searching…</p>
 	{:else if kind === 'single'}
 		{#if singles.length === 0}
-			<p class="muted">{q.trim() ? 'No matching printings.' : 'Type to search.'}</p>
+			<EmptyState
+				size="sm"
+				title={q.trim() ? 'No matching printings.' : 'Type to search.'}
+				description={q.trim()
+					? 'Search the card name; add its number to narrow a reprint (“Pikachu 25”).'
+					: 'The whole catalog is searchable here, not just what you own.'}
+			/>
 		{:else}
 			<ul class="results">
 				{#each singles as row (row.printing_id)}
@@ -112,7 +119,13 @@
 			</ul>
 		{/if}
 	{:else if sealed.length === 0}
-		<p class="muted">{q.trim() ? 'No matching products.' : 'Type to search.'}</p>
+		<EmptyState
+			size="sm"
+			title={q.trim() ? 'No matching products.' : 'Type to search.'}
+			description={q.trim()
+				? 'Search the product name as TCGplayer lists it — “Obsidian Flames Booster Box”.'
+				: 'Every sealed product in the catalog is searchable here.'}
+		/>
 	{:else}
 		<ul class="results">
 			{#each sealed as p (p.product_id)}

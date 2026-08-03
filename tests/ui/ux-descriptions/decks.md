@@ -51,7 +51,7 @@ its name, lifecycle state, optional owner, and card count.
 | State | Condition | Appearance |
 |-------|-----------|------------|
 | **Loading** | While `api.decks()` runs on mount | "Loading…" muted text |
-| **Empty** | `decks.length === 0` after load | "No decks yet. Create one above." |
+| **Empty** | `decks.length === 0` after load | EmptyState "No decks yet." — "A deck holds the copies you've committed to a list, so they stop counting as loose collection. Name one above to create your first." |
 | **Error** | A load or create fails | Red error text below the create form |
 | **Populated** | Decks exist | The grid of deck tiles |
 

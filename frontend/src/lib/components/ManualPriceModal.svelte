@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { money } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { ManualPrice } from '$lib/types/ManualPrice';
 
 	// Per-printing manual price entry. The user can append timestamped
@@ -166,7 +167,11 @@
 	{#if loading}
 		<p class="muted">Loading…</p>
 	{:else if entries.length === 0}
-		<p class="muted">No entries yet.</p>
+		<EmptyState
+			size="sm"
+			title="No entries yet."
+			description="Add an observation above and it becomes this printing's price wherever TCGplayer has none."
+		/>
 	{:else}
 		<ul>
 			{#each entries as e (e.id)}

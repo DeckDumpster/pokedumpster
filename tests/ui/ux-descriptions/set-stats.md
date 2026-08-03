@@ -55,7 +55,7 @@ read-only.
 |-------|-----------|------------|
 | **Loading** | While `api.setAnalytics()` runs | "Loading…" muted text |
 | **Error** | The analytics fetch rejects | "Failed to load set stats: {message}" |
-| **Empty rarity split** | `stats.rarities.length === 0` | "No cards catalogued." inside the Rarity split card; the rest of the page still renders |
+| **Empty rarity split** | `stats.rarities.length === 0` | Small EmptyState "No cards catalogued." inside the Rarity split card; the rest of the page still renders |
 
 ---
 

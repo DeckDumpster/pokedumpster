@@ -7,6 +7,7 @@
 	import { CONDITIONS } from '$lib/conditions';
 	import { conditionMultiplier } from '$lib/conditions.svelte';
 	import { money as price } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { CardDetail } from '$lib/types/CardDetail';
 	import type { Binder } from '$lib/types/Binder';
 	import type { Deck } from '$lib/types/Deck';
@@ -607,7 +608,11 @@
 	<section>
 		<h2>Your copies ({detail.copies.length})</h2>
 		{#if detail.copies.length === 0}
-			<p class="muted">You don't own this card yet.</p>
+			<EmptyState
+				size="sm"
+				title="You don't own this card yet."
+				description="Register a printing above and each copy you own lands here as its own row, with its own condition and location."
+			/>
 		{:else}
 			{#snippet savedTick(key: string)}
 				{#if savedKey === key}<span class="cellSaved" transition:fade={{ duration: 120 }}

@@ -4,6 +4,7 @@
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
 	import CollectionPicker from '$lib/components/CollectionPicker.svelte';
+	import { Button, EmptyState } from '$lib/components/ui';
 	import type { BinderDetail } from '$lib/types/BinderDetail';
 
 	let detail = $state<BinderDetail | null>(null);
@@ -73,7 +74,14 @@
 	{#if error}<p class="error">{error}</p>{/if}
 
 	{#if detail.cards.length === 0}
-		<p class="muted">No cards in this binder. Add some with “Add cards”.</p>
+		<EmptyState
+			title="No cards in this binder."
+			description="Pick copies you already own and they move into this binder — a copy lives in one binder at a time."
+		>
+			{#snippet action()}
+				<Button onclick={() => (picking = true)}>Add cards</Button>
+			{/snippet}
+		</EmptyState>
 	{:else}
 		<table>
 			<thead>

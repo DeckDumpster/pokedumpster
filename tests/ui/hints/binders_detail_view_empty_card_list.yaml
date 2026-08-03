@@ -3,7 +3,7 @@ involves:
   - "create form (.newform) with the 'New binder name…' input and 'Create' button"
   - "new binder .tile appears in the grid after creation"
   - "binder detail header with '+ Add cards' and red 'Delete binder' buttons"
-  - "empty-state text 'No cards in this binder. Add some with \\'Add cards\\'.'"
+  - "empty-state text 'No cards in this binder.' + its Add cards button"
 fixture_data:
   new_binder_name: "Empty Test Binder"
 notes: >

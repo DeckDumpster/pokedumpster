@@ -2,6 +2,7 @@
 	import { Chart, registerables, type ChartConfiguration } from 'chart.js';
 	import { untrack } from 'svelte';
 	import { money } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { ValueSeries } from '$lib/api';
 
 	Chart.register(...registerables);
@@ -116,9 +117,11 @@
 </script>
 
 {#if empty}
-	<p class="muted">
-		No value history yet — it fills in as the nightly refresh runs (or after a one-time backfill).
-	</p>
+	<EmptyState
+		size="sm"
+		title="No value history yet."
+		description="It fills in as the nightly refresh runs — or all at once after a one-time backfill."
+	/>
 {:else}
 	{#if oneShot}
 		<p class="muted">Only one snapshot so far — the line grows as the nightly refresh runs.</p>

@@ -4,6 +4,7 @@
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
 	import CollectionPicker from '$lib/components/CollectionPicker.svelte';
+	import { Button, EmptyState } from '$lib/components/ui';
 	import type { DeckDetail } from '$lib/types/DeckDetail';
 
 	let detail = $state<DeckDetail | null>(null);
@@ -104,7 +105,14 @@
 	{#if error}<p class="error">{error}</p>{/if}
 
 	{#if detail.cards.length === 0}
-		<p class="muted">No cards in this deck. Add some with “Add cards”.</p>
+		<EmptyState
+			title="No cards in this deck."
+			description="Pick copies you already own and they're assigned to this list, so the rest of the collection knows they're spoken for."
+		>
+			{#snippet action()}
+				<Button onclick={() => (picking = true)}>Add cards</Button>
+			{/snippet}
+		</EmptyState>
 	{:else}
 		<table>
 			<thead>

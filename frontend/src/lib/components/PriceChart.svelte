@@ -3,6 +3,7 @@
 	import { untrack } from 'svelte';
 	import { variantLabel } from '$lib/variants.svelte';
 	import { money } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { PriceSeries } from '$lib/types/PriceSeries';
 
 	Chart.register(...registerables);
@@ -94,7 +95,11 @@
 </script>
 
 {#if empty}
-	<p class="muted">No price history yet.</p>
+	<EmptyState
+		size="sm"
+		title="No price history yet."
+		description="Prices are recorded by the daily refresh — the chart appears once this printing has been seen at least once."
+	/>
 {:else if oneShot}
 	<p class="muted">Only one price snapshot so far — the chart will grow as the daily refresh runs.</p>
 	<div class="wrap" data-testid="price-chart" data-series-count={series.length} data-builds={builds}>

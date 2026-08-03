@@ -1347,10 +1347,10 @@
 
 <style>
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-danger-text);
 	}
 
 	/* --- DD-style top chrome ------------------------------------------- */
@@ -1368,8 +1368,12 @@
 		flex-direction: column;
 		gap: 0.3rem;
 		padding: 0.4rem 0.7rem 0.45rem;
-		background: #16213e;
-		border-bottom: 1px solid #0f3460;
+		/* Deliberately the panel surface, not --color-surface-sticky. The
+		   translucent role would drop the search input's boundary against
+		   the bar to 2.61:1 — under WCAG 1.4.11 — and rebuilding this bar
+		   is pd-nt4k's remit, not this migration's. */
+		background: var(--color-surface-panel);
+		border-bottom: 1px solid var(--color-border);
 	}
 	.topbarSpacer {
 		display: none;
@@ -1377,7 +1381,7 @@
 	.row {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
+		gap: var(--space-2);
 	}
 	/* Toggles + ⋯ hug the left; countline rides flush right via the
 	   `.countline { margin-left: auto }` rule below. Vertical alignment
@@ -1414,22 +1418,25 @@
 		/* Extra right padding leaves room for the clear button without
 		   it overlapping typed text. */
 		padding: 0.45rem 2rem 0.45rem 0.6rem;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		border-radius: 6px;
-		color: #e0e0e0;
+		background: var(--color-control-surface);
+		border: 1px solid var(--color-control-border);
+		border-radius: var(--radius-md);
+		color: var(--color-control-text);
 		font: inherit;
 	}
+	/* An invalid control reddens on the danger ramp, not the brand one —
+	   the same answer the Field primitive gives for `error`. Crimson here
+	   was the "delete reads as brand" muddle the two ramps exist to end. */
 	.search.error {
-		border-color: #e94560;
+		border-color: var(--color-danger);
 	}
 	.searcherr {
 		gap: 0.6rem;
 		font-size: 0.82rem;
-		color: #ff8a8a;
+		color: var(--color-danger-text);
 	}
 	.errpos {
-		color: #9aa0bd;
+		color: var(--color-text-subtle);
 	}
 	.helplink {
 		display: inline-flex;
@@ -1437,16 +1444,16 @@
 		justify-content: center;
 		width: 1.5rem;
 		height: 1.5rem;
-		border: 1px solid #0f3460;
-		border-radius: 50%;
-		color: #9aa0bd;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-round);
+		color: var(--color-text-subtle);
 		text-decoration: none;
-		font-size: 0.85rem;
+		font-size: var(--text-md);
 		flex-shrink: 0;
 	}
 	.helplink:hover {
-		color: #ffd66b;
-		border-color: #ffd66b;
+		color: var(--color-warning-text);
+		border-color: var(--color-warning);
 	}
 	.acmenu {
 		position: absolute;
@@ -1454,13 +1461,13 @@
 		left: 0;
 		right: 0;
 		z-index: 60;
-		margin: 0;
-		padding: 0.25rem;
+		margin: var(--space-0);
+		padding: var(--space-1);
 		list-style: none;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		border-radius: 6px;
-		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+		background: var(--color-surface-overlay);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		box-shadow: var(--shadow-lg);
 		max-height: 16rem;
 		overflow-y: auto;
 	}
@@ -1472,23 +1479,23 @@
 		text-align: left;
 		background: none;
 		border: none;
-		border-radius: 4px;
+		border-radius: var(--radius-sm);
 		padding: 0.35rem 0.5rem;
-		color: #e0e0e0;
+		color: var(--color-text);
 		font: inherit;
 		cursor: pointer;
 	}
 	.acitem.active,
 	.acitem:hover {
-		background: #0f3460;
+		background: var(--color-surface-hover);
 	}
 	.ackey {
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		color: #ffd66b;
+		font-family: var(--font-mono);
+		color: var(--color-warning-text);
 		white-space: nowrap;
 	}
 	.achint {
-		color: #9aa0bd;
+		color: var(--color-text-subtle);
 		font-size: 0.82rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -1501,28 +1508,28 @@
 		transform: translateY(-50%);
 		width: 1.4rem;
 		height: 1.4rem;
-		padding: 0;
+		padding: var(--space-0);
 		background: none;
 		border: none;
-		color: #888;
-		font-size: 1.1rem;
+		color: var(--color-text-subtle);
+		font-size: var(--text-xl);
 		line-height: 1;
-		border-radius: 50%;
+		border-radius: var(--radius-round);
 		cursor: pointer;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 	}
 	.searchclear:hover {
-		color: #e94560;
-		background: rgba(233, 69, 96, 0.12);
+		color: var(--color-text-accent);
+		background: var(--color-surface-selected);
 	}
 	.alltoggle {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.3rem;
-		color: #888;
-		font-size: 0.85rem;
+		color: var(--color-text-subtle);
+		font-size: var(--text-md);
 		white-space: nowrap;
 		cursor: pointer;
 	}
@@ -1530,16 +1537,16 @@
 		cursor: pointer;
 	}
 	.countline {
-		margin: 0 0 0 auto;
-		font-size: 0.85rem;
+		margin: var(--space-0) var(--space-0) var(--space-0) auto;
+		font-size: var(--text-md);
 		background: none;
 		border: none;
-		padding: 0;
+		padding: var(--space-0);
 		font-family: inherit;
 		cursor: pointer;
 	}
 	.countline:hover {
-		color: #e0e0e0;
+		color: var(--color-text);
 		text-decoration: underline;
 	}
 	.tableScroll {
@@ -1550,37 +1557,37 @@
 	}
 	.viewtoggle button {
 		background: none;
-		border: 1px solid #0f3460;
-		color: #888;
+		border: 1px solid var(--color-border);
+		color: var(--color-text-subtle);
 		padding: 0.25rem 0.55rem;
-		font-size: 1.1rem;
+		font-size: var(--text-xl);
 		line-height: 1;
 		cursor: pointer;
 	}
 	.viewtoggle button:first-child {
-		border-radius: 6px 0 0 6px;
+		border-radius: var(--radius-md) 0 0 var(--radius-md);
 	}
 	.viewtoggle button:last-child {
-		border-radius: 0 6px 6px 0;
+		border-radius: 0 var(--radius-md) var(--radius-md) 0;
 		border-left: none;
 	}
 	.viewtoggle button.on {
-		background: #0f3460;
-		color: #e0e0e0;
+		background: var(--color-info-surface);
+		color: var(--color-text);
 	}
 	.burger {
 		background: none;
 		border: 1px solid transparent;
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 1.3rem;
 		line-height: 1;
 		padding: 0.25rem 0.55rem;
 		cursor: pointer;
-		border-radius: 6px;
+		border-radius: var(--radius-md);
 	}
 	.burger:hover {
-		color: #e0e0e0;
-		border-color: #0f3460;
+		color: var(--color-text);
+		border-color: var(--color-border);
 	}
 
 	.menuBackdrop {
@@ -1603,28 +1610,28 @@
 		display: flex;
 		flex-direction: column;
 		min-width: 180px;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		border-radius: 8px;
+		background: var(--color-surface-overlay);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-lg);
 		padding: 0.3rem;
-		box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+		box-shadow: var(--shadow-md);
 	}
 	.menuItem {
 		background: none;
 		border: none;
-		color: #e0e0e0;
+		color: var(--color-text);
 		text-align: left;
 		padding: 0.45rem 0.7rem;
 		font: inherit;
 		font-size: 0.9rem;
-		border-radius: 5px;
+		border-radius: var(--radius-sm);
 		cursor: pointer;
 		text-decoration: none;
 		display: block;
 	}
 	.menuItem:hover {
-		background: #0f3460;
-		color: #e94560;
+		background: var(--color-surface-hover);
+		color: var(--color-text-accent);
 	}
 
 	/* --- Grid view ------------------------------------------------------ */
@@ -1634,14 +1641,14 @@
 		gap: 0.4rem;
 		align-items: center;
 		flex-wrap: wrap;
-		margin: 0 0 0.5rem;
-		font-size: 0.85rem;
+		margin: var(--space-0) var(--space-0) var(--space-2);
+		font-size: var(--text-md);
 	}
 	.sortbtn {
-		background: #16213e;
-		border: 1px solid #0f3460;
-		color: #888;
-		border-radius: 6px;
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
+		color: var(--color-text-subtle);
+		border-radius: var(--radius-md);
 		padding: 0.3rem 0.7rem;
 		font: inherit;
 		cursor: pointer;
@@ -1650,19 +1657,22 @@
 		gap: 0.3rem;
 	}
 	.sortbtn:hover {
-		border-color: #e94560;
-		color: #e0e0e0;
+		border-color: var(--color-border-accent);
+		color: var(--color-text);
 	}
 	.sortbtn.active {
-		background: #e94560;
-		border-color: #e94560;
-		color: #fff;
+		background: var(--color-accent);
+		border-color: var(--color-border-accent);
+		/* Dark ink on the crimson fill — the same pairing Button's
+		   `primary` uses. White here was 3.83:1, the app's most common AA
+		   failure. */
+		color: var(--color-on-accent);
 	}
 	.sortbtn .caret {
-		/* Override the global .caret rule (#e94560) which collides with
-		   the active sortbtn's red background. Inheriting the button's
-		   color gives gray on inactive buttons and white on the active
-		   one, both readable. */
+		/* Override the global .caret rule (--color-text-accent), which
+		   collides with the active sortbtn's crimson fill. Inheriting the
+		   button's color gives grey on inactive buttons and the on-accent
+		   ink on the active one, both readable. */
 		color: inherit;
 		font-size: 0.65rem;
 		opacity: 0.9;
@@ -1671,14 +1681,14 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
 		gap: 0.4rem;
-		margin-top: 0;
+		margin-top: var(--space-0);
 	}
 	.cardtile {
 		position: relative;
-		padding: 0;
+		padding: var(--space-0);
 		background: none;
 		border: 2px solid transparent;
-		border-radius: 8px;
+		border-radius: var(--radius-lg);
 		cursor: pointer;
 	}
 	.cardtile img {
@@ -1686,11 +1696,11 @@
 		display: block;
 		aspect-ratio: 5 / 7;
 		object-fit: contain;
-		background: #0d1424;
-		border-radius: 6px;
+		background: var(--color-surface-well);
+		border-radius: var(--radius-md);
 	}
 	.cardtile.picked {
-		border-color: #e94560;
+		border-color: var(--color-border-accent);
 	}
 	/* Catalog rows the user doesn't own — mirror the .missing treatment
 	   the browse view uses for empty binder slots. */
@@ -1708,7 +1718,11 @@
 	   none so clicks still hit the underlying button. The .cardtile
 	   already has rounded corners + overflow handled by its img;
 	   give the foil overlays the same border-radius and clip them
-	   to the tile. */
+	   to the tile.
+
+	   Both treatments are theme composites (--gradient-foil-*): a foil is
+	   a card-game idiom, not a colour, so it belongs to the theme whole
+	   rather than being reassembled from seven stops per component. */
 	.cardtile.foil {
 		overflow: hidden;
 	}
@@ -1718,17 +1732,7 @@
 		position: absolute;
 		inset: 0;
 		border-radius: inherit;
-		background: repeating-linear-gradient(
-			135deg,
-			rgba(255, 0, 0, 0.08),
-			rgba(255, 165, 0, 0.08) 5%,
-			rgba(255, 255, 0, 0.08) 10%,
-			rgba(0, 200, 0, 0.08) 15%,
-			rgba(0, 140, 255, 0.08) 20%,
-			rgba(130, 0, 255, 0.08) 25%,
-			rgba(255, 0, 200, 0.08) 30%,
-			rgba(255, 0, 0, 0.08) 33.33%
-		);
+		background: var(--gradient-foil-spectrum);
 		mix-blend-mode: color;
 		pointer-events: none;
 		z-index: 1;
@@ -1739,15 +1743,7 @@
 		position: absolute;
 		inset: 0;
 		border-radius: inherit;
-		background:
-			linear-gradient(
-				135deg,
-				transparent 46%,
-				rgba(255, 255, 255, 0.18) 49%,
-				rgba(255, 255, 255, 0.18) 51%,
-				transparent 54%
-			)
-			100% 100% / 240% 240%;
+		background: var(--gradient-foil-streak) 100% 100% / 240% 240%;
 		pointer-events: none;
 		z-index: 2;
 		animation: foil-streak 3.2s ease-in-out infinite;
@@ -1767,7 +1763,7 @@
 		position: relative;
 		display: inline-block;
 		flex-shrink: 0;
-		border-radius: 3px;
+		border-radius: var(--radius-xs);
 		overflow: hidden;
 	}
 	/* Quantity badge in the corner of an aggregated grid tile. */
@@ -1775,36 +1771,25 @@
 		position: absolute;
 		top: 4px;
 		right: 4px;
-		background: rgba(15, 52, 96, 0.95);
-		color: #fff;
-		font-size: 0.72rem;
-		font-weight: 700;
+		background: var(--color-surface-sticky);
+		color: var(--color-text);
+		font-size: var(--text-xs);
+		font-weight: var(--weight-bold);
 		padding: 0.1rem 0.4rem;
-		border-radius: 999px;
+		border-radius: var(--radius-pill);
 		z-index: 3;
 		pointer-events: none;
-	}
-	.ownbadge {
-		position: absolute;
-		top: 4px;
-		right: 4px;
-		background: #0f3460;
-		color: #9fe7a0;
-		font-size: 0.7rem;
-		padding: 1px 5px;
-		border-radius: 4px;
-		font-weight: 600;
 	}
 	.tilenoart {
 		aspect-ratio: 5 / 7;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: #16213e;
-		border-radius: 6px;
-		color: #888;
-		font-size: 0.8rem;
-		padding: 0.5rem;
+		background: var(--color-surface-panel);
+		border-radius: var(--radius-md);
+		color: var(--color-text-subtle);
+		font-size: var(--text-sm);
+		padding: var(--space-2);
 		text-align: center;
 	}
 	.tick {
@@ -1813,10 +1798,10 @@
 		right: 5px;
 		width: 22px;
 		height: 22px;
-		border-radius: 50%;
-		background: #e94560;
-		color: #fff;
-		font-size: 0.8rem;
+		border-radius: var(--radius-round);
+		background: var(--color-accent);
+		color: var(--color-on-accent);
+		font-size: var(--text-sm);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -1827,32 +1812,34 @@
 	.bulkbar {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
+		gap: var(--space-2);
 		flex-wrap: wrap;
 		margin: 0.6rem 0;
 		padding: 0.6rem 0.8rem;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		border-radius: 8px;
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-lg);
 	}
 	.bulkbar .count {
-		font-size: 0.85rem;
-		color: #e94560;
-		font-weight: 600;
+		font-size: var(--text-md);
+		color: var(--color-text-accent);
+		font-weight: var(--weight-semibold);
 	}
 	.bulkbar button,
 	.bulkbar select {
-		background: #0f3460;
+		background: var(--color-info-surface);
 		border: none;
-		border-radius: 6px;
-		color: #e0e0e0;
+		border-radius: var(--radius-md);
+		color: var(--color-text);
 		padding: 0.35rem 0.7rem;
-		font-size: 0.8rem;
+		font-size: var(--text-sm);
 		cursor: pointer;
 	}
 	.bulkbar button:hover:not(:disabled),
 	.bulkbar select:hover:not(:disabled) {
-		background: #e94560;
+		background: var(--color-accent);
+		/* Dark ink on the crimson fill, as Button's `primary` does. */
+		color: var(--color-on-accent);
 	}
 	.bulkbar button:disabled,
 	.bulkbar select:disabled {
@@ -1870,7 +1857,7 @@
 		width: 100%;
 		border-collapse: collapse;
 		font-size: 0.9rem;
-		margin-top: 0;
+		margin-top: var(--space-0);
 	}
 	/* The flex column: `width: 100%` under `table-layout: auto` makes
 	   this column claim all leftover horizontal space. Today it's the
@@ -1882,14 +1869,14 @@
 	table.dd th,
 	table.dd td {
 		padding: 0.35rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 		vertical-align: middle;
 	}
 	table.dd th {
 		text-align: left;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
-		font-size: 0.72rem;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
+		font-size: var(--text-xs);
 		text-transform: uppercase;
 		white-space: nowrap;
 	}
@@ -1906,23 +1893,25 @@
 		cursor: pointer;
 	}
 	table.dd tbody tr:hover {
-		background: rgba(233, 69, 96, 0.07);
+		background: var(--color-surface-accent-wash);
 	}
 	table.dd tbody tr.picked {
-		background: rgba(233, 69, 96, 0.14);
+		background: var(--color-surface-selected);
 	}
 	/* Only the Name cell opens the card; the other columns are facet
 	   searches (pokedumpster-ozm). Highlight whichever cell the pointer is
 	   over so the per-column click target reads clearly. */
 	table.dd tbody td.namecol:hover,
 	table.dd tbody td.fac:hover {
-		background: rgba(233, 69, 96, 0.2);
-		color: #e0e0e0;
+		background: var(--color-surface-selected);
+		color: var(--color-text);
 	}
 	/* Match the .cardtile.missing treatment so unowned catalog rows read
-	   the same way in table view as in grid view. */
+	   the same way in table view as in grid view. The dimming is carried
+	   by the opacity + the grayscale filter, so the text itself can stay
+	   on the AA-clearing subtle step. */
 	table.dd tbody tr.missing {
-		color: #777;
+		color: var(--color-text-subtle);
 		opacity: 0.82;
 	}
 	table.dd tbody tr.missing img {
@@ -1942,30 +1931,30 @@
 	   prices don't draw a box. */
 	.pricebox {
 		display: inline-block;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		border-radius: 4px;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
 		padding: 1px 6px;
 		font-variant-numeric: tabular-nums;
 	}
 	.pricedash {
-		color: #555;
+		color: var(--color-text-disabled);
 	}
 	.sortable {
 		cursor: pointer;
 		user-select: none;
 	}
 	.sortable:hover {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.caret {
-		color: #e94560;
+		color: var(--color-text-accent);
 		font-size: 0.65rem;
 		margin-left: 0.15rem;
 	}
 	.qty {
-		font-weight: 600;
-		color: #e0e0e0;
+		font-weight: var(--weight-semibold);
+		color: var(--color-text);
 	}
 	.namecell {
 		display: flex;
@@ -1978,13 +1967,13 @@
 		height: 36px;
 		object-fit: cover;
 		object-position: top center;
-		border-radius: 3px;
+		border-radius: var(--radius-xs);
 		flex-shrink: 0;
-		background: #0d1424;
+		background: var(--color-surface-well);
 	}
 	.cardname {
-		font-weight: 500;
-		color: #e0e0e0;
+		font-weight: var(--weight-medium);
+		color: var(--color-text);
 	}
 	/* Wrap name + inline tags so the tags flow with the text. Without this
 	   wrapper they sit as flex siblings of .namecell, and a long-wrapping
@@ -2004,15 +1993,15 @@
 		max-width: 180px;
 	}
 	.typeMain {
-		color: #ddd;
-		font-size: 0.85rem;
+		color: var(--color-text-muted);
+		font-size: var(--text-md);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.typeSub {
-		color: #777;
-		font-size: 0.72rem;
+		color: var(--color-text-subtle);
+		font-size: var(--text-xs);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -2039,47 +2028,52 @@
 	/* Inline tags (variant, non-owned status) — DD card-tag pattern.
 	   inline-block + vertical-align lets the pill keep its shape while
 	   flowing as inline content inside .namebody, so a wrapped card
-	   name has its tags glued to the last line of text. */
+	   name has its tags glued to the last line of text.
+
+	   Deliberately not the Badge primitive: these sit inline inside a
+	   table cell tuned for density, and Badge's pill padding would reflow
+	   the Name column. The tones below use the same state roles Badge's
+	   `soft` variant resolves, so the two stay in step. */
 	.tag {
 		display: inline-block;
 		vertical-align: middle;
 		margin-left: 0.4rem;
 		padding: 1px 4px;
 		font-size: 0.62rem;
-		font-weight: 600;
+		font-weight: var(--weight-semibold);
 		text-transform: uppercase;
-		border-radius: 3px;
+		border-radius: var(--radius-xs);
 		border: 1px solid;
 		letter-spacing: 0.04em;
 		white-space: nowrap;
 	}
 	.vtag {
-		background: #16213e;
-		color: #9ab3d8;
-		border-color: #0f3460;
+		background: var(--color-surface-panel);
+		color: var(--color-text-subtle);
+		border-color: var(--color-border);
 	}
 	.stag.t-ordered {
-		background: #5c3a1a;
-		color: #f0c878;
-		border-color: #8c5a2a;
+		background: var(--color-warning-surface);
+		color: var(--color-warning-text);
+		border-color: var(--color-warning-border);
 	}
 	.stag.t-listed {
-		background: #1a3a5c;
-		color: #78c8f0;
-		border-color: #2a5a8c;
+		background: var(--color-info-surface);
+		color: var(--color-info-text);
+		border-color: var(--color-info-border);
 	}
 	.stag.t-sold,
 	.stag.t-traded,
 	.stag.t-gifted {
-		background: #1a5c3a;
-		color: #7ee8b0;
-		border-color: #2a8c5a;
+		background: var(--color-success-surface);
+		color: var(--color-success-text);
+		border-color: var(--color-success-border);
 	}
 	.stag.t-removed,
 	.stag.t-lost {
-		background: #5c1a2a;
-		color: #f08888;
-		border-color: #8c2a3a;
+		background: var(--color-danger-surface);
+		color: var(--color-danger-text);
+		border-color: var(--color-danger-border);
 	}
 
 	/* Set cell: just the symbol; alt/title carries "PFL/me2". */
@@ -2112,7 +2106,7 @@
 	   reflow yet (it would clash with click-to-sort headers). */
 	@media (max-width: 540px) {
 		table.dd {
-			font-size: 0.8rem;
+			font-size: var(--text-sm);
 		}
 		.cardthumb {
 			width: 70px;

@@ -104,6 +104,12 @@
 		{ "fg": "--color-text-accent", "bg": "--color-surface-sunken", "size": "normal" },
 		{ "fg": "--color-text-accent", "bg": "--color-surface-inset", "size": "normal" },
 		{
+			"$note": "/collection's overflow-menu item accents its label on hover.",
+			"fg": "--color-text-accent",
+			"bg": "--color-surface-hover",
+			"size": "normal"
+		},
+		{
 			"fg": "--color-text-accent",
 			"bg": "--color-surface-selected",
 			"base": "--color-surface-panel",
@@ -150,6 +156,12 @@
 		{ "fg": "--color-warning-text", "bg": "--color-surface-page", "size": "normal" },
 		{ "fg": "--color-warning-text", "bg": "--color-surface-panel", "size": "normal" },
 		{ "fg": "--color-warning-text", "bg": "--color-surface-raised", "size": "normal" },
+		{
+			"$note": "The keyword glyph in /collection's search autocomplete popover.",
+			"fg": "--color-warning-text",
+			"bg": "--color-surface-overlay",
+			"size": "normal"
+		},
 		{ "fg": "--color-warning-text", "bg": "--color-warning-surface", "size": "normal" },
 
 		{ "fg": "--color-danger-text", "bg": "--color-surface-page", "size": "normal" },

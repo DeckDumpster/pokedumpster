@@ -14,7 +14,12 @@
 	},
 
 	"routes": [
-		{ "id": "home", "path": "/", "about": "Landing page + capabilities list" },
+		{
+			"id": "home",
+			"path": "/",
+			"about": "Front door — collection stats, recent additions, set completion, sections",
+			"waitFor": ".thumbs"
+		},
 		{
 			"id": "browse",
 			"path": "/browse",

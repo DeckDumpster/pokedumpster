@@ -1,7 +1,26 @@
 # Spike: ATTACH-across-namespaces in self-hosted `sqld`
 
+> ## ⚠️ This path was NOT taken
+>
+> These spikes validated a libSQL/`sqld` + per-tenant-namespaces substrate.
+> That direction was **rejected**. The direction actually chosen is
+> **file-per-tenant local SQLite + Litestream multi-DB replication** — epic
+> **pd-gckl** — which keeps today's rusqlite stack and its connection-scoped
+> `ATTACH` unchanged, so the `cat.`-qualification sweep and async ripple these
+> spikes costed never has to be paid.
+>
+> The analysis is kept deliberately: it is the evidence for *why* libSQL was
+> rejected. Read it as a record, not as a plan.
+>
+> **Known correction inside `RESULT.md`:** the TEMP-VIEW spike (spike 2)
+> recommended attaching the catalog once at connection open; the Rust `libsql`
+> client spike (spike 3) disproved it — attach must live inside each
+> `transaction()`. Both results stand in the document with the contradiction
+> marked in place.
+
 **Issue:** pokedumpster-5jv
-**Status:** throwaway spike — NOT a migration commitment.
+**Status:** throwaway spike — NOT a migration commitment; path since rejected
+(see the banner above).
 
 > **Where the runnable scripts went.** Only the findings (`RESULT.md`,
 > `SUMMARY.md`, this file) live in-tree. The reproduction scripts

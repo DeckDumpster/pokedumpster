@@ -13,6 +13,6 @@ notes: >
   visible. Assert the Source select has options tcgplayer, ebay,
   pokemoncenter, lgs, other. Assert the Seller, Order date, Total, and
   Notes inputs are present. Assert the paste textarea and "Parse" button
-  exist. Assert the lines header reads "Cards (0/0 ready)" and the empty
+  exist. Assert the lines header reads "Cards (0/0 ready)" and the
   empty state "No cards on this order yet." is shown. Assert the
   "Commit order" button is disabled. Screenshot.

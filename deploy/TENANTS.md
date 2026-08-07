@@ -275,13 +275,16 @@ Run `pkdump tenant adopt collection` (see deploy/TENANTS.md).
 A collection silently reading as empty is the worst outcome available to this
 change, so it is the one the code makes impossible.
 
+## Recovering one tenant
+
+`deploy/RESTORE.md`, "Restoring ONE tenant while the others stay live".
+`deploy/restore-litestream.sh <instance> <tenant>` restores exactly one tenant
+from its own derived prefix; `tests/litestream/drill.sh` runs that procedure in
+CI — in place, in time, and onto a bare volume — and asserts the other tenants
+come out byte-identical.
+
 ## What is not here yet
 
 - **Authentication** — a separate epic, not started. Until it lands, the
   `--multi-tenant` resolver believes whatever a caller claims, which is why
   nothing running it may be exposed.
-- **Restoring one tenant without touching the others** — `pd-v8zf`.
-  `deploy/restore-litestream.sh <instance> <tenant>` restores exactly one tenant
-  from its own derived prefix, and `tests/litestream/run.sh` proves it hands back
-  that tenant's data and not a neighbour's. The written multi-tenant DR runbook
-  is still that bead's deliverable.

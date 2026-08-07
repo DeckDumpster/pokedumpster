@@ -1,18 +1,21 @@
 //! `pkdump-server` — the Axum HTTP application for PokeDumpster.
 //!
-//! Holds one user-database connection (with the shared catalog attached)
-//! behind a mutex; requests are serialised, which is fine for a single-user
-//! local server. The JSON API lives under `/api`; every other path is served
-//! from the SvelteKit static build, falling back to `index.html` so the SPA
-//! handles client-side routing.
+//! Holds one collection-database connection per tenant (with the shared
+//! catalog attached) behind a mutex; a tenant's requests are serialised,
+//! which is fine for a personal collection tracker. The JSON API lives under
+//! `/api`; every other path is served from the SvelteKit static build,
+//! falling back to `index.html` so the SPA handles client-side routing.
+//!
+//! Which tenant a request is served as is decided by [`tenant`], once, in a
+//! middleware — and by default there is only one, exactly as before.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::{Router, routing::get};
+use axum::{Router, middleware, routing::get};
 use rusqlite::Connection;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -21,12 +24,20 @@ use pkdump_db::DbError;
 use pkdump_db::search_meta::SearchFlag;
 
 mod routes;
+pub mod tenant;
 
-/// Shared application state: the single user-database connection (guarded by
-/// a mutex) plus the immutable search registry/flags loaded once at startup.
+use tenant::Tenants;
+
+/// Shared application state: the collection databases this process may serve
+/// plus the immutable search registry/flags loaded once at startup.
+///
+/// Note what is *not* here: a connection. Reaching a database goes through
+/// [`Tenants::connection`] with a [`tenant::TenantId`] that only the
+/// resolution middleware can mint, so there is no ambient default collection
+/// for a handler to pick up by accident.
 #[derive(Clone)]
 pub struct AppState {
-    conn: Arc<Mutex<Connection>>,
+    tenants: Arc<Tenants>,
     registry: Arc<KeywordRegistry>,
     flags: Arc<Vec<SearchFlag>>,
     /// The data dir — read by `/api/backup-status` for the `.backup-last-ok`
@@ -36,6 +47,7 @@ pub struct AppState {
 
 /// An error rendered as an HTTP response. `DbError::NotFound` → 404,
 /// `DbError::Conflict` → 409, `DbError::Import` → 400, everything else → 500.
+#[derive(Debug)]
 pub struct AppError(StatusCode, String);
 
 impl AppError {
@@ -76,13 +88,21 @@ impl From<tokio::task::JoinError> for AppError {
 /// Run a blocking database closure on the connection without holding the
 /// async executor. The closure receives `&mut Connection` so it works with
 /// both read and write repository functions.
+///
+/// This is the only route from a handler to a database, and it takes the
+/// tenant from the request scope rather than from anything the handler
+/// passes in — that is what makes cross-tenant access unreachable from
+/// route code rather than merely unusual. A request that never went through
+/// the resolution middleware errors here; it does not get a default.
 async fn blocking<T, F>(state: &AppState, f: F) -> Result<T, AppError>
 where
     F: FnOnce(&mut Connection) -> Result<T, DbError> + Send + 'static,
     T: Send + 'static,
 {
-    let conn = state.conn.clone();
+    let id = tenant::current()?;
+    let tenants = state.tenants.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let conn = tenants.connection(&id)?;
         let mut guard = conn.lock().expect("connection mutex poisoned");
         f(&mut guard)
     })
@@ -105,9 +125,14 @@ fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
         let html = index_html.clone();
         async move { axum::response::Html(html) }
     };
+    // `route_layer`, not `layer`: resolution runs for API routes that match,
+    // and an unmatched `/api/...` path still falls through to the SPA
+    // fallback exactly as it did before.
+    let api = routes::api_router()
+        .route_layer(middleware::from_fn_with_state(state.clone(), tenant::layer));
     Router::new()
         .route("/health", get(|| async { "ok" }))
-        .nest("/api", routes::api_router())
+        .nest("/api", api)
         .nest_service("/_app", ServeDir::new(static_dir.join("_app")))
         // Static-asset directories carried in by adapter-static. Each needs
         // an explicit nest_service so they don't fall through to the SPA
@@ -126,45 +151,74 @@ fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
         .fallback(get(spa))
 }
 
-/// Start the HTTP server. Opens the user database (catalog attached) up
-/// front — fails fast if the catalog is missing (`pkdump setup` not run).
-pub async fn serve(
-    user_db: PathBuf,
-    shared_db: PathBuf,
-    static_dir: PathBuf,
-    data_dir: PathBuf,
-    host: IpAddr,
-    port: u16,
-) -> anyhow::Result<()> {
+/// Everything `pkdump serve` needs to stand the HTTP app up.
+pub struct ServeConfig {
+    /// The tenant this process serves when `multi_tenant` is off — i.e.
+    /// `$PKDUMP_USER` — and the collection database it resolves to.
+    pub tenant: String,
+    pub user_db: PathBuf,
+    /// The directory holding one database per tenant. Read only when
+    /// `multi_tenant` is on; `tenant`/`user_db` are ignored in that mode.
+    pub tenants_dir: PathBuf,
+    pub shared_db: PathBuf,
+    pub static_dir: PathBuf,
+    pub data_dir: PathBuf,
+    pub host: IpAddr,
+    pub port: u16,
+    /// Per-request tenant resolution. **Off unless explicitly switched on.**
+    /// There is no authentication in front of it, so an instance with this
+    /// on lets any caller name any tenant — see `deploy/TENANTS.md`.
+    pub multi_tenant: bool,
+}
+
+/// Start the HTTP server. In single-tenant mode the collection database is
+/// opened up front — so a missing catalog (`pkdump setup` not run) fails at
+/// startup rather than on the first request.
+pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
     // Idempotent shared-catalog migration on startup. `pkdump setup`
     // and `pkdump data refresh` normally own shared schema, but a
     // binary upgrade can ship a data-only migration (e.g. seeding a
     // new variant) that must be applied before the server starts
     // serving requests. open_shared runs pending migrations and is a
     // no-op when nothing is pending.
-    {
-        let mut shared = pkdump_db::open_shared(&shared_db)?;
+    //
+    // The search registry is read off the catalog here too: it is catalog
+    // data, the same for every tenant, so it is loaded once from the one
+    // shared database rather than through whichever collection happens to
+    // be open.
+    let (registry, flags) = {
+        let mut shared = pkdump_db::open_shared(&cfg.shared_db)?;
         // Seed the search query metadata (keywords, rarity ranks, is:-flags)
         // on every startup. Unlike the upstream catalog, these are pure
         // embedded data (include_str!), so reconciling here — not just at
         // `pkdump setup`/`data refresh` — means a fresh deploy never serves an
         // empty keyword registry (which would reject every keyword query).
         pkdump_db::search_meta::reconcile(&mut shared)?;
-    }
-    let conn = pkdump_db::connect_user(&user_db, &shared_db)?;
-    // Load the search keyword registry + is:-flag definitions once.
-    let registry = Arc::new(pkdump_db::search_meta::load_registry(&conn)?);
-    let flags = Arc::new(pkdump_db::search_meta::load_flags(&conn)?);
+        (
+            Arc::new(pkdump_db::search_meta::load_registry(&shared)?),
+            Arc::new(pkdump_db::search_meta::load_flags(&shared)?),
+        )
+    };
+    let tenants = if cfg.multi_tenant {
+        println!(
+            "pkdump: MULTI-TENANT resolution is ON — every request names its tenant in \
+             `{}`, and nothing authenticates that claim. Do not expose this instance.",
+            tenant::TENANT_HEADER
+        );
+        Tenants::multi(cfg.tenants_dir, cfg.shared_db)
+    } else {
+        Tenants::single(&cfg.tenant, cfg.user_db, cfg.shared_db)?
+    };
     let state = AppState {
-        conn: Arc::new(Mutex::new(conn)),
+        tenants: Arc::new(tenants),
         registry,
         flags,
-        data_dir: Arc::new(data_dir.clone()),
+        data_dir: Arc::new(cfg.data_dir.clone()),
     };
-    let addr = SocketAddr::new(host, port);
+    let addr = SocketAddr::new(cfg.host, cfg.port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("pkdump serving on http://{addr}");
-    axum::serve(listener, app(state, static_dir, data_dir)).await?;
+    axum::serve(listener, app(state, cfg.static_dir, cfg.data_dir)).await?;
     Ok(())
 }
 
@@ -175,52 +229,111 @@ mod tests {
     use axum::http::{Request, header};
     use tower::ServiceExt;
 
-    /// A test router whose catalog holds one printing (`sv3pt5-1-normal`) and
-    /// whose static dir holds a stub `index.html`.
-    fn test_app() -> (tempfile::TempDir, Router) {
-        let dir = tempfile::tempdir().unwrap();
-        let shared = dir.path().join("shared.sqlite");
-        {
-            let mut c = pkdump_db::open_shared(&shared).unwrap();
-            pkdump_db::search_meta::reconcile(&mut c).unwrap();
-            c.execute(
-                "INSERT INTO sets (set_code, ptcgo_code, name, series) \
-                 VALUES ('sv3pt5', 'MEW', '151', 'Scarlet & Violet')",
-                [],
-            )
-            .unwrap();
-            c.execute(
-                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
-                 VALUES ('sv3pt5-1', 'sv3pt5', '1', 1, 'Bulbasaur')",
-                [],
-            )
-            .unwrap();
-            c.execute(
-                "INSERT INTO printings (printing_id, card_id, variant) \
-                 VALUES ('sv3pt5-1-normal', 'sv3pt5-1', 'normal')",
-                [],
-            )
-            .unwrap();
-        }
-        let conn = pkdump_db::connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
-        let registry = Arc::new(pkdump_db::search_meta::load_registry(&conn).unwrap());
-        let flags = Arc::new(pkdump_db::search_meta::load_flags(&conn).unwrap());
-        let static_dir = dir.path().join("static");
+    /// A catalog holding one printing (`sv3pt5-1-normal`), plus the static
+    /// dir the router serves the SPA shell from.
+    fn seed(dir: &std::path::Path) -> PathBuf {
+        let shared = dir.join("shared.sqlite");
+        let mut c = pkdump_db::open_shared(&shared).unwrap();
+        pkdump_db::search_meta::reconcile(&mut c).unwrap();
+        c.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('sv3pt5', 'MEW', '151', 'Scarlet & Violet')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+             VALUES ('sv3pt5-1', 'sv3pt5', '1', 1, 'Bulbasaur')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO printings (printing_id, card_id, variant) \
+             VALUES ('sv3pt5-1-normal', 'sv3pt5-1', 'normal')",
+            [],
+        )
+        .unwrap();
+
+        let static_dir = dir.join("static");
         std::fs::create_dir_all(&static_dir).unwrap();
         std::fs::write(
             static_dir.join("index.html"),
             "<!doctype html><title>PokeDumpster</title>",
         )
         .unwrap();
-        let data_dir = dir.path().to_path_buf();
+        shared
+    }
+
+    fn router_for(dir: &std::path::Path, shared: &std::path::Path, tenants: Tenants) -> Router {
+        let registry = {
+            let c = pkdump_db::open_shared(shared).unwrap();
+            Arc::new(pkdump_db::search_meta::load_registry(&c).unwrap())
+        };
+        let flags = {
+            let c = pkdump_db::open_shared(shared).unwrap();
+            Arc::new(pkdump_db::search_meta::load_flags(&c).unwrap())
+        };
+        let data_dir = dir.to_path_buf();
         let state = AppState {
-            conn: Arc::new(Mutex::new(conn)),
+            tenants: Arc::new(tenants),
             registry,
             flags,
             data_dir: Arc::new(data_dir.clone()),
         };
-        (dir, app(state, static_dir, data_dir))
+        app(state, dir.join("static"), data_dir)
     }
+
+    /// A single-tenant test router — the production shape, and the one every
+    /// pre-existing test below exercises.
+    fn test_app() -> (tempfile::TempDir, Router) {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = seed(dir.path());
+        let tenants = Tenants::single(
+            "collection",
+            dir.path().join("tenants").join("collection.sqlite"),
+            shared.clone(),
+        )
+        .unwrap();
+        let router = router_for(dir.path(), &shared, tenants);
+        (dir, router)
+    }
+
+    /// A multi-tenant test router with `alice` and `bob` provisioned, as
+    /// `pkdump tenant create` would leave them.
+    fn multi_tenant_app(names: &[&str]) -> (tempfile::TempDir, Router, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = seed(dir.path());
+        let tenants_dir = dir.path().join("tenants");
+        std::fs::create_dir_all(&tenants_dir).unwrap();
+        // What `pkdump tenant create` leaves behind: one database per
+        // tenant, user schema applied, under `tenants/`.
+        for name in names {
+            pkdump_db::open_user(&tenants_dir.join(format!("{name}.sqlite"))).unwrap();
+        }
+        let router = router_for(
+            dir.path(),
+            &shared,
+            Tenants::multi(tenants_dir.clone(), shared.clone()),
+        );
+        (dir, router, tenants_dir)
+    }
+
+    /// `GET`/`POST`/`DELETE` helpers that optionally name a tenant.
+    fn request(method: &str, uri: &str, tenant: Option<&str>, body: Option<&str>) -> Request<Body> {
+        let mut b = Request::builder().method(method).uri(uri);
+        if let Some(t) = tenant {
+            b = b.header(tenant::TENANT_HEADER, t);
+        }
+        match body {
+            Some(json) => b
+                .header("content-type", "application/json")
+                .body(Body::from(json.to_string()))
+                .unwrap(),
+            None => b.body(Body::empty()).unwrap(),
+        }
+    }
+
+    const ADD_CARD: &str = r#"{"printing_id":"sv3pt5-1-normal","source":"manual_id"}"#;
 
     async fn body_string(resp: Response) -> String {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -523,5 +636,198 @@ mod tests {
         // read-only shared database) is not.
         assert!(envelope.get("collection").is_some());
         assert!(envelope.get("printings").is_none());
+    }
+
+    // ---------------------------------------------------------------------
+    // Tenant resolution and isolation.
+    //
+    // These assert the NEGATIVE. "Alice can see Alice's cards" is not the
+    // property that matters and would pass just as happily with no resolver
+    // at all; what matters is that nothing Bob sends reaches Alice's
+    // collection. Each test below is written so that removing or bypassing
+    // the resolver breaks it — verified by mutation, see `pd-5emg`.
+    // ---------------------------------------------------------------------
+
+    /// **The load-bearing test.** A request resolved as Bob cannot read, and
+    /// cannot destroy, anything belonging to Alice.
+    ///
+    /// Break the resolver — have `Tenants::resolve` ignore the header and
+    /// return a fixed tenant, or have `blocking` reach for some ambient
+    /// connection — and Bob's list comes back holding Alice's card, or his
+    /// DELETE succeeds. Either way this fails.
+    #[tokio::test]
+    async fn one_tenant_cannot_reach_another_tenants_collection() {
+        let (_d, router, _dir) = multi_tenant_app(&["alice", "bob"]);
+
+        // Alice registers a card.
+        let created = router
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some("alice"),
+                Some(ADD_CARD),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        // Bob's collection is empty. This is the assertion the whole epic
+        // is for.
+        let bobs = router
+            .clone()
+            .oneshot(request("GET", "/api/collection", Some("bob"), None))
+            .await
+            .unwrap();
+        assert_eq!(bobs.status(), StatusCode::OK);
+        let body = body_string(bobs).await;
+        assert_eq!(
+            body.trim(),
+            "[]",
+            "bob's collection must not contain alice's card: {body}"
+        );
+
+        // Nor can Bob reach it by id — the row exists, but not for him.
+        let stolen = router
+            .clone()
+            .oneshot(request("DELETE", "/api/collection/1", Some("bob"), None))
+            .await
+            .unwrap();
+        assert_eq!(
+            stolen.status(),
+            StatusCode::NOT_FOUND,
+            "bob deleted a row out of alice's collection"
+        );
+
+        // And Alice still has it — the negative above is not just "nobody
+        // can see anything".
+        let alices = router
+            .oneshot(request("GET", "/api/collection", Some("alice"), None))
+            .await
+            .unwrap();
+        assert!(body_string(alices).await.contains("sv3pt5-1-normal"));
+    }
+
+    /// Multi-tenant with no tenant named is refused. There is no ambient
+    /// tenant to fall back to — falling back would serve one person's
+    /// collection to an anonymous caller.
+    #[tokio::test]
+    async fn a_request_that_names_no_tenant_is_refused() {
+        let (_d, router, _dir) = multi_tenant_app(&["alice"]);
+        router
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some("alice"),
+                Some(ADD_CARD),
+            ))
+            .await
+            .unwrap();
+
+        let anon = router
+            .oneshot(request("GET", "/api/collection", None, None))
+            .await
+            .unwrap();
+        assert_eq!(anon.status(), StatusCode::BAD_REQUEST);
+        let body = body_string(anon).await;
+        assert!(
+            !body.contains("sv3pt5-1-normal"),
+            "an unresolved request was served a collection: {body}"
+        );
+    }
+
+    /// Naming a tenant that does not exist is a 404 — it does not provision
+    /// one. A resolver that opened whatever it was handed would let any
+    /// caller create tenants by guessing names.
+    #[tokio::test]
+    async fn an_unknown_tenant_is_a_404_and_creates_nothing() {
+        let (_d, router, tenants_dir) = multi_tenant_app(&["alice"]);
+        let resp = router
+            .oneshot(request("GET", "/api/collection", Some("mallory"), None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert!(!tenants_dir.join("mallory.sqlite").exists());
+    }
+
+    /// A tenant name is a filename, so a traversing one must not reach a
+    /// database outside `tenants/` — the catalog beside it, say.
+    #[tokio::test]
+    async fn a_traversing_tenant_name_cannot_escape_the_tenants_directory() {
+        let (_d, router, _dir) = multi_tenant_app(&["alice"]);
+        let resp = router
+            .oneshot(request("GET", "/api/collection", Some("../shared"), None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// **Multitenancy is invisible when it is off.** The default build reads
+    /// no tenant header at all, so a request cannot switch collections by
+    /// sending one — the opt-in flag is the only switch there is.
+    #[tokio::test]
+    async fn with_the_flag_off_the_header_does_nothing() {
+        let (_d, router) = test_app();
+
+        // Register a card without naming a tenant, as the SPA does.
+        let created = router
+            .clone()
+            .oneshot(request("POST", "/api/collection", None, Some(ADD_CARD)))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        // The same instance, asked for some other tenant, serves the one
+        // collection it has — it does not 404, and it does not switch.
+        let claimed = router
+            .oneshot(request("GET", "/api/collection", Some("bob"), None))
+            .await
+            .unwrap();
+        assert_eq!(claimed.status(), StatusCode::OK);
+        assert!(body_string(claimed).await.contains("sv3pt5-1-normal"));
+    }
+
+    /// Every route reaches its database through `blocking`, which takes the
+    /// tenant from the request scope. Outside a resolved request there is no
+    /// connection to be had — not a default one, none.
+    #[tokio::test]
+    async fn there_is_no_database_outside_a_resolved_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = seed(dir.path());
+        let state = AppState {
+            tenants: Arc::new(
+                Tenants::single(
+                    "collection",
+                    dir.path().join("tenants").join("collection.sqlite"),
+                    shared,
+                )
+                .unwrap(),
+            ),
+            registry: Arc::new(Default::default()),
+            flags: Arc::new(Vec::new()),
+            data_dir: Arc::new(dir.path().to_path_buf()),
+        };
+
+        let unscoped = blocking(&state, |c| {
+            Ok(c.query_row("SELECT count(*) FROM collection", [], |r| {
+                r.get::<_, i64>(0)
+            })?)
+        })
+        .await;
+        assert!(unscoped.is_err(), "a connection without a resolved tenant");
+
+        // In scope, the same call works — the failure above is the missing
+        // tenant, not a broken query.
+        let scoped = tenant::test_support::as_tenant(
+            "collection",
+            blocking(&state, |c| {
+                Ok(c.query_row("SELECT count(*) FROM collection", [], |r| {
+                    r.get::<_, i64>(0)
+                })?)
+            }),
+        )
+        .await;
+        assert_eq!(scoped.unwrap(), 0);
     }
 }

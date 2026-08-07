@@ -57,7 +57,10 @@ cargo run --bin pkdump -- serve
 ```
 
 Set `$PKDUMP_HOME` to relocate the data dir (defaults to `~/.pkdump/`).
-Set `$PKDUMP_USER` to switch user (defaults to `collection`).
+Set `$PKDUMP_USER` to switch tenant (defaults to `collection`). Each tenant's
+collection lives at `$PKDUMP_HOME/tenants/<tenant>.sqlite`, sharing the one
+`shared.sqlite` catalog; `pkdump tenant create|list|remove` provisions them and
+`deploy/TENANTS.md` is the runbook.
 
 ## Deployment
 

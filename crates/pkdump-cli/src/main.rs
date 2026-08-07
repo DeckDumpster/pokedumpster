@@ -10,6 +10,7 @@ mod fixture;
 mod import;
 mod serve;
 mod setup;
+mod tenant;
 
 use clap::{Parser, Subcommand};
 
@@ -32,6 +33,8 @@ enum Command {
     Data(data::DataArgs),
     /// Start the HTTP server.
     Serve(serve::ServeArgs),
+    /// Provision the per-tenant collection databases.
+    Tenant(tenant::TenantArgs),
     /// Build the deterministic test fixture for the intents UI harness.
     SeedFixture(fixture::FixtureArgs),
     /// Database maintenance — snapshot/restore for the UI test harness.
@@ -47,6 +50,7 @@ fn main() -> anyhow::Result<()> {
         Command::Setup(args) => setup::run(args),
         Command::Data(args) => data::run(args),
         Command::Serve(args) => serve::run(args),
+        Command::Tenant(args) => tenant::run(args),
         Command::SeedFixture(args) => fixture::run(args),
         Command::Db(args) => db::run(args),
         Command::Export(args) => export::run(args),

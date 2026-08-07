@@ -44,9 +44,12 @@ scripts instead of `setup.sh` / `deploy.sh` / `teardown.sh`.
 Two SQLite databases live on each data volume:
 
 - `shared.sqlite` — the immutable card catalog. Fully reproducible from
-  upstream via `pkdump setup`; **not** backed up.
-- `collection.sqlite` — the per-user collection. The only thing worth
-  backing up.
+  upstream via `pkdump setup`; **not** backed up. One copy, `ATTACH`ed by
+  every tenant.
+- `tenants/<tenant>.sqlite` — one collection per tenant (`collection` is the
+  original single user). The only thing worth backing up. See
+  [TENANTS.md](TENANTS.md) for provisioning and the migration from the old
+  flat `collection.sqlite` layout.
 
 ## Local CI loop
 
@@ -166,7 +169,7 @@ timers for the instance (the host-wide disk timer is left alone).
 ## Backup & restore — Litestream → S3
 
 Backups are off-box only (no local disk): the `pkdump-litestream-<inst>` sidecar
-continuously replicates `collection.sqlite` to S3 with **6-month point-in-time
+continuously replicates `tenants/collection.sqlite` to S3 with **6-month point-in-time
 recovery**. The shared catalog is not backed up (reproducible via `seed.sh`).
 Credentials are assume-role (auto-refresh) via a podman secret.
 

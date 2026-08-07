@@ -5,7 +5,7 @@
 #
 # The old design pinged a monitor from inside backup.sh on a successful nightly
 # run. There is no backup.sh anymore: backups are a CONTINUOUS Litestream sidecar
-# replicating collection.sqlite to S3. The canonical silent failure (observed
+# replicating tenants/collection.sqlite to S3. The canonical silent failure (observed
 # during a Jun 2026 key rotation) is the sidecar showing systemd `active` while
 # error-looping on AccessDenied and NOT replicating — liveness is NOT freshness.
 #
@@ -92,8 +92,8 @@ SNAP_OUT="$(podman run --rm --user 0:0 \
     -e LITESTREAM_S3_BUCKET="${LITESTREAM_S3_BUCKET:-}" \
     -e LITESTREAM_S3_REGION="${LITESTREAM_S3_REGION:-}" \
     -e LITESTREAM_S3_PATH="${LITESTREAM_S3_PATH:-}" \
-    -e LITESTREAM_DB_PATH="/data/${USER_DB}.sqlite" \
-    "$LS_IMG" snapshots -config /etc/litestream.yml "/data/${USER_DB}.sqlite" 2>&1)" \
+    -e LITESTREAM_DB_PATH="/data/tenants/${USER_DB}.sqlite" \
+    "$LS_IMG" snapshots -config /etc/litestream.yml "/data/tenants/${USER_DB}.sqlite" 2>&1)" \
     || stale "litestream snapshots failed (creds/network/S3): $(printf '%s' "$SNAP_OUT" | tail -n1)"
 
 # Newest RFC3339 'created' timestamp, parsed format-agnostically (the column

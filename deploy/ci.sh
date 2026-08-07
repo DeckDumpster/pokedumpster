@@ -95,8 +95,10 @@ step "Frontend: npm ci && npm test && npm run check && npm run build"
 (
     cd "$REPO_DIR/frontend"
     npm ci
-    # Design-token gates: WCAG AA contrast for every declared pairing, plus the
-    # reference/semantic layer split. Node's built-in runner, no extra deps.
+    # Design-token gates: WCAG AA contrast for every declared pairing, the
+    # reference/semantic layer split, and the two ratchets — raw colour and raw
+    # dimension — which fail on any INCREASE in values chosen outside the token
+    # layer. Node's built-in runner, no extra deps.
     npm test
     npm run check
     npm run build

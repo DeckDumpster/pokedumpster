@@ -342,8 +342,8 @@ in `tokens.css`, not an exception.
 
 `frontend/src/lib/components/ui/` is the visual vocabulary — `Panel`, `Button`,
 `Field`, `Badge`, `ProgressBar`, `SectionHeader`, `EmptyState`, `Toolbar`,
-re-exported from `$lib/components/ui`. Routes render; they do not decide
-surfaces, fills, rules or spacing.
+`SearchField`, `Segmented`, `Menu`, re-exported from `$lib/components/ui`.
+Routes render; they do not decide surfaces, fills, rules or spacing.
 
 Every primitive is styled from the **semantic** token layer only — no colour
 literal, no `--pd-*`. A route that needs a variant a primitive lacks **adds the

@@ -64,17 +64,23 @@ Steps, in order, exiting non-zero on the first failure:
 
 1. Tear down any stale `ci` instance.
 2. `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
-3. Frontend: `npm ci && npm run check && npm run build`.
-4. Build and start a `--test` container, wait for the server to answer on
-   its port, then tear it down.
-5. Intents UI harness (`tests/ui`, Playwright) — run if browsers are
-   installed, otherwise skipped with a message. Some scenarios need
-   `ANTHROPIC_API_KEY`; without it, Vision-mode scenarios may skip.
+3. Frontend: `npm ci && npm test && npm run check && npm run build`.
+4. Build and start a `--test` container and wait for the server to answer on
+   its port.
+5. Backup gate (`tests/litestream/run.sh`): four tenant databases replicated
+   through the shipped Litestream config to a throwaway MinIO, and a
+   non-first one restored.
+6. DR drill (`tests/litestream/drill.sh`): `deploy/RESTORE.md`'s procedure
+   executed with the shipped scripts — one tenant restored in place while the
+   others stay byte-identical.
+7. Visual regression (`tests/visual/`): every route at 1440 and 768, diffed
+   against the committed baselines.
 
-Install Playwright browsers once to enable step 5:
+The intents UI harness (`tests/ui`, Playwright) is deliberately not in the
+loop — it needs `ANTHROPIC_API_KEY` for Vision mode. Run it on its own:
 
 ```bash
-( cd tests/ui && npx playwright install chromium )
+( cd tests/ui && npx playwright install chromium && npx playwright test )
 ```
 
 ## Seed volume (one-time, speeds up future instances)

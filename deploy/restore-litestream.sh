@@ -16,6 +16,8 @@
 #      volume (temp-then-rename).
 #   3. Restarts the app + sidecar.
 #   4. Verifies the restored row count.
+#   5. Verifies both services actually came back — a restored collection that is
+#      no longer replicating is a half-finished recovery, and it fails silently.
 #
 #   Only the named tenant is touched. Every other tenant keeps replicating from
 #   its own prefix and its files are not read or written here.
@@ -141,7 +143,12 @@ rm -f "${DEST}-wal" "${DEST}-shm"
 mv -f "$TMP" "$DEST"
 
 # --- Restart ---------------------------------------------------------------
+# reset-failed before start: the sidecar unit is rate-limited (StartLimitBurst=5
+# per 300s) so a crash-loop pages instead of thrashing. Restoring several tenants
+# in a row — exactly what a real incident looks like — trips that limit, and then
+# `start` fails. Observed in the pd-v8zf DR drill.
 echo "==> Starting ${SERVICE_NAME} (+ sidecar)..."
+systemctl --user reset-failed "$SERVICE_NAME" "${SIDECAR}.service" 2>/dev/null || true
 systemctl --user start "$SERVICE_NAME" 2>/dev/null || true
 systemctl --user start "${SIDECAR}.service" 2>/dev/null || true
 
@@ -149,3 +156,29 @@ systemctl --user start "${SIDECAR}.service" 2>/dev/null || true
 ROWS="$(sqlite3 "file:${DEST}?mode=ro" 'SELECT count(*) FROM collection;' 2>&1 || echo '?')"
 echo "==> Restore complete — tenants/${TENANT}.sqlite has ${ROWS} collection rows."
 echo "    Shared catalog not restored (reproducible): bash deploy/seed.sh ${INSTANCE}"
+
+# A restored collection that is no longer being backed up is a half-finished
+# recovery, and the failure is silent: replication stopping produces no error
+# anywhere and Layer 1 would not notice for 36 hours. So the services this script
+# stopped are checked, not merely started.
+DOWN=()
+for UNIT in "$SERVICE_NAME" "${SIDECAR}.service"; do
+    # Units that are not installed on this box (a bare instance with no app, a
+    # box with backups deliberately unconfigured) are not "down".
+    systemctl --user cat "$UNIT" >/dev/null 2>&1 || continue
+    # A few seconds of grace: the app container pulls itself up behind systemd.
+    for _ in $(seq 10); do
+        [ "$(systemctl --user is-active "$UNIT")" = active ] && break
+        sleep 1
+    done
+    [ "$(systemctl --user is-active "$UNIT")" = active ] || DOWN+=("$UNIT")
+done
+if [ ${#DOWN[@]} -gt 0 ]; then
+    echo ""
+    echo "ERROR: the restore succeeded but these units did NOT come back up:"
+    printf '         %s\n' "${DOWN[@]}"
+    echo "       Backups are OFF until the sidecar runs. Diagnose and start it:"
+    echo "         systemctl --user status ${SIDECAR}.service"
+    echo "         systemctl --user reset-failed ${SIDECAR}.service && systemctl --user start ${SIDECAR}.service"
+    exit 1
+fi

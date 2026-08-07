@@ -21,7 +21,7 @@ OnFailure=pkdump-alert@%n.service
 Image=docker.io/litestream/litestream:latest
 Exec=replicate -config /etc/litestream.yml
 # Run as container-root so (under rootless Podman) it maps to the invoking user
-# — matching the app's ownership of collection.sqlite + the mounted creds.
+# — matching the app's ownership of tenants/*.sqlite + the mounted creds.
 # Litestream 0.5 WRITES bookkeeping tables to the DB, so it needs read+write.
 User=0
 

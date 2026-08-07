@@ -48,7 +48,9 @@ export const EXPLICIT_BASE_URL = process.env.UI_TEST_BASE_URL ?? null;
 // main DB file, leaving the live `-wal` in place so a prior test's writes
 // replayed across the isolation boundary (pokedumpster-lxm). `pkdump db` uses
 // SQLite's online backup API, which is WAL-correct and dependency-free.
-const CONTAINER_DB_BACKUP = "/data/collection.sqlite.bak";
+// Tenant collection DBs live under /data/tenants (deploy/TENANTS.md); the
+// shared catalog stays at the root of the data dir.
+const CONTAINER_DB_BACKUP = "/data/tenants/collection.sqlite.bak";
 const CONTAINER_SHARED_DB_BACKUP = "/data/shared.sqlite.bak";
 
 /** Skip-style error: surfaces a reason when the environment is not ready. */

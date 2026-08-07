@@ -5,8 +5,8 @@ your collection back. It assumes nothing but a shell — no Claude, no extra too
 
 ## What's backed up, and where
 
-- The **per-user collection DB** (`collection.sqlite`, ~4.6k rows) is continuously
-  replicated to **S3** by the Litestream sidecar (`pkdump-litestream-<inst>.service`).
+- The **per-tenant collection DB** (`tenants/collection.sqlite`, ~4.6k rows) is
+  continuously replicated to **S3** by the Litestream sidecar (`pkdump-litestream-<inst>.service`).
 - Location: `s3://<bucket>/prod/collection` — the bucket is in
   `~/.config/pkdump/<inst>/litestream.env`.
 - **Point-in-time recovery: 6 months.** You can restore the DB as it was at *any
@@ -36,7 +36,7 @@ bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod
 cd ~/pokedumpster
 bash deploy/restore-litestream.sh prod          # add --yes to skip the prompt
 ```
-It stops the app + sidecar, restores `collection.sqlite` from S3 onto the data
+It stops the app + sidecar, restores `tenants/<tenant>.sqlite` from S3 onto the data
 volume (temp-then-rename), restarts both, and prints the row count. Done.
 
 ## Scenario B — undo a mistake (point-in-time)
@@ -54,9 +54,9 @@ podman run --rm --user 0:0 -v "$D:/out" \
   --secret pkdump-prod-s3-bootstrap,type=mount,target=/aws/credentials \
   -e AWS_CONFIG_FILE=/aws/config -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials -e AWS_PROFILE=pkdump \
   -e LITESTREAM_S3_BUCKET="$LITESTREAM_S3_BUCKET" -e LITESTREAM_S3_REGION="$LITESTREAM_S3_REGION" \
-  -e LITESTREAM_S3_PATH=prod/collection -e LITESTREAM_DB_PATH=/data/collection.sqlite \
+  -e LITESTREAM_S3_PATH=prod/collection -e LITESTREAM_DB_PATH=/data/tenants/collection.sqlite \
   docker.io/litestream/litestream:latest \
-  restore -config /etc/litestream.yml -timestamp 2026-06-01T12:00:00Z -o /out/check.sqlite /data/collection.sqlite
+  restore -config /etc/litestream.yml -timestamp 2026-06-01T12:00:00Z -o /out/check.sqlite /data/tenants/collection.sqlite
 sqlite3 "$D/check.sqlite" 'SELECT count(*) FROM collection;'   # looks right?
 
 # 2. If good, commit it onto the live instance:
@@ -86,7 +86,7 @@ systemctl --user start pkdump-prod              # start the app
 
 ```bash
 MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-prod-data)
-sqlite3 "file:${MP}/collection.sqlite?mode=ro" 'SELECT count(*) FROM collection;'
+sqlite3 "file:${MP}/tenants/collection.sqlite?mode=ro" 'SELECT count(*) FROM collection;'
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8090/api/sets     # 200 = serving
 systemctl --user is-active pkdump-litestream-prod.service                    # backups resumed
 ```

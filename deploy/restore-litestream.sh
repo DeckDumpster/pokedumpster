@@ -65,7 +65,7 @@ LS_YML="${REPO_DIR}/deploy/litestream.yml"
 LS_IMG="docker.io/litestream/litestream:latest"
 
 echo "==> PokeDumpster Litestream restore"
-echo "    Instance: ${INSTANCE}   User DB: ${USER_DB}.sqlite   Volume: ${VOLUME}"
+echo "    Instance: ${INSTANCE}   Tenant DB: tenants/${USER_DB}.sqlite   Volume: ${VOLUME}"
 [ -n "$AT" ] && echo "    Point-in-time: ${AT}"
 
 # --- Validate --------------------------------------------------------------
@@ -84,7 +84,7 @@ set -a; . "${CONF_DIR}/litestream.env"; set +a
 # --- Confirm ---------------------------------------------------------------
 if [ "$YES" = false ]; then
     echo ""
-    echo "WARNING: overwrites ${USER_DB}.sqlite on '${VOLUME}' from"
+    echo "WARNING: overwrites tenants/${USER_DB}.sqlite on '${VOLUME}' from"
     echo "         s3://${LITESTREAM_S3_BUCKET}/${LITESTREAM_S3_PATH}"
     read -r -p "Continue? [y/N] " response
     [[ "$response" =~ ^[Yy]$ ]] || { echo "Restore cancelled."; exit 0; }
@@ -97,17 +97,21 @@ systemctl --user stop "${SIDECAR}.service" 2>/dev/null || true
 sleep 2
 
 MOUNTPOINT="$(podman volume inspect -f '{{.Mountpoint}}' "$VOLUME")"
-DEST="${MOUNTPOINT}/${USER_DB}.sqlite"
-TMP="${MOUNTPOINT}/${USER_DB}.sqlite.restore-tmp"
+# Tenant collection DBs live under tenants/ (deploy/TENANTS.md). Restoring onto
+# a bare volume — the disaster case — reaches a data dir that has no tenants/
+# yet, and litestream will not create the parent of its -o target.
+mkdir -p "${MOUNTPOINT}/tenants"
+DEST="${MOUNTPOINT}/tenants/${USER_DB}.sqlite"
+TMP="${MOUNTPOINT}/tenants/${USER_DB}.sqlite.restore-tmp"
 
 # --- Restore from S3 -------------------------------------------------------
 # litestream restore refuses to overwrite an existing file, so restore to a temp
 # path on the volume, then atomically rename into place.
-echo "==> Restoring ${USER_DB}.sqlite from S3 via litestream..."
+echo "==> Restoring tenants/${USER_DB}.sqlite from S3 via litestream..."
 rm -f "$TMP"
 RESTORE_FLAGS=(restore -config /etc/litestream.yml)
 [ -n "$AT" ] && RESTORE_FLAGS+=(-timestamp "$AT")     # point-in-time restore
-RESTORE_FLAGS+=(-o "/data/${USER_DB}.sqlite.restore-tmp" "/data/${USER_DB}.sqlite")
+RESTORE_FLAGS+=(-o "/data/tenants/${USER_DB}.sqlite.restore-tmp" "/data/tenants/${USER_DB}.sqlite")
 podman run --rm --user 0:0 \
     -v "${VOLUME}:/data" \
     -v "${LS_YML}:/etc/litestream.yml:ro" \
@@ -119,7 +123,7 @@ podman run --rm --user 0:0 \
     -e LITESTREAM_S3_BUCKET="$LITESTREAM_S3_BUCKET" \
     -e LITESTREAM_S3_REGION="$LITESTREAM_S3_REGION" \
     -e LITESTREAM_S3_PATH="$LITESTREAM_S3_PATH" \
-    -e LITESTREAM_DB_PATH="/data/${USER_DB}.sqlite" \
+    -e LITESTREAM_DB_PATH="/data/tenants/${USER_DB}.sqlite" \
     "$LS_IMG" "${RESTORE_FLAGS[@]}"
 
 # --- Atomic swap -----------------------------------------------------------
@@ -133,5 +137,5 @@ systemctl --user start "${SIDECAR}.service" 2>/dev/null || true
 
 # --- Verify ----------------------------------------------------------------
 ROWS="$(sqlite3 "file:${DEST}?mode=ro" 'SELECT count(*) FROM collection;' 2>&1 || echo '?')"
-echo "==> Restore complete — ${USER_DB}.sqlite has ${ROWS} collection rows."
+echo "==> Restore complete — tenants/${USER_DB}.sqlite has ${ROWS} collection rows."
 echo "    Shared catalog not restored (reproducible): bash deploy/seed.sh ${INSTANCE}"

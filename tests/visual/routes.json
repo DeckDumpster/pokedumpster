@@ -70,7 +70,7 @@
 			"id": "search-help",
 			"path": "/search-help",
 			"about": "Search syntax reference — dense prose and code",
-			"$waitFor": "The keyword and flag tables come from an onMount fetch, which can start AFTER networkidle — so settle() returns while the page is still short and it then grows under the screenshot. Without this the route fails 'two consecutive stable screenshots' most runs at 1440 (and did so before the token migration too).",
+			"$waitFor": "The keyword and flag tables come from an onMount fetch, which can start AFTER networkidle — so without this, settle() returns while the page is still short and it then grows under the screenshot. This is not the whole of pd-832w's 2557-vs-2561 flake, though: that one survived this waitFor and was the capture itself relaying out the page. See the warm-up shot in stabilize.ts.",
 			"waitFor": "[data-testid=\"search-vocab\"]"
 		}
 	]

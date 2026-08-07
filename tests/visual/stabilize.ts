@@ -108,8 +108,11 @@ export async function stabilize(page: Page): Promise<void> {
 /**
  * Wait until the page has stopped moving: data fetched, webfonts resolved,
  * and — for the routes that draw one — Chart.js finished its opening
- * animation. `toHaveScreenshot` re-shoots until two frames match, so this is
- * about getting there quickly, not about correctness.
+ * animation. `toHaveScreenshot` re-shoots until two frames match, so most of
+ * this is about getting there quickly, not about correctness.
+ *
+ * The warm-up capture is the exception, and it *is* about correctness — see
+ * the comment on it below.
  */
 export async function settle(page: Page, waitFor?: string): Promise<void> {
 	if (waitFor) await page.locator(waitFor).first().waitFor({ state: 'visible' });
@@ -121,13 +124,34 @@ export async function settle(page: Page, waitFor?: string): Promise<void> {
 		() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
 	);
 
+	// Taking a fullPage shot is not a passive read of the page: to reach past
+	// the viewport Chromium overrides the device metrics to the document's own
+	// height, and that relayout can resolve text differently from the layout
+	// that preceded it. On /search-help the inline <code> runs re-shape to a
+	// monospace face one pixel shorter — computed font-family, font-size and
+	// line-height are all unchanged, so only the inline box moves — which
+	// reflows the lead paragraph and one <h2> and makes the document 4px
+	// taller. It is a one-time step: every capture after the first agrees.
+	//
+	// That step is the whole flake. `toHaveScreenshot` shoots until two frames
+	// match, so whether the suite saw 2557 or 2561 came down to whether the
+	// relayout landed between its first two captures — fast box, first two
+	// disagree and it gives up with "failed to take two consecutive stable
+	// screenshots"; loaded box, both land cold and it compares 2557 against a
+	// 2561 baseline. Same defect, two different failure texts, neither
+	// reproducible on demand.
+	//
+	// So pay the step here, on a capture nobody looks at, and let the height
+	// loop below confirm the page has stopped moving afterwards. Every route
+	// then shoots from the warmed state its baseline was recorded in. Only
+	// /search-help is measurably affected today (verified across all 24 routes
+	// at both viewports), but nothing about the mechanism is specific to it,
+	// which is why this lives in settle() and not in that route's entry.
+	await page.screenshot({ fullPage: true });
+
 	// A fullPage shot is taken at the document's height, so that height is part
 	// of the screenshot's identity — and it can still be moving after everything
-	// above has settled. /search-help at 1440 grows by four trailing pixels as
-	// its last table commits, which is enough for `toHaveScreenshot` to give up
-	// with "failed to take two consecutive stable screenshots" even though the
-	// two frames are pixel-identical everywhere they overlap. Wait for the
-	// height to repeat before letting it shoot.
+	// above has settled. Wait for the height to repeat before letting it shoot.
 	await page.waitForFunction(
 		() => {
 			const w = window as unknown as { __pdH?: number; __pdN?: number };

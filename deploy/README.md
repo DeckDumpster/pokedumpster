@@ -135,7 +135,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `setup.sh <name> [port] [--init] [--test]` | Create an instance. `--test` seeds from the committed fixture; `--init` clones the seed volume |
 | `deploy.sh <name>` | Rebuild image and restart one instance |
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
-| `restore-litestream.sh [--yes] [--at=<RFC3339>] <inst> [user]` | Restore the collection from the S3 backup (latest or point-in-time) — see [RESTORE.md](RESTORE.md) |
+| `restore-litestream.sh [--yes] [--at=<RFC3339>] <inst> [tenant]` | Restore ONE tenant's collection from the S3 backup (latest or point-in-time) — see [RESTORE.md](RESTORE.md) |
 | `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer) |
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin) |
@@ -169,13 +169,18 @@ timers for the instance (the host-wide disk timer is left alone).
 ## Backup & restore — Litestream → S3
 
 Backups are off-box only (no local disk): the `pkdump-litestream-<inst>` sidecar
-continuously replicates `tenants/collection.sqlite` to S3 with **6-month point-in-time
-recovery**. The shared catalog is not backed up (reproducible via `seed.sh`).
-Credentials are assume-role (auto-refresh) via a podman secret.
+continuously replicates **every** `tenants/*.sqlite` to S3 with **6-month
+point-in-time recovery**. One sidecar covers all tenants — it watches the
+`tenants/` directory and derives each tenant's S3 prefix from its filename, so
+`pkdump tenant create` is the whole of "add a tenant to backups": no config
+edit, no restart. The shared catalog is not backed up (reproducible via
+`seed.sh`). Credentials are assume-role (auto-refresh) via a podman secret.
 
 ```bash
-# Restore the latest backup onto a live instance:
+# Restore the latest backup onto a live instance (tenant defaults to `collection`;
+# only that tenant is touched):
 bash deploy/restore-litestream.sh prod
+bash deploy/restore-litestream.sh prod alice
 
 # Point-in-time restore (within the 6-month window):
 bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod

@@ -1,26 +1,64 @@
 # Litestream config for the PokeDumpster backup sidecar (pokedumpster-8ch.3).
 #
-# Continuously replicates the per-user collection DB to S3. The shared catalog
-# (shared.sqlite) is reproducible via `pkdump setup` and is NOT backed up.
+# Continuously replicates EVERY tenant collection database to S3 from this one
+# sidecar. The shared catalog (shared.sqlite) is reproducible via `pkdump setup`,
+# lives OUTSIDE tenants/, and is deliberately NOT backed up.
 #
-# This file is INSTANCE-AGNOSTIC: the S3 target and DB path come from the
-# environment (set by the Quadlet unit's EnvironmentFile), so the single clone
-# can serve every instance. Litestream expands ${VARS} in the config by default.
+# This file is INSTANCE-AGNOSTIC: the S3 target and the tenants directory come
+# from the environment (set by the Quadlet unit's EnvironmentFile), so the single
+# clone can serve every instance. Litestream expands ${VARS} by default.
+#
+# ── DIRECTORY MODE (pd-fof4) ────────────────────────────────────────────────
+# `dir:` + `pattern:` + `watch:` is Litestream 0.5's native N-database mode. It
+# discovers the tenant databases itself and DERIVES each replica path from the
+# filename — `<LITESTREAM_S3_PATH>/<tenant>.sqlite`. Two consequences, and both
+# are the reason this is a directory entry and not a generated list of tenants:
+#
+#   * Adding a tenant is `pkdump tenant create <name>`, full stop. `watch: true`
+#     picks the new file up within ~5s with no config edit and no restart; there
+#     is no generator to run and nothing to keep in sync with the filesystem.
+#   * Two tenants CANNOT collide on one replica path. Pointing two databases at
+#     the same prefix is accepted silently by Litestream and makes a restore hand
+#     back the wrong tenant's collection while reporting success — the worst
+#     failure available to a data-isolation feature (deep-dives/litestream-multi-db
+#     RESULT.md §2). Here the prefix is derived from a filename, and tenant names
+#     are validated unique-by-construction, so that state is unreachable.
+#
+# The trade-off: this config no longer names any database path, so
+# `litestream restore -config <this file> /data/tenants/x.sqlite` FAILS with
+# "database not found in config". Point operations address the replica by URL
+# instead — deploy/litestream-lib.sh derives it, deploy/RESTORE.md documents it.
 #
 # `region` is PINNED so Litestream does NOT call s3:GetBucketLocation — the
 # backup IAM role deliberately does not grant that action (validated in
 # spikes/sqld-attach-namespaces/RESULT.md, "GATE spike").
+#
+# `endpoint` is empty in production (the AWS SDK resolves the real S3 endpoint
+# from the pinned region); tests/litestream/run.sh sets it to a throwaway MinIO.
+#
+# ── RETENTION ───────────────────────────────────────────────────────────────
 # Point-in-time recovery window: daily snapshots kept for 6 months (180 days).
-# This is the ONLY backup now (no local snapshots) — so the retention IS the
-# recovery horizon. Litestream 0.5 durations are h-only (no d/w); 4320h = 180d.
+# This is the ONLY backup (no local snapshots) — so the retention IS the recovery
+# horizon. Litestream 0.5 durations are h-only (no d/w); 4320h = 180d.
+#
+# This block MUST stay at the TOP LEVEL. Litestream's snapshot/retention monitors
+# are one set per process: the identical block written inside a `dbs:` entry is
+# SILENTLY IGNORED and falls back to the 24h default (RESULT.md §1). Every tenant
+# therefore shares one cadence and one retention window — per-tenant retention is
+# not available from one sidecar, and nothing here should be designed as if it
+# were. tests/litestream/run.sh asserts both the placement and that Litestream
+# honours it.
 snapshot:
   interval: 24h
   retention: 4320h
 
 dbs:
-  - path: ${LITESTREAM_DB_PATH}
+  - dir: ${LITESTREAM_TENANTS_DIR}
+    pattern: "*.sqlite"
+    watch: true
     replicas:
       - type: s3
         bucket: ${LITESTREAM_S3_BUCKET}
         path: ${LITESTREAM_S3_PATH}
         region: ${LITESTREAM_S3_REGION}
+        endpoint: ${LITESTREAM_S3_ENDPOINT}

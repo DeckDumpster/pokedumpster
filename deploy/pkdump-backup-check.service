@@ -1,7 +1,8 @@
 [Unit]
 Description=PokeDumpster backup freshness check (%i)
-# Layer 1 dead-man's switch (pokedumpster-ivq.2). Verifies the Litestream S3
-# replica is fresh, then pings the off-box monitor. %i is the instance name.
+# Layer 1 dead-man's switch (pokedumpster-ivq.2). Verifies that EVERY tenant's
+# Litestream S3 replica is fresh, then pings the off-box monitor. %i is the
+# instance name; the tenant list comes off the data volume.
 # {{REPO_DIR}} is sed-substituted by deploy/setup.sh (single-clone deployment).
 After=network-online.target
 Wants=network-online.target
@@ -11,4 +12,7 @@ OnFailure=pkdump-alert@%n.service
 [Service]
 Type=oneshot
 ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/backup-check.sh %i'
-TimeoutStartSec=120
+# One `litestream ltx` container per tenant, a few seconds each — the ceiling
+# has to scale past a single-tenant instance or the check starts timing out as
+# tenants are added, which reads as a backup failure.
+TimeoutStartSec=300

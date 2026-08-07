@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
 #
 # Layer 1 (PRIMARY) — backup-freshness dead-man's switch (pokedumpster-ivq.2,
-# re-scoped for S3-only Litestream).
+# re-scoped for S3-only Litestream, multi-tenant since pd-fof4).
 #
 # The old design pinged a monitor from inside backup.sh on a successful nightly
 # run. There is no backup.sh anymore: backups are a CONTINUOUS Litestream sidecar
-# replicating tenants/collection.sqlite to S3. The canonical silent failure (observed
+# replicating every tenants/*.sqlite to S3. The canonical silent failure (observed
 # during a Jun 2026 key rotation) is the sidecar showing systemd `active` while
 # error-looping on AccessDenied and NOT replicating — liveness is NOT freshness.
 #
 # So this checker VERIFIES REPLICATION FRESHNESS against S3, then pings the
 # off-box monitor (healthchecks.io) only when it is genuinely fresh:
-#   1. List the S3 replica's snapshots via the litestream image (same creds /
-#      secret / config as deploy/restore-litestream.sh).
-#   2. If the list FAILS (broken creds, network, missing replica) -> NOT fresh.
-#   3. If the newest snapshot is older than the threshold -> NOT fresh.
-#   4. Fresh  -> ping the monitor (it expects a ping every run; a miss alerts).
-#      Stale  -> ping <url>/fail (trip immediately) + push Pushover with detail.
+#   1. Enumerate EVERY tenant database on the data volume — the same glob the
+#      sidecar's `dir:` entry replicates. A tenant whose replica is dead is
+#      exactly as unbacked-up as the only tenant used to be, and in directory
+#      mode nothing else would ever notice: a tenant that never reached S3
+#      produces no error anywhere, just an absent prefix.
+#   2. List each tenant's replica LTX files via the litestream image (same creds
+#      / secret / addressing as deploy/restore-litestream.sh).
+#   3. If any list FAILS (broken creds, network, missing replica) -> NOT fresh.
+#   4. If any tenant's newest replica write is older than the threshold -> NOT fresh.
+#   5. All fresh -> ping the monitor (it expects a ping every run; a miss alerts).
+#      Any stale -> ping <url>/fail (trip immediately) + push Pushover with detail.
 #
 # Because the monitor lives OFF the box, a dead checker / dead box / disabled
 # timer ALSO stops the pings and trips the alert — this is the layer that would
@@ -26,19 +31,20 @@
 # Env-driven; PKDUMP_BACKUP_PING_URL unset = no-op (dev/test/unconfigured boxes
 # are unaffected). No new runtime deps beyond curl + the litestream image.
 #
-# Usage: backup-check.sh <instance> [user-db-name]   (default user-db: collection)
+# Usage: backup-check.sh <instance> [tenant ...]   (default: every tenant on the volume)
 set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-INSTANCE="${1:?usage: backup-check.sh <instance> [user-db-name]}"
-USER_DB="${2:-collection}"
+INSTANCE="${1:?usage: backup-check.sh <instance> [tenant ...]}"
+shift || true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONF_DIR="${HOME}/.config/pkdump/${INSTANCE}"
-LS_YML="${REPO_DIR}/deploy/litestream.yml"
 LS_IMG="docker.io/litestream/litestream:latest"
 VOLUME="pkdump-${INSTANCE}-data"
+
+# shellcheck source=deploy/litestream-lib.sh
+. "${SCRIPT_DIR}/litestream-lib.sh"
 
 # Host-wide Pushover creds, then per-instance ping URL / threshold / S3 target.
 [ -f "${HOME}/.config/pkdump/alerts.env" ] && { set -a; . "${HOME}/.config/pkdump/alerts.env"; set +a; }
@@ -77,41 +83,77 @@ stale() {
     exit 1
 }
 
-# --- Query S3 for the replica's snapshots (read-only) ----------------------
-# Mirrors restore-litestream.sh's invocation: assume-role profile + bootstrap
-# secret, region pinned via litestream.yml. A read/list op — so broken creds
-# surface here exactly as they would for replication.
-SNAP_OUT="$(podman run --rm --user 0:0 \
-    -v "${VOLUME}:/data:ro" \
-    -v "${LS_YML}:/etc/litestream.yml:ro" \
-    -v "${CONF_DIR}/aws/config:/aws/config:ro" \
-    --secret "pkdump-${INSTANCE}-s3-bootstrap,type=mount,target=/aws/credentials" \
-    -e AWS_CONFIG_FILE=/aws/config \
-    -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
-    -e AWS_PROFILE="${AWS_PROFILE:-pkdump}" \
-    -e LITESTREAM_S3_BUCKET="${LITESTREAM_S3_BUCKET:-}" \
-    -e LITESTREAM_S3_REGION="${LITESTREAM_S3_REGION:-}" \
-    -e LITESTREAM_S3_PATH="${LITESTREAM_S3_PATH:-}" \
-    -e LITESTREAM_DB_PATH="/data/tenants/${USER_DB}.sqlite" \
-    "$LS_IMG" snapshots -config /etc/litestream.yml "/data/tenants/${USER_DB}.sqlite" 2>&1)" \
-    || stale "litestream snapshots failed (creds/network/S3): $(printf '%s' "$SNAP_OUT" | tail -n1)"
-
-# Newest RFC3339 'created' timestamp, parsed format-agnostically (the column
-# order has shifted across litestream versions). Zulu RFC3339 sorts
-# lexicographically == chronologically.
-NEWEST="$(printf '%s\n' "$SNAP_OUT" \
-    | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z' \
-    | sort | tail -n1)"
-[ -n "$NEWEST" ] || stale "no snapshots found in S3 replica (output: $(printf '%s' "$SNAP_OUT" | tail -n1))"
-
-NEWEST_EPOCH="$(date -d "$NEWEST" +%s 2>/dev/null)" || stale "could not parse snapshot timestamp: ${NEWEST}"
-AGE_H=$(( ( $(date +%s) - NEWEST_EPOCH ) / 3600 ))
-
-if [ "$AGE_H" -gt "$MAX_AGE_HOURS" ]; then
-    stale "newest S3 snapshot is ${AGE_H}h old (> ${MAX_AGE_HOURS}h threshold)"
+# --- Which tenants to check ------------------------------------------------
+# Default: every tenant database on the volume. Explicit names are accepted so a
+# restore drill can check one without waiting for the timer.
+TENANTS=("$@")
+if [ ${#TENANTS[@]} -eq 0 ]; then
+    [ -n "$MOUNTPOINT" ] || stale "data volume '${VOLUME}' not found — cannot enumerate tenants"
+    mapfile -t TENANTS < <(tenants_on_volume "$MOUNTPOINT")
 fi
+[ ${#TENANTS[@]} -gt 0 ] || stale "no tenant databases found under ${MOUNTPOINT}/tenants/"
+
+NOW="$(date +%s)"
+MAX_AGE_SECONDS=$(( MAX_AGE_HOURS * 3600 ))
+
+# --- Query S3 for each tenant's replica (read-only) ------------------------
+# Mirrors restore-litestream.sh's invocation: assume-role profile + bootstrap
+# secret, region pinned in the derived replica URL. A read/list op — so broken
+# creds surface here exactly as they would for replication.
+for TENANT in "${TENANTS[@]}"; do
+    REPLICA_URL="$(tenant_replica_url "$TENANT")" \
+        || stale "tenant '${TENANT}': could not derive a replica URL (check litestream.env)"
+
+    LTX_OUT="$(podman run --rm --user 0:0 \
+        -v "${CONF_DIR}/aws/config:/aws/config:ro" \
+        --secret "pkdump-${INSTANCE}-s3-bootstrap,type=mount,target=/aws/credentials" \
+        -e AWS_CONFIG_FILE=/aws/config \
+        -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
+        -e AWS_PROFILE="${AWS_PROFILE:-pkdump}" \
+        "$LS_IMG" ltx -level all "$REPLICA_URL" 2>&1)" \
+        || stale "tenant '${TENANT}': litestream ltx failed (creds/network/S3): $(printf '%s' "$LTX_OUT" | tail -n1)"
+
+    # Newest RFC3339 'created' timestamp, parsed format-agnostically (the column
+    # order has shifted across litestream versions). Zulu RFC3339 sorts
+    # lexicographically == chronologically.
+    #
+    # `-level all` is load-bearing: `ltx` defaults to level 0, and level 0 gets
+    # compacted away into higher levels. A tenant nobody has written to today
+    # would list nothing at level 0 and read as dead when it is merely idle.
+    # `|| true` because "no timestamps at all" is a case this handles below, not
+    # a reason to abort: grep exits 1 on no match and pipefail would kill the
+    # script before it could report — silently, with the dead-man's switch
+    # neither pinged nor tripped.
+    NEWEST="$(printf '%s\n' "$LTX_OUT" \
+        | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z' \
+        | sort | tail -n1 || true)"
+
+    if [ -z "$NEWEST" ]; then
+        # Nothing has ever been replicated for this tenant. That is the alarm
+        # condition — unless the database itself is younger than the threshold,
+        # in which case it was only just provisioned and has not had a full
+        # window to reach S3 yet.
+        DB_FILE="${MOUNTPOINT}/tenants/${TENANT}.sqlite"
+        DB_AGE=0
+        [ -e "$DB_FILE" ] && DB_AGE=$(( NOW - $(stat -c %Y "$DB_FILE") ))
+        if [ "$DB_AGE" -gt "$MAX_AGE_SECONDS" ]; then
+            stale "tenant '${TENANT}': no replica data at ${REPLICA_URL%%\?*} — it is NOT backed up"
+        fi
+        echo "backup-check: tenant '${TENANT}' has no replica yet but was provisioned $(( DB_AGE / 60 ))m ago — not judged"
+        continue
+    fi
+
+    NEWEST_EPOCH="$(date -d "$NEWEST" +%s 2>/dev/null)" \
+        || stale "tenant '${TENANT}': could not parse replica timestamp: ${NEWEST}"
+    AGE_H=$(( ( NOW - NEWEST_EPOCH ) / 3600 ))
+
+    if [ "$AGE_H" -gt "$MAX_AGE_HOURS" ]; then
+        stale "tenant '${TENANT}': newest S3 replica write is ${AGE_H}h old (> ${MAX_AGE_HOURS}h threshold)"
+    fi
+    echo "backup-check: tenant '${TENANT}' OK — newest S3 replica write ${AGE_H}h old (<= ${MAX_AGE_HOURS}h)"
+done
 
 # --- Fresh: ping the monitor + record the marker ---------------------------
-echo "backup-check: OK — newest S3 snapshot ${AGE_H}h old (<= ${MAX_AGE_HOURS}h); pinging monitor"
+echo "backup-check: OK — ${#TENANTS[@]} tenant(s) fresh; pinging monitor"
 mark_fresh
 curl -fsS -m 10 "$PING" >/dev/null 2>&1 || echo "backup-check: WARNING — monitor ping failed (will retry next run)" >&2

@@ -1,6 +1,9 @@
 [Unit]
 Description=PokeDumpster Litestream backup sidecar ({{INSTANCE}})
-# Continuously replicates the per-user collection DB to S3 (pokedumpster-8ch.3).
+# Continuously replicates EVERY tenant collection DB to S3 (pokedumpster-8ch.3,
+# multi-tenant since pd-fof4). One sidecar for all tenants: deploy/litestream.yml
+# watches the tenants/ directory, so provisioning a tenant needs no unit change
+# and no restart.
 # The repo path + instance are sed-substituted by deploy/setup.sh — single-clone
 # deployment (all instances share one checkout; only the data volume differs).
 After=pkdump-{{INSTANCE}}.service network-online.target
@@ -25,8 +28,9 @@ Exec=replicate -config /etc/litestream.yml
 # Litestream 0.5 WRITES bookkeeping tables to the DB, so it needs read+write.
 User=0
 
-# Same data volume as the app — read the live collection DB + its WAL (RW: the
-# replica manages WAL checkpointing).
+# Same data volume as the app — read the live tenant DBs + their WALs (RW: the
+# replica manages WAL checkpointing). The whole volume is mounted, not just
+# tenants/, because `watch: true` needs the directory itself to see new files.
 Volume=pkdump-{{INSTANCE}}-data:/data:Z
 # Instance-agnostic config, mounted read-only from the single clone.
 Volume={{REPO_DIR}}/deploy/litestream.yml:/etc/litestream.yml:ro
@@ -41,7 +45,7 @@ Secret=pkdump-{{INSTANCE}}-s3-bootstrap,type=mount,target=/aws/credentials
 Environment=AWS_CONFIG_FILE=/aws/config
 Environment=AWS_SHARED_CREDENTIALS_FILE=/aws/credentials
 
-# S3 target (bucket/region/path), DB path, and AWS_PROFILE — user-provided.
+# S3 target (bucket/region/parent path), tenants dir, and AWS_PROFILE — user-provided.
 EnvironmentFile=%h/.config/pkdump/{{INSTANCE}}/litestream.env
 
 [Service]

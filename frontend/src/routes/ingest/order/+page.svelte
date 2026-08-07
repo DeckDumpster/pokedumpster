@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
+	import { EmptyState } from '$lib/components/ui';
 	import type { PrintingInfo } from '$lib/types/PrintingInfo';
 
 	type Line = {
@@ -154,7 +155,11 @@
 		<button class="secondary" onclick={addLine}>+ Add line</button>
 	</div>
 	{#if lines.length === 0}
-		<p class="muted">Add a line, or paste order text above.</p>
+		<EmptyState
+			size="sm"
+			title="No cards on this order yet."
+			description="Paste the order text above and every line is parsed for you, or add lines one at a time."
+		/>
 	{/if}
 	{#each lines as line, i (i)}
 		<div class="line" class:ok={line.printingId}>
@@ -195,9 +200,6 @@
 	h2 {
 		font-size: 1rem;
 		margin: 0;
-	}
-	.muted {
-		color: var(--color-text-subtle);
 	}
 	.error {
 		color: var(--color-text-accent);

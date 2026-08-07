@@ -13,5 +13,5 @@ notes: >
   click "Look up" so the line resolves to Charmander and is ready. Click
   the line's "✕" remove button. Verify the line is gone, the Cards
   header reads "Cards (0/0 ready)", the "No cards on this order yet."
-  above." message is shown again, and the "Commit order" button is
+  empty state is shown again, and the "Commit order" button is
   disabled.

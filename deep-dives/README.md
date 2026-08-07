@@ -13,4 +13,4 @@ history; each dive notes the recovery commit.
 
 | Dive | What it answers | Status |
 |---|---|---|
-| [`sqld-multitenancy/`](sqld-multitenancy/) | Can PokeDumpster's shared-catalog (ATTACH read-only) survive a move to libSQL/`sqld` with per-tenant namespaces + S3 backup? Plus JWT auth, bottomless, sigv4-proxy validation. | Validated; multitenancy deferred (see `pokedumpster-cz8`, `-181`) |
+| [`sqld-multitenancy/`](sqld-multitenancy/) | Can PokeDumpster's shared-catalog (ATTACH read-only) survive a move to libSQL/`sqld` with per-tenant namespaces + S3 backup? Plus JWT auth, bottomless, sigv4-proxy validation. | Validated, then **path NOT taken** — multitenancy went to file-per-tenant SQLite + Litestream (epic `pd-gckl`). Kept as the record of why libSQL was rejected. |

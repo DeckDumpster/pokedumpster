@@ -3,10 +3,11 @@
 Every tenant gets its own collection database. The card catalog stays a single
 shared copy, `ATTACH`ed read-only per connection exactly as it always was.
 
-> **Status: integration branch only.** Provisioning exists; there is no tenant
-> *resolution* in the request path yet (`pd-5emg`) and no authentication at all
-> (a separate epic). `pkdump serve` still opens one collection, chosen by
-> `$PKDUMP_USER`. Do not deploy a multi-tenant instance to the internet.
+> **Status: integration branch only.** Provisioning and request-path
+> *resolution* both exist; there is **no authentication at all** (a separate
+> epic). Resolution is off by default — `pkdump serve` opens the one
+> collection `$PKDUMP_USER` names, exactly as it always did. Do not deploy a
+> multi-tenant instance to the internet.
 
 ## Layout
 
@@ -50,6 +51,68 @@ command here — the S3 replica outlives it, but only for as long as retention
 holds (6 months; `deploy/RESTORE.md`).
 
 Also available: `pkdump tenant list`.
+
+## Serving more than one tenant
+
+`pkdump serve` serves exactly one collection. Which one is decided at startup
+from `$PKDUMP_USER`, and no request can change it. That is the default, that is
+what production runs, and with it a tenant header is not read at all — send one
+and nothing happens.
+
+Passing `--multi-tenant` (or `PKDUMP_MULTITENANT=1`) switches on per-request
+resolution instead: every `/api` request must name its tenant in an
+`x-pkdump-tenant` header, and is served that tenant's database.
+
+```bash
+pkdump serve --multi-tenant
+curl -H 'x-pkdump-tenant: alice' localhost:8080/api/collection
+```
+
+### Read this before you turn it on
+
+**Nothing authenticates that header.** A caller who sends
+`x-pkdump-tenant: alice` *is* Alice as far as the server is concerned. There is
+no login, no session, no token — identity is a separate epic that has not been
+built. An instance running with this flag on and reachable by anyone but you
+hands every collection to whoever asks for it.
+
+Which is why:
+
+- The flag is off unless explicitly set, and `PKDUMP_MULTITENANT` only counts
+  `1`, `true` or `yes` as on — `PKDUMP_MULTITENANT=0` does not switch it on by
+  the mere fact of being set.
+- The server prints a warning line at startup when it is on.
+- The mechanism is a **header**, not a hostname or a URL prefix. A browser does
+  not send it on its own, so a multi-tenant instance cannot be driven by
+  pointing a browser at it — the frontend is unchanged and remains
+  single-tenant. Browser-reachable multi-tenancy waits on the identity epic.
+- **Production stays single-tenant.** This work lives on the integration
+  branch; `deploy/pkdump.container` does not set the variable and must not.
+
+### What isolation rests on
+
+A tenant's requests reach a connection opened against that tenant's own
+database file, so another tenant's rows are not in scope for any query — there
+is no `WHERE tenant_id = ?` that a route could forget. Three things hold that
+up, all in `crates/pkdump-server/src/tenant.rs`:
+
+- The application state holds **no connection**. The only way to a database is
+  `blocking()`, and the only way to name one is a `TenantId` that the
+  resolution middleware alone can mint.
+- The resolved tenant lives in a task-local for the life of the request.
+  Handlers do not pass it, so they cannot pass the wrong one.
+- Opening a tenant connection asserts `pragma_database_list` holds exactly
+  `main` = that tenant's file and `shared` = the catalog, and fails otherwise.
+
+Tenant names from the header go through the same validation as provisioning,
+before they touch the filesystem, and a name with no database is a 404 — the
+resolver never creates one.
+
+The load-bearing test is
+`one_tenant_cannot_reach_another_tenants_collection` in
+`crates/pkdump-server/src/lib.rs`. It asserts the negative — Bob cannot read,
+and cannot delete, Alice's card — and it has been shown to fail when the
+resolver is bypassed (see `pd-5emg`).
 
 In a container, prefix with `podman exec`:
 
@@ -163,8 +226,9 @@ change, so it is the one the code makes impossible.
 - **Litestream config for N tenants** — `pd-fof4`. `deploy/litestream.yml` still
   names a single `LITESTREAM_DB_PATH`; the `dir:`/`watch:` mode that would pick
   up new tenants automatically is that bead's call to make.
-- **Tenant resolution in the request path** — `pd-5emg`. Until then the served
-  tenant is whatever `$PKDUMP_USER` says, for the whole process.
+- **Authentication** — a separate epic, not started. Until it lands, the
+  `--multi-tenant` resolver believes whatever a caller claims, which is why
+  nothing running it may be exposed.
 - **Restoring one tenant without touching the others** — `pd-v8zf`.
   `deploy/restore-litestream.sh <instance> <tenant>` already takes the tenant
   name and now writes under `tenants/`, but the multi-tenant DR runbook is that

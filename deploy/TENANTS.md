@@ -142,6 +142,57 @@ holding the LTX cache and txid) moves with the database. It has to: left
 behind, the sidecar would treat the relocated file as a brand-new database
 while its S3 prefix already holds months of history.
 
+### Backups across the migration — read this first
+
+The sidecar no longer replicates one named database. `deploy/litestream.yml`
+watches `tenants/` and **derives** each tenant's replica prefix from its
+filename, which is what makes adding a tenant free and a cross-tenant prefix
+collision impossible (`pd-fof4`). The cost is that tenant `collection` gets a new
+prefix:
+
+```
+before   s3://<bucket>/prod/collection
+after    s3://<bucket>/prod/tenants/collection.sqlite
+```
+
+**The retention policy does not change** — still `interval: 24h`,
+`retention: 4320h`, still a 180-day window. But the *new* prefix's history starts
+at cutover, so for the first 180 days after the migration, recovery splits in
+two:
+
+- **After the cutover** → `bash deploy/restore-litestream.sh prod collection`,
+  which reads the derived prefix.
+- **Before the cutover** → the old prefix, addressed directly by URL. Nothing
+  writes to it any more and nothing prunes it, so it stays exactly as deep as it
+  was on the day you cut over:
+
+  ```bash
+  set -a; . ~/.config/pkdump/prod/litestream.env; set +a
+  D=$(mktemp -d); chmod 777 "$D"
+  podman run --rm --user 0 -v "$D:/out" \
+      -v ~/.config/pkdump/prod/aws/config:/aws/config:ro \
+      --secret pkdump-prod-s3-bootstrap,type=mount,target=/aws/credentials \
+      -e AWS_CONFIG_FILE=/aws/config -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
+      -e AWS_PROFILE=pkdump docker.io/litestream/litestream:latest \
+      restore -integrity-check full -timestamp 2026-07-01T00:00:00Z -o /out/old.sqlite \
+      "s3://${LITESTREAM_S3_BUCKET}/prod/collection?region=${LITESTREAM_S3_REGION}"
+  sqlite3 "$D/old.sqlite" 'SELECT count(*) FROM collection;'
+  ```
+
+  Verified against the live production replica on 2026-08-07: point-in-time
+  restores at 60, 37 and 6 days back returned 4600 / 4622 / 4763 rows.
+
+**Do not try to migrate the history by copying the prefix.** `aws s3 cp` moves
+all 618 objects and a *latest* restore from the copy succeeds with a passing
+integrity check — but every `-timestamp` restore against it fails with
+`timestamp does not exist`, because Litestream resolves point-in-time from the
+S3 object's `LastModified` and a copy resets it to the copy time. A copied
+prefix looks like a working backup and has silently lost its recovery window,
+which is worse than leaving the original where it is. Tested 2026-08-07.
+
+Once the new prefix is 180 days deep, the old one is redundant and can be
+deleted.
+
 ```bash
 INSTANCE=prod
 
@@ -152,12 +203,13 @@ systemctl --user stop pkdump-${INSTANCE} pkdump-litestream-${INSTANCE}
 podman run --rm -v pkdump-${INSTANCE}-data:/data -e PKDUMP_HOME=/data \
     --entrypoint pkdump localhost/pkdump:${INSTANCE} tenant adopt collection
 
-# 3. Point the backup sidecar at the new path.
-#    Only the DB path changes. LITESTREAM_S3_PATH stays exactly as it was, so
-#    the existing replica history — and the 6-month recovery window with it —
-#    carries straight over.
-sed -i 's|^LITESTREAM_DB_PATH=.*|LITESTREAM_DB_PATH=/data/tenants/collection.sqlite|' \
+# 3. Point the backup sidecar at the tenants DIRECTORY (see "Backups" below —
+#    this step changes the replica prefix, and that has consequences).
+sed -i -e 's|^LITESTREAM_DB_PATH=.*|LITESTREAM_TENANTS_DIR=/data/tenants|' \
+       -e "s|^LITESTREAM_S3_PATH=.*|LITESTREAM_S3_PATH=${INSTANCE}/tenants|" \
     ~/.config/pkdump/${INSTANCE}/litestream.env
+grep -q '^LITESTREAM_S3_ENDPOINT=' ~/.config/pkdump/${INSTANCE}/litestream.env \
+    || echo 'LITESTREAM_S3_ENDPOINT=' >> ~/.config/pkdump/${INSTANCE}/litestream.env
 
 # 4. Start both back up.
 systemctl --user start pkdump-${INSTANCE} pkdump-litestream-${INSTANCE}
@@ -192,7 +244,9 @@ systemctl --user stop pkdump-${INSTANCE} pkdump-litestream-${INSTANCE}
 podman run --rm -v pkdump-${INSTANCE}-data:/data -e PKDUMP_HOME=/data \
     --entrypoint pkdump localhost/pkdump:${INSTANCE} tenant revert collection
 
-sed -i 's|^LITESTREAM_DB_PATH=.*|LITESTREAM_DB_PATH=/data/collection.sqlite|' \
+# Restore the pre-tenants backup target too (single DB, original prefix).
+sed -i -e 's|^LITESTREAM_TENANTS_DIR=.*|LITESTREAM_DB_PATH=/data/collection.sqlite|' \
+       -e "s|^LITESTREAM_S3_PATH=.*|LITESTREAM_S3_PATH=${INSTANCE}/collection|" \
     ~/.config/pkdump/${INSTANCE}/litestream.env
 
 # Roll the code back too — the tenant-layout build refuses to run against an
@@ -223,13 +277,11 @@ change, so it is the one the code makes impossible.
 
 ## What is not here yet
 
-- **Litestream config for N tenants** — `pd-fof4`. `deploy/litestream.yml` still
-  names a single `LITESTREAM_DB_PATH`; the `dir:`/`watch:` mode that would pick
-  up new tenants automatically is that bead's call to make.
 - **Authentication** — a separate epic, not started. Until it lands, the
   `--multi-tenant` resolver believes whatever a caller claims, which is why
   nothing running it may be exposed.
 - **Restoring one tenant without touching the others** — `pd-v8zf`.
-  `deploy/restore-litestream.sh <instance> <tenant>` already takes the tenant
-  name and now writes under `tenants/`, but the multi-tenant DR runbook is that
-  bead's deliverable.
+  `deploy/restore-litestream.sh <instance> <tenant>` restores exactly one tenant
+  from its own derived prefix, and `tests/litestream/run.sh` proves it hands back
+  that tenant's data and not a neighbour's. The written multi-tenant DR runbook
+  is still that bead's deliverable.

@@ -103,7 +103,7 @@ cd tests/ui && npm test
 ```
 
 `$PKDUMP_HOME` overrides the data dir (default `~/.pkdump/`).
-`$PKDUMP_USER` overrides the active user (default `collection`).
+`$PKDUMP_USER` overrides the active tenant (default `collection`).
 
 ## Architecture Overview
 
@@ -123,7 +123,8 @@ Cargo workspace, five crates (`crates/`):
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).
 - **pkdump-cli** — the `pkdump` binary; clap command tree
-  (`setup`, `data`, `serve`, `seed-fixture`, `db`, `export`, `import`).
+  (`setup`, `data`, `serve`, `seed-fixture`, `db`, `tenant`, `export`,
+  `import`).
 
 Frontend: SvelteKit (Svelte 5 runes mode) in `frontend/`, built static,
 served by `pkdump-server`. Generated TypeScript bindings live under
@@ -135,12 +136,21 @@ Two SQLite databases under the data dir:
   upstream. Rebuilt by `pkdump setup`. Opens with tuned PRAGMAs
   (WAL + `synchronous=NORMAL` + 64MB cache) so variant expansion stays
   fast (see `crates/pkdump-db/src/connection.rs`).
-- **&lt;user&gt;.sqlite** (default `collection.sqlite`) — per-user mutable
-  collection. The only thing worth backing up; replicated off-box to S3 by the
-  Litestream sidecar (6-month PITR — see `deploy/RESTORE.md`).
+- **tenants/&lt;tenant&gt;.sqlite** (default `tenants/collection.sqlite`) — one
+  mutable collection per tenant. The only thing worth backing up; replicated
+  off-box to S3 by the Litestream sidecar (6-month PITR — see
+  `deploy/RESTORE.md`).
 
 At runtime the user DB `ATTACH`es the shared DB read-only and exposes
-catalog tables through TEMP VIEWs so queries can join unqualified.
+catalog tables through TEMP VIEWs so queries can join unqualified. That
+ATTACH is identical for every tenant — the catalog is ONE copy on disk,
+joined per query, never denormalised per tenant.
+
+Provisioning is `pkdump tenant create <name>` / `pkdump tenant remove
+<name> --yes`; `pkdump tenant adopt` migrates a pre-`tenants/` data dir and
+`revert` rolls it back. Layout rationale + the production migration runbook:
+`deploy/TENANTS.md`. Tenant *resolution* in the request path does not exist
+yet — `pkdump serve` opens the one collection named by `$PKDUMP_USER`.
 
 ## Deployment
 

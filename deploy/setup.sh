@@ -163,7 +163,7 @@ if [ ! -f "${LS_CONF_DIR}/litestream.env" ]; then
 LITESTREAM_S3_BUCKET=CHANGE_ME
 LITESTREAM_S3_REGION=us-west-2
 LITESTREAM_S3_PATH=${INSTANCE}/collection
-LITESTREAM_DB_PATH=/data/collection.sqlite
+LITESTREAM_DB_PATH=/data/tenants/collection.sqlite
 AWS_PROFILE=pkdump
 EOF
     chmod 600 "${LS_CONF_DIR}/litestream.env"
@@ -226,8 +226,11 @@ seed_from_fixture() {
     # shellcheck disable=SC2064
     trap "podman rm -f '$temp' >/dev/null 2>&1 || true" RETURN
 
+    # Tenant collection DBs live under /data/tenants (deploy/TENANTS.md); the
+    # catalog stays at the root of the data dir, shared by every tenant.
+    podman exec "$temp" mkdir -p /data/tenants
     podman cp "$shared"     "${temp}:/data/shared.sqlite"
-    podman cp "$collection" "${temp}:/data/collection.sqlite"
+    podman cp "$collection" "${temp}:/data/tenants/collection.sqlite"
     podman rm -f "$temp" >/dev/null
     trap - RETURN
     echo "    Fixture data installed."

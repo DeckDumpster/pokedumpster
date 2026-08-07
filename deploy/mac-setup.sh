@@ -86,8 +86,10 @@ if [ "$TEST" = true ]; then
     TEMP="pkdump-fixture-$$"
     podman run -d --name "$TEMP" -v "${VOLUME}:/data" --entrypoint sleep \
         "$IMAGE" infinity >/dev/null
+    # Tenant collection DBs live under /data/tenants (deploy/TENANTS.md).
+    podman exec "$TEMP" mkdir -p /data/tenants
     podman cp "$FIXTURE_DIR/shared.sqlite"     "${TEMP}:/data/shared.sqlite"
-    podman cp "$FIXTURE_DIR/collection.sqlite" "${TEMP}:/data/collection.sqlite"
+    podman cp "$FIXTURE_DIR/collection.sqlite" "${TEMP}:/data/tenants/collection.sqlite"
     podman rm -f "$TEMP" >/dev/null
 elif [ "$INIT" = true ]; then
     if podman volume exists "$SEED_VOLUME" 2>/dev/null; then

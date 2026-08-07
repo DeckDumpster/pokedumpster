@@ -5,4 +5,13 @@
  * catalogued card in the set, in collector-number order; `copies` is
  * the total physical count across every variant.
  */
-export type CardCopyCount = { number: string, number_sortable: number, rarity: string | null, copies: number, };
+export type CardCopyCount = { number: string, number_sortable: number, 
+/**
+ * Canonical spelling from the `rarities` table where the tier is
+ * known, else the raw catalog string.
+ */
+rarity: string | null, 
+/**
+ * Group alias for the tier — the histogram paints its columns by it.
+ */
+rarity_grp: string | null, copies: number, };

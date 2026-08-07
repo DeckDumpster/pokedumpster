@@ -24,6 +24,20 @@
 		size?: 'sm' | 'md';
 		/** Caption above the track — "Base 42/102". Also the accessible name. */
 		label?: string;
+		/**
+		 * Second half of the caption, pushed to the right edge and muted —
+		 * "42 / 102 · 41%" against a plain "Base set" label. The stats page
+		 * splits the figure off the name that way; without it that route
+		 * would have to rebuild the caption row outside the primitive.
+		 */
+		hint?: string;
+		/**
+		 * Keep `label` as the accessible name but draw no caption. For a bar
+		 * whose row already names it — the rarity-split table, where the
+		 * tier is the cell two columns left — a visible caption would be a
+		 * second copy of a label that is already on screen.
+		 */
+		labelHidden?: boolean;
 		class?: string;
 	} & HTMLAttributes<HTMLDivElement>;
 
@@ -33,6 +47,8 @@
 		tone = 'accent',
 		size = 'sm',
 		label = undefined,
+		hint = undefined,
+		labelHidden = false,
 		class: extra = '',
 		...rest
 	}: Props = $props();
@@ -44,7 +60,12 @@
 </script>
 
 <div class={classes} {...rest}>
-	{#if label}<span class="label">{label}</span>{/if}
+	{#if label && !labelHidden}
+		<span class="label">
+			<span>{label}</span>
+			{#if hint}<span class="hint">{hint}</span>{/if}
+		</span>
+	{/if}
 	<div
 		class="track"
 		role="progressbar"
@@ -63,9 +84,18 @@
 		flex-direction: column;
 		gap: var(--space-1);
 	}
+	/* The caption is a row so `hint` can sit against the right edge. With
+	   no hint it collapses to a plain left-aligned line — the shape
+	   /browse and /browse/[set] already draw. */
 	.label {
+		display: flex;
+		justify-content: space-between;
+		gap: var(--space-2);
 		font-size: var(--text-md);
 		color: var(--color-text-muted);
+	}
+	.hint {
+		color: var(--color-text-subtle);
 	}
 	.track {
 		width: 100%;

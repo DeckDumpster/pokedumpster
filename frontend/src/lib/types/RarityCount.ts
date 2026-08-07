@@ -2,5 +2,21 @@
 
 /**
  * One rarity tier within a set, with how many of its cards the user owns.
+ *
+ * `rarity` is the canonical spelling from the `rarities` table, and
+ * `rank`/`grp` come from the same row: the tier's curated ordinal and its
+ * group alias. Both ride along so the stats page can order and colour the
+ * split without re-deriving a rarity typology in TypeScript — the catalog
+ * already owns one.
  */
-export type RarityCount = { rarity: string, total_cards: number, owned_cards: number, };
+export type RarityCount = { rarity: string, 
+/**
+ * Curated ordinal from `rarities.rank`; [`UNRANKED_RARITY`] for a
+ * tier the table does not carry. Rows arrive pre-sorted by it.
+ */
+rank: number, 
+/**
+ * Group alias (`common`, `ultra`, `secret`…), or `null` when the
+ * tier is unranked or the row declares no group.
+ */
+grp: string | null, total_cards: number, owned_cards: number, };

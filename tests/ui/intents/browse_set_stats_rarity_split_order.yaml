@@ -1,0 +1,12 @@
+# Scenario: The rarity split is ordered by the catalog's rarity ranking
+
+# Related: browse_set_stats_progress_bars_are_accessible, collection_filter_rarity
+
+description: >
+  On the "151" set stats page the Rarity split table lists tiers from
+  commonest to rarest — Common, Uncommon, Rare, Double Rare, Illustration
+  Rare, Special Illustration Rare, Hyper Rare — not alphabetically and not in
+  whatever order the cards happened to be catalogued. The Copies-by-card
+  histogram below it colours each column by the same tier, so a run of one
+  rarity reads as a band of one colour, and cards owned zero copies of stay
+  the unfilled background shade whatever their rarity.

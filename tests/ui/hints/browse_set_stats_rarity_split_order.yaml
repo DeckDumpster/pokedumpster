@@ -1,0 +1,26 @@
+start_page: /browse/sv3pt5/stats
+involves:
+  - "GET /api/sets/sv3pt5/analytics returns rarities[] pre-sorted by `rank`, each row carrying rarity/rank/grp"
+  - "rank + grp come from the shared catalog's `rarities` table (data/rarities.json), resolved by pkdump_db::search_meta::RarityLookup"
+  - "the route renders stats.rarities in receive order — no client-side sort"
+  - "histogram: span.histo-col.g-{rarity_grp} for owned columns, .g-none for copies===0; each .g-* rule spends a --color-rarity-* token"
+fixture_data:
+  set: "151 (sv3pt5)"
+  collection: >
+    Seven rarity tiers present. Ranks from data/rarities.json: Common 0,
+    Uncommon 1, Rare 2, Double Rare 4, Illustration Rare 5, Special
+    Illustration Rare 6, Hyper Rare 7. Groups: common, uncommon, rare, ultra,
+    special, special, secret.
+notes: >
+  1. Navigate to /browse/sv3pt5/stats and wait for the Rarity split table. 2.
+  Read the Rarity column top to bottom and assert the exact sequence above.
+  Alphabetical order would put Double Rare first and Uncommon last, so a
+  sorted-by-name regression fails loudly. 3. Assert the order matches the
+  `rank` field of the analytics response, fetched from the page — the ordering
+  must come from the API, not from a map in the route. Before pd-xzea this
+  page carried its own RARITY_ORDER covering only eleven of the catalog's
+  fifty-four tiers. 4. In the histogram, assert every span.histo-col carries
+  exactly one g-* class, and that two columns of the same rarity have the same
+  computed backgroundColor while two of different rarity differ. 5. Assert a
+  column whose title says "0 copies" is .g-none regardless of its rarity. 6.
+  Screenshot.

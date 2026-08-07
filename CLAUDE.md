@@ -90,6 +90,13 @@ cargo run --bin pkdump -- import --json collection.json
 # Frontend — SvelteKit (Svelte 5, vite, adapter-static)
 cd frontend && npm install && npm run build
 cd frontend && npm run check     # svelte-check / TypeScript
+cd frontend && npm test          # design-token gates (WCAG AA contrast, layer
+                                 #   split, raw-colour ratchet)
+
+# Visual regression — every route at 1440 and 768 against a throwaway
+# container instance. A pixel diff fails; approving one is explicit.
+bash tests/visual/run.sh         # check
+bash tests/visual/run.sh --update  # approve — see tests/visual/README.md
 
 # UI test harness — Playwright + intent YAMLs              (in progress)
 cd tests/ui && npm test
@@ -299,6 +306,55 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
   recomputed in components.
 - Per-page leaf labels (e.g. set name in the breadcrumb) are pushed into
   `$lib/breadcrumbs.svelte` from the page's `$effect`.
+
+### Design tokens
+
+`frontend/src/lib/styles/tokens.css` is the only file in `frontend/src` that
+may contain a raw colour literal. It is imported once, from `+layout.svelte`.
+
+Two layers, and the split is load-bearing:
+
+- **Reference** (`--pd-crimson-500: #e94560`) — named for what a value *is*.
+  Theme-owned. **Components must never reference `--pd-*`.**
+- **Semantic** (`--color-accent: var(--pd-crimson-500)`) — named for what a
+  value *does*. This is the only layer components may use.
+
+A future re-skin is then a new reference block, not a refactor; light mode is
+the same mechanism (`:root[data-theme='light']`), designed for and deferred.
+
+`frontend/npm test` enforces it — and enforces WCAG AA on every pairing
+declared in `contrast-pairs.json`. Contrast is a test, not a review note: add
+a colour role that gets painted on a surface, add its pairing.
+`legacy-color-map.json` maps each raw colour still left in `frontend/src` to
+the role that replaces it; migrations read the replacement off that file
+rather than inventing one.
+
+`raw-color-budget.json` is the ratchet toward zero raw colour. It records how
+many literals each file still holds; the count may only go **down**. Exceed a
+budget and the test reads it as a regression; drop below it and the test fails
+too, printing the number to write. Migrating a file means lowering its entry
+in the same commit, and deleting the entry when it reaches zero. When the
+budget is empty the target is met and any literal anywhere fails the build.
+Never raise a budget — a value that has nowhere to live needs a semantic role
+in `tokens.css`, not an exception.
+
+### UI primitives
+
+`frontend/src/lib/components/ui/` is the visual vocabulary — `Panel`, `Button`,
+`Field`, `Badge`, `ProgressBar`, `SectionHeader`, `EmptyState`, `Toolbar`,
+re-exported from `$lib/components/ui`. Routes render; they do not decide
+surfaces, fills, rules or spacing.
+
+Every primitive is styled from the **semantic** token layer only — no colour
+literal, no `--pd-*`. A route that needs a variant a primitive lacks **adds the
+variant to the primitive**; the moment two routes patch the same primitive at
+the call site, the system is back to taste.
+
+`frontend/tests/primitives/` has one render test per primitive (renders,
+respects its variants, emits no hardcoded colour). It renders components
+server-side under Node's built-in test runner — no jsdom, no testing-library
+— via the loader hook in `frontend/tests/support/svelte-hooks.js`, which
+compiles `.svelte` on import (`npm test` wires it in with `--import`).
 
 ### Performance
 

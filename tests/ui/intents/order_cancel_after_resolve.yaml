@@ -6,6 +6,6 @@
 description: >
   After I add and resolve a card line on the Import order page, I click
   that line's "✕" remove button. The line disappears, the Cards header
-  ready count drops back to 0/0, the "Add a line, or paste order text
+  ready count drops back to 0/0, the "No cards on this order yet."
   above." empty message returns, and the "Commit order" button is
   disabled again.

@@ -51,7 +51,7 @@ that batch added.
 | State | Condition | Appearance |
 |-------|-----------|------------|
 | **Loading** | While the batches fetch runs on mount | "Loading…" muted text |
-| **Empty** | `batches.length === 0` after load | "No activity yet." |
+| **Empty** | `batches.length === 0` after load | EmptyState "No activity yet." with a **Browse sets** button |
 | **Error** | The list fetch (or a per-batch detail fetch) fails | Red error text near the top |
 | **Expanding** | A batch is expanded but its cards haven't arrived | Indented "Loading…" muted text under the batch row |
 | **Expanded — empty batch** | An expanded batch has no cards | Indented "No cards." |

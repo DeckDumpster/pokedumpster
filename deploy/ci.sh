@@ -9,14 +9,18 @@
 # Steps:
 #   1. Tear down any stale `ci` container instance.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
-#   3. Frontend gate:  npm ci && npm run check && npm run build.
+#   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #   4. Container gate: build + start a `--test` instance, wait for the server
 #                      to answer on its port, then tear it down.
+#   5. Visual gate:    screenshot every route at 1440 and 768 against that
+#                      same instance and diff against the committed baselines.
+#                      See tests/visual/README.md for the approval workflow.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
-# it needs Playwright browsers and — until the replay implementations are
-# generated — an ANTHROPIC_API_KEY for Vision mode, which makes it slow and
-# non-deterministic. Run it on its own when needed:
+# until the replay implementations are generated it needs an ANTHROPIC_API_KEY
+# for Vision mode, which makes it slow and non-deterministic. (The visual gate
+# in step 5 also drives Playwright, but offline and deterministically — that is
+# the difference, not the browser.) Run the intents harness on its own:
 #   (cd tests/ui && npx playwright install chromium && npx playwright test)
 #
 # Exits non-zero on the first failure. Fast and re-runnable.
@@ -66,10 +70,13 @@ step "cargo fmt --check"
 
 # --- 3. Frontend gate -------------------------------------------------------
 
-step "Frontend: npm ci && npm run check && npm run build"
+step "Frontend: npm ci && npm test && npm run check && npm run build"
 (
     cd "$REPO_DIR/frontend"
     npm ci
+    # Design-token gates: WCAG AA contrast for every declared pairing, plus the
+    # reference/semantic layer split. Node's built-in runner, no extra deps.
+    npm test
     npm run check
     npm run build
 )
@@ -96,6 +103,13 @@ if [ -z "$PORT" ]; then
     journalctl --user -u "$SERVICE_NAME" --no-pager -n 40 2>/dev/null || true
     exit 1
 fi
+
+# --- 5. Visual-regression gate ---------------------------------------------
+# Runs against the container started above rather than standing up a second
+# one. A pixel diff fails CI; approving it is explicit — tests/visual/README.md.
+
+step "Visual regression: every route, two viewports"
+PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwright.sh"
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

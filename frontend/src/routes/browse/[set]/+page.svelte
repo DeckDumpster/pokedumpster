@@ -5,6 +5,15 @@
 	import VariantModal from '$lib/components/VariantModal.svelte';
 	import TcgExportModal from '$lib/components/TcgExportModal.svelte';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
+	import {
+		Button,
+		EmptyState,
+		Field,
+		Panel,
+		ProgressBar,
+		SectionHeader,
+		Toolbar
+	} from '$lib/components/ui';
 	import { variantColor, variantLabel, variantSortCmp } from '$lib/variants.svelte';
 	import type { BinderPage } from '$lib/types/BinderPage';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
@@ -344,10 +353,6 @@
 	// makes sense. Drives the rendering branches below.
 	const isBundle = $derived(binder?.set.kind === 'bundle');
 
-	function pct(owned: number, total: number): number {
-		return total > 0 ? Math.round((owned / total) * 100) : 0;
-	}
-
 	function resetPage() {
 		pageNum = 1;
 	}
@@ -429,264 +434,311 @@
 {:else if error && !binder}
 	<p class="error">Failed to load binder: {error}</p>
 {:else if binder}
-	<header>
-		<a class="statslink" href="/browse/{binder.set.set_code}/stats">Set stats →</a>
-		<div class="stats">
-			{#if isBundle}
-				<!-- Bundles have a single section: base == master. Show one
-				     progress bar instead of two identical ones. -->
-				<div class="stat">
-					<span>Collected {binder.master_owned}/{binder.master_total}</span>
-					<div class="bar">
-						<span style:width="{pct(binder.master_owned, binder.master_total)}%"></span>
-					</div>
-				</div>
-			{:else}
-				<div class="stat">
-					<span>Base {binder.base_owned}/{binder.base_total}</span>
-					<div class="bar">
-						<span style:width="{pct(binder.base_owned, binder.base_total)}%"></span>
-					</div>
-				</div>
-				<div class="stat">
-					<span>Master {binder.master_owned}/{binder.master_total}</span>
-					<div class="bar">
-						<span style:width="{pct(binder.master_owned, binder.master_total)}%"></span>
-					</div>
-				</div>
-			{/if}
-		</div>
-	</header>
+	<div class="binderpage">
+		<header>
+			<a class="statslink" href="/browse/{binder.set.set_code}/stats">Set stats →</a>
+			<div class="stats">
+				{#if isBundle}
+					<!-- Bundles have a single section: base == master. Show one
+					     progress bar instead of two identical ones. -->
+					<ProgressBar
+						class="stat"
+						label="Collected {binder.master_owned}/{binder.master_total}"
+						value={binder.master_owned}
+						max={binder.master_total}
+					/>
+				{:else}
+					<ProgressBar
+						class="stat"
+						label="Base {binder.base_owned}/{binder.base_total}"
+						value={binder.base_owned}
+						max={binder.base_total}
+					/>
+					<ProgressBar
+						class="stat"
+						label="Master {binder.master_owned}/{binder.master_total}"
+						value={binder.master_owned}
+						max={binder.master_total}
+					/>
+				{/if}
+			</div>
+		</header>
 
-	<!-- Search + 'Missing only' share a row. On laptop the checkbox
-	     hugs the right edge; on narrow viewports it wraps below. -->
-	<div class="searchrow">
-		<div class="searchwrap">
-			<input
-				class="search"
-				type="text"
-				placeholder="Search this set…"
-				bind:value={searchRaw}
-				bind:this={searchInput}
-			/>
-			{#if searchRaw}
-				<button
-					class="searchclear"
-					type="button"
-					aria-label="Clear search"
-					title="Clear"
-					onclick={clearSearch}
-				>×</button>
-			{/if}
-		</div>
-		<!-- Stop-gap until the unified search lands (pokedumpster-dzf):
-		     restricts the binder to cards the user owns no printing of.
-		     Default off → show the whole set. -->
-		<label class="missingonly">
-			<input
+		<!-- Search + 'Missing only' share a row. On laptop the checkbox
+		     hugs the right edge; on narrow viewports it wraps below. -->
+		<Toolbar class="searchrow" gap="md">
+			<div class="searchwrap">
+				<input
+					class="search"
+					type="text"
+					placeholder="Search this set…"
+					bind:value={searchRaw}
+					bind:this={searchInput}
+				/>
+				{#if searchRaw}
+					<Button
+						variant="link"
+						class="searchclear"
+						aria-label="Clear search"
+						title="Clear"
+						onclick={clearSearch}>×</Button
+					>
+				{/if}
+			</div>
+			<!-- Stop-gap until the unified search lands (pokedumpster-dzf):
+			     restricts the binder to cards the user owns no printing of.
+			     Default off → show the whole set. -->
+			<Field
+				inline
 				type="checkbox"
+				label="Missing only"
 				bind:checked={missingOnly}
 				onchange={() => (pageNum = 1)}
 			/>
-			Missing only
-		</label>
-	</div>
+		</Toolbar>
 
-	<div class="controls">
 		<!-- Per-field sort buttons (DD-style). # already orders by
 		     rarity (set numbering groups by rarity tier) so the
 		     standalone Rarity button is redundant; Name sorting is
 		     subsumed by the search input. -->
-		<div class="sortbtns">
-			{#snippet sortBtn(key: SortKey, label: string)}
+		{#snippet sortBtn(key: SortKey, label: string)}
+			<Button
+				variant={sortKey === key ? 'primary' : 'ghost'}
+				size="sm"
+				class="sortbtn"
+				onclick={() => toggleSort(key)}
+			>
+				{label}
+				{#if sortKey === key}
+					<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>
+				{/if}
+			</Button>
+		{/snippet}
+
+		<Toolbar class="controls" gap="lg">
+			<Toolbar gap="sm">
+				{@render sortBtn('number', '#')}
+				{@render sortBtn('price', 'Price')}
+			</Toolbar>
+			<!-- Binder view = image + pips only (mimics a physical binder).
+			     Card view = adds a metadata footer (#, name, rarity, owned). -->
+			<div class="viewtoggle" role="group" aria-label="View mode">
 				<button
-					class="sortbtn"
-					class:active={sortKey === key}
-					onclick={() => toggleSort(key)}
+					class:active={view === 'binder'}
+					onclick={() => (view = 'binder')}
+					title="Binder view — image + variant pips only"
+				>Binder</button>
+				<button
+					class:active={view === 'card'}
+					onclick={() => (view = 'card')}
+					title="Card view — image + #, name, rarity, owned"
+				>Card</button>
+			</div>
+			<!-- Cards per row stepper. Pure UI choice (1..10) — page size
+			     derives from it (cols × 3 rows per page) so the backend's
+			     pagination stays consistent at 3 visible rows. -->
+			<div class="cpr">
+				<span class="cpr-label">Columns</span>
+				<Button
+					variant="ghost"
+					size="sm"
+					class="cpr-btn"
+					disabled={cols <= 1}
+					onclick={() => stepCols(-1)}
+					aria-label="Fewer cards per row">−</Button
 				>
-					{label}
-					{#if sortKey === key}
-						<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>
-					{/if}
-				</button>
-			{/snippet}
-			{@render sortBtn('number', '#')}
-			{@render sortBtn('price', 'Price')}
-		</div>
-		<!-- Binder view = image + pips only (mimics a physical binder).
-		     Card view = adds a metadata footer (#, name, rarity, owned). -->
-		<div class="viewtoggle" role="group" aria-label="View mode">
-			<button
-				class:active={view === 'binder'}
-				onclick={() => (view = 'binder')}
-				title="Binder view — image + variant pips only"
-			>Binder</button>
-			<button
-				class:active={view === 'card'}
-				onclick={() => (view = 'card')}
-				title="Card view — image + #, name, rarity, owned"
-			>Card</button>
-		</div>
-		<!-- Cards per row stepper. Pure UI choice (1..10) — page size
-		     derives from it (cols × 3 rows per page) so the backend's
-		     pagination stays consistent at 3 visible rows. -->
-		<div class="cpr">
-			<span class="cpr-label">Columns</span>
-			<button
-				class="cpr-btn"
-				disabled={cols <= 1}
-				onclick={() => stepCols(-1)}
-				aria-label="Fewer cards per row"
-			>−</button>
-			<span class="cpr-value">{cols}</span>
-			<button
-				class="cpr-btn"
-				disabled={cols >= 10}
-				onclick={() => stepCols(1)}
-				aria-label="More cards per row"
-			>+</button>
-		</div>
-		<!-- Section-include toggles. Secret usually has content on modern
-		     sets but it's not something you flip every visit; Subset and
-		     Promos are mostly empty on SV/ME-era sets — tuck all three
-		     into an overflow menu so they don't take a row of real estate.
-		     Hidden for bundles since they have a single section. -->
-		{#if !isBundle}
-			<details class="overflow">
-				<summary aria-label="More filters" title="More filters">⋯</summary>
-				<div class="overflow-menu">
-					<label
-						><input
+				<span class="cpr-value">{cols}</span>
+				<Button
+					variant="ghost"
+					size="sm"
+					class="cpr-btn"
+					disabled={cols >= 10}
+					onclick={() => stepCols(1)}
+					aria-label="More cards per row">+</Button
+				>
+			</div>
+			<!-- Section-include toggles. Secret usually has content on modern
+			     sets but it's not something you flip every visit; Subset and
+			     Promos are mostly empty on SV/ME-era sets — tuck all three
+			     into an overflow menu so they don't take a row of real estate.
+			     Hidden for bundles since they have a single section. -->
+			{#if !isBundle}
+				<details class="overflow">
+					<summary aria-label="More filters" title="More filters">⋯</summary>
+					<Panel variant="overlay" elevation="md" padding="sm" class="overflow-menu">
+						<Field
+							inline
 							type="checkbox"
+							label="Secret"
 							bind:checked={includeSecret}
 							onchange={resetPage}
-						/> Secret</label
-					>
-					<label
-						><input
+						/>
+						<Field
+							inline
 							type="checkbox"
+							label="Subset"
 							bind:checked={includeSubset}
 							onchange={resetPage}
-						/> Subset</label
-					>
-					<label
-						><input
+						/>
+						<Field
+							inline
 							type="checkbox"
+							label="Promos"
 							bind:checked={includePromos}
 							onchange={resetPage}
-						/> Promos</label
+						/>
+					</Panel>
+				</details>
+				<!-- One-click: collect every missing card as a TCGplayer Mass
+				     Entry list. Real sets only — bundles span many home sets. -->
+				<Button
+					variant="ghost"
+					size="sm"
+					onclick={() => (showTcgExport = true)}
+					title="Build a TCGplayer Mass Entry list of every card you're missing"
+					>🛒 Buy missing</Button
+				>
+			{/if}
+			<span class="spacer"></span>
+			<!-- Top pager — entire row hidden on mobile (the bottom pager
+			     handles paging there); arrow keys work either way. -->
+			<div class="toppager">
+				<Button
+					variant="ghost"
+					size="sm"
+					disabled={binder.page <= 1}
+					onclick={() => gotoPage(binder!.page - 1)}>← Prev</Button
+				>
+				<span class="pageno">Page {binder.page} of {binder.total_pages}</span>
+				<Button
+					variant="ghost"
+					size="sm"
+					disabled={binder.page >= binder.total_pages}
+					onclick={() => gotoPage(binder!.page + 1)}>Next →</Button
+				>
+			</div>
+		</Toolbar>
+
+		{#if error}<p class="error">{error}</p>{/if}
+
+		{#if binder.slots.length === 0}
+			{#if search}
+				<EmptyState
+					title="No cards match “{search}”."
+					description="The search reads card names and collector numbers inside this set only."
+				>
+					{#snippet action()}
+						<Button variant="ghost" onclick={clearSearch}>Clear search</Button>
+					{/snippet}
+				</EmptyState>
+			{:else if missingOnly}
+				<EmptyState
+					tone="success"
+					title="Nothing missing here."
+					description="You own a printing of every card in this view. Turn off “Missing only” to see the whole set."
+				>
+					{#snippet action()}
+						<Button variant="ghost" onclick={() => ((missingOnly = false), resetPage())}>
+							Show every card
+						</Button>
+					{/snippet}
+				</EmptyState>
+			{:else}
+				<EmptyState
+					title="No cards in this view."
+					description="Every section this set has is switched off — turn Secret, Subset or Promos back on in the ⋯ menu."
+				/>
+			{/if}
+		{:else}
+			<div class="grid" style:grid-template-columns="repeat({cols}, 1fr)">
+				{#each binder.slots as slot, i (slot.card_id)}
+					{@const prevSection = i > 0 ? binder.slots[i - 1].section : 'base'}
+					{#if slot.section !== prevSection && slot.section !== 'base'}
+						<SectionHeader
+							class="sectionbreak"
+							tone="accent"
+							divider
+							title={sectionLabel[slot.section]}
+						/>
+					{/if}
+					<!-- One colored pip per variant. In binder view pips sit alone
+					     below the image; in card view they share a row with the
+					     metadata (#, name, ×owned). The pip buttons live OUTSIDE
+					     the slot button so they don't produce nested-button
+					     invalid HTML. -->
+					{#snippet pips(slot: BinderSlot)}
+						<div class="vchips">
+							{#each slot.printings
+								.filter((p) => !p.deprecated)
+								.slice()
+								.sort((a, b) => variantSortCmp(a.variant, b.variant)) as p (p.printing_id)}
+								<button
+									class="vchip"
+									class:owned={p.owned_count > 0}
+									style:--c={variantColor(p.variant)}
+									title="{variantLabel(p.variant)}{p.owned_count > 0
+										? ` ×${p.owned_count}`
+										: ''} — click to add"
+									aria-label="Add one {variantLabel(p.variant)}{p.owned_count > 0
+										? ` (own ${p.owned_count})`
+										: ''}"
+									onclick={() => addToSlot(slot, p.printing_id)}
+								>
+									{#if p.owned_count > 1}<span class="vcount">{p.owned_count}</span>{/if}
+								</button>
+							{/each}
+						</div>
+					{/snippet}
+					<div class="slotwrap" class:missing={!ownedAny(slot)}>
+						<button class="slot" onclick={() => (selectedSlot = slot)}>
+							{#if slot.image_large}
+								<img src={slot.image_large} alt={slot.name} loading="lazy" />
+							{:else}
+								<div class="noart">{slot.name}</div>
+							{/if}
+						</button>
+						{#if view === 'card'}
+							<div class="meta">
+								<span class="num">#{slot.number}</span>
+								<span class="name" title={slot.name}>{slot.name}</span>
+								{#if ownedTotal(slot) > 0}
+									<span class="own" title="Owned copies">×{ownedTotal(slot)}</span>
+								{/if}
+								{@render pips(slot)}
+							</div>
+							{#if slot.external_set}
+								<!-- Bundle slot: the underlying card lives in another set.
+								     Link out so the user can land on the home-set's binder. -->
+								<a class="extset" href="/browse/{slot.external_set.set_code}"
+									>{slot.external_set.name}</a
+								>
+							{/if}
+						{:else}
+							{@render pips(slot)}
+						{/if}
+					</div>
+				{/each}
+			</div>
+
+			{#if binder.total_pages > 1}
+				<div class="pager-bottom">
+					<Button
+						variant="ghost"
+						size="sm"
+						disabled={binder.page <= 1}
+						onclick={() => gotoPage(binder!.page - 1)}>← Prev</Button
+					>
+					<span class="pageno">Page {binder.page} of {binder.total_pages}</span>
+					<Button
+						variant="ghost"
+						size="sm"
+						disabled={binder.page >= binder.total_pages}
+						onclick={() => gotoPage(binder!.page + 1)}>Next →</Button
 					>
 				</div>
-			</details>
-			<!-- One-click: collect every missing card as a TCGplayer Mass
-			     Entry list. Real sets only — bundles span many home sets. -->
-			<button
-				class="buymissing"
-				onclick={() => (showTcgExport = true)}
-				title="Build a TCGplayer Mass Entry list of every card you're missing"
-			>🛒 Buy missing</button>
+			{/if}
 		{/if}
-		<span class="spacer"></span>
-		<!-- Top pager — entire row hidden on mobile (the bottom pager
-		     handles paging there); arrow keys work either way. -->
-		<div class="toppager">
-			<button
-				disabled={binder.page <= 1}
-				onclick={() => gotoPage(binder!.page - 1)}
-			>← Prev</button>
-			<span class="pageno">Page {binder.page} of {binder.total_pages}</span>
-			<button
-				disabled={binder.page >= binder.total_pages}
-				onclick={() => gotoPage(binder!.page + 1)}
-			>Next →</button>
-		</div>
 	</div>
-
-	{#if error}<p class="error">{error}</p>{/if}
-
-	{#if binder.slots.length === 0}
-		<p class="muted">No cards in this view.</p>
-	{:else}
-		<div class="grid" style:grid-template-columns="repeat({cols}, 1fr)">
-			{#each binder.slots as slot, i (slot.card_id)}
-				{@const prevSection = i > 0 ? binder.slots[i - 1].section : 'base'}
-				{#if slot.section !== prevSection && slot.section !== 'base'}
-					<div class="divider">{sectionLabel[slot.section]}</div>
-				{/if}
-				<!-- One colored pip per variant. In binder view pips sit alone
-				     below the image; in card view they share a row with the
-				     metadata (#, name, ×owned). The pip buttons live OUTSIDE
-				     the slot button so they don't produce nested-button
-				     invalid HTML. -->
-				{#snippet pips(slot: BinderSlot)}
-					<div class="vchips">
-						{#each slot.printings
-							.filter((p) => !p.deprecated)
-							.slice()
-							.sort((a, b) => variantSortCmp(a.variant, b.variant)) as p (p.printing_id)}
-							<button
-								class="vchip"
-								class:owned={p.owned_count > 0}
-								style:--c={variantColor(p.variant)}
-								title="{variantLabel(p.variant)}{p.owned_count > 0
-									? ` ×${p.owned_count}`
-									: ''} — click to add"
-								aria-label="Add one {variantLabel(p.variant)}{p.owned_count > 0
-									? ` (own ${p.owned_count})`
-									: ''}"
-								onclick={() => addToSlot(slot, p.printing_id)}
-							>
-								{#if p.owned_count > 1}<span class="vcount">{p.owned_count}</span>{/if}
-							</button>
-						{/each}
-					</div>
-				{/snippet}
-				<div class="slotwrap" class:missing={!ownedAny(slot)}>
-					<button class="slot" onclick={() => (selectedSlot = slot)}>
-						{#if slot.image_large}
-							<img src={slot.image_large} alt={slot.name} loading="lazy" />
-						{:else}
-							<div class="noart">{slot.name}</div>
-						{/if}
-					</button>
-					{#if view === 'card'}
-						<div class="meta">
-							<span class="num">#{slot.number}</span>
-							<span class="name" title={slot.name}>{slot.name}</span>
-							{#if ownedTotal(slot) > 0}
-								<span class="own" title="Owned copies">×{ownedTotal(slot)}</span>
-							{/if}
-							{@render pips(slot)}
-						</div>
-						{#if slot.external_set}
-							<!-- Bundle slot: the underlying card lives in another set.
-							     Link out so the user can land on the home-set's binder. -->
-							<a class="extset" href="/browse/{slot.external_set.set_code}"
-								>{slot.external_set.name}</a
-							>
-						{/if}
-					{:else}
-						{@render pips(slot)}
-					{/if}
-				</div>
-			{/each}
-		</div>
-
-		{#if binder.total_pages > 1}
-			<div class="pager-bottom">
-				<button disabled={binder.page <= 1} onclick={() => gotoPage(binder!.page - 1)}>
-					← Prev
-				</button>
-				<span class="pageno">Page {binder.page} of {binder.total_pages}</span>
-				<button
-					disabled={binder.page >= binder.total_pages}
-					onclick={() => gotoPage(binder!.page + 1)}
-				>
-					Next →
-				</button>
-			</div>
-		{/if}
-	{/if}
 {/if}
 
 {#if selectedSlot && binder}
@@ -704,83 +756,60 @@
 	<TcgExportModal setCode={binder.set.set_code} onClose={() => (showTcgExport = false)} />
 {/if}
 
+
 <style>
+	/*
+		Only layout and geometry are left here — where a box sits, how wide it
+		is, what shape it holds. Surfaces, fills, rules, text colour, radius,
+		spacing and elevation all arrive through the semantic token layer or
+		through a primitive that owns them.
+
+		WHERE A PRIMITIVE IS PLACED. Svelte scopes a rule to the elements in
+		this file, and a `class` handed to a component lands on markup this
+		file does not own — so `.controls { margin: 1rem 0 }` would compile to
+		a selector matching nothing. Placement of a primitive is therefore
+		written as `:global()` nested under a scoped ancestor; `.binderpage`
+		exists to be that ancestor for the page's top-level rows. Never a bare
+		`:global(.controls)` — that leaks the rule to every route.
+
+		The segmented view toggle and the search field's clear-X are shapes the
+		primitive set does not have yet, and are shared verbatim with
+		/collection and /sealed; filed as pd-5fki rather than grown into a
+		private variant here.
+	*/
 	header {
 		display: flex;
-		gap: 2rem;
+		gap: var(--space-8);
 		align-items: baseline;
 		flex-wrap: wrap;
 	}
 	.statslink {
-		color: #e0e0e0;
-		font-size: 0.85rem;
+		color: var(--color-text);
+		font-size: var(--text-md);
 	}
 	.statslink:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-danger-text);
 	}
 	.stats {
 		display: flex;
-		gap: 1.5rem;
+		gap: var(--space-6);
 	}
-	.stat span {
-		font-size: 0.85rem;
-		color: #ccc;
-	}
-	.bar {
+	/* Both meters are ProgressBar; the route only says how wide they are. */
+	.stats :global(.stat) {
 		width: 160px;
-		height: 6px;
-		background: #0f3460;
-		border-radius: 3px;
-		margin-top: 0.2rem;
-		overflow: hidden;
 	}
-	.bar span {
-		display: block;
-		height: 100%;
-		background: #e94560;
+	.binderpage :global(.controls) {
+		margin: var(--space-4) var(--space-0);
+		font-size: var(--text-md);
 	}
-	.controls {
-		display: flex;
-		gap: 1rem;
-		align-items: center;
-		flex-wrap: wrap;
-		margin: 1rem 0;
-		font-size: 0.85rem;
-	}
-	.sortbtns {
-		display: flex;
-		gap: 0.3rem;
-		flex-wrap: wrap;
-	}
-	.sortbtn {
-		background: #16213e;
-		border: 1px solid #0f3460;
-		color: #888;
-		border-radius: 6px;
-		padding: 0.3rem 0.7rem;
-		font: inherit;
-		cursor: pointer;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.3rem;
-	}
-	.sortbtn:hover {
-		border-color: #e94560;
-		color: #e0e0e0;
-	}
-	.sortbtn.active {
-		background: #e94560;
-		border-color: #e94560;
-		color: #fff;
-	}
-	.sortbtn .caret {
-		font-size: 0.65rem;
+	.caret {
+		font-size: var(--text-xs);
 		opacity: 0.9;
 	}
 	.overflow {
@@ -794,11 +823,11 @@
 		justify-content: center;
 		width: 28px;
 		height: 28px;
-		border-radius: 6px;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		color: #b8c1d9;
-		font-size: 1.1rem;
+		border-radius: var(--radius-md);
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
+		color: var(--color-text-muted);
+		font-size: var(--text-xl);
 		line-height: 1;
 		user-select: none;
 	}
@@ -806,53 +835,30 @@
 		display: none;
 	}
 	.overflow > summary:hover {
-		border-color: #e94560;
-		color: #e94560;
+		border-color: var(--color-border-accent);
+		color: var(--color-text-accent);
 	}
 	.overflow[open] > summary {
-		border-color: #e94560;
-		color: #e94560;
+		border-color: var(--color-border-accent);
+		color: var(--color-text-accent);
 	}
-	.overflow-menu {
+	/* Placement only; Panel `overlay` + elevation md is the popover surface. */
+	.overflow :global(.overflow-menu) {
 		position: absolute;
-		top: calc(100% + 4px);
+		top: calc(100% + var(--space-1));
 		left: 0;
 		z-index: 5;
 		display: flex;
 		flex-direction: column;
-		gap: 0.4rem;
-		padding: 0.6rem 0.8rem;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		border-radius: 6px;
+		gap: var(--space-2);
 		min-width: 140px;
 		white-space: nowrap;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-	}
-	.controls label {
-		color: #ccc;
-	}
-	.missingonly {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		color: #ccc;
-		font-size: 0.85rem;
-		cursor: pointer;
-		user-select: none;
-	}
-	.missingonly input {
-		cursor: pointer;
 	}
 	/* Search row — search input + 'Missing only' checkbox on the same
 	   line. Search takes all the slack via flex:1; the checkbox hugs
 	   the right edge and wraps below on narrow viewports. */
-	.searchrow {
-		display: flex;
-		gap: 0.75rem;
-		align-items: center;
-		flex-wrap: wrap;
-		margin: 1rem 0 0.5rem;
+	.binderpage :global(.searchrow) {
+		margin: var(--space-4) var(--space-0) var(--space-2);
 	}
 	/* Search input + clear-X. flex:1 lets it absorb all available
 	   width; min-width:0 stops it from refusing to shrink below its
@@ -867,93 +873,62 @@
 	/* Binder/Card view-mode segmented control. */
 	.viewtoggle {
 		display: inline-flex;
-		border: 1px solid #0f3460;
-		border-radius: 6px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
 		overflow: hidden;
 	}
 	.viewtoggle button {
-		background: #16213e;
+		background: var(--color-surface-panel);
 		border: none;
-		color: #888;
-		padding: 0.3rem 0.65rem;
+		color: var(--color-text-subtle);
+		padding: var(--space-1) var(--space-2);
 		font: inherit;
-		font-size: 0.85rem;
+		font-size: var(--text-md);
 		cursor: pointer;
 		border-radius: 0;
 	}
 	.viewtoggle button + button {
-		border-left: 1px solid #0f3460;
+		border-left: 1px solid var(--color-border);
 	}
 	.viewtoggle button:hover {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.viewtoggle button.active {
-		background: #e94560;
-		color: #fff;
-	}
-	/* "Buy missing" → TCGplayer export. */
-	.buymissing {
-		background: #16213e;
-		border: 1px solid #0f3460;
-		border-radius: 6px;
-		color: #e0e0e0;
-		padding: 0.3rem 0.7rem;
-		font: inherit;
-		font-size: 0.85rem;
-		cursor: pointer;
-	}
-	.buymissing:hover {
-		border-color: #e94560;
-		color: #fff;
+		background: var(--color-accent);
+		color: var(--color-on-accent);
 	}
 	/* Cards-per-row stepper. */
 	.cpr {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.4rem;
-		color: #ccc;
+		gap: var(--space-2);
+		color: var(--color-text-muted);
 		margin-left: auto;
 	}
 	.cpr-label {
-		font-size: 0.85rem;
-		color: #888;
+		font-size: var(--text-md);
+		color: var(--color-text-subtle);
 	}
-	.cpr-btn {
+	.cpr :global(.cpr-btn) {
 		width: 28px;
 		height: 28px;
-		padding: 0;
-		font-size: 1.1rem;
+		padding: var(--space-0);
+		font-size: var(--text-xl);
 		line-height: 1;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
-		border-radius: 6px;
-		cursor: pointer;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-	}
-	.cpr-btn:hover:not(:disabled) {
-		border-color: #e94560;
-		color: #e94560;
-	}
-	.cpr-btn:disabled {
-		opacity: 0.35;
-		cursor: default;
 	}
 	.cpr-value {
 		min-width: 1.2rem;
 		text-align: center;
 		font-variant-numeric: tabular-nums;
-		font-weight: 600;
-		color: #e0e0e0;
+		font-weight: var(--weight-semibold);
+		color: var(--color-text);
 	}
 	/* Top pager — page counter + Prev/Next arrows. Both hidden on
 	   mobile (the bottom pager handles paging there). */
 	.toppager {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.5rem;
+		gap: var(--space-2);
 	}
 	@media (max-width: 540px) {
 		.toppager {
@@ -963,88 +938,66 @@
 	.search {
 		flex: 1;
 		min-width: 0;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
-		border-radius: 6px;
-		padding: 0.4rem 2rem 0.4rem 0.6rem;
+		background: var(--color-control-surface);
+		border: 1px solid var(--color-control-border);
+		color: var(--color-control-text);
+		border-radius: var(--radius-md);
+		padding: var(--space-2) var(--space-8) var(--space-2) var(--space-2);
 		font: inherit;
 	}
-	.searchclear {
+	.search::placeholder {
+		color: var(--color-control-placeholder);
+	}
+	.search:focus-visible {
+		outline: none;
+		border-color: var(--color-border-focus);
+		box-shadow: var(--shadow-focus);
+	}
+	/* Geometry only — the Button primitive paints it. */
+	.searchwrap :global(.searchclear) {
 		position: absolute;
-		right: 0.4rem;
+		right: var(--space-2);
 		top: 50%;
 		transform: translateY(-50%);
 		width: 1.4rem;
 		height: 1.4rem;
-		padding: 0;
-		background: none;
-		border: none;
-		color: #888;
-		font-size: 1.1rem;
+		font-size: var(--text-xl);
 		line-height: 1;
-		border-radius: 50%;
-		cursor: pointer;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-	}
-	.searchclear:hover {
-		color: #e94560;
-		background: rgba(233, 69, 96, 0.12);
+		border-radius: var(--radius-round);
 	}
 	.spacer {
 		flex: 1;
 	}
 	.pageno {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.pager-bottom {
 		display: flex;
 		justify-content: center;
 		align-items: center;
-		gap: 0.75rem;
-		margin: 1.5rem 0 0.5rem;
-	}
-	button {
-		background: #16213e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
-		padding: 0.3rem 0.7rem;
-		border-radius: 6px;
-		cursor: pointer;
-		font: inherit;
-	}
-	button:disabled {
-		opacity: 0.4;
-		cursor: default;
+		gap: var(--space-3);
+		margin: var(--space-6) var(--space-0) var(--space-2);
 	}
 	.grid {
 		display: grid;
-		gap: 0.75rem;
+		gap: var(--space-3);
 	}
-	.divider {
+	/* The section label is a SectionHeader; the grid only says it spans. */
+	.grid :global(.sectionbreak) {
 		grid-column: 1 / -1;
-		color: #e94560;
-		font-size: 0.8rem;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		border-bottom: 1px solid #0f3460;
-		padding-bottom: 0.2rem;
-		margin-top: 0.5rem;
 	}
 	.slotwrap {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		gap: var(--space-1);
 	}
 	.slot {
 		display: block;
 		width: 100%;
-		padding: 0;
+		padding: var(--space-0);
 		background: transparent;
 		border: none;
-		color: #e0e0e0;
+		color: var(--color-text);
 		text-align: left;
 		cursor: pointer;
 	}
@@ -1070,9 +1023,9 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		font-size: 0.8rem;
-		color: #888;
-		padding: 0.5rem;
+		font-size: var(--text-sm);
+		color: var(--color-text-subtle);
+		padding: var(--space-2);
 		text-align: center;
 	}
 	/* 'Card view' metadata row: collector #, name, owned count, pips —
@@ -1081,19 +1034,19 @@
 	.meta {
 		display: flex;
 		align-items: center;
-		gap: 0.4rem;
-		font-size: 0.78rem;
-		line-height: 1.2;
-		color: #ccc;
+		gap: var(--space-2);
+		font-size: var(--text-sm);
+		line-height: var(--leading-tight);
+		color: var(--color-text-muted);
 		min-width: 0;
 	}
 	.meta .num {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-variant-numeric: tabular-nums;
 		flex-shrink: 0;
 	}
 	.meta .name {
-		color: #e0e0e0;
+		color: var(--color-text);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -1101,9 +1054,9 @@
 		flex: 1;
 	}
 	.meta .own {
-		color: #9fe7a0;
+		color: var(--color-success-text);
 		font-variant-numeric: tabular-nums;
-		font-weight: 600;
+		font-weight: var(--weight-semibold);
 		flex-shrink: 0;
 	}
 	/* When pips share the meta row, anchor them to the right edge so
@@ -1113,41 +1066,42 @@
 	}
 	.slotwrap.missing .meta .name,
 	.slotwrap.missing .meta .num {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	/* Bundle-slot home-set link, sits under the meta row in card view. */
 	.extset {
-		font-size: 0.72rem;
-		color: #888;
+		font-size: var(--text-xs);
+		color: var(--color-text-subtle);
 		text-decoration: none;
 	}
 	.extset:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	/* Color-coded variant chips centered below the card. Empty (border-
 	   only) when unowned, filled with the variant's color when owned;
-	   count badge appears when owned > 1. */
+	   count badge appears when owned > 1. The fill is per-variant data
+	   (the `variants` table), delivered as --c by the markup. */
 	.vchips {
 		display: flex;
 		justify-content: center;
 		align-items: center;
-		gap: 4px;
+		gap: var(--space-1);
 		flex-wrap: wrap;
 	}
 	.vchip {
 		width: 20px;
 		height: 20px;
-		border-radius: 50%;
-		border: 2px solid var(--c, #666);
+		border-radius: var(--radius-round);
+		border: 2px solid var(--c, var(--color-chart-unknown));
 		background: transparent;
-		color: #fff;
-		padding: 0;
+		color: var(--color-text-strong);
+		padding: var(--space-0);
 		cursor: pointer;
 		font: inherit;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		transition: transform 0.08s ease-out;
+		transition: transform var(--dur-fast) var(--ease-standard);
 	}
 	.vchip.owned {
 		background: var(--c);
@@ -1156,38 +1110,37 @@
 		transform: scale(1.15);
 	}
 	.vcount {
-		font-size: 0.62rem;
-		font-weight: 700;
+		font-size: var(--text-xs);
+		font-weight: var(--weight-bold);
 		line-height: 1;
 		/* Dark text on light fills (yellow/silver/light blue); white text
-		   on dark fills. Black with a thin white halo reads on both. */
-		color: #0a0a1a;
-		text-shadow: 0 0 2px rgba(255, 255, 255, 0.7);
+		   on dark fills. Dark ink with a thin halo reads on both. */
+		color: var(--color-text-inverse);
+		text-shadow: var(--shadow-text-halo);
 	}
 
 	/* Larger tap targets on touch-sized viewports (PLAN §6.9). */
 	@media (max-width: 540px) {
-		.controls {
-			gap: 0.6rem 1rem;
+		.binderpage :global(.controls) {
+			gap: var(--space-2) var(--space-4);
 		}
-		.controls label,
-		.controls button {
-			font-size: 0.95rem;
-			padding: 0.45rem 0.6rem;
+		.binderpage :global(.controls button) {
+			font-size: var(--text-lg);
+			padding: var(--space-2) var(--space-2);
 		}
 		.stats {
-			gap: 1rem;
+			gap: var(--space-4);
 		}
-		.bar {
+		.stats :global(.stat) {
 			width: 120px;
 		}
 		/* Tighter binder so a full page fits — small gaps, thin borders,
 		   no foot padding eating the card. */
 		.grid {
-			gap: 0.25rem;
+			gap: var(--space-1);
 		}
 		.slotwrap {
-			gap: 4px;
+			gap: var(--space-1);
 		}
 	}
 </style>

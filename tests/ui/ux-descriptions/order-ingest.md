@@ -61,7 +61,7 @@ and navigates to its detail page.
 
 | State | Condition | Appearance |
 |-------|-----------|------------|
-| **No lines** | `lines.length === 0` | "Add a line, or paste order text above." |
+| **No lines** | `lines.length === 0` | EmptyState (small) "No cards on this order yet." — "Paste the order text above and every line is parsed for you, or add lines one at a time." |
 | **Per-line error** | A line's lookup fails or its set/number is blank | A red per-line error message under that line |
 | **Commit validation** | "Commit order" pressed with no resolved line | "Resolve at least one line (look up its card) before committing." |
 | **Commit error** | The create-order request fails | Red error text above the commit button |

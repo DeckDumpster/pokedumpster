@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { count } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { Binder } from '$lib/types/Binder';
 
 	let binders = $state<Binder[]>([]);
@@ -57,7 +58,10 @@
 {#if loading}
 	<p class="muted">Loading…</p>
 {:else if binders.length === 0}
-	<p class="muted">No binders yet. Create one above.</p>
+	<EmptyState
+		title="No binders yet."
+		description="A binder files cards you own into pages — a master set, a trade folder, whatever sits on your shelf. Name one above to create your first."
+	/>
 {:else}
 	<div class="grid">
 		{#each binders as binder (binder.id)}
@@ -71,13 +75,13 @@
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.newform {
 		display: flex;
@@ -86,15 +90,15 @@
 	}
 	input {
 		padding: 0.5rem;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	button {
-		background: #e94560;
+		background: var(--color-accent);
 		border: none;
-		color: #fff;
+		color: var(--color-on-accent);
 		padding: 0.5rem 1rem;
 		border-radius: 6px;
 		cursor: pointer;
@@ -109,23 +113,23 @@
 	}
 	.tile {
 		display: block;
-		background: #16213e;
-		border: 2px solid #0f3460;
+		background: var(--color-surface-panel);
+		border: 2px solid var(--color-border);
 		border-radius: 10px;
 		padding: 1rem;
 		text-decoration: none;
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.tile:hover {
-		border-color: #e94560;
+		border-color: var(--color-border-accent);
 	}
 	.name {
 		font-weight: 700;
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.count {
 		font-size: 0.85rem;
-		color: #888;
+		color: var(--color-text-subtle);
 		margin-top: 0.3rem;
 	}
 </style>

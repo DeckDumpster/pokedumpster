@@ -78,7 +78,7 @@
 	</section>
 
 	{#if vocab}
-		<section>
+		<section data-testid="search-vocab">
 			<h2>Keywords</h2>
 			<table>
 				<thead><tr><th>Keyword</th><th>Operators</th><th>Description</th></tr></thead>
@@ -121,10 +121,10 @@
 	h2 {
 		margin: 2rem 0 0.6rem;
 		font-size: 1.1rem;
-		color: #cdd3ff;
+		color: var(--color-text-muted);
 	}
 	.lead {
-		color: #b8bcd0;
+		color: var(--color-text-muted);
 		line-height: 1.5;
 		max-width: 48rem;
 	}
@@ -135,35 +135,35 @@
 	}
 	th {
 		text-align: left;
-		color: #9aa0bd;
+		color: var(--color-text-subtle);
 		font-weight: 600;
-		border-bottom: 1px solid #2a2f4a;
+		border-bottom: 1px solid var(--color-border-subtle);
 		padding: 0.4rem 0.6rem;
 	}
 	td {
 		padding: 0.35rem 0.6rem;
-		border-bottom: 1px solid #20243a;
+		border-bottom: 1px solid var(--color-border-subtle);
 		vertical-align: top;
 	}
 	.mono {
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		color: #ffd66b;
+		color: var(--color-warning-text);
 		white-space: nowrap;
 	}
 	.ops {
-		color: #8fb7ff;
+		color: var(--color-info-text);
 	}
 	code {
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		background: #20243a;
+		background: var(--color-surface-raised);
 		padding: 0.05rem 0.3rem;
 		border-radius: 0.25rem;
-		color: #ffd66b;
+		color: var(--color-warning-text);
 	}
 	.error {
-		color: #ff8a8a;
+		color: var(--color-danger-text);
 	}
 	.muted {
-		color: #9aa0bd;
+		color: var(--color-text-subtle);
 	}
 </style>

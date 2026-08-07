@@ -5,5 +5,5 @@
 description: >
   After creating a new binder from the binders list, I open its detail
   view. Since it has no cards, the page shows the empty-state message
-  "No cards in this binder. Add some with 'Add cards'." The header
+  "No cards in this binder." with an "Add cards" button. The header
   still shows the "+ Add cards" and "Delete binder" buttons.

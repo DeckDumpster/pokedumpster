@@ -9,5 +9,5 @@ description: >
   Source select (tcgplayer, ebay, pokemoncenter, lgs, other) and Seller,
   Order date, Total, and Notes inputs, a paste textarea with a Parse
   button, a "Cards (0/0 ready)" header with a "+ Add line" button, the
-  "Add a line, or paste order text above." empty message, and a disabled
+  "No cards on this order yet." empty state, and a disabled
   "Commit order" button.

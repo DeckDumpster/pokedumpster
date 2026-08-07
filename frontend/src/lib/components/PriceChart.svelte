@@ -2,7 +2,9 @@
 	import { Chart, registerables, type ChartConfiguration } from 'chart.js';
 	import { untrack } from 'svelte';
 	import { variantLabel } from '$lib/variants.svelte';
+	import { chartFill, chartPalette, token } from '$lib/styles/tokens';
 	import { money } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { PriceSeries } from '$lib/types/PriceSeries';
 
 	Chart.register(...registerables);
@@ -15,11 +17,14 @@
 	// copy's condition) does NOT rebuild the chart.
 	let builds = $state(0);
 
-	// Distinct line color per series; cycles if there are more printings than
-	// palette entries (Pokémon cards almost always have <= 4 printings).
-	const PALETTE = ['#e94560', '#4a8df0', '#f0c878', '#5cb85c', '#a64ac9', '#ccc'];
-
 	function buildConfig(series: PriceSeries[]): ChartConfiguration {
+		// Distinct line color per series; cycles if there are more printings than
+		// palette entries (Pokémon cards almost always have <= 4 printings).
+		// Resolved here rather than at module scope because the token layer only
+		// exists once the document does.
+		const palette = chartPalette();
+		const grid = token('--color-chart-grid');
+		const axis = token('--color-chart-axis');
 		const dates = Array.from(
 			new Set(series.flatMap((s) => s.points.map((p) => p.date)))
 		).sort();
@@ -32,8 +37,8 @@
 					return {
 						label: variantLabel(s.variant),
 						data: dates.map((d) => map.get(d) ?? null),
-						borderColor: PALETTE[i % PALETTE.length],
-						backgroundColor: PALETTE[i % PALETTE.length] + '33',
+						borderColor: palette[i % palette.length],
+						backgroundColor: chartFill(palette[i % palette.length]),
 						spanGaps: true,
 						tension: 0.2,
 						pointRadius: 3
@@ -44,17 +49,17 @@
 				responsive: true,
 				maintainAspectRatio: false,
 				scales: {
-					x: { grid: { color: '#0f3460' }, ticks: { color: '#888', maxRotation: 0 } },
+					x: { grid: { color: grid }, ticks: { color: axis, maxRotation: 0 } },
 					y: {
-						grid: { color: '#0f3460' },
+						grid: { color: grid },
 						ticks: {
-							color: '#888',
+							color: axis,
 							callback: (v) => money(Number(v))
 						}
 					}
 				},
 				plugins: {
-					legend: { labels: { color: '#ccc' } },
+					legend: { labels: { color: token('--color-text-muted') } },
 					tooltip: {
 						callbacks: {
 							label: (ctx) =>
@@ -94,7 +99,11 @@
 </script>
 
 {#if empty}
-	<p class="muted">No price history yet.</p>
+	<EmptyState
+		size="sm"
+		title="No price history yet."
+		description="Prices are recorded by the daily refresh — the chart appears once this printing has been seen at least once."
+	/>
 {:else if oneShot}
 	<p class="muted">Only one price snapshot so far — the chart will grow as the daily refresh runs.</p>
 	<div class="wrap" data-testid="price-chart" data-series-count={series.length} data-builds={builds}>
@@ -112,7 +121,7 @@
 		max-width: 640px;
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 		margin: 0 0 0.4rem;
 	}

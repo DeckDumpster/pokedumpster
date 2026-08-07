@@ -1,0 +1,77 @@
+{
+	"$doc": "Every route the visual-regression suite screenshots, at every viewport in playwright.config.ts. Data, not code — adding a route to the app means adding a line here, and `routes.spec.ts` fails if a `+page.svelte` exists with no entry, so the list cannot silently fall behind.",
+	"$paths": "Concrete URLs resolved against the committed fixture in tests/ui/fixtures (see its README for the ids). Keep them pinned: a screenshot of whatever happens to be row 1 is not a baseline.",
+	"$fields": {
+		"id": "baseline filename stem — stable, kebab-case; renaming it orphans a PNG",
+		"path": "URL path to visit",
+		"about": "what this route is, for whoever reads a failure",
+		"waitFor": "optional CSS selector that must be visible before the shot",
+		"mask": "optional selectors painted over — for genuinely non-deterministic pixels only, never to hide a diff you don't feel like reviewing"
+	},
+
+	"unrepresented": {
+		"routes/bundles/[slug]/+page.svelte": "Redirect-only shim to /browse/[code] (pokedumpster-80q). It renders one line of placeholder text before navigating; the destination is already covered by browse-set."
+	},
+
+	"routes": [
+		{
+			"id": "home",
+			"path": "/",
+			"about": "Front door — collection stats, recent additions, set completion, sections",
+			"waitFor": ".thumbs"
+		},
+		{
+			"id": "browse",
+			"path": "/browse",
+			"about": "Set index — the tile grid, incl. the synthesized-set badge"
+		},
+		{
+			"id": "browse-set",
+			"path": "/browse/sv3pt5",
+			"about": "Binder-page grid for 151 — the headline feature"
+		},
+		{
+			"id": "browse-set-vintage",
+			"path": "/browse/base1",
+			"about": "Binder page for a 1999 set — different rarity mix and pip states"
+		},
+		{
+			"id": "browse-set-stats",
+			"path": "/browse/sv3pt5/stats",
+			"about": "Master-set completion stats — charts and progress meters"
+		},
+		{
+			"id": "card-detail",
+			"path": "/card/sv3pt5/6",
+			"about": "Charizard ex — card detail with variants, prices and copies"
+		},
+		{
+			"id": "card-detail-owned-vintage",
+			"path": "/card/base1/4",
+			"about": "Base Set Charizard — a card with an ordered copy in flight"
+		},
+		{ "id": "collection", "path": "/collection", "about": "Collection list — paints its own chrome" },
+		{ "id": "sealed", "path": "/sealed", "about": "Sealed collection — paints its own chrome" },
+		{ "id": "wishlist", "path": "/wishlist", "about": "Wishlist with priorities and max prices" },
+		{ "id": "recent", "path": "/recent", "about": "Recently added copies" },
+		{ "id": "binders", "path": "/binders", "about": "Binder list" },
+		{ "id": "binder-detail", "path": "/binders/2", "about": "Master Set: 151 — a populated 12-pocket binder" },
+		{ "id": "decks", "path": "/decks", "about": "Deck list across all three lifecycle states" },
+		{ "id": "deck-detail", "path": "/decks/1", "about": "Charizard ex Control — a built deck" },
+		{ "id": "batches", "path": "/batches", "about": "Batch list with the type filter bar" },
+		{ "id": "batch-detail", "path": "/batches/4", "about": "151 binder page-through — a binder_click batch" },
+		{ "id": "orders", "path": "/orders", "about": "Order list — one received, one open" },
+		{ "id": "order-detail", "path": "/orders/1", "about": "TCG-100001 — a received order" },
+		{ "id": "ingest-manual", "path": "/ingest/manual", "about": "Manual entry form" },
+		{ "id": "ingest-csv", "path": "/ingest/csv", "about": "CSV import — the largest form surface in the app" },
+		{ "id": "ingest-order", "path": "/ingest/order", "about": "Order intake form" },
+		{ "id": "ingest-unresolved", "path": "/ingest/unresolved", "about": "Unresolved-import queue" },
+		{
+			"id": "search-help",
+			"path": "/search-help",
+			"about": "Search syntax reference — dense prose and code",
+			"$waitFor": "The keyword and flag tables come from an onMount fetch, which can start AFTER networkidle — so settle() returns while the page is still short and it then grows under the screenshot. Without this the route fails 'two consecutive stable screenshots' most runs at 1440 (and did so before the token migration too).",
+			"waitFor": "[data-testid=\"search-vocab\"]"
+		}
+	]
+}

@@ -1,7 +1,7 @@
 start_page: /decks
 involves:
   - delete all three fixture decks via their detail-page "Delete deck" buttons
-  - '"No decks yet. Create one above." empty-state message'
+  - '"No decks yet." empty-state message'
   - inline create form (.newform) still visible above the message
 fixture_data:
   deck_1_id: 1
@@ -11,5 +11,5 @@ notes: >
   Navigate to /decks. Delete all three fixture decks: click into each
   deck tile in turn, click "Delete deck", accept the confirm dialog, and
   return to /decks. After all three are gone, reload /decks. Wait for the
-  empty-state message. Verify the text "No decks yet. Create one above."
+  empty-state message. Verify the text "No decks yet."
   is present. Verify the create form is still visible. Take a screenshot.

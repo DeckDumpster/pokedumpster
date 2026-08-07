@@ -5,6 +5,7 @@
 
 description: >
   When I visit /decks on an instance with no decks, I see the message
-  "No decks yet. Create one above." instead of a deck grid. The inline
+  "No decks yet." instead of a deck grid, with a line explaining what a
+  deck is and to name one above. The inline
   create form is still available above the message. To reach this state,
   I first delete all three existing fixture decks, then reload the page.

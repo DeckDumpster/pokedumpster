@@ -149,8 +149,17 @@ joined per query, never denormalised per tenant.
 Provisioning is `pkdump tenant create <name>` / `pkdump tenant remove
 <name> --yes`; `pkdump tenant adopt` migrates a pre-`tenants/` data dir and
 `revert` rolls it back. Layout rationale + the production migration runbook:
-`deploy/TENANTS.md`. Tenant *resolution* in the request path does not exist
-yet — `pkdump serve` opens the one collection named by `$PKDUMP_USER`.
+`deploy/TENANTS.md`.
+
+Tenant *resolution* lives in `pkdump-server/src/tenant.rs` and is **off by
+default**: `pkdump serve` opens the one collection named by `$PKDUMP_USER`
+and does not read the tenant header at all. `--multi-tenant` (or
+`PKDUMP_MULTITENANT=1`) switches on per-request resolution from the
+`x-pkdump-tenant` header. **Nothing authenticates that header** — identity is
+a separate epic — so the flag must stay off in production. Isolation is
+structural: `AppState` holds no connection, `blocking()` takes the tenant from
+the request scope, and one connection per tenant is opened against that
+tenant's own file. See `deploy/TENANTS.md`.
 
 ## Deployment
 

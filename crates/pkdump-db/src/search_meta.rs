@@ -176,6 +176,72 @@ pub fn load_rarities(conn: &Connection) -> Result<Vec<Rarity>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// Resolve raw catalog rarity strings against the `rarities` table.
+///
+/// Upstream is inconsistent about spelling: pokemontcg.io ships
+/// `"Special Illustration Rare"` while some TCGCSV tiers arrive as
+/// `"MEGA_ATTACK_RARE"`. Both name the same tier, so the lookup key is a
+/// normalised form (lowercased, underscores as spaces, whitespace
+/// collapsed) and the table's own `name` is the canonical spelling to
+/// display.
+///
+/// This is the one place that normalisation lives. Before it existed, the
+/// stats page carried its own `canonicalRarity()` plus a `RARITY_ORDER`
+/// map in TypeScript — a second, drifting copy of a typology the shared
+/// catalog already owns.
+pub struct RarityLookup {
+    by_key: std::collections::HashMap<String, Rarity>,
+}
+
+impl RarityLookup {
+    /// Build the lookup from the `rarities` table.
+    pub fn load(conn: &Connection) -> Result<Self> {
+        let by_key = load_rarities(conn)?
+            .into_iter()
+            .map(|r| (normalize_rarity(&r.name), r))
+            .collect();
+        Ok(Self { by_key })
+    }
+
+    /// The table row for a raw catalog rarity, if the tier is ranked.
+    pub fn get(&self, raw: &str) -> Option<&Rarity> {
+        self.by_key.get(&normalize_rarity(raw))
+    }
+
+    /// Canonical display spelling — the table's `name`, or the raw string
+    /// unchanged when the tier is not in the table. An unranked tier is a
+    /// gap in `data/rarities.json`, not a reason to hide the card.
+    pub fn display(&self, raw: &str) -> String {
+        self.get(raw)
+            .map_or_else(|| raw.to_string(), |r| r.name.clone())
+    }
+
+    /// Curated ordinal, or [`UNRANKED_RARITY`] for a tier the table does
+    /// not carry — which sorts every unknown tier after the known ones.
+    pub fn rank(&self, raw: &str) -> i64 {
+        self.get(raw).map_or(UNRANKED_RARITY, |r| r.rank)
+    }
+
+    /// Group alias (`common`, `ultra`, `secret`…) — the key the stats page
+    /// colours its histogram by.
+    pub fn grp(&self, raw: &str) -> Option<String> {
+        self.get(raw).and_then(|r| r.grp.clone())
+    }
+}
+
+/// Rank given to a rarity string absent from the `rarities` table.
+pub const UNRANKED_RARITY: i64 = 1000;
+
+/// Fold a rarity string into its lookup key: `"MEGA_ATTACK_RARE"` and
+/// `"Mega Attack Rare"` both become `"mega attack rare"`.
+fn normalize_rarity(raw: &str) -> String {
+    raw.split(|c: char| c == '_' || c.is_whitespace())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Load the `is:`/`has:` flag definitions.
 pub fn load_flags(conn: &Connection) -> Result<Vec<SearchFlag>> {
     let mut stmt = conn
@@ -272,6 +338,28 @@ mod tests {
                 .as_deref(),
             Some("secret")
         );
+    }
+
+    #[test]
+    fn rarity_lookup_folds_upstream_spelling_variants() {
+        let (_d, mut conn) = shared();
+        reconcile(&mut conn).unwrap();
+        let tiers = RarityLookup::load(&conn).unwrap();
+
+        // TCGCSV's SCREAMING_SNAKE and pokemontcg.io's title case name the
+        // same tier; both resolve to the seed's spelling.
+        for raw in ["Mega Attack Rare", "MEGA_ATTACK_RARE", "mega  attack rare"] {
+            assert_eq!(tiers.display(raw), "Mega Attack Rare", "raw = {raw}");
+            assert_eq!(tiers.grp(raw).as_deref(), Some("special"), "raw = {raw}");
+        }
+        assert_eq!(tiers.grp("Hyper Rare").as_deref(), Some("secret"));
+        assert!(tiers.rank("Common") < tiers.rank("Hyper Rare"));
+
+        // A tier the seed does not carry keeps its string and sorts last.
+        assert_eq!(tiers.display("Blorbo Rare"), "Blorbo Rare");
+        assert_eq!(tiers.rank("Blorbo Rare"), UNRANKED_RARITY);
+        assert_eq!(tiers.grp("Blorbo Rare"), None);
+        assert!(tiers.rank("Blorbo Rare") > tiers.rank("Hyper Rare"));
     }
 
     #[test]

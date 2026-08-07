@@ -22,7 +22,8 @@ use crate::binder::{
     BinderPage, BinderQuery, BinderSetInfo, BinderSlot, ExternalSet, SlotPrinting,
 };
 use crate::error::Result;
-use crate::sets::{CardCopyCount, RarityCount, SetAnalytics, SetSummary};
+use crate::search_meta::RarityLookup;
+use crate::sets::{self, CardCopyCount, SetAnalytics, SetSummary};
 
 /// `data/bundles.json` — the canonical bundle registry.
 const BUNDLES_SEED: &str = include_str!("../../../data/bundles.json");
@@ -434,7 +435,9 @@ pub fn analytics(conn: &Connection, slug: &str) -> Result<Option<SetAnalytics>> 
         .filter_map(|r| r.market_price.map(|p| p * r.owned_count as f64))
         .sum();
 
-    // Rarity split from underlying cards.
+    // Rarity split from underlying cards. Same catalog typology the
+    // per-set breakdown uses — a bundle's stats page is the same page.
+    let tiers = RarityLookup::load(conn)?;
     let mut rarity_totals: HashMap<String, (i64, i64)> = HashMap::new();
     for r in &rows {
         if let Some(rarity) = &r.card_rarity {
@@ -445,15 +448,13 @@ pub fn analytics(conn: &Connection, slug: &str) -> Result<Option<SetAnalytics>> 
             }
         }
     }
-    let mut rarities: Vec<RarityCount> = rarity_totals
-        .into_iter()
-        .map(|(rarity, (t, o))| RarityCount {
-            rarity,
-            total_cards: t,
-            owned_cards: o,
-        })
-        .collect();
-    rarities.sort_by(|a, b| a.rarity.cmp(&b.rarity));
+    let rarities = sets::rank_rarities(
+        &tiers,
+        rarity_totals
+            .into_iter()
+            .map(|(rarity, (t, o))| (rarity, t, o))
+            .collect(),
+    );
 
     // Per-slot copy counts. Sums every printing's copies (one printing
     // per slot for bundles, so this is just the slot's owned_count).
@@ -465,7 +466,8 @@ pub fn analytics(conn: &Connection, slug: &str) -> Result<Option<SetAnalytics>> 
                 .clone()
                 .unwrap_or(r.number_sortable.to_string()),
             number_sortable: r.number_sortable,
-            rarity: r.card_rarity.clone(),
+            rarity: r.card_rarity.as_deref().map(|s| tiers.display(s)),
+            rarity_grp: r.card_rarity.as_deref().and_then(|s| tiers.grp(s)),
             copies: r.owned_count,
         })
         .collect();

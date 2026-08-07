@@ -285,6 +285,31 @@
 	--color-chart-empty: var(--pd-ink-600);
 	--color-chart-unknown: var(--pd-slate-400);
 
+	/* Rarity tiers. The GROUPS are the shared catalog's, not this file's:
+	   `rarities.grp` in shared.sqlite buckets all 54 upstream tiers into
+	   these eight, and the API ships the bucket with every rarity it
+	   reports. One role per bucket is what lets the stats histogram colour
+	   itself from data — before this the mapping was a nine-arm switch in
+	   the route's TypeScript, where no test could see it and 45 of the 54
+	   tiers fell through to a single grey (pd-xzea).
+
+	   Ordered by rank, coldest to hottest, so the ramp reads as escalation
+	   down a set's rarity ladder. The values are the categorical chart
+	   ramp's, one per bucket — but spelled as reference aliases, because a
+	   semantic token pointing at another semantic token collapses the two
+	   layers and re-skinning rarity would drag every chart with it. */
+	--color-rarity-common: var(--pd-slate-200);
+	--color-rarity-uncommon: var(--pd-green-500);
+	--color-rarity-rare: var(--pd-blue-400);
+	--color-rarity-promo: var(--pd-cyan-300);
+	--color-rarity-holo: var(--pd-violet-500);
+	--color-rarity-ultra: var(--pd-crimson-500);
+	--color-rarity-special: var(--pd-amber-500);
+	--color-rarity-secret: var(--pd-lime-400);
+	/* A tier missing from data/rarities.json — a gap in the seed, drawn as
+	   an absence rather than mis-filed into a neighbouring bucket. */
+	--color-rarity-unranked: var(--pd-slate-400);
+
 	/* Fallback swatch for a variant with no colour in the `variants` table. */
 	--color-chip-fallback: var(--pd-violet-300);
 

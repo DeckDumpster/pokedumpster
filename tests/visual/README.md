@@ -106,6 +106,22 @@ If you find yourself wanting to loosen these, the honest move is a `mask`
 entry in `routes.json` naming the specific element that is genuinely
 non-deterministic — not a wider tolerance for the whole app.
 
+Tolerances only matter once the page has stopped moving, and `toHaveScreenshot`
+cannot establish that: re-shooting until two frames match turns a page that
+settles late into a coin flip rather than a failure. So `routes.spec.ts` checks
+it directly — after `settle()`, two back-to-back captures must agree on size —
+and `settle()` earns that by taking one throwaway `fullPage` capture first.
+The throwaway is not superstition: reaching past the viewport makes Chromium
+override the device metrics and relay out the page, which on `/search-help`
+re-resolves its inline `<code>` to a monospace face a pixel shorter and grows
+the document by 4px, once. Left unpaid, that step landed on either side of the
+comparison depending on how loaded the box was, and `/search-help` alternated
+between 2557 and 2561px for a week (pd-832w).
+
+If the size guard fires on a route, it needs a `waitFor` in `routes.json`, or
+its own reason found and fixed. It never needs a re-recorded baseline —
+approving a height that arrives half the time just moves the coin flip.
+
 ## Baselines are host-specific
 
 PNGs are rendered by the Chromium build in `~/.cache/ms-playwright` against the

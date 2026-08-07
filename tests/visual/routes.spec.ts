@@ -13,6 +13,9 @@ import { stabilize, settle } from './stabilize';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '../..');
 
+/** `WxH` off a PNG's IHDR — enough to compare two captures without a decoder. */
+const dimensions = (shot: Buffer) => `${shot.readUInt32BE(16)}x${shot.readUInt32BE(20)}`;
+
 type Route = {
 	id: string;
 	path: string;
@@ -36,6 +39,23 @@ for (const route of manifest.routes) {
 		).toBeLessThan(400);
 
 		await settle(page, route.waitFor);
+
+		// The gate is only worth having if it fails for design reasons, so the
+		// harness has to prove the page is actually still before it judges it.
+		// `toHaveScreenshot` cannot: it re-shoots until two frames match, which
+		// turns a page that settles late into a coin flip rather than a failure
+		// (pd-832w — /search-help alternated 2557/2561px for a week, failing as
+		// "two consecutive stable screenshots" on a fast box and as a baseline
+		// mismatch on a loaded one). Capture size is the cheap tell, and after
+		// settle() it must already be final — if this fails, the route needs a
+		// `waitFor` in routes.json, not a re-recorded baseline.
+		const first = await page.screenshot({ fullPage: true });
+		const second = await page.screenshot({ fullPage: true });
+		expect(
+			dimensions(first),
+			`${route.path} is still moving after settle() — its capture size changed ` +
+				`between two back-to-back shots, so any baseline taken here is a coin flip`
+		).toBe(dimensions(second));
 
 		await expect(page).toHaveScreenshot(`${route.id}.png`, {
 			fullPage: true,

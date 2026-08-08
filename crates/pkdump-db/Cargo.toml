@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 ts-rs.workspace = true
 csv.workspace = true
+ulid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

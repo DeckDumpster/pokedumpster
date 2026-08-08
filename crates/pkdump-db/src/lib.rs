@@ -29,6 +29,7 @@ pub mod search_meta;
 pub mod set_aliases;
 pub mod sets;
 pub mod sub_type_map;
+pub mod tenants;
 pub mod unresolved;
 pub mod user_printings;
 pub mod value_history;
@@ -44,4 +45,7 @@ pub use connection::{
     snapshot_db,
 };
 pub use error::{DbError, Result};
-pub use paths::{current_user, pkdump_home, shared_db_path, user_db_path};
+pub use paths::{
+    TENANTS_DIR, current_user, legacy_user_db_path, pkdump_home, shared_db_path, tenant_db_path,
+    tenants_dir, user_db_path, validate_tenant_name,
+};

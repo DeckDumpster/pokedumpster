@@ -12,14 +12,21 @@
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #   4. Container gate: build + start a `--test` instance, wait for the server
 #                      to answer on its port, then tear it down.
-#   5. Visual gate:    screenshot every route at 1440 and 768 against that
+#   5. Backup gate:    replicate four tenant databases through the SHIPPED
+#                      deploy/litestream.yml to a throwaway MinIO and restore a
+#                      NON-FIRST one, asserting it comes back as itself. See
+#                      tests/litestream/run.sh.
+#   6. DR drill:       run deploy/RESTORE.md's procedure with the shipped
+#                      scripts — restore one tenant in place while the others
+#                      stay byte-identical. See tests/litestream/drill.sh.
+#   7. Visual gate:    screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines.
 #                      See tests/visual/README.md for the approval workflow.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
 # for Vision mode, which makes it slow and non-deterministic. (The visual gate
-# in step 5 also drives Playwright, but offline and deterministically — that is
+# in step 7 also drives Playwright, but offline and deterministically — that is
 # the difference, not the browser.) Run the intents harness on its own:
 #   (cd tests/ui && npx playwright install chromium && npx playwright test)
 #
@@ -127,7 +134,24 @@ if [ -z "$PORT" ]; then
     exit 1
 fi
 
-# --- 5. Visual-regression gate ---------------------------------------------
+# --- 5. Backup gate ---------------------------------------------------------
+# Litestream replicates every tenant from one sidecar and a restore hands back
+# the right tenant's collection. Self-contained (own network, own MinIO, own
+# temp dir) — it does not touch the instance started above, nor any real bucket.
+
+step "Litestream multi-tenant replication + restore"
+bash "$REPO_DIR/tests/litestream/run.sh"
+
+# --- 6. DR drill ------------------------------------------------------------
+# The operator procedure in deploy/RESTORE.md, executed with the shipped scripts
+# against a real Quadlet sidecar: restore one tenant in place, in time, and onto
+# a bare volume, and assert the other tenants are byte-identical every time.
+# Its own instance name / volume / MinIO / secret — it touches nothing else.
+
+step "Multi-tenant DR drill (deploy/RESTORE.md, executed)"
+bash "$REPO_DIR/tests/litestream/drill.sh"
+
+# --- 7. Visual-regression gate ---------------------------------------------
 # Runs against the container started above rather than standing up a second
 # one. A pixel diff fails CI; approving it is explicit — tests/visual/README.md.
 

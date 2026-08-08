@@ -96,21 +96,20 @@ MINIO_PORT=${MINIO_PORT:-$(( 39500 + 16#$(printf '%s' "$REPO_DIR" | sha1sum | cu
 # said `alpha`. With `tenants/01k2c7...sqlite` on disk, the registry is the ONLY
 # thing that can attribute the file, which is precisely the property §7 tests.
 #
-# The ids below are ULID-SHAPED rather than real ULIDs — 26 characters, leading
-# timestamp, but with a readable tail so a FAIL line still names the tenant it
-# is about. What they are faithful to is the CASE: a real ULID renders as
-# uppercase Crockford base32, and validate_tenant_name — in BOTH
-# deploy/litestream-lib.sh and crates/pkdump-db/src/paths.rs — rejects uppercase.
-# So an id that reaches these scripts has to arrive lowercased. That collision
-# is filed as pd-vgof; it belongs to whichever bead first turns a database id
-# into a path, not to this one, and the drill assumes the resolution that leaves
-# today's validators standing.
+# The ids are the shape pd-zr9n actually mints: 26 characters of UPPERCASE
+# Crockford base32 (0-9 A-Z less I, L, O and U), which is what
+# validate_database_id accepts on both sides of the fence. Fixed rather than
+# generated so a failure is reproducible, with a distinguishable tail so a FAIL
+# line still names the tenant it is about — but the CASE is not a detail to be
+# tidied: `01J8…` and `01j8…` are one file on a case-insensitive filesystem and
+# two S3 prefixes, and taking the lowercase shortcut here is what let this drill
+# pass while deploy/litestream-lib.sh still rejected every real id (pd-vgof).
 TENANTS=(alpha bravo charlie delta)
 declare -A DB_ID=(
-	[alpha]=01k2c7hq8n0000000000alpha
-	[bravo]=01k2c7hq8n0000000000bravo
-	[charlie]=01k2c7hq8n000000000charli
-	[delta]=01k2c7hq8n0000000000delta
+	[alpha]=01K2C7HQ8N0000000000000AAA
+	[bravo]=01K2C7HQ8N0000000000000BBB
+	[charlie]=01K2C7HQ8N0000000000000CCC
+	[delta]=01K2C7HQ8N0000000000000DDD
 )
 VICTIM=bravo
 WRITER=delta   # keeps taking writes while the victim is being recovered

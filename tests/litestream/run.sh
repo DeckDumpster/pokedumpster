@@ -486,15 +486,35 @@ check "and it does not pick up the catalog" "0" \
 check "nor the user registry" "0" \
 	"$(tenants_on_volume "$WORK/data" | grep -c registry || true)"
 
-log "9. malformed tenant names cannot retarget the S3 prefix"
-# The names come off an operator's command line in restore-litestream.sh and
+log "9. what may name a database — both shapes, and nothing else"
+# These come off an operator's command line in restore-litestream.sh and
 # backup-check.sh; a `/` or a `..` would silently address a different prefix.
-for bad in "../other" "a/b" "Alpha" "-flag" ""; do
+#
+# A data volume mid-migration (pd-hqee) holds BOTH shapes at once: databases
+# minted since pd-zr9n are named by a 26-character uppercase Crockford
+# `database_id`, and ones predating it are still named by their handle —
+# tenants/collection.sqlite is on the prod box today. So the derivation has to
+# accept both, and a version that took only one would refuse to restore real
+# databases. It took only handles until pd-nd6w, which is why the uppercase id
+# below is an assertion and not a formality.
+for good in "01J8Z9K3QW0000000000000AAA" "collection" "alice" "tenant-2"; do
+	if tenant_replica_url "$good" >/dev/null 2>&1; then
+		echo "  PASS  '${good}' accepted"
+		pass=$((pass + 1))
+	else
+		echo "  FAIL  '${good}' was REJECTED — a real database could not be restored"
+		fail=$((fail + 1))
+	fi
+done
+# Traversal and separators, still. Plus two near-miss ids: 25 characters, and one
+# containing `I` — Crockford excludes I/L/O/U precisely because they misread as
+# 1/1/0/V, and a typo'd id must not address a prefix at all.
+for bad in "../other" "a/b" "Alpha" "-flag" "" "01J8Z9K3QW0000000000000AA" "01I8Z9K3QW0000000000000AAA"; do
 	if tenant_replica_url "$bad" >/dev/null 2>&1; then
-		echo "  FAIL  tenant name '${bad}' was accepted"
+		echo "  FAIL  '${bad}' was accepted"
 		fail=$((fail + 1))
 	else
-		echo "  PASS  tenant name '${bad}' rejected"
+		echo "  PASS  '${bad:-<empty>}' rejected"
 		pass=$((pass + 1))
 	fi
 done

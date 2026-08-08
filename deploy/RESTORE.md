@@ -55,14 +55,19 @@ bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod alice
 bash deploy/restore-litestream.sh --registry prod
 ```
 
-> **Where the two-identifier model is today.** The registry file, its schema and
-> its replication are in place; resolution through it, the CLI that writes it,
-> and the migration of existing tenants onto opaque ids are separate work
-> (`pd-rqgv`, `pd-zr9n`, `pd-hqee`). So on an instance that has not migrated,
-> `database_id` and the handle are still the same string and every command below
-> reads identically either way — `prod alice` and `prod <alice's id>` are the
-> same restore. The ordering is written for the model being built, because the
-> order is what has to be right *before* the ids go opaque, not after.
+> **A data volume mid-migration holds BOTH shapes.** `pkdump tenant create` has
+> minted opaque ids since `pd-zr9n`, so new databases are
+> `tenants/<26-char uppercase ULID>.sqlite`; databases that predate it are still
+> named by their handle, and `tenants/collection.sqlite` is on the prod box
+> today. Migrating the old ones onto ids is `pd-hqee`.
+>
+> Every command here takes whichever the file is actually called — the stem, not
+> the person. `restore-litestream.sh prod collection` and
+> `restore-litestream.sh prod 01K2C7HQ8N…` are both valid, and which one you
+> want is a question for the registry, not for your memory. **The ids are
+> case-sensitive**: `01J8…` and `01j8…` are one file on a case-insensitive
+> filesystem but two different S3 prefixes, so the scripts reject the lowercase
+> form rather than restore from a prefix that does not exist.
 
 > **Upgrading an existing instance.** The registry entry needs two keys
 > (`LITESTREAM_REGISTRY_DB`, `LITESTREAM_S3_REGISTRY_PATH`) that a
@@ -229,7 +234,7 @@ bash deploy/setup.sh prod 8090            # build image + install units (keep th
 A tenant database is named by an opaque `database_id`, not by a handle. So the
 bucket on its own answers *"how many databases are there"* and **not** *"whose is
 which"*. Restore the tenants first and you are holding a directory of files called
-`01k2c7hq8n….sqlite` with no way to tell whose collection is inside any of them —
+`01K2C7HQ8N….sqlite` with no way to tell whose collection is inside any of them —
 every byte present, nothing attributable. The registry is the only thing that
 puts the names back.
 
@@ -245,14 +250,14 @@ bash deploy/restore-litestream.sh --yes --registry prod
 MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-prod-data)
 sqlite3 "file:${MP}/registry.sqlite?mode=ro" \
   "SELECT handle, database_id FROM user WHERE state='active';"
-#   alice|01k2c7hq8nz0xw3v9r5m6d0abc
-#   bob  |01k2c7hq8p41k8t2y7q3n5e1def
+#   alice|01K2C7HQ8NZ0XW3V9R5M6D0ABC
+#   bob  |01K2C7HQ8P41K8T2Y7Q3N5E1DEF
 ```
 
 ```bash
 # ── STEP 3 — restore each database the registry named, then rebuild the catalog.
-bash deploy/restore-litestream.sh --yes prod 01k2c7hq8nz0xw3v9r5m6d0abc
-bash deploy/restore-litestream.sh --yes prod 01k2c7hq8p41k8t2y7q3n5e1def
+bash deploy/restore-litestream.sh --yes prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
+bash deploy/restore-litestream.sh --yes prod 01K2C7HQ8P41K8T2Y7Q3N5E1DEF
 bash deploy/seed.sh prod                        # rebuild the shared catalog from upstream
 systemctl --user start pkdump-prod              # start the app
 ```
@@ -271,8 +276,8 @@ podman run --rm \
   -e AWS_PROFILE=pkdump -e AWS_REGION="${LITESTREAM_S3_REGION}" \
   docker.io/amazon/aws-cli:latest \
   s3 ls "s3://${LITESTREAM_S3_BUCKET}/${LITESTREAM_S3_PATH}/"
-#   PRE 01k2c7hq8nz0xw3v9r5m6d0abc.sqlite/    <- one prefix per tenant
-#   PRE 01k2c7hq8p41k8t2y7q3n5e1def.sqlite/      strip ".sqlite/" for the id
+#   PRE 01K2C7HQ8NZ0XW3V9R5M6D0ABC.sqlite/    <- one prefix per tenant
+#   PRE 01K2C7HQ8P41K8T2Y7Q3N5E1DEF.sqlite/      strip ".sqlite/" for the id
 ```
 
 **If the registry itself is gone** — the one case the order cannot save you from

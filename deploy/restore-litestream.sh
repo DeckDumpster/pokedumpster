@@ -48,7 +48,7 @@
 #   See deploy/RESTORE.md, scenario C.
 #
 # USAGE
-#   bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] <instance> [tenant]
+#   bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] <instance> [tenant|database-id]
 #   bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] --registry <instance>
 #     --yes, -y      skip the confirmation prompt (scripted use)
 #     --at=<time>    point-in-time restore, e.g. --at=2026-06-01T12:00:00Z
@@ -58,6 +58,7 @@
 #     bash deploy/restore-litestream.sh prod
 #     bash deploy/restore-litestream.sh prod alice
 #     bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod alice
+#     bash deploy/restore-litestream.sh prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
 #     bash deploy/restore-litestream.sh --registry prod
 # ────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -78,7 +79,7 @@ for arg in "$@"; do
 done
 
 if [ ${#POSITIONAL[@]} -lt 1 ]; then
-    echo "Usage: bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] <instance> [tenant]"
+    echo "Usage: bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] <instance> [tenant|database-id]"
     echo "       bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] --registry <instance>"
     exit 1
 fi
@@ -122,8 +123,11 @@ set -a; . "${CONF_DIR}/litestream.env"; set +a
 
 # The one file this restore writes, and the one replica URL it reads. Both come
 # out of litestream-lib.sh so they cannot drift from what the sidecar wrote —
-# and for a tenant that derivation also REJECTS a malformed name before it can
-# retarget the S3 prefix.
+# and for a tenant that derivation also REJECTS a malformed stem before it can
+# retarget the S3 prefix. The positional argument is the database's FILENAME
+# STEM, not the person: a 26-character uppercase database id for anything minted
+# since pd-zr9n, or the old handle for a database that predates it. Both live
+# under tenants/ during the migration, so both are accepted.
 #
 # RELPATH is relative to the data volume root: the registry sits at the root,
 # tenants one level down under tenants/. That difference is the whole difference

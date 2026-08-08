@@ -1,12 +1,28 @@
 # Litestream config for the PokeDumpster backup sidecar (pokedumpster-8ch.3).
 #
-# Continuously replicates EVERY tenant collection database to S3 from this one
-# sidecar. The shared catalog (shared.sqlite) is reproducible via `pkdump setup`,
-# lives OUTSIDE tenants/, and is deliberately NOT backed up.
+# Continuously replicates EVERY tenant collection database — and the user
+# registry — to S3 from this one sidecar. The shared catalog (shared.sqlite) is
+# reproducible via `pkdump setup`, lives OUTSIDE tenants/, and is deliberately
+# NOT backed up.
 #
-# This file is INSTANCE-AGNOSTIC: the S3 target and the tenants directory come
-# from the environment (set by the Quadlet unit's EnvironmentFile), so the single
-# clone can serve every instance. Litestream expands ${VARS} by default.
+# The irreplaceable set is therefore TWO things, and both are here: the tenant
+# databases, and the table that says whose is whose.
+#
+# This file is INSTANCE-AGNOSTIC: the S3 target, the tenants directory and the
+# registry path come from the environment (set by the Quadlet unit's
+# EnvironmentFile), so the single clone can serve every instance. Litestream
+# expands ${VARS} by default.
+#
+# An UNSET variable expands to empty, and Litestream's tolerance for that is not
+# uniform — measured, v0.5.16:
+#   * an empty `path:` on a db entry is fatal at startup ("must specify either
+#     'path' or 'dir'"), which is the good case: an instance whose litestream.env
+#     predates the registry entry FAILS LOUDLY instead of quietly backing up only
+#     its tenants. `deploy/setup.sh <instance>` backfills the missing keys.
+#   * an empty `path:` on a REPLICA is not fatal: it replicates to the bucket
+#     ROOT, in silence. So never ship a replica prefix that is a bare variable
+#     nobody validates — deploy/litestream-lib.sh hard-fails on an unset one, and
+#     deploy/backup-check.sh asks S3 whether the registry is actually fresh.
 #
 # ── DIRECTORY MODE (pd-fof4) ────────────────────────────────────────────────
 # `dir:` + `pattern:` + `watch:` is Litestream 0.5's native N-database mode. It
@@ -60,5 +76,49 @@ dbs:
       - type: s3
         bucket: ${LITESTREAM_S3_BUCKET}
         path: ${LITESTREAM_S3_PATH}
+        region: ${LITESTREAM_S3_REGION}
+        endpoint: ${LITESTREAM_S3_ENDPOINT}
+
+  # ── THE USER REGISTRY (pd-nd6w) ──────────────────────────────────────────
+  # handle -> database_id. It lives at the DATA ROOT, not under tenants/, so
+  # the glob above does not and must not reach it: `tenants/*.sqlite` means
+  # "one file per tenant" exactly, and that statement is what makes the glob a
+  # correct description of the tenant set. The registry is not a tenant, so it
+  # is replicated as ITSELF — its own entry, its own prefix.
+  #
+  # It is irreplaceable in a way even a tenant database is not. Lose it and
+  # every tenant file is still present but ANONYMOUS: a directory of opaque
+  # database ids with nothing saying whose is whose. That is exactly the DR gap
+  # this project cited when it rejected libSQL/sqld (bottomless does not back up
+  # the namespace registry, so recovery has to re-declare namespaces before any
+  # data will restore). An unreplicated registry would hand that criticism back.
+  #
+  # A `path:` entry, not a second `dir:` one, because there is exactly one
+  # registry and naming it is the point. Two measured consequences (both
+  # asserted in tests/litestream/run.sh):
+  #
+  #   * The file does NOT have to exist yet. registry.sqlite is created lazily
+  #     on first use, and no box has one today; Litestream logs `initialized db`
+  #     and starts replicating the moment it appears. So this entry is safe to
+  #     ship ahead of anything that writes a registry.
+  #   * A `path:` replica prefix is used VERBATIM — unlike `dir:` mode, the file
+  #     name is NOT appended. So LITESTREAM_S3_REGISTRY_PATH carries the
+  #     `.sqlite` itself and addresses one database, not a parent.
+  #
+  # It sits BESIDE the tenants prefix (`<inst>/registry.sqlite` next to
+  # `<inst>/tenants/`), never underneath it — the total-loss procedure lists
+  # that parent prefix to enumerate tenants, and a registry inside it would read
+  # as one more tenant.
+  #
+  # Retention/PITR are the top-level `snapshot:` block above, which is
+  # PROCESS-GLOBAL: the registry gets the same 180-day window as every tenant,
+  # and it could not be given a different one from this sidecar even if we
+  # wanted to. Do not write a `snapshot:` block in here — it is accepted and
+  # silently ignored (RESULT.md §1).
+  - path: ${LITESTREAM_REGISTRY_DB}
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_S3_BUCKET}
+        path: ${LITESTREAM_S3_REGISTRY_PATH}
         region: ${LITESTREAM_S3_REGION}
         endpoint: ${LITESTREAM_S3_ENDPOINT}

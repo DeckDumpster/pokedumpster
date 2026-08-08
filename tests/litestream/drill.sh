@@ -18,10 +18,11 @@
 # invocation. This drills the OPERATOR PROCEDURE instead — deploy/RESTORE.md's
 # three scenarios, executed as written:
 #
-#   A. a tenant's live database is deleted    -> restore-litestream.sh <inst> <tenant>
+#   A. a tenant's live database is deleted    -> restore-litestream.sh <inst> <db-id>
 #   B. a tenant needs rolling back in time    -> restore-litestream.sh --at=<T> ...
-#   C. the whole data volume is lost          -> enumerate the tenants FROM S3,
-#                                                restore each one
+#   C. the whole data volume is lost          -> restore the REGISTRY first, read
+#                                                the tenant list out of it, then
+#                                                restore each database it names
 #
 # It runs the real scripts (deploy/restore-litestream.sh, deploy/backup-check.sh)
 # against a real Quadlet sidecar unit on a real data volume, in place — deleting
@@ -30,11 +31,15 @@
 # tenant's database is byte-identical, its replica is still current, and it still
 # restores to its own data.
 #
-# Scenario C also settles the question this bead was given: the rejected
+# Scenario C also settles the question the epic keeps returning to: the rejected
 # libSQL/sqld path had a DR gap where the namespace registry was not backed up,
 # so recovery had to re-declare the namespaces before any data would come back.
-# File-per-tenant has no registry to lose — §7 recovers a wiped volume knowing
-# only the bucket, listing the tenants out of S3 itself.
+# We have a registry now (pd-fci1) — a handle -> database_id table — so the only
+# honest answer is to put it in the replicated set and RESTORE FROM IT. §7 wipes
+# the volume, shows what the bucket alone can say (four anonymous ids, not one
+# name), restores the registry FIRST, and recovers every tenant by handle from
+# what it says. That ordering is the finding, not a detail: the reverse order
+# hands you every byte and no way to attribute any of it.
 #
 # Prod-safe by default: its own instance name, its own volume, its own throwaway
 # MinIO, its own podman secret, its own config dir. It touches no pkdump-prod
@@ -56,7 +61,15 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
 
-INSTANCE=${DRILL_INSTANCE:-drill}
+# PER-CHECKOUT by default, for the reason deploy/ci.sh derives its container
+# instance the same way: the swarm runs several polecats per rig, each from its
+# own worktree, and every one of them runs deploy/ci.sh — which runs this. With a
+# fixed `drill` instance, run B's opening `podman volume rm -f` deleted run A's
+# data volume between A creating it and A using it ("Error: no such volume
+# pkdump-drill-data", observed 2026-08-08). Everything else here — the volume,
+# the sidecar unit, the config dir, the podman secret, the MinIO container — is
+# named after the instance, so making the instance unique makes all of them so.
+INSTANCE=${DRILL_INSTANCE:-drill-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)}
 case "$INSTANCE" in
 	prod|"") echo "refusing to drill instance '${INSTANCE}'" >&2; exit 1 ;;
 esac
@@ -67,11 +80,38 @@ SECRET_NAME="pkdump-${INSTANCE}-s3-bootstrap"
 QUADLET_DIR="${HOME}/.config/containers/systemd"
 
 MINIO_CTR="pkdump-${INSTANCE}-minio"
-MINIO_PORT=${MINIO_PORT:-39931}
+# Published on the host, so it needs its own per-checkout port. 39500-39899
+# here; tests/litestream/run.sh takes the band below it, so the two gates cannot
+# collide with each other either.
+MINIO_PORT=${MINIO_PORT:-$(( 39500 + 16#$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-3) % 400 ))}
 
 # FOUR tenants, and the victim is #2 — a restore that grabbed the first or the
 # last prefix would still look right with one or two.
+#
+# A tenant here is TWO identifiers, because that is what the product is becoming
+# (pd-fci1): a HANDLE that a person answers to, and an opaque DATABASE ID that
+# names their file and their replica prefix. The drill uses opaque ids on
+# purpose. With `tenants/alpha.sqlite` on disk, "restore the registry and check
+# every tenant is reachable by handle" proves nothing — the filename already
+# said `alpha`. With `tenants/01k2c7...sqlite` on disk, the registry is the ONLY
+# thing that can attribute the file, which is precisely the property §7 tests.
+#
+# The ids below are ULID-SHAPED rather than real ULIDs — 26 characters, leading
+# timestamp, but with a readable tail so a FAIL line still names the tenant it
+# is about. What they are faithful to is the CASE: a real ULID renders as
+# uppercase Crockford base32, and validate_tenant_name — in BOTH
+# deploy/litestream-lib.sh and crates/pkdump-db/src/paths.rs — rejects uppercase.
+# So an id that reaches these scripts has to arrive lowercased. That collision
+# is filed as pd-vgof; it belongs to whichever bead first turns a database id
+# into a path, not to this one, and the drill assumes the resolution that leaves
+# today's validators standing.
 TENANTS=(alpha bravo charlie delta)
+declare -A DB_ID=(
+	[alpha]=01k2c7hq8n0000000000alpha
+	[bravo]=01k2c7hq8n0000000000bravo
+	[charlie]=01k2c7hq8n000000000charli
+	[delta]=01k2c7hq8n0000000000delta
+)
 VICTIM=bravo
 WRITER=delta   # keeps taking writes while the victim is being recovered
 
@@ -157,7 +197,13 @@ sidecar_start() {
 }
 
 mount_point() { podman volume inspect -f '{{.Mountpoint}}' "$VOLUME"; }
-tenant_file() { printf '%s/tenants/%s.sqlite' "$(mount_point)" "$1"; }
+# Everything below takes a HANDLE and goes through the id, because that is the
+# indirection under test. Nothing in the drill derives a path from a handle
+# except via DB_ID — the same way nothing in the product will, once the resolver
+# reads the registry.
+db_id() { printf '%s' "${DB_ID[$1]}"; }
+tenant_file() { printf '%s/tenants/%s.sqlite' "$(mount_point)" "$(db_id "$1")"; }
+registry_file() { printf '%s/registry.sqlite' "$(mount_point)"; }
 file_hash() { sha256sum "$(tenant_file "$1")" 2>/dev/null | cut -d' ' -f1 || echo '<missing>'; }
 # The rows, independent of page layout and of Litestream's own bookkeeping
 # tables. "Untouched" has to mean the data, not just the bytes.
@@ -177,7 +223,7 @@ write_phase() { # write_phase <phase>
 
 wait_for_replica() { # wait_for_replica <tenant> [seconds]
 	local url deadline
-	url="$(tenant_replica_url "$1")"
+	url="$(tenant_replica_url "$(db_id "$1")")"
 	deadline=$(( SECONDS + ${2:-60} ))
 	while [ "$SECONDS" -lt "$deadline" ]; do
 		if ls_cli ltx -level all "$url" 2>/dev/null | grep -q .; then return 0; fi
@@ -195,6 +241,9 @@ if [ -n "${DRILL_REAL_S3:-}" ]; then
 	# The drill writes ONLY under its own prefix, never the instance's.
 	DRILL_PREFIX="pd-v8zf-drill/${INSTANCE}"
 	export LITESTREAM_S3_PATH="${DRILL_PREFIX}/tenants"
+	# Beside the tenants prefix, never inside it — §7 lists that parent prefix
+	# to enumerate tenants, and a registry underneath would read as one more.
+	export LITESTREAM_S3_REGISTRY_PATH="${DRILL_PREFIX}/registry.sqlite"
 	export LITESTREAM_S3_ENDPOINT=""
 	echo "  bucket ${LITESTREAM_S3_BUCKET}, prefix ${LITESTREAM_S3_PATH} (deleted on exit)"
 else
@@ -205,6 +254,9 @@ else
 	export LITESTREAM_S3_BUCKET=pkdump-drill
 	export LITESTREAM_S3_REGION=us-west-2
 	export LITESTREAM_S3_PATH="${DRILL_PREFIX}/tenants"
+	# Beside the tenants prefix, never inside it — §7 lists that parent prefix
+	# to enumerate tenants, and a registry underneath would read as one more.
+	export LITESTREAM_S3_REGISTRY_PATH="${DRILL_PREFIX}/registry.sqlite"
 	# Rootless Podman puts these containers on slirp4netns, where a container
 	# cannot reach a port the host bound to 127.0.0.1 — and restore-litestream.sh
 	# deliberately runs its restore container with no --network, exactly as an
@@ -252,6 +304,8 @@ LITESTREAM_S3_BUCKET=${LITESTREAM_S3_BUCKET}
 LITESTREAM_S3_REGION=${LITESTREAM_S3_REGION}
 LITESTREAM_S3_PATH=${LITESTREAM_S3_PATH}
 LITESTREAM_TENANTS_DIR=/data/tenants
+LITESTREAM_REGISTRY_DB=/data/registry.sqlite
+LITESTREAM_S3_REGISTRY_PATH=${LITESTREAM_S3_REGISTRY_PATH}
 LITESTREAM_S3_ENDPOINT=${LITESTREAM_S3_ENDPOINT}
 AWS_PROFILE=pkdump
 EOF
@@ -278,7 +332,24 @@ done
 # Every row names its own tenant, so a restore that hands back a neighbour's
 # collection is caught by READING THE DATA, not by trusting the prefix.
 write_phase early
-echo "  ${#TENANTS[@]} tenants on ${VOLUME}: ${TENANTS[*]}"
+
+# The user registry (pd-nd6w). At the data ROOT, deliberately outside tenants/,
+# holding the only statement anywhere of which file belongs to whom.
+#
+# Applied from the SHIPPED schema rather than a copy of it, so this fixture
+# cannot drift away from the table the product actually writes. Seeded with
+# sqlite3 rather than the app for the same reason the tenant databases are: the
+# drill exercises the BACKUP layer and should not need a build to run.
+sqlite3 "$(registry_file)" 'PRAGMA journal_mode=WAL;' >/dev/null
+sqlite3 "$(registry_file)" < "${REPO_DIR}/crates/pkdump-db/src/schema_registry.sql"
+for t in "${TENANTS[@]}"; do
+	sqlite3 "$(registry_file)" \
+		"INSERT INTO user (handle, database_id, created_at, state)
+		 VALUES ('$t', '$(db_id "$t")', datetime('now'), 'active');"
+done
+echo "  ${#TENANTS[@]} tenants on ${VOLUME}, named by opaque database id:"
+for t in "${TENANTS[@]}"; do echo "    ${t} -> tenants/$(db_id "$t").sqlite"; done
+echo "  registry.sqlite at the data root holds that mapping and nothing else does"
 
 # The shipped Quadlet sidecar unit, installed the way deploy/setup.sh installs it.
 mkdir -p "$QUADLET_DIR"
@@ -294,6 +365,21 @@ for t in "${TENANTS[@]}"; do
 	wait_for_replica "$t" 90 && replicating=$((replicating + 1)) || echo "  ${t} never reached S3"
 done
 check "every tenant is replicating from the one sidecar" "4" "$replicating"
+
+# The registry rides the SAME sidecar — no second process, no second unit, no
+# config edit beyond the entry deploy/litestream.yml already ships.
+REG_URL="$(registry_replica_url)"
+reg_deadline=$(( SECONDS + 90 ))
+reg_replicating=no
+while [ "$SECONDS" -lt "$reg_deadline" ]; do
+	if ls_cli ltx -level all "$REG_URL" 2>/dev/null | grep -q .; then reg_replicating=yes; break; fi
+	sleep 2
+done
+check "the registry is replicating from that same sidecar" "yes" "$reg_replicating"
+# Beside the tenants prefix, never inside it: §7 lists that parent prefix to
+# enumerate tenants, and a registry underneath it would read as one more tenant.
+check "the registry's prefix is NOT under the tenants prefix" "outside" \
+	"$(case "$LITESTREAM_S3_REGISTRY_PATH" in "${LITESTREAM_S3_PATH%/}"/*) echo inside ;; *) echo outside ;; esac)"
 
 # A marker between two write phases, for the point-in-time restore in §5.
 sleep 2
@@ -329,7 +415,7 @@ sqlite3 "$(tenant_file "$WRITER")" \
 	"INSERT INTO collection (printing_id, acquired_at, source, phase)
 	 VALUES ('${WRITER}-card-during', datetime('now'), 'drill', 'during');"
 
-bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$VICTIM"
+bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$(db_id "$VICTIM")"
 
 # Measure with the sidecar stopped again: its restart writes Litestream's own
 # bookkeeping tables into every database it picks up, which is not the restore's
@@ -352,14 +438,14 @@ check "and ${WRITER}'s own write during the restore is still there" "3" "$(rows_
 sidecar_start
 # The neighbours' replicas must also survive: restoring one tenant neither
 # consumes nor invalidates another's stream.
-ls_cli restore -integrity-check full -o /out/charlie-after.sqlite "$(tenant_replica_url charlie)" >/dev/null 2>&1 || true
+ls_cli restore -integrity-check full -o /out/charlie-after.sqlite "$(tenant_replica_url "$(db_id charlie)")" >/dev/null 2>&1 || true
 check "an untouched tenant still restores to current from its own replica" "2" \
 	"$(sqlite3 "${WORK}/out/charlie-after.sqlite" 'SELECT count(*) FROM collection;' 2>/dev/null || echo '<no db>')"
 check "and it is charlie's data, not ${VICTIM}'s" "charlie" \
 	"$(sqlite3 "${WORK}/out/charlie-after.sqlite" "SELECT DISTINCT substr(printing_id,1,instr(printing_id,'-')-1) FROM collection;" 2>/dev/null || echo '<no db>')"
 # The write taken while the sidecar was down is not lost: it is replicated when
 # the sidecar resumes. This is the whole cost of one sidecar for N tenants.
-ls_cli restore -integrity-check full -o /out/writer-after.sqlite "$(tenant_replica_url "$WRITER")" >/dev/null 2>&1 || true
+ls_cli restore -integrity-check full -o /out/writer-after.sqlite "$(tenant_replica_url "$(db_id "$WRITER")")" >/dev/null 2>&1 || true
 check "a write made while the sidecar was down reached S3 once it resumed" "3" \
 	"$(sqlite3 "${WORK}/out/writer-after.sqlite" 'SELECT count(*) FROM collection;' 2>/dev/null || echo '<no db>')"
 
@@ -371,7 +457,7 @@ sidecar_stop
 PRE_ROLLBACK=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 for t in "${TENANTS[@]}"; do BEFORE_FILE[$t]="$(file_hash "$t")"; BEFORE_ROWS[$t]="$(rows_hash "$t")"; done
 
-bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes --at="$MARKER" "$INSTANCE" "$VICTIM"
+bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes --at="$MARKER" "$INSTANCE" "$(db_id "$VICTIM")"
 
 sidecar_stop
 check "${VICTIM} rolled back to the marker (early phase only)" "1" "$(rows_count "$VICTIM")"
@@ -392,11 +478,11 @@ check "a point-in-time rollback of one tenant leaves the others at CURRENT" "3" 
 # history), so that state is still there.
 sidecar_start
 sidecar_stop
-bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$VICTIM"
+bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$(db_id "$VICTIM")"
 sidecar_stop
 check "after the rollback replicates, 'latest' is the rolled-back state" "1" "$(rows_count "$VICTIM")"
 
-bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes --at="$PRE_ROLLBACK" "$INSTANCE" "$VICTIM"
+bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes --at="$PRE_ROLLBACK" "$INSTANCE" "$(db_id "$VICTIM")"
 sidecar_stop
 check "and the discarded state comes back from just before the rollback" "2" \
 	"$(rows_count "$VICTIM")"
@@ -412,35 +498,86 @@ BC_OUT="$(PKDUMP_BACKUP_PING_URL=http://127.0.0.1:1/drill \
 	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" 2>&1)" && BC_RC=0 || BC_RC=$?
 printf '%s\n' "$BC_OUT" | sed 's/^/    /'
 check "backup-check reports every tenant fresh after the restore" "0" "$BC_RC"
-check "and it checked all four" "4" "$(printf '%s\n' "$BC_OUT" | grep -c "OK — newest S3 replica" || true)"
+check "and it checked all four" "4" \
+	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: tenant .* OK — newest S3 replica" || true)"
+# The registry is checked too, and separately — its silent loss is the one
+# failure the per-tenant loop above cannot see.
+check "and it checked the registry as well" "1" \
+	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: the user registry OK — newest S3 replica" || true)"
 
 # ── 7. RESTORE.md scenario C — the whole volume is gone ─────────────────────
-log "7. scenario C: total loss — the bucket IS the tenant registry"
+log "7. scenario C: total loss — restore the REGISTRY FIRST, then the tenants"
 # The question this section settles: after losing the box, how does the operator
-# know WHICH tenants to restore? The rejected libSQL path needed a namespace
-# registry that bottomless did not back up. Here the tenant list is derivable
-# from the replica prefixes alone, because directory mode names each prefix after
-# the file. Nothing local is consulted — the volume is wiped first.
+# know which databases to restore and WHOSE they are?
+#
+# The rejected libSQL/sqld path had a DR gap where bottomless did not back up the
+# namespace registry, so recovery had to re-declare every namespace before any
+# data would come back. We do not get to point at that gap unless our own
+# registry is IN the replicated set — which is what §2 established, and what this
+# section spends.
+#
+# ORDER IS THE POINT. Restore the registry first and the tenant list, with names
+# attached, falls out of it. Restore the tenants first and you have a directory
+# of opaque ids: every byte present, nothing attributable. The drill proves the
+# second half rather than asserting it — it wipes the volume, then LOOKS at what
+# S3 alone can tell you before the registry comes back.
 sidecar_stop
-rm -rf "${MP}/tenants" "${MP}/shared.sqlite"
+rm -rf "${MP}/tenants" "${MP}/shared.sqlite" "$(registry_file)" "$(registry_file)-wal" "$(registry_file)-shm"
 check "the data volume is empty" "0" "$(find "${MP}" -name '*.sqlite' | grep -c . || true)"
 
-mapfile -t DISCOVERED < <(aws_cli s3 ls "s3://${LITESTREAM_S3_BUCKET}/${LITESTREAM_S3_PATH}/" 2>/dev/null \
+# What the bucket knows on its own: four database ids, and not one handle.
+mapfile -t PREFIXES < <(aws_cli s3 ls "s3://${LITESTREAM_S3_BUCKET}/${LITESTREAM_S3_PATH}/" 2>/dev/null \
 	| awk '/PRE/ {print $2}' | sed 's|\.sqlite/$||' | sort)
-check "every tenant is discoverable from S3 alone" "${TENANTS[*]}" "${DISCOVERED[*]-}"
+echo "  the tenant prefixes S3 offers, with the registry gone:"
+printf '    %s\n' "${PREFIXES[@]-}"
+check "S3 alone yields the right NUMBER of databases" "4" "${#PREFIXES[@]}"
+check "...and not one of them is a handle — the files are anonymous" "0" \
+	"$(comm -12 <(printf '%s\n' "${PREFIXES[@]-}" | sort) <(printf '%s\n' "${TENANTS[@]}" | sort) | grep -c . || true)"
 
-for t in "${DISCOVERED[@]}"; do
-	bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$t" >/dev/null
+# STEP ONE: the registry. It is restorable with the volume in this state —
+# nothing has to exist first, and no tenant has to be restored first.
+bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes --registry "$INSTANCE"
+check "the registry is back on a bare volume" "4" \
+	"$(sqlite3 "file:$(registry_file)?mode=ro" "SELECT count(*) FROM user WHERE state='active';" 2>/dev/null || echo '<no db>')"
+
+# STEP TWO: the tenant list comes OUT of the registry, handles and all. This is
+# the enumeration the runbook tells the operator to use, and the only one that
+# survives opaque ids.
+mapfile -t DISCOVERED < <(sqlite3 "file:$(registry_file)?mode=ro" \
+	"SELECT handle || ' ' || database_id FROM user WHERE state='active' ORDER BY handle;")
+echo "  the registry's answer:"
+printf '    %s\n' "${DISCOVERED[@]-}"
+check "every tenant is reachable BY HANDLE again" "alpha bravo charlie delta" \
+	"$(printf '%s\n' "${DISCOVERED[@]-}" | awk '{printf "%s ", $1}' | sed 's/ $//')"
+# And the registry's answer and the bucket's agree — neither is trusted alone.
+check "the ids it names are exactly the prefixes in the bucket" "same" \
+	"$(cmp -s <(printf '%s\n' "${DISCOVERED[@]-}" | awk '{print $2}' | sort) \
+	          <(printf '%s\n' "${PREFIXES[@]-}" | sort) && echo same || echo different)"
+
+# STEP THREE: restore each database the registry named.
+for row in "${DISCOVERED[@]}"; do
+	bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "${row##* }" >/dev/null
 done
 check "all four restored onto a bare volume" "2 2 2 3" \
 	"$(for t in "${TENANTS[@]}"; do printf '%s ' "$(rows_count "$t")"; done | sed 's/ $//')"
-check "and each one is itself" "alpha bravo charlie delta" \
-	"$(for t in "${TENANTS[@]}"; do printf '%s ' "$(rows_owner "$t")"; done | sed 's/ $//')"
+# The closing claim of the whole scenario: handle -> database_id -> that file,
+# and the collection inside it is that person's. Resolved through the restored
+# registry, not through a filename.
+resolved=0
+for row in "${DISCOVERED[@]}"; do
+	handle="${row%% *}"; id="${row##* }"
+	owner="$(sqlite3 "file:${MP}/tenants/${id}.sqlite?mode=ro" \
+		"SELECT DISTINCT substr(printing_id, 1, instr(printing_id,'-')-1) FROM collection;" 2>/dev/null || echo '<no db>')"
+	[ "$owner" = "$handle" ] && resolved=$((resolved + 1)) \
+		|| echo "  ${handle} resolved to tenants/${id}.sqlite, which holds '${owner}'"
+done
+check "each handle resolves to a database holding THAT person's collection" "4" "$resolved"
 check "the catalog was NOT restored (it is not backed up — pkdump setup rebuilds it)" "absent" \
 	"$([ -e "${MP}/shared.sqlite" ] && echo present || echo absent)"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"
 [[ $fail -eq 0 ]] || exit 1
-echo "  PASS — one tenant restores in place, in time, and from nothing, and the"
-echo "         other tenants are byte-identical every time."
+echo "  PASS — one tenant restores in place, in time, and from nothing; the other"
+echo "         tenants are byte-identical every time; and after a total loss the"
+echo "         registry comes back FIRST and puts a name back on every file."

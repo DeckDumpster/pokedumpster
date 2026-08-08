@@ -19,7 +19,10 @@
 #   6. DR drill:       run deploy/RESTORE.md's procedure with the shipped
 #                      scripts — restore one tenant in place while the others
 #                      stay byte-identical. See tests/litestream/drill.sh.
-#   7. Visual gate:    screenshot every route at 1440 and 768 against that
+#   7. Recreate proof: create a user, remove her, create her again, and prove no
+#                      restore of the second one can reach the first one's card
+#                      — pd-pm7b, closed executably. See tests/litestream/recreate.sh.
+#   8. Visual gate:    screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines.
 #                      See tests/visual/README.md for the approval workflow.
 #
@@ -151,7 +154,17 @@ bash "$REPO_DIR/tests/litestream/run.sh"
 step "Multi-tenant DR drill (deploy/RESTORE.md, executed)"
 bash "$REPO_DIR/tests/litestream/drill.sh"
 
-# --- 7. Visual-regression gate ---------------------------------------------
+# --- 7. Recreated-handle proof ----------------------------------------------
+# pd-pm7b as an executable statement rather than an argument: a handle is
+# created, removed and created again through the real `pkdump tenant` commands,
+# and no restore of the second user — latest or point-in-time inside the
+# retention window — can produce the first user's card. Its own MinIO, its own
+# $PKDUMP_HOME, its own prefix; it touches nothing else here.
+
+step "Recreated handle cannot inherit a replica (pd-pm7b)"
+bash "$REPO_DIR/tests/litestream/recreate.sh"
+
+# --- 8. Visual-regression gate ---------------------------------------------
 # Runs against the container started above rather than standing up a second
 # one. A pixel diff fails CI; approving it is explicit — tests/visual/README.md.
 

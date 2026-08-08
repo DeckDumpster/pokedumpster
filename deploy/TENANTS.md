@@ -302,6 +302,23 @@ from its own derived prefix; `tests/litestream/drill.sh` runs that procedure in
 CI — in place, in time, and onto a bare volume — and asserts the other tenants
 come out byte-identical.
 
+## Recreating a handle someone else used to have
+
+A released handle can be registered again immediately, and the new user gets a
+new `database_id` — so a new file, and a new S3 replica prefix. The predecessor's
+collection stays where it was, under the id that names it, until it is purged and
+its retention expires. Nothing about the new user addresses it.
+
+That is the whole reason a handle stopped being a filename, so it is gated rather
+than asserted: `tests/litestream/recreate.sh` creates a user, writes a
+recognisable card, removes her, purges her local database, creates the handle
+again, and shows that no restore of the second user — latest, or point-in-time at
+the exact instant the first user's card was live — produces that card, while the
+card is demonstrably still in the bucket and still healthy under the old id. The
+same script replicates a handle-named database beside it and shows the old
+addressing handing the deleted user's card straight back, so the absence in the
+first half means something. It runs in `deploy/ci.sh`.
+
 ## What is not here yet
 
 - **Authentication** — a separate epic, not started. Until it lands, the

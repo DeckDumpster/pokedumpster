@@ -104,9 +104,28 @@ up, all in `crates/pkdump-server/src/tenant.rs`:
 - Opening a tenant connection asserts `pragma_database_list` holds exactly
   `main` = that tenant's file and `shared` = the catalog, and fails otherwise.
 
-Tenant names from the header go through the same validation as provisioning,
-before they touch the filesystem, and a name with no database is a 404 — the
-resolver never creates one.
+**The header is a lookup key, not a filename.** What a request names is a
+*handle*; what it is served from is `tenants/<database_id>.sqlite`, and the two
+are joined by a row in the user registry (`registry.sqlite`, see
+`crates/pkdump-db/src/registry.rs`) rather than by string equality. Resolution
+is a `SELECT` with the header as a bound parameter, and the only string that
+reaches a path constructor is the `database_id` that lookup returned — which
+only the registry mints, and which `pkdump_db::tenant_db_file` re-checks is a
+ULID before it becomes a path. A handle that is not registered, and one whose
+registration was detached, are the same 404; neither creates anything. Nothing
+an unauthenticated caller sends is concatenated into a filename.
+
+Handles are still validated where they are *issued* — `pkdump tenant create`
+holds them to `[a-z0-9][a-z0-9_-]{0,31}`, because a handle is a name people
+type. Resolution deliberately does not re-check the charset: a hostile handle
+is refused for not being in the table, not for its characters, and a validator
+there would suggest the safety came from the charset. `pd-rqgv`.
+
+> **Interim, on this branch only.** A tenant `pkdump tenant create` makes
+> resolves; one that predates the registry does not. Databases already sitting
+> at `tenants/<name>.sqlite` name nobody in the registry, so their handles are
+> a 404 until `pd-hqee` migrates them onto their ids. Nothing deployed is
+> affected: production is single-tenant and does not resolve.
 
 The load-bearing test is
 `one_tenant_cannot_reach_another_tenants_collection` in

@@ -13,6 +13,11 @@
 #                                          #   fixture (no network, ~seconds)
 #   bash deploy/setup.sh demo --init       # clone the pre-built seed volume
 #
+# Container storage: rootless Podman's default store lives under $HOME, which on
+# the deployment box is the same disk prod runs from. Set PKDUMP_STORE_ROOT=<dir>
+# to build this instance's image and volume into an alternate store instead —
+# opt-in, so prod (which never sets it) is unaffected. See deploy/store-lib.sh.
+#
 # Modes:
 #   (plain)  Build the image + install the Quadlet. Catalog stays empty —
 #            populate it later with deploy/seed.sh.
@@ -65,6 +70,12 @@ if ! command -v podman >/dev/null 2>&1; then
     exit 1
 fi
 
+# Opt-in alternate container store (pd-fite). No-op unless PKDUMP_STORE_ROOT is
+# set — and prod never sets it.
+# shellcheck source=deploy/store-lib.sh
+. "$SCRIPT_DIR/store-lib.sh"
+pkdump_store_activate
+
 if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q "Linger=yes"; then
     echo "WARNING: linger not enabled — services stop when you log out."
     echo "  Fix: loginctl enable-linger $USER"
@@ -91,6 +102,9 @@ sed \
     -e "s|{{PORT}}:8080|${PORT_MAPPING}|g" \
     "$REPO_DIR/deploy/pkdump.container" \
     > "${QUADLET_DIR}/${SERVICE_NAME}.container"
+# systemd does not inherit the shim on PATH, so the unit carries the store flags
+# itself. No-op without PKDUMP_STORE_ROOT — prod's unit comes out unchanged.
+pkdump_store_stamp_unit "${QUADLET_DIR}/${SERVICE_NAME}.container"
 
 # --- Install per-instance timer units --------------------------------------
 # %i-templated units installed under a concrete instance name so several
@@ -151,6 +165,7 @@ sed -e "s|{{INSTANCE}}|${INSTANCE}|g" \
     -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
     "$REPO_DIR/deploy/pkdump-litestream.container" \
     > "${QUADLET_DIR}/pkdump-litestream-${INSTANCE}.container"
+pkdump_store_stamp_unit "${QUADLET_DIR}/pkdump-litestream-${INSTANCE}.container"
 
 # Scaffold the per-instance config (S3 target + AWS creds). Secrets NEVER live in
 # the repo; this only writes a template and never clobbers existing config.

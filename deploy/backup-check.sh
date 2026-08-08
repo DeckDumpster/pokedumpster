@@ -62,6 +62,13 @@ if [ -z "$PING" ]; then
     exit 0
 fi
 
+# Look in the store the instance actually lives in (pd-fite). No-op for prod,
+# whose unit carries no store flags.
+# shellcheck source=deploy/store-lib.sh
+. "$SCRIPT_DIR/store-lib.sh"
+pkdump_store_adopt_instance "$INSTANCE"
+pkdump_store_activate
+
 # Mark the latest confirmed-fresh time on the data volume so the app can surface
 # staleness in-app (Layer 3 / ivq.5) without needing S3 creds of its own.
 MOUNTPOINT="$(podman volume inspect -f '{{.Mountpoint}}' "$VOLUME" 2>/dev/null || true)"

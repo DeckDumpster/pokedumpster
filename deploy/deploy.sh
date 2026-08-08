@@ -21,6 +21,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 QUADLET_FILE="$HOME/.config/containers/systemd/${SERVICE_NAME}.container"
 
+# Rebuild into the store the instance already lives in (pd-fite). Prod's unit
+# carries no store flags, so prod keeps using Podman's default store.
+# shellcheck source=deploy/store-lib.sh
+. "$SCRIPT_DIR/store-lib.sh"
+pkdump_store_adopt_instance "$INSTANCE"
+pkdump_store_activate
+
 if [ ! -f "$QUADLET_FILE" ]; then
     echo "==> No instance '$INSTANCE' yet — running setup..."
     bash "$SCRIPT_DIR/setup.sh" "$INSTANCE"

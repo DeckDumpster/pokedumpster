@@ -41,6 +41,15 @@ if ! command -v podman >/dev/null 2>&1; then
     exit 1
 fi
 
+# Seed into the store the instance lives in (pd-fite). No-op for prod, which
+# never opts in to an alternate store.
+# shellcheck source=deploy/store-lib.sh
+. "$SCRIPT_DIR/store-lib.sh"
+if [ ${#POSITIONAL[@]} -ge 1 ]; then
+    pkdump_store_adopt_instance "${POSITIONAL[0]}"
+fi
+pkdump_store_activate
+
 # ============================================================================
 # Seed-volume mode — build the reusable pkdump-seed-data volume.
 # ============================================================================

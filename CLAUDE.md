@@ -171,7 +171,11 @@ and does not read the tenant header at all. `--multi-tenant` (or
 a separate epic — so the flag must stay off in production. That is enforced
 rather than trusted: with the flag on and a non-loopback `--host`, the server
 refuses to start unless `PKDUMP_MULTITENANT_INSECURE_BIND=1` is also set.
-Single-tenant mode is unaffected at any address. Isolation is
+Single-tenant mode is unaffected at any address. What the header carries is a
+*handle*, and it is only ever a lookup key: the user registry
+(`registry.sqlite`, `pkdump-db/src/registry.rs`) maps it to an opaque
+`database_id`, and that id — never the header — is what
+`pkdump_db::tenant_db_file` turns into `tenants/<database_id>.sqlite`. Isolation is
 structural: `AppState` holds no connection, `blocking()` takes the tenant from
 the request scope, and one connection per tenant is opened against that
 tenant's own file. See `deploy/TENANTS.md`.

@@ -59,6 +59,7 @@ pub fn run(args: ServeArgs) -> anyhow::Result<()> {
     let cfg = ServeConfig {
         user_db: pkdump_db::user_db_path(&tenant)?,
         tenants_dir: pkdump_db::tenants_dir()?,
+        registry_db: pkdump_db::registry_db_path()?,
         tenant,
         shared_db: pkdump_db::shared_db_path()?,
         data_dir: pkdump_db::pkdump_home()?,

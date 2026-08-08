@@ -159,9 +159,32 @@ S3 replica are kept. Hard deletion is the explicit second step `pkdump tenant
 purge <database-id> --yes`, addressed by id so it cannot be reached by
 mistyping a live person's name.
 
-`pkdump tenant adopt` migrates a pre-`tenants/` data dir and `revert` rolls
-it back. Layout rationale + the production migration runbook:
-`deploy/TENANTS.md`.
+Two migrations, each with a rollback, because a box can be at either point:
+`pkdump tenant adopt` moves a pre-`tenants/` data dir into `tenants/`
+(`revert` rolls it back), and `pkdump tenant migrate` puts handle-named
+databases already in there onto opaque ids, registry row and all
+(`unmigrate` rolls that back). `migrate` is idempotent and refuses a busy
+database. Layout rationale + both runbooks: `deploy/TENANTS.md`.
+
+**Neither migration gates startup**, deliberately. `pkdump serve` serves an
+un-migrated data dir exactly as it finds it and prints which database it
+opened, because a required migration is what took prod down on the first
+automated deploy of the last one (`pd-uoph`). What it will not do is come up
+*empty*: `pkdump_db::tenants::resolve` is the single resolution point, and
+every branch either finds real bytes or fails naming the command that makes
+them exist. `tests/tenants/upgrade.sh` is the container-tier gate — an
+OLD-LAYOUT volume through the shipped image, migrated, rolled back, and
+migrated again, with the served collection asserted byte-identical
+throughout. Fresh instances do not exercise the upgrade path; `deploy/setup.sh
+--test` builds its volume in the current layout, which is exactly how the last
+one shipped untested.
+
+A rename changes the file name, and `deploy/litestream.yml` derives each
+replica prefix *from* the file name — so `migrate`/`unmigrate` **delete**
+Litestream's per-database state directory instead of moving it with the file
+(`adopt`/`revert`, which keep the name, still move it). Carrying that state
+across a prefix change is what left prod replicating nothing at
+`txid.replica=0` while the unit reported healthy (`pd-1717`).
 
 Tenant *resolution* lives in `pkdump-server/src/tenant.rs` and is **off by
 default**: `pkdump serve` opens the one collection named by `$PKDUMP_USER`

@@ -3,6 +3,7 @@
 //! The clap command tree grows as features land (PLAN.md §2, §5). The
 //! `ingest` subcommand arrives with a later task.
 
+mod collection;
 mod data;
 mod db;
 mod export;

@@ -33,7 +33,7 @@ pub fn run(args: ImportArgs) -> anyhow::Result<()> {
         anyhow::bail!("pass --json (the only supported import format)");
     }
     let envelope = std::fs::read_to_string(&args.file)?;
-    let user_db = pkdump_db::user_db_path(&pkdump_db::current_user())?;
+    let user_db = crate::collection::user_db()?;
     let mut conn = pkdump_db::open_user(&user_db)?;
 
     let on_existing = if args.force {

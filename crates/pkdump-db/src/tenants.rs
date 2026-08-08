@@ -19,10 +19,19 @@
 //! Hard deletion is [`purge`]: a separate, explicit act on a detached user,
 //! not the default meaning of "remove".
 //!
-//! [`adopt`] and [`revert`] are untouched by all of this. They migrate a
-//! data directory laid out before `tenants/` existed, and they address files
-//! by handle because that is what those files are named — moving them onto
-//! opaque ids is `pd-hqee`'s job, not theirs.
+//! [`adopt`] and [`revert`] move a data directory laid out before `tenants/`
+//! existed into that directory, and they address files by handle because that
+//! is what those files are named. [`migrate`] and [`unmigrate`] are the step
+//! *after*: they take handle-named databases already under `tenants/` and put
+//! them on opaque ids, registry row and all. Two migrations, each with its own
+//! rollback, because a box can be at either point.
+//!
+//! [`resolve`] is what single-tenant mode opens, and it is deliberately NOT a
+//! gate: a data directory that has not been migrated is served as it is,
+//! because production runs single-tenant and a required migration is how the
+//! previous epic took it down (`pd-uoph`). What it refuses to do is come up
+//! *empty* — every branch either finds real bytes or says exactly which
+//! command makes them exist.
 //!
 //! The shared catalog is untouched by every function here. Provisioning a
 //! tenant creates one file holding the user schema; the catalog stays a
@@ -36,7 +45,10 @@ use rusqlite::Connection;
 
 use crate::connection::open_user;
 use crate::error::{DbError, Result};
-use crate::paths::{legacy_user_db_path, tenant_db_path, tenant_db_path_for_id, tenants_dir};
+use crate::paths::{
+    legacy_user_db_path, tenant_db_path, tenant_db_path_for_id, tenants_dir, validate_database_id,
+    validate_tenant_name,
+};
 use crate::registry::{self, User, UserState};
 
 /// Sidecar files SQLite keeps beside a database in WAL mode.
@@ -63,6 +75,142 @@ impl Tenant {
             user,
         })
     }
+}
+
+/// How single-tenant mode arrived at the database it is about to open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Storage {
+    /// A registry row named it: `tenants/<database_id>.sqlite`. The model
+    /// this epic exists to reach.
+    Registered(User),
+    /// No registry row — a handle-named database from before [`migrate`].
+    /// Served exactly as it is; the caller is expected to say so out loud.
+    Unmigrated,
+}
+
+/// The collection single-tenant mode serves, and how it was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collection {
+    pub path: PathBuf,
+    pub storage: Storage,
+}
+
+impl Collection {
+    /// Whether this data directory still needs [`migrate`] run against it.
+    pub fn is_unmigrated(&self) -> bool {
+        self.storage == Storage::Unmigrated
+    }
+}
+
+/// The collection database `pkdump serve` (and every CLI command) opens for
+/// `handle` when tenant resolution is off — which is production.
+///
+/// # This is not a migration gate, and that is the whole design
+///
+/// The previous epic shipped a required migration and made the app refuse to
+/// start until it had been run. The refusal was correct in isolation and it
+/// took production down on the first automated deploy, because nobody had
+/// ever started the new binary against a volume the old one made (`pd-uoph`).
+/// So a data directory whose databases are still named by handle is served,
+/// not refused: prod keeps running across the upgrade and migrates when its
+/// operator chooses to.
+///
+/// What is *not* tolerated is coming up empty. A collection silently reading
+/// as zero rows is the worst outcome available to this project, so every
+/// branch below either resolves to bytes that exist or fails naming the one
+/// command that would create them:
+///
+/// 1. An **active registry row** — `tenants/<database_id>.sqlite`. The
+///    migrated state, and the only one multi-tenant resolution can reach.
+/// 2. **`tenants/<handle>.sqlite`** — pre-[`migrate`], served as-is.
+/// 3. **`$PKDUMP_HOME/<handle>.sqlite`** — pre-[`adopt`]; the `pd-gckl`
+///    refusal, unchanged, because an un-adopted database being shadowed by an
+///    empty new one is the failure that guard was written for.
+/// 4. **Nothing anywhere, and nothing registered** — a genuinely fresh data
+///    directory. The handle is registered and an id minted, so a new install
+///    is born on the two-identifier model rather than needing a migration it
+///    could have skipped.
+/// 5. **Nothing for this handle, but this data directory holds other users** —
+///    an error naming `pkdump tenant create`. This is the one behaviour change
+///    an operator can notice, and it removes a silent-empty that exists today:
+///    a typo in `$PKDUMP_USER` currently provisions an empty collection under
+///    the typo and serves it.
+pub fn resolve(handle: &str) -> Result<Collection> {
+    validate_tenant_name(handle)?;
+    let conn = registry::open()?;
+
+    if let Some(user) = registry::lookup(&conn, handle)?
+        && user.state == UserState::Active
+    {
+        let path = tenant_db_path_for_id(&user.database_id)?;
+        if !path.exists() {
+            // The registry and the disk disagree. If what is actually there
+            // is a pre-`tenants/` database, say so in the terms the operator
+            // already has a runbook for; otherwise report the drift plainly.
+            let legacy = legacy_user_db_path(handle)?;
+            if legacy.exists() {
+                return Err(unadopted(handle, &legacy)?);
+            }
+            return Err(DbError::Env(format!(
+                "the user registry says tenant {handle:?} is served from database \
+                 {} but {} does not exist. Nothing was created: an empty collection \
+                 in its place is not a recovery. Restore it (deploy/RESTORE.md), or \
+                 roll the migration back with `pkdump tenant unmigrate`.",
+                user.database_id,
+                path.display()
+            )));
+        }
+        return Ok(Collection {
+            path,
+            storage: Storage::Registered(user),
+        });
+    }
+
+    let by_handle = tenant_db_path(handle)?;
+    if by_handle.exists() {
+        return Ok(Collection {
+            path: by_handle,
+            storage: Storage::Unmigrated,
+        });
+    }
+
+    let legacy = legacy_user_db_path(handle)?;
+    if legacy.exists() {
+        return Err(unadopted(handle, &legacy)?);
+    }
+
+    // Nothing for this handle. Whether that is a fresh install or a mistake
+    // is answered by whether this data directory holds anyone at all.
+    if registry::list(&conn)?.is_empty() && databases_on_disk()?.is_empty() {
+        // Through [`create`], so the row and the file land together and an
+        // active registry row always names a database that is there — the
+        // invariant the first branch above relies on to call a missing one a
+        // fault rather than a fresh start.
+        drop(conn);
+        let tenant = create(handle)?;
+        return Ok(Collection {
+            path: tenant.path,
+            storage: Storage::Registered(tenant.user),
+        });
+    }
+    Err(DbError::NotFound(format!(
+        "no collection for tenant {handle:?} in {}. This data directory holds other \
+         users, so an empty one is not being created under that name — check \
+         $PKDUMP_USER, or run `pkdump tenant create {handle}` if that is really a \
+         new user. `pkdump tenant list` shows who is registered.",
+        tenants_dir()?.display()
+    )))
+}
+
+/// The `pd-gckl` refusal: a collection still at the pre-`tenants/` location.
+fn unadopted(handle: &str, legacy: &Path) -> Result<DbError> {
+    Ok(DbError::Env(format!(
+        "collection database for tenant {handle:?} is still at the pre-tenants \
+         location {} and has not been adopted into {}. \
+         Run `pkdump tenant adopt {handle}` (see deploy/TENANTS.md).",
+        legacy.display(),
+        tenants_dir()?.display(),
+    )))
 }
 
 /// Register `handle` and provision their collection database.
@@ -185,6 +333,171 @@ pub fn purge(database_id: &str) -> Result<User> {
     registry::delete(&conn, database_id)
 }
 
+/// One database moved between the two ways of naming it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    /// The handle the database was, or is again, named by.
+    pub handle: String,
+    /// The id it was, or is now, named by.
+    pub database_id: String,
+    pub from: PathBuf,
+    pub to: PathBuf,
+}
+
+/// The handle-named databases under `tenants/` that [`migrate`] would move.
+///
+/// A stem that is already a `database_id` is migrated; anything else is a
+/// handle-named database from before this epic. Sorted, so a dry run and the
+/// migration itself report in the same order.
+pub fn migratable() -> Result<Vec<String>> {
+    Ok(unregistered()?
+        .into_iter()
+        .filter(|stem| validate_database_id(stem).is_err())
+        .collect())
+}
+
+/// Put every handle-named database under `tenants/` onto an opaque id:
+/// register the handle, mint a `database_id`, and rename the file to match.
+///
+/// This is `pd-hqee`. Before it, a database was named by the handle whose
+/// collection it held, so the handle was simultaneously a lookup key, a
+/// filename and an S3 replica prefix. After it, the filename is a ULID that
+/// only the registry issues, and the handle is one column of one row.
+///
+/// **Idempotent.** A second run finds no handle-named files and does nothing:
+/// it neither duplicates a row nor renames a database that is already on its
+/// id. That is a property of what it selects, not a flag it checks.
+///
+/// Each database is its own transaction — row inserted, file renamed, then
+/// committed — so an interruption leaves the ones already done done and the
+/// rest untouched. It refuses outright if a handle it would register is
+/// already taken: a live user and a handle-named file of the same name is a
+/// collision that must be looked at, not resolved by guessing.
+///
+/// **Stop the app and the Litestream sidecar first.** Each rename checkpoints
+/// the database with `PRAGMA wal_checkpoint(TRUNCATE)` and refuses to proceed
+/// if it reports busy, exactly as [`adopt`] does.
+pub fn migrate() -> Result<Vec<Moved>> {
+    let handles = migratable()?;
+    let mut conn = registry::open()?;
+    let mut moved = Vec::with_capacity(handles.len());
+    for handle in handles {
+        // A file whose name is not a handle the registry would ever have
+        // issued is not something to invent an owner for.
+        if let Err(e) = validate_tenant_name(&handle) {
+            return Err(DbError::Env(format!(
+                "cannot migrate {} — its name is neither a database id nor a handle \
+                 ({e}). Move it out of {} and migrate the rest.",
+                tenant_db_path_unchecked(&handle)?.display(),
+                tenants_dir()?.display()
+            )));
+        }
+        if let Some(existing) = registry::lookup(&conn, &handle)? {
+            return Err(DbError::Conflict(format!(
+                "handle {handle:?} is already registered to database {}, but a \
+                 handle-named database is also sitting at {}. Two databases claim \
+                 one user; resolve that by hand before migrating.",
+                existing.database_id,
+                tenant_db_path(&handle)?.display()
+            )));
+        }
+        let from = tenant_db_path(&handle)?;
+        let tx = conn.transaction()?;
+        let user = registry::insert(&tx, &handle)?;
+        let to = tenant_db_path_for_id(&user.database_id)?;
+        relocate(&handle, &from, &to, Litestream::Reset)?;
+        if let Err(e) = tx.commit() {
+            // The row never landed, so the file must not stay under a name
+            // nothing claims — that is precisely the unattributable database
+            // this design exists to prevent.
+            let _ = std::fs::rename(&to, &from);
+            return Err(e.into());
+        }
+        moved.push(Moved {
+            handle,
+            database_id: user.database_id,
+            from,
+            to,
+        });
+    }
+    Ok(moved)
+}
+
+/// The rollback for [`migrate`]: put every registered user's database back
+/// under their handle and drop their registry row.
+///
+/// A build that predates this epic finds `tenants/<handle>.sqlite` and reads
+/// the registry not at all, so putting the data directory back means both
+/// halves — the rename *and* the row. The rename happens first, so the file is
+/// attributable by its own name before the row that attributed it goes away
+/// (see [`registry::unregister`]).
+///
+/// Detached users are left exactly as they are and reported by the caller:
+/// their handle was released, so there is no name to give their database back,
+/// and the build being rolled back to has no concept of them. Same
+/// preconditions as [`migrate`] — stop the app and the sidecar.
+pub fn unmigrate() -> Result<(Vec<Moved>, Vec<User>)> {
+    let conn = registry::open()?;
+    let (active, detached): (Vec<User>, Vec<User>) = registry::list(&conn)?
+        .into_iter()
+        .partition(|u| u.state == UserState::Active);
+
+    let mut moved = Vec::new();
+    for user in active {
+        let from = tenant_db_path_for_id(&user.database_id)?;
+        let to = tenant_db_path(&user.handle)?;
+        if !from.exists() {
+            return Err(DbError::NotFound(format!(
+                "the registry says {:?} is served from {}, which does not exist — \
+                 refusing to roll back a data directory that is already inconsistent",
+                user.handle,
+                from.display()
+            )));
+        }
+        relocate(&user.handle, &from, &to, Litestream::Reset)?;
+        if let Err(e) = registry::unregister(&conn, &user.database_id) {
+            // Put it back rather than leaving a handle-named file that a row
+            // still claims under its id.
+            let _ = std::fs::rename(&to, &from);
+            return Err(e);
+        }
+        moved.push(Moved {
+            handle: user.handle,
+            database_id: user.database_id,
+            from,
+            to,
+        });
+    }
+    Ok((moved, detached))
+}
+
+/// Every `*.sqlite` directly under `tenants/`, by filename stem. Sorted.
+///
+/// The directory listing, with no opinion about who owns what — [`list`] and
+/// [`unregistered`] are the two halves that do have one.
+fn databases_on_disk() -> Result<Vec<String>> {
+    let dir = tenants_dir()?;
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(&dir)
+        .map_err(|e| DbError::Env(format!("reading {}: {e}", dir.display())))?;
+    let mut stems: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|f| f.strip_suffix(".sqlite").map(str::to_string))
+        .collect();
+    stems.sort();
+    Ok(stems)
+}
+
+/// Where a stem sits under `tenants/`, without asking whether it is a name
+/// anything would have issued. Only for naming a file in an error message
+/// about that file being unnameable.
+fn tenant_db_path_unchecked(stem: &str) -> Result<PathBuf> {
+    Ok(tenants_dir()?.join(format!("{stem}.sqlite")))
+}
+
 /// Database files under `tenants/` that no registry row claims.
 ///
 /// The registry is the source of truth, which means it can be *behind* the
@@ -233,7 +546,7 @@ pub fn unregistered() -> Result<Vec<String>> {
 pub fn adopt(name: &str) -> Result<PathBuf> {
     let from = legacy_user_db_path(name)?;
     let to = tenant_db_path(name)?;
-    relocate(name, &from, &to)
+    relocate(name, &from, &to, Litestream::Carry)
 }
 
 /// The rollback for [`adopt`]: move a tenant's database back to the
@@ -242,12 +555,45 @@ pub fn adopt(name: &str) -> Result<PathBuf> {
 pub fn revert(name: &str) -> Result<PathBuf> {
     let from = tenant_db_path(name)?;
     let to = legacy_user_db_path(name)?;
-    relocate(name, &from, &to)
+    relocate(name, &from, &to, Litestream::Carry)
 }
 
-/// Checkpoint `from`, then `rename(2)` it to `to`. Shared by [`adopt`] and
-/// [`revert`] so the rollback cannot drift from the migration.
-fn relocate(name: &str, from: &Path, to: &Path) -> Result<PathBuf> {
+/// What a move does with Litestream's per-database state directory — the LTX
+/// cache and txid it keeps beside the database (`.<db>-litestream`).
+///
+/// This is not a detail, it is the difference between a backup and a unit that
+/// merely looks active. `deploy/litestream.yml` runs in directory mode, where
+/// **the replica prefix is derived from the filename**. So whether the state
+/// may travel with the file is decided by one question: does this move change
+/// the name?
+enum Litestream {
+    /// The filename is unchanged, so the state still describes the prefix it
+    /// was built against and must go with the database — left behind, the
+    /// sidecar would treat a relocated file as brand new against a prefix that
+    /// already holds months of history.
+    Carry,
+    /// The filename changes, so the replica prefix changes with it, and the
+    /// state describes a prefix this database no longer writes to. It is
+    /// removed rather than moved.
+    ///
+    /// **This is the `pd-1717` lesson, paid for on production.** After the
+    /// `pd-gckl` migration the state directory was carried across a prefix
+    /// change; Litestream came up active, logged "snapshot complete", and
+    /// replicated nothing — `txid.replica` stuck at `0000000000000000` while
+    /// `txid.db` climbed — because its LTX history began mid-stream and it
+    /// could not catch an empty new prefix up from files it no longer had. It
+    /// errored with "LTX file is missing" and sat there. Removing the
+    /// directory and restarting was the fix, so a rename does it up front.
+    ///
+    /// Only derived state is destroyed: the database is untouched, and the old
+    /// prefix keeps every object it had, which is what the pre-cutover half of
+    /// the recovery window is (`deploy/TENANTS.md`).
+    Reset,
+}
+
+/// Checkpoint `from`, then `rename(2)` it to `to`. Shared by every migration
+/// here so no rollback can drift from the migration it undoes.
+fn relocate(name: &str, from: &Path, to: &Path, litestream: Litestream) -> Result<PathBuf> {
     if !from.exists() {
         return Err(DbError::NotFound(format!(
             "no collection database for tenant {name:?} at {}",
@@ -278,22 +624,44 @@ fn relocate(name: &str, from: &Path, to: &Path) -> Result<PathBuf> {
     })?;
 
     // Litestream 0.5 keeps its replication bookkeeping (LTX cache, txid) in a
-    // `.<db>-litestream` directory beside the database — prod has one. Leaving
-    // it behind makes the moved database look brand new to the sidecar while
-    // its S3 prefix already holds history, so it travels with the file.
-    if from_ls.exists()
-        && let Err(e) = std::fs::rename(&from_ls, &to_ls)
-    {
-        // Put the database back so the operator is left with the layout they
-        // started from rather than a half-moved one.
-        let _ = std::fs::rename(to, from);
-        return Err(DbError::Env(format!(
-            "moved {} but could not move its Litestream directory {} to {}: {e} \
-             (the database was moved back)",
-            from.display(),
-            from_ls.display(),
-            to_ls.display()
-        )));
+    // `.<db>-litestream` directory beside the database — prod has one. Whether
+    // it may travel is the question [`Litestream`] documents; getting it wrong
+    // is a silently dead backup either way.
+    match litestream {
+        Litestream::Carry => {
+            if from_ls.exists()
+                && let Err(e) = std::fs::rename(&from_ls, &to_ls)
+            {
+                // Put the database back so the operator is left with the
+                // layout they started from rather than a half-moved one.
+                let _ = std::fs::rename(to, from);
+                return Err(DbError::Env(format!(
+                    "moved {} but could not move its Litestream directory {} to {}: {e} \
+                     (the database was moved back)",
+                    from.display(),
+                    from_ls.display(),
+                    to_ls.display()
+                )));
+            }
+        }
+        Litestream::Reset => {
+            // `to_ls` cannot exist — the guard above refuses to move onto it —
+            // so there is exactly one directory here, the one belonging to the
+            // name being left behind.
+            if from_ls.exists()
+                && let Err(e) = std::fs::remove_dir_all(&from_ls)
+            {
+                let _ = std::fs::rename(to, from);
+                return Err(DbError::Env(format!(
+                    "moved {} but could not clear its Litestream state directory \
+                     {}: {e}. Leaving it would point the sidecar at the prefix this \
+                     database no longer writes to, which replicates nothing while \
+                     reporting healthy (pd-1717). The database was moved back.",
+                    from.display(),
+                    from_ls.display()
+                )));
+            }
+        }
     }
 
     // The checkpoint emptied these; they describe a file that is no longer
@@ -370,15 +738,18 @@ mod tests {
     use crate::connection::{connect_user, open_shared};
     use crate::paths::{shared_db_path, with_home};
 
+    /// Idempotent, so a test that stands up two tenants can call it per
+    /// tenant without the second one failing on the catalog's primary key.
     fn seed_catalog() {
         let conn = open_shared(&shared_db_path().unwrap()).unwrap();
         conn.execute(
-            "INSERT INTO sets (set_code, name, series) VALUES ('sv3pt5', '151', 'Scarlet & Violet')",
+            "INSERT OR IGNORE INTO sets (set_code, name, series) \
+             VALUES ('sv3pt5', '151', 'Scarlet & Violet')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+            "INSERT OR IGNORE INTO cards (card_id, set_code, number, number_sortable, name) \
              VALUES ('sv3pt5-1', 'sv3pt5', '1', 1, 'Bulbasaur')",
             [],
         )
@@ -681,7 +1052,7 @@ mod tests {
             }
 
             // Before adopting, the app refuses to open anything.
-            assert!(crate::paths::user_db_path("collection").is_err());
+            assert!(resolve("collection").is_err());
 
             let moved = adopt("collection").unwrap();
             assert_eq!(moved, home.join("tenants").join("collection.sqlite"));
@@ -692,7 +1063,7 @@ mod tests {
             // migrates these onto opaque ids).
             assert_eq!(list().unwrap(), Vec::new());
             assert_eq!(unregistered().unwrap(), vec!["collection"]);
-            assert_eq!(crate::paths::user_db_path("collection").unwrap(), moved);
+            assert_eq!(resolve("collection").unwrap().path, moved);
 
             // The row survived the move, and the catalog still attaches.
             {
@@ -793,6 +1164,355 @@ mod tests {
         });
     }
 
+    // ── pd-hqee: existing tenants onto opaque ids ────────────────────────
+
+    /// A pre-`pd-hqee` data directory: a handle-named collection under
+    /// `tenants/`, with rows, a live WAL and Litestream state beside it — and
+    /// no registry. This is the shape on the prod box, and the shape
+    /// `deploy/setup.sh --test` seeds.
+    fn old_layout(handle: &str) -> PathBuf {
+        seed_catalog();
+        let path = tenant_db_path(handle).unwrap();
+        let conn = connect_user(&path, &shared_db_path().unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO collection (printing_id, acquired_at, source) \
+             VALUES ('sv3pt5-1-normal', '2026-08-07', 'manual_id')",
+            [],
+        )
+        .unwrap();
+        let ls = litestream_dir(&path);
+        std::fs::create_dir_all(ls.join("ltx/0")).unwrap();
+        std::fs::write(ls.join("ltx/0/0001-0001.ltx"), b"ltx").unwrap();
+        std::fs::write(ls.join("txid.db"), b"4e6").unwrap();
+        path
+    }
+
+    fn rows(path: &Path) -> i64 {
+        connect_user(path, &shared_db_path().unwrap())
+            .unwrap()
+            .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// **The bead's first acceptance criterion, and prod's actual state.**
+    /// An existing handle-named database gets a registry row and an opaque
+    /// id, the file is renamed to match, and the rows survive.
+    #[test]
+    fn migrate_registers_and_renames_an_existing_database() {
+        with_home(|home| {
+            let before = old_layout("collection");
+            assert_eq!(migratable().unwrap(), vec!["collection"]);
+
+            let moved = migrate().unwrap();
+            assert_eq!(moved.len(), 1);
+            let m = &moved[0];
+            assert_eq!(m.handle, "collection");
+            assert_eq!(m.from, before);
+
+            // The file is named by the minted id, and the handle appears
+            // nowhere in it.
+            let id = &m.database_id;
+            assert_eq!(m.to, home.join("tenants").join(format!("{id}.sqlite")));
+            assert!(m.to.exists() && !before.exists());
+            assert!(!m.to.to_string_lossy().contains("collection"));
+
+            // The registry now joins the two, and the collection is intact.
+            let t = lookup("collection").unwrap().unwrap();
+            assert_eq!(t.user.database_id, *id);
+            assert_eq!(t.user.state, UserState::Active);
+            assert_eq!(t.path, m.to);
+            assert!(t.present);
+            assert_eq!(rows(&m.to), 1);
+
+            // And nothing on disk is unattributable any more.
+            assert_eq!(unregistered().unwrap(), Vec::<String>::new());
+            assert_eq!(migratable().unwrap(), Vec::<String>::new());
+        });
+    }
+
+    /// **Idempotent** — the bead asks for it by name. A second run neither
+    /// duplicates a row nor moves a database that is already on its id.
+    #[test]
+    fn migrate_twice_changes_nothing_the_second_time() {
+        with_home(|_| {
+            old_layout("collection");
+            old_layout("alice");
+            let first = migrate().unwrap();
+            assert_eq!(first.len(), 2);
+            let after: Vec<_> = list().unwrap();
+
+            let second = migrate().unwrap();
+            assert!(
+                second.is_empty(),
+                "a second run moved something: {second:?}"
+            );
+            assert_eq!(list().unwrap(), after, "a second run touched the registry");
+            for t in &after {
+                assert!(t.path.exists(), "a second run lost {}", t.path.display());
+                assert_eq!(rows(&t.path), 1);
+            }
+            // Two users, two ids, two files. Not one shared, not one lost.
+            assert_eq!(after.len(), 2);
+            assert_eq!(
+                after
+                    .iter()
+                    .map(|t| t.user.database_id.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                2
+            );
+        });
+    }
+
+    /// **The rollback, exercised** — the bead's second acceptance criterion.
+    /// Every file goes back under its handle, every row goes away, and the
+    /// data is still there at both ends. That is what a build predating the
+    /// registry needs to find.
+    #[test]
+    fn unmigrate_puts_every_database_back_under_its_handle() {
+        with_home(|home| {
+            old_layout("collection");
+            old_layout("alice");
+            migrate().unwrap();
+            assert!(!home.join("tenants").join("collection.sqlite").exists());
+
+            let (moved, detached) = unmigrate().unwrap();
+            assert_eq!(moved.len(), 2);
+            assert!(detached.is_empty());
+
+            for handle in ["collection", "alice"] {
+                let path = tenant_db_path(handle).unwrap();
+                assert!(path.exists(), "{handle} did not come back");
+                assert_eq!(rows(&path), 1, "{handle} lost its collection");
+            }
+            // The registry has nothing left to say, and the handles are free
+            // — a rollback is not a detach.
+            assert_eq!(list().unwrap(), Vec::new());
+            assert!(!exists("collection").unwrap());
+            // Which is exactly the state migrate started from, so it can be
+            // run again.
+            assert_eq!(migratable().unwrap(), vec!["alice", "collection"]);
+        });
+    }
+
+    /// A rename changes the filename, and the filename **is** the replica
+    /// prefix (`deploy/litestream.yml` runs in directory mode). Carrying the
+    /// state directory across that is what left prod replicating nothing at
+    /// `txid.replica=0` while reporting healthy — so a rename clears it, in
+    /// both directions. `pd-1717`.
+    #[test]
+    fn migrating_clears_litestream_state_rather_than_carrying_it() {
+        with_home(|home| {
+            let before = old_layout("collection");
+            let old_state = litestream_dir(&before);
+            assert!(old_state.join("txid.db").exists());
+
+            let m = migrate().unwrap().pop().unwrap();
+            assert!(
+                !old_state.exists(),
+                "the old prefix's state was left beside the tenants dir"
+            );
+            assert!(
+                !litestream_dir(&m.to).exists(),
+                "the state was carried onto the new name — the sidecar would come \
+                 up mid-stream against an empty prefix and stall (pd-1717)"
+            );
+            // Nothing else was collected on the way past.
+            assert!(home.join("shared.sqlite").exists());
+
+            // And the same on the way back.
+            std::fs::create_dir_all(litestream_dir(&m.to).join("ltx")).unwrap();
+            unmigrate().unwrap();
+            assert!(!litestream_dir(&m.to).exists());
+            assert!(!litestream_dir(&before).exists());
+        });
+    }
+
+    /// The same refusal `adopt` has, for the same reason: renaming a database
+    /// out from under a process that is reading it leaves that process writing
+    /// to an unlinked inode. Stop the app first.
+    #[test]
+    fn migrate_refuses_while_the_database_is_being_read() {
+        with_home(|_| {
+            let path = old_layout("collection");
+            // A serving app, which is what this refusal is aimed at: frames in
+            // the WAL and a read transaction open over them. (An idle handle
+            // on a checkpointed database is invisible to `wal_checkpoint`, as
+            // `adopt`'s docs already say — stop the services regardless.)
+            let reader = connect_user(&path, &shared_db_path().unwrap()).unwrap();
+            reader
+                .execute(
+                    "INSERT INTO collection (printing_id, acquired_at, source) \
+                     VALUES ('sv3pt5-1-holofoil', '2026-08-08', 'manual_id')",
+                    [],
+                )
+                .unwrap();
+            reader
+                .execute_batch("BEGIN; SELECT count(*) FROM collection;")
+                .unwrap();
+
+            let err = migrate().unwrap_err().to_string();
+            assert!(err.contains("open in another process"), "unexpected: {err}");
+            // Nothing moved, and no half-written registry row was left behind
+            // claiming a database that is still under its handle.
+            assert!(path.exists());
+            assert_eq!(list().unwrap(), Vec::new());
+
+            reader.execute_batch("COMMIT").unwrap();
+            drop(reader);
+            assert_eq!(migrate().unwrap().len(), 1);
+        });
+    }
+
+    /// A handle-named database whose handle is already registered to some
+    /// other database is two databases claiming one user. Refuse; do not pick.
+    #[test]
+    fn migrate_refuses_when_the_handle_is_already_registered() {
+        with_home(|_| {
+            let alice = create("alice").unwrap();
+            old_layout("alice"); // ...and a stray handle-named one as well
+            let err = migrate().unwrap_err().to_string();
+            assert!(err.contains("already registered"), "unexpected: {err}");
+            // Both are still there: nothing was renamed onto anything.
+            assert!(alice.path.exists());
+            assert!(tenant_db_path("alice").unwrap().exists());
+            assert_eq!(list().unwrap().len(), 1);
+        });
+    }
+
+    /// A file whose name is neither an id nor a handle gets reported, not
+    /// registered under an invented name.
+    #[test]
+    fn migrate_refuses_a_database_that_is_not_named_like_anything() {
+        with_home(|home| {
+            std::fs::create_dir_all(home.join("tenants")).unwrap();
+            let odd = home.join("tenants").join("Not A Handle.sqlite");
+            std::fs::write(&odd, b"").unwrap();
+            let err = migrate().unwrap_err().to_string();
+            assert!(err.contains("neither a database id nor a handle"), "{err}");
+            assert!(odd.exists());
+            assert_eq!(list().unwrap(), Vec::new());
+        });
+    }
+
+    // ── pd-hqee: what single-tenant startup opens ────────────────────────
+
+    /// **Production's upgrade path.** The binary meets a data directory it has
+    /// not migrated and serves the real collection, because a migration the
+    /// app refuses to start without is how the last epic took prod down.
+    #[test]
+    fn an_unmigrated_data_dir_is_served_as_it_is() {
+        with_home(|_| {
+            let path = old_layout("collection");
+            let c = resolve("collection").unwrap();
+            assert_eq!(c.path, path);
+            assert!(c.is_unmigrated());
+            // The real rows — this resolving to an empty new file is the
+            // failure this project can least afford.
+            assert_eq!(rows(&c.path), 1);
+        });
+    }
+
+    /// ...and after migrating, the same handle resolves to the id-named file
+    /// with the same rows. The two halves of "prod survives the upgrade".
+    #[test]
+    fn a_migrated_data_dir_resolves_through_the_registry() {
+        with_home(|_| {
+            old_layout("collection");
+            let m = migrate().unwrap().pop().unwrap();
+
+            let c = resolve("collection").unwrap();
+            assert_eq!(c.path, m.to);
+            assert!(!c.is_unmigrated());
+            assert_eq!(rows(&c.path), 1);
+            let Storage::Registered(user) = c.storage else {
+                panic!("expected a registered collection");
+            };
+            assert_eq!(user.database_id, m.database_id);
+            assert_eq!(user.handle, "collection");
+
+            // And the rollback restores the un-migrated answer, unchanged.
+            unmigrate().unwrap();
+            let back = resolve("collection").unwrap();
+            assert!(back.is_unmigrated());
+            assert_eq!(rows(&back.path), 1);
+        });
+    }
+
+    /// A fresh data directory registers its handle, so a new install is born
+    /// on the two-identifier model instead of needing a migration later.
+    #[test]
+    fn a_fresh_data_dir_registers_the_handle_it_serves() {
+        with_home(|home| {
+            let c = resolve("collection").unwrap();
+            let Storage::Registered(user) = c.storage.clone() else {
+                panic!("a fresh data dir should register its user");
+            };
+            assert_eq!(user.handle, "collection");
+            assert_eq!(
+                c.path,
+                home.join("tenants")
+                    .join(format!("{}.sqlite", user.database_id))
+            );
+            // Idempotent: the second call finds the row rather than minting a
+            // second id and a second empty database.
+            assert_eq!(resolve("collection").unwrap(), c);
+            assert_eq!(list().unwrap().len(), 1);
+        });
+    }
+
+    /// A handle nobody registered, in a data directory that plainly holds
+    /// other people, must not quietly become a new empty collection. This is
+    /// the one behaviour change an operator can notice, and it closes a
+    /// silent-empty that a typo in `$PKDUMP_USER` reaches today.
+    #[test]
+    fn an_unknown_handle_does_not_become_an_empty_collection() {
+        with_home(|home| {
+            create("alice").unwrap();
+            let err = resolve("collecton").unwrap_err().to_string();
+            assert!(err.contains("pkdump tenant create"), "unhelpful: {err}");
+            assert!(!home.join("tenants").join("collecton.sqlite").exists());
+            assert_eq!(list().unwrap().len(), 1);
+        });
+    }
+
+    /// The `pd-gckl` refusal, unchanged: a database still at the pre-tenants
+    /// location is never shadowed by an empty new one.
+    #[test]
+    fn resolve_refuses_an_unadopted_legacy_database() {
+        with_home(|home| {
+            std::fs::write(home.join("collection.sqlite"), b"").unwrap();
+            let err = resolve("collection").unwrap_err().to_string();
+            assert!(err.contains("pkdump tenant adopt"), "unhelpful: {err}");
+            assert_eq!(list().unwrap(), Vec::new());
+
+            // Adopting clears it, and migrating then moves it onto an id.
+            adopt("collection").unwrap();
+            assert!(resolve("collection").unwrap().is_unmigrated());
+            migrate().unwrap();
+            assert!(!resolve("collection").unwrap().is_unmigrated());
+        });
+    }
+
+    /// A registry row whose database is gone is a fault to surface with a way
+    /// out in it — not a fresh empty collection, and not a crash.
+    #[test]
+    fn a_registered_user_whose_database_vanished_fails_with_a_way_out() {
+        with_home(|_| {
+            old_layout("collection");
+            let m = migrate().unwrap().pop().unwrap();
+            std::fs::rename(&m.to, m.to.with_extension("sqlite.moved-away")).unwrap();
+
+            let err = resolve("collection").unwrap_err().to_string();
+            assert!(err.contains(&m.database_id), "unhelpful: {err}");
+            assert!(
+                err.contains("unmigrate") || err.contains("RESTORE"),
+                "{err}"
+            );
+            assert!(!m.to.exists(), "resolving created the missing database");
+        });
+    }
+
     #[test]
     fn provisioning_rejects_a_traversing_name() {
         with_home(|home| {
@@ -800,6 +1520,7 @@ mod tests {
             assert!(detach("../escape").is_err());
             assert!(purge("../escape").is_err());
             assert!(adopt("../escape").is_err());
+            assert!(resolve("../escape").is_err());
             assert!(!home.join("escape.sqlite").exists());
         });
     }

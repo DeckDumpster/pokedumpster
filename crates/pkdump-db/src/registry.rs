@@ -242,6 +242,31 @@ pub fn delete(conn: &Connection, database_id: &str) -> Result<User> {
     Ok(user)
 }
 
+/// Drop an **active** user's row without touching their database — the
+/// registry half of `pd-hqee`'s rollback, and the only thing that may do it.
+///
+/// [`delete`] refuses an active user because dropping their row would leave
+/// bytes on disk that belong to nobody. That invariant is about
+/// *attributability*, not about the row: [`crate::tenants::unmigrate`] renames
+/// `tenants/<database_id>.sqlite` back to `tenants/<handle>.sqlite` **first**,
+/// so by the time this runs the file is attributable by its own name again —
+/// which is what the pre-registry layout meant by a tenant existing. Calling
+/// it in the other order would produce exactly the anonymous database
+/// [`delete`] exists to prevent.
+///
+/// It is not a detach: a rollback has to leave the handle free and the
+/// registry with nothing to say about it, because the build being rolled back
+/// to does not read the registry at all.
+pub fn unregister(conn: &Connection, database_id: &str) -> Result<User> {
+    let user = find(conn, database_id)?
+        .ok_or_else(|| DbError::NotFound(format!("no user with database id {database_id:?}")))?;
+    conn.execute(
+        "DELETE FROM user WHERE database_id = ?1",
+        params![database_id],
+    )?;
+    Ok(user)
+}
+
 /// Every registered user, detached ones included, in creation order —
 /// which is `database_id` order, ULIDs being time-prefixed.
 pub fn list(conn: &Connection) -> Result<Vec<User>> {
@@ -504,6 +529,33 @@ mod tests {
         // And there is nothing left to delete twice.
         assert!(matches!(
             delete(&conn, &alice.database_id).unwrap_err(),
+            DbError::NotFound(_)
+        ));
+    }
+
+    /// The rollback's registry half: an ACTIVE row goes, the handle comes
+    /// free, and nothing is left saying the user was ever registered — which
+    /// is the state a build predating the registry expects to find.
+    #[test]
+    fn unregister_drops_an_active_row() {
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        // `delete` will not do this, and that is the distinction: it guards
+        // attributability, and only the caller that renames the file back to
+        // the handle first is entitled to bypass it.
+        assert!(delete(&conn, &alice.database_id).is_err());
+
+        let gone = unregister(&conn, &alice.database_id).unwrap();
+        assert_eq!(gone, alice);
+        assert_eq!(lookup(&conn, "alice").unwrap(), None);
+        assert_eq!(find(&conn, &alice.database_id).unwrap(), None);
+        assert_eq!(list(&conn).unwrap(), Vec::new());
+
+        // The handle is genuinely free, not retired.
+        assert!(insert(&conn, "alice").is_ok());
+        // And there is nothing left to drop twice.
+        assert!(matches!(
+            unregister(&conn, &alice.database_id).unwrap_err(),
             DbError::NotFound(_)
         ));
     }

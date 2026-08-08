@@ -14,10 +14,17 @@ shared copy, `ATTACH`ed read-only per connection exactly as it always was.
 ```
 $PKDUMP_HOME/                 # /data in the container, ~/.pkdump otherwise
   shared.sqlite               # the catalog — ONE copy, shared by every tenant
+  registry.sqlite             # handle -> database_id: who owns which file
   tenants/
-    collection.sqlite         # tenant `collection` — the original single user
-    <tenant>.sqlite           # one file per additional tenant
+    <database_id>.sqlite      # one file per user, named by an opaque ULID
+    <handle>.sqlite           # ...or by handle, before `pkdump tenant migrate`
 ```
+
+A tenant's database is named by its `database_id`, never by the handle of the
+person whose collection it holds — that is `pd-fci1`, and it is why a rename
+costs one `UPDATE` and a recycled handle cannot inherit a predecessor's replica.
+Handle-named files are the pre-migration shape; they still work, and
+`pkdump tenant migrate` moves them over (below).
 
 Two things about that directory are load-bearing:
 
@@ -121,11 +128,10 @@ type. Resolution deliberately does not re-check the charset: a hostile handle
 is refused for not being in the table, not for its characters, and a validator
 there would suggest the safety came from the charset. `pd-rqgv`.
 
-> **Interim, on this branch only.** A tenant `pkdump tenant create` makes
-> resolves; one that predates the registry does not. Databases already sitting
-> at `tenants/<name>.sqlite` name nobody in the registry, so their handles are
-> a 404 until `pd-hqee` migrates them onto their ids. Nothing deployed is
-> affected: production is single-tenant and does not resolve.
+> A database still sitting at `tenants/<name>.sqlite` names nobody in the
+> registry, so its handle is a 404 to the resolver until `pkdump tenant
+> migrate` puts it on an id — see "Migrating onto opaque database ids" below.
+> Single-tenant serving is unaffected either way: it does not resolve.
 
 The load-bearing test is
 `one_tenant_cannot_reach_another_tenants_collection` in
@@ -293,6 +299,138 @@ Run `pkdump tenant adopt collection` (see deploy/TENANTS.md).
 
 A collection silently reading as empty is the worst outcome available to this
 change, so it is the one the code makes impossible.
+
+## Migrating onto opaque database ids
+
+The migration above puts the collection at `tenants/collection.sqlite` — named
+by the *handle* of the user whose collection it is. This one puts it on an
+opaque `database_id`, so the handle stops being a filename at all:
+
+```
+before   tenants/collection.sqlite
+after    tenants/01K2C7HQ8N3Q4E9YB5R7MDX0VT.sqlite   + a row in registry.sqlite
+```
+
+`pkdump tenant migrate` does it: for every handle-named database under
+`tenants/`, it registers the handle, mints a `database_id`, and renames the file
+to match. Same mechanics as `adopt` — a `rename(2)` after a
+`wal_checkpoint(TRUNCATE)` that **refuses if the database is busy** — one
+transaction per database, so an interruption leaves the ones already done done.
+
+It is **idempotent**: a second run finds no handle-named files and does nothing.
+
+### This is not a startup gate, deliberately
+
+`pkdump serve` serves an un-migrated data directory exactly as it finds it, and
+prints which database it opened and that it is not on the model yet:
+
+```
+pkdump: tenant "collection" -> /data/tenants/collection.sqlite (named by handle, NOT YET MIGRATED)
+warning: tenant "collection" is served from /data/tenants/collection.sqlite, which is named by handle …
+```
+
+A required migration is what took production down on the first automated deploy
+of the previous epic (`pd-uoph`), and production is single-tenant. So this one
+does not gate startup: the box keeps running and migrates when you choose.
+
+What the app still refuses is coming up **empty**. A registry row naming a
+database that is not on disk is a startup failure with the id in the message,
+not a fresh empty collection — and neither is a handle that nothing on this
+volume knows about.
+
+### Backups across this migration — read this first
+
+The file is **renamed**, and `deploy/litestream.yml` derives each replica prefix
+from the filename. So the rename does not move a replica; it starts a new, empty
+one:
+
+```
+before   s3://<bucket>/prod/tenants/collection.sqlite
+after    s3://<bucket>/prod/tenants/01K2C7HQ8N3Q4E9YB5R7MDX0VT.sqlite
+```
+
+Same split as the `adopt` cutover: recovery **after** the cutover reads the new
+prefix (`deploy/restore-litestream.sh prod <database-id>` — it takes the id, and
+`pkdump tenant list` is what tells you whose it is); recovery **before** it
+addresses the old prefix by URL, which stops advancing and keeps everything it
+had. Do not try to copy the history across — `aws s3 cp` resets `LastModified`
+and every `-timestamp` restore against the copy fails.
+
+**Litestream's per-database state directory is removed by the rename, not moved
+with it.** That is the opposite of what `adopt` does, and the difference is
+whether the *filename* changes: `adopt` keeps the name, this changes it. Carrying
+the state across a prefix change is exactly what left production replicating
+nothing while the unit reported healthy — `txid.replica` stuck at
+`0000000000000000` while `txid.db` climbed (`pd-1717`).
+
+```bash
+INSTANCE=prod
+
+# 1. Stop every writer: the app AND the Litestream sidecar.
+systemctl --user stop pkdump-${INSTANCE} pkdump-litestream-${INSTANCE}
+
+# 2. Look before you leap.
+podman run --rm -v pkdump-${INSTANCE}-data:/data -e PKDUMP_HOME=/data \
+    --entrypoint pkdump localhost/pkdump:${INSTANCE} tenant migrate --dry-run
+
+# 3. Migrate. It prints the handle -> database_id mapping it created; that
+#    mapping is the only thing that says which ULID-named file is whose.
+podman run --rm -v pkdump-${INSTANCE}-data:/data -e PKDUMP_HOME=/data \
+    --entrypoint pkdump localhost/pkdump:${INSTANCE} tenant migrate
+
+# 4. Start both back up. No config edit: the sidecar watches the DIRECTORY and
+#    derives the new prefix from the new filename by itself.
+systemctl --user start pkdump-${INSTANCE} pkdump-litestream-${INSTANCE}
+```
+
+### Verify
+
+```bash
+INSTANCE=prod
+# Who is registered, and where. The handle is no longer readable off the disk,
+# so this is the only thing that answers it.
+podman exec systemd-pkdump-${INSTANCE} pkdump tenant list
+DB_ID=$(podman exec systemd-pkdump-${INSTANCE} pkdump tenant list \
+        | awk '$1=="collection"{print $2}')
+
+# The collection is in the file that id names, and has its rows.
+MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-${INSTANCE}-data)
+sqlite3 "file:${MP}/tenants/${DB_ID}.sqlite?mode=ro" 'SELECT count(*) FROM collection;'
+# Nothing left under the old name, and no Litestream state under either name.
+ls "${MP}/tenants/collection.sqlite" 2>&1                    # -> No such file
+ls -d "${MP}/tenants/.collection.sqlite-litestream" 2>&1     # -> No such file
+# The app came up on the registered database, with no un-migrated warning.
+journalctl --user -u pkdump-${INSTANCE} -n 20 | grep 'pkdump: tenant'
+
+# BACKUPS — the step that matters, and the one the last migration skipped.
+# `is-active` and "snapshot complete" both said healthy while nothing replicated.
+# Watch txid.replica: zero on the first sync after a rename is expected, but it
+# must move off zero and converge on txid.db.
+journalctl --user -u pkdump-litestream-${INSTANCE} -n 50 | grep 'replica sync'
+bash deploy/backup-check.sh ${INSTANCE}
+```
+
+### Rollback
+
+`pkdump tenant unmigrate` is the inverse: every registered user's database goes
+back to `tenants/<handle>.sqlite` and their registry row is dropped, so a build
+predating the registry finds what it expects. Detached users are left as they
+are and reported — a released handle is not a filename to give a database back.
+
+```bash
+INSTANCE=prod
+systemctl --user stop pkdump-${INSTANCE} pkdump-litestream-${INSTANCE}
+podman run --rm -v pkdump-${INSTANCE}-data:/data -e PKDUMP_HOME=/data \
+    --entrypoint pkdump localhost/pkdump:${INSTANCE} tenant unmigrate
+systemctl --user start pkdump-${INSTANCE} pkdump-litestream-${INSTANCE}
+```
+
+The rollback renames too, so it changes the replica prefix back and the same
+backup warning applies in reverse — check `txid.replica` afterwards.
+
+`tests/tenants/upgrade.sh` runs this whole sequence in CI against the shipped
+image: an old-layout volume, migrated, rolled back, and migrated again, with the
+served collection asserted byte-identical at every step.
 
 ## Recovering one tenant
 

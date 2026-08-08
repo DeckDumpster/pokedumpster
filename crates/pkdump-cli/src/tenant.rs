@@ -22,9 +22,20 @@
 //! listing tells you only how many collections exist — this is the only thing
 //! that says whose they are.
 //!
-//! `adopt` / `revert` are the migration and its rollback for a data directory
-//! laid out before `tenants/` existed — see `deploy/TENANTS.md` for the
-//! runbook.
+//! Two migrations, each with its rollback, because a box can be at either
+//! point — see `deploy/TENANTS.md` for both runbooks:
+//!
+//! ```text
+//! pkdump tenant adopt [name]     # $PKDUMP_HOME/<name>.sqlite -> tenants/
+//! pkdump tenant revert [name]    #   ...and back
+//! pkdump tenant migrate          # tenants/<handle>.sqlite -> tenants/<id>.sqlite
+//! pkdump tenant unmigrate        #   ...and back
+//! ```
+//!
+//! Neither is a gate. `pkdump serve` serves a data directory that has not been
+//! migrated exactly as it finds it and says so on startup: production runs
+//! single-tenant, and a migration the app refuses to start without is how the
+//! previous epic took it down (`pd-uoph`).
 //!
 //! Paths come from `$PKDUMP_HOME`, so `podman exec <ctr> pkdump tenant …`
 //! works against a running instance the same way `pkdump db` does.
@@ -55,6 +66,17 @@ enum TenantCommand {
     Adopt(OptionalNameArgs),
     /// Roll `adopt` back: move the database out of `tenants/` again.
     Revert(OptionalNameArgs),
+    /// Put handle-named collection databases onto opaque database ids.
+    Migrate(MigrateArgs),
+    /// Roll `migrate` back: name every collection by its handle again.
+    Unmigrate,
+}
+
+#[derive(clap::Args)]
+pub struct MigrateArgs {
+    /// Report what would move and change nothing.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(clap::Args)]
@@ -162,9 +184,104 @@ pub fn run(args: TenantArgs) -> anyhow::Result<()> {
             let path = tenants::revert(&name)?;
             println!("Reverted tenant {name} -> {}", path.display());
         }
+        TenantCommand::Migrate(a) => migrate(a.dry_run)?,
+        TenantCommand::Unmigrate => unmigrate()?,
     }
     Ok(())
 }
+
+/// `pkdump tenant migrate` — every handle-named database onto an opaque id.
+///
+/// Prints the mapping it created, because that mapping is the only thing that
+/// says which of these ULID-named files is whose, and an operator watching a
+/// migration run should not have to go and ask afterwards.
+fn migrate(dry_run: bool) -> anyhow::Result<()> {
+    let candidates = tenants::migratable()?;
+    if candidates.is_empty() {
+        println!(
+            "Nothing to migrate: no handle-named databases under {}.",
+            pkdump_db::tenants_dir()?.display()
+        );
+        return Ok(());
+    }
+    if dry_run {
+        println!(
+            "{} database(s) under {} would be registered and renamed:",
+            candidates.len(),
+            pkdump_db::tenants_dir()?.display()
+        );
+        for handle in candidates {
+            println!("  {handle}.sqlite  ->  <new database id>.sqlite  (handle {handle})");
+        }
+        println!("\nNothing was changed. Re-run without --dry-run to do it.");
+        return Ok(());
+    }
+
+    let moved = tenants::migrate()?;
+    println!("Migrated {} database(s):", moved.len());
+    for m in &moved {
+        println!(
+            "  {handle}  ->  database {id}\n    {from}\n    {to}",
+            handle = m.handle,
+            id = m.database_id,
+            from = m.from.display(),
+            to = m.to.display()
+        );
+    }
+    println!("{}", RENAMED_FILES_NOTE);
+    Ok(())
+}
+
+/// `pkdump tenant unmigrate` — the rollback.
+fn unmigrate() -> anyhow::Result<()> {
+    let (moved, detached) = tenants::unmigrate()?;
+    if moved.is_empty() {
+        println!("Nothing to roll back: no registered user has a database on disk.");
+    } else {
+        println!(
+            "Rolled {} database(s) back onto their handles:",
+            moved.len()
+        );
+        for m in &moved {
+            println!(
+                "  database {id}  ->  {handle}\n    {from}\n    {to}",
+                id = m.database_id,
+                handle = m.handle,
+                from = m.from.display(),
+                to = m.to.display()
+            );
+        }
+        println!("{}", RENAMED_FILES_NOTE);
+    }
+    if !detached.is_empty() {
+        println!(
+            "\n{} detached user(s) were LEFT AS THEY ARE — a released handle is not a \
+             filename to give a database back, and a build predating the registry has \
+             no concept of them:",
+            detached.len()
+        );
+        for u in detached {
+            println!("  database {} (last held by {})", u.database_id, u.handle);
+        }
+    }
+    Ok(())
+}
+
+/// Printed after anything that renames a collection database.
+///
+/// The replica prefix is derived from the filename (`deploy/litestream.yml`
+/// runs in directory mode), so a rename starts a new prefix and leaves the old
+/// one holding every object it had. Litestream's local state for the old name
+/// is removed as part of the move — carrying it across a prefix change is what
+/// left production replicating nothing while reporting healthy (`pd-1717`) —
+/// and the one thing an operator must then do is check that the new prefix is
+/// actually advancing rather than trusting that the unit is active.
+const RENAMED_FILES_NOTE: &str = "\nBACKUPS: these files were RENAMED, so each one now replicates to a NEW S3\n\
+     prefix and starts its recovery window at this moment. The old prefixes keep\n\
+     everything they had — restore from them by URL (deploy/TENANTS.md).\n\
+     Start the sidecar and CHECK IT IS ADVANCING, not merely active:\n\
+   \x20 journalctl --user -u pkdump-litestream-<instance> | grep 'replica sync'\n\
+     txid.replica must be non-zero and converging on txid.db (pd-1717).";
 
 /// `pkdump tenant list` — the registry as a table, plus anything on disk the
 /// registry cannot account for.

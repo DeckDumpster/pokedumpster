@@ -146,9 +146,21 @@ catalog tables through TEMP VIEWs so queries can join unqualified. That
 ATTACH is identical for every tenant — the catalog is ONE copy on disk,
 joined per query, never denormalised per tenant.
 
-Provisioning is `pkdump tenant create <name>` / `pkdump tenant remove
-<name> --yes`; `pkdump tenant adopt` migrates a pre-`tenants/` data dir and
-`revert` rolls it back. Layout rationale + the production migration runbook:
+Provisioning is `pkdump tenant create|list|rename|detach`, driven by the
+**user registry** (`registry.sqlite` at the data root — see
+`crates/pkdump-db/src/registry.rs`), not by the directory listing. A user is
+a `handle` joined to an opaque ULID `database_id`; their collection is
+`tenants/<database_id>.sqlite`, so a handle is never a path component and a
+rename never moves a file.
+
+**`pkdump tenant remove <name> --yes` no longer deletes anything.** It is an
+alias for `detach`: the handle is released for reuse and the database and its
+S3 replica are kept. Hard deletion is the explicit second step `pkdump tenant
+purge <database-id> --yes`, addressed by id so it cannot be reached by
+mistyping a live person's name.
+
+`pkdump tenant adopt` migrates a pre-`tenants/` data dir and `revert` rolls
+it back. Layout rationale + the production migration runbook:
 `deploy/TENANTS.md`.
 
 Tenant *resolution* lives in `pkdump-server/src/tenant.rs` and is **off by

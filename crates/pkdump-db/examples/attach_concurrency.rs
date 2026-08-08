@@ -406,12 +406,17 @@ fn provision_tenants(cfg: &Config, catalog: &Path, count: usize) -> Vec<PathBuf>
     for i in 0..count {
         let name = format!("tenant{i:02}");
         let path = match pkdump_db::tenants::create(&name) {
-            Ok(p) => {
-                seed_collection(&p, &printing_ids, cfg.owned_per_tenant, i as u64);
-                p
+            Ok(t) => {
+                seed_collection(&t.path, &printing_ids, cfg.owned_per_tenant, i as u64);
+                t.path
             }
             // Already provisioned by an earlier run against this work dir.
-            Err(_) => pkdump_db::tenant_db_path(&name).unwrap(),
+            Err(_) => {
+                pkdump_db::tenants::lookup(&name)
+                    .unwrap()
+                    .expect("tenant exists but is not registered")
+                    .path
+            }
         };
         paths.push(path);
     }

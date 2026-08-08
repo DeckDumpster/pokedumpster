@@ -74,14 +74,19 @@ bash deploy/restore-litestream.sh --registry prod
 > (`must specify either 'path' or 'dir'`) rather than backing up the tenants and
 > leaving the registry off, and the unit's `OnFailure` alert fires.
 >
-> **This is not enough on an instance that also predates the `tenants/` layout**
-> — one whose `litestream.env` still has `LITESTREAM_DB_PATH` and
-> `LITESTREAM_S3_PATH=<inst>/collection`. As of 2026-08-08 `prod` is such an
-> instance: it is replicating happily on the pre-`tenants/` single-database
-> config. Backfilling the registry keys there would leave it with a tenants
-> directory it does not use and a replica prefix that means something else.
-> Do [TENANTS.md](TENANTS.md)'s production cutover first — that one changes a
-> replica prefix and is deliberately not automated.
+> **`prod` needs this.** Its `litestream.env` took [TENANTS.md](TENANTS.md)'s
+> cutover on 2026-08-08 (`LITESTREAM_S3_PATH=prod/tenants`,
+> `LITESTREAM_TENANTS_DIR=/data/tenants`) and has neither registry key, so it is
+> exactly the instance described above: the moment it is deployed with this
+> config, the sidecar stops starting until `deploy/setup.sh prod` has run.
+> **Backups are off while it will not start** — do the backfill in the same
+> maintenance window as the deploy, not after it.
+>
+> On an instance that has not taken that cutover either — `litestream.env` still
+> carrying `LITESTREAM_DB_PATH` and `LITESTREAM_S3_PATH=<inst>/collection` — the
+> backfill is still not enough on its own. It deliberately never touches
+> `LITESTREAM_S3_PATH`, because changing a replica prefix is a data cutover and
+> not a config edit; do TENANTS.md's migration first.
 
 ---
 
@@ -363,9 +368,9 @@ nothing — the filename already said `alpha`. So the drill prints what the buck
 alone can tell you with the registry gone (four ids, not one name), restores the
 registry first, and recovers every tenant *by handle* from what it says.
 
-**Last exercised: 2026-08-08** (pd-nd6w), MinIO mode, 32/32 checks — including
-the registry loss/restore path above. The previous full pass across both modes
-was 2026-08-07 (pd-v8zf), 25/25 each: MinIO, and the production bucket under
-prefix `pd-v8zf-drill/` with the real assume-role credentials (prefix deleted
-afterwards — 0 objects; `prod/collection` untouched at 618 objects throughout).
-`DRILL_REAL_S3=1` has **not** been re-run since the registry entry landed.
+**Last exercised: 2026-08-08** (pd-nd6w), **both modes, 32/32 checks each** —
+including the registry loss/restore path above. MinIO, and the production bucket
+under prefix `pd-v8zf-drill/` with the real assume-role credentials, which is
+also what confirms the backup role can write the registry's new prefix and not
+just the tenants one. The throwaway prefix was deleted afterwards (0 objects
+remaining) and `prod/tenants/` was untouched throughout.

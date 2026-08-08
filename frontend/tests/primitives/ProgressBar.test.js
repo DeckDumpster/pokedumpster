@@ -40,6 +40,30 @@ test('ProgressBar is a progressbar to assistive tech', () => {
 	assert.match(html, /Base 42\/102/, 'the label is also drawn as the caption');
 });
 
+test('ProgressBar splits its caption when given a hint', () => {
+	// The stats page's completion meters put the name on the left and the
+	// figure on the right; without `hint` that route would rebuild the
+	// caption row itself and the split would stop being the primitive's.
+	const html = body({ value: 42, max: 102, label: 'Base set', hint: '42 / 102 · 41%' });
+	assert.match(html, /Base set/);
+	assert.match(html, /42 \/ 102 · 41%/);
+	assert.match(html, /class="hint\b/);
+	assert.match(html, /aria-label="Base set"/, 'the hint is not part of the name');
+	// No hint: a plain single-line caption, the shape /browse draws.
+	assert.doesNotMatch(body({ value: 1, max: 2, label: 'Base' }), /class="hint\b/);
+});
+
+test('ProgressBar keeps its accessible name when the caption is hidden', () => {
+	// The rarity-split table names the tier two columns to the left, so a
+	// visible caption would duplicate it — but the bar must still announce
+	// itself. Silently dropping the name is the bug this guards.
+	const html = body({ value: 3, max: 9, label: 'Illustration Rare', labelHidden: true });
+	assert.match(html, /role="progressbar"/);
+	assert.match(html, /aria-label="Illustration Rare"/);
+	assert.match(html, /aria-valuenow="3"/);
+	assert.doesNotMatch(html, /class="label\b/, 'no caption is drawn');
+});
+
 test('ProgressBar emits no hardcoded colour', () => {
 	assertTokenOnly('ProgressBar.svelte');
 	const css = styles(ProgressBar, { value: 1, max: 2 });

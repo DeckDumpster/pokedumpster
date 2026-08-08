@@ -438,11 +438,17 @@
 		<header>
 			<a class="statslink" href="/browse/{binder.set.set_code}/stats">Set stats →</a>
 			<div class="stats">
+				<!-- tone="complete" on every meter here, not the primitive's
+				     default accent: green is ownership across the whole app,
+				     and /browse already draws these same two figures green on
+				     its set tiles. Clicking a tile used to swap them to
+				     crimson for the identical number (pd-2lk2). -->
 				{#if isBundle}
 					<!-- Bundles have a single section: base == master. Show one
 					     progress bar instead of two identical ones. -->
 					<ProgressBar
 						class="stat"
+						tone="complete"
 						label="Collected {binder.master_owned}/{binder.master_total}"
 						value={binder.master_owned}
 						max={binder.master_total}
@@ -450,12 +456,14 @@
 				{:else}
 					<ProgressBar
 						class="stat"
+						tone="complete"
 						label="Base {binder.base_owned}/{binder.base_total}"
 						value={binder.base_owned}
 						max={binder.base_total}
 					/>
 					<ProgressBar
 						class="stat"
+						tone="complete"
 						label="Master {binder.master_owned}/{binder.master_total}"
 						value={binder.master_owned}
 						max={binder.master_total}

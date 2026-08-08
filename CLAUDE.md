@@ -91,7 +91,7 @@ cargo run --bin pkdump -- import --json collection.json
 cd frontend && npm install && npm run build
 cd frontend && npm run check     # svelte-check / TypeScript
 cd frontend && npm test          # design-token gates (WCAG AA contrast, layer
-                                 #   split, raw-colour ratchet)
+                                 #   split, raw-colour + raw-dimension ratchets)
 
 # Visual regression — every route at 1440 and 768 against a throwaway
 # container instance. A pixel diff fails; approving one is explicit.
@@ -338,12 +338,23 @@ budget is empty the target is met and any literal anywhere fails the build.
 Never raise a budget — a value that has nowhere to live needs a semantic role
 in `tokens.css`, not an exception.
 
+Colour is not the whole layer. `tokens.css` also declares **space**
+(`--space-*`), **type** (`--text-*`), **radius** (`--radius-*`) and
+**elevation** (`--shadow-*`), and `raw-dimension-budget.json` is the same
+ratchet pointed at those: every `padding`/`margin`/`gap`, `font-size`,
+`border-radius` or `box-shadow` declaration that still spells out a length
+instead of spending a step. Same rules — down only, delete at zero, never
+raise. The unit is the *declaration*, not the literal, so `padding: 0.4rem
+0.6rem` is one. Unitless `0` doesn't count; a `calc()` multiplier over a token
+doesn't either. It was seeded at the counts of the day it landed and is
+deliberately not a migration — routes shed theirs as they get touched.
+
 ### UI primitives
 
 `frontend/src/lib/components/ui/` is the visual vocabulary — `Panel`, `Button`,
 `Field`, `Badge`, `ProgressBar`, `SectionHeader`, `EmptyState`, `Toolbar`,
-re-exported from `$lib/components/ui`. Routes render; they do not decide
-surfaces, fills, rules or spacing.
+`SearchField`, `Segmented`, `Menu`, re-exported from `$lib/components/ui`.
+Routes render; they do not decide surfaces, fills, rules or spacing.
 
 Every primitive is styled from the **semantic** token layer only — no colour
 literal, no `--pd-*`. A route that needs a variant a primitive lacks **adds the

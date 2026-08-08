@@ -7,7 +7,7 @@
 # GitHub workflow should be a thin wrapper that just calls this file.
 #
 # Steps:
-#   1. Tear down any stale `ci` container instance.
+#   1. Tear down any stale container instance belonging to THIS checkout.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #   4. Container gate: build + start a `--test` instance, wait for the server
@@ -27,6 +27,11 @@
 #
 # Usage:
 #   bash deploy/ci.sh
+#   PKDUMP_CI_INSTANCE=myname bash deploy/ci.sh   # pin the instance name
+#
+# Parallel-safe: the container instance is named per-checkout, so several
+# polecats can run this concurrently from their own worktrees without tearing
+# down each other's containers. Do not reintroduce a fixed instance name.
 #
 set -euo pipefail
 
@@ -34,12 +39,24 @@ set -euo pipefail
 # non-interactive shells often lack it.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-INSTANCE="ci"
-SERVICE_NAME="pkdump-${INSTANCE}"
-CONTAINER="systemd-${SERVICE_NAME}"
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# The instance name has to be unique per checkout. The swarm runs several
+# polecats per rig, each from its own worktree, and every one of them runs
+# this script; with a shared name, run B's opening teardown destroyed run A's
+# container mid-suite (observed 2026-08-03, polecats pipboy and raider). The
+# symptoms surfaced as screenshot instability in unrelated routes, so this
+# also cost debugging time somewhere else entirely.
+#
+# Derived from the full worktree path, not its basename: every polecat
+# worktree is .../polecats/<name>/pokedumpster, so a basename would collide
+# for all of them. Hashing the whole path keeps the name stable per checkout
+# — so the stale-cleanup below still finds the previous run's leftovers —
+# while making a cross-checkout collision impossible.
+INSTANCE="${PKDUMP_CI_INSTANCE:-ci-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)}"
+SERVICE_NAME="pkdump-${INSTANCE}"
+CONTAINER="systemd-${SERVICE_NAME}"
 
 START_TIME=$(date +%s)
 
@@ -49,7 +66,11 @@ step() { echo ""; echo "==> $*"; }
 
 step "Cleaning up stale '${INSTANCE}' instance..."
 bash "$SCRIPT_DIR/teardown.sh" "$INSTANCE" --purge 2>/dev/null || true
-podman image prune -f >/dev/null 2>&1 || true
+# `until=24h` matters for the same reason the instance name does: a bare
+# `image prune -f` is global, so it will happily delete a dangling layer that
+# a concurrently-running polecat's build is still using. Age-filtering keeps
+# the housekeeping without reaching into another run's build.
+podman image prune -f --filter "until=24h" >/dev/null 2>&1 || true
 
 # Tear the ci instance down again on exit, whatever happens.
 cleanup() {
@@ -74,8 +95,10 @@ step "Frontend: npm ci && npm test && npm run check && npm run build"
 (
     cd "$REPO_DIR/frontend"
     npm ci
-    # Design-token gates: WCAG AA contrast for every declared pairing, plus the
-    # reference/semantic layer split. Node's built-in runner, no extra deps.
+    # Design-token gates: WCAG AA contrast for every declared pairing, the
+    # reference/semantic layer split, and the two ratchets — raw colour and raw
+    # dimension — which fail on any INCREASE in values chosen outside the token
+    # layer. Node's built-in runner, no extra deps.
     npm test
     npm run check
     npm run build

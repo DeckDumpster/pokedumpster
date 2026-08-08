@@ -1,9 +1,10 @@
 start_page: /browse/sv3pt5
 involves:
-  - "div.stats containing two div.stat blocks"
-  - "first stat span 'Base {binder.base_owned}/{binder.base_total}' with div.bar"
-  - "second stat span 'Master {binder.master_owned}/{binder.master_total}' with div.bar"
-  - "pct(owned, total) drives each div.bar span width"
+  - "div.stats containing two ProgressBar blocks, each classed .stat"
+  - "first: label span 'Base {binder.base_owned}/{binder.base_total}'"
+  - "second: label span 'Master {binder.master_owned}/{binder.master_total}'"
+  - "each renders div.track[role=progressbar] with aria-valuenow/max, and span.fill whose width is the percentage"
+  - "both are tone=complete — the green /browse paints the same two figures with (pd-2lk2)"
 fixture_data:
   set: "151 (sv3pt5)"
   collection: "8 sv3pt5 copies registered to Master Set: 151 via binder_click (including the Mew ex hyper rare), so base_owned and master_owned are both > 0"
@@ -13,4 +14,7 @@ notes: >
   width. 3. Assert a stat reading "Master {owned}/{total}" is visible with a
   non-zero progress bar width. 4. Do not hard-code the counts — the fixture
   registers 8 copies but base_owned counts distinct card numbers; assert the
-  format and that owned > 0 and owned <= total. 5. Screenshot.
+  format and that owned > 0 and owned <= total. 5. Assert both fills compute
+  to --color-progress-fill and neither to --color-accent: these are the same
+  figures the /browse tile showed a click earlier, and they used to change
+  hue on the way here. 6. Screenshot.

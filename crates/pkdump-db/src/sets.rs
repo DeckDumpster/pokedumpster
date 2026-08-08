@@ -3,6 +3,7 @@
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::Result;
+use crate::search_meta::RarityLookup;
 
 /// A set with its card count and how many of its cards the user owns —
 /// the shape the `/browse` set picker renders. Bundles project into the
@@ -94,10 +95,23 @@ pub fn list_sets(conn: &Connection) -> Result<Vec<SetSummary>> {
 }
 
 /// One rarity tier within a set, with how many of its cards the user owns.
+///
+/// `rarity` is the canonical spelling from the `rarities` table, and
+/// `rank`/`grp` come from the same row: the tier's curated ordinal and its
+/// group alias. Both ride along so the stats page can order and colour the
+/// split without re-deriving a rarity typology in TypeScript — the catalog
+/// already owns one.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct RarityCount {
     pub rarity: String,
+    /// Curated ordinal from `rarities.rank`; [`UNRANKED_RARITY`] for a
+    /// tier the table does not carry. Rows arrive pre-sorted by it.
+    #[ts(type = "number")]
+    pub rank: i64,
+    /// Group alias (`common`, `ultra`, `secret`…), or `null` when the
+    /// tier is unranked or the row declares no group.
+    pub grp: Option<String>,
     #[ts(type = "number")]
     pub total_cards: i64,
     #[ts(type = "number")]
@@ -113,7 +127,11 @@ pub struct CardCopyCount {
     pub number: String,
     #[ts(type = "number")]
     pub number_sortable: i64,
+    /// Canonical spelling from the `rarities` table where the tier is
+    /// known, else the raw catalog string.
     pub rarity: Option<String>,
+    /// Group alias for the tier — the histogram paints its columns by it.
+    pub rarity_grp: Option<String>,
     #[ts(type = "number")]
     pub copies: i64,
 }
@@ -157,6 +175,35 @@ pub struct SetAnalytics {
     /// One entry per card in the set, ordered by collector number —
     /// drives the stats-page copy-count histogram.
     pub copy_counts: Vec<CardCopyCount>,
+}
+
+/// Fold raw `(rarity, total, owned)` tallies onto their canonical tiers
+/// and return them in the catalog's curated order.
+///
+/// Sorting here rather than in the client is the point: the ordinal lives
+/// in `data/rarities.json` and nowhere else, so the stats table renders
+/// the rows in the order it receives them.
+pub(crate) fn rank_rarities(
+    tiers: &RarityLookup,
+    raw_counts: Vec<(String, i64, i64)>,
+) -> Vec<RarityCount> {
+    let mut folded: std::collections::HashMap<String, RarityCount> =
+        std::collections::HashMap::new();
+    for (raw, total, owned) in raw_counts {
+        let name = tiers.display(&raw);
+        let entry = folded.entry(name.clone()).or_insert_with(|| RarityCount {
+            rarity: name,
+            rank: tiers.rank(&raw),
+            grp: tiers.grp(&raw),
+            total_cards: 0,
+            owned_cards: 0,
+        });
+        entry.total_cards += total;
+        entry.owned_cards += owned;
+    }
+    let mut out: Vec<RarityCount> = folded.into_values().collect();
+    out.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.rarity.cmp(&b.rarity)));
+    out
 }
 
 /// Compute the analytical breakdown for one set. `None` if no such set.
@@ -290,6 +337,11 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
     // Per-card copy counts in collector-number order. LEFT JOIN through
     // printings/collection so cards owned 0 times still produce a row
     // (copies = 0 because COUNT ignores NULLs).
+    // The rarity typology — canonical spelling, curated rank, group
+    // alias — comes from the shared catalog's `rarities` table, not from
+    // whatever string the upstream row happened to carry.
+    let tiers = RarityLookup::load(conn)?;
+
     let copy_counts: Vec<CardCopyCount> = {
         let mut stmt = conn.prepare(
             "SELECT c.number, c.number_sortable, c.rarity, \
@@ -302,16 +354,21 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
              ORDER BY c.number_sortable",
         )?;
         let rows = stmt.query_map([set_code], |r| {
+            let raw: Option<String> = r.get(2)?;
             Ok(CardCopyCount {
                 number: r.get(0)?,
                 number_sortable: r.get(1)?,
-                rarity: r.get(2)?,
+                rarity: raw.as_deref().map(|s| tiers.display(s)),
+                rarity_grp: raw.as_deref().and_then(|s| tiers.grp(s)),
                 copies: r.get(3)?,
             })
         })?;
         rows.collect::<rusqlite::Result<_>>()?
     };
 
+    // Grouped on the RAW string in SQL, then folded onto the canonical
+    // spelling in Rust: a set carrying both "MEGA_ATTACK_RARE" and
+    // "Mega Attack Rare" is one tier in the split, not two.
     let rarities = {
         let mut stmt = conn.prepare(
             "SELECT COALESCE(c.rarity, 'Unknown') AS rarity, \
@@ -323,16 +380,15 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
                           JOIN cards cd ON p.card_id = cd.card_id \
                         WHERE cd.set_code = ?1) owned ON owned.card_id = c.card_id \
              WHERE c.set_code = ?1 \
-             GROUP BY rarity ORDER BY total_cards DESC, rarity",
+             GROUP BY rarity",
         )?;
         let rows = stmt.query_map([set_code], |r| {
-            Ok(RarityCount {
-                rarity: r.get(0)?,
-                total_cards: r.get(1)?,
-                owned_cards: r.get(2)?,
-            })
+            let raw: String = r.get(0)?;
+            let total: i64 = r.get(1)?;
+            let owned: i64 = r.get(2)?;
+            Ok((raw, total, owned))
         })?;
-        rows.collect::<rusqlite::Result<_>>()?
+        rank_rarities(&tiers, rows.collect::<rusqlite::Result<Vec<_>>>()?)
     };
 
     Ok(Some(SetAnalytics {
@@ -463,7 +519,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shared = dir.path().join("shared.sqlite");
         {
-            let c = open_shared(&shared).unwrap();
+            let mut c = open_shared(&shared).unwrap();
+            // The rarity split reads rank/grp off the `rarities` table;
+            // the server reconciles it at startup, so a test that wants a
+            // realistic split has to seed it too.
+            crate::search_meta::reconcile(&mut c).unwrap();
             c.execute(
                 "INSERT INTO sets (set_code, name, series) VALUES ('sv3pt5', '151', 'SV')",
                 [],
@@ -539,7 +599,102 @@ mod tests {
         assert_eq!(rare.total_cards, 1);
         assert_eq!(rare.owned_cards, 1);
 
+        // The split carries the catalog's typology so the stats page can
+        // order and colour it without a rarity map of its own.
+        assert_eq!(common.grp.as_deref(), Some("common"));
+        assert_eq!(rare.grp.as_deref(), Some("rare"));
+        assert!(common.rank < rare.rank, "curated order, not alphabetical");
+        assert_eq!(
+            a.rarities
+                .iter()
+                .map(|r| r.rarity.as_str())
+                .collect::<Vec<_>>(),
+            ["Common", "Rare"],
+            "rows arrive pre-sorted by rank"
+        );
+        // The histogram colours by group, so every column carries one.
+        assert_eq!(a.copy_counts[0].rarity.as_deref(), Some("Common"));
+        assert_eq!(a.copy_counts[0].rarity_grp.as_deref(), Some("common"));
+
         assert!(analytics(&conn, "nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn rarity_split_folds_upstream_spelling_onto_one_canonical_tier() {
+        // Upstream ships the same tier two ways — pokemontcg.io's
+        // "Mega Attack Rare" and TCGCSV's "MEGA_ATTACK_RARE". They are one
+        // rarity, and the split must say so: one row, both cards, the
+        // catalog's spelling. Before the `rarities` lookup they were two
+        // rows, and the stats page's own canonicalRarity() papered over it
+        // only for the label — the counts stayed split.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let mut c = open_shared(&shared).unwrap();
+            crate::search_meta::reconcile(&mut c).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) VALUES ('me1', 'Mega Evolution', 'ME')",
+                [],
+            )
+            .unwrap();
+            for (n, rarity) in [("1", "Mega Attack Rare"), ("2", "MEGA_ATTACK_RARE")] {
+                c.execute(
+                    "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+                     VALUES (?1, 'me1', ?2, ?3, 'Card', ?4)",
+                    rusqlite::params![format!("me1-{n}"), n, n.parse::<i64>().unwrap(), rarity],
+                )
+                .unwrap();
+            }
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+
+        let a = analytics(&conn, "me1").unwrap().unwrap();
+        assert_eq!(a.rarities.len(), 1, "one tier, not two spellings");
+        assert_eq!(a.rarities[0].rarity, "Mega Attack Rare");
+        assert_eq!(a.rarities[0].total_cards, 2);
+        assert_eq!(a.rarities[0].grp.as_deref(), Some("special"));
+        // The histogram gets the canonical spelling on both columns too.
+        assert_eq!(a.copy_counts[1].rarity.as_deref(), Some("Mega Attack Rare"));
+        assert_eq!(a.copy_counts[1].rarity_grp.as_deref(), Some("special"));
+    }
+
+    #[test]
+    fn unranked_rarity_keeps_its_string_and_sorts_last() {
+        // A tier missing from data/rarities.json is a gap in the seed, not
+        // a reason to drop the cards: it keeps its raw label and falls in
+        // behind every ranked tier.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let mut c = open_shared(&shared).unwrap();
+            crate::search_meta::reconcile(&mut c).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) VALUES ('zz1', 'Zed', 'ZZ')",
+                [],
+            )
+            .unwrap();
+            for (n, rarity) in [("1", "Blorbo Rare"), ("2", "Common")] {
+                c.execute(
+                    "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+                     VALUES (?1, 'zz1', ?2, ?3, 'Card', ?4)",
+                    rusqlite::params![format!("zz1-{n}"), n, n.parse::<i64>().unwrap(), rarity],
+                )
+                .unwrap();
+            }
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+
+        let a = analytics(&conn, "zz1").unwrap().unwrap();
+        assert_eq!(
+            a.rarities
+                .iter()
+                .map(|r| r.rarity.as_str())
+                .collect::<Vec<_>>(),
+            ["Common", "Blorbo Rare"]
+        );
+        let unknown = &a.rarities[1];
+        assert_eq!(unknown.rank, crate::search_meta::UNRANKED_RARITY);
+        assert_eq!(unknown.grp, None);
     }
 
     #[test]

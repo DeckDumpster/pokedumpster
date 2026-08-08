@@ -261,6 +261,16 @@
 		{ "fg": "--color-chart-axis", "bg": "--color-surface-panel", "size": "ui" },
 		{ "fg": "--color-chart-unknown", "bg": "--color-surface-panel", "size": "ui" },
 
+		{ "fg": "--color-rarity-common", "bg": "--color-surface-well", "size": "ui" },
+		{ "fg": "--color-rarity-uncommon", "bg": "--color-surface-well", "size": "ui" },
+		{ "fg": "--color-rarity-rare", "bg": "--color-surface-well", "size": "ui" },
+		{ "fg": "--color-rarity-promo", "bg": "--color-surface-well", "size": "ui" },
+		{ "fg": "--color-rarity-holo", "bg": "--color-surface-well", "size": "ui" },
+		{ "fg": "--color-rarity-ultra", "bg": "--color-surface-well", "size": "ui" },
+		{ "fg": "--color-rarity-special", "bg": "--color-surface-well", "size": "ui" },
+		{ "fg": "--color-rarity-secret", "bg": "--color-surface-well", "size": "ui" },
+		{ "fg": "--color-rarity-unranked", "bg": "--color-surface-well", "size": "ui" },
+
 		{ "fg": "--color-chip-fallback", "bg": "--color-surface-panel", "size": "normal" },
 		{ "fg": "--color-chip-fallback", "bg": "--color-surface-raised", "size": "normal" }
 	]

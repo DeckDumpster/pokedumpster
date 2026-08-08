@@ -194,6 +194,44 @@ pub fn detach(conn: &Connection, handle: &str) -> Result<User> {
     })
 }
 
+/// The user whose collection lives in `database_id`, if any.
+///
+/// The inverse of the map: a file on disk back to whoever it belongs to.
+/// What a purge and a post-restore audit both start from.
+pub fn find(conn: &Connection, database_id: &str) -> Result<Option<User>> {
+    let row = conn
+        .query_row(
+            &format!("SELECT {COLS} FROM user WHERE database_id = ?1"),
+            params![database_id],
+            from_row,
+        )
+        .optional()?;
+    row.map(into_user).transpose()
+}
+
+/// Forget a detached user entirely — the registry half of a hard delete.
+/// Returns the row that was removed.
+///
+/// Refuses an `active` user, which is not a policy but the invariant: an
+/// active row is what makes a database reachable, and dropping it would
+/// leave bytes on disk that belong to nobody. [`detach`] first, deliberately,
+/// then this. Deleting the file is [`crate::tenants::purge`]'s half.
+pub fn delete(conn: &Connection, database_id: &str) -> Result<User> {
+    let user = find(conn, database_id)?
+        .ok_or_else(|| DbError::NotFound(format!("no user with database id {database_id:?}")))?;
+    if user.state == UserState::Active {
+        return Err(DbError::Conflict(format!(
+            "user {:?} is still active — detach them before forgetting the mapping",
+            user.handle
+        )));
+    }
+    conn.execute(
+        "DELETE FROM user WHERE database_id = ?1",
+        params![database_id],
+    )?;
+    Ok(user)
+}
+
 /// Every registered user, detached ones included, in creation order —
 /// which is `database_id` order, ULIDs being time-prefixed.
 pub fn list(conn: &Connection) -> Result<Vec<User>> {
@@ -426,6 +464,38 @@ mod tests {
         for u in list(&conn).unwrap() {
             assert!(validate_tenant_name(&u.handle).is_err(), "{u:?}");
         }
+    }
+
+    #[test]
+    fn find_maps_a_database_back_to_its_owner() {
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        assert_eq!(find(&conn, &alice.database_id).unwrap(), Some(alice));
+        assert_eq!(find(&conn, "NOSUCHDATABASE").unwrap(), None);
+    }
+
+    #[test]
+    fn delete_refuses_an_active_user() {
+        // Dropping the row of a live user would leave their bytes on disk
+        // attributable to nobody. Detaching is the deliberate first step.
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        let err = delete(&conn, &alice.database_id).unwrap_err();
+        assert!(matches!(err, DbError::Conflict(_)), "{err:?}");
+        assert_eq!(lookup(&conn, "alice").unwrap(), Some(alice.clone()));
+
+        detach(&conn, "alice").unwrap();
+        let gone = delete(&conn, &alice.database_id).unwrap();
+        assert_eq!(gone.database_id, alice.database_id);
+        assert_eq!(gone.state, UserState::Detached);
+        assert_eq!(find(&conn, &alice.database_id).unwrap(), None);
+        assert_eq!(list(&conn).unwrap(), Vec::new());
+
+        // And there is nothing left to delete twice.
+        assert!(matches!(
+            delete(&conn, &alice.database_id).unwrap_err(),
+            DbError::NotFound(_)
+        ));
     }
 
     #[test]

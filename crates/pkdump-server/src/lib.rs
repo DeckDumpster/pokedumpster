@@ -169,12 +169,53 @@ pub struct ServeConfig {
     /// There is no authentication in front of it, so an instance with this
     /// on lets any caller name any tenant — see `deploy/TENANTS.md`.
     pub multi_tenant: bool,
+    /// The second opt-in that lets `multi_tenant` bind somewhere other than
+    /// loopback. Off unless explicitly set; see `check_bind`.
+    pub allow_insecure_bind: bool,
+}
+
+/// Refuse the one combination that has no defence: per-request tenant
+/// resolution, reachable from off-box.
+///
+/// `multi_tenant` takes the tenant from a header nothing authenticates, so on
+/// a non-loopback bind every collection belongs to whoever can reach the
+/// port. Every other guardrail around that flag — a default of off, an env
+/// parse that rejects `0`, a `deploy/` that never sets it — is a convention
+/// plus a printed warning. This is the mechanism: the process does not start.
+///
+/// Whoever genuinely wants that combination later (behind a reverse proxy
+/// that does authenticate, say) says so a second time, explicitly, with
+/// `PKDUMP_MULTITENANT_INSECURE_BIND`.
+///
+/// Single-tenant mode is not touched at any address — the tenant is fixed at
+/// startup, no request can change it, and the container deployment binds
+/// `0.0.0.0`.
+fn check_bind(multi_tenant: bool, host: IpAddr, allow_insecure_bind: bool) -> anyhow::Result<()> {
+    if !multi_tenant || host.is_loopback() || allow_insecure_bind {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "refusing to start: multi-tenant resolution is on and --host {host} is not loopback.\n\
+         \n\
+         In multi-tenant mode the tenant is whatever the request's `{}` header claims, and \
+         nothing authenticates that claim — there is no login, no session, no token. Bound \
+         anywhere but loopback, this process hands every tenant's collection to anyone who can \
+         reach the port and name a tenant.\n\
+         \n\
+         Bind 127.0.0.1 (or ::1), or drop --multi-tenant / PKDUMP_MULTITENANT. If you really do \
+         mean to expose it — behind something that authenticates for it — say so a second time \
+         with PKDUMP_MULTITENANT_INSECURE_BIND=1.",
+        tenant::TENANT_HEADER
+    )
 }
 
 /// Start the HTTP server. In single-tenant mode the collection database is
 /// opened up front — so a missing catalog (`pkdump setup` not run) fails at
 /// startup rather than on the first request.
 pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
+    // Before anything is opened or bound: an unauthenticated resolver must
+    // not become reachable from off-box.
+    check_bind(cfg.multi_tenant, cfg.host, cfg.allow_insecure_bind)?;
     // Idempotent shared-catalog migration on startup. `pkdump setup`
     // and `pkdump data refresh` normally own shared schema, but a
     // binary upgrade can ship a data-only migration (e.g. seeding a
@@ -205,6 +246,16 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
              `{}`, and nothing authenticates that claim. Do not expose this instance.",
             tenant::TENANT_HEADER
         );
+        if !cfg.host.is_loopback() {
+            // Reachable only via the second opt-in — `check_bind` above
+            // refused otherwise.
+            println!(
+                "pkdump: PKDUMP_MULTITENANT_INSECURE_BIND is set and this instance is bound to \
+                 {} — every tenant's collection is readable and writable by anyone who can \
+                 reach this port.",
+                cfg.host
+            );
+        }
         Tenants::multi(cfg.tenants_dir, cfg.shared_db)
     } else {
         Tenants::single(&cfg.tenant, cfg.user_db, cfg.shared_db)?
@@ -786,6 +837,65 @@ mod tests {
             .unwrap();
         assert_eq!(claimed.status(), StatusCode::OK);
         assert!(body_string(claimed).await.contains("sv3pt5-1-normal"));
+    }
+
+    // ---------------------------------------------------------------------
+    // Refusing an exposed unauthenticated resolver (`check_bind`).
+    //
+    // The flag defaulting to off, the env parse that rejects "0", and the
+    // startup warning are all conventions. These four assert the mechanism:
+    // the process does not start. Delete the `anyhow::bail!` in `check_bind`
+    // and `multi_tenant_refuses_a_non_loopback_bind` fails.
+    // ---------------------------------------------------------------------
+
+    /// **The load-bearing test.** Multi-tenant plus a bind anyone can reach
+    /// is refused, and the refusal says why rather than just what.
+    #[test]
+    fn multi_tenant_refuses_a_non_loopback_bind() {
+        for host in ["0.0.0.0", "::", "192.168.1.10", "10.0.0.2"] {
+            let err = match check_bind(true, host.parse().unwrap(), false) {
+                Ok(()) => panic!("{host} must not serve an unauthenticated resolver"),
+                Err(e) => e,
+            };
+            let msg = err.to_string();
+            assert!(msg.contains(host), "the error names the address: {msg}");
+            assert!(
+                msg.contains("nothing authenticates"),
+                "the error says WHY, not just what: {msg}"
+            );
+            assert!(
+                msg.contains("PKDUMP_MULTITENANT_INSECURE_BIND"),
+                "the error names the way out: {msg}"
+            );
+        }
+    }
+
+    /// Loopback is the mode's intended shape — a developer, a demo, an SSH
+    /// tunnel — and stays allowed.
+    #[test]
+    fn multi_tenant_on_loopback_still_starts() {
+        for host in ["127.0.0.1", "::1", "127.0.0.5"] {
+            check_bind(true, host.parse().unwrap(), false)
+                .unwrap_or_else(|e| panic!("{host} is loopback and must serve: {e}"));
+        }
+    }
+
+    /// The escape hatch works — for whoever puts authentication in front of
+    /// it later — and it is the *only* thing that opens the refused case.
+    #[test]
+    fn the_explicit_opt_in_allows_the_insecure_bind() {
+        check_bind(true, "0.0.0.0".parse().unwrap(), true).unwrap();
+    }
+
+    /// **Single-tenant is untouched at any address.** It is the shipped
+    /// default and `deploy/pkdump.container` binds `0.0.0.0`; a refusal that
+    /// caught it would break production.
+    #[test]
+    fn single_tenant_is_unaffected_at_any_host() {
+        for host in ["0.0.0.0", "::", "127.0.0.1", "192.168.1.10"] {
+            check_bind(false, host.parse().unwrap(), false)
+                .unwrap_or_else(|e| panic!("single-tenant on {host} must serve: {e}"));
+        }
     }
 
     /// Every route reaches its database through `blocking`, which takes the

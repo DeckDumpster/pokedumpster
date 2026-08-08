@@ -167,6 +167,14 @@ LITESTREAM_S3_REGION=us-west-2
 #   <LITESTREAM_S3_PATH>/<tenant>.sqlite   (see deploy/litestream.yml)
 LITESTREAM_S3_PATH=${INSTANCE}/tenants
 LITESTREAM_TENANTS_DIR=/data/tenants
+# The user registry (handle -> database_id) is replicated by the same sidecar as
+# ITSELF, not as a tenant: it lives at the data root, so the glob above cannot
+# see it. A \`path:\` replica prefix is used verbatim (the file name is NOT
+# appended, unlike directory mode), so this names one database, .sqlite and all.
+# It sits BESIDE <LITESTREAM_S3_PATH>, never inside it — the total-loss
+# procedure lists that parent prefix to enumerate tenants.
+LITESTREAM_REGISTRY_DB=/data/registry.sqlite
+LITESTREAM_S3_REGISTRY_PATH=${INSTANCE}/registry.sqlite
 # Empty = real S3, resolved from the pinned region. Only tests point this
 # elsewhere (tests/litestream/run.sh at a throwaway MinIO).
 LITESTREAM_S3_ENDPOINT=
@@ -187,6 +195,34 @@ EOF
     echo "      3. Store the bootstrap key in a podman secret (NOT a file):"
     echo "           printf '[bootstrap]\\naws_access_key_id=K\\naws_secret_access_key=S\\n' | podman secret create pkdump-${INSTANCE}-s3-bootstrap -"
     echo "    Sidecar auto-starts once aws/config exists + the secret is present."
+fi
+
+# Backfill keys an OLDER litestream.env predates (pd-nd6w: the registry entry).
+# The block above deliberately never clobbers an operator's config, which is
+# also why it cannot introduce a new key into one — and deploy/litestream.yml
+# now references two. An unset db path is fatal to the sidecar at startup
+# (measured: "must specify either 'path' or 'dir'"), so an un-backfilled
+# instance does not silently drop the registry from the replicated set; it
+# refuses to run. Re-running this script is the fix, so make it BE the fix.
+#
+# Append-only, and only for keys that are absent: nothing here rewrites a value
+# the operator chose. The defaults match the template above.
+if [ -f "${LS_CONF_DIR}/litestream.env" ]; then
+    ADDED=()
+    grep -q '^LITESTREAM_REGISTRY_DB=' "${LS_CONF_DIR}/litestream.env" || ADDED+=("LITESTREAM_REGISTRY_DB=/data/registry.sqlite")
+    grep -q '^LITESTREAM_S3_REGISTRY_PATH=' "${LS_CONF_DIR}/litestream.env" || ADDED+=("LITESTREAM_S3_REGISTRY_PATH=${INSTANCE}/registry.sqlite")
+    if [ ${#ADDED[@]} -gt 0 ]; then
+        {
+            echo ""
+            echo "# Added by deploy/setup.sh (pd-nd6w): the user registry joins the replicated"
+            echo "# set. It is replicated as itself, beside LITESTREAM_S3_PATH — not inside it."
+            printf '%s\n' "${ADDED[@]}"
+        } >> "${LS_CONF_DIR}/litestream.env"
+        echo "==> Backfilled ${#ADDED[@]} registry key(s) into ${LS_CONF_DIR}/litestream.env:"
+        printf '      %s\n' "${ADDED[@]}"
+        echo "    Restart the sidecar to pick them up:"
+        echo "      systemctl --user restart pkdump-litestream-${INSTANCE}.service"
+    fi
 fi
 
 # Per-instance alert config: the healthchecks.io ping URL for THIS instance's

@@ -5,15 +5,33 @@ your collection back. It assumes nothing but a shell — no Claude, no extra too
 
 ## What's backed up, and where
 
-- **Every** tenant collection DB (`tenants/<tenant>.sqlite`) is continuously
+The irreplaceable set is **two things**, and one sidecar replicates both.
+
+- **Every** tenant collection DB (`tenants/<database_id>.sqlite`) is continuously
   replicated to **S3** by the one Litestream sidecar
   (`pkdump-litestream-<inst>.service`). One sidecar, N tenants.
-- Location: `s3://<bucket>/<LITESTREAM_S3_PATH>/<tenant>.sqlite` — bucket and
-  path are in `~/.config/pkdump/<inst>/litestream.env`. The sidecar watches the
-  `tenants/` directory and derives each tenant's prefix from its filename, so
-  every tenant has its own and no two can collide.
-- **Point-in-time recovery: 6 months.** You can restore the DB as it was at *any
-  second* within the last 180 days (daily snapshots + the transaction log).
+  Location: `s3://<bucket>/<LITESTREAM_S3_PATH>/<database_id>.sqlite`. The sidecar
+  watches the `tenants/` directory and derives each tenant's prefix from its
+  filename, so every tenant has its own and no two can collide.
+- **The user registry** (`registry.sqlite`, at the data root) — the table that
+  says which database belongs to which **handle**. Location:
+  `s3://<bucket>/<LITESTREAM_S3_REGISTRY_PATH>`, *beside* the tenants prefix and
+  never inside it. Bucket and both paths are in
+  `~/.config/pkdump/<inst>/litestream.env`.
+
+  **This is why the order in scenario C is not a style choice.** Tenant databases
+  are named by an opaque `database_id`, not by a person's handle. Lose the
+  registry and every byte is still there and *nothing is attributable* — a
+  directory of ids with nobody's name on it. That is precisely the DR gap this
+  project cited when it rejected libSQL/sqld (`bottomless` does not back up the
+  namespace registry, so recovery has to re-declare namespaces before any data
+  will restore), and we do not get to make that criticism unless our own registry
+  is in the replicated set. It is. Drilled, not assumed — see the bottom of this
+  file.
+- **Point-in-time recovery: 6 months**, for both. You can restore either as it was
+  at *any second* within the last 180 days (daily snapshots + the transaction
+  log). The `snapshot:` policy is process-global, so the registry and every
+  tenant share one cadence and one window.
 - The **shared catalog** (`shared.sqlite`: cards/sets/prices) is **not** backed up
   — it's reproducible from upstream (`deploy/seed.sh <inst>`).
 - Credentials: an assume-role profile (`~/.config/pkdump/<inst>/aws/config`) + the
@@ -31,7 +49,49 @@ bash deploy/restore-litestream.sh prod alice        # a different tenant
 
 # Point-in-time restore (recover from a mistake within the last 6 months):
 bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod alice
+
+# The user registry (handle -> database_id). Restore this FIRST after a total
+# loss — it is what tells you which databases exist and whose they are:
+bash deploy/restore-litestream.sh --registry prod
 ```
+
+> **A data volume mid-migration holds BOTH shapes.** `pkdump tenant create` has
+> minted opaque ids since `pd-zr9n`, so new databases are
+> `tenants/<26-char uppercase ULID>.sqlite`; databases that predate it are still
+> named by their handle, and `tenants/collection.sqlite` is on the prod box
+> today. Migrating the old ones onto ids is `pd-hqee`.
+>
+> Every command here takes whichever the file is actually called — the stem, not
+> the person. `restore-litestream.sh prod collection` and
+> `restore-litestream.sh prod 01K2C7HQ8N…` are both valid, and which one you
+> want is a question for the registry, not for your memory. **The ids are
+> case-sensitive**: `01J8…` and `01j8…` are one file on a case-insensitive
+> filesystem but two different S3 prefixes, so the scripts reject the lowercase
+> form rather than restore from a prefix that does not exist.
+
+> **Upgrading an existing instance.** The registry entry needs two keys
+> (`LITESTREAM_REGISTRY_DB`, `LITESTREAM_S3_REGISTRY_PATH`) that a
+> `litestream.env` written before it does not have. Run
+> `bash deploy/setup.sh <inst>` — it backfills them in place without touching
+> anything you chose — then
+> `systemctl --user restart pkdump-litestream-<inst>.service`.
+> You cannot forget this quietly: without them the sidecar **refuses to start**
+> (`must specify either 'path' or 'dir'`) rather than backing up the tenants and
+> leaving the registry off, and the unit's `OnFailure` alert fires.
+>
+> **`prod` needs this.** Its `litestream.env` took [TENANTS.md](TENANTS.md)'s
+> cutover on 2026-08-08 (`LITESTREAM_S3_PATH=prod/tenants`,
+> `LITESTREAM_TENANTS_DIR=/data/tenants`) and has neither registry key, so it is
+> exactly the instance described above: the moment it is deployed with this
+> config, the sidecar stops starting until `deploy/setup.sh prod` has run.
+> **Backups are off while it will not start** — do the backfill in the same
+> maintenance window as the deploy, not after it.
+>
+> On an instance that has not taken that cutover either — `litestream.env` still
+> carrying `LITESTREAM_DB_PATH` and `LITESTREAM_S3_PATH=<inst>/collection` — the
+> backfill is still not enough on its own. It deliberately never touches
+> `LITESTREAM_S3_PATH`, because changing a replica prefix is a data cutover and
+> not a config edit; do TENANTS.md's migration first.
 
 ---
 
@@ -159,21 +219,56 @@ bash deploy/setup.sh prod 8090            # build image + install units (keep th
 
 # Re-create the backup config + creds for this instance:
 #   ~/.config/pkdump/prod/litestream.env   (bucket/region; LITESTREAM_S3_PATH=prod/tenants,
-#                                           LITESTREAM_TENANTS_DIR=/data/tenants)
+#                                           LITESTREAM_TENANTS_DIR=/data/tenants,
+#                                           LITESTREAM_REGISTRY_DB=/data/registry.sqlite,
+#                                           LITESTREAM_S3_REGISTRY_PATH=prod/registry.sqlite)
+#     setup.sh writes all of these; it is only listed here so you can check them.
 #   ~/.config/pkdump/prod/aws/config       ([profile pkdump] role_arn=... source_profile=bootstrap region=...)
 #   podman secret create pkdump-prod-s3-bootstrap -   (paste the [bootstrap] key; from your password manager)
 ```
 
-**Which tenants existed?** Ask the bucket — it is the registry. Directory mode
-names each prefix after the tenant's file, so the list of recoverable tenants is
-the list of prefixes. Nothing local has to survive for this to work, and there is
-no separate registry object that can be missing (the rejected libSQL/sqld path
-had exactly that gap: `bottomless` did not back up the namespace registry, so DR
-had to re-declare every namespace before any data would restore. File-per-tenant
-has no equivalent — verified, not assumed; see the drill below).
+### ⚠️ Restore the REGISTRY first, then the tenant databases
+
+**This order is load-bearing. Do not invert it.**
+
+A tenant database is named by an opaque `database_id`, not by a handle. So the
+bucket on its own answers *"how many databases are there"* and **not** *"whose is
+which"*. Restore the tenants first and you are holding a directory of files called
+`01K2C7HQ8N….sqlite` with no way to tell whose collection is inside any of them —
+every byte present, nothing attributable. The registry is the only thing that
+puts the names back.
 
 ```bash
 set -a; . ~/.config/pkdump/prod/litestream.env; set +a
+
+# ── STEP 1 — the registry. Works on a bare volume; nothing has to exist first.
+bash deploy/restore-litestream.sh --yes --registry prod
+```
+
+```bash
+# ── STEP 2 — ask it who exists. THIS is the tenant list.
+MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-prod-data)
+sqlite3 "file:${MP}/registry.sqlite?mode=ro" \
+  "SELECT handle, database_id FROM user WHERE state='active';"
+#   alice|01K2C7HQ8NZ0XW3V9R5M6D0ABC
+#   bob  |01K2C7HQ8P41K8T2Y7Q3N5E1DEF
+```
+
+```bash
+# ── STEP 3 — restore each database the registry named, then rebuild the catalog.
+bash deploy/restore-litestream.sh --yes prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
+bash deploy/restore-litestream.sh --yes prod 01K2C7HQ8P41K8T2Y7Q3N5E1DEF
+bash deploy/seed.sh prod                        # rebuild the shared catalog from upstream
+systemctl --user start pkdump-prod              # start the app
+```
+
+**Cross-check against the bucket.** Neither source is trusted alone: the registry
+says which ids *should* exist, and the bucket says which ones *do*. They must
+agree. A prefix the registry does not name is an orphan (a detached user, or a
+tenant whose registry row was lost); an id the registry names with no prefix is a
+tenant that was never replicated, which is an incident of its own.
+
+```bash
 podman run --rm \
   -v ~/.config/pkdump/prod/aws/config:/aws/config:ro \
   --secret pkdump-prod-s3-bootstrap,type=mount,target=/aws/credentials \
@@ -181,18 +276,15 @@ podman run --rm \
   -e AWS_PROFILE=pkdump -e AWS_REGION="${LITESTREAM_S3_REGION}" \
   docker.io/amazon/aws-cli:latest \
   s3 ls "s3://${LITESTREAM_S3_BUCKET}/${LITESTREAM_S3_PATH}/"
-#   PRE collection.sqlite/
-#   PRE alice.sqlite/          <- one prefix per tenant; strip ".sqlite/" for the name
+#   PRE 01K2C7HQ8NZ0XW3V9R5M6D0ABC.sqlite/    <- one prefix per tenant
+#   PRE 01K2C7HQ8P41K8T2Y7Q3N5E1DEF.sqlite/      strip ".sqlite/" for the id
 ```
 
-Then restore each one, and rebuild the catalog:
-
-```bash
-bash deploy/restore-litestream.sh --yes prod collection
-bash deploy/restore-litestream.sh --yes prod alice        # once per tenant
-bash deploy/seed.sh prod                        # rebuild the shared catalog from upstream
-systemctl --user start pkdump-prod              # start the app
-```
+**If the registry itself is gone** — the one case the order cannot save you from
+— the databases are still fully recoverable, but anonymous: restore each prefix
+and identify them by their contents. Assume nothing about which is which. This is
+the failure the registry being replicated exists to prevent, so if you are here,
+find out why its replica was missing before rebuilding anything on top of it.
 
 The data volume does not need to be prepared: the restore creates `tenants/` if
 it is missing, so restoring onto a bare volume is the same command. Provisioning
@@ -232,7 +324,18 @@ error-looping on bad credentials. `backup-check.sh` is the one that asks S3.
 - **`litestream restore` says no snapshots** → check the bucket/path in
   `litestream.env` and that the secret's key can assume the role. Print the
   prefix it is reading with
-  `. deploy/litestream-lib.sh; tenant_replica_url <tenant>`.
+  `. deploy/litestream-lib.sh; tenant_replica_url <tenant>` (or
+  `registry_replica_url` for the registry).
+- **`missing in litestream.env — run deploy/setup.sh <instance>`** → this
+  instance's config predates the registry entry. `bash deploy/setup.sh <inst>`
+  backfills the two keys, then restart the sidecar. The scripts refuse to guess
+  a replica prefix on purpose: an empty one is the single misconfiguration
+  Litestream does *not* complain about — it replicates to the bucket root in
+  silence.
+- **Sidecar exits immediately with `must specify either 'path' or 'dir'`** →
+  same cause, same fix. This is the deliberate loud failure: an instance that
+  has not been backfilled does not run at all, rather than running with the
+  registry quietly outside the replicated set.
 - **`timestamp does not exist`** → the timestamp is outside that tenant's replica
   history, in *either* direction. A time newer than the newest replicated write
   fails rather than silently giving you the latest state; drop `--at` to get
@@ -258,13 +361,21 @@ DRILL_REAL_S3=1 bash tests/litestream/drill.sh  # same, against the real bucket
 
 It stands up a four-tenant instance with the shipped Quadlet sidecar and walks
 the scenarios above with the shipped scripts: deletes tenant #2 of 4 and restores
-it in place, rolls it back in time, un-rolls it, wipes the whole volume and
-recovers every tenant from the bucket alone — asserting after each restore that
-the other three are byte-identical, still replicating, and still restore to their
-own current data. It is part of `deploy/ci.sh`, so the runbook cannot rot
-silently.
+it in place, rolls it back in time, un-rolls it, then wipes the whole volume —
+registry included — and recovers everything in the documented order, asserting
+after each restore that the other three tenants are byte-identical, still
+replicating, and still restore to their own current data. It is part of
+`deploy/ci.sh`, so the runbook cannot rot silently.
 
-**Last exercised: 2026-08-07** (pd-v8zf), both modes, 25/25 checks each:
-MinIO, and the production bucket under prefix `pd-v8zf-drill/` with the real
-assume-role credentials (prefix deleted afterwards — 0 objects; `prod/collection`
-untouched at 618 objects throughout).
+Its tenants are named by opaque database ids on purpose. With `alpha.sqlite` on
+disk, "restore the registry and check every tenant is reachable by handle" proves
+nothing — the filename already said `alpha`. So the drill prints what the bucket
+alone can tell you with the registry gone (four ids, not one name), restores the
+registry first, and recovers every tenant *by handle* from what it says.
+
+**Last exercised: 2026-08-08** (pd-nd6w), **both modes, 32/32 checks each** —
+including the registry loss/restore path above. MinIO, and the production bucket
+under prefix `pd-v8zf-drill/` with the real assume-role credentials, which is
+also what confirms the backup role can write the registry's new prefix and not
+just the tenants one. The throwaway prefix was deleted afterwards (0 objects
+remaining) and `prod/tenants/` was untouched throughout.

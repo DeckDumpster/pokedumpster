@@ -11,6 +11,11 @@
 #
 # So this checker VERIFIES REPLICATION FRESHNESS against S3, then pings the
 # off-box monitor (healthchecks.io) only when it is genuinely fresh:
+#   0. Check the USER REGISTRY's replica (pd-nd6w). It is checked separately
+#      because it IS separate: its own file at the data root, its own `path:`
+#      replica prefix. And it is checked at all because its silent loss is the
+#      one this script's tenant loop cannot see — every tenant would still be
+#      fresh, and the table saying whose database is whose would be gone.
 #   1. Enumerate EVERY tenant database on the data volume — the same glob the
 #      sidecar's `dir:` entry replicates. A tenant whose replica is dead is
 #      exactly as unbacked-up as the only tenant used to be, and in directory
@@ -96,6 +101,93 @@ fi
 NOW="$(date +%s)"
 MAX_AGE_SECONDS=$(( MAX_AGE_HOURS * 3600 ))
 
+# ltx_newest <replica-url> <what> — the newest RFC3339 'created' timestamp in a
+# replica, or empty if it has none. Returns NON-ZERO if the query itself failed,
+# because "we could not ask" and "the answer is fine" must never be the same
+# outcome — and every caller substitutes this, so it cannot trip the switch
+# itself: `exit` inside `$(...)` leaves only the subshell, and the check would
+# sail on with an empty answer. The caller does the tripping.
+#
+# Parsed format-agnostically: the column order has shifted across litestream
+# versions. Zulu RFC3339 sorts lexicographically == chronologically.
+#
+# `-level all` is load-bearing: `ltx` defaults to level 0, and level 0 gets
+# compacted away into higher levels. A database nobody has written to today
+# would list nothing at level 0 and read as dead when it is merely idle.
+# `|| true` because "no timestamps at all" is a case the callers handle, not a
+# reason to abort: grep exits 1 on no match and pipefail would kill the script
+# before it could report — silently, with the dead-man's switch neither pinged
+# nor tripped.
+ltx_newest() {
+    local url="$1" what="$2" out
+    out="$(podman run --rm --user 0:0 \
+        -v "${CONF_DIR}/aws/config:/aws/config:ro" \
+        --secret "pkdump-${INSTANCE}-s3-bootstrap,type=mount,target=/aws/credentials" \
+        -e AWS_CONFIG_FILE=/aws/config \
+        -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
+        -e AWS_PROFILE="${AWS_PROFILE:-pkdump}" \
+        "$LS_IMG" ltx -level all "$url" 2>&1)" || {
+        echo "backup-check: ${what}: litestream ltx failed (creds/network/S3): $(printf '%s' "$out" | tail -n1)" >&2
+        return 1
+    }
+
+    printf '%s\n' "$out" \
+        | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z' \
+        | sort | tail -n1 || true
+}
+
+# judge_freshness <what> <newest> <db-file> <replica-url> — shared by the
+# registry and every tenant. Either it returns quietly or it trips the switch.
+judge_freshness() {
+    local what="$1" newest="$2" db_file="$3" url="$4" age_h db_age=0 newest_epoch
+
+    if [ -z "$newest" ]; then
+        # Nothing has ever been replicated. That is the alarm condition —
+        # unless the database itself is younger than the threshold, in which
+        # case it was only just created and has not had a full window to reach
+        # S3 yet.
+        [ -e "$db_file" ] && db_age=$(( NOW - $(stat -c %Y "$db_file") ))
+        if [ "$db_age" -gt "$MAX_AGE_SECONDS" ]; then
+            stale "${what}: no replica data at ${url%%\?*} — it is NOT backed up"
+        fi
+        echo "backup-check: ${what} has no replica yet but was created $(( db_age / 60 ))m ago — not judged"
+        return 0
+    fi
+
+    newest_epoch="$(date -d "$newest" +%s 2>/dev/null)" \
+        || stale "${what}: could not parse replica timestamp: ${newest}"
+    age_h=$(( ( NOW - newest_epoch ) / 3600 ))
+
+    if [ "$age_h" -gt "$MAX_AGE_HOURS" ]; then
+        stale "${what}: newest S3 replica write is ${age_h}h old (> ${MAX_AGE_HOURS}h threshold)"
+    fi
+    echo "backup-check: ${what} OK — newest S3 replica write ${age_h}h old (<= ${MAX_AGE_HOURS}h)"
+}
+
+# --- The user registry (pd-nd6w) -------------------------------------------
+# Checked FIRST, and checked at all, because a registry that quietly stopped
+# replicating is the one failure the tenant loop below cannot see: every tenant
+# would still be fresh, and the thing that says whose database is whose would be
+# gone. That is the DR gap this project rejected libSQL/sqld over.
+#
+# It is NOT checked as a tenant. The registry lives at the data root with its own
+# `path:` replica prefix, so it needs its own URL — and passing "registry" to
+# tenant_replica_url would silently address a tenant prefix that does not exist.
+#
+# A box that has never had a registry file (nothing writes one until the resolver
+# lands) is not a failure: absent file AND absent replica is the pre-registry
+# state, and it is judged only once a registry exists to be backed up.
+REGISTRY_FILE="${MOUNTPOINT}/registry.sqlite"
+REGISTRY_URL="$(registry_replica_url)" \
+    || stale "could not derive the registry replica URL — run deploy/setup.sh ${INSTANCE} to backfill litestream.env"
+REGISTRY_NEWEST="$(ltx_newest "$REGISTRY_URL" "the user registry")" \
+    || stale "the user registry: could not read its replica at ${REGISTRY_URL%%\?*}"
+if [ -z "$REGISTRY_NEWEST" ] && [ ! -e "$REGISTRY_FILE" ]; then
+    echo "backup-check: no user registry on this instance yet — nothing to back up"
+else
+    judge_freshness "the user registry" "$REGISTRY_NEWEST" "$REGISTRY_FILE" "$REGISTRY_URL"
+fi
+
 # --- Query S3 for each tenant's replica (read-only) ------------------------
 # Mirrors restore-litestream.sh's invocation: assume-role profile + bootstrap
 # secret, region pinned in the derived replica URL. A read/list op — so broken
@@ -103,57 +195,13 @@ MAX_AGE_SECONDS=$(( MAX_AGE_HOURS * 3600 ))
 for TENANT in "${TENANTS[@]}"; do
     REPLICA_URL="$(tenant_replica_url "$TENANT")" \
         || stale "tenant '${TENANT}': could not derive a replica URL (check litestream.env)"
-
-    LTX_OUT="$(podman run --rm --user 0:0 \
-        -v "${CONF_DIR}/aws/config:/aws/config:ro" \
-        --secret "pkdump-${INSTANCE}-s3-bootstrap,type=mount,target=/aws/credentials" \
-        -e AWS_CONFIG_FILE=/aws/config \
-        -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
-        -e AWS_PROFILE="${AWS_PROFILE:-pkdump}" \
-        "$LS_IMG" ltx -level all "$REPLICA_URL" 2>&1)" \
-        || stale "tenant '${TENANT}': litestream ltx failed (creds/network/S3): $(printf '%s' "$LTX_OUT" | tail -n1)"
-
-    # Newest RFC3339 'created' timestamp, parsed format-agnostically (the column
-    # order has shifted across litestream versions). Zulu RFC3339 sorts
-    # lexicographically == chronologically.
-    #
-    # `-level all` is load-bearing: `ltx` defaults to level 0, and level 0 gets
-    # compacted away into higher levels. A tenant nobody has written to today
-    # would list nothing at level 0 and read as dead when it is merely idle.
-    # `|| true` because "no timestamps at all" is a case this handles below, not
-    # a reason to abort: grep exits 1 on no match and pipefail would kill the
-    # script before it could report — silently, with the dead-man's switch
-    # neither pinged nor tripped.
-    NEWEST="$(printf '%s\n' "$LTX_OUT" \
-        | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z' \
-        | sort | tail -n1 || true)"
-
-    if [ -z "$NEWEST" ]; then
-        # Nothing has ever been replicated for this tenant. That is the alarm
-        # condition — unless the database itself is younger than the threshold,
-        # in which case it was only just provisioned and has not had a full
-        # window to reach S3 yet.
-        DB_FILE="${MOUNTPOINT}/tenants/${TENANT}.sqlite"
-        DB_AGE=0
-        [ -e "$DB_FILE" ] && DB_AGE=$(( NOW - $(stat -c %Y "$DB_FILE") ))
-        if [ "$DB_AGE" -gt "$MAX_AGE_SECONDS" ]; then
-            stale "tenant '${TENANT}': no replica data at ${REPLICA_URL%%\?*} — it is NOT backed up"
-        fi
-        echo "backup-check: tenant '${TENANT}' has no replica yet but was provisioned $(( DB_AGE / 60 ))m ago — not judged"
-        continue
-    fi
-
-    NEWEST_EPOCH="$(date -d "$NEWEST" +%s 2>/dev/null)" \
-        || stale "tenant '${TENANT}': could not parse replica timestamp: ${NEWEST}"
-    AGE_H=$(( ( NOW - NEWEST_EPOCH ) / 3600 ))
-
-    if [ "$AGE_H" -gt "$MAX_AGE_HOURS" ]; then
-        stale "tenant '${TENANT}': newest S3 replica write is ${AGE_H}h old (> ${MAX_AGE_HOURS}h threshold)"
-    fi
-    echo "backup-check: tenant '${TENANT}' OK — newest S3 replica write ${AGE_H}h old (<= ${MAX_AGE_HOURS}h)"
+    NEWEST="$(ltx_newest "$REPLICA_URL" "tenant '${TENANT}'")" \
+        || stale "tenant '${TENANT}': could not read its replica at ${REPLICA_URL%%\?*}"
+    judge_freshness "tenant '${TENANT}'" "$NEWEST" \
+        "${MOUNTPOINT}/tenants/${TENANT}.sqlite" "$REPLICA_URL"
 done
 
 # --- Fresh: ping the monitor + record the marker ---------------------------
-echo "backup-check: OK — ${#TENANTS[@]} tenant(s) fresh; pinging monitor"
+echo "backup-check: OK — the registry + ${#TENANTS[@]} tenant(s) fresh; pinging monitor"
 mark_fresh
 curl -fsS -m 10 "$PING" >/dev/null 2>&1 || echo "backup-check: WARNING — monitor ping failed (will retry next run)" >&2

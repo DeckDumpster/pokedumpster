@@ -41,15 +41,22 @@ scripts instead of `setup.sh` / `deploy.sh` / `teardown.sh`.
 | Data dir in container | `/data` (`PKDUMP_HOME=/data`) |
 | Default instance | `prod` |
 
-Two SQLite databases live on each data volume:
+Three SQLite databases live on each data volume:
 
 - `shared.sqlite` — the immutable card catalog. Fully reproducible from
   upstream via `pkdump setup`; **not** backed up. One copy, `ATTACH`ed by
   every tenant.
-- `tenants/<tenant>.sqlite` — one collection per tenant (`collection` is the
-  original single user). The only thing worth backing up. See
-  [TENANTS.md](TENANTS.md) for provisioning and the migration from the old
-  flat `collection.sqlite` layout.
+- `tenants/<database_id>.sqlite` — one collection per tenant (`collection` is
+  the original single user). See [TENANTS.md](TENANTS.md) for provisioning and
+  the migration from the old flat `collection.sqlite` layout.
+- `registry.sqlite` — the user registry: handle → `database_id`. At the data
+  root, deliberately outside `tenants/` so that directory keeps meaning "one
+  file per tenant" exactly.
+
+The last two are the irreplaceable set, and both are replicated by the one
+Litestream sidecar. The registry is not an afterthought in that set: without it
+the tenant files are present but anonymous. [RESTORE.md](RESTORE.md) restores it
+**first** for exactly that reason.
 
 ## Local CI loop
 
@@ -175,18 +182,27 @@ timers for the instance (the host-wide disk timer is left alone).
 ## Backup & restore — Litestream → S3
 
 Backups are off-box only (no local disk): the `pkdump-litestream-<inst>` sidecar
-continuously replicates **every** `tenants/*.sqlite` to S3 with **6-month
-point-in-time recovery**. One sidecar covers all tenants — it watches the
-`tenants/` directory and derives each tenant's S3 prefix from its filename, so
-`pkdump tenant create` is the whole of "add a tenant to backups": no config
-edit, no restart. The shared catalog is not backed up (reproducible via
-`seed.sh`). Credentials are assume-role (auto-refresh) via a podman secret.
+continuously replicates **every** `tenants/*.sqlite` **and `registry.sqlite`** to
+S3 with **6-month point-in-time recovery**. One sidecar covers all of it — it
+watches the `tenants/` directory and derives each tenant's S3 prefix from its
+filename, so `pkdump tenant create` is the whole of "add a tenant to backups": no
+config edit, no restart. The registry is named explicitly instead, on its own
+prefix beside the tenants one. The shared catalog is not backed up (reproducible
+via `seed.sh`). Credentials are assume-role (auto-refresh) via a podman secret.
+
+Upgrading an instance whose `litestream.env` predates the registry: re-run
+`deploy/setup.sh <inst>` to backfill the two new keys, then restart the sidecar.
+Until you do, the sidecar refuses to start — deliberately, so the registry cannot
+be silently left out of the replicated set.
 
 ```bash
 # Restore the latest backup onto a live instance (tenant defaults to `collection`;
 # only that tenant is touched):
 bash deploy/restore-litestream.sh prod
 bash deploy/restore-litestream.sh prod alice
+
+# The user registry — restore this FIRST after a total loss (RESTORE.md):
+bash deploy/restore-litestream.sh --registry prod
 
 # Point-in-time restore (within the 6-month window):
 bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod

@@ -519,6 +519,97 @@ for bad in "../other" "a/b" "Alpha" "-flag" "" "01J8Z9K3QW0000000000000AA" "01I8
 	fi
 done
 
+log "10. a database RENAMED onto an opaque id keeps replicating (pd-hqee, pd-1717)"
+# `pkdump tenant migrate` renames tenants/<handle>.sqlite to
+# tenants/<database_id>.sqlite. In directory mode the replica prefix is DERIVED
+# FROM THE FILENAME, so that rename does not move a replica — it starts a new,
+# EMPTY one, and the old prefix stops advancing and keeps everything it had.
+#
+# That is the step which silently broke production. After the pd-gckl migration
+# Litestream came up ACTIVE, logged "snapshot complete", and replicated NOTHING:
+#
+#   msg="replica sync" db=collection.sqlite replica=s3 \
+#       txid.replica=0000000000000000 txid.db=00000000000004e6
+#
+# The per-database state directory had been carried across the prefix change, so
+# its LTX history began mid-stream while the new prefix was at txid 0, and it
+# could not catch one up from the other ("LTX file is missing"). Removing the
+# state directory was the fix, and `pkdump tenant migrate` now does it as part
+# of the rename — `migrating_clears_litestream_state_rather_than_carrying_it` in
+# crates/pkdump-db/src/tenants.rs is the test that it does.
+#
+# What THAT test cannot show is whether the resulting shape actually replicates,
+# because it has no Litestream. This does: same move, real sidecar, and the
+# assertion is that the new prefix ADVANCES — txid.replica non-zero, and a
+# restore from it returning the rows written after the rename. "The unit is
+# active" is precisely the signal that lied last time.
+MIGRATED_ID=01K2C7HQ8N0000000000000CHR   # 26 chars of Crockford base32, as minted
+check "the stand-in database id is one the shipped derivation accepts" "yes" \
+	"$(tenant_replica_url "$MIGRATED_ID" >/dev/null 2>&1 && echo yes || echo no)"
+
+# Stop the sidecar first — deploy/TENANTS.md's runbook does, and the migration
+# refuses to move a database another process is writing to.
+podman stop "$LS_CTR" >/dev/null
+mv "$WORK/data/tenants/charlie.sqlite" "$WORK/data/tenants/${MIGRATED_ID}.sqlite"
+# Exactly what migrate does with the state directory: removes it. Not moves it.
+rm -rf "$WORK/data/tenants/.charlie.sqlite-litestream"
+# A write that exists only AFTER the rename, so "the new prefix has data" cannot
+# be satisfied by whatever the old prefix already held.
+sqlite3 "$WORK/data/tenants/${MIGRATED_ID}.sqlite" \
+	"INSERT INTO collection (tenant, phase) VALUES ('charlie','post-migration');" >/dev/null
+podman start "$LS_CTR" >/dev/null
+
+# Wait for the new prefix to hold a restorable database carrying that write.
+for _ in $(seq 45); do
+	rm -f "$WORK/restore/migrated.sqlite"
+	restore_ok "migrated.sqlite" "$(tenant_replica_url "$MIGRATED_ID" || true)"
+	[ "$(sq_restored migrated.sqlite "SELECT count(*) FROM collection WHERE phase='post-migration';")" = 1 ] && break
+	sleep 2
+done
+check "the renamed database restores from its NEW derived prefix" "3" \
+	"$(sq_restored migrated.sqlite 'SELECT count(*) FROM collection;')"
+check "including the write made after the rename" "1" \
+	"$(sq_restored migrated.sqlite "SELECT count(*) FROM collection WHERE phase='post-migration';")"
+check "and it is still charlie's data under its new name" "charlie" \
+	"$(sq_restored migrated.sqlite 'SELECT DISTINCT tenant FROM collection;')"
+
+# THE pd-1717 ASSERTION, read off the sidecar's own account rather than inferred
+# from a successful restore: replication is ADVANCING, not stuck at zero.
+#
+# `txid.replica=0000000000000000` on the FIRST sync after a rename is correct and
+# healthy — the new prefix is empty until the first upload lands, and Litestream
+# logs the sync it is about to do. The pathology is that it never moves off zero
+# while txid.db climbs, so the assertion has to be about what happens NEXT: keep
+# writing, and require a sync line whose replica txid is non-zero. Looking once
+# would be asserting how fast this machine is, and on a box running deploy/ci.sh
+# it caught exactly that first line (2026-08-08).
+ADVANCED=no
+advance_deadline=$(( SECONDS + 90 ))
+while [ "$SECONDS" -lt "$advance_deadline" ]; do
+	if podman logs "$LS_CTR" 2>&1 | grep "db=${MIGRATED_ID}.sqlite" \
+		| grep -qE 'txid\.replica=0*[1-9a-f]'; then
+		ADVANCED=yes
+		break
+	fi
+	sq "$WORK/data/tenants/${MIGRATED_ID}.sqlite" \
+		"INSERT INTO collection (tenant, phase) VALUES ('charlie','advancing');" >/dev/null
+	sleep 2
+done
+check "txid.replica advances on the new prefix, rather than sticking at 0" "yes" "$ADVANCED"
+if [ "$ADVANCED" != yes ]; then
+	echo "  --- replica sync lines for ${MIGRATED_ID}.sqlite ---"
+	podman logs "$LS_CTR" 2>&1 | grep "db=${MIGRATED_ID}.sqlite" | tail -10 | sed 's/^/  /'
+fi
+
+# The pre-cutover half of the recovery window: the old prefix stops advancing
+# but keeps every object it had, which is what deploy/TENANTS.md tells an
+# operator to restore from for anything before the migration.
+restore_ok "pre-migration.sqlite" "$(tenant_replica_url charlie || true)"
+check "the pre-migration prefix still restores, as deep as it was" "2" \
+	"$(sq_restored "pre-migration.sqlite" 'SELECT count(*) FROM collection;')"
+check "and the two prefixes are different objects, not one moved" "2" \
+	"$(tenant_prefixes | grep -cE "/(charlie|${MIGRATED_ID})\.sqlite$" || true)"
+
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"
 [[ $fail -eq 0 ]] || exit 1

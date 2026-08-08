@@ -48,6 +48,10 @@ pub use connection::{
 pub use error::{DbError, Result};
 pub use paths::{
     TENANTS_DIR, current_user, legacy_user_db_path, pkdump_home, registry_db_path, shared_db_path,
-    tenant_db_file, tenant_db_path, tenants_dir, user_db_path, validate_database_id,
-    validate_tenant_name,
+    tenant_db_file, tenant_db_path, tenants_dir, validate_database_id, validate_tenant_name,
 };
+/// Which collection single-tenant mode serves for a handle. Not in `paths`
+/// because it is not a path calculation: it reads the user registry, and the
+/// answer for a migrated data directory is a file whose name the handle does
+/// not appear in. See [`tenants::resolve`].
+pub use tenants::resolve as resolve_collection;

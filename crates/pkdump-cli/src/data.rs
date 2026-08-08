@@ -122,7 +122,7 @@ fn backfill_value_history(args: RefreshArgs) -> anyhow::Result<()> {
         Some(p) => p,
         None => pkdump_db::shared_db_path()?,
     };
-    let user_db = pkdump_db::user_db_path(&pkdump_db::current_user())?;
+    let user_db = crate::collection::user_db()?;
     println!(
         "Backfilling value history into {} (catalog {})",
         user_db.display(),
@@ -350,7 +350,7 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     use std::io::Write;
     println!("Snapshotting today's collection value...");
     std::io::stdout().flush().ok();
-    let user_db = pkdump_db::user_db_path(&pkdump_db::current_user())?;
+    let user_db = crate::collection::user_db()?;
     let mut user_conn = pkdump_db::connect_user(&user_db, &db_path)?;
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let n_snap = pkdump_db::value_history::snapshot_today(&mut user_conn, &today)?;

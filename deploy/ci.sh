@@ -22,14 +22,18 @@
 #   7. Recreate proof: create a user, remove her, create her again, and prove no
 #                      restore of the second one can reach the first one's card
 #                      — pd-pm7b, closed executably. See tests/litestream/recreate.sh.
-#   8. Visual gate:    screenshot every route at 1440 and 768 against that
+#   8. Upgrade gate:   start the SHIPPED image against a data volume built in
+#                      the OLD layout, migrate it onto opaque database ids, roll
+#                      that back, and assert it serves the same collection at
+#                      every step. See tests/tenants/upgrade.sh.
+#   9. Visual gate:    screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines.
 #                      See tests/visual/README.md for the approval workflow.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
 # for Vision mode, which makes it slow and non-deterministic. (The visual gate
-# in step 7 also drives Playwright, but offline and deterministically — that is
+# in step 9 also drives Playwright, but offline and deterministically — that is
 # the difference, not the browser.) Run the intents harness on its own:
 #   (cd tests/ui && npx playwright install chromium && npx playwright test)
 #
@@ -164,7 +168,18 @@ bash "$REPO_DIR/tests/litestream/drill.sh"
 step "Recreated handle cannot inherit a replica (pd-pm7b)"
 bash "$REPO_DIR/tests/litestream/recreate.sh"
 
-# --- 8. Visual-regression gate ---------------------------------------------
+# --- 8. Upgrade-path gate ---------------------------------------------------
+# Fresh instances are not the upgrade path. deploy/setup.sh --test creates its
+# volume already in the current layout, which is exactly why two alignment beads
+# both verified single-tenant startup and prod still went down on the first
+# automated deploy of the last migration (pd-uoph). This starts the shipped image
+# against a volume built in the OLD shape. Its own image tag, container, port and
+# temp dir — it does not touch the instance started above.
+
+step "Upgrade path: old-layout volume -> migrate -> rollback (pd-hqee)"
+bash "$REPO_DIR/tests/tenants/upgrade.sh"
+
+# --- 9. Visual-regression gate ---------------------------------------------
 # Runs against the container started above rather than standing up a second
 # one. A pixel diff fails CI; approving it is explicit — tests/visual/README.md.
 

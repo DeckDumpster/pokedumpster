@@ -21,6 +21,7 @@ use crate::error::Result;
 
 const SCHEMA_SHARED: &str = include_str!("schema_shared.sql");
 const SCHEMA_USER: &str = include_str!("schema_user.sql");
+const SCHEMA_REGISTRY: &str = include_str!("schema_registry.sql");
 
 /// Open the shared catalog database, creating it if absent, and apply the
 /// schema (idempotent — every CREATE is IF NOT EXISTS). Read-write — for
@@ -133,6 +134,24 @@ pub fn open_user(user_path: &Path) -> Result<Connection> {
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.execute_batch(SCHEMA_USER)?;
+    Ok(conn)
+}
+
+/// Open the user registry database, creating it if absent, and apply the
+/// registry schema (idempotent, like the other two).
+///
+/// Never attaches the catalog: the registry answers one question — which
+/// database file belongs to this handle — and joins nothing. WAL so a
+/// resolver reading it is not blocked by a `pkdump tenant create` writing
+/// it.
+pub fn open_registry(path: &Path) -> Result<Connection> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let conn = Connection::open(path)?;
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.execute_batch(SCHEMA_REGISTRY)?;
     Ok(conn)
 }
 

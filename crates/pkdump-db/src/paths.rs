@@ -5,6 +5,7 @@
 //! ```text
 //! $PKDUMP_HOME/                     # default ~/.pkdump
 //!   shared.sqlite                   # the catalog: one copy, ATTACHed by every tenant
+//!   registry.sqlite                 # handle → database_id (see [`crate::registry`])
 //!   tenants/
 //!     collection.sqlite             # tenant `collection` (the original single user)
 //!     <tenant>.sqlite               # one file per additional tenant
@@ -59,6 +60,17 @@ pub fn shared_db_path() -> Result<PathBuf> {
 /// The directory holding every tenant's collection database.
 pub fn tenants_dir() -> Result<PathBuf> {
     Ok(pkdump_home()?.join(TENANTS_DIR))
+}
+
+/// Path to the user registry database — the handle → `database_id` map.
+///
+/// Beside the catalog at the data root, deliberately NOT under `tenants/`:
+/// that directory means "one file per tenant" exactly, which is what makes
+/// the Litestream glob a correct description of the irreplaceable set.
+/// The registry is irreplaceable too, but it is not a tenant, so it is
+/// replicated as itself rather than by being smuggled into the glob.
+pub fn registry_db_path() -> Result<PathBuf> {
+    Ok(pkdump_home()?.join("registry.sqlite"))
 }
 
 /// The active tenant: `$PKDUMP_USER` if set, else `collection`.

@@ -83,6 +83,13 @@ echo "==> PokeDumpster Litestream restore"
 echo "    Instance: ${INSTANCE}   Tenant: ${TENANT}   Volume: ${VOLUME}"
 [ -n "$AT" ] && echo "    Point-in-time: ${AT}"
 
+# Restore into the store the instance actually lives in (pd-fite). Prod's unit
+# carries no store flags, so this is a no-op for prod.
+# shellcheck source=deploy/store-lib.sh
+. "$SCRIPT_DIR/store-lib.sh"
+pkdump_store_adopt_instance "$INSTANCE"
+pkdump_store_activate
+
 # --- Validate --------------------------------------------------------------
 command -v sqlite3 >/dev/null 2>&1 || { echo "ERROR: sqlite3 not found on host. Install: sudo apt install sqlite3"; exit 1; }
 [ -f "${CONF_DIR}/litestream.env" ] || { echo "ERROR: ${CONF_DIR}/litestream.env not found — is the sidecar configured?"; exit 1; }

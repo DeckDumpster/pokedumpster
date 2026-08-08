@@ -55,6 +55,13 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # The addressing under test is the deploy scripts' own.
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
+# ...and so is the container store. Already active when deploy/ci.sh ran this,
+# in which case activation is a no-op; standalone it honours PKDUMP_STORE_ROOT
+# the same way setup.sh does. Without it the drill's sidecar unit would look for
+# its image in a store the drill's own podman calls never wrote to (pd-fite).
+# shellcheck source=deploy/store-lib.sh
+. "${REPO_DIR}/deploy/store-lib.sh"
+pkdump_store_activate
 
 INSTANCE=${DRILL_INSTANCE:-drill}
 case "$INSTANCE" in
@@ -284,6 +291,7 @@ echo "  ${#TENANTS[@]} tenants on ${VOLUME}: ${TENANTS[*]}"
 mkdir -p "$QUADLET_DIR"
 sed -e "s|{{INSTANCE}}|${INSTANCE}|g" -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
 	"${REPO_DIR}/deploy/pkdump-litestream.container" > "${QUADLET_DIR}/${SIDECAR}.container"
+pkdump_store_stamp_unit "${QUADLET_DIR}/${SIDECAR}.container"
 systemctl --user daemon-reload
 sidecar_start 3
 check "the shipped sidecar unit is running" "active" \

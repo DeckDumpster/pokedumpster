@@ -22,6 +22,7 @@ pub mod json_backup;
 pub mod latest_prices;
 pub mod manual_prices;
 pub mod orders;
+pub mod registry;
 pub mod sealed;
 pub mod sealed_import;
 pub mod search;
@@ -41,11 +42,11 @@ mod error;
 mod paths;
 
 pub use connection::{
-    attach_shared_readonly, connect_user, init_user_schema, open_shared, open_user, restore_db,
-    snapshot_db,
+    attach_shared_readonly, connect_user, init_user_schema, open_registry, open_shared, open_user,
+    restore_db, snapshot_db,
 };
 pub use error::{DbError, Result};
 pub use paths::{
-    TENANTS_DIR, current_user, legacy_user_db_path, pkdump_home, shared_db_path, tenant_db_path,
-    tenants_dir, user_db_path, validate_tenant_name,
+    TENANTS_DIR, current_user, legacy_user_db_path, pkdump_home, registry_db_path, shared_db_path,
+    tenant_db_path, tenants_dir, user_db_path, validate_tenant_name,
 };

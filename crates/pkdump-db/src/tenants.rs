@@ -1,10 +1,28 @@
-//! Tenant provisioning — creating, listing and removing the per-tenant
-//! collection databases described in [`crate::paths`].
+//! Tenant provisioning — the operator surface over the user registry.
 //!
-//! A tenant *is* its database file. There is no tenant registry table and
-//! deliberately so: a registry would be a second source of truth that can
-//! disagree with the filesystem, and the filesystem is what Litestream
-//! replicates. `tenants/<name>.sqlite` exists ⇒ the tenant exists.
+//! A tenant used to *be* its database file: `tenants/<name>.sqlite` exists ⇒
+//! the tenant exists. That made a tenant's name three things at once — the
+//! value in a header, a filename, and an S3 replica prefix — which is what
+//! made `pd-pm7b` possible: remove `alice`, create `alice` again, and the new
+//! database lands under the old one's replica stream.
+//!
+//! So the filesystem is no longer the registry. [`crate::registry`] is, and
+//! these four operations are it, seen from an operator's side:
+//!
+//! * [`create`] mints a `database_id` and writes the file that id names.
+//! * [`list`] reads the registry back out — the mitigation for a `tenants/`
+//!   directory that is no longer human-readable, and therefore not garnish.
+//! * [`rename`] writes one column. No file moves, no replica moves, no
+//!   history is disturbed. This is the capability the whole split buys.
+//! * [`detach`] releases a handle and keeps the bytes.
+//!
+//! Hard deletion is [`purge`]: a separate, explicit act on a detached user,
+//! not the default meaning of "remove".
+//!
+//! [`adopt`] and [`revert`] are untouched by all of this. They migrate a
+//! data directory laid out before `tenants/` existed, and they address files
+//! by handle because that is what those files are named — moving them onto
+//! opaque ids is `pd-hqee`'s job, not theirs.
 //!
 //! The shared catalog is untouched by every function here. Provisioning a
 //! tenant creates one file holding the user schema; the catalog stays a
@@ -18,88 +36,186 @@ use rusqlite::Connection;
 
 use crate::connection::open_user;
 use crate::error::{DbError, Result};
-use crate::paths::{legacy_user_db_path, tenant_db_path, tenants_dir, validate_tenant_name};
+use crate::paths::{legacy_user_db_path, tenant_db_path, tenant_db_path_for_id, tenants_dir};
+use crate::registry::{self, User, UserState};
 
 /// Sidecar files SQLite keeps beside a database in WAL mode.
 const WAL_SIDECARS: [&str; 2] = ["-wal", "-shm"];
 
-/// Create tenant `name`: its collection database, with the user schema
-/// applied, under `tenants/`. Returns the path.
+/// A registered user and the file their collection lives in — the two halves
+/// of the map, joined, which is what an operator actually needs to see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tenant {
+    pub user: User,
+    /// `tenants/<database_id>.sqlite`. Derived from the id, never the handle.
+    pub path: PathBuf,
+    /// Whether that file is actually on this box. A registered user whose
+    /// database is missing is drift worth seeing, not an error to swallow.
+    pub present: bool,
+}
+
+impl Tenant {
+    fn of(user: User) -> Result<Self> {
+        let path = tenant_db_path_for_id(&user.database_id)?;
+        Ok(Tenant {
+            present: path.exists(),
+            path,
+            user,
+        })
+    }
+}
+
+/// Register `handle` and provision their collection database.
 ///
-/// Fails if the tenant already exists — provisioning is not idempotent on
-/// purpose. "Create the tenant that is already there" is either a typo or a
+/// The `database_id` is minted by the registry, so the filename is never
+/// derived from the handle — creating `alice` a second time after she was
+/// detached yields a different file under a different replica prefix, which
+/// is the property this epic exists for.
+///
+/// Fails if the handle is already taken — provisioning is not idempotent on
+/// purpose. "Create the user that is already there" is either a typo or a
 /// second operator, and silently succeeding would make the second case look
 /// like the first.
-pub fn create(name: &str) -> Result<PathBuf> {
-    let path = tenant_db_path(name)?;
-    if path.exists() {
-        return Err(DbError::Conflict(format!(
-            "tenant {name:?} already exists at {}",
-            path.display()
-        )));
-    }
+///
+/// Row and file land together: the insert is held open in a transaction
+/// until the database has been written, so a failure part-way through leaves
+/// no user pointing at a file that does not exist.
+pub fn create(handle: &str) -> Result<Tenant> {
+    let mut conn = registry::open()?;
+    let tx = conn.transaction()?;
+    let user = registry::insert(&tx, handle)?;
     // `open_user` creates the parent directory and applies the user schema,
     // so a freshly created tenant is immediately usable.
-    open_user(&path)?;
-    Ok(path)
+    let tenant = Tenant::of(user)?;
+    open_user(&tenant.path)?;
+    tx.commit()?;
+    Ok(Tenant {
+        present: true,
+        ..tenant
+    })
 }
 
-/// Remove tenant `name`: its collection database, its WAL sidecars, and its
-/// Litestream bookkeeping directory. Returns the path that was removed.
+/// Every registered user, detached ones included, in creation order, each
+/// with the file they map to.
 ///
-/// This destroys the only copy of that tenant's collection on this box. The
-/// replica in S3 outlives it (see `deploy/RESTORE.md`), but retention is
-/// finite — treat this as permanent.
+/// This reads the registry, not the directory. Under opaque ids a directory
+/// listing says only how many collections exist, so this is the only way to
+/// answer "whose is that file?" — see [`unregistered`] for the other
+/// direction.
+pub fn list() -> Result<Vec<Tenant>> {
+    let conn = registry::open()?;
+    registry::list(&conn)?.into_iter().map(Tenant::of).collect()
+}
+
+/// The tenant registered under `handle`, if the handle is live.
+pub fn lookup(handle: &str) -> Result<Option<Tenant>> {
+    let conn = registry::open()?;
+    registry::lookup(&conn, handle)?.map(Tenant::of).transpose()
+}
+
+/// Whether `handle` names a live user.
+pub fn exists(handle: &str) -> Result<bool> {
+    Ok(lookup(handle)?.is_some())
+}
+
+/// Rename `from` to `to`. Nothing on disk moves.
+///
+/// The database keeps its `database_id`, so it keeps its filename, so it
+/// keeps its Litestream prefix and every LTX file already under it. A user
+/// changing their name costs one `UPDATE` and no replication history —
+/// which was impossible while the name *was* the path.
+pub fn rename(from: &str, to: &str) -> Result<Tenant> {
+    let conn = registry::open()?;
+    Tenant::of(registry::rename(&conn, from, to)?)
+}
+
+/// Release `handle`, keeping the database and its replica.
+///
+/// **This is what `pkdump tenant remove` now does.** Nothing is deleted: the
+/// row survives under a retired handle so the bytes stay attributable, and
+/// the handle is immediately free for someone else — who will get their own
+/// `database_id`, and therefore their own file and their own replica prefix.
+/// The retention window stops being the liability `pd-pm7b` made of it and
+/// becomes a safety net.
+///
+/// Hard deletion is [`purge`], on the detached row, by `database_id`.
+pub fn detach(handle: &str) -> Result<Tenant> {
+    let conn = registry::open()?;
+    Tenant::of(registry::detach(&conn, handle)?)
+}
+
+/// Destroy a detached user's collection: the database file, its WAL
+/// sidecars, its Litestream bookkeeping directory, and the registry row.
+/// Returns the row that was purged.
+///
+/// Addressed by `database_id`, not by handle, and only ever on a user
+/// [`detach`] has already released. Both of those are deliberate: a purge is
+/// the irreversible half of a removal, and it should be impossible to reach
+/// by mistyping a live person's name.
+///
+/// This destroys the only copy on this box. The replica in S3 outlives it
+/// (see `deploy/RESTORE.md`) but retention is finite — treat it as permanent.
 ///
 /// The Litestream directory goes with it deliberately: leaving it behind
-/// would hand a later tenant of the same name a predecessor's replication
-/// state, which is the shape of the cross-tenant substitution bug the
-/// backup spike found (`deep-dives/litestream-multi-db/RESULT.md` §2).
-pub fn remove(name: &str) -> Result<PathBuf> {
-    let path = tenant_db_path(name)?;
-    if !path.exists() {
-        return Err(DbError::NotFound(format!(
-            "tenant {name:?} — no database at {}",
-            path.display()
+/// would hand a later database of the same name a predecessor's replication
+/// state, which is the shape of the cross-tenant substitution bug the backup
+/// spike found (`deep-dives/litestream-multi-db/RESULT.md` §2). Under opaque
+/// ids no later database *has* the same name — this is the belt to that
+/// braces.
+pub fn purge(database_id: &str) -> Result<User> {
+    let path = tenant_db_path_for_id(database_id)?;
+    let conn = registry::open()?;
+    let user = registry::find(&conn, database_id)?
+        .ok_or_else(|| DbError::NotFound(format!("no user with database id {database_id:?}")))?;
+    if user.state == UserState::Active {
+        return Err(DbError::Conflict(format!(
+            "user {:?} is still active — `pkdump tenant detach {}` first",
+            user.handle, user.handle
         )));
     }
-    std::fs::remove_file(&path).map_err(|e| {
-        DbError::Env(format!(
-            "removing tenant {name:?} ({}): {e}",
-            path.display()
-        ))
-    })?;
+    // The file first. A row naming a database that is gone shows up in
+    // `list` as missing; a database no row names is unattributable, and that
+    // is the state this whole design exists to prevent.
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .map_err(|e| DbError::Env(format!("removing {}: {e}", path.display())))?;
+    }
     remove_sidecars(&path);
     let _ = std::fs::remove_dir_all(litestream_dir(&path));
-    Ok(path)
+    registry::delete(&conn, database_id)
 }
 
-/// Every tenant on this box, sorted. Reads the directory — the filesystem
-/// is the registry.
+/// Database files under `tenants/` that no registry row claims.
 ///
-/// Files that are not `<valid-tenant-name>.sqlite` are skipped rather than
-/// reported: `-wal`/`-shm` sidecars and `.bak` snapshots live in the same
-/// directory and are not tenants.
-pub fn list() -> Result<Vec<String>> {
+/// The registry is the source of truth, which means it can be *behind* the
+/// disk: a data directory from before this epic (handle-named files, no rows
+/// — `pd-hqee`'s migration), or a purge that failed after unlinking the file.
+/// Either way an unattributable database is exactly the thing worth
+/// reporting, so `list` shows these rather than pretending the directory
+/// holds nothing else.
+///
+/// Returns filename stems, sorted. `-wal`/`-shm` sidecars and `.bak`
+/// snapshots do not end in `.sqlite` and so are not mistaken for databases.
+pub fn unregistered() -> Result<Vec<String>> {
     let dir = tenants_dir()?;
     if !dir.exists() {
         return Ok(Vec::new());
     }
+    let conn = registry::open()?;
+    let known: std::collections::HashSet<String> = registry::list(&conn)?
+        .into_iter()
+        .map(|u| u.database_id)
+        .collect();
     let entries = std::fs::read_dir(&dir)
         .map_err(|e| DbError::Env(format!("reading {}: {e}", dir.display())))?;
-    let mut names: Vec<String> = entries
+    let mut stems: Vec<String> = entries
         .filter_map(|e| e.ok())
         .filter_map(|e| e.file_name().into_string().ok())
         .filter_map(|f| f.strip_suffix(".sqlite").map(str::to_string))
-        .filter(|n| validate_tenant_name(n).is_ok())
+        .filter(|stem| !known.contains(stem))
         .collect();
-    names.sort();
-    Ok(names)
-}
-
-/// Whether tenant `name` has a database on this box.
-pub fn exists(name: &str) -> Result<bool> {
-    Ok(tenant_db_path(name)?.exists())
+    stems.sort();
+    Ok(stems)
 }
 
 /// Move a pre-`tenants/` collection database into the tenant layout:
@@ -269,32 +385,171 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn create_list_remove_round_trip() {
-        with_home(|home| {
-            assert_eq!(list().unwrap(), Vec::<String>::new());
+    /// Handles of the live users, in registry order.
+    fn handles() -> Vec<String> {
+        list()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.user.state == UserState::Active)
+            .map(|t| t.user.handle)
+            .collect()
+    }
 
-            let path = create("alice").unwrap();
-            assert_eq!(path, home.join("tenants").join("alice.sqlite"));
+    #[test]
+    fn create_list_detach_purge_round_trip() {
+        with_home(|home| {
+            assert_eq!(list().unwrap(), Vec::new());
+
+            let alice = create("alice").unwrap();
+            // The file is named by the minted id, NOT by the handle.
+            assert_eq!(
+                alice.path,
+                home.join("tenants")
+                    .join(format!("{}.sqlite", alice.user.database_id))
+            );
+            assert!(alice.present && alice.path.exists());
+            assert!(!home.join("tenants").join("alice.sqlite").exists());
+
             create("bob").unwrap();
-            assert_eq!(list().unwrap(), vec!["alice", "bob"]);
+            assert_eq!(handles(), vec!["alice", "bob"]);
             assert!(exists("alice").unwrap());
 
-            // Creating an existing tenant is an error, not a no-op.
+            // Creating a user who already holds the handle is an error, not
+            // a no-op — and it provisions nothing.
             assert!(create("alice").is_err());
+            assert_eq!(list().unwrap().len(), 2);
 
-            remove("alice").unwrap();
-            assert_eq!(list().unwrap(), vec!["bob"]);
+            // Detaching frees the handle and keeps every byte.
+            let detached = detach("alice").unwrap();
+            assert_eq!(detached.user.state, UserState::Detached);
+            assert_eq!(detached.user.database_id, alice.user.database_id);
+            assert!(alice.path.exists(), "detach must not delete the database");
+            assert_eq!(handles(), vec!["bob"]);
             assert!(!exists("alice").unwrap());
-            // Removing a tenant that isn't there is an error too.
-            assert!(remove("alice").is_err());
+            assert!(detach("alice").is_err());
+
+            // Purge is the second, explicit step — and it takes the file.
+            let purged = purge(&alice.user.database_id).unwrap();
+            assert_eq!(purged.database_id, alice.user.database_id);
+            assert!(!alice.path.exists());
+            assert_eq!(handles(), vec!["bob"]);
+            assert_eq!(list().unwrap().len(), 1);
+            assert!(purge(&alice.user.database_id).is_err());
+        });
+    }
+
+    /// `remove` used to be a hard delete; it is now a detach. What it would
+    /// have destroyed — the database and its replication state — survives,
+    /// which is what turns the retention window from a liability into a
+    /// safety net.
+    #[test]
+    fn detach_keeps_the_database_and_its_replication_state() {
+        with_home(|_| {
+            let alice = create("alice").unwrap();
+            let ls = litestream_dir(&alice.path);
+            std::fs::create_dir_all(&ls).unwrap();
+            std::fs::write(ls.join("txid.db"), b"state").unwrap();
+
+            detach("alice").unwrap();
+
+            assert!(alice.path.exists(), "the collection must survive a detach");
+            assert_eq!(std::fs::read(ls.join("txid.db")).unwrap(), b"state");
+
+            // ...and purge, the explicit second step, takes both.
+            purge(&alice.user.database_id).unwrap();
+            assert!(!alice.path.exists());
+            assert!(!ls.exists());
+        });
+    }
+
+    #[test]
+    fn purge_refuses_a_live_user() {
+        with_home(|_| {
+            let alice = create("alice").unwrap();
+            let err = purge(&alice.user.database_id).unwrap_err().to_string();
+            assert!(err.contains("still active"), "unhelpful error: {err}");
+            assert!(alice.path.exists());
+            assert!(exists("alice").unwrap());
+        });
+    }
+
+    /// The acceptance criterion of `pd-zr9n`, and the whole point of the
+    /// epic: a recycled handle cannot inherit its predecessor's storage.
+    #[test]
+    fn a_recreated_handle_gets_a_different_database() {
+        with_home(|_| {
+            let first = create("alice").unwrap();
+            let payload = "INSERT INTO binders (name, created_at, updated_at) \
+                           VALUES ('first alice', '2026-08-08', '2026-08-08')";
+            Connection::open(&first.path)
+                .unwrap()
+                .execute(payload, [])
+                .unwrap();
+
+            detach("alice").unwrap();
+            let second = create("alice").unwrap();
+
+            assert_ne!(second.user.database_id, first.user.database_id);
+            assert_ne!(
+                second.path, first.path,
+                "the second alice must not be handed the first one's file — \
+                 and therefore not her replica prefix either"
+            );
+            // Both files exist; the new one is empty. Nothing was inherited.
+            assert!(first.path.exists() && second.path.exists());
+            let n: i64 = Connection::open(&second.path)
+                .unwrap()
+                .query_row("SELECT count(*) FROM binders", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "the new alice must not see the old alice's rows");
+        });
+    }
+
+    /// The capability the split buys: a rename is one column.
+    #[test]
+    fn rename_moves_nothing_on_disk() {
+        with_home(|_| {
+            let before = create("alice").unwrap();
+            // Stand in for replication state, which must not be disturbed.
+            let ls = litestream_dir(&before.path);
+            std::fs::create_dir_all(&ls).unwrap();
+            std::fs::write(ls.join("txid.db"), b"state").unwrap();
+
+            let after = rename("alice", "alicia").unwrap();
+
+            assert_eq!(after.user.handle, "alicia");
+            assert_eq!(after.user.database_id, before.user.database_id);
+            assert_eq!(after.path, before.path, "the database must not move");
+            assert!(after.present && after.path.exists());
+            assert_eq!(std::fs::read(ls.join("txid.db")).unwrap(), b"state");
+
+            assert!(!exists("alice").unwrap());
+            assert_eq!(handles(), vec!["alicia"]);
+
+            // A rename cannot smuggle in a name the registry would never
+            // have issued, and a failed one changes nothing.
+            assert!(rename("alicia", "../bob").is_err());
+            assert_eq!(handles(), vec!["alicia"]);
+        });
+    }
+
+    /// A user whose database could not be written must not be left in the
+    /// registry: the row and the file land together or not at all.
+    #[test]
+    fn create_leaves_no_row_behind_when_the_database_cannot_be_written() {
+        with_home(|home| {
+            // `tenants` as a *file* makes creating anything under it fail.
+            std::fs::write(home.join("tenants"), b"not a directory").unwrap();
+            assert!(create("alice").is_err());
+            assert!(!exists("alice").unwrap());
+            assert_eq!(list().unwrap(), Vec::new());
         });
     }
 
     #[test]
     fn a_created_tenant_has_the_user_schema() {
         with_home(|_| {
-            let path = create("alice").unwrap();
+            let path = create("alice").unwrap().path;
             let conn = Connection::open(&path).unwrap();
             let n: i64 = conn
                 .query_row(
@@ -307,16 +562,29 @@ mod tests {
         });
     }
 
+    /// A registered database is not "unregistered", and neither are the
+    /// files that live beside it: sidecars, snapshots and stray notes.
     #[test]
-    fn list_ignores_sidecars_and_snapshots() {
+    fn unregistered_reports_only_unclaimed_databases() {
         with_home(|home| {
-            create("alice").unwrap();
+            let alice = create("alice").unwrap();
             let dir = home.join("tenants");
-            std::fs::write(dir.join("alice.sqlite-wal"), b"").unwrap();
-            std::fs::write(dir.join("alice.sqlite-shm"), b"").unwrap();
-            std::fs::write(dir.join("alice.sqlite.bak"), b"").unwrap();
+            let stem = &alice.user.database_id;
+            std::fs::write(dir.join(format!("{stem}.sqlite-wal")), b"").unwrap();
+            std::fs::write(dir.join(format!("{stem}.sqlite-shm")), b"").unwrap();
+            std::fs::write(dir.join(format!("{stem}.sqlite.bak")), b"").unwrap();
             std::fs::write(dir.join("README"), b"").unwrap();
-            assert_eq!(list().unwrap(), vec!["alice"]);
+            assert_eq!(unregistered().unwrap(), Vec::<String>::new());
+
+            // A pre-registry, handle-named database is exactly what this is
+            // for: real bytes that the registry cannot account for.
+            std::fs::write(dir.join("collection.sqlite"), b"").unwrap();
+            assert_eq!(unregistered().unwrap(), vec!["collection"]);
+
+            // And a detached user's file is still claimed — the row that
+            // names it is what keeps those bytes attributable.
+            detach("alice").unwrap();
+            assert_eq!(unregistered().unwrap(), vec!["collection"]);
         });
     }
 
@@ -333,8 +601,8 @@ mod tests {
             let alice = create("alice").unwrap();
             let bob = create("bob").unwrap();
 
-            let a = connect_user(&alice, &shared).unwrap();
-            let b = connect_user(&bob, &shared).unwrap();
+            let a = connect_user(&alice.path, &shared).unwrap();
+            let b = connect_user(&bob.path, &shared).unwrap();
 
             // Both see the catalog, unqualified, through the temp views.
             assert!(catalog::card_exists(&a, "sv3pt5-1").unwrap());
@@ -373,8 +641,8 @@ mod tests {
         with_home(|_| {
             seed_catalog();
             let shared = shared_db_path().unwrap();
-            let a = connect_user(&create("alice").unwrap(), &shared).unwrap();
-            let b = connect_user(&create("bob").unwrap(), &shared).unwrap();
+            let a = connect_user(&create("alice").unwrap().path, &shared).unwrap();
+            let b = connect_user(&create("bob").unwrap().path, &shared).unwrap();
 
             a.execute(
                 "INSERT INTO binders (name, created_at, updated_at) \
@@ -419,7 +687,11 @@ mod tests {
             assert_eq!(moved, home.join("tenants").join("collection.sqlite"));
             assert!(!legacy.exists(), "legacy database must be gone");
             assert!(!sidecar(&legacy, "-wal").exists(), "stale WAL left behind");
-            assert_eq!(list().unwrap(), vec!["collection"]);
+            // The registry knows nothing of it — a handle-named database is
+            // exactly the drift `unregistered` exists to surface (pd-hqee
+            // migrates these onto opaque ids).
+            assert_eq!(list().unwrap(), Vec::new());
+            assert_eq!(unregistered().unwrap(), vec!["collection"]);
             assert_eq!(crate::paths::user_db_path("collection").unwrap(), moved);
 
             // The row survived the move, and the catalog still attaches.
@@ -437,7 +709,7 @@ mod tests {
             assert_eq!(back, legacy);
             assert!(legacy.exists());
             assert!(!moved.exists());
-            assert_eq!(list().unwrap(), Vec::<String>::new());
+            assert_eq!(unregistered().unwrap(), Vec::<String>::new());
             let conn = connect_user(&legacy, &shared).unwrap();
             let n: i64 = conn
                 .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
@@ -499,25 +771,11 @@ mod tests {
         });
     }
 
-    /// A removed tenant must not leave replication state for a later tenant
-    /// of the same name to inherit.
-    #[test]
-    fn remove_takes_the_litestream_directory_with_it() {
-        with_home(|home| {
-            create("alice").unwrap();
-            let ls = home.join("tenants").join(".alice.sqlite-litestream");
-            std::fs::create_dir_all(&ls).unwrap();
-            std::fs::write(ls.join("txid.db"), b"x").unwrap();
-
-            remove("alice").unwrap();
-            assert!(!ls.exists());
-        });
-    }
-
     #[test]
     fn adopt_refuses_to_overwrite_an_existing_tenant() {
         with_home(|home| {
-            create("collection").unwrap();
+            std::fs::create_dir_all(home.join("tenants")).unwrap();
+            std::fs::write(home.join("tenants").join("collection.sqlite"), b"").unwrap();
             std::fs::write(home.join("collection.sqlite"), b"").unwrap();
             let err = adopt("collection").unwrap_err().to_string();
             assert!(err.contains("refusing to move"), "unexpected: {err}");
@@ -539,7 +797,8 @@ mod tests {
     fn provisioning_rejects_a_traversing_name() {
         with_home(|home| {
             assert!(create("../escape").is_err());
-            assert!(remove("../escape").is_err());
+            assert!(detach("../escape").is_err());
+            assert!(purge("../escape").is_err());
             assert!(adopt("../escape").is_err());
             assert!(!home.join("escape.sqlite").exists());
         });

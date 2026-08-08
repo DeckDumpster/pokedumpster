@@ -27,18 +27,20 @@
 # ── DIRECTORY MODE (pd-fof4) ────────────────────────────────────────────────
 # `dir:` + `pattern:` + `watch:` is Litestream 0.5's native N-database mode. It
 # discovers the tenant databases itself and DERIVES each replica path from the
-# filename — `<LITESTREAM_S3_PATH>/<tenant>.sqlite`. Two consequences, and both
-# are the reason this is a directory entry and not a generated list of tenants:
+# filename — `<LITESTREAM_S3_PATH>/<database_id>.sqlite`. Two consequences, and
+# both are the reason this is a directory entry and not a generated list of
+# tenants:
 #
-#   * Adding a tenant is `pkdump tenant create <name>`, full stop. `watch: true`
+#   * Adding a tenant is `pkdump tenant create <handle>`, full stop. `watch: true`
 #     picks the new file up within ~5s with no config edit and no restart; there
 #     is no generator to run and nothing to keep in sync with the filesystem.
 #   * Two tenants CANNOT collide on one replica path. Pointing two databases at
 #     the same prefix is accepted silently by Litestream and makes a restore hand
 #     back the wrong tenant's collection while reporting success — the worst
 #     failure available to a data-isolation feature (deep-dives/litestream-multi-db
-#     RESULT.md §2). Here the prefix is derived from a filename, and tenant names
-#     are validated unique-by-construction, so that state is unreachable.
+#     RESULT.md §2). Here the prefix is derived from a filename, and a filename
+#     is a `database_id` the registry mints and never reissues — so no two
+#     tenants share a prefix, and no later tenant lands on an earlier one's.
 #
 # The trade-off: this config no longer names any database path, so
 # `litestream restore -config <this file> /data/tenants/x.sqlite` FAILS with

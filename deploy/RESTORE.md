@@ -41,33 +41,36 @@ The irreplaceable set is **two things**, and one sidecar replicates both.
 ## Quick reference
 
 ```bash
-# Restore the LATEST backup onto the live instance (stops app+sidecar, restores,
-# restarts, verifies row count + that both services came back). Tenant
-# defaults to `collection`:
+# FIRST, after any total loss: the user registry (handle -> database_id). It is
+# what tells you which databases exist and whose they are — see scenario C:
+bash deploy/restore-litestream.sh --registry prod
+
+# Restore the LATEST backup of ONE collection onto the live instance (stops
+# app+sidecar, restores, restarts, verifies row count + that both services came
+# back). The argument is the database's FILE STEM, defaulting to `collection`:
 bash deploy/restore-litestream.sh prod
-bash deploy/restore-litestream.sh prod alice        # a different tenant
+bash deploy/restore-litestream.sh prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
 
 # Point-in-time restore (recover from a mistake within the last 6 months):
-bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod alice
-
-# The user registry (handle -> database_id). Restore this FIRST after a total
-# loss — it is what tells you which databases exist and whose they are:
-bash deploy/restore-litestream.sh --registry prod
+bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
 ```
 
-> **A data volume mid-migration holds BOTH shapes.** `pkdump tenant create` has
-> minted opaque ids since `pd-zr9n`, so new databases are
-> `tenants/<26-char uppercase ULID>.sqlite`; databases that predate it are still
-> named by their handle, and `tenants/collection.sqlite` is on the prod box
-> today. Migrating the old ones onto ids is `pd-hqee`.
+> **The argument names a FILE, not a person.** A collection is stored under an
+> opaque `database_id`, so "restore alice's collection" is two steps: ask the
+> registry which database is alice's, then restore that. **`pkdump tenant list`
+> is step one** (`deploy/TENANTS.md`, "Which file is whose") — a handle you
+> remember is not an answer, because a rename moves the handle and leaves the id
+> alone, and a recreated handle points at a different database entirely.
 >
-> Every command here takes whichever the file is actually called — the stem, not
-> the person. `restore-litestream.sh prod collection` and
-> `restore-litestream.sh prod 01K2C7HQ8N…` are both valid, and which one you
-> want is a question for the registry, not for your memory. **The ids are
-> case-sensitive**: `01J8…` and `01j8…` are one file on a case-insensitive
-> filesystem but two different S3 prefixes, so the scripts reject the lowercase
-> form rather than restore from a prefix that does not exist.
+> **A data volume mid-migration holds BOTH shapes**, so the scripts accept
+> either stem. `pkdump tenant create` has minted opaque ids since `pd-zr9n`;
+> databases predating it are still named by their handle until
+> `pkdump tenant migrate` (`pd-hqee`) puts them on ids, so
+> `restore-litestream.sh prod collection` is valid on a box that has not
+> migrated yet. **The ids are case-sensitive**: `01J8…` and `01j8…` are one file
+> on a case-insensitive filesystem but two different S3 prefixes, so the scripts
+> reject the lowercase form rather than restore from a prefix that does not
+> exist.
 
 > **Upgrading an existing instance.** The registry entry needs two keys
 > (`LITESTREAM_REGISTRY_DB`, `LITESTREAM_S3_REGISTRY_PATH`) that a
@@ -104,8 +107,8 @@ without rolling anybody else back.
 them.** Two structural reasons, both drilled (see the bottom of this file):
 
 - **One file per tenant.** A restore writes exactly
-  `tenants/<tenant>.sqlite` on the data volume. No other tenant's file is read,
-  written, or renamed — they come out of the restore *byte-identical*.
+  `tenants/<database_id>.sqlite` on the data volume. No other tenant's file is
+  read, written, or renamed — they come out of the restore *byte-identical*.
 - **One replica prefix per tenant.** The sidecar runs in Litestream's directory
   mode, so each tenant's prefix is derived from its filename and a restore reads
   only that prefix. Restoring one tenant neither consumes nor invalidates
@@ -120,7 +123,10 @@ of restoring one tenant, and it is the cost of one sidecar serving all of them.
 
 ```bash
 cd ~/pokedumpster
-bash deploy/restore-litestream.sh prod alice        # add --yes to skip the prompt
+# Step 1 — which database is alice's? The disk cannot tell you; the registry can.
+podman exec systemd-pkdump-prod pkdump tenant list
+# Step 2 — restore that id. Add --yes to skip the prompt.
+bash deploy/restore-litestream.sh prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
 ```
 
 ### Confirm the others were untouched
@@ -131,7 +137,7 @@ was *written to* between the two fingerprints will differ, of course; what must
 not differ is a tenant nobody touched.
 
 ```bash
-INSTANCE=prod; VICTIM=alice
+INSTANCE=prod; VICTIM=01K2C7HQ8NZ0XW3V9R5M6D0ABC   # the database id, from `pkdump tenant list`
 MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-${INSTANCE}-data)
 
 # BEFORE — quiesce, then fingerprint every OTHER tenant.
@@ -160,10 +166,11 @@ bash deploy/backup-check.sh ${INSTANCE}
 
 ```bash
 cd ~/pokedumpster
-bash deploy/restore-litestream.sh prod          # tenant `collection`
-bash deploy/restore-litestream.sh prod alice    # or a named tenant
+podman exec systemd-pkdump-prod pkdump tenant list   # whose database is which
+bash deploy/restore-litestream.sh prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
+bash deploy/restore-litestream.sh prod               # or the default stem, `collection`
 ```
-It stops the app + sidecar, restores `tenants/<tenant>.sqlite` from S3 onto the data
+It stops the app + sidecar, restores `tenants/<database_id>.sqlite` from S3 onto the data
 volume (temp-then-rename), restarts both, prints the row count, and **fails loudly
 if either service did not come back** — a restored collection that is no longer
 replicating is a half-finished recovery, and that failure is otherwise silent.
@@ -183,17 +190,22 @@ D=$(mktemp -d); chmod 777 "$D"
 cd ~/pokedumpster
 . deploy/litestream-lib.sh
 set -a; . ~/.config/pkdump/prod/litestream.env; set +a
+
+# Which database holds the collection you mean? `pkdump tenant list` is the
+# only thing that answers it — the filename is an opaque id. On a box that has
+# not run `pkdump tenant migrate` yet, this is still the handle (`collection`).
+DB=01K2C7HQ8NZ0XW3V9R5M6D0ABC
 podman run --rm --user 0:0 -v "$D:/out" \
   -v ~/.config/pkdump/prod/aws/config:/aws/config:ro \
   --secret pkdump-prod-s3-bootstrap,type=mount,target=/aws/credentials \
   -e AWS_CONFIG_FILE=/aws/config -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials -e AWS_PROFILE=pkdump \
   docker.io/litestream/litestream:latest \
   restore -integrity-check full -timestamp 2026-06-01T12:00:00Z \
-  -o /out/check.sqlite "$(tenant_replica_url collection)"
+  -o /out/check.sqlite "$(tenant_replica_url "$DB")"
 sqlite3 "$D/check.sqlite" 'SELECT count(*) FROM collection;'   # looks right?
 
 # 2. If good, commit it onto the live instance:
-bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod collection
+bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod "$DB"
 rm -rf "$D"
 ```
 
@@ -205,11 +217,58 @@ still recoverable — ask for a timestamp from just **before** you ran the
 rollback:
 
 ```bash
-bash deploy/restore-litestream.sh --at=<a time before the rollback> prod collection
+bash deploy/restore-litestream.sh --at=<a time before the rollback> prod "$DB"
 ```
 
 Which is the argument for step 1: check the temp copy before committing, and note
 the wall-clock time when you do commit.
+
+## Scenario B2 — you removed a user and want them back
+
+**Check whether this is a restore at all first.** `pkdump tenant remove` is now
+an alias for `detach` and **deletes nothing** (`deploy/TENANTS.md`); the
+database and its replica are both still there, and the row survives under a
+retired handle. So the usual answer is a registry edit, not a recovery:
+
+```bash
+podman exec systemd-pkdump-prod pkdump tenant list   # the row reads <handle>:detached:<id>
+```
+
+If the database is still on the volume, **no restore is needed and none will
+help** — the bytes never moved. What a detach costs is the *mapping*: the handle
+is released, the row is marked `detached`, and a detached row does not resolve.
+
+**There is no reattach command** — a gap, not a decision (`pd-rtjk`). Do not
+reach for `tenant rename`: it succeeds on a retired handle, puts the name back
+on the row, and leaves the state `detached`, which takes the handle out of
+circulation without making it resolve. Until that is fixed, reviving a detached
+user is a hand edit of the registry. Resolution reads it per request, so nothing
+needs restarting:
+
+```bash
+MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-prod-data)
+sqlite3 "${MP}/registry.sqlite" \
+  "UPDATE user SET handle='carol', state='active' WHERE database_id='<id>';"
+podman exec systemd-pkdump-prod pkdump tenant list                  # carol, active
+```
+
+If someone else took the handle in the meantime, `user.handle` is the primary
+key and the write fails rather than merging two people onto one name
+(`UNIQUE constraint failed: user.handle`). Pick another handle, or rename the
+live holder first.
+
+Only a **purge** destroys the local copy, and even then the S3 replica outlives
+it until retention expires (6 months). Recover it exactly like any other
+collection, addressed by the id the purge printed:
+
+```bash
+bash deploy/restore-litestream.sh prod <the purged database id>
+```
+
+The restored file is under a `database_id` that no registry row names any more,
+so `pkdump tenant list` will report it as a database no registered user claims
+until you decide who it belongs to. That is the intended shape: the bytes come
+back before the attribution does, and neither is guessed.
 
 ## Scenario C — total box loss (rebuild from scratch)
 
@@ -297,7 +356,8 @@ tenant, and `watch: true` puts it back under replication within ~5s.
 
 ```bash
 MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-prod-data)
-sqlite3 "file:${MP}/tenants/collection.sqlite?mode=ro" 'SELECT count(*) FROM collection;'
+podman exec systemd-pkdump-prod pkdump tenant list       # no (DATABASE MISSING) rows
+sqlite3 "file:${MP}/tenants/${DB}.sqlite?mode=ro" 'SELECT count(*) FROM collection;'
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8090/api/sets     # 200 = serving
 systemctl --user is-active pkdump-litestream-prod.service                    # backups resumed
 bash deploy/backup-check.sh prod                                             # ...and are FRESH, per tenant

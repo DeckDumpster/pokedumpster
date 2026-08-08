@@ -46,9 +46,12 @@ Three SQLite databases live on each data volume:
 - `shared.sqlite` — the immutable card catalog. Fully reproducible from
   upstream via `pkdump setup`; **not** backed up. One copy, `ATTACH`ed by
   every tenant.
-- `tenants/<database_id>.sqlite` — one collection per tenant (`collection` is
-  the original single user). See [TENANTS.md](TENANTS.md) for provisioning and
-  the migration from the old flat `collection.sqlite` layout.
+- `tenants/<database_id>.sqlite` — one collection per tenant, named by an
+  opaque ULID and never by the handle of the person whose collection it is
+  (`collection` is the original single user, and the ids say nothing about
+  that). See [TENANTS.md](TENANTS.md) for provisioning, for the operator step
+  that answers **which file is whose**, and for the two migrations — out of the
+  old flat `collection.sqlite` layout, and then off handle-named files onto ids.
 - `registry.sqlite` — the user registry: handle → `database_id`. At the data
   root, deliberately outside `tenants/` so that directory keeps meaning "one
   file per tenant" exactly.
@@ -148,7 +151,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `setup.sh <name> [port] [--init] [--test]` | Create an instance. `--test` seeds from the committed fixture; `--init` clones the seed volume |
 | `deploy.sh <name>` | Rebuild image and restart one instance |
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
-| `restore-litestream.sh [--yes] [--at=<RFC3339>] <inst> [tenant]` | Restore ONE tenant's collection from the S3 backup (latest or point-in-time) — see [RESTORE.md](RESTORE.md) |
+| `restore-litestream.sh [--yes] [--at=<RFC3339>] <inst> [database-id]` | Restore ONE collection from the S3 backup (latest or point-in-time). Addressed by the database's file stem, not by a handle — `pkdump tenant list` says which is whose. See [RESTORE.md](RESTORE.md) |
 | `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer) |
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin) |
@@ -196,10 +199,11 @@ Until you do, the sidecar refuses to start — deliberately, so the registry can
 be silently left out of the replicated set.
 
 ```bash
-# Restore the latest backup onto a live instance (tenant defaults to `collection`;
-# only that tenant is touched):
+# Restore the latest backup onto a live instance. The argument is the database's
+# file stem (an opaque `database_id`), not a person — `pkdump tenant list` maps
+# handles to ids. Only that one collection is touched; it defaults to `collection`:
 bash deploy/restore-litestream.sh prod
-bash deploy/restore-litestream.sh prod alice
+bash deploy/restore-litestream.sh prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
 
 # The user registry — restore this FIRST after a total loss (RESTORE.md):
 bash deploy/restore-litestream.sh --registry prod

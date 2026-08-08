@@ -12,6 +12,12 @@ Captured against a throwaway `--test` instance (`deploy/setup.sh mtdemo --test`)
 with `PKDUMP_MULTITENANT=1` set **on that instance only** — the shipped
 `deploy/pkdump.container` does not set it and must not.
 
+Reproducing this now also needs `PKDUMP_MULTITENANT_INSECURE_BIND=1` on that
+same throwaway instance: since `pd-tyqr` the server *refuses* to start with
+multi-tenant resolution on and a non-loopback bind, and the image entrypoint
+binds `0.0.0.0`. The demo instance really was reachable off-box, which is the
+case the refusal exists to catch — see `deploy/TENANTS.md`.
+
 The frontend is unchanged by this epic and does not send the header, so this was
 driven with Playwright's `extraHTTPHeaders`. That is the point of the
 "browser-reachable multitenancy waits on the identity epic" note in

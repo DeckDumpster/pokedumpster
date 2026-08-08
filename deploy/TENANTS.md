@@ -78,6 +78,8 @@ hands every collection to whoever asks for it.
 
 Which is why:
 
+- **The server refuses to start** with the flag on and a bind address that is
+  not loopback. Not a warning — a refusal; see below.
 - The flag is off unless explicitly set, and `PKDUMP_MULTITENANT` only counts
   `1`, `true` or `yes` as on — `PKDUMP_MULTITENANT=0` does not switch it on by
   the mere fact of being set.
@@ -88,6 +90,41 @@ Which is why:
   single-tenant. Browser-reachable multi-tenancy waits on the identity epic.
 - **Production stays single-tenant.** This work lives on the integration
   branch; `deploy/pkdump.container` does not set the variable and must not.
+
+### The refusal
+
+Everything above except the first bullet is a convention plus a printed line.
+The refusal is the mechanism:
+
+```
+$ pkdump serve --multi-tenant --host 0.0.0.0
+Error: refusing to start: multi-tenant resolution is on and --host 0.0.0.0 is
+not loopback.
+...
+```
+
+Loopback (`127.0.0.1`, `::1`) still starts — that is the mode's intended shape:
+a developer, a demo, or an SSH/WireGuard tunnel that does the reaching.
+
+If you genuinely mean to expose it — behind a reverse proxy that authenticates
+*for* it, once that exists — say so a second time:
+
+```bash
+PKDUMP_MULTITENANT=1 PKDUMP_MULTITENANT_INSECURE_BIND=1 pkdump serve --host 0.0.0.0
+```
+
+That second variable is parsed by the same strict helper as the first: only
+`1`, `true` or `yes`; `PKDUMP_MULTITENANT_INSECURE_BIND=0` does not open it.
+There is no `--allow-insecure-bind` flag — this should not be one
+tab-completion away.
+
+**Single-tenant mode is unaffected at any address.** Its tenant is fixed at
+startup and no request can change it, which is why the container entrypoint's
+`--host 0.0.0.0` is fine and stays. The refusal only ever fires on the
+combination that has no defence. Note the consequence for containers: an image
+binds `0.0.0.0`, so *any* containerised multi-tenant instance needs the second
+opt-in — a container publishing a port is off-box reachable, and that is
+precisely the case being caught.
 
 ### What isolation rests on
 

@@ -36,6 +36,14 @@
 # real S3 bucket and no application code.
 set -euo pipefail
 
+# Bare `sqlite3` has NO busy timeout: it returns SQLITE_BUSY the moment the
+# replicator holds the lock, and `set -e` takes the whole run down with it. This
+# gate writes to databases while a Litestream container replicates them, so
+# contention is not an edge case here — it is the scenario under test. Same
+# helper, same 5s, as pd-znsf added on master for the tenant writes; the registry
+# writes below need it for exactly the same reason.
+sq() { sqlite3 -cmd '.timeout 5000' "$@"; }
+
 LITESTREAM_IMAGE=${LITESTREAM_IMAGE:-docker.io/litestream/litestream:latest}
 MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
 MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
@@ -243,7 +251,7 @@ log "4b. the user registry rides the same sidecar, on its own prefix (pd-nd6w)"
 # ship this entry ahead of anything that writes a registry. If that ever stops
 # being true, the sidecar dies at startup and §3 fails; this section proves the
 # file is then actually picked up.
-sqlite3 "$WORK/data/registry.sqlite" \
+sq "$WORK/data/registry.sqlite" \
 	"PRAGMA journal_mode=WAL;
 	 CREATE TABLE user (handle TEXT PRIMARY KEY, database_id TEXT NOT NULL UNIQUE,
 	                    created_at TEXT NOT NULL, state TEXT NOT NULL);
@@ -304,7 +312,7 @@ check "the registry restores and still holds its mapping" "alpha 01k2c7hq8n00000
 # has to actually work on THIS prefix, not just on the tenant prefixes.
 REG_MARKER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 sleep 2
-sqlite3 "$WORK/data/registry.sqlite" \
+sq "$WORK/data/registry.sqlite" \
 	"INSERT INTO user VALUES ('bravo','01k2c7hq8n0000000000bravo',datetime('now'),'active');" >/dev/null
 for _ in $(seq 30); do
 	restore_registry registry-latest.sqlite
@@ -449,7 +457,7 @@ podman run -d --name "$PROBE_CTR" --network "$NET" --user 0 \
 SNAPSHOTS=0
 probe_deadline=$(( SECONDS + 120 ))
 while [ "$SECONDS" -lt "$probe_deadline" ]; do
-	sqlite3 "$WORK/probe/tenants/echo.sqlite" "INSERT INTO collection (tenant) VALUES ('echo');"
+	sq "$WORK/probe/tenants/echo.sqlite" "INSERT INTO collection (tenant) VALUES ('echo');"
 	SNAPSHOTS=$(mc ls -r "s/$BUCKET" 2>/dev/null | grep -c 'citest/probe/echo.sqlite/0009/' || true)
 	[ "$SNAPSHOTS" -gt 1 ] && break
 	sleep 1

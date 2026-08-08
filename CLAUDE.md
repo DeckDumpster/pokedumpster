@@ -156,7 +156,10 @@ default**: `pkdump serve` opens the one collection named by `$PKDUMP_USER`
 and does not read the tenant header at all. `--multi-tenant` (or
 `PKDUMP_MULTITENANT=1`) switches on per-request resolution from the
 `x-pkdump-tenant` header. **Nothing authenticates that header** — identity is
-a separate epic — so the flag must stay off in production. Isolation is
+a separate epic — so the flag must stay off in production. That is enforced
+rather than trusted: with the flag on and a non-loopback `--host`, the server
+refuses to start unless `PKDUMP_MULTITENANT_INSECURE_BIND=1` is also set.
+Single-tenant mode is unaffected at any address. Isolation is
 structural: `AppState` holds no connection, `blocking()` takes the tenant from
 the request scope, and one connection per tenant is opened against that
 tenant's own file. See `deploy/TENANTS.md`.

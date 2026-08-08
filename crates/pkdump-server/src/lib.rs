@@ -157,9 +157,11 @@ pub struct ServeConfig {
     /// `$PKDUMP_USER` — and the collection database it resolves to.
     pub tenant: String,
     pub user_db: PathBuf,
-    /// The directory holding one database per tenant. Read only when
+    /// The directory holding one database per tenant, and the registry that
+    /// says which of them a handle is served from. Read only when
     /// `multi_tenant` is on; `tenant`/`user_db` are ignored in that mode.
     pub tenants_dir: PathBuf,
+    pub registry_db: PathBuf,
     pub shared_db: PathBuf,
     pub static_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -205,7 +207,7 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
              `{}`, and nothing authenticates that claim. Do not expose this instance.",
             tenant::TENANT_HEADER
         );
-        Tenants::multi(cfg.tenants_dir, cfg.shared_db)
+        Tenants::multi(cfg.tenants_dir, cfg.shared_db, &cfg.registry_db)?
     } else {
         Tenants::single(&cfg.tenant, cfg.user_db, cfg.shared_db)?
     };
@@ -298,22 +300,28 @@ mod tests {
         (dir, router)
     }
 
-    /// A multi-tenant test router with `alice` and `bob` provisioned, as
-    /// `pkdump tenant create` would leave them.
-    fn multi_tenant_app(names: &[&str]) -> (tempfile::TempDir, Router, PathBuf) {
+    /// A multi-tenant test router with `handles` provisioned, as
+    /// `pkdump tenant create` would leave them: a registry row per user, and
+    /// one database per user named by the `database_id` that row issued —
+    /// *not* by the handle.
+    fn multi_tenant_app(handles: &[&str]) -> (tempfile::TempDir, Router, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let shared = seed(dir.path());
         let tenants_dir = dir.path().join("tenants");
         std::fs::create_dir_all(&tenants_dir).unwrap();
-        // What `pkdump tenant create` leaves behind: one database per
-        // tenant, user schema applied, under `tenants/`.
-        for name in names {
-            pkdump_db::open_user(&tenants_dir.join(format!("{name}.sqlite"))).unwrap();
+        let registry_db = dir.path().join("registry.sqlite");
+        let registry = pkdump_db::open_registry(&registry_db).unwrap();
+        for handle in handles {
+            let user = pkdump_db::registry::insert(&registry, handle).unwrap();
+            pkdump_db::open_user(
+                &pkdump_db::tenant_db_file(&tenants_dir, &user.database_id).unwrap(),
+            )
+            .unwrap();
         }
         let router = router_for(
             dir.path(),
             &shared,
-            Tenants::multi(tenants_dir.clone(), shared.clone()),
+            Tenants::multi(tenants_dir.clone(), shared.clone(), &registry_db).unwrap(),
         );
         (dir, router, tenants_dir)
     }
@@ -737,30 +745,69 @@ mod tests {
         );
     }
 
-    /// Naming a tenant that does not exist is a 404 — it does not provision
+    /// Naming a handle nobody registered is a 404 — it does not provision
     /// one. A resolver that opened whatever it was handed would let any
     /// caller create tenants by guessing names.
     #[tokio::test]
     async fn an_unknown_tenant_is_a_404_and_creates_nothing() {
         let (_d, router, tenants_dir) = multi_tenant_app(&["alice"]);
+        let before = std::fs::read_dir(&tenants_dir).unwrap().count();
         let resp = router
             .oneshot(request("GET", "/api/collection", Some("mallory"), None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        assert!(!tenants_dir.join("mallory.sqlite").exists());
+        assert_eq!(std::fs::read_dir(&tenants_dir).unwrap().count(), before);
     }
 
-    /// A tenant name is a filename, so a traversing one must not reach a
-    /// database outside `tenants/` — the catalog beside it, say.
+    /// **`pd-rqgv`, end to end.** The header is a lookup key, so a handle
+    /// that names a *file* — one in `tenants/`, or one reached by climbing
+    /// out of it — resolves to nothing. There is no path to escape from,
+    /// because no path is built from what the header carries.
+    ///
+    /// The first case is the mutation canary: `ghost.sqlite` is a real
+    /// collection with a card in it, and under the old
+    /// `dir.join(format!("{name}.sqlite"))` the header `ghost` would have
+    /// been served that card.
     #[tokio::test]
-    async fn a_traversing_tenant_name_cannot_escape_the_tenants_directory() {
-        let (_d, router, _dir) = multi_tenant_app(&["alice"]);
+    async fn a_handle_that_names_a_file_resolves_to_nothing() {
+        let (_d, router, tenants_dir) = multi_tenant_app(&["alice"]);
+
+        // A database in `tenants/` that the registry does not know about.
+        let ghost = tenants_dir.join("ghost.sqlite");
+        pkdump_db::open_user(&ghost).unwrap();
+
+        for handle in ["ghost", "../shared", "../../etc/passwd", "alice/../ghost"] {
+            let resp = router
+                .clone()
+                .oneshot(request("GET", "/api/collection", Some(handle), None))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{handle:?}");
+        }
+    }
+
+    /// A user's `database_id` is not a second way in. Only the `handle`
+    /// column resolves, so knowing where someone's bytes live does not let
+    /// a caller ask to be served from them.
+    #[tokio::test]
+    async fn a_database_id_is_not_a_handle() {
+        let (d, router, _dir) = multi_tenant_app(&["alice"]);
+        let registry = pkdump_db::open_registry(&d.path().join("registry.sqlite")).unwrap();
+        let alice = pkdump_db::registry::lookup(&registry, "alice")
+            .unwrap()
+            .unwrap();
+
         let resp = router
-            .oneshot(request("GET", "/api/collection", Some("../shared"), None))
+            .oneshot(request(
+                "GET",
+                "/api/collection",
+                Some(&alice.database_id),
+                None,
+            ))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     /// **Multitenancy is invisible when it is off.** The default build reads

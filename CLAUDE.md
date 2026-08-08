@@ -168,7 +168,11 @@ default**: `pkdump serve` opens the one collection named by `$PKDUMP_USER`
 and does not read the tenant header at all. `--multi-tenant` (or
 `PKDUMP_MULTITENANT=1`) switches on per-request resolution from the
 `x-pkdump-tenant` header. **Nothing authenticates that header** — identity is
-a separate epic — so the flag must stay off in production. Isolation is
+a separate epic — so the flag must stay off in production. What the header
+carries is a *handle*, and it is only ever a lookup key: the user registry
+(`registry.sqlite`, `pkdump-db/src/registry.rs`) maps it to an opaque
+`database_id`, and that id — never the header — is what
+`pkdump_db::tenant_db_file` turns into `tenants/<database_id>.sqlite`. Isolation is
 structural: `AppState` holds no connection, `blocking()` takes the tenant from
 the request scope, and one connection per tenant is opened against that
 tenant's own file. See `deploy/TENANTS.md`.

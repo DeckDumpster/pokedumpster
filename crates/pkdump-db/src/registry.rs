@@ -113,6 +113,16 @@ pub fn lookup(conn: &Connection, handle: &str) -> Result<Option<User>> {
     row.map(into_user).transpose()
 }
 
+/// Mint a fresh `database_id`. The one place ids come from.
+///
+/// A canonical ULID: 26 characters of uppercase Crockford base32, which is
+/// exactly what [`crate::paths::validate_database_id`] admits — that
+/// function is the gate every id passes on its way to becoming a path, and
+/// this is the only thing on the far side of it.
+pub fn mint_database_id() -> String {
+    Ulid::generate().to_string()
+}
+
 /// Register a new user and mint their `database_id`. Returns the new row.
 ///
 /// The id is generated here, never supplied: it is the one guarantee that
@@ -126,7 +136,7 @@ pub fn insert(conn: &Connection, handle: &str) -> Result<User> {
     validate_tenant_name(handle)?;
     let user = User {
         handle: handle.to_string(),
-        database_id: Ulid::generate().to_string(),
+        database_id: mint_database_id(),
         created_at: chrono::Utc::now().to_rfc3339(),
         state: UserState::Active,
     };

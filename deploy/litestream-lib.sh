@@ -19,10 +19,14 @@
 # environment (LITESTREAM_S3_BUCKET / _PATH / _REGION, optionally _ENDPOINT).
 
 # Mirrors pkdump-db's validate_tenant_name (crates/pkdump-db/src/paths.rs):
-# a tenant name is a filename AND an S3 path component at the same time, so the
-# same narrow alphabet applies on this side of the fence. Enforced here too
-# because these scripts take the name from an operator's command line, where a
-# stray `/` would silently retarget the whole S3 prefix.
+# the charset a HANDLE is held to where it is issued. A handle is no longer a
+# filename — `pd-fci1` split the two, and what names a file is a `database_id`
+# (validate_database_id, below) — but a handle-named database from before
+# `pkdump tenant migrate` still exists on real volumes, so a stem may legally be
+# either shape and both have to be checked before anything is concatenated into
+# a path. Enforced here as well as in Rust because these scripts take the stem
+# from an operator's command line, where a stray `/` would silently retarget the
+# whole S3 prefix.
 validate_tenant_name() {
     local name="${1-}"
     case "$name" in
@@ -89,7 +93,8 @@ tenant_db_path() {
 # tenant_replica_url <tenant> — the S3 replica URL the sidecar replicates to.
 #
 # Litestream derives `<replica path>/<file name>`, so the tenant's prefix is
-# "${LITESTREAM_S3_PATH}/<tenant>.sqlite". `region` rides in the query string for
+# "${LITESTREAM_S3_PATH}/<stem>.sqlite" — the stem, not the person. `region`
+# rides in the query string for
 # the same reason it is pinned in the YAML: without it Litestream calls
 # s3:GetBucketLocation, which the backup role does not grant.
 tenant_replica_url() {

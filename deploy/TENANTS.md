@@ -35,29 +35,169 @@ Two things about that directory are load-bearing:
 - **The whole set is one glob.** That is the shape Litestream's
   `dir:` + `pattern:` + `watch:` mode wants
   (`deep-dives/litestream-multi-db/RESULT.md` §4), where each replica path is
-  *derived from the filename*. Distinct tenant names therefore give distinct
+  *derived from the filename*. Distinct `database_id`s therefore give distinct
   replica prefixes by construction — which forecloses the silent cross-tenant
-  substitution that the same spike demonstrated is otherwise possible (§2).
+  substitution that the same spike demonstrated is otherwise possible (§2). And
+  because ids are never reissued, that holds across time too: no later database
+  can land on a prefix an earlier one used.
 
-Tenant names are validated to `[a-z0-9][a-z0-9_-]{0,31}`. A name is a filename
-*and* an S3 path component at the same time, so uppercase (which collides on
-case-insensitive filesystems), dots, and slashes are all rejected.
+## The two identifiers
 
-## The two commands
+A user is **two facts joined by a row** in `registry.sqlite`, not one string
+doing every job. Which one you are looking at decides what you can do with it.
+
+| | `handle` | `database_id` |
+|---|---|---|
+| What it is | the user's name — `alice`, `collection` | an opaque ULID — `01K2C7HQ8N3Q4E9YB5R7MDX0VT` |
+| Who chooses it | a person, at `pkdump tenant create` | the registry, and nothing else |
+| Where it appears | the `x-pkdump-tenant` header, `$PKDUMP_USER`, `pkdump tenant` arguments | the filename, the S3 replica prefix, `pkdump tenant purge` |
+| On disk | **nowhere** | `tenants/<database_id>.sqlite` |
+| Can it change? | yes — `pkdump tenant rename`, one `UPDATE`, nothing moves | never, for the life of the database |
+| Charset | `[a-z0-9][a-z0-9_-]{0,31}`, validated where it is *issued* | 26 characters of uppercase Crockford base32, minted here |
+
+Read the "on disk" row twice, because it is the point of the whole design: **a
+handle is never a path component.** It is a lookup key and only a lookup key,
+so nothing an unauthenticated caller sends is concatenated into a filename, and
+a handle someone released cannot inherit its predecessor's file or replica —
+the successor gets a new id, so a new file and a new prefix, by construction
+(`pd-fci1`, closing `pd-pm7b`).
+
+The handle charset is still narrow, because a handle is a name people type and
+a narrow one keeps `alice` and `Alice` from being two users. But it is no longer
+load-bearing for safety: a hostile handle is refused for not being in the table,
+not for its characters.
+
+## The commands
 
 ```bash
-pkdump tenant create <name>          # provision a tenant
-pkdump tenant remove <name> --yes    # delete a tenant's collection
+pkdump tenant create <handle>            # register a user; mint an id; write the database
+pkdump tenant list                       # who is registered, and which file is theirs
+pkdump tenant rename <from> <to>         # one column; nothing on disk moves
+pkdump tenant detach <handle> --yes      # release the handle, KEEP the collection
+pkdump tenant purge <database-id> --yes  # destroy a detached collection. Irreversible.
 ```
 
-`create` writes `tenants/<name>.sqlite` with the user schema applied; the
-tenant is usable immediately. It fails if the tenant already exists.
+`create` mints a `database_id`, writes `tenants/<database_id>.sqlite` with the
+user schema applied, and registers the handle against it. The tenant is usable
+immediately. It fails if the handle is already taken.
 
-`remove` deletes that file and its WAL sidecars. It is the only destructive
-command here — the S3 replica outlives it, but only for as long as retention
-holds (6 months; `deploy/RESTORE.md`).
+`rename` writes one column. The database keeps its id, therefore its filename,
+therefore its Litestream prefix and every LTX file already under it — a user
+changing their name costs no replication history. This is the capability the
+split buys, and it was impossible while the name *was* the path.
 
-Also available: `pkdump tenant list`.
+`detach` frees the handle and keeps everything else (see below). `purge` is the
+only destructive command here, and it takes an **id**, not a name.
+
+All of them read `$PKDUMP_HOME`, so against a running instance prefix with
+`podman exec`:
+
+```bash
+podman exec systemd-pkdump-prod pkdump tenant create alice
+podman exec systemd-pkdump-prod pkdump tenant list
+```
+
+### ⚠️ `tenant remove` no longer deletes anything
+
+**`pkdump tenant remove <handle> --yes` is now an alias for `detach`.** It used
+to unlink the database. It does not any more:
+
+| | before | now |
+|---|---|---|
+| the handle | freed | freed |
+| the collection database | **deleted** | **kept** |
+| the S3 replica | left to expire with retention | kept |
+| registry row | n/a | kept, under a retired handle, so the bytes stay attributable |
+
+Every script and every piece of muscle memory that says `tenant remove alice
+--yes` still parses and still succeeds — and now means something else. That is
+deliberate (it fails safe, and it is gated by
+`remove_is_an_alias_for_detach` in `crates/pkdump-cli/src/tenant.rs`), but it is
+exactly the kind of silent change that bites at 3am, so: **if you ran `remove`
+expecting the disk space back, you did not get it.** The command tells you so
+and prints the second step:
+
+```
+Detached alice. The handle is free; the collection was KEPT.
+  database 01KZHQVMSVRD4WPNTG9WWRXYC0 at /data/tenants/01KZHQVMSVRD4WPNTG9WWRXYC0.sqlite
+  to destroy it: pkdump tenant purge 01KZHQVMSVRD4WPNTG9WWRXYC0 --yes
+```
+
+Hard deletion is that second command, and three things about it are on purpose:
+
+- It takes a **`database_id`**, not a handle. A purge should not be reachable by
+  mistyping a live person's name.
+- It **refuses an active user** — detach first. So a purge is always the second
+  half of a decision already taken, never the whole of one:
+
+  ```
+  Error: conflict: user "collection" is still active — `pkdump tenant detach collection` first
+  ```
+- It removes the file, its WAL sidecars, and Litestream's local state directory
+  for it. The **S3 replica outlives it** until retention expires (6 months;
+  `deploy/RESTORE.md`), so a purge is recoverable for that window and permanent
+  after it.
+
+Why the inversion: while a name was a filename, the retention window was a
+liability — recreate `alice` and the new database sat inside the old one's
+replica stream (`pd-pm7b`). With ids, the same window is a safety net, and the
+default meaning of "remove" can afford to be the reversible half.
+
+**Reversible in the sense that nothing is destroyed — not in the sense that one
+command puts it back.** There is no `tenant attach` yet, and `tenant rename` is
+not it: renaming a retired handle back succeeds, restores the `handle` column,
+and leaves the row `detached`, so the handle is taken again while still
+resolving to nothing. `pd-rtjk` tracks the gap; `deploy/RESTORE.md`, scenario
+B2, has the hand edit in the meantime.
+
+## Which file is whose
+
+**A directory listing no longer tells you who exists.** Under opaque ids,
+`ls tenants/` answers *how many* collections there are and nothing else. The
+registry is the only thing that answers *whose*, so this is an operator step
+rather than something you read off the disk:
+
+```bash
+podman exec systemd-pkdump-prod pkdump tenant list
+```
+```
+HANDLE                                   DATABASE ID                 CREATED                              STATE
+collection                               01KZHQVMMS4CSRASCMG5XRCPC3  2026-08-08T22:28:21.785088095+00:00  active
+alicia                                   01KZHQVMQ6GVFQF1R5T7AW1K5X  2026-08-08T22:28:21.862295795+00:00  active  (DATABASE MISSING)
+bob:detached:01KZHQVMSVRD4WPNTG9WWRXYC0  01KZHQVMSVRD4WPNTG9WWRXYC0  2026-08-08T22:28:21.947244169+00:00  detached
+
+1 database(s) under /data/tenants that no registered user claims:
+  orphan.sqlite
+```
+
+It reads the registry, not the directory, and it reports both directions of
+disagreement between them — which is what makes it worth running before
+anything destructive:
+
+- **`(DATABASE MISSING)`** beside a row — the registry names a database that is
+  not on this volume. Restore it by that id (`deploy/RESTORE.md`). Do not try to
+  provision your way out: `pkdump tenant create` refuses a handle that is already
+  registered (`conflict: handle "alicia" is already registered`), and detaching
+  first so it succeeds would mint a *new* id — a fresh empty collection, with the
+  real bytes stranded under the old one.
+- **"database(s) … that no registered user claims"** — files no row accounts
+  for. Either handle-named databases from before `pkdump tenant migrate`, or an
+  orphan worth understanding before you delete it. `purge` will not touch these:
+  it resolves its argument through the registry first
+  (`not found: no user with database id …`), so a file nothing claims has to be
+  removed by hand, deliberately.
+
+The `detached` rows are the other half of the answer. A released handle keeps
+its row, retired to `<handle>:detached:<database_id>` — `:` is outside the
+handle charset, so a retired handle can never collide with a live one and the
+handle is free the instant it is released. Bytes that belong to nobody in
+particular still belong to *someone identifiable*, which is the difference
+between a purge you can justify and a file you deleted because you could not
+tell what it was.
+
+If the registry itself is gone, this question has no answer from the box alone.
+That is why it is in the replicated set and why it is restored **first**:
+`deploy/RESTORE.md`, scenario C.
 
 ## Serving more than one tenant
 
@@ -128,7 +268,7 @@ type. Resolution deliberately does not re-check the charset: a hostile handle
 is refused for not being in the table, not for its characters, and a validator
 there would suggest the safety came from the charset. `pd-rqgv`.
 
-> A database still sitting at `tenants/<name>.sqlite` names nobody in the
+> A database still sitting at `tenants/<handle>.sqlite` names nobody in the
 > registry, so its handle is a 404 to the resolver until `pkdump tenant
 > migrate` puts it on an id — see "Migrating onto opaque database ids" below.
 > Single-tenant serving is unaffected either way: it does not resolve.
@@ -138,13 +278,6 @@ The load-bearing test is
 `crates/pkdump-server/src/lib.rs`. It asserts the negative — Bob cannot read,
 and cannot delete, Alice's card — and it has been shown to fail when the
 resolver is bypassed (see `pd-5emg`).
-
-In a container, prefix with `podman exec`:
-
-```bash
-podman exec systemd-pkdump-prod pkdump tenant create alice
-podman exec systemd-pkdump-prod pkdump tenant list
-```
 
 ## Migrating the existing production database
 
@@ -288,7 +421,7 @@ recovery mechanism is the S3 replica (`deploy/RESTORE.md`), not this.
 ### If you forget step 2
 
 The app will not quietly come up with an empty collection. `user_db_path`
-refuses to hand out `tenants/<name>.sqlite` while an un-adopted database still
+refuses to hand out `tenants/<handle>.sqlite` while an un-adopted database still
 sits at the old location, and says so:
 
 ```

@@ -164,7 +164,7 @@ LITESTREAM_S3_BUCKET=CHANGE_ME
 LITESTREAM_S3_REGION=us-west-2
 # The sidecar replicates EVERY tenants/*.sqlite and derives each tenant's prefix
 # from its filename, so this is the parent prefix, not one database's:
-#   <LITESTREAM_S3_PATH>/<tenant>.sqlite   (see deploy/litestream.yml)
+#   <LITESTREAM_S3_PATH>/<database_id>.sqlite   (see deploy/litestream.yml)
 LITESTREAM_S3_PATH=${INSTANCE}/tenants
 LITESTREAM_TENANTS_DIR=/data/tenants
 # The user registry (handle -> database_id) is replicated by the same sidecar as

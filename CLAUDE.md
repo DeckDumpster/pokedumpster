@@ -233,7 +233,7 @@ Rootless Podman + systemd-user, scripts in `deploy/`:
 ```bash
 deploy/setup.sh prod        # one-time: build image, install Quadlet unit + timers
 deploy/seed.sh prod         # populate the catalog (pkdump setup in a one-off container)
-deploy/deploy.sh prod       # rebuild + restart
+deploy/deploy.sh prod       # rebuild + reinstall the unit files + restart
 deploy/restore-litestream.sh prod   # restore the collection from S3 (see deploy/RESTORE.md)
 deploy/teardown.sh prod [--purge]
 ```

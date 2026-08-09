@@ -247,7 +247,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `seed.sh <instance>` | Populate one instance's catalog in place |
 | `seed.sh --volume [--force]` | Build the reusable `pkdump-seed-data` volume |
 | `setup.sh <name> [port] [--init] [--test]` | Create an instance. `--test` seeds from the committed fixture; `--init` clones the seed volume |
-| `deploy.sh <name>` | Rebuild image and restart one instance |
+| `deploy.sh <name>` | Rebuild image, reinstall the unit files from this checkout, and restart one instance |
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
 | `restore-litestream.sh [--yes] [--at=<RFC3339>] [--unattributed] <inst> [database-id]` | Restore ONE collection from the S3 backup (latest or point-in-time). Addressed by the database's file stem, not by a handle — `pkdump tenant list` says which is whose. **Refuses a database the registry cannot name** (restore `--registry` first; `--unattributed` for a purged one). See [RESTORE.md](RESTORE.md) |
 | `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer). The verification always runs; the ping URL controls only the ping |
@@ -255,12 +255,20 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `diskcheck.sh --floor [path...]` | Gate — exit non-zero under `PKDUMP_DISK_FLOOR_GB` free; run by `ci.sh` before it builds |
 | `store-lib.sh` | Sourced — resolves which Podman store an instance's image and volume live in (`PKDUMP_STORE_ROOT`) |
+| `units-lib.sh` | Sourced — renders every unit template this checkout ships into `~/.config`, preserving the instance's published port. Shared by `setup.sh` and `deploy.sh` so a deploy cannot ship a binary and leave the units behind (pd-2t6u) |
 | `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin) |
 | `mac-setup.sh` / `mac-deploy.sh` / `mac-teardown.sh` | macOS equivalents (no systemd) |
 
 ## Systemd timers
 
-`setup.sh` installs these `--user` units alongside the instance:
+`setup.sh` installs these `--user` units alongside the instance, and `deploy.sh`
+re-installs them on every deploy — the files under `deploy/` are templates, so
+what an instance runs is a copy, and a copy only tracks the repo if something
+rewrites it. Until Aug 2026 nothing did on the deploy path: prod's Litestream
+sidecar was still the pre-multi-tenant template, missing the `OnFailure=`
+alerting the repo had carried since Jun 2026, so the sidecar that silently
+stopped replicating paged nobody (pd-2t6u). A deploy now names the units it
+changed.
 
 - `pkdump-refresh@<instance>` — nightly `pkdump data refresh` inside the
   running container (via `podman exec`), 06:00 + jitter.

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Deploy-script gate (pd-fite): the container-store resolution and the low-disk
-# guard are shell, so they get a shell test.
+# Deploy-script gate (pd-fite, pd-2t6u): the container-store resolution, the
+# low-disk guard and the unit-file install are shell, so they get a shell test.
 #
-# Two properties are worth more than the rest and are asserted first:
+# Three properties are worth more than the rest:
 #
 #   PROD IS UNAFFECTED — with PKDUMP_STORE_ROOT unset, every function here is a
 #   no-op and a generated Quadlet unit comes out byte-identical to the one the
@@ -12,6 +12,12 @@
 #   THE GUARD ACTUALLY FIRES — a floor check that has never been seen to fail is
 #   not a guard. §2 runs it against a floor it cannot satisfy and asserts both
 #   the non-zero exit and the message that explains the bus error.
+#
+#   A DEPLOY SHIPS THE UNIT FILES — the units are templates copied into
+#   ~/.config at install time, and for months only setup.sh wrote those copies,
+#   so prod ran a Litestream unit with no failure alerting while the repo said
+#   it had some. §7 drives deploy.sh over a fake HOME holding stale units and
+#   asserts every one comes back matching the template, port intact.
 #
 # Hermetic: no podman, no containers, no disk written outside a temp dir.
 #
@@ -325,6 +331,122 @@ OFFENDERS="$(
 		grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true
 )"
 check "no script resets podman storage" "" "$OFFENDERS"
+
+reset_store
+
+# ---------------------------------------------------------------------------
+log "7. deploy.sh ships the unit files, not just the image (pd-2t6u)"
+# ---------------------------------------------------------------------------
+#
+# The units under deploy/ are TEMPLATES; what an instance runs is a copy made at
+# install time. Only setup.sh ever wrote those copies, so `deploy/deploy.sh prod`
+# — the command an operator runs to ship a change — updated the binary and left
+# the units at whatever version the instance was created with. Prod's Litestream
+# sidecar was still the pre-multi-tenant template months later, missing
+# `OnFailure=pkdump-alert@%n.service`: the backup that silently stopped
+# replicating on 2026-08-08 had no failure alerting wired, while the repo said it
+# did.
+#
+# Driven end to end against a fake HOME with stale units already installed.
+# Hermetic: podman and systemctl are stubs, nothing is built and no unit is
+# loaded.
+
+reset_store
+
+FAKE_HOME="${WORK}/deployhome"
+QUADLET="${FAKE_HOME}/.config/containers/systemd"
+UNITS="${FAKE_HOME}/.config/systemd/user"
+mkdir -p "$QUADLET" "$UNITS" "${WORK}/deploybin"
+
+# Stubs for the two commands deploy.sh drives. `systemctl is-active --quiet`
+# must report NOT active, so the sidecar-restart branch stays out of the way.
+cat > "${WORK}/deploybin/podman" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "${WORK}/deploybin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do [ "$a" = is-active ] && exit 3; done
+echo "SYSTEMCTL: $*" >> "$PKDUMP_TEST_SYSTEMCTL_LOG"
+exit 0
+EOF
+chmod +x "${WORK}/deploybin/podman" "${WORK}/deploybin/systemctl"
+
+# The instance as it exists on the box: a unit from an older checkout, still
+# publishing the port everything reaches it on.
+printf '[Unit]\nDescription=stale\n\n[Container]\nImage=localhost/pkdump:prod\nPublishPort=8090:8080\n' \
+	> "${QUADLET}/pkdump-prod.container"
+printf '[Unit]\nDescription=stale sidecar\n' \
+	> "${QUADLET}/pkdump-litestream-prod.container"
+
+SYSCTL_LOG="${WORK}/systemctl.log"
+: > "$SYSCTL_LOG"
+DEPLOY_OUT="$(
+	PATH="${WORK}/deploybin:${ORIG_PATH}" \
+		HOME="$FAKE_HOME" \
+		PKDUMP_TEST_SYSTEMCTL_LOG="$SYSCTL_LOG" \
+		bash "${REPO_DIR}/deploy/deploy.sh" prod 2>&1
+)"
+
+# The unit that had no alerting. This is the actual regression: prod's copy was
+# missing keys the template had carried since Jun 2026.
+check "sidecar unit gets OnFailure=" "1" \
+	"$(grep -c '^OnFailure=pkdump-alert@%n.service$' "${QUADLET}/pkdump-litestream-prod.container" || true)"
+check "sidecar unit gets its restart bounds" "2" \
+	"$(grep -c '^StartLimit\(IntervalSec\|Burst\)=' "${QUADLET}/pkdump-litestream-prod.container" || true)"
+check "sidecar unit names this checkout" "1" \
+	"$(grep -c "^Volume=${REPO_DIR}/deploy/litestream.yml:/etc/litestream.yml:ro$" "${QUADLET}/pkdump-litestream-prod.container" || true)"
+
+# Every unit the shipped templates define, byte for byte — not just the one that
+# was noticed. Drift is per-file, so an assertion on one file finds one bug.
+sed -e 's|{{INSTANCE}}|prod|g' -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
+	"${REPO_DIR}/deploy/pkdump-litestream.container" > "${WORK}/ls.expected"
+check "sidecar unit matches the template" "same" \
+	"$(cmp -s "${QUADLET}/pkdump-litestream-prod.container" "${WORK}/ls.expected" && echo same || echo differs)"
+
+sed -e 's|{{INSTANCE}}|prod|g' -e 's|{{PORT}}:8080|8090:8080|' \
+	"${REPO_DIR}/deploy/pkdump.container" > "${WORK}/app.expected"
+check "app unit matches the template" "same" \
+	"$(cmp -s "${QUADLET}/pkdump-prod.container" "${WORK}/app.expected" && echo same || echo differs)"
+
+# An outage caused by fixing the units is not a fix. Refreshing must never move
+# an instance off the address everything reaches it on.
+check "the published port survives the refresh" "1" \
+	"$(grep -c '^PublishPort=8090:8080$' "${QUADLET}/pkdump-prod.container" || true)"
+
+# The alarming and refresh templates travel with a deploy too — alarm-status.sh
+# tells an operator to run setup.sh when one is missing, and a deploy that
+# rewrites only the Quadlets would leave that advice permanently true.
+for U in pkdump-alert@.service pkdump-backup-check@.service pkdump-backup-check@.timer \
+	pkdump-refresh@.service pkdump-refresh@.timer pkdump-diskcheck.service pkdump-diskcheck.timer; do
+	check "installs ${U}" "yes" "$([ -f "${UNITS}/${U}" ] && echo yes || echo no)"
+done
+check "no {{REPO_DIR}} left unsubstituted" "0" \
+	"$(grep -rl '{{REPO_DIR}}' "$UNITS" "$QUADLET" 2>/dev/null | wc -l)"
+
+# Drift is invisible by construction — installed copy here, template there — so
+# the deploy that finally corrects it has to say so, or it reads identically to
+# the deploy that corrected nothing.
+check "names what it changed" "1" \
+	"$(printf '%s' "$DEPLOY_OUT" | grep -c 'pkdump-litestream-prod.container' || true)"
+check "reloads systemd after writing" "1" \
+	"$(grep -c '^SYSTEMCTL: --user daemon-reload$' "$SYSCTL_LOG" || true)"
+
+# Second run, nothing changed: converging must be idempotent, and must not claim
+# work it did not do.
+: > "$SYSCTL_LOG"
+DEPLOY_OUT2="$(
+	PATH="${WORK}/deploybin:${ORIG_PATH}" \
+		HOME="$FAKE_HOME" \
+		PKDUMP_TEST_SYSTEMCTL_LOG="$SYSCTL_LOG" \
+		bash "${REPO_DIR}/deploy/deploy.sh" prod 2>&1
+)"
+check "a second deploy rewrites nothing" "1" \
+	"$(printf '%s' "$DEPLOY_OUT2" | grep -c 'already match this checkout' || true)"
+check "and leaves no temp files behind" "0" \
+	"$(find "$QUADLET" "$UNITS" -name '.*.new.*' | wc -l)"
+
+reset_store
 
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"

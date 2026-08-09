@@ -33,11 +33,11 @@
 # have caught the 11-day outage. The Pushover push is the fast, detailed signal
 # while the box is up; the monitor is the backstop for box-down.
 #
-# ── NO CHECK MAY PASS BY SKIPPING (pd-7f46) ─────────────────────────────────
-# This script used to exit 0 without asking S3 anything when
-# PKDUMP_BACKUP_PING_URL was unset. That is a pass — indistinguishable, to a
-# caller, a CI tier or an operator reading a green unit, from "every replica is
-# fresh". A check that cannot fail is not evidence, and this project already
+# ── NO CHECK MAY PASS BY SKIPPING (pd-1717, then pd-7f46) ───────────────────
+# This script used to print "skipping" and exit 0 without asking S3 anything
+# when PKDUMP_BACKUP_PING_URL was unset. That is a pass — indistinguishable, to
+# a caller, a CI tier or an operator reading a green unit, from "every replica
+# is fresh". A check that cannot fail is not evidence, and this project already
 # owns the scar: prod ran ACTIVE and replicating nothing while every
 # backup-shaped signal was green (pd-1717).
 #
@@ -46,6 +46,12 @@
 # S3 and a stale replica still fails, it just cannot arm the off-box dead-man.
 # The absence of that URL is reported on the way past, because an unarmed Layer
 # 1 is worth saying out loud on a box that has real backups.
+#
+# Note that "is this instance armed?" is a different question from "are the
+# backups fresh?", and it has its own truthful answer in deploy/alarm-status.sh
+# — which reports NOT ARMED and exits non-zero for exactly this configuration.
+# Answering it here as well, by failing, would cost the freshness verification
+# its own exit status.
 #
 # No new runtime deps beyond curl + the litestream image.
 #
@@ -65,9 +71,14 @@ VOLUME="pkdump-${INSTANCE}-data"
 . "${SCRIPT_DIR}/litestream-lib.sh"
 
 # Host-wide Pushover creds, then per-instance ping URL / threshold / S3 target.
-[ -f "${HOME}/.config/pkdump/alerts.env" ] && { set -a; . "${HOME}/.config/pkdump/alerts.env"; set +a; }
-[ -f "${CONF_DIR}/alerts.env" ]            && { set -a; . "${CONF_DIR}/alerts.env";            set +a; }
-[ -f "${CONF_DIR}/litestream.env" ]        && { set -a; . "${CONF_DIR}/litestream.env";        set +a; }
+# PKDUMP_ALERTS_ENV names the host-wide file; production never sets it. Only
+# tests point it elsewhere (tests/alarming/run.sh), for the same reason
+# LITESTREAM_S3_ENDPOINT exists — so a gate can exercise the shipped script
+# without writing to the operator's real credentials.
+ALERTS_ENV="${PKDUMP_ALERTS_ENV:-${HOME}/.config/pkdump/alerts.env}"
+[ -f "$ALERTS_ENV" ]                && { set -a; . "$ALERTS_ENV";                set +a; }
+[ -f "${CONF_DIR}/alerts.env" ]     && { set -a; . "${CONF_DIR}/alerts.env";     set +a; }
+[ -f "${CONF_DIR}/litestream.env" ] && { set -a; . "${CONF_DIR}/litestream.env"; set +a; }
 
 PING="${PKDUMP_BACKUP_PING_URL:-}"
 # Snapshots are daily (litestream.yml interval=24h); the threshold must clear one
@@ -75,10 +86,13 @@ PING="${PKDUMP_BACKUP_PING_URL:-}"
 MAX_AGE_HOURS="${PKDUMP_BACKUP_MAX_AGE_HOURS:-36}"
 
 # No monitor configured. The check still runs — see the header. Only the ping at
-# the end is skipped, and the operator is told which half they are getting.
+# the end is skipped, and the operator is told which half they are getting, and
+# how to arm the other one.
 if [ -z "$PING" ]; then
     echo "backup-check: PKDUMP_BACKUP_PING_URL unset — verifying freshness anyway;" \
-         "the off-box dead-man's switch is NOT armed (instance: ${INSTANCE})"
+         "the off-box dead-man's switch is NOT armed (instance: ${INSTANCE})." \
+         "To arm it: put the healthchecks.io ping URL in ${CONF_DIR}/alerts.env," \
+         "then bash ${SCRIPT_DIR}/alarm-status.sh ${INSTANCE}"
 fi
 
 # Mark the latest confirmed-fresh time on the data volume so the app can surface

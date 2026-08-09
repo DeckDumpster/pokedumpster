@@ -9,6 +9,11 @@
 //! (`pkdump serve --multi-tenant` / `PKDUMP_MULTITENANT=1`) and why nothing
 //! running it may face the internet. Identity is a separate epic.
 //!
+//! "May not" is enforced, not asked for: with the flag on and a bind address
+//! that is not loopback, the process refuses to start
+//! (`check_bind` in the crate root) unless a second, explicit opt-in says to expose it
+//! anyway.
+//!
 //! With the flag off — production, and every existing UI test — this module
 //! is inert: [`Tenants::resolve`] ignores the request entirely and hands back
 //! the single tenant the process was started with. A request cannot switch

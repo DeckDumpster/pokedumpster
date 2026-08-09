@@ -191,10 +191,14 @@ default**: `pkdump serve` opens the one collection named by `$PKDUMP_USER`
 and does not read the tenant header at all. `--multi-tenant` (or
 `PKDUMP_MULTITENANT=1`) switches on per-request resolution from the
 `x-pkdump-tenant` header. **Nothing authenticates that header** — identity is
-a separate epic — so the flag must stay off in production. What the header
-carries is a *handle*, and it is only ever a lookup key: the user registry
-(`registry.sqlite`, `pkdump-db/src/registry.rs`) maps it to an opaque
-`database_id`, and that id — never the header — is what
+a separate epic — so the flag must stay off in production. That is enforced
+rather than trusted: with the flag on and a non-loopback `--host`, the server
+refuses to start unless `PKDUMP_MULTITENANT_INSECURE_BIND=1` is also set.
+Single-tenant mode is unaffected at any address.
+
+What the header carries is a *handle*, and it is only ever a lookup key: the
+user registry (`registry.sqlite`, `pkdump-db/src/registry.rs`) maps it to an
+opaque `database_id`, and that id — never the header — is what
 `pkdump_db::tenant_db_file` turns into `tenants/<database_id>.sqlite`. Isolation is
 structural: `AppState` holds no connection, `blocking()` takes the tenant from
 the request scope, and one connection per tenant is opened against that
@@ -344,11 +348,26 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
   binder/deck assignment.
 - **Edition 2024**, toolchain pinned in `rust-toolchain.toml`. `cargo
   fmt` and `cargo clippy` clean before every commit.
-- **Schema** — single-instance project (pokedumpster-luo). The full
-  schema for each database lives in `crates/pkdump-db/src/schema_{shared,user}.sql`
-  and is re-applied with `CREATE … IF NOT EXISTS` on every open. No
-  migration history, no refinery. Schema changes: edit the file + apply
-  the diff manually to the one prod box (`podman exec` + `sqlite3`).
+- **Schema** — the full schema for each database lives in
+  `crates/pkdump-db/src/schema_{shared,user}.sql` and is re-applied with
+  `CREATE … IF NOT EXISTS` on every open. No migration history, no
+  refinery: additive change travels by idempotent re-application.
+- **Schema versions** — every database carries its schema version in
+  `PRAGMA user_version`, and a file written by a *newer* build is
+  **refused, not opened** (`crates/pkdump-db/src/schema_version.rs`).
+  Lower or 0 is adopted in place; equal is a no-op. That refusal is what
+  makes rollback (`pkdump tenant revert`) safe — an older binary must
+  stop rather than quietly operate on a schema it does not know.
+  `Database::version()` is the one place the numbers live; bump one only
+  when a change cannot be expressed as `CREATE … IF NOT EXISTS`, and
+  never as a substitute for a migration you have not written.
+  One database per tenant means they can legitimately differ, so
+  `pkdump tenant list` reports each tenant's own version and whether it is
+  behind, current, or ahead of the running build — reading, deliberately,
+  is not gated: a tenant the server refuses to open is exactly the one the
+  report exists to name (`deploy/TENANTS.md`).
+  `tests/schema-version/run.sh` (container tier, run by `deploy/ci.sh`)
+  proves all of it against a prod-shaped instance.
 - **Workspace dependencies** are declared in the root `Cargo.toml`
   `[workspace.dependencies]`; crates opt in with `dep.workspace = true`.
 - **Tests that demonstrate bugs must fail** until the bug is fixed.

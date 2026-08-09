@@ -50,6 +50,7 @@ use crate::paths::{
     validate_tenant_name,
 };
 use crate::registry::{self, User, UserState};
+use crate::schema_version::{self, Database, SchemaState};
 
 /// Sidecar files SQLite keeps beside a database in WAL mode.
 const WAL_SIDECARS: [&str; 2] = ["-wal", "-shm"];
@@ -532,6 +533,53 @@ pub fn unregistered() -> Result<Vec<String>> {
         .collect();
     stems.sort();
     Ok(stems)
+}
+
+/// A registered user and the schema version their collection database
+/// carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantSchema {
+    /// The user and the file they map to, exactly as [`list`] reports them.
+    pub tenant: Tenant,
+    /// `PRAGMA user_version` read off that user's database — `None` when the
+    /// file the registry names is not on this box. A row with no bytes has no
+    /// version, and that is drift to show beside `present: false` rather than
+    /// an error that would hide every other row in the report.
+    pub version: Option<i64>,
+}
+
+impl TenantSchema {
+    /// Where this user's database stands relative to this build, or `None`
+    /// for a database that is not here to have a version.
+    pub fn state(&self) -> Option<SchemaState> {
+        self.version.map(|v| Database::User.state_of(v))
+    }
+}
+
+/// Every registered user with the schema version of their collection
+/// database — the answer to "which of my N databases are behind" (pd-enje).
+///
+/// One database per user means they can legitimately differ: a user created
+/// today carries this build's version, one restored from a replica carries
+/// whatever it had when it was replicated, and one left over from before the
+/// gate carries 0. Nothing could report that until now.
+///
+/// Reads each file's header without applying schema and without the gate
+/// (see [`schema_version::version_of_file`]), so a database this build would
+/// *refuse to open* is still listed, with the version that makes it
+/// refusable. Reporting drift that stops the server is the point; failing
+/// the same way the server does would not be a report.
+pub fn versions() -> Result<Vec<TenantSchema>> {
+    list()?
+        .into_iter()
+        .map(|tenant| {
+            let version = tenant
+                .present
+                .then(|| schema_version::version_of_file(&tenant.path))
+                .transpose()?;
+            Ok(TenantSchema { tenant, version })
+        })
+        .collect()
 }
 
 /// Move a pre-`tenants/` collection database into the tenant layout:
@@ -1163,6 +1211,156 @@ mod tests {
             assert!(!moved.exists());
             assert!(ls.join("ltx/0/0001-0001.ltx").exists());
         });
+    }
+
+    /// The drift report: three users at three different versions, each read
+    /// off their own file. One database per user means they can legitimately
+    /// differ, and until this there was no way to see it.
+    #[test]
+    fn versions_reports_each_users_own_schema_version() {
+        with_home(|_| {
+            let known = Database::User.version();
+            let current = create("current").unwrap();
+            let behind = create("behind").unwrap();
+            let ahead = create("ahead").unwrap();
+            set_version(&behind.path, 0);
+            set_version(&ahead.path, known + 1);
+
+            // Creation order, as `list` reports it.
+            let reported = versions().unwrap();
+            assert_eq!(
+                reported,
+                vec![
+                    TenantSchema {
+                        tenant: current,
+                        version: Some(known),
+                    },
+                    TenantSchema {
+                        tenant: behind,
+                        version: Some(0),
+                    },
+                    TenantSchema {
+                        tenant: ahead,
+                        version: Some(known + 1),
+                    },
+                ]
+            );
+            let states: Vec<Option<SchemaState>> =
+                reported.iter().map(TenantSchema::state).collect();
+            assert_eq!(
+                states,
+                vec![
+                    Some(SchemaState::Current),
+                    Some(SchemaState::Behind),
+                    Some(SchemaState::Ahead),
+                ]
+            );
+        });
+    }
+
+    /// A user this build refuses to OPEN must still be REPORTED — that user
+    /// is the whole reason an operator is running this command. A report that
+    /// failed the same way the server did would name nobody.
+    #[test]
+    fn a_user_from_the_future_is_reported_not_refused() {
+        with_home(|_| {
+            let alice = create("alice").unwrap();
+            create("bob").unwrap();
+            let ahead = Database::User.version() + 1;
+            set_version(&alice.path, ahead);
+
+            assert!(
+                open_user(&alice.path).is_err(),
+                "the fixture must be one this build refuses to open"
+            );
+
+            let reported = versions().unwrap();
+            assert_eq!(reported.len(), 2, "the refusable user must still appear");
+            assert_eq!(reported[0].version, Some(ahead));
+            assert_eq!(reported[0].state(), Some(SchemaState::Ahead));
+            // And reporting did not "fix" what it read: the operator's next
+            // move is to run the newer build, which must find its database
+            // exactly as it left it.
+            assert_eq!(schema_version::version_of_file(&alice.path).unwrap(), ahead);
+        });
+    }
+
+    /// A registry row whose database is not on this box has no version to
+    /// report — and must not take the whole listing down with it. Drift shows
+    /// up as a blank column next to `(DATABASE MISSING)`, not as an error
+    /// that hides every other row.
+    #[test]
+    fn a_missing_database_reports_no_version_rather_than_failing() {
+        with_home(|_| {
+            let alice = create("alice").unwrap();
+            create("bob").unwrap();
+            std::fs::remove_file(&alice.path).unwrap();
+
+            let reported = versions().unwrap();
+            assert_eq!(reported[0].version, None);
+            assert_eq!(reported[0].state(), None);
+            assert!(!reported[0].tenant.present);
+            assert_eq!(reported[1].version, Some(Database::User.version()));
+        });
+    }
+
+    /// Listing must not open a collection the way the app does: `open_user`
+    /// applies the schema and stamps, so a report routed through it would
+    /// silently migrate every database on the box just by being asked what
+    /// version they are.
+    #[test]
+    fn reporting_versions_does_not_stamp_or_migrate() {
+        with_home(|_| {
+            let alice = create("alice").unwrap();
+            set_version(&alice.path, 0);
+            // Drop the tables too — an unversioned, schema-less file is what
+            // an accidental `open_user` would visibly repair.
+            Connection::open(&alice.path)
+                .unwrap()
+                .execute_batch("DROP TABLE collection")
+                .unwrap();
+
+            assert_eq!(versions().unwrap()[0].version, Some(0));
+
+            let conn = Connection::open(&alice.path).unwrap();
+            assert_eq!(schema_version::version(&conn).unwrap(), 0, "it stamped");
+            let tables: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name = 'collection'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(tables, 0, "it applied the schema");
+        });
+    }
+
+    /// Every user's version comes from that user's own file. A report that
+    /// read one database N times would look perfectly healthy while hiding
+    /// exactly the drift it exists to surface.
+    #[test]
+    fn no_user_reports_another_users_version() {
+        with_home(|_| {
+            let alice = create("alice").unwrap();
+            let bob = create("bob").unwrap();
+            set_version(&bob.path, 0);
+
+            let reported = versions().unwrap();
+            assert_eq!(reported[0].tenant.user.handle, "alice");
+            assert_eq!(reported[0].version, Some(Database::User.version()));
+            assert_eq!(reported[1].tenant.user.handle, "bob");
+            assert_eq!(reported[1].version, Some(0));
+            assert_ne!(alice.user.database_id, bob.user.database_id);
+        });
+    }
+
+    /// `PRAGMA user_version = n` against a live WAL database, the way an
+    /// older binary or a restore leaves one behind.
+    fn set_version(path: &Path, version: i64) {
+        Connection::open(path)
+            .unwrap()
+            .execute_batch(&format!("PRAGMA user_version = {version}"))
+            .unwrap();
     }
 
     #[test]

@@ -6,6 +6,23 @@
 -- prod (it's one box, one user).
 
 -- ---------------------------------------------------------------------
+-- Not part of the shape (pd-yj40)
+--
+-- `refinery_schema_history` is the migration-history table the pre-luo
+-- migration system left behind. Nothing has written to it since, and
+-- every consumer that walks sqlite_master had to name it just to skip it.
+-- Dropping it here removes both the table and the reason to know it
+-- existed; a database that never had it is untouched, and re-opening one
+-- that did writes nothing at all.
+--
+-- No `user_version` bump: an older binary reading a catalog without this
+-- table is not wrong, merely missing a table it already ignored. Bumping
+-- would refuse to open on rollback for a dead table.
+-- ---------------------------------------------------------------------
+
+DROP TABLE IF EXISTS refinery_schema_history;
+
+-- ---------------------------------------------------------------------
 -- Sets and cards
 -- ---------------------------------------------------------------------
 

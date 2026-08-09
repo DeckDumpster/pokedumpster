@@ -36,12 +36,20 @@
 # real S3 bucket and no application code.
 set -euo pipefail
 
-# Bare `sqlite3` has NO busy timeout: it returns SQLITE_BUSY the moment the
-# replicator holds the lock, and `set -e` takes the whole run down with it. This
-# gate writes to databases while a Litestream container replicates them, so
-# contention is not an edge case here — it is the scenario under test. Same
-# helper, same 5s, as pd-znsf added on master for the tenant writes; the registry
-# writes below need it for exactly the same reason.
+# Every SQLite write in this script goes through `sq`, never bare `sqlite3` —
+# the registry writes below included, for exactly the same reason as the tenant
+# writes pd-znsf added it for.
+#
+# The whole point of this gate is that Litestream is replicating these databases
+# WHILE we write to them, so contention is not an edge case here — it is the
+# scenario under test. A bare `sqlite3` has no busy timeout: it returns
+# SQLITE_BUSY the instant the replicator holds the lock, and with `set -e` that
+# takes the entire CI run down with `Error: stepping, database is locked (5)`.
+# Intermittent by nature — the same commit passed one run and failed the next.
+#
+# The application already gets this right (pkdump-db sets a 5s busy_timeout,
+# which is why pd-jgd4 measured zero SQLITE_BUSY across every concurrency arm).
+# Only this harness was missing it, so a correct product looked flaky.
 sq() { sqlite3 -cmd '.timeout 5000' "$@"; }
 
 LITESTREAM_IMAGE=${LITESTREAM_IMAGE:-docker.io/litestream/litestream:latest}
@@ -178,7 +186,7 @@ log "2. tenant databases under tenants/, one file each"
 # Every row carries its tenant name, so a restore that returns the wrong
 # tenant's data is caught by reading the data — not by trusting the prefix.
 seed_tenant() {
-	sqlite3 "$WORK/data/tenants/$1.sqlite" \
+	sq "$WORK/data/tenants/$1.sqlite" \
 		"PRAGMA journal_mode=WAL;
 		 CREATE TABLE collection (n INTEGER PRIMARY KEY, tenant TEXT, phase TEXT);
 		 INSERT INTO collection (tenant, phase) VALUES ('$1','early');" >/dev/null
@@ -186,7 +194,7 @@ seed_tenant() {
 # The catalog sits BESIDE tenants/, never inside it: it is reproducible from
 # upstream and must not be replicated. Put a decoy there to prove the glob
 # cannot reach it.
-sqlite3 "$WORK/data/shared.sqlite" "CREATE TABLE cards (id TEXT);" >/dev/null
+sq "$WORK/data/shared.sqlite" "CREATE TABLE cards (id TEXT);" >/dev/null
 # alpha/bravo/charlie exist before the sidecar starts; delta is created later,
 # with the sidecar already running (§5).
 for t in alpha bravo charlie; do seed_tenant "$t"; echo "  $t"; done
@@ -206,7 +214,7 @@ sleep 8
 MARKER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 sleep 2
 for t in alpha bravo charlie; do
-	sqlite3 "$WORK/data/tenants/$t.sqlite" \
+	sq "$WORK/data/tenants/$t.sqlite" \
 		"INSERT INTO collection (tenant, phase) VALUES ('$t','late');" >/dev/null
 done
 sleep 8
@@ -394,7 +402,7 @@ restore_ok() { # restore_ok <out> <url> [flags...] — never aborts the report
 	local out="$1" url="$2"; shift 2
 	ls_run restore "$@" -o "/restore/${out}" "$url" >/dev/null 2>&1 || true
 }
-sq_restored() { sqlite3 "$WORK/restore/$1" "$2" 2>/dev/null || echo '<no restored db>'; }
+sq_restored() { sq "$WORK/restore/$1" "$2" 2>/dev/null || echo '<no restored db>'; }
 
 restore_ok "${VICTIM}-latest.sqlite" "$(tenant_replica_url "$VICTIM" || true)" -integrity-check full
 check "restored tenant is ${VICTIM}, not a neighbour" "$VICTIM" \
@@ -437,7 +445,7 @@ check "every s3 replica pins its region (no s3:GetBucketLocation)" \
 # throughout. Ignored block => the 24h default => one initial level-9 object.
 sed 's/^  interval: 24h/  interval: 2s/' "$SHIPPED_YML" >"$WORK/fast-snapshot.yml"
 mkdir -p "$WORK/probe/tenants"
-sqlite3 "$WORK/probe/tenants/echo.sqlite" \
+sq "$WORK/probe/tenants/echo.sqlite" \
 	"PRAGMA journal_mode=WAL; CREATE TABLE collection (n INTEGER PRIMARY KEY, tenant TEXT);" >/dev/null
 podman run -d --name "$PROBE_CTR" --network "$NET" --user 0 \
 	-v "$WORK/probe:/data:Z" -v "$WORK/fast-snapshot.yml:/etc/litestream.yml:ro,Z" \

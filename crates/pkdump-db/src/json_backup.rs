@@ -78,15 +78,15 @@ impl ImportSummary {
 
 /// Every user table in the connection's `main` database, alphabetically.
 ///
-/// Skips SQLite internals and the legacy `refinery_schema_history` table left
-/// behind on the prod database by the pre-luo migration system — it is not in
-/// `schema_user.sql`, so a fresh database has nowhere to put it.
+/// Skips SQLite's own internals and nothing else. A table the collection
+/// should not carry is dropped by `schema_user.sql` on open, not named here
+/// — an exclusion list in the exporter is a second, quieter description of
+/// the schema, and it drifts (pd-yj40).
 pub fn user_tables(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT name FROM main.sqlite_master \
          WHERE type = 'table' \
            AND name NOT LIKE 'sqlite_%' \
-           AND name <> 'refinery_schema_history' \
          ORDER BY name",
     )?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;

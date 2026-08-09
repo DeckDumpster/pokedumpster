@@ -37,10 +37,16 @@
 //! single-tenant, and a migration the app refuses to start without is how the
 //! previous epic took it down (`pd-uoph`).
 //!
+//! `list` is also the schema-drift report: every tenant carries its own
+//! `PRAGMA user_version` and they can legitimately differ, so the listing
+//! names each one's version and where it stands relative to this build
+//! (pd-enje).
+//!
 //! Paths come from `$PKDUMP_HOME`, so `podman exec <ctr> pkdump tenant …`
 //! works against a running instance the same way `pkdump db` does.
 
-use pkdump_db::tenants::{self, Tenant};
+use pkdump_db::schema_version::{Database, SchemaState};
+use pkdump_db::tenants::{self, TenantSchema};
 
 /// Arguments for `pkdump tenant`.
 #[derive(clap::Args)]
@@ -285,8 +291,15 @@ const RENAMED_FILES_NOTE: &str = "\nBACKUPS: these files were RENAMED, so each o
 
 /// `pkdump tenant list` — the registry as a table, plus anything on disk the
 /// registry cannot account for.
+///
+/// The schema version is a column rather than a separate command because
+/// drift is only visible in comparison: one database per user means they can
+/// legitimately differ, and "which of my N databases are behind" is a
+/// question about the whole list (pd-enje). A user this build would refuse to
+/// OPEN is listed like any other — that row is what an operator whose server
+/// will not start is here to find.
 fn list() -> anyhow::Result<()> {
-    let tenants = tenants::list()?;
+    let tenants = tenants::versions()?;
     let unregistered = tenants::unregistered()?;
 
     if tenants.is_empty() {
@@ -295,9 +308,10 @@ fn list() -> anyhow::Result<()> {
             pkdump_db::registry_db_path()?.display()
         );
     } else {
+        let known = Database::User.version();
         // Measured, not guessed: a timestamp is as long as the registry
         // wrote it, and a detached row carries its holder's real handle.
-        let widest = |header: &str, of: &dyn Fn(&Tenant) -> &str| {
+        let widest = |header: &str, of: &dyn Fn(&TenantSchema) -> &str| {
             tenants
                 .iter()
                 .map(|t| of(t).len())
@@ -305,30 +319,43 @@ fn list() -> anyhow::Result<()> {
                 .unwrap_or(0)
                 .max(header.len())
         };
-        let handle = widest("HANDLE", &|t| &t.user.handle);
-        let id = widest("DATABASE ID", &|t| &t.user.database_id);
-        let created = widest("CREATED", &|t| &t.user.created_at);
-        let state = widest("STATE", &|t| t.user.state.as_str());
+        let handle = widest("HANDLE", &|t| &t.tenant.user.handle);
+        let id = widest("DATABASE ID", &|t| &t.tenant.user.database_id);
+        let created = widest("CREATED", &|t| &t.tenant.user.created_at);
+        let state = widest("STATE", &|t| t.tenant.user.state.as_str());
+        // Measured like the rest, and for the same reason: a retirement is a
+        // timestamp as long as the one in CREATED, so a guessed width here
+        // would push SCHEMA and STATUS out of line on exactly the rows an
+        // operator is reading the table to compare.
+        let retired = widest("RETIRED", &|t| {
+            t.tenant.user.retired_at.as_deref().unwrap_or("-")
+        });
         println!(
-            "{:<handle$}  {:<id$}  {:<created$}  {:<state$}  RETIRED",
-            "HANDLE", "DATABASE ID", "CREATED", "STATE"
+            "{:<handle$}  {:<id$}  {:<created$}  {:<state$}  {:<retired$}  SCHEMA  STATUS",
+            "HANDLE", "DATABASE ID", "CREATED", "STATE", "RETIRED"
         );
         for t in &tenants {
+            let status = match t.state() {
+                None => "DATABASE MISSING".to_string(),
+                Some(SchemaState::Current) => "current".to_string(),
+                Some(SchemaState::Behind) => {
+                    format!("behind this build's {known} — adopted on its next open")
+                }
+                Some(SchemaState::Ahead) => {
+                    format!("ahead of this build's {known} — this build refuses to open it")
+                }
+            };
             println!(
-                "{:<handle$}  {:<id$}  {:<created$}  {:<state$}  {}{}",
-                t.user.handle,
-                t.user.database_id,
-                t.user.created_at,
-                t.user.state.as_str(),
+                "{:<handle$}  {:<id$}  {:<created$}  {:<state$}  {:<retired$}  {:>6}  {status}",
+                t.tenant.user.handle,
+                t.tenant.user.database_id,
+                t.tenant.user.created_at,
+                t.tenant.user.state.as_str(),
                 // Two rows can share a handle now — one live, any number
                 // retired — so when each was released is what tells them
                 // apart at a glance.
-                t.user.retired_at.as_deref().unwrap_or("-"),
-                if t.present {
-                    ""
-                } else {
-                    "  (DATABASE MISSING)"
-                }
+                t.tenant.user.retired_at.as_deref().unwrap_or("-"),
+                t.version.map_or_else(|| "-".to_string(), |v| v.to_string()),
             );
         }
     }

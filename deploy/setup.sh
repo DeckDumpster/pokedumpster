@@ -66,8 +66,6 @@ IMAGE="localhost/pkdump:${INSTANCE}"
 SEED_VOLUME="pkdump-seed-data"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-QUADLET_DIR="$HOME/.config/containers/systemd"
-SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 
 if ! command -v podman >/dev/null 2>&1; then
     echo "ERROR: podman not found. Install it: sudo apt install podman"
@@ -99,69 +97,16 @@ echo "==> Building image pkdump:${INSTANCE}..."
 podman build -t pkdump:latest -f "$REPO_DIR/Containerfile" "$REPO_DIR"
 podman tag pkdump:latest "pkdump:${INSTANCE}"
 
-# --- Install the Quadlet unit ----------------------------------------------
+# --- Install the unit files -------------------------------------------------
+# Every Quadlet + systemd-user unit this checkout ships for the instance, in one
+# place, because deploy.sh installs exactly the same set (pd-2t6u). An existing
+# instance keeps the port it already publishes unless one is passed explicitly.
 
-echo "==> Installing Quadlet unit..."
-mkdir -p "$QUADLET_DIR"
-# Re-running setup.sh is how unit-file changes reach an existing instance, and
-# the port must survive that. Without this, `setup.sh prod` (no port) rewrites
-# prod's Quadlet with a RANDOM host port and the address everything reaches it
-# on changes — an outage caused by refreshing the units. An existing instance
-# keeps the port it already publishes unless one is passed explicitly.
-if [ "$PORT" = "0" ] && [ -f "${QUADLET_DIR}/${SERVICE_NAME}.container" ]; then
-    EXISTING_PORT="$(sed -n 's|^PublishPort=\([0-9]\{1,\}\):8080$|\1|p' \
-        "${QUADLET_DIR}/${SERVICE_NAME}.container" | head -1)"
-    if [ -n "$EXISTING_PORT" ]; then
-        PORT="$EXISTING_PORT"
-        echo "    Keeping the port '${INSTANCE}' already publishes: ${PORT}"
-    fi
-fi
-# PORT=0 -> ":8080" lets Podman pick a free host port.
-if [ "$PORT" = "0" ]; then
-    PORT_MAPPING=":8080"
-else
-    PORT_MAPPING="${PORT}:8080"
-fi
-sed \
-    -e "s|{{INSTANCE}}|${INSTANCE}|g" \
-    -e "s|{{PORT}}:8080|${PORT_MAPPING}|g" \
-    "$REPO_DIR/deploy/pkdump.container" \
-    > "${QUADLET_DIR}/${SERVICE_NAME}.container"
-# systemd does not inherit the shim on PATH, so the unit carries the store flags
-# itself. No-op without PKDUMP_STORE_ROOT — prod's unit comes out unchanged.
-pkdump_store_stamp_unit "${QUADLET_DIR}/${SERVICE_NAME}.container"
-
-# --- Install per-instance timer units --------------------------------------
-# %i-templated units installed under a concrete instance name so several
-# instances can run side by side. Enable them after setup if desired.
-
-mkdir -p "$SYSTEMD_USER_DIR"
-# Substitute {{REPO_DIR}} with this checkout so ExecStart resolves
-# (single-clone deployment — the clone is not named per-instance).
-for EXT in service timer; do
-    sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
-        "$REPO_DIR/deploy/pkdump-refresh.${EXT}" \
-        > "${SYSTEMD_USER_DIR}/pkdump-refresh@.${EXT}"
-done
-
-# --- Install the backup-failure alarming units (pokedumpster-ivq) -----------
-# Layer 1: backup-freshness dead-man's switch (per-instance @ template).
-# Layer 2: OnFailure -> Pushover journal-tail push (instance-by-failed-unit).
-# Layer 4: host-wide low-disk check (not per-instance).
-echo "==> Installing backup-failure alarming units..."
-for EXT in service timer; do
-    sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
-        "$REPO_DIR/deploy/pkdump-backup-check.${EXT}" \
-        > "${SYSTEMD_USER_DIR}/pkdump-backup-check@.${EXT}"
-done
-sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
-    "$REPO_DIR/deploy/pkdump-alert@.service" \
-    > "${SYSTEMD_USER_DIR}/pkdump-alert@.service"
-for EXT in service timer; do
-    sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
-        "$REPO_DIR/deploy/pkdump-diskcheck.${EXT}" \
-        > "${SYSTEMD_USER_DIR}/pkdump-diskcheck.${EXT}"
-done
+echo "==> Installing unit files..."
+# shellcheck source=deploy/units-lib.sh
+. "$SCRIPT_DIR/units-lib.sh"
+pkdump_units_install "$INSTANCE" "$PORT"
+pkdump_units_report
 
 # Scaffold the host-wide alert config (Pushover creds + disk threshold). Secrets
 # NEVER live in the repo; this only writes a template and never clobbers it.
@@ -212,17 +157,9 @@ EOF
     echo "    Wrote ${STORE_ENV} (container store; commented out = Podman's default)."
 fi
 
-# --- Install the Litestream backup sidecar (pokedumpster-8ch.3) -------------
-# Quadlet sidecar that continuously replicates the collection DB to S3. Instance
-# + repo path are sed-substituted (single-clone deployment).
-echo "==> Installing Litestream backup sidecar..."
-sed -e "s|{{INSTANCE}}|${INSTANCE}|g" \
-    -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
-    "$REPO_DIR/deploy/pkdump-litestream.container" \
-    > "${QUADLET_DIR}/pkdump-litestream-${INSTANCE}.container"
-pkdump_store_stamp_unit "${QUADLET_DIR}/pkdump-litestream-${INSTANCE}.container"
-
-# Scaffold the per-instance config (S3 target + AWS creds). Secrets NEVER live in
+# --- Litestream backup sidecar config (pokedumpster-8ch.3) ------------------
+# The sidecar's Quadlet unit is installed above with the rest of them; what is
+# left is its per-instance config (S3 target + AWS creds). Secrets NEVER live in
 # the repo; this only writes a template and never clobbers existing config.
 LS_CONF_DIR="${HOME}/.config/pkdump/${INSTANCE}"
 mkdir -p "${LS_CONF_DIR}/aws"

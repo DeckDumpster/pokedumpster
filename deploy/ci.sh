@@ -182,10 +182,12 @@ step "cargo fmt --check"
 ( cd "$REPO_DIR" && cargo fmt --check )
 
 # --- 2b. Deploy-script gates ------------------------------------------------
-# The low-disk guard and the store-root resolution are shell, so they get a
-# shell test — including one that shows the guard actually firing.
+# The low-disk guard, the store-root resolution and the unit-file install are
+# shell, so they get a shell test — including one that shows the guard actually
+# firing, and one that drives deploy.sh over stale installed units and asserts
+# every one comes back matching the shipped template (pd-2t6u).
 
-step "Deploy scripts: store resolution + low-disk guard"
+step "Deploy scripts: unit install + store resolution + low-disk guard"
 bash "$REPO_DIR/tests/deploy/run.sh"
 
 # --- 3. Frontend gate -------------------------------------------------------

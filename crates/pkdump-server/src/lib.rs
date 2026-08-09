@@ -55,7 +55,8 @@ impl AppError {
         AppError(StatusCode::INTERNAL_SERVER_ERROR, msg.into())
     }
 
-    /// A 400 with a body the frontend parses for `{error, position}`.
+    /// A 400 whose body is JSON the frontend reads: `{error, position}` for a
+    /// query-language parse error, `{error}` alone for everything else.
     fn bad_request(body: impl Into<String>) -> Self {
         AppError(StatusCode::BAD_REQUEST, body.into())
     }
@@ -627,7 +628,95 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(none.status(), StatusCode::OK);
-        assert_eq!(body_string(none).await.trim(), "[]");
+        let body = body_string(none).await;
+        assert!(body.contains("\"rows\":[]"), "no matches: {body}");
+        assert!(body.contains("\"total\":0"), "no matches: {body}");
+    }
+
+    /// pd-jsby. The body is a page envelope, not a bare array, and the page it
+    /// describes is bounded even when the caller names no bounds.
+    #[tokio::test]
+    async fn search_returns_a_page_envelope_with_a_bounded_default() {
+        let (_d, router) = test_app();
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/collection/search?include_unowned=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(body["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(body["total"], 1, "total counts the whole result set");
+        assert_eq!(
+            body["limit"],
+            pkdump_db::search::DEFAULT_LIMIT,
+            "an absent limit is the bounded default, not unbounded"
+        );
+        assert_eq!(body["offset"], 0);
+    }
+
+    /// The page bounds reach the query, and `total` stays the size of the whole
+    /// result rather than of the page returned.
+    #[tokio::test]
+    async fn search_honours_limit_and_offset() {
+        let (_d, router) = test_app();
+        let page = |uri: &'static str| {
+            let router = router.clone();
+            async move {
+                let resp = router
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::OK);
+                serde_json::from_str::<serde_json::Value>(&body_string(resp).await).unwrap()
+            }
+        };
+
+        let empty = page("/api/collection/search?include_unowned=1&limit=0").await;
+        assert!(empty["rows"].as_array().unwrap().is_empty());
+        assert_eq!(empty["total"], 1, "limit=0 is a count-only request");
+
+        let past_end = page("/api/collection/search?include_unowned=1&limit=10&offset=5").await;
+        assert!(past_end["rows"].as_array().unwrap().is_empty());
+        assert_eq!(
+            past_end["total"], 1,
+            "an offset past the end is not an error"
+        );
+        assert_eq!(past_end["limit"], 10);
+        assert_eq!(past_end["offset"], 5);
+    }
+
+    /// A paging bound that is not a whole number in range is refused — never
+    /// honoured, never clamped to something the caller did not ask for. The 400
+    /// body carries `error` and no `position`, which is how the client tells a
+    /// paging complaint from a query-syntax one.
+    #[tokio::test]
+    async fn search_refuses_bad_paging_bounds() {
+        let (_d, router) = test_app();
+        let over_max = pkdump_db::search::MAX_LIMIT + 1;
+        for uri in [
+            "/api/collection/search?limit=-1".to_string(),
+            "/api/collection/search?limit=abc".to_string(),
+            "/api/collection/search?limit=1.5".to_string(),
+            format!("/api/collection/search?limit={over_max}"),
+            "/api/collection/search?limit=99999999999999999999".to_string(),
+            "/api/collection/search?offset=-1".to_string(),
+            "/api/collection/search?offset=nope".to_string(),
+        ] {
+            let resp = router
+                .clone()
+                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
+            let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+            assert!(body["error"].is_string(), "{uri}: {body}");
+            assert!(body["position"].is_null(), "not a query error: {uri}");
+        }
     }
 
     #[tokio::test]

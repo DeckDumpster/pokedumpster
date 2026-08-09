@@ -78,10 +78,10 @@ pub struct CopySummary {
 
 /// One search result row — a single printing, owned or not (decision D3).
 ///
-/// **Every field here is one the search list actually draws.** The list is
-/// unpaginated and catalog-wide mode returns the whole catalog, so a field
-/// nobody renders costs its bytes *and* its key name ~57k times over
-/// (pd-lk8v). Anything only the card modal shows belongs on `CardDetail`,
+/// **Every field here is one the search list actually draws.** A field nobody
+/// renders costs its bytes *and* its key name once per row (pd-lk8v) — which
+/// was ~57k times over before the endpoint answered in pages (pd-jsby), and is
+/// still the whole page. Anything only the card modal shows belongs on `CardDetail`,
 /// which is fetched for the one card the user clicked — see
 /// `list_payload_carries_only_what_the_list_renders`, which fails if a field
 /// is added here without that decision being made.
@@ -114,6 +114,32 @@ pub struct SearchRow {
     /// The owned copies of this printing (empty when unowned).
     pub copies: Vec<CopySummary>,
 }
+
+/// One page of search results plus the size of the whole result set.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct SearchPage {
+    pub rows: Vec<SearchRow>,
+    /// Rows the query matches in total, ignoring `limit`/`offset`.
+    #[ts(type = "number")]
+    pub total: i64,
+    #[ts(type = "number")]
+    pub limit: u32,
+    #[ts(type = "number")]
+    pub offset: u32,
+}
+
+/// Rows returned when a caller names no `limit`.
+///
+/// The default is bounded, not unbounded: catalog-wide mode matches one row per
+/// printing in the catalog, so an unbounded default leaves a 44 MB response one
+/// forgotten parameter away — which is exactly how it shipped. Truncation is
+/// not silent, because [`SearchPage::total`] always describes the whole result.
+pub const DEFAULT_LIMIT: u32 = 250;
+
+/// The largest page a caller may ask for. Beyond this the request is refused,
+/// not clamped — a caller that wants everything is asking the wrong endpoint.
+pub const MAX_LIMIT: u32 = 1000;
 
 #[derive(Clone, Copy, Default)]
 enum Dir {
@@ -210,12 +236,65 @@ pub fn compile(ast: &Ast, flags: &[SearchFlag]) -> CompiledSearch {
     }
 }
 
-/// Parse-compile-execute convenience used by the route and tests.
+/// Execute a compiled query **unbounded** — every matching row.
+///
+/// This is the differential-oracle and test path. Anything serving an HTTP
+/// response wants [`search_page`] instead: catalog-wide mode returns one row
+/// per printing in the catalog (56k on the real one), which is how the
+/// endpoint came to ship a 44 MB body.
 pub fn search(conn: &Connection, compiled: &CompiledSearch) -> Result<Vec<SearchRow>> {
-    let sql = build_full_sql(compiled);
+    run(conn, compiled, None)
+}
+
+/// Execute a compiled query as one page, alongside the count of the whole
+/// result set.
+///
+/// `total` is the count of the **unbounded** query, not of the page returned,
+/// so a client can render "N results" and page without a second request.
+/// `limit` and `offset` are echoed back so a response is self-describing.
+pub fn search_page(
+    conn: &Connection,
+    compiled: &CompiledSearch,
+    limit: u32,
+    offset: u32,
+) -> Result<SearchPage> {
+    let total = count(conn, compiled)?;
+    let rows = run(conn, compiled, Some((limit, offset)))?;
+    Ok(SearchPage {
+        rows,
+        total,
+        limit,
+        offset,
+    })
+}
+
+/// Count every row the compiled query matches, ignoring any paging.
+pub fn count(conn: &Connection, compiled: &CompiledSearch) -> Result<i64> {
+    let sql = format!(
+        "SELECT COUNT(*) {FROM_CLAUSE} WHERE {}",
+        where_clause(compiled)
+    );
+    let n = conn.query_row(&sql, params_from_iter(compiled.params.iter()), |r| r.get(0))?;
+    Ok(n)
+}
+
+/// Run the row query, optionally bounded to one `(limit, offset)` page.
+fn run(
+    conn: &Connection,
+    compiled: &CompiledSearch,
+    page: Option<(u32, u32)>,
+) -> Result<Vec<SearchRow>> {
+    let sql = build_full_sql(compiled, page);
+    // The paging bounds are bound parameters like every user value, appended
+    // after the WHERE clause's own params in statement order.
+    let mut params = compiled.params.clone();
+    if let Some((limit, offset)) = page {
+        params.push(Value::Integer(i64::from(limit)));
+        params.push(Value::Integer(i64::from(offset)));
+    }
     let mut stmt = conn.prepare(&sql)?;
     let mut rows: Vec<SearchRow> = stmt
-        .query_map(params_from_iter(compiled.params.iter()), row_from)?
+        .query_map(params_from_iter(params.iter()), row_from)?
         .collect::<rusqlite::Result<_>>()?;
     if !rows.is_empty() {
         attach_copies(conn, &mut rows)?;
@@ -724,10 +803,10 @@ fn order_sql(order_by: Option<&str>) -> String {
     }
 }
 
-fn build_full_sql(c: &CompiledSearch) -> String {
-    // Owned mode requires an owned/ordered copy unless the query already
-    // constrains status explicitly; catalog-wide mode keeps the catalog.
-    let where_clause = if c.catalog_wide || c.has_status_filter {
+/// Owned mode requires an owned/ordered copy unless the query already
+/// constrains status explicitly; catalog-wide mode keeps the catalog.
+fn where_clause(c: &CompiledSearch) -> String {
+    if c.catalog_wide || c.has_status_filter {
         c.where_sql.clone()
     } else {
         format!(
@@ -735,12 +814,25 @@ fn build_full_sql(c: &CompiledSearch) -> String {
              AND c.status IN ('owned', 'ordered')) AND ({})",
             c.where_sql
         )
-    };
+    }
+}
+
+fn build_full_sql(c: &CompiledSearch, page: Option<(u32, u32)>) -> String {
+    let where_clause = where_clause(c);
     let order_col = order_sql(c.order_by.as_deref());
     let dir = if matches!(c.order_dir, Dir::Desc) {
         "DESC"
     } else {
         "ASC"
+    };
+    // `p.printing_id` is unique, so the ORDER BY is a total order. Without a
+    // unique final key, rows tied on the sort column (Pikachu normal and
+    // reverse holo share a name AND a number) may sit in either order from one
+    // statement to the next, and OFFSET paging then drops and duplicates them.
+    let paging = if page.is_some() {
+        " LIMIT ? OFFSET ?"
+    } else {
+        ""
     };
     format!(
         "SELECT p.printing_id, cd.card_id, cd.set_code, s.name AS set_name, s.ptcgo_code, \
@@ -751,7 +843,7 @@ fn build_full_sql(c: &CompiledSearch) -> String {
                 ({OWNED_COUNT_SUBQ}) AS owned_count \
          {FROM_CLAUSE} \
          WHERE {where_clause} \
-         ORDER BY {order_col} {dir}, cd.number_sortable ASC"
+         ORDER BY {order_col} {dir}, cd.number_sortable ASC, p.printing_id ASC{paging}"
     )
 }
 
@@ -1114,10 +1206,11 @@ mod tests {
 
     // --- payload shape (pd-lk8v) -------------------------------------------
 
-    // The list is unpaginated and catalog-wide mode returns the whole catalog
-    // (~57k rows on prod), so every field here is paid ~57k times — for its
-    // value *and* for its key name. `attacks` alone was 54% of a 44 MB
-    // response for a Cost column that renders only the energy pips.
+    // Every field here is paid once per row — for its value *and* for its key
+    // name. `attacks` alone was 54% of a 44 MB response for a Cost column that
+    // renders only the energy pips, back when catalog-wide mode returned the
+    // whole catalog in one body (~57k rows on prod). The endpoint pages now
+    // (pd-jsby), which caps the multiplier without changing the argument.
     //
     // Named explicitly, not size-asserted: a byte budget rots, a key set does
     // not. Adding a field to SearchRow fails this test, which is the point —
@@ -1238,6 +1331,148 @@ mod tests {
         assert_eq!(
             f.ids("t:fire or t:lightning"),
             vec!["base1-4-holo", "sv3pt5-25-normal"]
+        );
+    }
+
+    // --- paging (pd-jsby) ---------------------------------------------------
+
+    /// Catalog-wide, empty query: every fixture printing, the shape the
+    /// unbounded endpoint used to return 56k rows of.
+    fn all_printings() -> CompiledSearch {
+        let mut c = compile_all();
+        c.set_catalog_wide(true);
+        c
+    }
+
+    #[test]
+    fn limit_bounds_the_page_and_total_counts_the_whole_result() {
+        let f = fixture();
+        let c = all_printings();
+        // Read the catalog size off the query rather than hardcoding it — the
+        // fixture grows as other beads land, and paging is what is under test.
+        let all = search(&f.conn, &c).unwrap().len() as i64;
+        assert!(all > 2, "fixture needs more printings than the page below");
+
+        let page = search_page(&f.conn, &c, 2, 0).unwrap();
+        assert_eq!(page.rows.len(), 2, "limit bounds the rows returned");
+        assert_eq!(
+            page.total, all,
+            "total is the unbounded count, not the page"
+        );
+        assert_eq!((page.limit, page.offset), (2, 0), "page echoes its bounds");
+
+        // A limit past the end returns what exists, not an error.
+        let over = search_page(&f.conn, &c, 100, 0).unwrap();
+        assert_eq!(over.rows.len() as i64, all);
+        assert_eq!(over.total, all);
+
+        // limit=0 is a legal count-only request.
+        let none = search_page(&f.conn, &c, 0, 0).unwrap();
+        assert!(none.rows.is_empty());
+        assert_eq!(none.total, all);
+    }
+
+    #[test]
+    fn offset_past_the_end_is_an_empty_page_with_an_honest_total() {
+        let f = fixture();
+        let c = all_printings();
+        let all = search(&f.conn, &c).unwrap().len() as i64;
+        let page = search_page(&f.conn, &c, 10, 999).unwrap();
+        assert!(page.rows.is_empty());
+        assert_eq!(page.total, all);
+    }
+
+    // The classic form of this bug: an ORDER BY that is not a total order lets
+    // SQLite return tied rows in either order between statements, so an OFFSET
+    // walk drops some rows and repeats others. The fixture has a tie pair by
+    // construction — sv3pt5-25-normal and sv3pt5-25-reverse_holo are the same
+    // card, so they share `cd.name` AND `cd.number_sortable`, the only two
+    // ORDER BY keys this query had before the printing_id tiebreaker.
+    //
+    // This asserts the SQL shape rather than a walk, deliberately: SQLite's
+    // sorter happens to be stable at four rows, so the walk below passes with
+    // or without a unique key and cannot be the guard. Uniqueness of the sort
+    // key is the property; the walk is what it buys.
+    #[test]
+    fn order_by_is_a_total_order() {
+        let sql = build_full_sql(&all_printings(), Some((1, 0)));
+        assert!(
+            sql.contains("cd.number_sortable ASC, p.printing_id ASC LIMIT ? OFFSET ?"),
+            "unique final sort key + bound paging: {sql}"
+        );
+        // And the bounds are bound parameters, never formatted into the SQL.
+        assert!(sql.ends_with("LIMIT ? OFFSET ?"), "bounds are bound: {sql}");
+        assert!(build_full_sql(&all_printings(), None).ends_with("p.printing_id ASC"));
+    }
+
+    #[test]
+    fn offset_walks_the_full_result_without_gaps_or_repeats() {
+        let f = fixture();
+        let c = all_printings();
+        let expected: Vec<String> = search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.printing_id)
+            .collect();
+
+        // Walk one row at a time — the harshest paging the client can ask for.
+        let mut walked: Vec<String> = Vec::new();
+        let mut offset = 0u32;
+        loop {
+            let page = search_page(&f.conn, &c, 1, offset).unwrap();
+            assert_eq!(page.total, expected.len() as i64, "total is page-invariant");
+            if page.rows.is_empty() {
+                break;
+            }
+            walked.extend(page.rows.into_iter().map(|r| r.printing_id));
+            offset += 1;
+        }
+        assert_eq!(walked, expected, "pages concatenate to the whole result");
+
+        // Same walk at a page size that does not divide the total evenly.
+        let mut walked3: Vec<String> = Vec::new();
+        let mut offset = 0u32;
+        while (offset as usize) < expected.len() {
+            let page = search_page(&f.conn, &c, 3, offset).unwrap();
+            walked3.extend(page.rows.into_iter().map(|r| r.printing_id));
+            offset += 3;
+        }
+        assert_eq!(walked3, expected);
+    }
+
+    #[test]
+    fn paging_survives_a_sort_column_that_is_null_for_every_row() {
+        let f = fixture();
+        // `order:price` — no prices in the fixture, so every row ties on NULL
+        // and only the tiebreakers separate them.
+        let mut c = all_printings();
+        c.override_order(Some("price"), None);
+        let expected: Vec<String> = search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.printing_id)
+            .collect();
+        let mut walked: Vec<String> = Vec::new();
+        for offset in 0..expected.len() as u32 {
+            let page = search_page(&f.conn, &c, 1, offset).unwrap();
+            walked.extend(page.rows.into_iter().map(|r| r.printing_id));
+        }
+        assert_eq!(walked, expected, "all-NULL sort still pages coherently");
+    }
+
+    #[test]
+    fn paging_respects_the_query_filter() {
+        let f = fixture();
+        // Owned mode, one match: paging must not widen or narrow the filter.
+        let c = f.compile("t:fire");
+        let page = search_page(&f.conn, &c, 10, 0).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].printing_id, "base1-4-holo");
+        assert_eq!(
+            page.rows[0].copies.len(),
+            2,
+            "copies still attach on a page"
         );
     }
 }

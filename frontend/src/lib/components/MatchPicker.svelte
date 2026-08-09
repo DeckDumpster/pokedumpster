@@ -42,7 +42,11 @@
 		error = null;
 		try {
 			if (kind === 'single') {
-				singles = query ? await api.collectionSearch(query, undefined, undefined, true) : [];
+				// One page is the whole point here — the picker offers candidates
+				// to click, not the catalog.
+				singles = query
+					? (await api.collectionSearch(query, undefined, undefined, true)).rows
+					: [];
 			} else {
 				sealed = query ? await api.sealedProducts(query) : [];
 			}

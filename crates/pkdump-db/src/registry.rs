@@ -25,18 +25,19 @@
 //!
 //! Resolution, the CLI, and replication all live elsewhere. This module is
 //! the schema and its accessor: lookup, insert, rename, detach.
+//!
+//! What it deliberately is *not* is the place the rules live. `database_id`
+//! is the primary key, a handle's charset is a `CHECK`, and "one live user
+//! per handle" is a partial unique index over `state = 'active'` — all three
+//! in `schema_registry.sql`, so they hold for every writer including an
+//! operator with `sqlite3` open on the file. The functions below are the
+//! ergonomic path to them, not the enforcement.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use ulid::Ulid;
 
 use crate::error::{DbError, Result};
 use crate::paths::{registry_db_path, validate_tenant_name};
-
-/// Separator marking a released handle. `:` is outside the handle charset
-/// [`validate_tenant_name`] admits, so a retired handle can never collide
-/// with a live one — which is what lets [`detach`] free `alice` while the
-/// row that says where alice's bytes are survives.
-const RETIRED_MARK: &str = ":detached:";
 
 /// Whether a registered user is live, or has released their handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,26 +70,35 @@ impl UserState {
 }
 
 /// One row of the registry: who they are, and where their collection lives.
+///
+/// `database_id` first because it is the primary key — the identity. `handle`
+/// is a label on it, and a detached user keeps theirs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct User {
-    pub handle: String,
     pub database_id: String,
+    pub handle: String,
     pub created_at: String,
     pub state: UserState,
+    /// When the handle was released. `None` while active.
+    pub retired_at: Option<String>,
 }
 
-const COLS: &str = "handle, database_id, created_at, state";
+const COLS: &str = "database_id, handle, created_at, state, retired_at";
 
-fn from_row(r: &rusqlite::Row) -> rusqlite::Result<(String, String, String, String)> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+/// The columns as [`COLS`] names them, still as SQLite handed them over.
+type Row = (String, String, String, String, Option<String>);
+
+fn from_row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
 }
 
-fn into_user(row: (String, String, String, String)) -> Result<User> {
+fn into_user(row: Row) -> Result<User> {
     Ok(User {
-        handle: row.0,
-        database_id: row.1,
+        database_id: row.0,
+        handle: row.1,
         created_at: row.2,
         state: UserState::parse(&row.3)?,
+        retired_at: row.4,
     })
 }
 
@@ -97,7 +107,17 @@ pub fn open() -> Result<Connection> {
     crate::connection::open_registry(&registry_db_path()?)
 }
 
-/// The user registered under `handle`, if any.
+/// The **active** user registered under `handle`, if any.
+///
+/// Active-only, and that is the whole meaning of the word "registered" here:
+/// a detached row keeps its holder's real handle, so a handle can name one
+/// live user and any number of retired ones. Which of them a caller wants is
+/// never in question — the live one, or nobody. Retired rows are reached by
+/// `database_id` ([`find`]) or read in bulk ([`list`]), the two places that
+/// are asking about a *database* rather than about a name.
+///
+/// At most one row can come back: `user_one_active_handle` is a unique index
+/// over exactly this predicate.
 ///
 /// The handle is a bound parameter and nothing else: it is compared against
 /// a column, never concatenated, never turned into a path. An unknown
@@ -105,7 +125,7 @@ pub fn open() -> Result<Connection> {
 pub fn lookup(conn: &Connection, handle: &str) -> Result<Option<User>> {
     let row = conn
         .query_row(
-            &format!("SELECT {COLS} FROM user WHERE handle = ?1"),
+            &format!("SELECT {COLS} FROM user WHERE handle = ?1 AND state = 'active'"),
             params![handle],
             from_row,
         )
@@ -129,24 +149,31 @@ pub fn mint_database_id() -> String {
 /// two users cannot be pointed at one file, and that a recycled handle
 /// gets fresh storage.
 ///
-/// Fails with [`DbError::Conflict`] if the handle is taken — by the PRIMARY
-/// KEY, not by a check-then-insert, so two concurrent creates cannot both
-/// win.
+/// Fails with [`DbError::Conflict`] if the handle is taken by a live user —
+/// by `user_one_active_handle`, not by a check-then-insert, so two concurrent
+/// creates cannot both win. A handle held only by *detached* rows is free,
+/// which is the point of the index being partial.
+///
+/// [`validate_tenant_name`] runs first for the error message, not for the
+/// guarantee: the `CHECK` on `user.handle` is the same rule and it is the one
+/// that cannot be gone around.
 pub fn insert(conn: &Connection, handle: &str) -> Result<User> {
     validate_tenant_name(handle)?;
     let user = User {
-        handle: handle.to_string(),
         database_id: mint_database_id(),
+        handle: handle.to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
         state: UserState::Active,
+        retired_at: None,
     };
     conn.execute(
-        "INSERT INTO user (handle, database_id, created_at, state) VALUES (?1, ?2, ?3, ?4)",
+        &format!("INSERT INTO user ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5)"),
         params![
-            user.handle,
             user.database_id,
+            user.handle,
             user.created_at,
-            user.state.as_str()
+            user.state.as_str(),
+            user.retired_at
         ],
     )
     .map_err(|e| conflict(e, format!("handle {handle:?} is already registered")))?;
@@ -155,15 +182,16 @@ pub fn insert(conn: &Connection, handle: &str) -> Result<User> {
 
 /// Rename `from` to `to`. Returns the renamed row.
 ///
-/// Only the `handle` column is written — the database, its replica prefix
-/// and the user's history are all keyed on `database_id` and cannot move
-/// because someone changed their name.
+/// Only the `handle` column is written, and the row is addressed by its
+/// `database_id` — the database, its replica prefix and the user's history
+/// are all keyed on that id and cannot move because someone changed their
+/// name.
 pub fn rename(conn: &Connection, from: &str, to: &str) -> Result<User> {
     validate_tenant_name(to)?;
     let user = require(conn, from)?;
     conn.execute(
-        "UPDATE user SET handle = ?2 WHERE handle = ?1",
-        params![from, to],
+        "UPDATE user SET handle = ?2 WHERE database_id = ?1",
+        params![user.database_id, to],
     )
     .map_err(|e| conflict(e, format!("handle {to:?} is already registered")))?;
     Ok(User {
@@ -173,13 +201,19 @@ pub fn rename(conn: &Connection, from: &str, to: &str) -> Result<User> {
 }
 
 /// Release `handle` and keep the database: the row goes to
-/// `state = 'detached'` and its handle is retired to `<handle>:detached:<id>`.
-/// Returns the detached row, under its retired handle.
+/// `state = 'detached'`, stamped with when. Returns the detached row.
 ///
 /// This is what `tenant remove` becomes. Nothing is deleted — not the file,
 /// not the replica — so the retention window stops being the liability
 /// `pd-pm7b` made of it and becomes a safety net. Hard deletion is a
 /// separate, explicit act.
+///
+/// **The retired row keeps the person's real handle.** Freeing the name is
+/// the index's job, not a rewrite's: `user_one_active_handle` covers only
+/// `state = 'active'`, so the moment this `UPDATE` commits the handle is
+/// available and the row still says whose bytes those are. An orphaned
+/// database is therefore attributable by reading a column rather than by
+/// parsing a composite string.
 ///
 /// The handle is genuinely free afterwards: registering it again mints a
 /// new `database_id`, so the new user gets a new file and a new replica
@@ -187,19 +221,14 @@ pub fn rename(conn: &Connection, from: &str, to: &str) -> Result<User> {
 /// is the test that holds it.
 pub fn detach(conn: &Connection, handle: &str) -> Result<User> {
     let user = require(conn, handle)?;
-    if user.state == UserState::Detached {
-        return Err(DbError::Conflict(format!(
-            "user {handle:?} is already detached"
-        )));
-    }
-    let retired = format!("{handle}{RETIRED_MARK}{}", user.database_id);
+    let retired_at = chrono::Utc::now().to_rfc3339();
     conn.execute(
-        "UPDATE user SET handle = ?2, state = ?3 WHERE handle = ?1",
-        params![handle, retired, UserState::Detached.as_str()],
+        "UPDATE user SET state = ?2, retired_at = ?3 WHERE database_id = ?1",
+        params![user.database_id, UserState::Detached.as_str(), retired_at],
     )?;
     Ok(User {
-        handle: retired,
         state: UserState::Detached,
+        retired_at: Some(retired_at),
         ..user
     })
 }
@@ -278,6 +307,10 @@ pub fn list(conn: &Connection) -> Result<Vec<User>> {
 }
 
 /// [`lookup`], but a missing handle is an error rather than `None`.
+///
+/// "Missing" includes a handle only detached rows hold: [`lookup`] is
+/// active-only, so [`rename`] and [`detach`] can act on what it returns
+/// without asking a second time whether the user is live.
 fn require(conn: &Connection, handle: &str) -> Result<User> {
     lookup(conn, handle)?
         .ok_or_else(|| DbError::NotFound(format!("no user with handle {handle:?}")))
@@ -345,35 +378,50 @@ mod tests {
         }
     }
 
+    /// Insert a row past the accessor entirely, so the assertion is about the
+    /// schema and not about Rust. Returns whatever SQLite said.
+    fn raw_insert(
+        conn: &Connection,
+        database_id: &str,
+        handle: &str,
+        state: &str,
+    ) -> rusqlite::Result<usize> {
+        conn.execute(
+            "INSERT INTO user (database_id, handle, created_at, state) \
+             VALUES (?1, ?2, '2026-08-08T00:00:00Z', ?3)",
+            params![database_id, handle, state],
+        )
+    }
+
     #[test]
-    fn a_handle_is_unique_by_schema() {
+    fn one_active_user_per_handle_by_schema() {
         let (_dir, conn) = registry();
         insert(&conn, "alice").unwrap();
         let err = insert(&conn, "alice").unwrap_err();
         assert!(matches!(err, DbError::Conflict(_)), "{err:?}");
 
-        // Not a check-then-insert: the PRIMARY KEY refuses it even when the
+        // Not a check-then-insert, and not the accessor being careful: the
+        // partial unique index refuses a second ACTIVE alice even when the
         // accessor is bypassed entirely.
-        let raw = conn.execute(
-            "INSERT INTO user (handle, database_id, created_at, state) \
-             VALUES ('alice', 'SOMEOTHERID', '2026-08-08T00:00:00Z', 'active')",
-            [],
+        assert!(
+            raw_insert(&conn, "SOMEOTHERID", "alice", "active").is_err(),
+            "the schema must refuse two active users with one handle"
         );
-        assert!(raw.is_err(), "the schema must enforce handle uniqueness");
+
+        // ...and admits a DETACHED one, which is the whole reason the index
+        // is partial: a released handle is free while its row survives.
+        raw_insert(&conn, "SOMEOTHERID", "alice", "detached")
+            .expect("a detached row may share a handle with a live user");
     }
 
     #[test]
-    fn a_database_id_is_unique_by_schema() {
-        // Two handles pointing at one file is the failure this forecloses.
+    fn a_database_id_is_the_primary_key() {
+        // Two handles pointing at one file is the failure this forecloses,
+        // and the id being the key is the epic's thesis in the schema.
         let (_dir, conn) = registry();
         let alice = insert(&conn, "alice").unwrap();
-        let raw = conn.execute(
-            "INSERT INTO user (handle, database_id, created_at, state) \
-             VALUES ('bob', ?1, '2026-08-08T00:00:00Z', 'active')",
-            params![alice.database_id],
-        );
         assert!(
-            raw.is_err(),
+            raw_insert(&conn, &alice.database_id, "bob", "active").is_err(),
             "the schema must enforce database_id uniqueness"
         );
     }
@@ -381,12 +429,50 @@ mod tests {
     #[test]
     fn state_is_constrained_by_schema() {
         let (_dir, conn) = registry();
-        let raw = conn.execute(
-            "INSERT INTO user (handle, database_id, created_at, state) \
-             VALUES ('alice', 'SOMEID', '2026-08-08T00:00:00Z', 'banished')",
-            [],
+        assert!(
+            raw_insert(&conn, "SOMEID", "alice", "banished").is_err(),
+            "state must be constrained to the two values"
         );
-        assert!(raw.is_err(), "state must be constrained to the two values");
+    }
+
+    #[test]
+    fn the_handle_format_is_a_check_constraint() {
+        // The definition of a valid handle is part of the data model, so it
+        // holds against a writer that never goes near `validate_tenant_name`
+        // — a migration, or an operator with sqlite3 open on the file.
+        let (_dir, conn) = registry();
+        let longest = "x".repeat(32);
+        let too_long = "x".repeat(33);
+
+        let accepted = ["alice", "a-b_9", "0", longest.as_str()];
+        for (i, ok) in accepted.into_iter().enumerate() {
+            raw_insert(&conn, &format!("OKID{i}"), ok, "active")
+                .unwrap_or_else(|e| panic!("{ok:?} is a valid handle: {e}"));
+        }
+
+        let refused = [
+            "../etc/passwd",
+            "Alice",
+            "-flag",
+            "",
+            "a/b",
+            "a.b",
+            // The composite retired handle the old detach wrote. It was never
+            // a name anyone could register, and now it cannot be stored at all.
+            "alice:detached:01J",
+            too_long.as_str(),
+        ];
+        // A distinct id each time, so the CHECK is the only thing that can
+        // refuse the row — a shared id would fail on the primary key and read
+        // as a pass whatever the constraint did.
+        for (i, bad) in refused.into_iter().enumerate() {
+            let err = raw_insert(&conn, &format!("BADID{i}"), bad, "active")
+                .expect_err("an invalid handle must be refused");
+            assert!(
+                err.to_string().contains("CHECK constraint failed"),
+                "{bad:?} must be refused by the CHECK, not by something else: {err}"
+            );
+        }
     }
 
     #[test]
@@ -429,27 +515,26 @@ mod tests {
     fn detach_keeps_the_row_and_releases_the_handle() {
         let (_dir, conn) = registry();
         let alice = insert(&conn, "alice").unwrap();
+        assert_eq!(alice.retired_at, None);
         let detached = detach(&conn, "alice").unwrap();
 
         assert_eq!(detached.state, UserState::Detached);
         assert_eq!(detached.database_id, alice.database_id);
         assert_eq!(detached.created_at, alice.created_at);
-        // The handle is released...
+        // The row is stamped with when the handle was released.
+        assert!(detached.retired_at.is_some(), "{detached:?}");
+        // The handle is released — nothing live answers to it...
         assert_eq!(lookup(&conn, "alice").unwrap(), None);
-        // ...but the mapping survives, so the file on disk and its replica
-        // are still attributable to who owned them.
-        let detached_handle = detached.handle.clone();
-        assert_eq!(lookup(&conn, &detached_handle).unwrap(), Some(detached));
+        // ...and yet the row still carries alice's REAL handle, so the file
+        // on disk and its replica stay attributable to who owned them
+        // without anything having to parse a composite string.
+        assert_eq!(detached.handle, "alice");
+        assert_eq!(find(&conn, &alice.database_id).unwrap(), Some(detached));
 
-        // There is no second detach to do: the handle is gone.
+        // There is no second detach to do: no live user answers to the name.
         assert!(matches!(
             detach(&conn, "alice").unwrap_err(),
             DbError::NotFound(_)
-        ));
-        // Nor by naming the retired row directly.
-        assert!(matches!(
-            detach(&conn, &detached_handle).unwrap_err(),
-            DbError::Conflict(_)
         ));
     }
 
@@ -476,29 +561,45 @@ mod tests {
             all.iter().filter(|u| u.state == UserState::Active).count(),
             1
         );
-        // And the detached row still names the old database, which is what
-        // a restore has to be able to find.
-        assert!(
-            all.iter()
-                .any(|u| u.state == UserState::Detached && u.database_id == first.database_id)
-        );
+        // And the detached row still names the old database *and* the handle
+        // it was held under, which is what a restore has to be able to find.
+        assert!(all.iter().any(|u| u.state == UserState::Detached
+            && u.database_id == first.database_id
+            && u.handle == "alice"));
     }
 
     #[test]
-    fn detached_handles_cannot_collide_with_live_ones() {
-        // Two successive alices, both released: retiring by database_id
-        // keeps their rows distinct under a PRIMARY KEY on handle.
+    fn a_handle_may_be_retired_any_number_of_times() {
+        // Two alices released and a third live: three rows all named
+        // "alice", exactly one of them active. Under a PRIMARY KEY on
+        // handle this shape was unrepresentable, which is why detach used
+        // to have to rewrite the name.
         let (_dir, conn) = registry();
         insert(&conn, "alice").unwrap();
         detach(&conn, "alice").unwrap();
         insert(&conn, "alice").unwrap();
         detach(&conn, "alice").unwrap();
-        assert_eq!(list(&conn).unwrap().len(), 2);
+        let live = insert(&conn, "alice").unwrap();
 
-        // A retired handle is not a name anyone could have registered.
-        for u in list(&conn).unwrap() {
-            assert!(validate_tenant_name(&u.handle).is_err(), "{u:?}");
+        let all = list(&conn).unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().all(|u| u.handle == "alice"), "{all:?}");
+        assert_eq!(
+            all.iter()
+                .filter(|u| u.state == UserState::Active)
+                .collect::<Vec<_>>(),
+            vec![&live]
+        );
+        // Every retired row keeps the handle its holder actually had — the
+        // property an orphaned database is identified by.
+        for u in all.iter().filter(|u| u.state == UserState::Detached) {
+            validate_tenant_name(&u.handle).unwrap();
+            assert!(u.retired_at.is_some(), "{u:?}");
         }
+        // And each is a different database. Three alices, three files.
+        let ids: std::collections::HashSet<&str> =
+            all.iter().map(|u| u.database_id.as_str()).collect();
+        assert_eq!(ids.len(), 3);
     }
 
     #[test]

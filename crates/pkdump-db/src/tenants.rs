@@ -139,9 +139,10 @@ pub fn resolve(handle: &str) -> Result<Collection> {
     validate_tenant_name(handle)?;
     let conn = registry::open()?;
 
-    if let Some(user) = registry::lookup(&conn, handle)?
-        && user.state == UserState::Active
-    {
+    // `lookup` is active-only by construction — a detached row keeps its
+    // holder's real handle, so "is this handle live?" is a question only the
+    // registry's own predicate can answer, and it does.
+    if let Some(user) = registry::lookup(&conn, handle)? {
         let path = tenant_db_path_for_id(&user.database_id)?;
         if !path.exists() {
             // The registry and the disk disagree. If what is actually there
@@ -280,9 +281,11 @@ pub fn rename(from: &str, to: &str) -> Result<Tenant> {
 /// Release `handle`, keeping the database and its replica.
 ///
 /// **This is what `pkdump tenant remove` now does.** Nothing is deleted: the
-/// row survives under a retired handle so the bytes stay attributable, and
-/// the handle is immediately free for someone else — who will get their own
-/// `database_id`, and therefore their own file and their own replica prefix.
+/// row survives, still carrying the person's real handle, so the bytes stay
+/// attributable — and the handle is immediately free for someone else, who
+/// will get their own `database_id`, and therefore their own file and their
+/// own replica prefix. Both at once because the handle is unique only among
+/// *active* rows; see `user_one_active_handle` in `schema_registry.sql`.
 /// The retention window stops being the liability `pd-pm7b` made of it and
 /// becomes a safety net.
 ///
@@ -798,6 +801,12 @@ mod tests {
             assert_eq!(handles(), vec!["bob"]);
             assert!(!exists("alice").unwrap());
             assert!(detach("alice").is_err());
+            // Both halves at once, which is what the partial index buys: the
+            // handle is free, AND the surviving row still carries her real
+            // name, so the file left on disk is attributable to whom it
+            // belonged without anything having to parse the handle.
+            assert_eq!(detached.user.handle, "alice");
+            assert!(detached.user.retired_at.is_some(), "{detached:?}");
 
             // Purge is the second, explicit step — and it takes the file.
             let purged = purge(&alice.user.database_id).unwrap();
@@ -873,6 +882,20 @@ mod tests {
                 .query_row("SELECT count(*) FROM binders", [], |r| r.get(0))
                 .unwrap();
             assert_eq!(n, 0, "the new alice must not see the old alice's rows");
+
+            // Two rows, both named alice, exactly one live — and the retired
+            // one still points at the file holding the first alice's binder.
+            // That is what makes those bytes restorable rather than orphaned.
+            let all = list().unwrap();
+            assert_eq!(all.len(), 2);
+            assert!(all.iter().all(|t| t.user.handle == "alice"), "{all:?}");
+            assert_eq!(handles(), vec!["alice"]);
+            let retired = all
+                .iter()
+                .find(|t| t.user.state == UserState::Detached)
+                .expect("the first alice's row must survive");
+            assert_eq!(retired.user.database_id, first.user.database_id);
+            assert_eq!(retired.path, first.path);
         });
     }
 

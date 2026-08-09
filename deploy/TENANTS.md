@@ -53,7 +53,8 @@ doing every job. Which one you are looking at decides what you can do with it.
 | Where it appears | the `x-pkdump-tenant` header, `$PKDUMP_USER`, `pkdump tenant` arguments | the filename, the S3 replica prefix, `pkdump tenant purge` |
 | On disk | **nowhere** | `tenants/<database_id>.sqlite` |
 | Can it change? | yes — `pkdump tenant rename`, one `UPDATE`, nothing moves | never, for the life of the database |
-| Charset | `[a-z0-9][a-z0-9_-]{0,31}`, validated where it is *issued* | 26 characters of uppercase Crockford base32, minted here |
+| In the table | a mutable label; unique among **active** users only | the **PRIMARY KEY** |
+| Charset | `[a-z0-9][a-z0-9_-]{0,31}`, a `CHECK` on the column | 26 characters of uppercase Crockford base32, minted here |
 
 Read the "on disk" row twice, because it is the point of the whole design: **a
 handle is never a path component.** It is a lookup key and only a lookup key,
@@ -66,6 +67,12 @@ The handle charset is still narrow, because a handle is a name people type and
 a narrow one keeps `alice` and `Alice` from being two users. But it is no longer
 load-bearing for safety: a hostile handle is refused for not being in the table,
 not for its characters.
+
+Both rules live **in the schema**, not in the accessor — `database_id` is the
+primary key, the charset is a `CHECK` on `handle`, and "one live user per
+handle" is `CREATE UNIQUE INDEX user_one_active_handle ON user(handle) WHERE
+state = 'active'`. So they hold for every writer: the app, a migration, and an
+operator with `sqlite3` open on `registry.sqlite`.
 
 ## The commands
 
@@ -107,7 +114,7 @@ to unlink the database. It does not any more:
 | the handle | freed | freed |
 | the collection database | **deleted** | **kept** |
 | the S3 replica | left to expire with retention | kept |
-| registry row | n/a | kept, under a retired handle, so the bytes stay attributable |
+| registry row | n/a | kept, still naming them, so the bytes stay attributable |
 
 Every script and every piece of muscle memory that says `tenant remove alice
 --yes` still parses and still succeeds — and now means something else. That is
@@ -145,10 +152,10 @@ default meaning of "remove" can afford to be the reversible half.
 
 **Reversible in the sense that nothing is destroyed — not in the sense that one
 command puts it back.** There is no `tenant attach` yet, and `tenant rename` is
-not it: renaming a retired handle back succeeds, restores the `handle` column,
-and leaves the row `detached`, so the handle is taken again while still
-resolving to nothing. `pd-rtjk` tracks the gap; `deploy/RESTORE.md`, scenario
-B2, has the hand edit in the meantime.
+not it: rename addresses a *live* user, and a detached one is not found.
+`pd-rtjk` tracks the gap; `deploy/RESTORE.md`, scenario B2, has the hand edit in
+the meantime — one column, `state`, because the row never stopped saying who
+they were.
 
 ## Which file is whose
 
@@ -161,10 +168,10 @@ rather than something you read off the disk:
 podman exec systemd-pkdump-prod pkdump tenant list
 ```
 ```
-HANDLE                                   DATABASE ID                 CREATED                              STATE
-collection                               01KZHQVMMS4CSRASCMG5XRCPC3  2026-08-08T22:28:21.785088095+00:00  active
-alicia                                   01KZHQVMQ6GVFQF1R5T7AW1K5X  2026-08-08T22:28:21.862295795+00:00  active  (DATABASE MISSING)
-bob:detached:01KZHQVMSVRD4WPNTG9WWRXYC0  01KZHQVMSVRD4WPNTG9WWRXYC0  2026-08-08T22:28:21.947244169+00:00  detached
+HANDLE      DATABASE ID                 CREATED                              STATE     RETIRED
+collection  01KZHQVMMS4CSRASCMG5XRCPC3  2026-08-08T22:28:21.785088095+00:00  active    -
+alicia      01KZHQVMQ6GVFQF1R5T7AW1K5X  2026-08-08T22:28:21.862295795+00:00  active    -  (DATABASE MISSING)
+bob         01KZHQVMSVRD4WPNTG9WWRXYC0  2026-08-08T22:28:21.947244169+00:00  detached  2026-08-09T04:11:07.204416512+00:00
 
 1 database(s) under /data/tenants that no registered user claims:
   orphan.sqlite
@@ -187,13 +194,18 @@ anything destructive:
   (`not found: no user with database id …`), so a file nothing claims has to be
   removed by hand, deliberately.
 
-The `detached` rows are the other half of the answer. A released handle keeps
-its row, retired to `<handle>:detached:<database_id>` — `:` is outside the
-handle charset, so a retired handle can never collide with a live one and the
-handle is free the instant it is released. Bytes that belong to nobody in
-particular still belong to *someone identifiable*, which is the difference
-between a purge you can justify and a file you deleted because you could not
-tell what it was.
+The `detached` rows are the other half of the answer. **A released handle keeps
+its row, and the row keeps the person's real name** — `RETIRED` says when they
+let it go. The handle is free the instant it is released all the same, because
+the uniqueness rule is a *partial* index: `user(handle) WHERE state = 'active'`.
+One live bob, any number of retired ones, and no composite string to parse to
+tell which is which. Bytes that belong to nobody in particular still belong to
+*someone identifiable*, which is the difference between a purge you can justify
+and a file you deleted because you could not tell what it was.
+
+So a handle in this table is not a key on its own. `WHERE handle = 'bob'` can
+return several rows; the live one is `WHERE handle = 'bob' AND state = 'active'`,
+and `database_id` — the primary key — is what addresses a database.
 
 If the registry itself is gone, this question has no answer from the box alone.
 That is why it is in the replicated set and why it is restored **first**:
@@ -524,7 +536,7 @@ INSTANCE=prod
 # so this is the only thing that answers it.
 podman exec systemd-pkdump-${INSTANCE} pkdump tenant list
 DB_ID=$(podman exec systemd-pkdump-${INSTANCE} pkdump tenant list \
-        | awk '$1=="collection"{print $2}')
+        | awk '$1=="collection" && $4=="active"{print $2}')
 
 # The collection is in the file that id names, and has its rows.
 MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-${INSTANCE}-data)

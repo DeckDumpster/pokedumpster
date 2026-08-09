@@ -574,13 +574,13 @@ mod tests {
                 .unwrap()
                 .exists()
         );
-        // ...and neither her old handle nor her retired one reaches it.
+        // ...and her handle does not reach it. The row that keeps those bytes
+        // attributable still spells her name — it is `state`, not a rewritten
+        // handle, that takes her out of circulation, so the resolver has to
+        // be asking the right question and not merely failing to match.
+        assert_eq!(detached.handle, "alice");
         assert_eq!(
             status(tenants.resolve(&headers("alice"))),
-            StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            status(tenants.resolve(&headers(&detached.handle))),
             StatusCode::NOT_FOUND
         );
     }

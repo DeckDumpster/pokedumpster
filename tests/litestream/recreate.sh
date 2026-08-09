@@ -292,8 +292,15 @@ fi
 pk() { PKDUMP_HOME="$WORK/data" "$PKDUMP_BIN" "$@"; }
 # `Created user <handle> -> database <ID> at <path>`
 created_id() { awk '/^Created user /{print $6; exit}'; }
-# The registry's own answer to "where does this handle live now?"
-registry_id() { pk tenant list | awk -v h="$1" '$1 == h {print $2; exit}'; }
+# The registry's own answer to "where does this handle live now?" — the ACTIVE
+# row, because a handle is unique only among live users: every alice who has
+# ever been detached keeps her row, and keeps her real name on it.
+registry_id() { registry_id_in_state "$1" active; }
+# ...and the same question asked of the rows that were released.
+detached_ids() { registry_id_in_state "$1" detached; }
+registry_id_in_state() {
+	pk tenant list | awk -v h="$1" -v s="$2" '$1 == h && $4 == s {print $2}'
+}
 tenant_file() { printf '%s/data/tenants/%s.sqlite' "$WORK" "$1"; }
 
 # ── 2. create alice, and write the recognisable card ────────────────────────
@@ -348,8 +355,12 @@ echo "  marker timestamp inside the window, old alice live: ${T_OLD}"
 log "4. remove alice (detach), then purge: the local bytes go, the replica stays"
 pk tenant detach alice --yes >/dev/null
 check "the handle is free again" "" "$(registry_id alice)"
-check "the row survives under a retired handle, so the bytes stay attributable" "$ID_OLD" \
-	"$(registry_id "alice:detached:${ID_OLD}")"
+# Both at once, which is the partial index doing the work: no live user answers
+# to "alice", and the surviving row still says these bytes were alice's. The
+# handle is not rewritten to free it, so an orphaned database is attributable
+# by reading a column rather than by parsing a composite name.
+check "the row survives under her REAL handle, so the bytes stay attributable" "$ID_OLD" \
+	"$(detached_ids alice)"
 check "detach kept her database" "yes" \
 	"$([ -f "$(tenant_file "$ID_OLD")" ] && echo yes || echo no)"
 

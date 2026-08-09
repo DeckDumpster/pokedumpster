@@ -227,35 +227,36 @@ the wall-clock time when you do commit.
 
 **Check whether this is a restore at all first.** `pkdump tenant remove` is now
 an alias for `detach` and **deletes nothing** (`deploy/TENANTS.md`); the
-database and its replica are both still there, and the row survives under a
-retired handle. So the usual answer is a registry edit, not a recovery:
+database and its replica are both still there, and the row survives — under the
+person's **own handle**, with `retired_at` saying when it was released. So the
+usual answer is a registry edit, not a recovery:
 
 ```bash
-podman exec systemd-pkdump-prod pkdump tenant list   # the row reads <handle>:detached:<id>
+podman exec systemd-pkdump-prod pkdump tenant list   # carol, detached, RETIRED <when>
 ```
 
 If the database is still on the volume, **no restore is needed and none will
 help** — the bytes never moved. What a detach costs is the *mapping*: the handle
 is released, the row is marked `detached`, and a detached row does not resolve.
 
-**There is no reattach command** — a gap, not a decision (`pd-rtjk`). Do not
-reach for `tenant rename`: it succeeds on a retired handle, puts the name back
-on the row, and leaves the state `detached`, which takes the handle out of
-circulation without making it resolve. Until that is fixed, reviving a detached
-user is a hand edit of the registry. Resolution reads it per request, so nothing
+**There is no reattach command** — a gap, not a decision (`pd-rtjk`). `tenant
+rename` is not a way round it either: it addresses a *live* user and a detached
+one is not found. Until that is fixed, reviving a detached user is a hand edit
+of the registry — and it is now one column, because the row never stopped
+saying who they were. Resolution reads the registry per request, so nothing
 needs restarting:
 
 ```bash
 MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-prod-data)
 sqlite3 "${MP}/registry.sqlite" \
-  "UPDATE user SET handle='carol', state='active' WHERE database_id='<id>';"
+  "UPDATE user SET state='active', retired_at=NULL WHERE database_id='<id>';"
 podman exec systemd-pkdump-prod pkdump tenant list                  # carol, active
 ```
 
-If someone else took the handle in the meantime, `user.handle` is the primary
-key and the write fails rather than merging two people onto one name
-(`UNIQUE constraint failed: user.handle`). Pick another handle, or rename the
-live holder first.
+If someone else took the handle in the meantime, the write fails rather than
+merging two people onto one name (`UNIQUE constraint failed: user.handle` —
+`user_one_active_handle` is unique across live users). Set a free `handle` in
+the same `UPDATE`, or rename the live holder first.
 
 Only a **purge** destroys the local copy, and even then the S3 replica outlives
 it until retention expires (6 months). Recover it exactly like any other

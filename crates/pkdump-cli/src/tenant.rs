@@ -295,9 +295,9 @@ fn list() -> anyhow::Result<()> {
             pkdump_db::registry_db_path()?.display()
         );
     } else {
-        // Measured, not guessed: a retired handle carries the id it was
-        // retired with, and a timestamp is as long as the registry wrote it.
-        let widest = |header: &str, of: fn(&Tenant) -> &str| {
+        // Measured, not guessed: a timestamp is as long as the registry
+        // wrote it, and a detached row carries its holder's real handle.
+        let widest = |header: &str, of: &dyn Fn(&Tenant) -> &str| {
             tenants
                 .iter()
                 .map(|t| of(t).len())
@@ -305,20 +305,25 @@ fn list() -> anyhow::Result<()> {
                 .unwrap_or(0)
                 .max(header.len())
         };
-        let handle = widest("HANDLE", |t| &t.user.handle);
-        let id = widest("DATABASE ID", |t| &t.user.database_id);
-        let created = widest("CREATED", |t| &t.user.created_at);
+        let handle = widest("HANDLE", &|t| &t.user.handle);
+        let id = widest("DATABASE ID", &|t| &t.user.database_id);
+        let created = widest("CREATED", &|t| &t.user.created_at);
+        let state = widest("STATE", &|t| t.user.state.as_str());
         println!(
-            "{:<handle$}  {:<id$}  {:<created$}  STATE",
-            "HANDLE", "DATABASE ID", "CREATED"
+            "{:<handle$}  {:<id$}  {:<created$}  {:<state$}  RETIRED",
+            "HANDLE", "DATABASE ID", "CREATED", "STATE"
         );
         for t in &tenants {
             println!(
-                "{:<handle$}  {:<id$}  {:<created$}  {}{}",
+                "{:<handle$}  {:<id$}  {:<created$}  {:<state$}  {}{}",
                 t.user.handle,
                 t.user.database_id,
                 t.user.created_at,
                 t.user.state.as_str(),
+                // Two rows can share a handle now — one live, any number
+                // retired — so when each was released is what tells them
+                // apart at a glance.
+                t.user.retired_at.as_deref().unwrap_or("-"),
                 if t.present {
                     ""
                 } else {

@@ -126,7 +126,8 @@ them.** Two structural reasons, both drilled (see the bottom of this file):
 
 - **One file per tenant.** A restore writes exactly
   `tenants/<database_id>.sqlite` on the data volume. No other tenant's file is
-  read, written, or renamed — they come out of the restore *byte-identical*.
+  read, written, or renamed — they come out of the restore holding exactly the
+  data they held.
 - **One replica prefix per tenant.** The sidecar runs in Litestream's directory
   mode, so each tenant's prefix is derived from its filename and a restore reads
   only that prefix. Restoring one tenant neither consumes nor invalidates
@@ -149,28 +150,59 @@ bash deploy/restore-litestream.sh prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
 
 ### Confirm the others were untouched
 
-Do this — do not assume it. Take the hashes **before** you start (with the
+Do this — do not assume it. Take the fingerprints **before** you start (with the
 sidecar stopped, so nothing is mid-checkpoint), and compare after. A tenant that
-was *written to* between the two fingerprints will differ, of course; what must
-not differ is a tenant nobody touched.
+was *written to* between the two will differ, of course; what must not differ is
+a tenant nobody touched.
+
+**Fingerprint the CONTENT, not the file.** `sha256sum` on the `.sqlite` file is
+the obvious thing to reach for and it is wrong: SQLite makes no promise that a
+database keeps the same bytes across the operations a running box performs. A WAL
+checkpoint folds committed frames back into the main file, the freelist gets
+reused, pages get reordered — all of which rewrite the file and change not one
+fact in it. Even `pkdump tenant list` does it, because it opens each database to
+read its schema version and checkpoints on close. A byte comparison will tell you
+a bystander was clobbered on a day when nothing of the sort happened, which is the
+worst possible day to be chasing a phantom. This is drilled the same way
+(`tests/litestream/drill.sh`, pd-zk0c).
 
 ```bash
 INSTANCE=prod; VICTIM=01K2C7HQ8NZ0XW3V9R5M6D0ABC   # the database id, from `pkdump tenant list`
 MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-${INSTANCE}-data)
 
+# What a tenant database SAYS: its schema and all of its rows, in a stable order,
+# less Litestream's own bookkeeping tables (which change across a restart for the
+# benign reason above). Read-only — opening one read-write would checkpoint it,
+# and the measurement would move what it is measuring.
+fingerprint() {   # fingerprint <path to a tenant .sqlite>
+    local uri="file:$1?mode=ro" tbl
+    sqlite3 "$uri" 'PRAGMA integrity_check;'
+    sqlite3 "$uri" "SELECT type, name, sql FROM sqlite_master
+                     WHERE name NOT LIKE '\_litestream\_%' ESCAPE '\' ORDER BY type, name;"
+    sqlite3 "$uri" "SELECT name FROM sqlite_master WHERE type='table'
+                     AND name NOT LIKE '\_litestream\_%' ESCAPE '\' ORDER BY name;" |
+    while IFS= read -r tbl; do
+        echo "== $tbl"; sqlite3 "$uri" "SELECT * FROM \"$tbl\";" | sort
+    done
+}
+fingerprint_others() {
+    for db in "${MP}"/tenants/*.sqlite; do
+        [ "$db" = "${MP}/tenants/${VICTIM}.sqlite" ] && continue
+        echo "### $db"; fingerprint "$db"
+    done
+}
+
 # BEFORE — quiesce, then fingerprint every OTHER tenant.
 systemctl --user stop pkdump-litestream-${INSTANCE}.service
-sha256sum "${MP}"/tenants/*.sqlite | grep -v "/${VICTIM}.sqlite$" | tee /tmp/tenants-before
+fingerprint_others > /tmp/tenants-before
 
 # ... run the restore ...
 bash deploy/restore-litestream.sh --yes ${INSTANCE} ${VICTIM}
 
-# AFTER — same fingerprints. Stop the sidecar first: once it is running again it
-# writes its own bookkeeping tables into every database it picks up, which is not
-# the restore's doing but does change the bytes.
+# AFTER — same fingerprints, and `diff` names the row if one ever does move.
 systemctl --user stop pkdump-litestream-${INSTANCE}.service
-sha256sum "${MP}"/tenants/*.sqlite | grep -v "/${VICTIM}.sqlite$" | diff - /tmp/tenants-before \
-    && echo "OK: every other tenant is byte-identical"
+fingerprint_others | diff - /tmp/tenants-before \
+    && echo "OK: every other tenant holds exactly the data it held"
 systemctl --user reset-failed pkdump-litestream-${INSTANCE}.service
 systemctl --user start pkdump-litestream-${INSTANCE}.service
 
@@ -468,8 +500,8 @@ It stands up a four-tenant instance with the shipped Quadlet sidecar and walks
 the scenarios above with the shipped scripts: deletes tenant #2 of 4 and restores
 it in place, rolls it back in time, un-rolls it, then wipes the whole volume —
 registry included — and recovers everything in the documented order, asserting
-after each restore that the other three tenants are byte-identical, still
-replicating, and still restore to their own current data. It is part of
+after each restore that the other three tenants hold exactly the data they held,
+are still replicating, and still restore to their own current data. It is part of
 `deploy/ci.sh`, so the runbook cannot rot silently.
 
 Its tenants are named by opaque database ids on purpose. With `alpha.sqlite` on

@@ -50,8 +50,9 @@
 # against a real Quadlet sidecar unit on a real data volume, in place — deleting
 # the live file and restoring over it, which is what an incident actually looks
 # like. The property under test is ISOLATION: after each restore, every other
-# tenant's database is byte-identical, its replica is still current, and it still
-# restores to its own data.
+# tenant's database holds exactly the data it held, its replica is still current,
+# and it still restores to its own data. NOT byte-identical — see the comment on
+# `logical_dump` for why that is a claim SQLite never made (pd-zk0c).
 #
 # Scenario C also settles the question the epic keeps returning to: the rejected
 # libSQL/sqld path had a DR gap where the namespace registry was not backed up,
@@ -236,12 +237,97 @@ mount_point() { podman volume inspect -f '{{.Mountpoint}}' "$VOLUME"; }
 db_id() { printf '%s' "${DB_ID[$1]}"; }
 tenant_file() { printf '%s/tenants/%s.sqlite' "$(mount_point)" "$(db_id "$1")"; }
 registry_file() { printf '%s/registry.sqlite' "$(mount_point)"; }
-file_hash() { sha256sum "$(tenant_file "$1")" 2>/dev/null | cut -d' ' -f1 || echo '<missing>'; }
 # The rows, independent of page layout and of Litestream's own bookkeeping
 # tables. "Untouched" has to mean the data, not just the bytes.
 rows_hash() { sqlite3 "file:$(tenant_file "$1")?mode=ro" 'SELECT id, printing_id, phase FROM collection ORDER BY id;' 2>/dev/null | sha256sum | cut -d' ' -f1; }
 rows_count() { sqlite3 "file:$(tenant_file "$1")?mode=ro" 'SELECT count(*) FROM collection;' 2>/dev/null || echo '<no db>'; }
 rows_owner() { sqlite3 "file:$(tenant_file "$1")?mode=ro" "SELECT DISTINCT substr(printing_id, 1, instr(printing_id,'-')-1) FROM collection;" 2>/dev/null || echo '<no db>'; }
+
+# ── "UNTOUCHED" MEANS THE DATA, AND ONLY THE DATA (pd-zk0c) ─────────────────
+# There is no byte-equality assertion in this file, and there must not be one
+# again. SQLite does not promise a stable file image across the operations a
+# running box performs: a WAL checkpoint folds committed frames back into the
+# main file, the freelist gets reused, pages get reordered. Every one of those
+# rewrites the file and changes not one fact in it.
+#
+# That is not a hypothesis. §8 used to assert byte-identity and failed on it,
+# and three measurements settled why:
+#
+#   * instrumenting deploy/restore-litestream.sh showed the bystanders'
+#     sha256 identical BEFORE the restore, after the atomic swap with every
+#     service still down, after the sidecar was restarted, and at the point
+#     the drill measures. The restore path never touched them.
+#   * the bytes had already moved BEFORE the restore ran — during ordinary
+#     instance operation between the snapshot and the comparison.
+#   * reproduced in isolation: against a database left with committed frames
+#     in an uncheckpointed WAL (what killing the sidecar leaves behind),
+#     `pkdump tenant list` — which opens each tenant READ_WRITE to read its
+#     schema version — checkpoints on close and rewrites the main file. Row
+#     count before and after: identical.
+#
+# So the old assertion forbade something the engine never offered, and it
+# failed on the *drill's own* use of the product. It would have gone on
+# failing intermittently until everyone learned to ignore this gate. The
+# property it meant to state is real and is kept: restoring one tenant must
+# not change any OTHER tenant's DATA.
+#
+# Database-level, not application-level, and deliberately: the app's read path
+# would be the stronger statement in general, but `Database::open` re-applies
+# the schema and adopts `user_version` — it WRITES to the file it is asked
+# about, so measuring a bystander with it would be the measurement changing
+# the thing measured. (`pkdump export --json` is out for a second reason:
+# pd-ndkg records that it carries `_litestream_lock`/`_litestream_seq` in the
+# envelope, which differ across a restart for exactly the benign reason this
+# comment is about.) The tenant fixtures are also seeded with sqlite3 rather
+# than the app, so the app has no more authority over them than sqlite3 does.
+#
+# Read-only throughout, for the same reason: opening one of these read-write
+# would checkpoint it, and the measurement would move what it is measuring.
+logical_dump() { # logical_dump <tenant> — canonical text of everything it MEANS
+	local f uri tbl
+	f="$(tenant_file "$1")"
+	[ -e "$f" ] || { echo 'DATABASE MISSING'; return; }
+	uri="file:${f}?mode=ro"
+	# The engine's own verdict on the file, first, so a database that came back
+	# corrupt is a difference rather than a silently equal pile of rows.
+	echo "INTEGRITY $(sqlite3 -cmd '.timeout 5000' "$uri" 'PRAGMA integrity_check;' 2>&1 | tr '\n' ' ')"
+	# Schema included: a restore that dropped a table off a neighbour would
+	# otherwise read as "no rows changed".
+	sqlite3 -cmd '.timeout 5000' "$uri" "
+		SELECT 'SCHEMA ' || type || ' ' || name || ' ' || replace(COALESCE(sql, ''), char(10), ' ')
+		  FROM sqlite_master
+		 WHERE name NOT LIKE '\_litestream\_%' ESCAPE '\'
+		 ORDER BY type, name;" 2>&1
+	# Then every row of every table, sorted — so the comparison is of the facts
+	# held, not of the order SQLite happens to hold them in.
+	while IFS= read -r tbl; do
+		echo "TABLE ${tbl}"
+		sqlite3 -cmd '.timeout 5000' "$uri" "SELECT * FROM \"${tbl}\";" 2>&1 | sort | sed 's/^/  /'
+	done < <(sqlite3 -cmd '.timeout 5000' "$uri" "
+		SELECT name FROM sqlite_master
+		 WHERE type = 'table' AND name NOT LIKE '\_litestream\_%' ESCAPE '\'
+		 ORDER BY name;" 2>/dev/null)
+}
+# Snapshot every tenant's logical content, to be held the next restore against.
+snapshot_logical() {
+	local t
+	mkdir -p "${WORK}/logical"
+	for t in "${TENANTS[@]}"; do logical_dump "$t" > "${WORK}/logical/${t}"; done
+}
+# ...and the comparison. Prints `unchanged`/`changed` on stdout so it can be
+# read by `check`, and the actual difference on stderr, because "changed" on
+# its own is the diagnostic-free failure that made the old assertion so
+# expensive to read.
+logical_unchanged() { # logical_unchanged <tenant>
+	local t=$1 now="${WORK}/logical/${1}.now"
+	logical_dump "$t" > "$now"
+	if cmp -s "${WORK}/logical/${t}" "$now"; then echo unchanged; return; fi
+	{
+		echo "    DIAG ${t}: logical content differs from the snapshot —"
+		diff "${WORK}/logical/${t}" "$now" | head -20 | sed 's/^/      /'
+	} >&2
+	echo changed
+}
 
 # The real CLI, pointed at the drill's own data volume. §7 and §8 change registry
 # state — a rename and a detach — and those are product operations: asserting
@@ -460,11 +546,11 @@ log "3. record every tenant's state with the sidecar stopped"
 # Stopped first so nothing is mid-checkpoint: from here to the post-restore
 # measurement, the ONLY thing that runs against this volume is the restore.
 sidecar_stop
-declare -A BEFORE_FILE BEFORE_ROWS
+declare -A BEFORE_ROWS
+snapshot_logical
 for t in "${TENANTS[@]}"; do
-	BEFORE_FILE[$t]="$(file_hash "$t")"
 	BEFORE_ROWS[$t]="$(rows_hash "$t")"
-	echo "  ${t}  file ${BEFORE_FILE[$t]:0:12}  rows ${BEFORE_ROWS[$t]:0:12}  ($(rows_count "$t") rows)"
+	echo "  ${t}  rows ${BEFORE_ROWS[$t]:0:12}  ($(rows_count "$t") rows)"
 done
 
 # ── 4. RESTORE.md scenario A — a tenant's live database is gone ─────────────
@@ -493,11 +579,10 @@ check "restored ${VICTIM} row-for-row" "${BEFORE_ROWS[$VICTIM]}" "$(rows_hash "$
 untouched=0
 for t in "${TENANTS[@]}"; do
 	{ [ "$t" = "$VICTIM" ] || [ "$t" = "$WRITER" ]; } && continue
-	[ "$(file_hash "$t")" = "${BEFORE_FILE[$t]}" ] || { echo "  FAIL  ${t}'s file changed"; fail=$((fail + 1)); continue; }
-	[ "$(rows_hash "$t")" = "${BEFORE_ROWS[$t]}" ] || { echo "  FAIL  ${t}'s rows changed"; fail=$((fail + 1)); continue; }
-	untouched=$((untouched + 1))
+	[ "$(logical_unchanged "$t")" = unchanged ] && untouched=$((untouched + 1)) \
+		|| echo "  FAIL  ${t}'s data changed during a restore of ${VICTIM}"
 done
-check "every bystander tenant is BYTE-IDENTICAL across the restore" "2" "$untouched"
+check "every bystander tenant's DATA is untouched across the restore" "2" "$untouched"
 check "and ${WRITER}'s own write during the restore is still there" "3" "$(rows_count "$WRITER")"
 
 sidecar_start
@@ -520,7 +605,8 @@ sidecar_stop
 # The last moment at which ${VICTIM}'s replica still holds the CURRENT state —
 # used below to prove the rollback itself is undoable.
 PRE_ROLLBACK=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-for t in "${TENANTS[@]}"; do BEFORE_FILE[$t]="$(file_hash "$t")"; BEFORE_ROWS[$t]="$(rows_hash "$t")"; done
+snapshot_logical
+for t in "${TENANTS[@]}"; do BEFORE_ROWS[$t]="$(rows_hash "$t")"; done
 
 bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes --at="$MARKER" "$INSTANCE" "$(db_id "$VICTIM")"
 
@@ -530,8 +616,8 @@ check "and it is still ${VICTIM}'s data" "$VICTIM" "$(rows_owner "$VICTIM")"
 untouched=0
 for t in "${TENANTS[@]}"; do
 	[ "$t" = "$VICTIM" ] && continue
-	[ "$(file_hash "$t")" = "${BEFORE_FILE[$t]}" ] && [ "$(rows_hash "$t")" = "${BEFORE_ROWS[$t]}" ] \
-		&& untouched=$((untouched + 1)) || echo "  FAIL  ${t} changed during a point-in-time restore of ${VICTIM}"
+	[ "$(logical_unchanged "$t")" = unchanged ] && untouched=$((untouched + 1)) \
+		|| echo "  FAIL  ${t} changed during a point-in-time restore of ${VICTIM}"
 done
 check "a point-in-time rollback of one tenant leaves the others at CURRENT" "3" "$untouched"
 
@@ -639,7 +725,8 @@ prefix_count() {
 PREFIXES_BEFORE="$(prefix_count)"
 
 sidecar_stop
-for t in "${TENANTS[@]}"; do BEFORE_FILE[$t]="$(file_hash "$t")"; BEFORE_ROWS[$t]="$(rows_hash "$t")"; done
+snapshot_logical
+for t in "${TENANTS[@]}"; do BEFORE_ROWS[$t]="$(rows_hash "$t")"; done
 pk tenant rename "${HANDLE[$RENAMED]}" "$RENAMED_TO" | sed 's/^/    /'
 HANDLE[$RENAMED]=$RENAMED_TO
 
@@ -648,7 +735,11 @@ check "the new handle maps to the SAME database id" "$(db_id "$RENAMED")" \
 check "and the old handle resolves to nothing at all" "" "$(registry_id "$RENAMED")"
 check "the database did not move: same path, still there" "yes" \
 	"$([ "$(tenant_file "$RENAMED")" = "$RENAMED_FILE_BEFORE" ] && [ -e "$RENAMED_FILE_BEFORE" ] && echo yes || echo no)"
-check "not one byte of it changed" "${BEFORE_FILE[$RENAMED]}" "$(file_hash "$RENAMED")"
+# And nothing in it changed. This assertion USED to be a file sha256 — "not one
+# byte of it changed" — which passed only because a rename happens not to leave
+# a checkpoint behind. It is the same claim §8 was failing on and it would have
+# failed the first time the surrounding procedure touched the database (pd-zk0c).
+check "and nothing in it changed either" "unchanged" "$(logical_unchanged "$RENAMED")"
 check "and nothing on disk is named by either handle" "0" \
 	"$(find "$MP" -name "${RENAMED}*" -o -name "${RENAMED_TO}*" | grep -c . || true)"
 check "the replica prefix is unchanged, so the recovery window is unbroken" "same" \
@@ -675,10 +766,10 @@ check "and it is the same collection she had under her old handle" "$RENAMED" \
 untouched=0
 for t in "${TENANTS[@]}"; do
 	[ "$t" = "$RENAMED" ] && continue
-	[ "$(file_hash "$t")" = "${BEFORE_FILE[$t]}" ] && [ "$(rows_hash "$t")" = "${BEFORE_ROWS[$t]}" ] \
-		&& untouched=$((untouched + 1)) || echo "  FAIL  ${t} changed across a rename + restore of ${RENAMED_TO}"
+	[ "$(logical_unchanged "$t")" = unchanged ] && untouched=$((untouched + 1)) \
+		|| echo "  FAIL  ${t} changed across a rename + restore of ${RENAMED_TO}"
 done
-check "the other three tenants are byte-identical across all of it" "3" "$untouched"
+check "the other three tenants are unchanged across all of it" "3" "$untouched"
 sidecar_start
 
 # ── 8. recovery of a DETACHED tenant ────────────────────────────────────────
@@ -688,7 +779,8 @@ log "8. ${DETACHED} is detached, then her KEPT collection is recovered"
 # kept data genuinely comes back — otherwise it is a promise the box cannot
 # honour. So: detach, lose the live file, and restore it.
 sidecar_stop
-for t in "${TENANTS[@]}"; do BEFORE_FILE[$t]="$(file_hash "$t")"; BEFORE_ROWS[$t]="$(rows_hash "$t")"; done
+snapshot_logical
+for t in "${TENANTS[@]}"; do BEFORE_ROWS[$t]="$(rows_hash "$t")"; done
 DETACHED_ID="$(db_id "$DETACHED")"
 DETACHED_ROWS_BEFORE="$(rows_hash "$DETACHED")"
 pk tenant detach "${HANDLE[$DETACHED]}" --yes | sed 's/^/    /'
@@ -720,15 +812,10 @@ check "and it is her own data" "$DETACHED" "$(rows_owner "$DETACHED")"
 untouched=0
 for t in "${TENANTS[@]}"; do
 	[ "$t" = "$DETACHED" ] && continue
-	NOW_FILE="$(file_hash "$t")"; NOW_ROWS="$(rows_hash "$t")"
-	[ "$NOW_FILE" = "${BEFORE_FILE[$t]}" ] && [ "$NOW_ROWS" = "${BEFORE_ROWS[$t]}" ] \
-		&& untouched=$((untouched + 1)) || echo "  FAIL  ${t} changed during a restore of the detached ${DETACHED}"
-	# DIAGNOSTIC (pd-e7ui, not for commit): which of the two actually moved?
-	[ "$NOW_FILE" = "${BEFORE_FILE[$t]}" ] || echo "    DIAG ${t} FILE bytes differ: ${BEFORE_FILE[$t]:0:12} -> ${NOW_FILE:0:12}"
-	[ "$NOW_ROWS" = "${BEFORE_ROWS[$t]}" ] || echo "    DIAG ${t} ROWS differ: ${BEFORE_ROWS[$t]:0:12} -> ${NOW_ROWS:0:12}"
-	[ "$NOW_ROWS" = "${BEFORE_ROWS[$t]}" ] && echo "    DIAG ${t} rows IDENTICAL (count $(rows_count "$t"))"
+	[ "$(logical_unchanged "$t")" = unchanged ] && untouched=$((untouched + 1)) \
+		|| echo "  FAIL  ${t} changed during a restore of the detached ${DETACHED}"
 done
-check "and the live tenants are byte-identical through it" "3" "$untouched"
+check "and the live tenants are unchanged through it" "3" "$untouched"
 sidecar_start
 
 # ── 9. RESTORE.md scenario C — the whole volume is gone ─────────────────────
@@ -924,7 +1011,7 @@ echo "  ${pass} passed, ${fail} failed"
 [[ $fail -eq 0 ]] || exit 1
 echo "  PASS — a collection comes back after a RENAME (same file, same prefix, new"
 echo "         handle) and after a DETACH (kept, attributable, restorable); every"
-echo "         bystander tenant is byte-identical every time; a total loss recovers"
+echo "         bystander tenant holds the same data every time; a total loss recovers"
 echo "         all four states with the registry FIRST; and restoring the tenant"
 echo "         files WITHOUT the registry is REFUSED — after being shown to come"
 echo "         back complete, healthy and anonymous, which is what made it worth a"

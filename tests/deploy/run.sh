@@ -31,6 +31,15 @@ DISKCHECK="${REPO_DIR}/deploy/diskcheck.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Hermetic includes the runtime dir. Activation creates a runroot under
+# $XDG_RUNTIME_DIR keyed by the store's graph path, and every run of this file
+# used a fresh mktemp store — so every run left one more directory under the
+# real /run/user/$UID that nothing collected. There were 20 of them on the box
+# this was noticed on (pd-yfev). Point the whole file at a throwaway one; §8
+# also needs to plant netns state under it, which must never be the real one.
+export XDG_RUNTIME_DIR="${WORK}/run"
+mkdir -p "$XDG_RUNTIME_DIR"
+
 pass=0
 fail=0
 check() { # check <label> <expected> <actual>
@@ -170,11 +179,18 @@ log "4. Activation reaches every podman call"
 
 reset_store
 # A stand-in podman that just prints its arguments, so the shim can be driven
-# end to end without touching a real store.
+# end to end without touching a real store. `unshare` is the one verb it really
+# runs: §7's teardown removes a rootless store through it, and a fake that only
+# echoed would let a teardown that deletes nothing pass.
 mkdir -p "${WORK}/fakebin"
 cat > "${WORK}/fakebin/podman" <<'EOF'
 #!/usr/bin/env bash
 echo "PODMAN-ARGS: $*"
+args=("$@")
+while [[ ${#args[@]} -gt 0 && ${args[0]} == --* ]]; do args=("${args[@]:1}"); done
+if [[ ${#args[@]} -gt 0 && ${args[0]} == unshare ]]; then
+	exec "${args[@]:1}"
+fi
 EOF
 chmod +x "${WORK}/fakebin/podman"
 PATH="${WORK}/fakebin:${PATH}"
@@ -445,6 +461,166 @@ check "a second deploy rewrites nothing" "1" \
 	"$(printf '%s' "$DEPLOY_OUT2" | grep -c 'already match this checkout' || true)"
 check "and leaves no temp files behind" "0" \
 	"$(find "$QUADLET" "$UNITS" -name '.*.new.*' | wc -l)"
+
+reset_store
+
+# ---------------------------------------------------------------------------
+log "8. A second store cannot take this store's rootless netns"
+# ---------------------------------------------------------------------------
+#
+# pd-yfev. Podman 4.9 gives each store its own netns file but ONE shared
+# scaffolding directory, and the first store to clean up removes it — leaving
+# every other store holding a netns file that still looks valid and mounts into
+# nothing. That store can then never start a container on a user-defined
+# network, which is every container tests/litestream/{run,drill}.sh starts.
+#
+# Reproduced end to end against real podman before this was written; here it is
+# the state machine that gets asserted, from planted directories.
+
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+UID_N="$(id -u)"
+NETNS_DIR="${XDG_RUNTIME_DIR}/netns"
+SCAFFOLD="${XDG_RUNTIME_DIR}/libpod/tmp/rootless-netns/run/user/${UID_N}"
+mkdir -p "$NETNS_DIR"
+
+# The name podman derives, byte for byte: sha256 of <graph root>/libpod, first
+# ten bytes. Pinned to a vector measured against podman 4.9.3 — a store at
+# /workspaces/pd-netns-probe/storage really was given this name. Getting it
+# wrong is not a loud failure, it is a repair that silently never fires, so the
+# derivation is asserted rather than trusted.
+check "netns name matches podman's derivation" \
+	"rootless-netns-c94900efa81f2edcf008" \
+	"$(pkdump_store_netns_name /workspaces/pd-netns-probe/storage)"
+
+wedge_store() { # wedge_store <store root> — a netns file, no scaffolding
+	mkdir -p "${1}/storage"
+	rm -rf "${XDG_RUNTIME_DIR}/libpod"
+	: > "${NETNS_DIR}/$(pkdump_store_netns_name "${1}/storage")"
+}
+
+# The wedge: activation drops the stale name so podman rebuilds it.
+export PKDUMP_STORE_ROOT="${WORK}/wedged"
+wedge_store "$PKDUMP_STORE_ROOT"
+WEDGED_NS="${NETNS_DIR}/$(pkdump_store_netns_name "${PKDUMP_STORE_ROOT}/storage")"
+pkdump_store_activate >/dev/null 2>&1
+check "a stale netns name is dropped" "gone" \
+	"$([ -e "$WEDGED_NS" ] && echo present || echo gone)"
+
+# The guard, and it is the one that matters: scaffolding present means some
+# store is USING that namespace right now. Removing the name there would break a
+# live container instead of a wedged store.
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+export PKDUMP_STORE_ROOT="${WORK}/live"
+wedge_store "$PKDUMP_STORE_ROOT"
+mkdir -p "$SCAFFOLD"
+LIVE_NS="${NETNS_DIR}/$(pkdump_store_netns_name "${PKDUMP_STORE_ROOT}/storage")"
+pkdump_store_activate >/dev/null 2>&1
+check "a live netns is left alone" "present" \
+	"$([ -e "$LIVE_NS" ] && echo present || echo gone)"
+rm -rf "${XDG_RUNTIME_DIR}/libpod"
+
+# Prod's exposure is nil by construction: with no store opted in, the repair
+# returns before it derives a name at all, so there is no code path that can
+# compute — let alone remove — the default store's netns.
+reset_store
+PROD_NS="${NETNS_DIR}/$(pkdump_store_netns_name "${HOME}/.local/share/containers/storage")"
+: > "$PROD_NS"
+pkdump_store_netns_repair >/dev/null 2>&1
+check "no store opted in -> prod's netns untouched" "present" \
+	"$([ -e "$PROD_NS" ] && echo present || echo gone)"
+rm -f "$PROD_NS"
+
+# The repair that was found by hand first was `podman system migrate`, and it is
+# the wrong one: it kills the pause process, which is per-USER and shared with
+# the store prod runs in. A non-prod gate must not reach into prod's runtime
+# state to fix itself. (The other foot-gun, the store-wide reset, is §6's job
+# and it covers the whole repo.)
+check "the repair does not migrate the user's podman" "0" \
+	"$(grep -v '^ *#' "${REPO_DIR}/deploy/store-lib.sh" | grep -c 'system migrate' || true)"
+
+reset_store
+
+# ---------------------------------------------------------------------------
+log "9. A store has a teardown of its own"
+# ---------------------------------------------------------------------------
+#
+# deploy/teardown.sh removes an INSTANCE and leaves the store standing, which is
+# correct — the store is shared. The consequence was that nothing removed a
+# store, ever: 3.9G of images and a runroot per store on the box this was found
+# on (pd-yfev).
+
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+
+# No store configured means the target would be Podman's default store, which is
+# prod's. That must refuse, not default.
+set +e
+TD_OUT="$(unset PKDUMP_STORE_ROOT; pkdump_store_teardown 2>&1)"
+TD_RC=$?
+set -e
+check "refuses without a store" "1" "$TD_RC"
+check "and says whose store that would be" "1" \
+	"$(printf '%s' "$TD_OUT" | grep -c "default store" || true)"
+
+export PKDUMP_STORE_ROOT="${WORK}/doomed"
+pkdump_store_activate >/dev/null 2>&1
+DOOMED_RUNROOT="${XDG_RUNTIME_DIR}/pkdump-store-$(printf '%s' "${PKDUMP_STORE_ROOT}/storage" | sha1sum | cut -c1-8)"
+DOOMED_NS="${NETNS_DIR}/$(pkdump_store_netns_name "${PKDUMP_STORE_ROOT}/storage")"
+: > "$DOOMED_NS"
+mkdir -p "${PKDUMP_STORE_ROOT}/storage/overlay" "${DOOMED_RUNROOT}/overlay-layers"
+# A second store's runroot, to prove the removal is keyed to the store and does
+# not sweep the runtime dir.
+BYSTANDER="${XDG_RUNTIME_DIR}/pkdump-store-decoy00"
+mkdir -p "$BYSTANDER"
+
+pkdump_store_teardown >/dev/null 2>&1
+
+check "graph root removed" "gone" \
+	"$([ -e "${PKDUMP_STORE_ROOT}/storage" ] && echo present || echo gone)"
+check "buildah TMPDIR removed" "gone" \
+	"$([ -e "${PKDUMP_STORE_ROOT}/tmp" ] && echo present || echo gone)"
+check "the shim goes too" "gone" \
+	"$([ -e "${PKDUMP_STORE_ROOT}/bin" ] && echo present || echo gone)"
+check "its runroot removed" "gone" \
+	"$([ -e "$DOOMED_RUNROOT" ] && echo present || echo gone)"
+check "its netns name removed" "gone" \
+	"$([ -e "$DOOMED_NS" ] && echo present || echo gone)"
+check "another store's runroot survives" "present" \
+	"$([ -e "$BYSTANDER" ] && echo present || echo gone)"
+
+# A teardown that could not remove the store must SAY so. Reporting success over
+# a store still on disk is the worse failure: the disk it was meant to free
+# stays full and nothing anywhere says why. Simulated by making the store's
+# parent unwritable, so the removal cannot unlink it.
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+export PKDUMP_STORE_ROOT="${WORK}/ro/store"
+mkdir -p "${PKDUMP_STORE_ROOT}/storage"
+pkdump_store_activate >/dev/null 2>&1
+chmod 500 "${WORK}/ro"
+set +e
+STUCK_OUT="$(pkdump_store_teardown 2>&1)"
+STUCK_RC=$?
+set -e
+chmod 700 "${WORK}/ro"
+check "a store it could not remove is an error" "1" "$STUCK_RC"
+check "and it names the store" "1" \
+	"$(printf '%s' "$STUCK_OUT" | grep -c "${PKDUMP_STORE_ROOT} is still on disk" || true)"
+
+# The CLI over it resolves the store the same way ci.sh does, and refuses the
+# same way when the answer is "Podman's default".
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+set +e
+CLI_OUT="$(env -u PKDUMP_STORE_ROOT HOME="${WORK}/home" \
+	bash "${REPO_DIR}/deploy/store-teardown.sh" 2>&1)"
+CLI_RC=$?
+set -e
+check "store-teardown.sh exits non-zero unconfigured" "1" "$CLI_RC"
+check "and removes nothing" "1" \
+	"$(printf '%s' "$CLI_OUT" | grep -c 'nothing to remove' || true)"
 
 reset_store
 

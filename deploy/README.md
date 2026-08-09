@@ -176,7 +176,53 @@ start a new shell rather than trusting the one whose `PATH` now points at
 nothing.
 
 `tests/deploy/run.sh` §6 greps `deploy/` and `tests/` and fails on a scripted
-reset, so a future store-teardown command has to use this recipe.
+reset, so a store-teardown command has to use this recipe. One does now — the
+next section — and the steps above remain what it runs.
+
+#### Removing a store, with one command
+
+`teardown.sh` removes an *instance* and leaves the store standing, because the
+store is shared by every instance on the box. Nothing removed the store itself,
+so one accumulated forever — 3.9G of images and layers, plus a runroot per store
+under `/run/user/$UID`.
+
+```bash
+bash deploy/store-teardown.sh    # the store store.env names; refuses if there is none
+```
+
+It runs exactly the recipe above — stop, remove, prune, then `rm -rf` the store
+root and its runroot — plus the store's rootless-netns name. With no alternate
+store configured it exits non-zero rather than defaulting to Podman's; that one
+is prod's. It reports a failure rather than claiming success when something in
+the store is still mounted.
+
+#### Two stores, one rootless netns (pd-yfev)
+
+Podman 4.9 does not fully support two rootless stores on one login, and the way
+it fails is silent and total: the alternate store reaches a state where *every*
+container on a user-defined network dies with
+
+```
+Error: failed to mount runtime directory for rootless netns: no such file or directory
+```
+
+Each store gets its own netns file (named from a hash of its graph root) but they
+share one scaffolding directory, `$XDG_RUNTIME_DIR/libpod/tmp/rootless-netns` —
+`--root`/`--runroot` do not move it. `RootlessNetNS.Cleanup()` deletes that shared
+directory when the last bridge-network container *in its own store* exits, and it
+counts containers out of its own store's database, so it cannot see the other
+store's. The other store is then left holding a netns file that still looks valid
+and mounts into nothing, permanently.
+
+`tests/litestream/run.sh` and `drill.sh` both create a user-defined network, so a
+wedged store means `deploy/ci.sh` cannot pass — and it wedges mid-session, from
+another store's cleanup, with nothing in the message to suggest the store.
+
+`pkdump_store_activate` repairs it: if this store's netns file is present while
+the shared scaffolding is gone, the file is stale and is dropped, which puts
+podman back on the branch that rebuilds it. Deliberately *not* `podman system
+migrate` (the repair found by hand first) — that kills the pause process, which
+is per-user and shared with the store prod runs in.
 
 ### Low-disk guard
 

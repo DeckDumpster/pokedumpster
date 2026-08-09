@@ -134,6 +134,18 @@
 # left to memory — tests/deploy/run.sh §6 greps deploy/ and tests/ and fails on
 # a `podman system reset` anywhere in the repo.
 #
+# That command now exists: pkdump_store_teardown runs exactly the recipe above,
+# and deploy/store-teardown.sh is the CLI over it. Two details it had to add,
+# both measured rather than reasoned — see the function (pd-yfev).
+#
+# WHAT A SECOND STORE COSTS
+#
+# Podman 4.9 does not fully support two rootless stores on one login: they share
+# one rootless-netns scaffolding directory, and whichever store cleans up last
+# takes it from the other — leaving that store unable to start ANY container on
+# a user-defined network until its netns file is dropped. pkdump_store_netns_repair
+# handles it at activation; the mechanism is written up there (pd-yfev).
+#
 # Sourced, not executed.
 
 # pkdump_store_load_config — take PKDUMP_STORE_ROOT from host config when the
@@ -212,6 +224,173 @@ EOF
     # stderr: some callers capture a script's stdout and parse it (drill.sh reads
     # backup-check.sh's output), and this is a progress note, not a result.
     echo "==> Container storage: ${graph} (non-prod store; prod's is untouched)" >&2
+
+    pkdump_store_netns_repair
+}
+
+# pkdump_store_netns_name — the name Podman gives THIS store's rootless network
+# namespace. Podman derives it from the libpod static dir, which is <graph>/libpod:
+#
+#   libpod/networking_linux.go
+#     hash := sha256.Sum256([]byte(r.config.Engine.StaticDir))
+#     netnsName := fmt.Sprintf("%s-%x", rootlessNetNsName, hash[:10])
+#
+# Reproducing a hash from another project's internals is not something to do
+# lightly. It is done here because it is what makes the repair below SAFE: with
+# the name computed from this store's own graph root, prod's name is never even
+# derived, so no code path can remove it. The alternative — reaping every
+# `rootless-netns-*` in the runtime dir — would have to reason about prod's.
+#
+# Verified byte-exact against two live stores on podman 4.9.3. If a future
+# podman changes the scheme this stops matching, the repair silently finds
+# nothing, and the failure mode is the status quo ante (pd-yfev).
+pkdump_store_netns_name() {
+    printf 'rootless-netns-%s' \
+        "$(printf '%s' "${1}/libpod" | sha256sum | cut -c1-20)"
+}
+
+# pkdump_store_netns_repair — un-wedge this store's rootless networking.
+#
+# THE BUG (pd-yfev). Two rootless stores cannot both keep a network namespace,
+# and podman 4.9 does not notice:
+#
+#   * Each store gets its OWN netns file, named from the hash above, under
+#     $XDG_RUNTIME_DIR/netns/.
+#   * They SHARE one scaffolding directory, $XDG_RUNTIME_DIR/libpod/tmp/rootless-netns.
+#     That path comes from Engine.TmpDir, which --root and --runroot do not move
+#     (neither does --tmpdir — measured on 4.9.3).
+#   * The scaffolding is created only on the branch that CREATES the netns.
+#   * RootlessNetNS.Cleanup() does os.RemoveAll on the SHARED directory when the
+#     last bridge-network container *in its own store* exits — it counts
+#     containers out of its own store's database and cannot see the other one's.
+#
+# So the moment one store's last container on a user-defined network goes away,
+# every OTHER store is left holding a netns file that still looks valid. Podman
+# takes it, skips the create branch, and then fails to mount into scaffolding
+# that is no longer there:
+#
+#   Error: failed to mount runtime directory for rootless netns: no such file or directory
+#
+# That store can never start a container on a user-defined network again, and
+# tests/litestream/{run,drill}.sh both create one — so deploy/ci.sh cannot pass.
+# It wedges silently, mid-session, and nothing about the message says "store".
+#
+# THE REPAIR is to delete this store's stale netns file, which puts podman back
+# on the create branch. It is not a mountpoint in our mount namespace (the mount
+# lives in the pause process's), so removing the name is all it takes.
+#
+# It is deliberately NOT `podman system migrate`, which is the repair that was
+# found by hand first: migrate kills the pause process, and that process is
+# per-USER, not per-store — shared with the default store prod runs in. A
+# non-prod gate must not reach into prod's runtime state to fix itself.
+#
+# The guard is what keeps this from being a live-namespace killer: if the shared
+# scaffolding is present, some store is using it, and nothing is removed.
+pkdump_store_netns_repair() {
+    [ -n "${PKDUMP_STORE_ROOT:-}" ] || return 0
+
+    local rundir netns_file
+    rundir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    netns_file="${rundir}/netns/$(pkdump_store_netns_name "${PKDUMP_STORE_ROOT}/storage")"
+
+    # Nothing of ours to reap.
+    [ -e "$netns_file" ] || return 0
+    # Scaffolding intact — the netns is usable, and may be in use right now.
+    [ -d "${rundir}/libpod/tmp/rootless-netns/run/user/$(id -u)" ] && return 0
+
+    echo "==> Rootless netns for this store is stale (another store's cleanup removed" >&2
+    echo "    the shared scaffolding). Dropping ${netns_file##*/} so podman rebuilds it (pd-yfev)." >&2
+    rm -f "$netns_file"
+}
+
+# pkdump_store_teardown — remove the active store: every container and image in
+# it, the store root (graph, Buildah TMPDIR and the shim), its runroot, and its
+# netns name. The store-level lifecycle command that did not exist —
+# deploy/teardown.sh removes an INSTANCE and deliberately leaves the store it
+# lived in alone, so a box accumulated stores nothing ever collected (pd-yfev).
+#
+# This is the "REMOVING A STORE, correctly" recipe in this file's header, made
+# executable: stop and remove what the store owns from INSIDE that store, then
+# delete its directories. Never `podman system reset`, which ignores
+# --root/--runroot and took prod down when it was aimed at a throwaway store
+# (pd-rkrf) — a path deletes exactly the path, however podman resolves things.
+#
+# It must not run without a store either. With PKDUMP_STORE_ROOT empty the
+# target WOULD be Podman's default store, which is prod's, so that case refuses
+# instead of defaulting.
+#
+# `podman unshare rm -rf` rather than plain rm: a rootless store's layer
+# directories are owned by subuids, and rm fails on every one of them with
+# EPERM. unshare enters the user namespace where those uids are ours.
+pkdump_store_teardown() {
+    if [ -z "${PKDUMP_STORE_ROOT:-}" ]; then
+        echo "ERROR: pkdump_store_teardown needs PKDUMP_STORE_ROOT; refusing to" >&2
+        echo "       act on Podman's default store (prod's)." >&2
+        return 1
+    fi
+
+    # Not optional. Every podman call below is a bare `podman`, which without the
+    # shim means Podman's DEFAULT store — so an un-activated teardown would
+    # `rm -f -a` prod's containers. Activation is idempotent.
+    pkdump_store_activate || return 1
+
+    local root graph rundir netns_file
+    root="$PKDUMP_STORE_ROOT"
+    graph="${root}/storage"
+    rundir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    netns_file="${rundir}/netns/$(pkdump_store_netns_name "$graph")"
+
+    echo "==> Removing container store ${root}" >&2
+
+    # The recipe, in order, every command scoped by the shim's flags. Best-effort
+    # throughout: a store whose database is already gone has nothing to stop, and
+    # the directory removal below is what actually frees the disk.
+    podman stop -a >/dev/null 2>&1 || true
+    podman rm -af >/dev/null 2>&1 || true
+    podman volume rm -af >/dev/null 2>&1 || true
+    podman rmi -af >/dev/null 2>&1 || true
+    podman network prune -f >/dev/null 2>&1 || true
+    # The header's recipe ends in `rm -rf` on the store root and its runroot.
+    # Two details it does not mention, both measured rather than reasoned:
+    #
+    #   * `podman rm -af` returns before the container's rootfs is unmounted, and
+    #     one leftover mount fails the whole removal with EBUSY on
+    #     storage/overlay. It survived three retries a second apart. So the
+    #     unmount and the removal happen inside ONE `podman unshare` — the mount
+    #     is in that namespace, and a second invocation is a second namespace
+    #     that cannot see it.
+    #   * It cannot be the last word. This `podman` IS the doomed store's shim,
+    #     so podman re-creates that store's skeleton as it shuts down — after
+    #     the command inside it has exited. storage.lock, overlay/ and
+    #     overlay-layers/ come back every time. What comes back is empty and
+    #     ours (not subuid-owned), so a plain rm finishes the job.
+    #
+    # bin/ (the shim this call is running through) goes with it: podman has
+    # already exec'd, so the script being deleted underneath it is harmless.
+    podman unshare sh -c '
+        root=$1
+        while read -r _ _ _ _ mp _; do
+            case "$mp" in "$root"|"$root"/*) printf "%s\n" "$mp" ;; esac
+        done < /proc/self/mountinfo | sort -r | while read -r mp; do
+            umount -l "$mp" 2>/dev/null || true
+        done
+        rm -rf "$root"
+    ' sh "$root" >/dev/null 2>&1 || true
+    rm -rf "$root" 2>/dev/null || true
+
+    # The volatile state goes either way — it is this store's alone (the runroot
+    # is keyed by the graph path) and is worthless without the store.
+    rm -rf "${rundir}/pkdump-store-$(printf '%s' "$graph" | sha1sum | cut -c1-8)"
+    rm -f "$netns_file"
+
+    # Say what is actually true. A teardown that reports success over a store it
+    # could not remove is worse than one that fails: the disk it was supposed to
+    # free stays full and nothing says so.
+    if [ -e "$root" ]; then
+        echo "ERROR: ${root} is still on disk — something in it is still mounted." >&2
+        echo "       Stop anything using this store and run this again." >&2
+        return 1
+    fi
 }
 
 # pkdump_store_is_activated — is the store named by PKDUMP_STORE_ROOT the one

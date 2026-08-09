@@ -247,8 +247,17 @@ layout; `deploy/ci.sh` reads it, an explicit environment variable beats it,
 and unconfigured means Podman's default store. **Prod never opts in**
 (`setup.sh` does not read `store.env` at all) — its unit and volumes are
 untouched by construction. The generated Quadlet unit records the store so
-teardown removes from the same one. See `deploy/store-lib.sh` and the
-README's "Container storage".
+teardown removes from the same one. `deploy/store-teardown.sh` removes a store
+outright — `teardown.sh` only ever removes an *instance*, so nothing collected
+the store itself.
+
+A second store is not free. Podman 4.9 gives each store its own rootless-netns
+file but one shared scaffolding directory, and whichever store cleans up last
+deletes it — leaving the other unable to start any container on a user-defined
+network, which is what every Litestream gate uses. `pkdump_store_activate`
+detects the stale netns file and drops it (never `podman system migrate`: that
+kills the per-user pause process prod's store shares). See `deploy/store-lib.sh`
+and the README's "Container storage".
 
 The image runs `pkdump serve`; the data volume holds both `shared.sqlite`
 and the per-user collection DB. Off-box backup is the

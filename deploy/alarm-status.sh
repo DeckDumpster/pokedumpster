@@ -237,10 +237,14 @@ fi
 if [ "$VERIFY" = true ]; then
     layer "--verify — exercising the layers for real"
 
+    VERIFY_FAILURES=0
+
     echo "  running ${SVC} (this pings the off-box monitor)..."
-    if systemctl --user start "$SVC" 2>&1 | sed 's/^/    /'; then
-        echo "    checker exited $(unit_prop "$SVC" ExecMainStatus) (result=$(unit_prop "$SVC" Result))"
-    fi
+    # `systemctl start` on a Type=oneshot blocks until it finishes and exits
+    # non-zero if it failed — but only when its output is NOT piped, or the
+    # pipeline's status is sed's. Keep the two separate.
+    systemctl --user start "$SVC" >/dev/null 2>&1 || VERIFY_FAILURES=$((VERIFY_FAILURES + 1))
+    echo "    checker exited $(unit_prop "$SVC" ExecMainStatus) (result=$(unit_prop "$SVC" Result))"
     journalctl --user -u "$SVC" -n 15 --no-pager 2>/dev/null | sed 's/^/    /'
 
     echo ""
@@ -250,12 +254,18 @@ if [ "$VERIFY" = true ]; then
         echo "    push accepted by Pushover — check your phone."
     else
         echo "    PUSH FAILED — Layers 2 and 4 would reach nobody."
-        FAILURES=$((FAILURES + 1))
+        VERIFY_FAILURES=$((VERIFY_FAILURES + 1))
     fi
 
     echo ""
-    echo "  Now confirm the OTHER end: the healthchecks.io check for '${INSTANCE}'"
-    echo "  should have just gone green (or received a /fail if the replicas are stale)."
+    if [ "$VERIFY_FAILURES" -eq 0 ]; then
+        printf '  \033[32mVERIFY: both channels delivered.\033[0m\n'
+    else
+        printf '  \033[31mVERIFY: %d channel(s) failed to deliver.\033[0m\n' "$VERIFY_FAILURES"
+    fi
+    FAILURES=$((FAILURES + VERIFY_FAILURES))
+    echo "  Confirm the OTHER end yourself: the healthchecks.io check for"
+    echo "  '${INSTANCE}' should have just gone green, and the push should be on your phone."
 fi
 
 [ "$FAILURES" -eq 0 ]

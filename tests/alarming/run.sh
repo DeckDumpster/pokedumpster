@@ -34,6 +34,7 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 LITESTREAM_IMAGE=${LITESTREAM_IMAGE:-docker.io/litestream/litestream:latest}
 MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
+MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -63,9 +64,16 @@ SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 QUADLET_DIR="${HOME}/.config/containers/systemd"
 
 MINIO_CTR="pkdump-${INSTANCE}-minio"
-MINIO_PORT=${MINIO_PORT:-39941}
-SINK_PORT=${SINK_PORT:-39942}
 LS_CTR="pkdump-${INSTANCE}-litestream"
+
+# Ports are taken from the kernel, not picked. Fixed numbers fail two ways here:
+# several polecats run this gate concurrently from their own worktrees, and this
+# box already had an unrelated `python3 -m http.server` sitting on the first
+# number chosen — which surfaced as "address already in use" three sections
+# later, looking nothing like a port clash.
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()'; }
+MINIO_PORT=${MINIO_PORT:-$(free_port)}
+SINK_PORT=${SINK_PORT:-$(free_port)}
 
 WORK=${WORK:-$(mktemp -d /tmp/pkdump-alarm.XXXXXX)}
 SINK_LOG="${WORK}/sink.jsonl"
@@ -128,8 +136,11 @@ trap cleanup EXIT
 # --- sink queries ----------------------------------------------------------
 # Every assertion below is "what did the sink receive", never "what does the
 # script say it would send".
-sink_total() { grep -c . "$SINK_LOG" 2>/dev/null || echo 0; }
-sink_grep()  { grep -c -- "$1" "$SINK_LOG" 2>/dev/null || echo 0; }
+# `grep -c` already prints 0 when nothing matches — it just exits 1 while doing
+# it. An `|| echo 0` on the end therefore prints the count TWICE, which lands in
+# the next $(( )) as a syntax error and silently zeroes every assertion after it.
+sink_total() { wc -l <"$SINK_LOG" 2>/dev/null | tr -d ' '; }
+sink_grep()  { grep -c -- "$1" "$SINK_LOG" 2>/dev/null || true; }
 # Requests recorded after line N — so a section can assert on ITS OWN traffic.
 sink_since() { tail -n "+$(( $1 + 1 ))" "$SINK_LOG" 2>/dev/null; }
 since_grep() { sink_since "$1" | grep -c -- "$2" || true; }
@@ -148,13 +159,17 @@ run_check() { PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
 # ── 1. the recorder ─────────────────────────────────────────────────────────
 log "1. local HTTP sink standing in for healthchecks.io + Pushover"
 : >"$SINK_LOG"
-python3 "${SCRIPT_DIR}/sink.py" "$SINK_PORT" "$SINK_LOG" &
+python3 "${SCRIPT_DIR}/sink.py" "$SINK_PORT" "$SINK_LOG" >"${WORK}/sink.err" 2>&1 &
 SINK_PID=$!
 for _ in $(seq 40); do
 	curl -fsS -m 2 "http://127.0.0.1:${SINK_PORT}/ready" >/dev/null 2>&1 && break
 	sleep 0.25
 done
 check "the sink is up and recording" "1" "$(sink_grep '"path": "/ready"')"
+# Every later assertion is "what did the sink receive", so a sink that dies
+# mid-run turns real failures into fake ones. Assert it is still alive whenever
+# a section expects traffic.
+sink_alive() { kill -0 "$SINK_PID" 2>/dev/null && echo alive || { sed 's/^/    sink: /' "${WORK}/sink.err"; echo dead; }; }
 : >"$SINK_LOG"
 echo "  ping URL ${PING_URL}"
 
@@ -174,6 +189,7 @@ export LITESTREAM_S3_ENDPOINT="http://host.containers.internal:${MINIO_PORT}"
 export AWS_PROFILE=pkdump
 
 podman rm -f --ignore "$MINIO_CTR" "$LS_CTR" >/dev/null 2>&1
+mkdir -p "${WORK}/minio"
 podman run -d --name "$MINIO_CTR" -p "${MINIO_PORT}:9000" \
 	-e MINIO_ROOT_USER="$AKID" -e MINIO_ROOT_PASSWORD="$SECRET_KEY" \
 	-v "${WORK}/minio:/data:Z" "$MINIO_IMAGE" server /data >/dev/null
@@ -182,6 +198,13 @@ for _ in $(seq 60); do
 	sleep 1
 done
 check "minio is up" "0" "$(curl -fsS -o /dev/null "http://127.0.0.1:${MINIO_PORT}/minio/health/live"; echo $?)"
+# Litestream does not create buckets, and a missing one surfaces as NoSuchBucket
+# from the freshness query — which reads identically to the broken-creds failure
+# the gate deliberately provokes in §4b. Create it up front so the two cases
+# stay distinguishable.
+mc() { podman run --rm -e "MC_HOST_s=http://${AKID}:${SECRET_KEY}@host.containers.internal:${MINIO_PORT}" "$MC_IMAGE" "$@"; }
+mc mb --ignore-existing "s/${LITESTREAM_S3_BUCKET}" >/dev/null 2>&1
+check "the bucket exists" "1" "$(mc ls s/ 2>/dev/null | grep -c "$LITESTREAM_S3_BUCKET" || true)"
 
 podman secret rm "$SECRET_NAME" >/dev/null 2>&1
 mkdir -p "${CONF_DIR}/aws"
@@ -269,6 +292,7 @@ BEFORE=$(sink_total)
 OUT="$(run_check)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
 check "backup-check exits 0 when every replica is fresh" "0" "$RC"
+check "the sink is still recording" "alive" "$(sink_alive)"
 check "the monitor received its heartbeat" "1" "$(since_grep "$BEFORE" "$GREEN_PING")"
 check "and NOT the /fail trip" "0" "$(since_grep "$BEFORE" "$FAIL_PING")"
 check "no Pushover push on a healthy run" "0" "$(since_grep "$BEFORE" "$PUSH")"
@@ -370,6 +394,7 @@ for _ in $(seq 40); do
 	[ "$(since_grep "$BEFORE" "$PUSH")" -gt 0 ] && break
 	sleep 0.5
 done
+check "the sink is still recording" "alive" "$(sink_alive)"
 check "the failing unit produced a Pushover push" "1" "$(since_grep "$BEFORE" "$PUSH")"
 check "the push names the unit that failed" "1" "$(since_grep "$BEFORE" "unit FAILED: ${P}-boom.service")"
 check "and carries its journal tail" "1" "$(since_grep "$BEFORE" 'simulated backup unit failure')"
@@ -402,8 +427,8 @@ status_run() { bash "${REPO_DIR}/deploy/alarm-status.sh" "$INSTANCE" 2>&1; }
 OUT="$(status_run)"; RC=$?
 check "inert instance reports NOT ARMED" "1" "$RC"
 check "and says so in as many words" "1" "$(printf '%s' "$OUT" | grep -c 'NOT ARMED' || true)"
-check "it names the missing timer as the reason" "1" \
-	"$(printf '%s' "$OUT" | grep -c "${P}-backup-check@${INSTANCE}.timer" || true)"
+check "it names the missing timer as the reason" "yes" \
+	"$(printf '%s' "$OUT" | grep -q "${P}-backup-check@${INSTANCE}.timer" && echo yes || echo no)"
 # Configuration is not arming: §3 proved the checker works when run by hand, and
 # the answer here is still no, because nothing is running it on a schedule.
 check "and reports the checker as never having run under systemd" "1" \
@@ -461,6 +486,27 @@ check "a CHANGE_ME placeholder is not 'configured'" "1" "$RC"
 check "and it says the pushes would be dropped" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'still CHANGE_ME' || true)"
 sed -i 's|^PUSHOVER_TOKEN=.*|PUSHOVER_TOKEN=alarmgate-token|' "$TEST_ALERTS_ENV"
+
+# ── 9. --verify actually delivers ───────────────────────────────────────────
+# The last step of the arming runbook, and the one an operator judges the whole
+# feature by. Reading configuration back is not what it claims to do, so assert
+# on the two requests it is supposed to produce.
+log "9. alarm-status.sh --verify fires both channels"
+BEFORE=$(sink_total)
+OUT="$(bash "${REPO_DIR}/deploy/alarm-status.sh" "$INSTANCE" --verify 2>&1)"; RC=$?
+printf '%s\n' "$OUT" | tail -n 6 | sed 's/^/    /'
+check "--verify exits 0 on an armed instance" "0" "$RC"
+check "it pinged the off-box monitor for real" "1" "$(since_grep "$BEFORE" "$GREEN_PING")"
+check "it sent a real push" "1" "$(since_grep "$BEFORE" "$PUSH")"
+check "the push is labelled a test" "1" "$(since_grep "$BEFORE" "alarm test (${INSTANCE})")"
+check "and it reports both channels delivered" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'both channels delivered' || true)"
+
+# A channel that cannot deliver must fail the verify, not decorate it.
+sed -i 's|^PUSHOVER_API_URL=.*|PUSHOVER_API_URL=http://127.0.0.1:1/gone|' "$TEST_ALERTS_ENV"
+OUT="$(bash "${REPO_DIR}/deploy/alarm-status.sh" "$INSTANCE" --verify 2>&1)"; RC=$?
+check "a dead push channel makes --verify exit non-zero" "1" "$RC"
+check "and it says the push failed" "1" "$(printf '%s' "$OUT" | grep -c 'PUSH FAILED' || true)"
 
 # ── RESULT ──────────────────────────────────────────────────────────────────
 log "RESULT"

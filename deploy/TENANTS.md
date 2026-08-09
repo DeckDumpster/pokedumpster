@@ -264,8 +264,14 @@ sqlite3 "file:${MP}/tenants/collection.sqlite?mode=ro" 'SELECT count(*) FROM col
 ls "${MP}/collection.sqlite" 2>&1     # -> No such file or directory
 # The catalog did NOT move.
 ls -l "${MP}/shared.sqlite"
-# Backups are still flowing.
+# Backups are still flowing. This step is only evidence because backup-check.sh
+# now FAILS when it cannot verify (pd-1717): on 2026-08-08 this exact command
+# printed "skipping", exited 0, and was read as a pass while Litestream sat
+# ACTIVE with txid.replica pinned at zero. Non-zero exit here means the
+# migration did not finish, whatever `systemctl is-active` says.
 bash deploy/backup-check.sh ${INSTANCE}
+# And the whole alarming picture, if this instance is meant to be armed.
+bash deploy/alarm-status.sh ${INSTANCE}
 ```
 
 ### Rollback

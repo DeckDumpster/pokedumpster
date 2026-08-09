@@ -82,7 +82,7 @@ Steps, in order, exiting non-zero on the first failure:
    non-first one restored.
 6. DR drill (`tests/litestream/drill.sh`): `deploy/RESTORE.md`'s procedure
    executed with the shipped scripts — one tenant restored in place while the
-   others stay byte-identical.
+   others keep exactly their own data.
 7. Visual regression (`tests/visual/`): every route at 1440 and 768, diffed
    against the committed baselines.
 

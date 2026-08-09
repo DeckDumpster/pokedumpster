@@ -215,7 +215,7 @@ check "the catalog stayed where it was" "present" \
 log "5. it serves the SAME collection from its new name"
 start_app
 check "the server came up on the migrated volume" "up" "$(wait_up)"
-check "the collection is byte-identical to before the migration" "$BEFORE_HASH" \
+check "it serves exactly the collection it served before the migration" "$BEFORE_HASH" \
 	"$(collection_hash)"
 check "it reports the collection as registered" "1" \
 	"$(podman logs "$APP_CTR" 2>&1 | grep -c "registered as \"collection\" -> database ${DB_ID}" || true)"

@@ -299,11 +299,21 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
   binder/deck assignment.
 - **Edition 2024**, toolchain pinned in `rust-toolchain.toml`. `cargo
   fmt` and `cargo clippy` clean before every commit.
-- **Schema** — single-instance project (pokedumpster-luo). The full
-  schema for each database lives in `crates/pkdump-db/src/schema_{shared,user}.sql`
-  and is re-applied with `CREATE … IF NOT EXISTS` on every open. No
-  migration history, no refinery. Schema changes: edit the file + apply
-  the diff manually to the one prod box (`podman exec` + `sqlite3`).
+- **Schema** — the full schema for each database lives in
+  `crates/pkdump-db/src/schema_{shared,user}.sql` and is re-applied with
+  `CREATE … IF NOT EXISTS` on every open. No migration history, no
+  refinery: additive change travels by idempotent re-application.
+- **Schema versions** — every database carries its schema version in
+  `PRAGMA user_version`, and a file written by a *newer* build is
+  **refused, not opened** (`crates/pkdump-db/src/schema_version.rs`).
+  Lower or 0 is adopted in place; equal is a no-op. That refusal is what
+  makes rollback (`pkdump tenant revert`) safe — an older binary must
+  stop rather than quietly operate on a schema it does not know.
+  `Database::version()` is the one place the numbers live; bump one only
+  when a change cannot be expressed as `CREATE … IF NOT EXISTS`, and
+  never as a substitute for a migration you have not written.
+  `tests/schema-version/run.sh` (container tier, run by `deploy/ci.sh`)
+  proves both directions against a prod-shaped instance.
 - **Workspace dependencies** are declared in the root `Cargo.toml`
   `[workspace.dependencies]`; crates opt in with `dep.workspace = true`.
 - **Tests that demonstrate bugs must fail** until the bug is fixed.

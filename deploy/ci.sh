@@ -25,6 +25,11 @@
 #   7. Visual gate:    screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines.
 #                      See tests/visual/README.md for the approval workflow.
+#   8. Schema-version gate: start a prod-shaped instance against a deliberately
+#                      UNVERSIONED data volume — the shape every database on
+#                      disk has, prod's included — and assert it is adopted and
+#                      serves; then assert a database from the future is
+#                      refused. See tests/schema-version/run.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
@@ -170,6 +175,14 @@ bash "$REPO_DIR/tests/alarming/run.sh"
 
 step "Visual regression: every route, two viewports"
 PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwright.sh"
+
+# --- 8. Schema-version gate -------------------------------------------------
+# The upgrade path, not the fresh install: a prod-shaped container started
+# against a volume the PRE-GATE binary would have left behind. Its own instance
+# name, volume and port — it does not touch the instance started above.
+
+step "Schema version: an unversioned volume is adopted, a future one is refused"
+bash "$REPO_DIR/tests/schema-version/run.sh"
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

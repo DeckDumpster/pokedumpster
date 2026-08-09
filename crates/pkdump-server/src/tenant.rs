@@ -30,6 +30,25 @@
 //! *was* the filename, and the only thing standing between an unauthenticated
 //! caller and a path was a charset regex.
 //!
+//! # The header is validated all the same
+//!
+//! Not to protect the path — see above, there is no path — but because a
+//! boundary that accepts anything answers wrongly. `pkdump tenant create`
+//! holds a handle to [`pkdump_db::HANDLE_RULE`] and the registry stores it
+//! under a `CHECK` of the same rule, so a header outside that rule names
+//! something that could never have been registered. Serving it "404 no such
+//! tenant" states that a well-formed name is unused, which is false; it is a
+//! malformed request, and a 400 says so and can be diagnosed. `pd-4g7c`, and
+//! OWASP's multi-tenant guidance, which names an unvalidated tenant header as
+//! the anti-pattern in as many words.
+//!
+//! Validation is necessary and nowhere near sufficient. The header is still
+//! *asserted* identity: nothing authenticates it, which is why the mode is
+//! off by default and why the auth epic replaces this with a verified
+//! principal, the header demoted to a selector checked against what that
+//! principal is entitled to. Nothing here may assume the header stays the
+//! identity.
+//!
 //! # How isolation is enforced
 //!
 //! Structurally, not by filtering. A tenant's connection is opened against
@@ -69,6 +88,24 @@ use crate::{AppError, AppState};
 /// cannot be driven by simply pointing a browser at it. Making the dangerous
 /// mode awkward to reach by accident is the point.
 pub const TENANT_HEADER: &str = "x-pkdump-tenant";
+
+/// The 400 for a header that is not a handle.
+///
+/// It says what a handle may be — a caller who sent one cannot fix it
+/// otherwise — and it does not repeat what they sent. The value is untrusted
+/// bytes that reached us over a header nothing authenticates, and it has no
+/// business in a response body; [`pkdump_db::validate_tenant_name`]'s own
+/// errors quote the offending name, which is right for a CLI argument and
+/// wrong here, so they are deliberately not what goes on the wire.
+fn malformed() -> AppError {
+    AppError(
+        StatusCode::BAD_REQUEST,
+        format!(
+            "`{TENANT_HEADER}` is not a well-formed handle: {rule}",
+            rule = pkdump_db::HANDLE_RULE
+        ),
+    )
+}
 
 /// A tenant that has been resolved for the request in hand.
 ///
@@ -183,11 +220,17 @@ impl Tenants {
     /// In single-tenant mode the headers are not read at all — the header is
     /// not a way to switch tenants on an instance that did not opt in.
     ///
-    /// In multi-tenant mode the header is a **lookup key**: it is compared
-    /// against `user.handle` as a bound parameter and is then done with. A
-    /// handle that is not registered, and one whose registration was
-    /// detached, are the same 404 — neither is an active user, and neither
-    /// becomes a path.
+    /// In multi-tenant mode the header is a **lookup key**: it is checked
+    /// against [`pkdump_db::HANDLE_RULE`] and then compared against
+    /// `user.handle` as a bound parameter, and is then done with. Three
+    /// answers, and the distinction between the first two is the point:
+    ///
+    /// * not a well-formed handle — **400**. No row could ever have held it.
+    /// * well-formed and not an active user — **404**. Unregistered and
+    ///   detached are the same answer: neither is an active user, and
+    ///   distinguishing them would tell an unauthenticated caller which
+    ///   handles have ever existed.
+    /// * registered — the `database_id` on their row, never the header.
     pub(crate) fn resolve(&self, headers: &HeaderMap) -> Result<TenantId, AppError> {
         let (dir, registry) = match &self.mode {
             Mode::Single { id, .. } => return Ok(id.clone()),
@@ -202,17 +245,19 @@ impl Tenants {
                 ),
             )
         })?;
-        let handle = raw.to_str().map_err(|_| {
-            AppError(
-                StatusCode::BAD_REQUEST,
-                format!("`{TENANT_HEADER}` is not valid ASCII"),
-            )
-        })?;
-        // The handle is not validated here, and that is the point: there is
-        // no longer anything to protect it from. It is matched against a
-        // column; a value the registry would never have issued a row for
-        // simply misses. Reintroducing a charset check would suggest the
-        // safety came from the charset, when it comes from the lookup.
+        // Non-ASCII bytes and a bad charset are the same answer, deliberately:
+        // "that is not a handle" is one fact about the request, and splitting
+        // it in two would have a caller chasing which of two rules they broke
+        // when there is only one.
+        let handle = raw.to_str().map_err(|_| malformed())?;
+        // Refuse a malformed handle here, before the lookup, and refuse it as
+        // MALFORMED. Not because a bad charset could hurt anything downstream
+        // — it could not, nothing builds a path from this string — but because
+        // `create` holds a handle to a rule and the registry stores it under a
+        // CHECK, so a value outside that rule is one no row could ever have.
+        // Answering it "no such tenant" would be a false statement: the tenant
+        // does not fail to exist, the request is not a well-formed question.
+        validate_tenant_name(handle).map_err(|_| malformed())?;
         let found = registry
             .lock()
             .map_err(|_| AppError::internal("registry mutex poisoned"))
@@ -495,11 +540,13 @@ mod tests {
         );
 
         // Nor by naming the file alice IS served from: a database_id is not
-        // a handle. Only the handle column is a way in.
+        // a handle. Only the handle column is a way in — and a ULID is not
+        // even a well-formed handle (it is uppercase), so it is refused a
+        // step earlier, as the malformed question it is.
         let alice = registry::lookup(&reg, "alice").unwrap().unwrap();
         assert_eq!(
             status(tenants.resolve(&headers(&alice.database_id))),
-            StatusCode::NOT_FOUND
+            StatusCode::BAD_REQUEST
         );
 
         // And the registered handle resolves to the id, not to its own name.
@@ -510,12 +557,14 @@ mod tests {
     }
 
     /// The negative the epic exists for: a handle carrying traversal or a
-    /// separator is rejected at the lookup, and no path is built from it.
+    /// separator never becomes a path.
     ///
-    /// It is not rejected for its *characters* — nothing validates the
-    /// header any more. It misses the table, like any other string that was
-    /// never registered. The `collection.sqlite` beside the catalog is the
-    /// prize `../collection` was reaching for; it is still there afterwards,
+    /// Two independent reasons, and the test asserts both. It is refused at
+    /// the boundary as malformed — a 400, `pd-4g7c` — and even with that
+    /// check gone it would miss the table, like any other string nobody
+    /// registered, because nothing concatenates a handle into a filename any
+    /// more. The `collection.sqlite` beside the catalog is the prize
+    /// `../collection` was reaching for; it is still there afterwards,
     /// unopened.
     #[test]
     fn a_traversing_handle_never_reaches_a_path() {
@@ -546,7 +595,7 @@ mod tests {
             );
             assert_eq!(
                 status(tenants.resolve(&h)),
-                StatusCode::NOT_FOUND,
+                StatusCode::BAD_REQUEST,
                 "{hostile:?}"
             );
         }
@@ -555,6 +604,70 @@ mod tests {
         // into existence either.
         assert_eq!(std::fs::read_dir(&tenants_dir).unwrap().count(), before);
         assert!(!dir.path().join("collection.sqlite-wal").exists());
+    }
+
+    /// **`pd-4g7c`.** Malformed and unknown are different answers, and the
+    /// line between them is [`pkdump_db::HANDLE_RULE`] — the same rule
+    /// `tenant create` and the registry's `CHECK` are held to.
+    ///
+    /// Delete the `validate_tenant_name` call in `resolve` and every 400 here
+    /// becomes a 404: the resolver would be telling a caller that a string no
+    /// row could ever hold is merely an unused name.
+    #[test]
+    fn a_malformed_handle_is_a_400_and_a_well_formed_one_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tenants, _tenants_dir, _reg) = provisioned(dir.path(), &["alice"]);
+
+        for malformed in ["Alice", "-flag", "a/b", "alice.sqlite", "", "ünïcode"] {
+            let mut h = HeaderMap::new();
+            h.insert(
+                TENANT_HEADER,
+                HeaderValue::from_bytes(malformed.as_bytes()).unwrap(),
+            );
+            let AppError(code, body) = tenants.resolve(&h).unwrap_err();
+            assert_eq!(code, StatusCode::BAD_REQUEST, "{malformed:?}");
+            // Diagnosable: it says what a handle may be...
+            assert!(
+                body.contains(pkdump_db::HANDLE_RULE),
+                "{malformed:?} got an unhelpful 400: {body}"
+            );
+            // ...and does not echo the untrusted bytes back to say it.
+            assert!(
+                !body.contains(malformed) || malformed.is_empty(),
+                "the 400 echoed the header value: {body}"
+            );
+        }
+
+        // Well-formed, and nobody has it: a 404, unchanged. This is the half
+        // of the distinction that a blanket 400 would destroy.
+        for unknown in ["mallory", "0", "a-b_9", &"a".repeat(32)] {
+            let mut h = HeaderMap::new();
+            h.insert(TENANT_HEADER, HeaderValue::from_str(unknown).unwrap());
+            assert_eq!(
+                status(tenants.resolve(&h)),
+                StatusCode::NOT_FOUND,
+                "{unknown:?}"
+            );
+        }
+
+        // And a real one still resolves — the rule refuses nothing it should
+        // admit.
+        assert!(tenants.resolve(&headers("alice")).is_ok());
+    }
+
+    /// Bytes that are not even a string cannot be read as a handle, and are
+    /// refused before the rule gets a chance — with the same 400 and the same
+    /// message, so a caller sees one answer for "that is not a handle" rather
+    /// than two rules to chase.
+    #[test]
+    fn a_header_that_is_not_a_string_is_the_same_400() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tenants, _tenants_dir, _reg) = provisioned(dir.path(), &["alice"]);
+        let mut h = HeaderMap::new();
+        h.insert(TENANT_HEADER, HeaderValue::from_bytes(b"\xff\xfe").unwrap());
+        let AppError(code, body) = tenants.resolve(&h).unwrap_err();
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(body.contains(pkdump_db::HANDLE_RULE), "{body}");
     }
 
     /// A detached user is not an active user. Their handle is free for

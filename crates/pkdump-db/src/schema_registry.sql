@@ -33,7 +33,16 @@ CREATE TABLE IF NOT EXISTS user (
     database_id TEXT PRIMARY KEY,
     -- What a request names; renameable without touching anything on disk.
     -- The same charset crate::paths::validate_tenant_name admits, spelled as
-    -- a constraint so the database is the last word on it:
+    -- a constraint so the database is the last word on it. The two cannot
+    -- share an implementation — one is a Rust function, the other is checked
+    -- for writers that never enter the crate — so they share a CORPUS instead:
+    -- crate::paths::HANDLE_CASES is run through the validator by
+    -- paths::tests::tenant_names_are_validated and through this CHECK by
+    -- registry::tests::the_check_and_the_validator_agree. Relax one side only
+    -- and one of those two fails. It matters because the validator is also
+    -- what refuses a malformed tenant header with a 400 (pd-4g7c): a handle
+    -- one side admits and the other does not is a request answered wrongly.
+    --
     --   * 1..32 characters — long enough to name a person, short enough to
     --     stay a filename-safe label rather than a payload.
     --   * starts with a lowercase letter or digit — a leading `-` reads as a

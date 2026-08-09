@@ -435,43 +435,38 @@ mod tests {
         );
     }
 
+    /// The SQL half of [`crate::paths::HANDLE_CASES`]; the Rust half is
+    /// `paths::tests::tenant_names_are_validated`, over the same list.
+    ///
+    /// Two things at once. First, the definition of a valid handle is part of
+    /// the data model, so it holds against a writer that never goes near
+    /// `validate_tenant_name` — a migration, or an operator with sqlite3 open
+    /// on the file. Second, and the reason the corpus is shared: the `CHECK`
+    /// and the validator must not drift. The validator is what a request is
+    /// refused by at the boundary (`pd-4g7c`), and the `CHECK` is what a row is
+    /// refused by; a handle either of them admits and the other does not is a
+    /// request answered wrongly — 400 for a name that could have been
+    /// registered, or 404 for one that could not.
     #[test]
-    fn the_handle_format_is_a_check_constraint() {
-        // The definition of a valid handle is part of the data model, so it
-        // holds against a writer that never goes near `validate_tenant_name`
-        // — a migration, or an operator with sqlite3 open on the file.
+    fn the_check_and_the_validator_agree() {
         let (_dir, conn) = registry();
-        let longest = "x".repeat(32);
-        let too_long = "x".repeat(33);
 
-        let accepted = ["alice", "a-b_9", "0", longest.as_str()];
-        for (i, ok) in accepted.into_iter().enumerate() {
-            raw_insert(&conn, &format!("OKID{i}"), ok, "active")
-                .unwrap_or_else(|e| panic!("{ok:?} is a valid handle: {e}"));
-        }
-
-        let refused = [
-            "../etc/passwd",
-            "Alice",
-            "-flag",
-            "",
-            "a/b",
-            "a.b",
-            // The composite retired handle the old detach wrote. It was never
-            // a name anyone could register, and now it cannot be stored at all.
-            "alice:detached:01J",
-            too_long.as_str(),
-        ];
         // A distinct id each time, so the CHECK is the only thing that can
         // refuse the row — a shared id would fail on the primary key and read
         // as a pass whatever the constraint did.
-        for (i, bad) in refused.into_iter().enumerate() {
-            let err = raw_insert(&conn, &format!("BADID{i}"), bad, "active")
-                .expect_err("an invalid handle must be refused");
-            assert!(
-                err.to_string().contains("CHECK constraint failed"),
-                "{bad:?} must be refused by the CHECK, not by something else: {err}"
+        for (i, (handle, valid)) in crate::paths::HANDLE_CASES.iter().enumerate() {
+            let written = raw_insert(&conn, &format!("ID{i:024}"), handle, "active");
+            assert_eq!(
+                written.is_ok(),
+                *valid,
+                "the CHECK and validate_tenant_name disagree about {handle:?}: {written:?}"
             );
+            if let Err(e) = written {
+                assert!(
+                    e.to_string().contains("CHECK constraint failed"),
+                    "{handle:?} must be refused by the CHECK, not by something else: {e}"
+                );
+            }
         }
     }
 

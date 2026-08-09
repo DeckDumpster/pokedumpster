@@ -2,7 +2,7 @@
 // the Rust structs by ts-rs (see frontend/src/lib/types/).
 
 import type { CollectionRow } from './types/CollectionRow';
-import type { SearchRow } from './types/SearchRow';
+import type { SearchPage } from './types/SearchPage';
 import type { SearchVocabulary } from './types/SearchVocabulary';
 import type { CardDetail } from './types/CardDetail';
 import type { PriceSeries } from './types/PriceSeries';
@@ -98,27 +98,40 @@ export const api = {
 	 * Scryfall-style collection search — one row per printing (owned or not).
 	 * An empty `q` returns the default owned view. Throws {@link SearchQueryError}
 	 * (with a caret `position`) when the query fails to parse.
+	 *
+	 * The response is one **page**: `total` is the size of the whole result set,
+	 * not of `rows`. Omitting `limit` does not mean "everything" — the server
+	 * applies a bounded default and reports it back in `page.limit`.
 	 */
 	collectionSearch: async (
 		q: string,
 		sort?: string,
 		dir?: string,
-		includeUnowned = false
-	): Promise<SearchRow[]> => {
+		includeUnowned = false,
+		limit?: number,
+		offset?: number
+	): Promise<SearchPage> => {
 		const params = new URLSearchParams();
 		if (q) params.set('q', q);
 		if (sort) params.set('sort', sort);
 		if (dir) params.set('dir', dir);
 		if (includeUnowned) params.set('include_unowned', '1');
+		if (limit !== undefined) params.set('limit', String(limit));
+		if (offset !== undefined) params.set('offset', String(offset));
 		const res = await fetch(`/api/collection/search?${params.toString()}`);
 		if (res.status === 400) {
-			const body = (await res.json()) as { error: string; position: number };
-			throw new SearchQueryError(body.error, body.position);
+			const body = (await res.json()) as { error: string; position?: number };
+			// A query-syntax error carries the caret offset; a paging complaint
+			// (a bad limit/offset) does not, and is a plain failure.
+			if (typeof body.position === 'number') {
+				throw new SearchQueryError(body.error, body.position);
+			}
+			throw new Error(body.error);
 		}
 		if (!res.ok) {
 			throw new Error(`${res.status} ${res.statusText} — /api/collection/search`);
 		}
-		return (await res.json()) as SearchRow[];
+		return (await res.json()) as SearchPage;
 	},
 
 	/** The data-driven keyword + flag vocabulary, for autocomplete and help. */

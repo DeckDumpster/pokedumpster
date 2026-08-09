@@ -720,8 +720,13 @@ check "and it is her own data" "$DETACHED" "$(rows_owner "$DETACHED")"
 untouched=0
 for t in "${TENANTS[@]}"; do
 	[ "$t" = "$DETACHED" ] && continue
-	[ "$(file_hash "$t")" = "${BEFORE_FILE[$t]}" ] && [ "$(rows_hash "$t")" = "${BEFORE_ROWS[$t]}" ] \
+	NOW_FILE="$(file_hash "$t")"; NOW_ROWS="$(rows_hash "$t")"
+	[ "$NOW_FILE" = "${BEFORE_FILE[$t]}" ] && [ "$NOW_ROWS" = "${BEFORE_ROWS[$t]}" ] \
 		&& untouched=$((untouched + 1)) || echo "  FAIL  ${t} changed during a restore of the detached ${DETACHED}"
+	# DIAGNOSTIC (pd-e7ui, not for commit): which of the two actually moved?
+	[ "$NOW_FILE" = "${BEFORE_FILE[$t]}" ] || echo "    DIAG ${t} FILE bytes differ: ${BEFORE_FILE[$t]:0:12} -> ${NOW_FILE:0:12}"
+	[ "$NOW_ROWS" = "${BEFORE_ROWS[$t]}" ] || echo "    DIAG ${t} ROWS differ: ${BEFORE_ROWS[$t]:0:12} -> ${NOW_ROWS:0:12}"
+	[ "$NOW_ROWS" = "${BEFORE_ROWS[$t]}" ] && echo "    DIAG ${t} rows IDENTICAL (count $(rows_count "$t"))"
 done
 check "and the live tenants are byte-identical through it" "3" "$untouched"
 sidecar_start

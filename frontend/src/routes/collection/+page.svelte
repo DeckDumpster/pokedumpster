@@ -31,6 +31,10 @@
 	// back into per-copy rows (`rows`); unowned printings (owned_count === 0)
 	// drive the dimmed "missing" tiles via `unownedCatalog`.
 	let searchRows = $state<SearchRow[]>([]);
+	// Printings the query matches in total. The endpoint answers with one
+	// bounded page (pd-jsby), so this is usually larger than `searchRows` and
+	// is what the count line must speak from. Paging the rest is pd-tsqd.
+	let searchTotal = $state(0);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	// A query-language parse error, shown under the search box with a caret.
@@ -255,11 +259,14 @@
 		error = null;
 		searchError = null;
 		try {
-			searchRows = await api.collectionSearch(query, undefined, undefined, allCards);
+			const page = await api.collectionSearch(query, undefined, undefined, allCards);
+			searchRows = page.rows;
+			searchTotal = page.total;
 		} catch (e) {
 			if (e instanceof SearchQueryError) {
 				searchError = { message: e.message, position: e.position };
 				searchRows = [];
+				searchTotal = 0;
 			} else {
 				error = e instanceof Error ? e.message : String(e);
 			}
@@ -1046,6 +1053,15 @@
 				{/if}
 			</div>
 		{/if}
+		{#if searchTotal > searchRows.length}
+			<!-- The endpoint answers with one bounded page, so the count line
+			     below describes what is on screen, not what matched. Say so
+			     rather than let the shortfall read as "that is all there is".
+			     Paging to the rest is pd-tsqd. -->
+			<span class="truncnote muted" data-testid="search-truncated">
+				showing {count(searchRows.length)} of {count(searchTotal)} matches
+			</span>
+		{/if}
 		<button
 			type="button"
 			class="countline muted"
@@ -1658,6 +1674,16 @@
 		margin: var(--space-1) var(--space-1);
 		background: var(--color-border);
 		flex-shrink: 0;
+	}
+	.truncnote {
+		margin-left: auto;
+		font-size: var(--text-md);
+		white-space: nowrap;
+	}
+	/* With the note present it takes the auto margin and the count line sits
+	   next to it; without one, the count line still pushes itself right. */
+	.truncnote + .countline {
+		margin-left: var(--space-2);
 	}
 	.countline {
 		margin: var(--space-0) var(--space-0) var(--space-0) auto;

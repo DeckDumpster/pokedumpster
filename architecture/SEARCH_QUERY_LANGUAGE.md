@@ -348,11 +348,44 @@ necessary in real use.)
 
 ## 8. Server + frontend integration (decision: augment the collection page)
 
-- `GET /api/collection/search?q=&sort=&dir=` → `Vec<SearchRow>`. The handler
-  parses (`SearchError` → HTTP 400 with `position`), compiles, picks the
-  template, executes.
+- `GET /api/collection/search?q=&sort=&dir=&include_unowned=&limit=&offset=` →
+  `SearchPage`. The handler parses (`SearchError` → HTTP 400 with `position`),
+  compiles, picks the template, executes one **page**.
 - `GET /api/search/keywords` → the registry, JSON, for data-driven
   autocomplete and the help page.
+
+### Paging (pd-jsby)
+
+The response is an envelope, not a bare array:
+
+```json
+{ "rows": [ /* SearchRow */ ], "total": 56635, "limit": 250, "offset": 0 }
+```
+
+- **`total` is the count of the unbounded query**, not of the page returned, so
+  a client renders "N results" and pages without a second request.
+- **`limit` defaults to `search::DEFAULT_LIMIT` (250) when absent — the default
+  is bounded on purpose.** An unbounded default is how this endpoint shipped a
+  44 MB body from `include_unowned=1` (56,635 rows) and crashed a Firefox tab.
+  Nothing legitimately wants every row over HTTP: `/api/export/*` builds its
+  files from the export path, not from this one, so the bound truncates no
+  export. Truncation is not silent either, because `total` always describes the
+  whole result.
+- **`limit` is capped at `search::MAX_LIMIT` (1000).** A caller that wants
+  everything is asking the wrong endpoint.
+- **A bad bound is refused, never clamped.** A `limit`/`offset` that is not a
+  whole number in range is HTTP 400 with `{error}` and **no `position`** —
+  that absence is how a client tells a paging complaint from a query-syntax
+  one. An `offset` past the end is not an error: it is an empty page with an
+  honest `total`.
+- **`limit`/`offset` are bound parameters**, like every user value (§5).
+- **The `ORDER BY` ends in `p.printing_id ASC`,** which makes it a total order.
+  Without a unique final key, rows tied on the sort column (a card's normal and
+  reverse-holo printings share both `name` and `number_sortable`) can come back
+  in either order between statements, and an `OFFSET` walk then drops some rows
+  and repeats others.
+- `search::search` remains unbounded for the differential oracle and tests;
+  anything serving HTTP calls `search::search_page`.
 - The collection page (`frontend/src/routes/collection/+page.svelte`) moves
   from "load the whole collection, filter client-side"
   (`collection::list_rows`, today's documented pattern) to the server query:
@@ -361,7 +394,7 @@ necessary in real use.)
   render dimmed. Filters round-trip through the URL (`?q=&sort=&dir=`).
 - `/search-help` renders from the registry.
 
-`ts-rs` exports `SearchRow` / `CopySummary` into
+`ts-rs` exports `SearchPage` / `SearchRow` / `CopySummary` into
 `frontend/src/lib/types/` via `cargo test`, as with every other type.
 
 ---

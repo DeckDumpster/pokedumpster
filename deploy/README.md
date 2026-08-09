@@ -145,6 +145,39 @@ bash deploy/setup.sh prod 8090
 
 Mechanism and rationale: [`deploy/store-lib.sh`](store-lib.sh).
 
+#### Deleting a store — never `podman system reset`
+
+Everything above teaches you to aim `--root`/`--runroot` at a second store.
+`podman system reset` is the one subcommand that ignores them — it resets podman
+storage "back to default state", and on 4.9.3 that included
+`/run/user/$UID/libpod`, the rootless SHM lock, and the buildah cache at the
+ambient `TMPDIR`, none of which any flag pointed at. Run against a throwaway
+probe store, it took `prod` down: HTTP 000 on 8090 and podman answering
+`container state improper` while `pkdump serve` was still alive, with other
+instances stuck in state `Created` — serving but unmanageable. Data survived and
+Litestream never stopped replicating; the damage was runtime state, repaired by
+`systemctl --user restart pkdump-<instance>` per affected instance.
+
+Remove a store by removing what it owns and then the directories, all of which
+*are* scoped:
+
+```bash
+export PKDUMP_STORE_ROOT=/big/disk/pkdump-store
+. deploy/store-lib.sh && pkdump_store_activate   # puts the flags on every call
+podman stop -a && podman rm -af
+podman volume rm -af && podman rmi -af && podman network prune -f
+rm -rf "$PKDUMP_STORE_ROOT" "${PKDUMP_STORE_GLOBAL_ARGS##*--runroot=}"
+```
+
+The runroot comes off `PKDUMP_STORE_GLOBAL_ARGS` rather than a glob, so this
+deletes the runroot belonging to *this* graph root and not another store's. The
+`podman` shim lives inside the store root, so the last line takes it with it —
+start a new shell rather than trusting the one whose `PATH` now points at
+nothing.
+
+`tests/deploy/run.sh` §6 greps `deploy/` and `tests/` and fails on a scripted
+reset, so a future store-teardown command has to use this recipe.
+
 ### Low-disk guard
 
 `deploy/diskcheck.sh` has two modes off one threshold source:

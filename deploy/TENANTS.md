@@ -168,10 +168,10 @@ rather than something you read off the disk:
 podman exec systemd-pkdump-prod pkdump tenant list
 ```
 ```
-HANDLE      DATABASE ID                 CREATED                              STATE     RETIRED
-collection  01KZHQVMMS4CSRASCMG5XRCPC3  2026-08-08T22:28:21.785088095+00:00  active    -
-alicia      01KZHQVMQ6GVFQF1R5T7AW1K5X  2026-08-08T22:28:21.862295795+00:00  active    -  (DATABASE MISSING)
-bob         01KZHQVMSVRD4WPNTG9WWRXYC0  2026-08-08T22:28:21.947244169+00:00  detached  2026-08-09T04:11:07.204416512+00:00
+HANDLE      DATABASE ID                 CREATED                              STATE     RETIRED                              SCHEMA  STATUS
+collection  01KZHQVMMS4CSRASCMG5XRCPC3  2026-08-08T22:28:21.785088095+00:00  active    -                                         1  current
+alicia      01KZHQVMQ6GVFQF1R5T7AW1K5X  2026-08-08T22:28:21.862295795+00:00  active    -                                         -  DATABASE MISSING
+bob         01KZHQVMSVRD4WPNTG9WWRXYC0  2026-08-08T22:28:21.947244169+00:00  detached  2026-08-09T04:11:07.204416512+00:00        0  behind this build's 1 — adopted on its next open
 
 1 database(s) under /data/tenants that no registered user claims:
   orphan.sqlite
@@ -211,6 +211,32 @@ If the registry itself is gone, this question has no answer from the box alone.
 That is why it is in the replicated set and why it is restored **first**:
 `deploy/RESTORE.md`, scenario C.
 
+## Reading the drift: `pkdump tenant list`
+
+One database per user means they can legitimately hold different schema
+versions: a user created today carries this build's, one restored from a
+replica carries whatever it had when it was replicated, and one left over from
+before `PRAGMA user_version` landed carries 0. The `SCHEMA` and `STATUS`
+columns of the listing above are where that spread is visible — the version
+read off each user's own file, and where it stands relative to the running
+build.
+
+*behind* is not a problem to fix by hand — the schema is re-applied and the
+version stamped on that database's next open. *ahead* is the row that matters:
+that database was written by a newer build and this one **refuses to open it**
+(the gate in `crates/pkdump-db/src/schema_version.rs`; the server will not
+start for that user). Run the newer build, or restore that database from a
+replica taken before the upgrade.
+
+A `-` in `SCHEMA` is the third case, and it is not a version at all: the
+registry names a database that is not on this box (`DATABASE MISSING`). A row
+with no bytes has no version, and reporting that as `0` would file real drift
+under "behind, adopted on its next open".
+
+Reading is not opening. `list` reads each file's header directly, so it neither
+stamps nor applies schema — and it still reports a user the server itself
+refuses, which is the case an operator is usually running it for.
+
 ## Serving more than one tenant
 
 `pkdump serve` serves exactly one collection. Which one is decided at startup
@@ -237,6 +263,8 @@ hands every collection to whoever asks for it.
 
 Which is why:
 
+- **The server refuses to start** with the flag on and a bind address that is
+  not loopback. Not a warning — a refusal; see below.
 - The flag is off unless explicitly set, and `PKDUMP_MULTITENANT` only counts
   `1`, `true` or `yes` as on — `PKDUMP_MULTITENANT=0` does not switch it on by
   the mere fact of being set.
@@ -247,6 +275,41 @@ Which is why:
   single-tenant. Browser-reachable multi-tenancy waits on the identity epic.
 - **Production stays single-tenant.** This work lives on the integration
   branch; `deploy/pkdump.container` does not set the variable and must not.
+
+### The refusal
+
+Everything above except the first bullet is a convention plus a printed line.
+The refusal is the mechanism:
+
+```
+$ pkdump serve --multi-tenant --host 0.0.0.0
+Error: refusing to start: multi-tenant resolution is on and --host 0.0.0.0 is
+not loopback.
+...
+```
+
+Loopback (`127.0.0.1`, `::1`) still starts — that is the mode's intended shape:
+a developer, a demo, or an SSH/WireGuard tunnel that does the reaching.
+
+If you genuinely mean to expose it — behind a reverse proxy that authenticates
+*for* it, once that exists — say so a second time:
+
+```bash
+PKDUMP_MULTITENANT=1 PKDUMP_MULTITENANT_INSECURE_BIND=1 pkdump serve --host 0.0.0.0
+```
+
+That second variable is parsed by the same strict helper as the first: only
+`1`, `true` or `yes`; `PKDUMP_MULTITENANT_INSECURE_BIND=0` does not open it.
+There is no `--allow-insecure-bind` flag — this should not be one
+tab-completion away.
+
+**Single-tenant mode is unaffected at any address.** Its tenant is fixed at
+startup and no request can change it, which is why the container entrypoint's
+`--host 0.0.0.0` is fine and stays. The refusal only ever fires on the
+combination that has no defence. Note the consequence for containers: an image
+binds `0.0.0.0`, so *any* containerised multi-tenant instance needs the second
+opt-in — a container publishing a port is off-box reachable, and that is
+precisely the case being caught.
 
 ### What isolation rests on
 
@@ -418,15 +481,21 @@ systemctl --user start pkdump-${INSTANCE} pkdump-litestream-${INSTANCE}
 ```bash
 INSTANCE=prod
 # The collection is where it should be, and has its rows.
-podman exec systemd-pkdump-${INSTANCE} pkdump tenant list        # -> collection
+podman exec systemd-pkdump-${INSTANCE} pkdump tenant list        # -> collection, schema current
 MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-${INSTANCE}-data)
 sqlite3 "file:${MP}/tenants/collection.sqlite?mode=ro" 'SELECT count(*) FROM collection;'
 # Nothing left at the old location.
 ls "${MP}/collection.sqlite" 2>&1     # -> No such file or directory
 # The catalog did NOT move.
 ls -l "${MP}/shared.sqlite"
-# Backups are still flowing.
+# Backups are still flowing. This step is only evidence because backup-check.sh
+# now FAILS when it cannot verify (pd-1717): on 2026-08-08 this exact command
+# printed "skipping", exited 0, and was read as a pass while Litestream sat
+# ACTIVE with txid.replica pinned at zero. Non-zero exit here means the
+# migration did not finish, whatever `systemctl is-active` says.
 bash deploy/backup-check.sh ${INSTANCE}
+# And the whole alarming picture, if this instance is meant to be armed.
+bash deploy/alarm-status.sh ${INSTANCE}
 ```
 
 ### Rollback

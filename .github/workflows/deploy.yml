@@ -1,0 +1,71 @@
+name: Deploy
+
+# Gas Town ends at the merge queue and merging only moves origin/master, so for a
+# long time "merged" and "live" were different things — prod once sat 16 days and
+# two merged PRs behind without anyone noticing. This closes that gap.
+#
+# Prod deploys from ~/pokedumpster, NOT the dev clone: deploy/deploy.sh rebuilds
+# from whatever checkout it lives in, so running it from the wrong one silently
+# ships the wrong tree.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      instance:
+        description: 'Instance name (prod, or a throwaway)'
+        required: true
+        default: 'prod'
+
+concurrency:
+  # Two deploys of the same instance would race on the image tag and the restart.
+  group: deploy-${{ github.event.inputs.instance || 'prod' }}
+  cancel-in-progress: false
+
+env:
+  INSTANCE: ${{ github.event.inputs.instance || 'prod' }}
+  CHECKOUT: /home/ryangantt/pokedumpster
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Pull latest code
+        run: git -C "$CHECKOUT" pull --ff-only origin ${{ github.ref_name }}
+
+      - name: Prune dangling images
+        # Age-filtered deliberately: a bare `podman image prune -f` is global and
+        # will delete a dangling layer a concurrent polecat build is still using.
+        # Same class of bug as the shared CI instance name fixed in pd-yhzn.
+        run: podman image prune -f --filter "until=24h"
+
+      - name: Build and restart
+        run: bash "$CHECKOUT/deploy/deploy.sh" "$INSTANCE"
+
+      - name: Health check
+        # A deploy that starts a broken image must fail loudly. Without this the
+        # job reports success as long as systemd accepted the restart.
+        run: |
+          PORT=$(podman port "systemd-pkdump-$INSTANCE" 8080/tcp | head -1 | cut -d: -f2)
+          if [ -z "$PORT" ]; then
+            echo "No published port for systemd-pkdump-$INSTANCE"
+            exit 1
+          fi
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -sf --max-time 5 -o /dev/null "http://localhost:$PORT/"; then
+              echo "Healthy on port $PORT"
+              exit 0
+            fi
+            echo "Attempt $i/10 — waiting..."
+            sleep 5
+          done
+          echo "Health check failed; recent logs:"
+          journalctl --user -u "pkdump-$INSTANCE" --no-pager -n 40 || true
+          exit 1
+
+      - name: Report what is live
+        run: |
+          echo "Instance:  $INSTANCE"
+          echo "Commit:    $(git -C "$CHECKOUT" rev-parse --short HEAD)"
+          echo "Image:     $(podman image inspect "localhost/pkdump:$INSTANCE" --format '{{.Created}}')"

@@ -23,6 +23,9 @@
 #                      negative — restoring the tenant files WITHOUT the registry
 #                      must FAIL, shown succeeding-and-anonymous first. See
 #                      tests/litestream/drill.sh.
+#  6b. Alarming gate:  make every backup-alarming layer FIRE at a local sink
+#                      standing in for healthchecks.io + Pushover, and assert on
+#                      what it sent. See tests/alarming/run.sh.
 #   7. Recreate proof: create a user, remove her, create her again, and prove no
 #                      restore of the second one can reach the first one's card
 #                      — pd-pm7b, closed executably. See tests/litestream/recreate.sh.
@@ -37,6 +40,11 @@
 #  10. Visual gate:    screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines.
 #                      See tests/visual/README.md for the approval workflow.
+#  11. Schema-version gate: start a prod-shaped instance against a deliberately
+#                      UNVERSIONED data volume — the shape every database on
+#                      disk has, prod's included — and assert every database is
+#                      adopted and serves; then assert one from the future is
+#                      refused. See tests/schema-version/run.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
@@ -166,6 +174,16 @@ bash "$REPO_DIR/tests/litestream/run.sh"
 step "Multi-tenant DR drill (deploy/RESTORE.md, executed)"
 bash "$REPO_DIR/tests/litestream/drill.sh"
 
+# --- 6b. Alarming gate ------------------------------------------------------
+# A backup that is not alarmed is a backup nobody knows is broken — which is the
+# state this project was actually in for months. Every layer is made to fire at a
+# local recorder and asserted on what it sent. Its own instance, its own MinIO,
+# its own unit-name prefix, both endpoints on 127.0.0.1 — it touches no
+# pkdump-*@prod unit and contacts no external service.
+
+step "Backup alarming: every layer fires (tests/alarming/run.sh)"
+bash "$REPO_DIR/tests/alarming/run.sh"
+
 # --- 7. Recreated-handle proof ----------------------------------------------
 # pd-pm7b as an executable statement rather than an argument: a handle is
 # created, removed and created again through the real `pkdump tenant` commands,
@@ -204,6 +222,14 @@ bash "$REPO_DIR/tests/tenants/handles.sh"
 
 step "Visual regression: every route, two viewports"
 PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwright.sh"
+
+# --- 11. Schema-version gate ------------------------------------------------
+# The upgrade path, not the fresh install: a prod-shaped container started
+# against a volume the PRE-GATE binary would have left behind. Its own instance
+# name, volume and port — it does not touch the instance started above.
+
+step "Schema version: an unversioned volume is adopted, a future one is refused"
+bash "$REPO_DIR/tests/schema-version/run.sh"
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

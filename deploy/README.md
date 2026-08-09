@@ -153,6 +153,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
 | `restore-litestream.sh [--yes] [--at=<RFC3339>] [--unattributed] <inst> [database-id]` | Restore ONE collection from the S3 backup (latest or point-in-time). Addressed by the database's file stem, not by a handle — `pkdump tenant list` says which is whose. **Refuses a database the registry cannot name** (restore `--registry` first; `--unattributed` for a purged one). See [RESTORE.md](RESTORE.md) |
 | `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer). The verification always runs; the ping URL controls only the ping |
+| `alarm-status.sh <inst> [--verify]` | Is alarming actually ARMED on this instance? Exit 0 = yes. `--verify` fires it for real |
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin) |
 | `mac-setup.sh` / `mac-deploy.sh` / `mac-teardown.sh` | macOS equivalents (no systemd) |
@@ -240,6 +241,26 @@ S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
   `.backup-last-ok` marker goes old (`/api/backup-status`). Passive visibility;
   no paging.
 
+### Is it armed?
+
+```bash
+bash deploy/alarm-status.sh prod            # read-only; exit 0 = ARMED, 1 = NOT
+bash deploy/alarm-status.sh prod --verify   # …then FIRE it: real monitor ping + real push
+```
+
+This is the only trustworthy answer to "are the backups alarmed?", and it exists
+because every other signal lied. Installed units, present config files and
+scripts exiting 0 described a system where **nothing had ever fired**. So the
+gates are deliberately strict: a `CHANGE_ME` placeholder is not configured, an
+enabled timer that has never completed a run is not armed, and a checker whose
+last confirmation is older than the staleness window is not armed. Anything less
+than every gate green prints `NOT ARMED`, the reasons, and the commands to fix
+it.
+
+`--verify` is the last step of arming rather than part of the check: it runs the
+real checker (pinging the real monitor) and sends a real Pushover push, so
+"should reach me" becomes "did reach me".
+
 ### Arming it
 
 Secrets never live in the repo — `setup.sh` scaffolds two env files:
@@ -254,16 +275,37 @@ $EDITOR ~/.config/pkdump/<inst>/alerts.env   # PKDUMP_BACKUP_PING_URL
 # Then enable the timers:
 systemctl --user enable --now pkdump-backup-check@<inst>.timer
 systemctl --user enable --now pkdump-diskcheck.timer
+
+# And confirm it end-to-end (sends a real ping and a real push):
+bash deploy/alarm-status.sh <inst> --verify
 ```
 
 Create a healthchecks.io check (period ~6h, grace ~3h) and wire its Pushover
-integration. With `PKDUMP_BACKUP_PING_URL` empty the freshness check still runs
-and still fails on a stale replica — what is missing is the off-box dead-man, so
-a dead box or a dead timer goes unnoticed (`pd-7f46`: a check that skips reads as
-a check that passed, so the skip is gone). Verify end-to-end: run the check once
+integration. Verify end-to-end: run the check once
 (`systemctl --user start pkdump-backup-check@<inst>.service`) and confirm the
 monitor goes green, then simulate a failure (e.g. revoke the bootstrap key or
 rename the volume) and confirm the alert fires within the grace window.
+
+**There is no "unconfigured" pass.** `backup-check.sh` used to print `skipping`
+and exit 0 when `PKDUMP_BACKUP_PING_URL` was empty — a green unit, a green
+journal, and no monitor, having asked S3 nothing at all (pd-1717). The skip is
+gone: with that variable empty the freshness check still runs and a stale
+replica still fails (`pd-7f46`). What is missing is only the off-box dead-man,
+so a dead box or a dead timer goes unnoticed — which is a question about
+*arming*, and `alarm-status.sh` is what answers it (NOT ARMED, exit non-zero).
+`alert.sh` refuses to pass the same way: asked to alert with no credentials, it
+exits non-zero rather than dropping the alert quietly.
+
+### Proving it fires
+
+`tests/alarming/run.sh` (run by `ci.sh`) stands up a throwaway instance, a
+throwaway MinIO and a local HTTP recorder in place of healthchecks.io and
+Pushover, then **makes every layer fire** and asserts on the requests that
+arrive: the green heartbeat, the `/fail` trip, the Pushover push and its
+journal tail, the low-disk push, and the freshness marker. It also mutates the
+ping URL in both directions to hold the pd-1717 fix in place. Nothing it does
+touches `pkdump-*@prod`: its units live under their own name prefix, and both
+external endpoints resolve to `127.0.0.1`.
 
 ## Expanding to GitHub later
 

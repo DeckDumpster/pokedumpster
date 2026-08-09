@@ -86,7 +86,7 @@ instance over WireGuard — no application-level authentication.
 ```
 crates/
   pkdump-core/      domain types + pure logic (variant parsing, query model)
-  pkdump-db/        rusqlite persistence + refinery migrations
+  pkdump-db/        rusqlite persistence + the two schema files
   pkdump-ingest/    upstream catalog ingestion (pokemontcg.io, TCGCSV)
   pkdump-server/    Axum HTTP app + JSON API + SvelteKit static serve
   pkdump-cli/       the `pkdump` binary (setup / data / serve / seed-fixture)

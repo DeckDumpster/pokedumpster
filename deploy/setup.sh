@@ -13,6 +13,15 @@
 #                                          #   fixture (no network, ~seconds)
 #   bash deploy/setup.sh demo --init       # clone the pre-built seed volume
 #
+# Container storage: rootless Podman's default store lives under $HOME, which on
+# the deployment box is the same disk prod runs from. Set PKDUMP_STORE_ROOT=<dir>
+# to build this instance's image and volume into an alternate store instead —
+# opt-in, so prod (which never sets it) is unaffected. See deploy/store-lib.sh.
+# This script scaffolds the host-config file that names that directory
+# (~/.config/pkdump/store.env) but deliberately does not read it: prod is
+# installed with this script, and where prod's volumes live is not something a
+# host config file gets to change. deploy/ci.sh is what reads it.
+#
 # Modes:
 #   (plain)  Build the image + install the Quadlet. Catalog stays empty —
 #            populate it later with deploy/seed.sh.
@@ -65,6 +74,12 @@ if ! command -v podman >/dev/null 2>&1; then
     exit 1
 fi
 
+# Opt-in alternate container store (pd-fite). No-op unless PKDUMP_STORE_ROOT is
+# set — and prod never sets it.
+# shellcheck source=deploy/store-lib.sh
+. "$SCRIPT_DIR/store-lib.sh"
+pkdump_store_activate
+
 if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q "Linger=yes"; then
     echo "WARNING: linger not enabled — services stop when you log out."
     echo "  Fix: loginctl enable-linger $USER"
@@ -104,6 +119,9 @@ sed \
     -e "s|{{PORT}}:8080|${PORT_MAPPING}|g" \
     "$REPO_DIR/deploy/pkdump.container" \
     > "${QUADLET_DIR}/${SERVICE_NAME}.container"
+# systemd does not inherit the shim on PATH, so the unit carries the store flags
+# itself. No-op without PKDUMP_STORE_ROOT — prod's unit comes out unchanged.
+pkdump_store_stamp_unit "${QUADLET_DIR}/${SERVICE_NAME}.container"
 
 # --- Install per-instance timer units --------------------------------------
 # %i-templated units installed under a concrete instance name so several
@@ -156,6 +174,32 @@ EOF
     echo "    Wrote ${ALERTS_ENV} (fill PUSHOVER_TOKEN/USER)."
 fi
 
+# Scaffold the host-wide container-store config (pd-rf7c). Which disk non-prod
+# container storage belongs on is a fact about THIS box, so it is host config
+# rather than a repo constant — and it is scaffolded commented-out so a new box
+# has the knob visible instead of undiscoverable. Written but never read by this
+# script: setup.sh honours PKDUMP_STORE_ROOT from its environment only, so a
+# store.env that opts in cannot silently relocate a prod deploy.
+STORE_ENV="${HOME}/.config/pkdump/store.env"
+if [ ! -f "$STORE_ENV" ]; then
+    mkdir -p "${HOME}/.config/pkdump"
+    cat > "$STORE_ENV" <<'EOF'
+# Host-wide container-store config for PokeDumpster (pd-rf7c).
+#
+# Rootless Podman keeps images, layers and volumes under $HOME. Where $HOME
+# shares a disk with something that must not run out of space — on this
+# project's deployment box, prod itself — name a directory on another
+# filesystem here and non-prod container storage goes there instead.
+#
+# Read by deploy/ci.sh. An explicit PKDUMP_STORE_ROOT in the environment wins
+# over this file, including an explicit empty one (that is how a single run opts
+# back out). Left commented out, everything uses Podman's default store — which
+# is what prod uses, always, on every box.
+#PKDUMP_STORE_ROOT=/big/disk/pkdump-nonprod-store
+EOF
+    echo "    Wrote ${STORE_ENV} (container store; commented out = Podman's default)."
+fi
+
 # --- Install the Litestream backup sidecar (pokedumpster-8ch.3) -------------
 # Quadlet sidecar that continuously replicates the collection DB to S3. Instance
 # + repo path are sed-substituted (single-clone deployment).
@@ -164,6 +208,7 @@ sed -e "s|{{INSTANCE}}|${INSTANCE}|g" \
     -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
     "$REPO_DIR/deploy/pkdump-litestream.container" \
     > "${QUADLET_DIR}/pkdump-litestream-${INSTANCE}.container"
+pkdump_store_stamp_unit "${QUADLET_DIR}/pkdump-litestream-${INSTANCE}.container"
 
 # Scaffold the per-instance config (S3 target + AWS creds). Secrets NEVER live in
 # the repo; this only writes a template and never clobbers existing config.
@@ -177,9 +222,17 @@ LITESTREAM_S3_BUCKET=CHANGE_ME
 LITESTREAM_S3_REGION=us-west-2
 # The sidecar replicates EVERY tenants/*.sqlite and derives each tenant's prefix
 # from its filename, so this is the parent prefix, not one database's:
-#   <LITESTREAM_S3_PATH>/<tenant>.sqlite   (see deploy/litestream.yml)
+#   <LITESTREAM_S3_PATH>/<database_id>.sqlite   (see deploy/litestream.yml)
 LITESTREAM_S3_PATH=${INSTANCE}/tenants
 LITESTREAM_TENANTS_DIR=/data/tenants
+# The user registry (handle -> database_id) is replicated by the same sidecar as
+# ITSELF, not as a tenant: it lives at the data root, so the glob above cannot
+# see it. A \`path:\` replica prefix is used verbatim (the file name is NOT
+# appended, unlike directory mode), so this names one database, .sqlite and all.
+# It sits BESIDE <LITESTREAM_S3_PATH>, never inside it — the total-loss
+# procedure lists that parent prefix to enumerate tenants.
+LITESTREAM_REGISTRY_DB=/data/registry.sqlite
+LITESTREAM_S3_REGISTRY_PATH=${INSTANCE}/registry.sqlite
 # Empty = real S3, resolved from the pinned region. Only tests point this
 # elsewhere (tests/litestream/run.sh at a throwaway MinIO).
 LITESTREAM_S3_ENDPOINT=
@@ -200,6 +253,34 @@ EOF
     echo "      3. Store the bootstrap key in a podman secret (NOT a file):"
     echo "           printf '[bootstrap]\\naws_access_key_id=K\\naws_secret_access_key=S\\n' | podman secret create pkdump-${INSTANCE}-s3-bootstrap -"
     echo "    Sidecar auto-starts once aws/config exists + the secret is present."
+fi
+
+# Backfill keys an OLDER litestream.env predates (pd-nd6w: the registry entry).
+# The block above deliberately never clobbers an operator's config, which is
+# also why it cannot introduce a new key into one — and deploy/litestream.yml
+# now references two. An unset db path is fatal to the sidecar at startup
+# (measured: "must specify either 'path' or 'dir'"), so an un-backfilled
+# instance does not silently drop the registry from the replicated set; it
+# refuses to run. Re-running this script is the fix, so make it BE the fix.
+#
+# Append-only, and only for keys that are absent: nothing here rewrites a value
+# the operator chose. The defaults match the template above.
+if [ -f "${LS_CONF_DIR}/litestream.env" ]; then
+    ADDED=()
+    grep -q '^LITESTREAM_REGISTRY_DB=' "${LS_CONF_DIR}/litestream.env" || ADDED+=("LITESTREAM_REGISTRY_DB=/data/registry.sqlite")
+    grep -q '^LITESTREAM_S3_REGISTRY_PATH=' "${LS_CONF_DIR}/litestream.env" || ADDED+=("LITESTREAM_S3_REGISTRY_PATH=${INSTANCE}/registry.sqlite")
+    if [ ${#ADDED[@]} -gt 0 ]; then
+        {
+            echo ""
+            echo "# Added by deploy/setup.sh (pd-nd6w): the user registry joins the replicated"
+            echo "# set. It is replicated as itself, beside LITESTREAM_S3_PATH — not inside it."
+            printf '%s\n' "${ADDED[@]}"
+        } >> "${LS_CONF_DIR}/litestream.env"
+        echo "==> Backfilled ${#ADDED[@]} registry key(s) into ${LS_CONF_DIR}/litestream.env:"
+        printf '      %s\n' "${ADDED[@]}"
+        echo "    Restart the sidecar to pick them up:"
+        echo "      systemctl --user restart pkdump-litestream-${INSTANCE}.service"
+    fi
 fi
 
 # Per-instance alert config: the healthchecks.io ping URL for THIS instance's

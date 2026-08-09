@@ -56,9 +56,20 @@ pub struct ServeArgs {
 /// `PKDUMP_USER` (the shared catalog and the active user's collection).
 pub fn run(args: ServeArgs) -> anyhow::Result<()> {
     let tenant = pkdump_db::current_user();
+    // Resolved once, up front, so a data directory this process cannot make
+    // sense of is a startup failure with a command in it — never a server that
+    // comes up serving an empty collection. `crate::collection` also warns here
+    // if the databases are still named by handle (`pkdump tenant migrate`).
+    let collection = crate::collection::resolve()?;
+    println!(
+        "pkdump: tenant {tenant:?} -> {} ({})",
+        collection.path.display(),
+        crate::collection::describe(&collection)
+    );
     let cfg = ServeConfig {
-        user_db: pkdump_db::user_db_path(&tenant)?,
+        user_db: collection.path,
         tenants_dir: pkdump_db::tenants_dir()?,
+        registry_db: pkdump_db::registry_db_path()?,
         tenant,
         shared_db: pkdump_db::shared_db_path()?,
         data_dir: pkdump_db::pkdump_home()?,

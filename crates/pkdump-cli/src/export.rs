@@ -26,7 +26,7 @@ pub fn run(args: ExportArgs) -> anyhow::Result<()> {
     if !args.json {
         anyhow::bail!("pass --json (the only supported export format)");
     }
-    let user_db = pkdump_db::user_db_path(&pkdump_db::current_user())?;
+    let user_db = crate::collection::user_db()?;
     let conn = pkdump_db::open_user(&user_db)?;
     let json = pkdump_db::json_backup::export(&conn)?;
 

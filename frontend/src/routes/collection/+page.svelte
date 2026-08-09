@@ -28,7 +28,7 @@
 
 	// Server-side search results (one row per printing, owned or not). The
 	// page's existing rendering is per-copy, so owned printings are flattened
-	// back into CollectionRow[] (`rows`); unowned printings (owned_count === 0)
+	// back into per-copy rows (`rows`); unowned printings (owned_count === 0)
 	// drive the dimmed "missing" tiles via `unownedCatalog`.
 	let searchRows = $state<SearchRow[]>([]);
 	let loading = $state(true);
@@ -36,7 +36,16 @@
 	// A query-language parse error, shown under the search box with a caret.
 	let searchError = $state<{ message: string; position: number } | null>(null);
 
-	const rows = $derived<CollectionRow[]>(
+	// One rendered row per owned copy. Deliberately NOT CollectionRow: the
+	// search payload carries only the fields the list draws (pd-lk8v), so
+	// claiming that shape here would promise `attacks`/`artist` the server
+	// no longer sends. Anchored to CollectionRow by Omit so a field added
+	// there still has to be answered for here.
+	type ListRow = Omit<CollectionRow, 'artist' | 'attacks' | 'variant_description'> & {
+		attack_costs: string | null;
+	};
+
+	const rows = $derived<ListRow[]>(
 		searchRows.flatMap((sr) =>
 			sr.copies.map((cp) => ({
 				id: cp.id,
@@ -61,14 +70,12 @@
 				number: sr.number,
 				name: sr.name,
 				rarity: sr.rarity,
-				artist: sr.artist,
 				supertype: sr.supertype,
 				subtypes: sr.subtypes,
 				types: sr.types,
-				attacks: sr.attacks,
+				attack_costs: sr.attack_costs,
 				market_price: sr.market_price,
-				image_small: sr.image_small,
-				variant_description: sr.variant_description
+				image_small: sr.image_small
 			}))
 		)
 	);
@@ -385,7 +392,7 @@
 	}
 
 	/** Open a row's card in the detail modal — unless we're multi-selecting. */
-	function openCard(row: CollectionRow) {
+	function openCard(row: ListRow) {
 		if (selectMode) toggleRow(row.id);
 		else selectedCard = { set: row.set_code, number: row.number };
 	}
@@ -417,14 +424,16 @@
 		supertype: string | null;
 		subtypes: string | null;
 		types: string | null;
-		attacks: string | null;
+		/** JSON `[{name, cost}]` — the Cost column's pips and their tooltip.
+		    Attack text/damage live on the card modal's own fetch (pd-lk8v). */
+		attack_costs: string | null;
 		variant: string;
 		condition: string;
 		status: string;
 		image_small: string | null;
 	};
 
-	function aggregate(input: CollectionRow[]): AggRow[] {
+	function aggregate(input: ListRow[]): AggRow[] {
 		const map = new Map<string, AggRow>();
 		for (const r of input) {
 			const key = `${r.printing_id}|${r.condition}|${r.status}`;
@@ -464,7 +473,7 @@
 					supertype: r.supertype,
 					subtypes: r.subtypes,
 					types: r.types,
-					attacks: r.attacks,
+					attack_costs: r.attack_costs,
 					variant: r.variant,
 					condition: r.condition,
 					status: r.status,
@@ -486,6 +495,9 @@
 	}
 
 	// Attack list — one line of energy pips per attack in the Cost column.
+	// Reads `attack_costs`, the server's `[{name, cost}]` projection: name is
+	// the line's tooltip, cost is the pips, and nothing else was ever drawn
+	// here (pd-lk8v).
 	type Attack = { name: string; cost: string[] };
 	function parseAttacks(s: string | null): Attack[] {
 		if (!s) return [];
@@ -662,7 +674,7 @@
 			supertype: sr.supertype,
 			subtypes: sr.subtypes,
 			types: sr.types,
-			attacks: sr.attacks,
+			attack_costs: sr.attack_costs,
 			variant: sr.variant,
 			condition: '',
 			status: 'unowned',
@@ -1282,7 +1294,7 @@
 								</span>
 							</td>
 							<td>
-								{#each parseAttacks(a.attacks) as att, i (i)}
+								{#each parseAttacks(a.attack_costs) as att, i (i)}
 									<span class="attackline" title={att.name}>
 										{#each att.cost as cc, j (j)}
 											<img class="energy" src={energyIcon(cc)} alt={cc} title={cc} />
@@ -1381,7 +1393,7 @@
 							</span>
 						</td>
 						<td>
-							{#each parseAttacks(a.attacks) as att, i (i)}
+							{#each parseAttacks(a.attack_costs) as att, i (i)}
 								<span class="attackline" title={att.name}>
 									{#each att.cost as c, j (j)}
 										<img class="energy" src={energyIcon(c)} alt={c} title={c} />

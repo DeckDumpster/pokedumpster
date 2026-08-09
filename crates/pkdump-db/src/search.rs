@@ -36,6 +36,17 @@ const MARKET_PRICE_EXPR: &str = "COALESCE(\
      (SELECT mp.price FROM manual_prices mp \
         WHERE mp.printing_id = p.printing_id \
         ORDER BY mp.observed_at DESC LIMIT 1))";
+// The attack list projected down to exactly what the collection table's Cost
+// column draws: one energy-pip line per attack, with the attack name as its
+// tooltip. Attack `text`, `damage` and `convertedEnergyCost` are the card
+// modal's business and reach it through `/api/card/...`, one card at a time.
+// Shipping them on every row made `attacks` 54% of a 44 MB all-cards payload
+// (pd-lk8v) for a column that never rendered a byte of them.
+const ATTACK_COSTS_EXPR: &str = "CASE WHEN cd.attacks IS NULL THEN NULL ELSE ( \
+     SELECT json_group_array(json_object( \
+         'name', json_extract(value, '$.name'), \
+         'cost', json(json_extract(value, '$.cost')))) \
+     FROM json_each(cd.attacks)) END";
 // printings ⋃ user_printings, joined to cards + sets. Mirrors collection::ROW_FROM.
 const FROM_CLAUSE: &str = "FROM ( \
         SELECT printing_id, card_id, variant, tcgplayer_product_id, sub_type_name, \
@@ -66,6 +77,14 @@ pub struct CopySummary {
 }
 
 /// One search result row — a single printing, owned or not (decision D3).
+///
+/// **Every field here is one the search list actually draws.** The list is
+/// unpaginated and catalog-wide mode returns the whole catalog, so a field
+/// nobody renders costs its bytes *and* its key name ~57k times over
+/// (pd-lk8v). Anything only the card modal shows belongs on `CardDetail`,
+/// which is fetched for the one card the user clicked — see
+/// `list_payload_carries_only_what_the_list_renders`, which fails if a field
+/// is added here without that decision being made.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct SearchRow {
@@ -78,15 +97,16 @@ pub struct SearchRow {
     pub number: String,
     pub name: String,
     pub rarity: Option<String>,
-    pub artist: Option<String>,
     pub supertype: Option<String>,
     pub subtypes: Option<String>,
     pub types: Option<String>,
-    pub attacks: Option<String>,
+    /// JSON array of `{name, cost}`, one entry per attack — the Cost column's
+    /// energy pips and their tooltip, and nothing else. The full attack
+    /// (`text`, `damage`, …) comes from `CardDetail`.
+    pub attack_costs: Option<String>,
     pub market_price: Option<f64>,
     pub image_small: Option<String>,
     pub variant: String,
-    pub variant_description: Option<String>,
     /// True when at least one copy is owned (`owned_count > 0`).
     pub owned: bool,
     #[ts(type = "number")]
@@ -724,9 +744,10 @@ fn build_full_sql(c: &CompiledSearch) -> String {
     };
     format!(
         "SELECT p.printing_id, cd.card_id, cd.set_code, s.name AS set_name, s.ptcgo_code, \
-                s.symbol_url, cd.number, cd.name, cd.rarity, cd.artist, cd.supertype, \
-                cd.subtypes, cd.types, cd.attacks, {MARKET_PRICE_EXPR} AS market_price, \
-                cd.image_small, p.variant, p.variant_description, \
+                s.symbol_url, cd.number, cd.name, cd.rarity, cd.supertype, \
+                cd.subtypes, cd.types, {ATTACK_COSTS_EXPR} AS attack_costs, \
+                {MARKET_PRICE_EXPR} AS market_price, \
+                cd.image_small, p.variant, \
                 ({OWNED_COUNT_SUBQ}) AS owned_count \
          {FROM_CLAUSE} \
          WHERE {where_clause} \
@@ -735,7 +756,7 @@ fn build_full_sql(c: &CompiledSearch) -> String {
 }
 
 fn row_from(r: &rusqlite::Row) -> rusqlite::Result<SearchRow> {
-    let owned_count: i64 = r.get(18)?;
+    let owned_count: i64 = r.get(16)?;
     Ok(SearchRow {
         printing_id: r.get(0)?,
         card_id: r.get(1)?,
@@ -746,15 +767,13 @@ fn row_from(r: &rusqlite::Row) -> rusqlite::Result<SearchRow> {
         number: r.get(6)?,
         name: r.get(7)?,
         rarity: r.get(8)?,
-        artist: r.get(9)?,
-        supertype: r.get(10)?,
-        subtypes: r.get(11)?,
-        types: r.get(12)?,
-        attacks: r.get(13)?,
-        market_price: r.get(14)?,
-        image_small: r.get(15)?,
-        variant: r.get(16)?,
-        variant_description: r.get(17)?,
+        supertype: r.get(9)?,
+        subtypes: r.get(10)?,
+        types: r.get(11)?,
+        attack_costs: r.get(12)?,
+        market_price: r.get(13)?,
+        image_small: r.get(14)?,
+        variant: r.get(15)?,
         owned: owned_count > 0,
         owned_count,
         copies: Vec::new(),
@@ -842,13 +861,19 @@ mod tests {
                  VALUES
                  ('base1-4','base1','4',4,'Charizard','Pokémon','[\"Stage 2\"]',120,'[\"Fire\"]',
                    'Rare Holo','Mitsuhiro Arita','Spits fire.',
-                   '[{\"name\":\"Fire Spin\",\"damage\":\"100\"}]','[6]','{\"unlimited\":\"Legal\"}'),
+                   '[{\"name\":\"Fire Spin\",\"damage\":\"100\",\"cost\":[\"Fire\",\"Fire\",\"Fire\",\"Fire\"],
+                      \"convertedEnergyCost\":4,\"text\":\"Discard 2 Energy cards.\"}]',
+                   '[6]','{\"unlimited\":\"Legal\"}'),
                  ('sv3pt5-25','sv3pt5','25',25,'Pikachu','Pokémon','[\"Basic\"]',60,'[\"Lightning\"]',
                    'Common','Naoki Saito','Loves ketchup.',
                    '[{\"name\":\"Thunder Jolt\",\"damage\":\"30\"}]','[25]','{\"standard\":\"Legal\"}'),
                  ('base1-2','base1','2',2,'Blastoise','Pokémon','[\"Stage 2\"]',100,'[\"Water\"]',
                    'Rare Holo','Ken Sugimori','Crushes foes.',
-                   '[{\"name\":\"Hydro Pump\",\"damage\":\"60\"}]','[9]','{\"unlimited\":\"Legal\"}')",
+                   '[{\"name\":\"Hydro Pump\",\"damage\":\"60\"}]','[9]','{\"unlimited\":\"Legal\"}'),
+                 -- A Trainer: no types, no hp, no attacks. Unowned, so it only
+                 -- surfaces catalog-wide and leaves the owned-mode tests alone.
+                 ('base1-88','base1','88',88,'Professor Oak','Trainer',NULL,NULL,NULL,
+                   'Uncommon','Ken Sugimori','Draw 7 cards.',NULL,NULL,'{\"unlimited\":\"Legal\"}')",
                 [],
             )
             .unwrap();
@@ -857,7 +882,8 @@ mod tests {
                  ('base1-4-holo','base1-4','holo'),
                  ('sv3pt5-25-normal','sv3pt5-25','normal'),
                  ('sv3pt5-25-reverse_holo','sv3pt5-25','reverse_holo'),
-                 ('base1-2-holo','base1-2','holo')",
+                 ('base1-2-holo','base1-2','holo'),
+                 ('base1-88-normal','base1-88','normal')",
                 [],
             )
             .unwrap();
@@ -979,15 +1005,13 @@ mod tests {
             number: String::new(),
             name: String::new(),
             rarity: None,
-            artist: None,
             supertype: None,
             subtypes: None,
             types: None,
-            attacks: None,
+            attack_costs: None,
             market_price: None,
             image_small: None,
             variant: String::new(),
-            variant_description: None,
             owned: false,
             owned_count: 0,
             copies: Vec::new(),
@@ -1086,6 +1110,92 @@ mod tests {
         assert!(rows[0].owned);
         assert_eq!(rows[0].owned_count, 2);
         assert_eq!(rows[0].copies.len(), 2);
+    }
+
+    // --- payload shape (pd-lk8v) -------------------------------------------
+
+    // The list is unpaginated and catalog-wide mode returns the whole catalog
+    // (~57k rows on prod), so every field here is paid ~57k times — for its
+    // value *and* for its key name. `attacks` alone was 54% of a 44 MB
+    // response for a Cost column that renders only the energy pips.
+    //
+    // Named explicitly, not size-asserted: a byte budget rots, a key set does
+    // not. Adding a field to SearchRow fails this test, which is the point —
+    // the addition should be a decision, not a diff nobody measured.
+    #[test]
+    fn list_payload_carries_only_what_the_list_renders() {
+        let f = fixture();
+        let rows = search(&f.conn, &f.compile("charizard")).unwrap();
+        let json = serde_json::to_value(&rows[0]).unwrap();
+        let keys: Vec<&str> = json
+            .as_object()
+            .expect("SearchRow serializes to an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        // serde_json orders object keys alphabetically, so this list is too.
+        assert_eq!(
+            keys,
+            vec![
+                "attack_costs",
+                "card_id",
+                "copies",
+                "image_small",
+                "market_price",
+                "name",
+                "number",
+                "owned",
+                "owned_count",
+                "printing_id",
+                "rarity",
+                "set_code",
+                "set_name",
+                "set_ptcgo_code",
+                "set_symbol_url",
+                "subtypes",
+                "supertype",
+                "types",
+                "variant",
+            ],
+            "a field the list does not render belongs on CardDetail, not here"
+        );
+        // The three the modal owns, spelled out so a revert reads as one.
+        for gone in ["attacks", "artist", "variant_description"] {
+            assert!(
+                !keys.contains(&gone),
+                "{gone} is card-modal data — it must not ride the list payload"
+            );
+        }
+    }
+
+    // The Cost column keeps its pips and its tooltip; the bulk (text, damage,
+    // convertedEnergyCost) does not ride along.
+    #[test]
+    fn attack_costs_keeps_pips_and_tooltip_and_drops_the_prose() {
+        let f = fixture();
+        let rows = search(&f.conn, &f.compile("charizard")).unwrap();
+        let raw = rows[0]
+            .attack_costs
+            .as_deref()
+            .expect("Charizard has attacks");
+        assert_eq!(
+            raw, r#"[{"name":"Fire Spin","cost":["Fire","Fire","Fire","Fire"]}]"#,
+            "exactly the two keys the Cost column reads"
+        );
+        assert!(!raw.contains("text"), "attack text is modal-only");
+        assert!(!raw.contains("damage"), "attack damage is modal-only");
+        assert!(!raw.contains("convertedEnergyCost"));
+    }
+
+    // A Trainer has no attacks at all — json_each over a NULL column must
+    // yield NULL, not an empty array and not an error.
+    #[test]
+    fn attack_costs_is_null_when_the_card_has_no_attacks() {
+        let f = fixture();
+        let rows = search(&f.conn, &f.compile("is:missing professor oak")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].printing_id, "base1-88-normal");
+        assert!(rows[0].attack_costs.is_none());
     }
 
     #[test]

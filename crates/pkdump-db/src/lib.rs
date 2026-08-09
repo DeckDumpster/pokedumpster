@@ -22,6 +22,7 @@ pub mod json_backup;
 pub mod latest_prices;
 pub mod manual_prices;
 pub mod orders;
+pub mod schema_version;
 pub mod sealed;
 pub mod sealed_import;
 pub mod search;

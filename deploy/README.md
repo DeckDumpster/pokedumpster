@@ -105,10 +105,20 @@ PKDUMP_STORE_ROOT=/big/disk/pkdump-store bash deploy/setup.sh scratch --test
 bash deploy/setup.sh prod 8090
 ```
 
-- `deploy/ci.sh` opts in **by itself**, choosing the filesystem the checkout is
-  on — but only when that is a different filesystem from `$HOME`. Where both are
-  one disk it changes nothing, because a second store there would only duplicate
-  base images. `PKDUMP_STORE_ROOT=` (empty) opts back out.
+- **Which disk is host config, not a repo constant.** Uncomment
+  `PKDUMP_STORE_ROOT` in `~/.config/pkdump/store.env` — the same directory
+  `alerts.env` and `litestream.env` live in — and `deploy/ci.sh` builds there.
+  `setup.sh` scaffolds the file commented out, so the knob is visible on a new
+  box without changing anything. An explicit `PKDUMP_STORE_ROOT` in the
+  environment wins over the file, and an explicit `PKDUMP_STORE_ROOT=` (empty)
+  is how one run opts back out on a box that opts in.
+  The store is never *inferred* from the box's disk layout: a rule like "the
+  checkout is on a different filesystem from `$HOME`" describes one machine, and
+  on any other it quietly starts a container store at the top of whatever
+  external drive or network mount the checkout happens to sit on.
+- Only `ci.sh` reads `store.env`. `setup.sh` — which is also how prod is
+  installed — honours the environment and nothing else, so a host that opts in
+  cannot relocate a prod deploy.
 - `setup.sh`, `deploy.sh`, `seed.sh` and `teardown.sh` all agree on one store per
   instance: the generated Quadlet unit records it in a `GlobalArgs=` key, and
   `teardown.sh` reads it back, so a bare `deploy/teardown.sh <instance>` removes

@@ -22,6 +22,17 @@
 # every function here is a no-op and the generated Quadlet units come out
 # byte-identical to what they were before this file existed.
 #
+# WHERE THE VALUE COMES FROM
+#
+# Which disk is worth using is a fact about one machine, so it is not in the
+# repo: pkdump_store_load_config reads it from ~/.config/pkdump/store.env, the
+# same host-config directory alerts.env and litestream.env already live in. It
+# is NOT inferred from the box's disk layout — an earlier version derived the
+# store from "is the checkout on a different filesystem from $HOME", which
+# encoded one machine's topology as a rule and would silently invent a store
+# directory at the top of an external drive or a network mount on any other
+# box (pd-rf7c).
+#
 # HOW IT IS APPLIED
 #
 # Two consumers have to agree, or you get an instance whose image lives in one
@@ -51,22 +62,28 @@
 #
 # Sourced, not executed.
 
-# pkdump_store_default_root <dir> — where to put the store when the caller has
-# not chosen (deploy/ci.sh). Prints nothing when there is nothing to gain.
+# pkdump_store_load_config — take PKDUMP_STORE_ROOT from host config when the
+# caller has not set it. Called by the scripts that MAY use an alternate store
+# (deploy/ci.sh); never by the ones prod runs, so prod cannot pick one up from a
+# file it did not ask about.
 #
-# The rule: put throwaway storage on the same filesystem as the checkout, but
-# only when that is NOT the filesystem the default store already lives on. On
-# the box this was written for, worktrees are on the big disk and $HOME is on
-# the small one, so this resolves to the big disk. Where both are one filesystem
-# (a laptop, a stock CI runner) it prints nothing and the default store is used
-# — a second store there would only duplicate base images for no benefit.
-pkdump_store_default_root() {
-    local repo_dir="$1" mount
-    [ -d "$repo_dir" ] || return 0
-    [ "$(stat -c %d "$repo_dir")" != "$(stat -c %d "$HOME")" ] || return 0
-    mount="$(df --output=target "$repo_dir" | tail -n1)"
-    [ -n "$mount" ] && [ "$mount" != "/" ] || return 0
-    printf '%s/pkdump-nonprod-store' "$mount"
+# Precedence, and the distinction is load-bearing:
+#
+#   PKDUMP_STORE_ROOT set (even to empty)   the caller decided — file ignored
+#   PKDUMP_STORE_ROOT unset                 read ~/.config/pkdump/store.env
+#   neither                                 Podman's default store
+#
+# An explicit empty value has to win, because that is how a one-off run opts
+# back out on a box whose store.env opts in.
+pkdump_store_load_config() {
+    [ -z "${PKDUMP_STORE_ROOT+set}" ] || return 0
+    local conf="${HOME}/.config/pkdump/store.env"
+    [ -f "$conf" ] || return 0
+    # Same shape as alerts.env and litestream.env: a dotenv file, sourced.
+    set -a
+    # shellcheck disable=SC1090
+    . "$conf"
+    set +a
 }
 
 # pkdump_store_activate — point every podman invocation in this process tree at

@@ -40,17 +40,19 @@
 #   PKDUMP_CI_INSTANCE=myname bash deploy/ci.sh   # pin the instance name
 #   PKDUMP_STORE_ROOT=/some/dir bash deploy/ci.sh # pin the container store
 #   PKDUMP_STORE_ROOT= bash deploy/ci.sh          # use Podman's default store
+#                                                 # (overrides host store.env)
 #
 # Parallel-safe: the container instance is named per-checkout, so several
 # polecats can run this concurrently from their own worktrees without tearing
 # down each other's containers. Do not reintroduce a fixed instance name.
 #
-# Disk: nothing this script builds belongs on the disk prod runs from. Unless
-# told otherwise it puts the whole container store — images, layers, volumes and
-# Buildah's cache mounts — on the filesystem holding the checkout, which is only
-# a different disk from $HOME on a box where that is worth doing. See
-# deploy/store-lib.sh. It also refuses to start on a nearly-full disk, because
-# the failure that produces does not look like a disk problem.
+# Disk: nothing this script builds belongs on the disk prod runs from. Point
+# PKDUMP_STORE_ROOT at another filesystem and the whole container store — images,
+# layers, volumes and Buildah's cache mounts — goes there instead. Which disk
+# that is on a given box is host config, not a repo constant, so it is read from
+# ~/.config/pkdump/store.env; unconfigured, Podman's default store is used. See
+# deploy/store-lib.sh. This script also refuses to start on a nearly-full disk,
+# because the failure that produces does not look like a disk problem.
 #
 set -euo pipefail
 
@@ -85,11 +87,10 @@ step() { echo ""; echo "==> $*"; }
 
 # shellcheck source=deploy/store-lib.sh
 . "$SCRIPT_DIR/store-lib.sh"
-# Unset (not empty) means "choose for me". Empty means the caller deliberately
-# wants Podman's default store, so it is left alone.
-if [ -z "${PKDUMP_STORE_ROOT+set}" ]; then
-    PKDUMP_STORE_ROOT="$(pkdump_store_default_root "$REPO_DIR")"
-fi
+# Unset means "not answered here, ask the host" — ~/.config/pkdump/store.env.
+# Set, including set to empty, means the caller decided and is left alone.
+# Answered nowhere means Podman's default store, which is also prod's.
+pkdump_store_load_config
 pkdump_store_activate
 
 step "Disk floor check"

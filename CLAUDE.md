@@ -181,11 +181,15 @@ deploy/teardown.sh prod [--purge]
 
 Non-prod container storage does not belong on the disk prod runs from.
 `PKDUMP_STORE_ROOT=<dir>` puts an instance's image, layers, volume and
-Buildah cache in an alternate rootless store; `deploy/ci.sh` opts in on its
-own (the checkout's filesystem, when that differs from `$HOME`'s). **Prod
-never opts in** — its unit and volumes are untouched by construction. The
-generated Quadlet unit records the store so teardown removes from the same
-one. See `deploy/store-lib.sh` and the README's "Container storage".
+Buildah cache in an alternate rootless store. Which directory that is on a
+given box is **host config** — `~/.config/pkdump/store.env`, alongside
+`alerts.env` and `litestream.env` — never inferred from the machine's disk
+layout; `deploy/ci.sh` reads it, an explicit environment variable beats it,
+and unconfigured means Podman's default store. **Prod never opts in**
+(`setup.sh` does not read `store.env` at all) — its unit and volumes are
+untouched by construction. The generated Quadlet unit records the store so
+teardown removes from the same one. See `deploy/store-lib.sh` and the
+README's "Container storage".
 
 The image runs `pkdump serve`; the data volume holds both `shared.sqlite`
 and the per-user collection DB. Off-box backup is the

@@ -109,16 +109,54 @@ check "alert mode still exits zero" "0" \
 	"$(PKDUMP_DISK_THRESHOLD=0 PKDUMP_DISK_PATH="$WORK" bash "$DISKCHECK" >/dev/null 2>&1; echo $?)"
 
 # ---------------------------------------------------------------------------
-log "3. Choosing a store root"
+log "3. Where the store root comes from: host config, never disk topology"
 # ---------------------------------------------------------------------------
 
 reset_store
-# $HOME is on its own filesystem: there is nothing to gain from a second store
-# on the same disk, so the function declines to name one.
-check "same filesystem as \$HOME -> no alternate store" "" \
-	"$(pkdump_store_default_root "$HOME")"
-check "nonexistent directory -> no alternate store" "" \
-	"$(pkdump_store_default_root "${WORK}/no/such/dir")"
+
+# Nothing may derive a store path from the box's disk layout. The function this
+# replaced did exactly that — "checkout on a different filesystem from $HOME" —
+# and on a machine whose checkout sat on an external drive or a network mount it
+# would have invented a store directory at the top of it (pd-rf7c).
+check "the inferring function is gone" "" "$(type -t pkdump_store_default_root || true)"
+check "store-lib.sh consults no filesystem to place a store" "0" \
+	"$(grep -c 'df \|stat -c' "${REPO_DIR}/deploy/store-lib.sh" || true)"
+
+# The host config file, in the directory alerts.env and litestream.env use.
+mkdir -p "${WORK}/home/.config/pkdump"
+CONF="${WORK}/home/.config/pkdump/store.env"
+# load_config in a clean subshell, printing what it decided. Unset vs empty is
+# the whole contract, so `${VAR-<unset>}` (no colon) is deliberate.
+load() { # load <env assignment or nothing>
+	env -u PKDUMP_STORE_ROOT HOME="${WORK}/home" \
+		bash -c "${1:+export ${1};} . '${REPO_DIR}/deploy/store-lib.sh'; pkdump_store_load_config; printf '%s' \"\${PKDUMP_STORE_ROOT-<unset>}\""
+}
+
+check "no store.env -> unconfigured" "<unset>" "$(load)"
+
+printf 'PKDUMP_STORE_ROOT=/big/disk/store\n' > "$CONF"
+check "store.env supplies the root" "/big/disk/store" "$(load)"
+check "an explicit root beats the file" "/elsewhere" "$(load 'PKDUMP_STORE_ROOT=/elsewhere')"
+# The opt-out: one run wants Podman's default store even though this box's
+# store.env opts in. An empty value is SET, so the file must not overrule it.
+check "an explicit empty root beats the file" "" "$(load 'PKDUMP_STORE_ROOT=')"
+
+# The shape setup.sh scaffolds: present, but deciding nothing.
+printf '# PokeDumpster store config\n#PKDUMP_STORE_ROOT=/big/disk/store\n' > "$CONF"
+check "commented-out store.env -> unconfigured" "<unset>" "$(load)"
+rm -f "$CONF"
+
+# Who is allowed to ask the host. ci.sh may; setup.sh must not, because setup.sh
+# is also how prod is installed and prod's store is not a host-configurable
+# thing. Prod's opt-out survives a box whose store.env opts in.
+check "ci.sh reads host store config" "1" \
+	"$(grep -c '^pkdump_store_load_config$' "${REPO_DIR}/deploy/ci.sh" || true)"
+check "setup.sh does not" "0" \
+	"$(grep -c 'pkdump_store_load_config' "${REPO_DIR}/deploy/setup.sh" || true)"
+check "setup.sh scaffolds the knob commented out" "1" \
+	"$(grep -c '^#PKDUMP_STORE_ROOT=' "${REPO_DIR}/deploy/setup.sh" || true)"
+
+reset_store
 
 # ---------------------------------------------------------------------------
 log "4. Activation reaches every podman call"

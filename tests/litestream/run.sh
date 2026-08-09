@@ -58,11 +58,33 @@ SHIPPED_YML="${REPO_DIR}/deploy/litestream.yml"
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
 
-NET=pdls-test-net
-MINIO_CTR=pdls-test-minio
-LS_CTR=pdls-test-litestream
-MINIO_PORT=${MINIO_PORT:-39921}
-BUCKET=pdls-test
+# Failure diagnostics (pd-8gjs): an ERR trap that names the failing file, line,
+# command and status before the EXIT trap's teardown chatter, and `diag_run`,
+# which captures a command's stderr and prints it on failure through a
+# descriptor no call-site `2>/dev/null` can reach. This gate once died with a
+# bare exit 127 and an empty log; see tests/lib/diagnostics.sh.
+# shellcheck source=tests/lib/diagnostics.sh
+. "${REPO_DIR}/tests/lib/diagnostics.sh"
+diag_init
+
+# Unique per checkout, exactly as deploy/ci.sh's instance name and the alarming
+# gate's are. deploy/ci.sh is deliberately parallel-safe — several polecats run
+# it at once from their own worktrees — but it calls THIS script, and until
+# pd-8gjs these names were fixed. Run B's opening `podman rm -f` / `network rm`
+# then tore down run A's MinIO and sidecar mid-suite, and run A failed
+# somewhere downstream looking nothing like a name clash.
+SUFFIX="$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-6)"
+NET=pdls-test-net-${SUFFIX}
+MINIO_CTR=pdls-test-minio-${SUFFIX}
+LS_CTR=pdls-test-litestream-${SUFFIX}
+PROBE_CTR=pdls-test-probe-${SUFFIX}
+# From the kernel, not picked: a fixed number collides both with a concurrent
+# run of this gate and with whatever else happens to hold it on the box.
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()'; }
+MINIO_PORT=${MINIO_PORT:-$(free_port)}
+# The bucket is inside this run's own MinIO, but keep it distinct too so that a
+# stray `mc` pointed at the wrong endpoint cannot silently share state.
+BUCKET=pdls-test-${SUFFIX}
 AKID=pdlstestroot
 SECRET=pdlstestsecret123
 
@@ -97,6 +119,7 @@ log() { printf '\n=== %s ===\n' "$*"; }
 
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
+	local rc=$?
 	if [[ -n "${KEEP:-}" ]]; then
 		echo
 		echo "KEEP=1 — leaving containers up and WORK=$WORK in place."
@@ -106,13 +129,21 @@ cleanup() {
 	# --ignore matters: podman 4.9 given one name it cannot resolve removes
 	# NOTHING and still exits 0, so a best-effort list without it leaves the
 	# whole test bed running and the next run fails on "network already used".
-	podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" pdls-test-probe >/dev/null 2>&1 || true
+	podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" "$PROBE_CTR" >/dev/null 2>&1 || true
 	podman network rm -f "$NET" >/dev/null 2>&1 || true
 	rm -rf "$WORK"
+	# Said last, after the teardown noise, so the status is never something the
+	# reader has to infer from where the log happens to stop.
+	[[ $rc -eq 0 ]] || diag "!! tests/litestream/run.sh exiting with status ${rc}"
 }
 trap cleanup EXIT
 
-mc() { podman run --rm --network "$NET" -e "MC_HOST_s=http://$AKID:$SECRET@$MINIO_CTR:9000" "$MC_IMAGE" "$@"; }
+# Every mc invocation goes through diag_run: silent while it works, and on
+# failure it prints the podman command, its exit status and everything mc wrote
+# to stderr — through $PD_DIAG_FD, so a caller's own `2>/dev/null` cannot eat
+# the explanation for that caller's own death. This is the exact call path that
+# produced a bare, unexplained 127 in pd-8gjs.
+mc() { diag_run mc podman run --rm --network "$NET" -e "MC_HOST_s=http://$AKID:$SECRET@$MINIO_CTR:9000" "$MC_IMAGE" "$@"; }
 
 # litestream, with the same credential wiring the deploy scripts use in prod
 # (a shared-credentials file selected by AWS_PROFILE — in prod that profile
@@ -123,7 +154,7 @@ ls_run() { podman run --rm --network "$NET" --user 0 \
 	"$LITESTREAM_IMAGE" "$@"; }
 
 log "1. throwaway MinIO"
-podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" pdls-test-probe >/dev/null 2>&1 || true
+podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" "$PROBE_CTR" >/dev/null 2>&1 || true
 podman network rm -f "$NET" >/dev/null 2>&1 || true
 podman network create "$NET" >/dev/null
 podman run -d --name "$MINIO_CTR" --network "$NET" \
@@ -184,7 +215,7 @@ check "no ERROR lines from the shipped config" "0" \
 
 log "4. every tenant has its OWN derived prefix — and the shipped derivation agrees"
 # The set of prefixes Litestream actually created, read back out of the bucket.
-mc ls -r "s/$BUCKET" 2>/dev/null | awk '{print $NF}' | cut -d/ -f1-3 | sort -u >"$WORK/prefixes.txt"
+mc ls -r "s/$BUCKET" | awk '{print $NF}' | cut -d/ -f1-3 | sort -u >"$WORK/prefixes.txt"
 # Not just "three of them" — exactly the three the shipped derivation names. A
 # collided config still produces a plausible-looking count; it does not produce
 # a matching SET.
@@ -215,7 +246,7 @@ sleep 12
 DELTA_LOGGED=$(podman logs "$LS_CTR" 2>&1 | grep -c 'delta.sqlite' || true)
 check "delta was picked up live by watch:" "yes" \
 	"$([ "$DELTA_LOGGED" -gt 0 ] && echo yes || echo no)"
-mc ls -r "s/$BUCKET" 2>/dev/null | awk '{print $NF}' | cut -d/ -f1-3 | sort -u >"$WORK/prefixes.txt"
+mc ls -r "s/$BUCKET" | awk '{print $NF}' | cut -d/ -f1-3 | sort -u >"$WORK/prefixes.txt"
 check "delta has its own derived prefix" "1" \
 	"$(grep -cx "${LITESTREAM_S3_PATH}/delta.sqlite" "$WORK/prefixes.txt" || true)"
 check "four tenants, four prefixes" "4" "$(grep -c . "$WORK/prefixes.txt")"
@@ -223,11 +254,16 @@ check "four tenants, four prefixes" "4" "$(grep -c . "$WORK/prefixes.txt")"
 log "6. restore the NON-FIRST tenant — latest, and point-in-time"
 # Restoring tenant #1 would pass even if the derivation were off by one, so the
 # whole point of this section is that the victim is #2 of 4.
+# A failed restore must not abort the report — the checks below turn it into a
+# FAIL line instead. But "not fatal" is not the same as "not worth mentioning":
+# both of these route the failure through diag_run, so a restore that dies takes
+# litestream's (or sqlite's) own words with it into the log rather than leaving
+# `<no restored db>` as the only clue.
 restore_ok() { # restore_ok <out> <url> [flags...] — never aborts the report
 	local out="$1" url="$2"; shift 2
-	ls_run restore "$@" -o "/restore/${out}" "$url" >/dev/null 2>&1 || true
+	diag_run "restore ${out}" ls_run restore "$@" -o "/restore/${out}" "$url" >/dev/null || true
 }
-sq_restored() { sq "$WORK/restore/$1" "$2" 2>/dev/null || echo '<no restored db>'; }
+sq_restored() { diag_run "sqlite ${1}" sq "$WORK/restore/$1" "$2" || echo '<no restored db>'; }
 
 restore_ok "${VICTIM}-latest.sqlite" "$(tenant_replica_url "$VICTIM" || true)" -integrity-check full
 check "restored tenant is ${VICTIM}, not a neighbour" "$VICTIM" \
@@ -272,7 +308,7 @@ sed 's/^  interval: 24h/  interval: 2s/' "$SHIPPED_YML" >"$WORK/fast-snapshot.ym
 mkdir -p "$WORK/probe/tenants"
 sq "$WORK/probe/tenants/echo.sqlite" \
 	"PRAGMA journal_mode=WAL; CREATE TABLE collection (n INTEGER PRIMARY KEY, tenant TEXT);" >/dev/null
-podman run -d --name pdls-test-probe --network "$NET" --user 0 \
+podman run -d --name "$PROBE_CTR" --network "$NET" --user 0 \
 	-v "$WORK/probe:/data:Z" -v "$WORK/fast-snapshot.yml:/etc/litestream.yml:ro,Z" \
 	-v "$WORK/aws:/aws:ro,Z" \
 	-e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials -e AWS_PROFILE=pkdump \
@@ -283,8 +319,8 @@ for i in $(seq 15); do
 	sq "$WORK/probe/tenants/echo.sqlite" "INSERT INTO collection (tenant) VALUES ('echo');"
 	sleep 1
 done
-podman rm -f --ignore pdls-test-probe >/dev/null 2>&1 || true
-SNAPSHOTS=$(mc ls -r "s/$BUCKET" 2>/dev/null | grep -c 'citest/probe/echo.sqlite/0009/' || true)
+podman rm -f --ignore "$PROBE_CTR" >/dev/null 2>&1 || true
+SNAPSHOTS=$(mc ls -r "s/$BUCKET" | grep -c 'citest/probe/echo.sqlite/0009/' || true)
 check "the top-level snapshot interval is actually honoured (>1 snapshot in 15s)" "yes" \
 	"$([ "$SNAPSHOTS" -gt 1 ] && echo yes || echo no)"
 

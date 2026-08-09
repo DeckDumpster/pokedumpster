@@ -60,6 +60,62 @@
 # per-instance store flags. An instance in an alternate store is a throwaway —
 # do not enable those timers for it.
 #
+# ############################################################################
+# # NEVER RUN `podman system reset` — IT IS NOT SCOPED BY --root/--runroot.  #
+# ############################################################################
+#
+# Everything above teaches operators and scripts to pass --root/--runroot at a
+# second store. `system reset` is the one subcommand that ignores them, and it
+# sits one keystroke away from the store you actually want to delete. It says so
+# itself: `podman system reset --help` is "Reset podman storage back to default
+# state" — default, not "the state of the store you named".
+#
+# Measured on podman 4.9.3, 2026-08-08 (pd-rkrf). Cleaning up a THROWAWAY probe
+# store with
+#
+#     podman --root=<probe>/storage --runroot=<probe-runroot> system reset --force
+#
+# also wiped user-global rootless state that no flag pointed at:
+#
+#   * /run/user/$UID/libpod and the rootless SHM lock — podman's per-user
+#     runtime state, shared by EVERY store on the box, prod's included.
+#   * $TMPDIR/buildah-cache-$UID at the AMBIENT TMPDIR (/var/tmp, 6.7G), not the
+#     one this file points into the store root.
+#
+# RESULT: pkdump-prod went down — HTTP 000 on 8090, podman answering "container
+# state improper" while conmon and `pkdump serve` were still alive. Other
+# instances were left in podman state `Created` with live conmon: still serving,
+# but unmanageable until restarted. Data survived (the volumes are not what got
+# destroyed) and the Litestream sidecar never stopped replicating.
+#
+# If someone has already run it: the damage is to runtime state, so restart the
+# units — `systemctl --user restart pkdump-<instance>` — one per affected
+# instance, and check `podman ps` for anything still stuck in `Created`.
+#
+# REMOVING A STORE, correctly. Stop and remove what the store owns, from inside
+# that store, then delete its directories. Every command below IS scoped by the
+# flags, so run them with the shim on PATH (pkdump_store_activate) or pass
+# $PKDUMP_STORE_GLOBAL_ARGS explicitly:
+#
+#     podman stop -a                      # or teardown.sh per instance first
+#     podman rm -af
+#     podman volume rm -af                # the store's volumes, nobody else's
+#     podman rmi -af
+#     podman network prune -f
+#     rm -rf "$PKDUMP_STORE_ROOT" "${PKDUMP_STORE_GLOBAL_ARGS##*--runroot=}"
+#
+# The store root is storage/ + tmp/ (the buildah cache) + bin/ (the shim); the
+# runroot is read back off the flags rather than globbed, so it is the one
+# derived for THIS graph root and not another store's. `rm -rf` on the two
+# directories is the part `system reset` was being reached for, and it is scoped
+# by construction: a path deletes exactly the path. The shim is inside the store
+# root, so a shell that ran this has a PATH entry pointing at nothing — start a
+# new one.
+#
+# Any store-teardown command added to deploy/ must use this recipe. That is not
+# left to memory — tests/deploy/run.sh §6 greps deploy/ and tests/ and fails on
+# a `podman system reset` anywhere in the repo.
+#
 # Sourced, not executed.
 
 # pkdump_store_load_config — take PKDUMP_STORE_ROOT from host config when the

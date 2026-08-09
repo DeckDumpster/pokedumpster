@@ -218,5 +218,29 @@ check "no unit -> no store (prod's default)" "" \
 reset_store
 
 # ---------------------------------------------------------------------------
+log "6. nothing in the repo invokes podman's store-wide reset (pd-rkrf)"
+# ---------------------------------------------------------------------------
+
+# `podman system reset` is NOT scoped by --root/--runroot. Aimed at a throwaway
+# store it still wiped /run/user/$UID/libpod, the rootless SHM lock and the
+# buildah cache at the ambient TMPDIR — and took prod down with it, podman
+# answering "container state improper" while `pkdump serve` was still alive.
+# store-lib.sh's header carries the correct removal recipe (stop/rm what the
+# store owns, then rm -rf the store root and its runroot); this is what keeps the
+# next store-teardown command from reaching for the foot-gun anyway.
+#
+# Comment lines are excluded: the recipe has to be allowed to name what it
+# forbids. The needle is spelled in two pieces so this file does not match
+# itself, which is also why no line of code below writes the command out.
+NEEDLE='system'"[[:space:]]+"'reset'
+OFFENDERS="$(
+	grep -rnE --include='*.sh' --include='*.container' --include='*.service' \
+		--include='*.timer' --include='Containerfile' -e "$NEEDLE" \
+		"${REPO_DIR}/deploy" "${REPO_DIR}/tests" /dev/null |
+		grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true
+)"
+check "no script resets podman storage" "" "$OFFENDERS"
+
+# ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

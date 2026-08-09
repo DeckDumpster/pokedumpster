@@ -1,0 +1,70 @@
+name: CI
+
+# deploy.yml has shipped to prod on every push to master since it was added, with
+# nothing gating it. PR #7 merged and deployed without a single test having run in
+# CI — the suite existed, but only ever as something a human or a polecat ran by
+# hand. This is that gate.
+#
+# Modelled on deckdumpster's .github/workflows/ci.yml, same box, same runner
+# label, so the two repos work the same way.
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# ONE pokedumpster CI run at a time, box-wide.
+#
+# Rootless Podman keeps a single per-user store, and deploy/ci.sh runs
+# `podman image prune` and builds into it. Two concurrent runs sharing that store
+# is a real, observed failure: the litestream gate died with a bare `exit 127` and
+# an empty log, twice, both times with another deploy/ci.sh running (pd-8gjs).
+#
+# The group is a constant rather than ${{ github.ref }} — per-ref would still let
+# two different PRs collide, which is the case that actually bit. cancel-in-progress
+# is false because a queued run should WAIT for the store, not kill the run holding
+# it.
+#
+# What this does NOT cover, so nobody reads it as a guarantee: Gas Town polecats
+# run ci.sh outside Actions entirely, and deploy.yml takes its own `deploy-<instance>`
+# group so a deploy can still overlap a test run. Sharing one group with deploy was
+# considered and rejected — it would park a prod deploy behind a 60-minute suite.
+concurrency:
+  group: pokedumpster-ci
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: [self-hosted, rgantt]
+    # The suite builds a container, drives Playwright over every route at two
+    # viewports, and executes two DR drills against a throwaway MinIO. It is not
+    # a two-minute job; the default 360m is just too loose to catch a hang.
+    timeout-minutes: 60
+    env:
+      # Rootless podman and `systemctl --user` need this; a non-login runner
+      # process does not get it for free.
+      XDG_RUNTIME_DIR: /run/user/1000
+    steps:
+      - uses: actions/checkout@v4
+
+      # ONE step, calling the same script a developer and a polecat run.
+      #
+      # Deliberately not decomposed into per-gate steps. Every drift bug this
+      # repo has hit recently was a second copy of something going stale while
+      # the first moved on — a test fixture that predated the bind refusal
+      # (pd-z1xb), an alarming fixture that predated the registry (pd-nt1k). A
+      # workflow that re-listed the gates would be exactly that shape: the list
+      # here and the list in ci.sh drifting apart, with CI silently running fewer
+      # gates than the polecats do.
+      #
+      # ci.sh prints its own `==> step` banners, so the log stays readable, and it
+      # derives a per-checkout instance name and tears down via an EXIT trap, so
+      # no cleanup step is needed here.
+      #
+      # PKDUMP_STORE_ROOT is deliberately NOT set: the runner executes as the same
+      # user whose ~/.config/pkdump/store.env already points non-prod container
+      # storage at the big disk, and ci.sh reads that file itself. Setting it here
+      # would put the box's disk layout back into the repo, which is the thing
+      # pd-rf7c removed.
+      - name: deploy/ci.sh
+        run: bash deploy/ci.sh

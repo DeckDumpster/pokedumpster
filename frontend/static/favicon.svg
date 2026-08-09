@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#e94560" stroke-width="2">
+	<title>PokeDumpster</title>
+	<!--
+	  The same mark as src/lib/components/Pokeball.svelte, at the same geometry.
+	  A favicon is a static asset the browser fetches outside the document, so it
+	  cannot resolve a CSS custom property: #e94560 is the crimson-500 reference
+	  step spelled out, and this file is the one place in the project where that
+	  is the correct thing to do. Re-skinning the brand means editing this hex
+	  alongside the reference block in tokens.css.
+
+	  (No double hyphen may appear in this comment. An SVG served as
+	  image/svg+xml is parsed as XML, which forbids it inside a comment, and the
+	  browser drops the whole image with no console error.)
+	-->
+	<circle cx="12" cy="12" r="10" />
+	<line x1="2.5" y1="12" x2="21.5" y2="12" />
+	<circle cx="12" cy="12" r="3.2" />
+</svg>

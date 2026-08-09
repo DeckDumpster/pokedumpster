@@ -77,7 +77,9 @@ Escape key, and has a "Full card details →" link to `/card/{set}/{number}`.
 | **Loading** | First load, before `binder` is set | "Loading…" muted text |
 | **Error (no data)** | The binder fetch fails before any data loads | "Failed to load binder: {message}" |
 | **Inline error** | A reload or an add fails while a binder is already shown | Red error text shown above the slot grid; the page stays visible |
-| **Empty view** | `binder.slots.length === 0` | "No cards in this view." (e.g. all sections excluded) |
+| **Empty view** | `binder.slots.length === 0`, no search, "Missing only" off | EmptyState "No cards in this view." (every section excluded) |
+| **Search matches nothing** | `binder.slots.length === 0` with a search | EmptyState "No cards match “&lt;query&gt;”." with a **Clear search** button |
+| **Nothing missing** | `binder.slots.length === 0` with "Missing only" on | Success-toned EmptyState "Nothing missing here." with a **Show every card** button that turns the filter off |
 
 ---
 

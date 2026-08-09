@@ -3,7 +3,7 @@ name: run-tests
 description: Run PokeDumpster's test tiers in order of speed — the tight local dev loop. Stops on the first failure.
 user-invocable: true
 disable-model-invocation: false
-argument-hint: "[tier]   (cargo | lint | frontend | ci | ui | full)"
+argument-hint: "[tier]   (cargo | lint | frontend | visual | ci | ui | full)"
 ---
 
 # Run Tests
@@ -21,8 +21,9 @@ the faster sub-tiers you want during normal editing.
 |-----|------|------|------|
 | `cargo` *(default)* | `cargo test` | none | ~5 s |
 | `lint` | `cargo clippy --all-targets -- -D warnings` then `cargo fmt --check` | none | ~15 s |
-| `frontend` | `cd frontend && npm run check && npm run build` | Node | ~15 s |
-| `ci` | `bash deploy/ci.sh` — the full local CI loop (Rust gates + frontend + a `--test` container smoke test + intents harness if browsers exist) | Podman | ~3–8 min |
+| `frontend` | `cd frontend && npm test && npm run check && npm run build` | Node | ~15 s |
+| `visual` | `bash tests/visual/run.sh` — screenshot every route at 1440 and 768 against a throwaway `--test` instance, diff against the committed baselines | Podman + browsers | ~4 min |
+| `ci` | `bash deploy/ci.sh` — the full local CI loop (Rust gates + frontend + a `--test` container smoke test + the visual gate) | Podman | ~5–10 min |
 | `ui` | the Playwright intents harness against a running instance | container + browsers + `ANTHROPIC_API_KEY` for vision/generation modes | minutes |
 | `full` | `cargo` → `lint` → `frontend` → `ci`, in order | Podman | ~10 min |
 
@@ -34,7 +35,7 @@ Pick the tier from `$ARGUMENTS`; default `cargo`.
 
 ### 2. Pre-flight
 
-- `ci` / `full`: confirm `podman` is on PATH. If not, report and stop.
+- `ci` / `full` / `visual`: confirm `podman` is on PATH. If not, report and stop.
 - `ui`: confirm an instance is running — `podman container exists systemd-pkdump-<instance>` (default instance `ci` or `integration-test`). If none, tell the user to `bash deploy/setup.sh <name> --test && systemctl --user start pkdump-<name>` and stop.
 
 ### 3. Run
@@ -44,7 +45,8 @@ foreground — they finish in seconds. Slow tiers (`ci`, `ui`, `full`) run in
 the **background** so you can monitor:
 
 ```bash
-bash deploy/ci.sh 2>&1          # tier: ci  — run_in_background: true
+bash deploy/ci.sh 2>&1            # tier: ci      — run_in_background: true
+bash tests/visual/run.sh 2>&1     # tier: visual  — run_in_background: true
 ```
 
 Never pipe a backgrounded command through `tail`/`grep` — it buffers and
@@ -63,6 +65,11 @@ on failure — the exact failing command and error lines. If a tier fails,
 **stop**; do not run later tiers (unless `full` was requested, which already
 stops internally on first failure). For a failing `ci` run, suggest
 `/fix-ci`.
+
+A failing `visual` tier is never "just flaky" — back-to-back runs differ by
+zero pixels. Report which routes moved and point at the review workflow in
+`tests/visual/README.md`. **Never run `--update` to make it pass**; approving
+a baseline is the user's call, after they have looked at the diff.
 
 ## Key rules
 

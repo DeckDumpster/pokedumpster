@@ -47,7 +47,7 @@ The page has no inputs, buttons, modals, or mutations.
 |-------|-----------|------------|
 | **Loading** | While `api.batchDetail()` runs | "Loading…" muted text |
 | **Error** | The fetch rejects | "Failed to load batch: {message}" |
-| **Empty batch** | `detail.cards.length === 0` | "No cards in this batch." (header and metadata still render) |
+| **Empty batch** | `detail.cards.length === 0` | EmptyState "No cards in this batch." (header and metadata still render) |
 
 ---
 

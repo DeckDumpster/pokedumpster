@@ -80,6 +80,19 @@ podman tag pkdump:latest "pkdump:${INSTANCE}"
 
 echo "==> Installing Quadlet unit..."
 mkdir -p "$QUADLET_DIR"
+# Re-running setup.sh is how unit-file changes reach an existing instance, and
+# the port must survive that. Without this, `setup.sh prod` (no port) rewrites
+# prod's Quadlet with a RANDOM host port and the address everything reaches it
+# on changes — an outage caused by refreshing the units. An existing instance
+# keeps the port it already publishes unless one is passed explicitly.
+if [ "$PORT" = "0" ] && [ -f "${QUADLET_DIR}/${SERVICE_NAME}.container" ]; then
+    EXISTING_PORT="$(sed -n 's|^PublishPort=\([0-9]\{1,\}\):8080$|\1|p' \
+        "${QUADLET_DIR}/${SERVICE_NAME}.container" | head -1)"
+    if [ -n "$EXISTING_PORT" ]; then
+        PORT="$EXISTING_PORT"
+        echo "    Keeping the port '${INSTANCE}' already publishes: ${PORT}"
+    fi
+fi
 # PORT=0 -> ":8080" lets Podman pick a free host port.
 if [ "$PORT" = "0" ]; then
     PORT_MAPPING=":8080"
@@ -162,8 +175,14 @@ if [ ! -f "${LS_CONF_DIR}/litestream.env" ]; then
 # Litestream S3 target + AWS profile for instance '${INSTANCE}'. Fill CHANGE_ME.
 LITESTREAM_S3_BUCKET=CHANGE_ME
 LITESTREAM_S3_REGION=us-west-2
-LITESTREAM_S3_PATH=${INSTANCE}/collection
-LITESTREAM_DB_PATH=/data/collection.sqlite
+# The sidecar replicates EVERY tenants/*.sqlite and derives each tenant's prefix
+# from its filename, so this is the parent prefix, not one database's:
+#   <LITESTREAM_S3_PATH>/<tenant>.sqlite   (see deploy/litestream.yml)
+LITESTREAM_S3_PATH=${INSTANCE}/tenants
+LITESTREAM_TENANTS_DIR=/data/tenants
+# Empty = real S3, resolved from the pinned region. Only tests point this
+# elsewhere (tests/litestream/run.sh at a throwaway MinIO).
+LITESTREAM_S3_ENDPOINT=
 AWS_PROFILE=pkdump
 EOF
     chmod 600 "${LS_CONF_DIR}/litestream.env"
@@ -226,8 +245,11 @@ seed_from_fixture() {
     # shellcheck disable=SC2064
     trap "podman rm -f '$temp' >/dev/null 2>&1 || true" RETURN
 
+    # Tenant collection DBs live under /data/tenants (deploy/TENANTS.md); the
+    # catalog stays at the root of the data dir, shared by every tenant.
+    podman exec "$temp" mkdir -p /data/tenants
     podman cp "$shared"     "${temp}:/data/shared.sqlite"
-    podman cp "$collection" "${temp}:/data/collection.sqlite"
+    podman cp "$collection" "${temp}:/data/tenants/collection.sqlite"
     podman rm -f "$temp" >/dev/null
     trap - RETURN
     echo "    Fixture data installed."

@@ -49,7 +49,7 @@ editing card contents, and deletion happen on the binder detail page.
 | State | Condition | Appearance |
 |-------|-----------|------------|
 | **Loading** | While `api.binders()` runs on mount | "Loading…" muted text |
-| **Empty** | `binders.length === 0` after load | "No binders yet. Create one above." |
+| **Empty** | `binders.length === 0` after load | EmptyState "No binders yet." — "A binder files cards you own into pages — a master set, a trade folder, whatever sits on your shelf. Name one above to create your first." |
 | **Error** | A load or create fails | Red error text below the create form; the form stays usable |
 | **Populated** | Binders exist | The grid of binder tiles |
 

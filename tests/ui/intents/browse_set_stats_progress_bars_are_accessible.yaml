@@ -1,0 +1,12 @@
+# Scenario: Every meter on the set stats page is a progressbar to assistive tech
+
+# Related: browse_master_set_completion_stats_visible, browse_set_stats_rarity_split_order
+
+description: >
+  On the "151" set stats page every progress meter announces itself as a
+  progress bar. The Completion card has three — "Base set", "Numbered set"
+  and "Master set" — and the Rarity split table has one per rarity row, named
+  for its tier. Each one reports the owned count as its current value against
+  the total as its maximum, so a screen-reader user hears "Base set, 10 of
+  13" rather than an unlabelled graphic. Every fill is the same green the
+  /browse set tiles use for the identical figures; none of them is crimson.

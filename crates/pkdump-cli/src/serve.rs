@@ -7,6 +7,21 @@
 use std::net::IpAddr;
 use std::path::PathBuf;
 
+use pkdump_server::ServeConfig;
+
+/// Environment variable form of `--multi-tenant`, for the container
+/// deployment, which passes configuration as env and not as argv.
+const MULTITENANT_ENV: &str = "PKDUMP_MULTITENANT";
+
+/// The second opt-in: multi-tenant bound somewhere other than loopback.
+/// Without it the server refuses that combination outright rather than
+/// warning about it (`pkdump_server::check_bind`).
+///
+/// Deliberately env-only, with no `--allow-insecure-bind` twin. Exposing an
+/// unauthenticated resolver should not be one tab-completion away on a
+/// command line; whoever means it can spell it out.
+const MULTITENANT_INSECURE_BIND_ENV: &str = "PKDUMP_MULTITENANT_INSECURE_BIND";
+
 /// Arguments for `pkdump serve`.
 #[derive(clap::Args)]
 pub struct ServeArgs {
@@ -23,21 +38,102 @@ pub struct ServeArgs {
     /// `$PKDUMP_STATIC_DIR`, else `frontend/build`.
     #[arg(long, value_name = "DIR")]
     static_dir: Option<PathBuf>,
+
+    /// Serve every tenant, resolving each request to one of them by its
+    /// `x-pkdump-tenant` header, instead of serving only `$PKDUMP_USER`.
+    ///
+    /// OFF by default and it must stay off in production: nothing
+    /// authenticates the header, so with this on any caller may name any
+    /// tenant. Also settable as `PKDUMP_MULTITENANT=1`. Combined with a
+    /// non-loopback `--host` the server refuses to start unless
+    /// `PKDUMP_MULTITENANT_INSECURE_BIND=1` is also set. See
+    /// `deploy/TENANTS.md`.
+    #[arg(long)]
+    multi_tenant: bool,
 }
 
 /// Execute `pkdump serve`. Database paths come from `PKDUMP_HOME` /
 /// `PKDUMP_USER` (the shared catalog and the active user's collection).
 pub fn run(args: ServeArgs) -> anyhow::Result<()> {
-    let data_dir = pkdump_db::pkdump_home()?;
-    let shared_db = pkdump_db::shared_db_path()?;
-    let user_db = pkdump_db::user_db_path(&pkdump_db::current_user())?;
-    let static_dir = args.static_dir.unwrap_or_else(|| {
-        std::env::var("PKDUMP_STATIC_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("frontend/build"))
-    });
+    let tenant = pkdump_db::current_user();
+    let cfg = ServeConfig {
+        user_db: pkdump_db::user_db_path(&tenant)?,
+        tenants_dir: pkdump_db::tenants_dir()?,
+        tenant,
+        shared_db: pkdump_db::shared_db_path()?,
+        data_dir: pkdump_db::pkdump_home()?,
+        static_dir: args.static_dir.unwrap_or_else(|| {
+            std::env::var("PKDUMP_STATIC_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("frontend/build"))
+        }),
+        host: args.host,
+        port: args.port,
+        multi_tenant: args.multi_tenant || env_opt_in(MULTITENANT_ENV),
+        // Same strict helper as the flag above, on purpose: a second parsing
+        // path is how `=0` gets read as "on" again.
+        allow_insecure_bind: env_opt_in(MULTITENANT_INSECURE_BIND_ENV),
+    };
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(pkdump_server::serve(
-        user_db, shared_db, static_dir, data_dir, args.host, args.port,
-    ))
+    runtime.block_on(pkdump_server::serve(cfg))
+}
+
+/// Whether `name` is set to an affirmative value: `1`, `true` or `yes`,
+/// case-insensitively. Anything else — unset, empty, `0`, `false`, or a
+/// typo — is not opting in.
+///
+/// Deliberately not clap's `env`, which treats a flag's variable as set by
+/// its mere presence: `PKDUMP_MULTITENANT=0` reading as "on" is not a
+/// surprise this particular switch can afford, since it is the only thing
+/// keeping an unauthenticated resolver out of the request path.
+fn env_opt_in(name: &str) -> bool {
+    matches!(
+        std::env::var(name)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_an_affirmative_value_opts_in() {
+        // `cargo test` is threaded and the environment is process-global, so
+        // this test owns one variable no other test touches.
+        const VAR: &str = "PKDUMP_TEST_OPT_IN";
+        for on in ["1", "true", "TRUE", "yes", "Yes"] {
+            unsafe { std::env::set_var(VAR, on) };
+            assert!(env_opt_in(VAR), "{on:?} should opt in");
+        }
+        for off in ["", "0", "false", "no", "off", "maybe"] {
+            unsafe { std::env::set_var(VAR, off) };
+            assert!(!env_opt_in(VAR), "{off:?} must not opt in");
+        }
+        unsafe { std::env::remove_var(VAR) };
+        assert!(!env_opt_in(VAR), "unset must not opt in");
+    }
+
+    /// The insecure-bind opt-in reads through the same strict helper — a
+    /// looser second path is exactly how `PKDUMP_MULTITENANT_INSECURE_BIND=0`
+    /// would come to mean "yes, expose every collection".
+    #[test]
+    fn the_insecure_bind_opt_in_uses_the_same_strict_parse() {
+        // No other test touches this variable, and `run` (its only real
+        // reader) is never called from the test binary.
+        for off in ["", "0", "false", "no", "off"] {
+            unsafe { std::env::set_var(MULTITENANT_INSECURE_BIND_ENV, off) };
+            assert!(
+                !env_opt_in(MULTITENANT_INSECURE_BIND_ENV),
+                "{off:?} must not open a non-loopback multi-tenant bind"
+            );
+        }
+        unsafe { std::env::set_var(MULTITENANT_INSECURE_BIND_ENV, "1") };
+        assert!(env_opt_in(MULTITENANT_INSECURE_BIND_ENV));
+        unsafe { std::env::remove_var(MULTITENANT_INSECURE_BIND_ENV) };
+        assert!(!env_opt_in(MULTITENANT_INSECURE_BIND_ENV), "unset is off");
+    }
 }

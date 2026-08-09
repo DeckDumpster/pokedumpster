@@ -655,45 +655,45 @@
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	h2 {
 		font-size: 0.8rem;
 		text-transform: uppercase;
-		color: #888;
+		color: var(--color-text-subtle);
 		margin: 1.2rem 0 0.4rem;
 	}
 	h3 {
 		font-size: 0.72rem;
 		text-transform: uppercase;
-		color: #e9a045;
+		color: var(--color-warning-text);
 		margin: 0.9rem 0 0.3rem;
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.muted a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.muted a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.hint {
 		font-size: 0.82rem;
-		color: #8fb7e0;
-		background: #16213e;
-		border: 1px solid #0f3460;
+		color: var(--color-info-text);
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
 		padding: 0.5rem 0.7rem;
 		max-width: 640px;
 	}
 	.subhint {
 		font-size: 0.78rem;
-		color: #8a8aa0;
+		color: var(--color-text-subtle);
 		margin: 0 0 0.3rem;
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.form {
 		display: flex;
@@ -706,14 +706,14 @@
 		flex-direction: column;
 		gap: 0.3rem;
 		font-size: 0.85rem;
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	select,
 	textarea {
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		color: #e0e0e0;
+		color: var(--color-text);
 		padding: 0.5rem;
 		font: inherit;
 	}
@@ -729,35 +729,35 @@
 	}
 	.actions button {
 		padding: 0.5rem 1rem;
-		background: #0f3460;
+		background: var(--color-info-surface);
 		border: none;
 		border-radius: 6px;
-		color: #e0e0e0;
+		color: var(--color-text);
 		cursor: pointer;
 	}
 	.actions button:hover:not(:disabled) {
-		background: #e94560;
+		background: var(--color-accent);
 	}
 	.actions button:disabled {
 		opacity: 0.5;
 		cursor: default;
 	}
 	.commit {
-		background: #e94560 !important;
+		background: var(--color-accent) !important;
 	}
 	.commit:disabled {
-		background: #0f3460 !important;
+		background: var(--color-info-surface) !important;
 	}
 	.result {
 		margin: 1rem 0;
 		padding: 0.7rem 1rem;
-		background: #16213e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
 		border-radius: 8px;
 	}
 	.result a,
 	.result strong {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.summary {
 		font-size: 0.95rem;
@@ -771,34 +771,34 @@
 	.seltools button {
 		padding: 0.28rem 0.6rem;
 		font-size: 0.75rem;
-		background: #16213e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
 		border-radius: 5px;
-		color: #cfd6e6;
+		color: var(--color-text-muted);
 		cursor: pointer;
 	}
 	.seltools button:hover {
-		border-color: #e94560;
-		color: #fff;
+		border-color: var(--color-border-accent);
+		color: var(--color-text-strong);
 	}
 	.seltools button.warn {
-		border-color: #e9a045;
-		color: #e9a045;
+		border-color: var(--color-warning);
+		color: var(--color-warning-text);
 	}
 	.seltools button.warn:hover {
-		background: #e9a045;
-		color: #16213e;
+		background: var(--color-warning);
+		color: var(--color-on-warning);
 	}
 	.pane {
 		margin: 1.4rem 0;
 		padding: 0 0 0.4rem;
-		border-top: 2px solid #0f3460;
+		border-top: 2px solid var(--color-border);
 	}
 	.pane-head {
 		display: flex;
 		align-items: baseline;
 		gap: 0.6rem;
-		color: #e0e0e0;
+		color: var(--color-text);
 		font-size: 0.9rem;
 	}
 	.counts {
@@ -806,13 +806,13 @@
 		text-transform: none;
 	}
 	.ok {
-		color: #6bd968;
+		color: var(--color-success-text);
 	}
 	.miss {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.sel {
-		color: #8fb7e0;
+		color: var(--color-info-text);
 	}
 	table {
 		width: 100%;
@@ -822,14 +822,14 @@
 	th {
 		text-align: left;
 		padding: 0.35rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.72rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.35rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	th.chk,
 	td.chk {
@@ -849,27 +849,27 @@
 		padding: 0.05rem 0.4rem;
 		font-size: 0.68rem;
 		border-radius: 999px;
-		background: #3a2f16;
-		color: #e9a045;
-		border: 1px solid #e9a045;
+		background: var(--color-warning-surface);
+		color: var(--color-warning-text);
+		border: 1px solid var(--color-warning);
 		vertical-align: middle;
 	}
 	.reason {
-		color: #e9a045;
+		color: var(--color-warning-text);
 	}
 	.queuelink a {
 		display: inline-block;
 		padding: 0.4rem 0.8rem;
-		background: #3a2f16;
-		border: 1px solid #e9a045;
+		background: var(--color-warning-surface);
+		border: 1px solid var(--color-warning);
 		border-radius: 6px;
-		color: #e9a045;
+		color: var(--color-warning-text);
 		text-decoration: none;
 		font-size: 0.88rem;
 	}
 	.queuelink a:hover {
-		background: #e9a045;
-		color: #16213e;
+		background: var(--color-warning);
+		color: var(--color-on-warning);
 	}
 	.parkprompt {
 		display: flex;
@@ -878,27 +878,27 @@
 		flex-wrap: wrap;
 		margin: 1rem 0;
 		padding: 0.7rem 1rem;
-		background: #16213e;
-		border: 1px solid #e9a045;
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-warning);
 		border-radius: 8px;
 		font-size: 0.9rem;
 	}
 	.parkprompt strong {
-		color: #e9a045;
+		color: var(--color-warning-text);
 	}
 	.parkprompt button {
 		padding: 0.4rem 0.9rem;
-		background: #e9a045;
+		background: var(--color-warning);
 		border: none;
 		border-radius: 6px;
-		color: #16213e;
+		color: var(--color-on-warning);
 		cursor: pointer;
 		font-weight: 600;
 	}
 	.parkprompt button.ghost {
 		background: transparent;
-		border: 1px solid #0f3460;
-		color: #cfd6e6;
+		border: 1px solid var(--color-border);
+		color: var(--color-text-muted);
 		font-weight: 400;
 	}
 	.parkprompt button:disabled {
@@ -908,19 +908,19 @@
 	.matchbtn {
 		padding: 0.22rem 0.6rem;
 		font-size: 0.75rem;
-		background: #16213e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
 		border-radius: 5px;
-		color: #cfd6e6;
+		color: var(--color-text-muted);
 		cursor: pointer;
 		white-space: nowrap;
 	}
 	.matchbtn:hover {
-		border-color: #e94560;
-		color: #fff;
+		border-color: var(--color-border-accent);
+		color: var(--color-text-strong);
 	}
 	.pickrow td {
-		background: #12182e;
+		background: var(--color-surface-sunken);
 		padding: 0.2rem 0.4rem;
 	}
 </style>

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { count } from '$lib/format';
+	import { Button, EmptyState } from '$lib/components/ui';
 	import type { Batch } from '$lib/types/Batch';
 
 	let batches = $state<Batch[]>([]);
@@ -33,7 +34,14 @@
 {:else if error}
 	<p class="error">Failed to load batches: {error}</p>
 {:else if batches.length === 0}
-	<p class="muted">No batches yet.</p>
+	<EmptyState
+		title="No batches yet."
+		description="A batch is written for you every time cards enter the collection — nothing to record until the first ones do."
+	>
+		{#snippet action()}
+			<Button href="/browse">Browse sets</Button>
+		{/snippet}
+	</EmptyState>
 {:else}
 	<label class="filter">
 		Type
@@ -42,45 +50,57 @@
 			{#each types as t (t)}<option value={t}>{t}</option>{/each}
 		</select>
 	</label>
-	<table>
-		<thead>
-			<tr><th>Type</th><th>Name</th><th>Cards</th><th>When</th></tr>
-		</thead>
-		<tbody>
-			{#each shown as batch (batch.id)}
-				<tr>
-					<td><a href="/batches/{batch.id}">{batch.batch_type}</a></td>
-					<td>{batch.name ?? '—'}</td>
-					<td>{count(batch.card_count)}</td>
-					<td>{batch.created_at.slice(0, 16).replace('T', ' ')}</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
+	{#if shown.length === 0}
+		<EmptyState
+			size="sm"
+			title="No {typeFilter} batches."
+			description="Every other type is still here — clear the filter to see them."
+		>
+			{#snippet action()}
+				<Button variant="ghost" size="sm" onclick={() => (typeFilter = '')}>Clear filter</Button>
+			{/snippet}
+		</EmptyState>
+	{:else}
+		<table>
+			<thead>
+				<tr><th>Type</th><th>Name</th><th>Cards</th><th>When</th></tr>
+			</thead>
+			<tbody>
+				{#each shown as batch (batch.id)}
+					<tr>
+						<td><a href="/batches/{batch.id}">{batch.batch_type}</a></td>
+						<td>{batch.name ?? '—'}</td>
+						<td>{count(batch.card_count)}</td>
+						<td>{batch.created_at.slice(0, 16).replace('T', ' ')}</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	{/if}
 {/if}
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.filter {
 		display: inline-flex;
 		gap: 0.4rem;
 		align-items: center;
 		font-size: 0.85rem;
-		color: #888;
+		color: var(--color-text-subtle);
 		margin-bottom: 0.5rem;
 	}
 	select {
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
+		color: var(--color-text);
 		border-radius: 6px;
 		padding: 0.2rem;
 	}
@@ -92,19 +112,19 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 </style>

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
+	import { Button, EmptyState } from '$lib/components/ui';
 	import type { Batch } from '$lib/types/Batch';
 	import type { BatchDetail } from '$lib/types/BatchDetail';
 
@@ -52,7 +53,14 @@
 {#if loading}
 	<p class="muted">Loading…</p>
 {:else if batches.length === 0}
-	<p class="muted">No activity yet.</p>
+	<EmptyState
+		title="No activity yet."
+		description="Nothing has been added to the collection, so there's no history to walk back through. Page through a set's binder and this fills in."
+	>
+		{#snippet action()}
+			<Button href="/browse">Browse sets</Button>
+		{/snippet}
+	</EmptyState>
 {:else}
 	<ul class="timeline">
 		{#each batches as batch (batch.id)}
@@ -69,7 +77,11 @@
 					{#if !d}
 						<p class="muted indent">Loading…</p>
 					{:else if d.cards.length === 0}
-						<p class="muted indent">No cards.</p>
+						<EmptyState
+							size="sm"
+							title="No cards in this batch."
+							description="The run was recorded, but nothing came out of it."
+						/>
 					{:else}
 						<ul class="cards">
 							{#each d.cards as card (card.id)}
@@ -90,14 +102,14 @@
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 		margin-bottom: 0.25rem;
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.indent {
 		padding-left: 1.5rem;
@@ -107,7 +119,7 @@
 		padding: 0;
 	}
 	.timeline > li {
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	.head {
 		display: flex;
@@ -116,29 +128,29 @@
 		width: 100%;
 		background: none;
 		border: none;
-		color: #e0e0e0;
+		color: var(--color-text);
 		cursor: pointer;
 		padding: 0.6rem 0.25rem;
 		text-align: left;
 		font: inherit;
 	}
 	.head:hover {
-		background: rgba(233, 69, 96, 0.06);
+		background: var(--color-surface-accent-wash);
 	}
 	.caret {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.type {
-		color: #e94560;
+		color: var(--color-text-accent);
 		font-weight: 600;
 	}
 	.name {
 		flex: 1;
-		color: #aaa;
+		color: var(--color-text-subtle);
 	}
 	.count,
 	.when {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 	}
 	.cards {
@@ -151,13 +163,13 @@
 		font-size: 0.9rem;
 	}
 	.cardmeta {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.8rem;
 	}
 	a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 </style>

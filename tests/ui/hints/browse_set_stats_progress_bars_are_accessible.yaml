@@ -1,0 +1,28 @@
+start_page: /browse/sv3pt5/stats
+involves:
+  - "lib/components/ui/ProgressBar.svelte renders div.track[role=progressbar] with aria-valuenow/min/max + aria-label"
+  - "Completion card: three ProgressBar size=md tone=complete inside div.metrics, label='Base set'|'Numbered set'|'Master set', hint='{owned} / {total} · {pct}%'"
+  - "Rarity split: one ProgressBar tone=complete labelHidden per row, label={r.rarity}, inside div.pcell as :global(.rbar)"
+  - "tone=complete resolves the fill to --color-progress-fill (green), NOT the primitive's default accent (crimson)"
+fixture_data:
+  set: "151 (sv3pt5)"
+  collection: >
+    8 sv3pt5 copies registered to Master Set: 151 via binder_click. Analytics
+    reports base 10/13, numbered 10/13, master 12/20, and seven rarity rows
+    (Common, Uncommon, Rare, Double Rare, Illustration Rare, Special
+    Illustration Rare, Hyper Rare).
+notes: >
+  1. Navigate to /browse/sv3pt5/stats and wait for the Completion card. 2.
+  Assert [role=progressbar] resolves to 10 elements — three completion meters
+  plus one per rarity row. Before pd-ifhu this page hand-rolled
+  `<div class="bar"><span style="width:%">` and the count was ZERO, so a count
+  assertion is the regression guard. 3. For the three completion meters,
+  assert aria-label is exactly "Base set" / "Numbered set" / "Master set" and
+  that aria-valuenow <= aria-valuemax with aria-valuemin "0". 4. Assert each
+  rarity row's progressbar is aria-labelled with the tier name shown in that
+  row's Rarity cell, and that no visible caption duplicates it inside the
+  Progress cell (labelHidden). 5. Assert the computed backgroundColor of every
+  .fill matches --color-progress-fill, and that none equals --color-accent —
+  this is the /browse-to-/browse/[set] colour agreement (pd-2lk2), not just a
+  tidy-up. 6. Do not hard-code the counts; read owned/total from the row's own
+  Owned and Total cells. 7. Screenshot.

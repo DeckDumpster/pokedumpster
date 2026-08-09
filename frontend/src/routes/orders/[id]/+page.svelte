@@ -3,6 +3,7 @@
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
 	import { money } from '$lib/format';
+	import { EmptyState } from '$lib/components/ui';
 	import type { OrderDetail } from '$lib/types/OrderDetail';
 
 	let detail = $state<OrderDetail | null>(null);
@@ -70,23 +71,30 @@
 
 	{#if error}<p class="error">{error}</p>{/if}
 
-	<table>
-		<thead>
-			<tr><th>Name</th><th>Set</th><th>#</th><th>Variant</th><th>Paid</th><th>Status</th></tr>
-		</thead>
-		<tbody>
-			{#each detail.cards as card (card.id)}
-				<tr>
-					<td><a href="/card/{card.set_code}/{card.number}">{card.name}</a></td>
-					<td><a href="/browse/{card.set_code}">{card.set_name}</a></td>
-					<td>{card.number}</td>
-					<td>{variantLabel(card.variant)}</td>
-					<td>{money(card.purchase_price)}</td>
-					<td>{card.status}</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
+	{#if detail.cards.length === 0}
+		<EmptyState
+			title="No cards on this order."
+			description="The order was recorded without any lines — nothing here is waiting to arrive."
+		/>
+	{:else}
+		<table>
+			<thead>
+				<tr><th>Name</th><th>Set</th><th>#</th><th>Variant</th><th>Paid</th><th>Status</th></tr>
+			</thead>
+			<tbody>
+				{#each detail.cards as card (card.id)}
+					<tr>
+						<td><a href="/card/{card.set_code}/{card.number}">{card.name}</a></td>
+						<td><a href="/browse/{card.set_code}">{card.set_name}</a></td>
+						<td>{card.number}</td>
+						<td>{variantLabel(card.variant)}</td>
+						<td>{money(card.purchase_price)}</td>
+						<td>{card.status}</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	{/if}
 {/if}
 
 <style>
@@ -98,28 +106,28 @@
 		gap: 1rem;
 	}
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 		margin: 0;
 	}
 	.sub {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 		margin: 0.25rem 0 0;
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.received {
-		color: #9fe7a0;
+		color: var(--color-success-text);
 		font-size: 0.9rem;
 	}
 	button {
-		background: #e94560;
+		background: var(--color-accent);
 		border: none;
-		color: #fff;
+		color: var(--color-on-accent);
 		padding: 0.4rem 0.8rem;
 		border-radius: 6px;
 		cursor: pointer;
@@ -136,19 +144,19 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 </style>

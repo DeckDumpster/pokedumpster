@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { money, count } from '$lib/format';
+	import { Button, EmptyState } from '$lib/components/ui';
 	import type { Order } from '$lib/types/Order';
 
 	let orders = $state<Order[]>([]);
@@ -32,7 +33,14 @@
 {:else if error}
 	<p class="error">Failed to load orders: {error}</p>
 {:else if orders.length === 0}
-	<p class="muted">No orders yet. Import one from the link above.</p>
+	<EmptyState
+		title="No orders yet."
+		description="An order records what you bought, from whom and for how much, and keeps its cards marked as ordered until they arrive."
+	>
+		{#snippet action()}
+			<Button href="/ingest/order">Import an order</Button>
+		{/snippet}
+	</EmptyState>
 {:else}
 	<table>
 		<thead>
@@ -59,17 +67,17 @@
 		align-items: baseline;
 	}
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.btn {
-		background: #e94560;
-		color: #fff;
+		background: var(--color-accent);
+		color: var(--color-on-accent);
 		text-decoration: none;
 		padding: 0.4rem 0.8rem;
 		border-radius: 6px;
@@ -83,19 +91,19 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 </style>

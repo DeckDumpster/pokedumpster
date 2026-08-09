@@ -50,7 +50,8 @@ filter the list by batch type and drill into any batch's detail page.
 |-------|-----------|------------|
 | **Loading** | While `api.batches()` runs on mount | "Loading…" muted text |
 | **Error** | The fetch rejects | "Failed to load batches: {message}" |
-| **Empty** | `batches.length === 0` after load | "No batches yet." (the type filter is not shown) |
+| **Empty** | `batches.length === 0` after load | EmptyState "No batches yet." with a **Browse sets** button (the type filter is not shown) |
+| **Filtered to nothing** | A type filter matches no batch | Small EmptyState "No &lt;type&gt; batches." with a **Clear filter** button; the filter control stays |
 | **Empty filter result** | Batches exist but none match the chosen type | The table renders with no body rows |
 
 ---

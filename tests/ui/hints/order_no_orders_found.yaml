@@ -8,5 +8,5 @@ fixture_data:
 notes: >
   Navigate to /ingest/order. Fill the paste textarea with garbage text.
   Click "Parse". Verify no card lines were appended — the lines header
-  still reads "Cards (0/0 ready)" and the empty message "Add a line, or
-  paste order text above." is still shown.
+  still reads "Cards (0/0 ready)" and the empty state "No cards on this
+  order yet." is still shown.

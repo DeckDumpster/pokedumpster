@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
+	import { EmptyState, ProgressBar } from '$lib/components/ui';
 	import { money, count } from '$lib/format';
 	import type { SetAnalytics } from '$lib/types/SetAnalytics';
 
@@ -57,43 +58,12 @@
 		);
 	}
 
-	// Rarity-split table order. Listed rarities come first in this
-	// sequence; anything else falls in afterwards, alphabetised.
-	const RARITY_ORDER: Record<string, number> = {
-		Common: 0,
-		Uncommon: 1,
-		Rare: 2,
-		'Rare Holo': 3,
-		'Double Rare': 4,
-		'Illustration Rare': 5,
-		'Special Illustration Rare': 6,
-		'Ultra Rare': 7,
-		'Hyper Rare': 8,
-		'Mega Attack Rare': 9,
-		'Mega Hyper Rare': 10
-	};
-	// Upstream rarity strings are inconsistent — some are title-case
-	// ("Special Illustration Rare"), others are SCREAMING_SNAKE
-	// ("MEGA_ATTACK_RARE"). Normalize both into the same canonical form
-	// before ranking.
-	function canonicalRarity(r: string): string {
-		return r
-			.toLowerCase()
-			.replace(/_/g, ' ')
-			.split(' ')
-			.filter((w) => w.length > 0)
-			.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-			.join(' ');
-	}
-	const sortedRarities = $derived.by(() => {
-		if (!stats) return [];
-		const rank = (r: string): number => RARITY_ORDER[canonicalRarity(r)] ?? 100;
-		return [...stats.rarities].sort((a, b) => {
-			const ra = rank(a.rarity);
-			const rb = rank(b.rarity);
-			return ra !== rb ? ra - rb : a.rarity.localeCompare(b.rarity);
-		});
-	});
+	// Rarity order, canonical spelling and tier group all arrive on the
+	// API rows, read off the shared catalog's `rarities` table. This page
+	// used to carry its own RARITY_ORDER map and a canonicalRarity()
+	// normaliser — a second copy of a typology the catalog already owns,
+	// and one that only knew eleven of the fifty-four tiers (pd-xzea).
+	// `stats.rarities` is pre-sorted by rank; render it as it comes.
 
 	// Duplicates summary — owned_copies counts every physical card,
 	// owned_cards counts unique cards. Dupes = the difference. Cards
@@ -117,30 +87,13 @@
 	const maxCopies = $derived(
 		stats ? Math.max(1, ...stats.copy_counts.map((c) => c.copies)) : 1
 	);
-	function rarityColor(rarity: string | null): string {
-		if (!rarity) return '#3a3a52';
-		switch (canonicalRarity(rarity)) {
-			case 'Common':
-				return '#6a7280';
-			case 'Uncommon':
-				return '#5cb85c';
-			case 'Rare':
-				return '#4a8df0';
-			case 'Rare Holo':
-			case 'Double Rare':
-				return '#9c5fb5';
-			case 'Illustration Rare':
-				return '#f0c878';
-			case 'Special Illustration Rare':
-			case 'Ultra Rare':
-				return '#e94560';
-			case 'Hyper Rare':
-			case 'Mega Attack Rare':
-			case 'Mega Hyper Rare':
-				return '#ffd24a';
-			default:
-				return '#b88cc0';
-		}
+	// Which BUCKET a column belongs to is data (`rarity_grp`, straight off
+	// the catalog); which colour a bucket wears is a `.g-*` rule below,
+	// pointing at a --color-rarity-* role. Nothing here picks a colour —
+	// this only turns the group into a class name.
+	function rarityClass(grp: string | null, copies: number): string {
+		if (copies === 0) return 'g-none';
+		return `g-${grp ?? 'unranked'}`;
 	}
 </script>
 
@@ -162,18 +115,21 @@
 	<div class="cards">
 		<section class="card">
 			<h2>Completion</h2>
-			{#snippet bar(label: string, owned: number, total: number)}
-				<div class="metric">
-					<div class="metriclabel">
-						<span>{label}</span>
-						<span class="metricval">{count(owned)} / {count(total)} · {pct(owned, total)}%</span>
-					</div>
-					<div class="bar"><span style:width="{pct(owned, total)}%"></span></div>
-				</div>
-			{/snippet}
-			{@render bar('Base set', stats.base_owned_cards, stats.base_total_cards)}
-			{@render bar('Numbered set', stats.owned_cards, stats.total_cards)}
-			{@render bar('Master set', stats.owned_printings, stats.total_printings)}
+			<div class="metrics">
+				{#snippet bar(label: string, owned: number, total: number)}
+					<ProgressBar
+						size="md"
+						tone="complete"
+						{label}
+						hint="{count(owned)} / {count(total)} · {pct(owned, total)}%"
+						value={owned}
+						max={total}
+					/>
+				{/snippet}
+				{@render bar('Base set', stats.base_owned_cards, stats.base_total_cards)}
+				{@render bar('Numbered set', stats.owned_cards, stats.total_cards)}
+				{@render bar('Master set', stats.owned_printings, stats.total_printings)}
+			</div>
 		</section>
 
 		<section class="card">
@@ -238,11 +194,10 @@
 				     per-item state, so the index is a safe stable key. -->
 				{#each stats.copy_counts as c, i (i)}
 					<span
-						class="histo-col"
+						class="histo-col {rarityClass(c.rarity_grp, c.copies)}"
 						class:owned={c.copies > 0}
 						class:dupe={c.copies > 1}
 						style:height="{Math.max(2, (c.copies / maxCopies) * 100)}%"
-						style:background={c.copies > 0 ? rarityColor(c.rarity) : '#1f2640'}
 						title="#{c.number} · {c.rarity ?? 'Unknown'} · {c.copies} {c.copies === 1
 							? 'copy'
 							: 'copies'}"
@@ -255,7 +210,11 @@
 	<section class="card">
 		<h2>Rarity split</h2>
 		{#if stats.rarities.length === 0}
-			<p class="muted">No cards catalogued.</p>
+			<EmptyState
+				size="sm"
+				title="No cards catalogued."
+				description="This set has no cards in the shared catalog, so there is nothing to break down."
+			/>
 		{:else}
 			<table>
 				<thead>
@@ -268,14 +227,14 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each sortedRarities as r (r.rarity)}
+					{#each stats.rarities as r (r.rarity)}
 						<tr>
 							<td class="iconcol">
 								{#if rarityIconSrc(r.rarity)}
 									<img
 										class="rarityicon"
-										class:basic={isBasicRarity(canonicalRarity(r.rarity))}
-										src={rarityIconSrc(canonicalRarity(r.rarity))}
+										class:basic={isBasicRarity(r.rarity)}
+										src={rarityIconSrc(r.rarity)}
 										alt=""
 										onerror={(e) =>
 											((e.currentTarget as HTMLImageElement).style.display =
@@ -283,14 +242,19 @@
 									/>
 								{/if}
 							</td>
-							<td>{canonicalRarity(r.rarity)}</td>
+							<td>{r.rarity}</td>
 							<td>{count(r.owned_cards)}</td>
 							<td>{count(r.total_cards)}</td>
 							<td class="pcol">
 								<div class="pcell">
-									<div class="bar small">
-										<span style:width="{pct(r.owned_cards, r.total_cards)}%"></span>
-									</div>
+									<ProgressBar
+										class="rbar"
+										tone="complete"
+										label={r.rarity}
+										labelHidden
+										value={r.owned_cards}
+										max={r.total_cards}
+									/>
 									<span class="rpct">{pct(r.owned_cards, r.total_cards)}%</span>
 								</div>
 							</td>
@@ -310,27 +274,27 @@
 		gap: 1rem;
 	}
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 		margin: 0;
 	}
 	.series {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 		margin: 0.1rem 0 0;
 	}
 	.binderlink {
-		color: #e0e0e0;
+		color: var(--color-text);
 		font-size: 0.9rem;
 		white-space: nowrap;
 	}
 	.binderlink:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.cards {
 		display: grid;
@@ -339,8 +303,8 @@
 		margin: 1rem 0;
 	}
 	.card {
-		background: #16213e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-panel);
+		border: 1px solid var(--color-border);
 		border-radius: 10px;
 		padding: 1rem 1.2rem;
 		margin-bottom: 1rem;
@@ -348,35 +312,18 @@
 	h2 {
 		font-size: 0.8rem;
 		text-transform: uppercase;
-		color: #888;
+		color: var(--color-text-subtle);
 		margin: 0 0 0.8rem;
 	}
-	.metric {
-		margin-bottom: 0.8rem;
-	}
-	.metriclabel {
+	/* The three completion meters are ProgressBar; the route only says how
+	   they stack. Track, fill, thickness and the a11y attributes all come
+	   from the primitive — this page hand-rolled its own track/fill pair
+	   until pd-ifhu, which is why they were never progressbars to a screen
+	   reader. */
+	.metrics {
 		display: flex;
-		justify-content: space-between;
-		font-size: 0.85rem;
-		margin-bottom: 0.25rem;
-	}
-	.metricval {
-		color: #888;
-	}
-	.bar {
-		height: 8px;
-		background: #0f3460;
-		border-radius: 4px;
-		overflow: hidden;
-	}
-	.bar.small {
-		height: 6px;
-		flex: 1;
-	}
-	.bar span {
-		display: block;
-		height: 100%;
-		background: #e94560;
+		flex-direction: column;
+		gap: var(--space-3);
 	}
 	.figs {
 		display: flex;
@@ -389,12 +336,12 @@
 	.figval {
 		font-size: 1.4rem;
 		font-weight: 700;
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.figlabel {
 		font-size: 0.75rem;
 		text-transform: uppercase;
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	table {
 		width: 100%;
@@ -404,14 +351,14 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	/* Rarity glyph in its own column, right-aligned, so every rarity
 	   name in the next column starts on the same x-position. Glyph
@@ -440,11 +387,17 @@
 	.pcell {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
+		gap: var(--space-2);
+	}
+	/* The row's bar takes the slack the percentage doesn't. It carries no
+	   caption — the rarity is already two columns to the left — but keeps
+	   the tier as its accessible name via `labelHidden`. */
+	.pcell :global(.rbar) {
+		flex: 1;
 	}
 	.rpct {
-		color: #888;
-		font-size: 0.8rem;
+		color: var(--color-text-subtle);
+		font-size: var(--text-sm);
 		min-width: 2.5rem;
 		text-align: right;
 	}
@@ -452,7 +405,7 @@
 	   sized by flex so the whole set fits regardless of card count;
 	   each column's height is set inline as a percentage of the row. */
 	.histohint {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.8rem;
 		margin: 0 0 0.6rem;
 	}
@@ -462,7 +415,7 @@
 		gap: 1px;
 		height: 120px;
 		padding: 4px 0;
-		background: #0c1426;
+		background: var(--color-surface-well);
 		border-radius: 6px;
 	}
 	.histo-col {
@@ -475,7 +428,44 @@
 		filter: brightness(1.4);
 	}
 	.histo-col.dupe {
-		outline: 1px solid rgba(255, 255, 255, 0.25);
+		outline: 1px solid var(--color-border-focus);
 		outline-offset: -1px;
+	}
+	/* One rule per rarity group the catalog declares — the colour decision
+	   the route used to make in a TypeScript switch (pd-xzea). The buckets
+	   come from `rarities.grp` in shared.sqlite and arrive on the API row;
+	   all this does is spend the matching semantic role. A new group in
+	   data/rarities.json needs a role in tokens.css and a line here, and
+	   until it gets one it draws as unranked rather than as nothing. */
+	.histo-col.g-common {
+		background: var(--color-rarity-common);
+	}
+	.histo-col.g-uncommon {
+		background: var(--color-rarity-uncommon);
+	}
+	.histo-col.g-rare {
+		background: var(--color-rarity-rare);
+	}
+	.histo-col.g-promo {
+		background: var(--color-rarity-promo);
+	}
+	.histo-col.g-holo {
+		background: var(--color-rarity-holo);
+	}
+	.histo-col.g-ultra {
+		background: var(--color-rarity-ultra);
+	}
+	.histo-col.g-special {
+		background: var(--color-rarity-special);
+	}
+	.histo-col.g-secret {
+		background: var(--color-rarity-secret);
+	}
+	.histo-col.g-unranked {
+		background: var(--color-rarity-unranked);
+	}
+	/* Owned nothing — the column is the absence, whatever its rarity. */
+	.histo-col.g-none {
+		background: var(--color-chart-empty);
 	}
 </style>

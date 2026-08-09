@@ -1,0 +1,216 @@
+{
+	"$comment": [
+		"Every raw colour literal still living in frontend/src, mapped to the",
+		"semantic role it was serving. Two jobs:",
+		"",
+		"1. EVIDENCE. The token layer claims to cover every role the 89 distinct",
+		"   pre-token colours served. This is that claim, enumerated and tested:",
+		"   tokens.contrast.test.js fails if a literal in frontend/src has no",
+		"   entry here, or if an entry names a token that does not exist.",
+		"2. WORKLIST. The migration beads (collection, CardDetailView, sealed,",
+		"   browse, the rest) read the replacement off this file instead of each",
+		"   inventing its own. Where one literal served two roles, both are",
+		"   listed and `note` says which goes where.",
+		"",
+		"Entries are NOT pruned as migrations land — once frontend/src is clean",
+		"this file is the record of what became what, which is what a reviewer of",
+		"the last migration bead needs. Only unmapped literals fail the test.",
+		"",
+		"Exact hex is preserved where it already passed AA; a `note` flags every",
+		"place the replacement is deliberately a different value.",
+		"",
+		"MIGRATION COMPLETE (pd-eq99, 2026-08-03). frontend/src holds no literal",
+		"outside tokens.css, so job 2 — the worklist — is discharged and this file",
+		"is now purely job 1: the record. Where the last pass landed a literal",
+		"somewhere the earlier prediction did not anticipate, the entry below was",
+		"corrected to say where it ACTUALLY went, because a record that documents",
+		"an intention rather than an outcome is worse than none. Those corrections",
+		"are the ones carrying a `note` that names a call site."
+	],
+
+	"map": {
+		"#1a1a2e": { "tokens": ["--color-surface-page"] },
+		"#16213e": { "tokens": ["--color-surface-panel", "--color-surface-overlay"] },
+		"#20243a": {
+			"tokens": ["--color-surface-raised", "--color-border-subtle"],
+			"note": "Also appears once as a border-bottom; that use becomes --color-border-subtle."
+		},
+		"#1f2640": {
+			"tokens": ["--color-chart-empty"],
+			"note": "The set-completion grid's no-copies cell."
+		},
+		"#2a3050": { "tokens": ["--color-surface-raised"] },
+		"#12182e": { "tokens": ["--color-surface-sunken", "--color-control-surface"] },
+		"#0d1424": { "tokens": ["--color-surface-well"] },
+		"#0c1426": { "tokens": ["--color-surface-well"] },
+		"#0a0a1a": {
+			"tokens": ["--color-surface-inset", "--color-text-inverse"],
+			"note": "Used as a foreground once, over a bright collector-number badge — that is --color-text-inverse."
+		},
+		"#43344a": {
+			"tokens": ["--color-neutral-surface"],
+			"note": "The violet-tinted note callout in TcgExportModal; it was a one-off surface, not a role."
+		},
+
+		"#0f3460": {
+			"tokens": ["--color-border", "--color-info-surface", "--color-info-surface-hover", "--color-progress-track"],
+			"note": "The identity rule. Its uses as a solid section-bar FILL became --color-info-surface; borders stayed --color-border. Two exceptions the migration found: the three hand-rolled set-completion meters in /browse, /browse/[set] and /browse/[set]/stats are progress TRACKS and took --color-progress-track (matching the ProgressBar primitive, and the pairing this manifest already declared for them); and /browse's group-header hover fill took --color-info-surface-hover, which is this exact value. Note --color-control-border is deliberately NOT this value — see tokens.css."
+		},
+		"#2a2f4a": { "tokens": ["--color-border-subtle"] },
+		"#4a5680": {
+			"tokens": ["--color-border-strong", "--color-text-decorative"],
+			"note": "The breadcrumb separator glyph is --color-text-decorative."
+		},
+		"#3a3a52": { "tokens": ["--color-chart-unknown"] },
+		"#6a7280": {
+			"tokens": ["--color-chart-8"],
+			"note": "The Common bar in /browse/[set]/stats' rarity histogram. #3a3a52 (unknown rarity) is the one that took --color-chart-unknown; giving Common the same role would have erased the Common-vs-unknown distinction the histogram exists to show."
+		},
+
+		"#e0e0e0": { "tokens": ["--color-text"] },
+		"#fff": {
+			"tokens": ["--color-text-strong", "--color-on-accent", "--color-on-danger"],
+			"note": "White on a crimson fill was 3.83:1 and is the single most common AA failure in the app. On --color-accent it becomes --color-on-accent (dark ink, 5.02:1); on --color-danger it stays white (4.79:1)."
+		},
+		"#ddd": { "tokens": ["--color-text-muted"] },
+		"#ccc": { "tokens": ["--color-text-muted"] },
+		"#bbb": { "tokens": ["--color-text-muted"] },
+		"#aab": { "tokens": ["--color-text-muted"] },
+		"#cfd6e6": { "tokens": ["--color-text-muted"] },
+		"#b8c1d9": { "tokens": ["--color-text-muted"] },
+		"#b8bcd0": { "tokens": ["--color-text-muted"] },
+		"#cdd3ff": { "tokens": ["--color-text-muted"] },
+		"#c0d0f0": {
+			"tokens": ["--color-chart-8"],
+			"note": "A ValueHistoryChart series, not body text."
+		},
+		"#aaa": { "tokens": ["--color-text-subtle"] },
+		"#888": {
+			"tokens": ["--color-text-subtle", "--color-border-strong"],
+			"note": "134 uses, and 4.48:1 on the panel — one of the three documented AA failures. Replaced by --color-text-subtle at 6.10:1. Its single border-color use becomes --color-border-strong."
+		},
+		"#998": { "tokens": ["--color-text-subtle"] },
+		"#889": { "tokens": ["--color-text-subtle"] },
+		"#8aa": { "tokens": ["--color-text-subtle"] },
+		"#778": { "tokens": ["--color-text-subtle"] },
+		"#9aa0bd": { "tokens": ["--color-text-subtle"] },
+		"#8a8aa0": { "tokens": ["--color-text-subtle"] },
+		"#9ab3d8": { "tokens": ["--color-text-subtle"] },
+		"#b8859a": { "tokens": ["--color-text-subtle"] },
+		"#8899aa": { "tokens": ["--color-chart-axis"] },
+		"#777": { "tokens": ["--color-text-decorative"] },
+		"#666": { "tokens": ["--color-text-decorative"] },
+		"#555": { "tokens": ["--color-text-disabled"] },
+		"#6a6a80": { "tokens": ["--color-text-disabled"] },
+
+		"#e94560": {
+			"tokens": ["--color-accent", "--color-text-accent", "--color-border-accent", "--color-chart-1"],
+			"note": "175 uses. As a FILL or BORDER it is unchanged (--color-accent / --color-border-accent, still exactly #e94560). As TEXT it was 4.46:1 on the page and 4.15:1 on the panel — both documented AA failures — so foreground uses become --color-text-accent (#ff6b85, 6.25/5.82)."
+		},
+		"#ff6b85": { "tokens": ["--color-text-accent", "--color-link-hover"] },
+		"#e9456022": { "tokens": ["--color-surface-selected"] },
+
+		"#e9a045": { "tokens": ["--color-warning", "--color-warning-text"] },
+		"#e9a23b": { "tokens": ["--color-warning", "--color-warning-text"] },
+		"#e7732f": {
+			"tokens": ["--color-warning", "--color-warning-text"],
+			"note": "The bundle-tile treatment in /browse. As the tile border it is --color-warning (a 3:1 non-text indicator); as the tile title and the `provisional` badge it is text, so --color-warning-text."
+		},
+		"#e88a3a": { "tokens": ["--color-chart-3"] },
+		"#aa7733": { "tokens": ["--color-chart-3"] },
+		"#f0c878": {
+			"tokens": ["--color-warning-text", "--color-chart-3"],
+			"note": "Warning text everywhere in CSS; its two chart-palette uses (PriceChart, the Illustration Rare bar) are --color-chart-3."
+		},
+		"#e9c08a": { "tokens": ["--color-warning-text"] },
+		"#f0e4b8": { "tokens": ["--color-warning-text"] },
+		"#ffd66b": { "tokens": ["--color-warning-text", "--color-warning-border"] },
+		"#ffd24a": {
+			"tokens": ["--color-chart-7"],
+			"note": "Only ever the Hyper Rare bar in the rarity histogram — a categorical series, not warning text. Gold shifts to the lime step because --color-chart-3 (amber) is already spent on Illustration Rare."
+		},
+		"#3a2f16": { "tokens": ["--color-warning-surface"] },
+		"#5c3a1a": { "tokens": ["--color-warning-surface"] },
+		"#5a4a14": { "tokens": ["--color-warning-surface"] },
+		"#8c5a2a": { "tokens": ["--color-warning-border"] },
+		"#5a2f17": { "tokens": ["--color-warning-border"] },
+
+		"#9fe7a0": { "tokens": ["--color-success-text"] },
+		"#7ee8b0": { "tokens": ["--color-success-text"] },
+		"#6bd968": { "tokens": ["--color-success-text"] },
+		"#d8f3dc": { "tokens": ["--color-success-text"] },
+		"#2f9e54": { "tokens": ["--color-success"] },
+		"#4caf72": { "tokens": ["--color-progress-fill"] },
+		"#5cb85c": { "tokens": ["--color-chart-4"] },
+		"#8ac926": { "tokens": ["--color-chart-7"] },
+		"#1a5c3a": { "tokens": ["--color-success-surface"] },
+		"#2d6a4f": { "tokens": ["--color-success-surface"] },
+		"#2a8c5a": { "tokens": ["--color-success-border"] },
+
+		"#c0392b": {
+			"tokens": ["--color-danger"],
+			"note": "Destructive actions move onto the --pd-red-* ramp so 'delete' stops reading as 'brand'."
+		},
+		"#ff8a8a": { "tokens": ["--color-danger-text"] },
+		"#f08888": { "tokens": ["--color-danger-text"] },
+		"#ffd9d9": { "tokens": ["--color-danger-text"] },
+		"#5a1e1e": { "tokens": ["--color-danger-surface"] },
+		"#5c1a2a": { "tokens": ["--color-danger-surface"] },
+		"#8c2a3a": { "tokens": ["--color-danger-border"] },
+
+		"#78c8f0": { "tokens": ["--color-info-text"] },
+		"#8fb7e0": { "tokens": ["--color-info-text"] },
+		"#8fb7ff": { "tokens": ["--color-info-text"] },
+		"#6ab7ff": { "tokens": ["--color-info-text"] },
+		"#4a8df0": { "tokens": ["--color-info-text", "--color-chart-2"] },
+		"#5bc0de": { "tokens": ["--color-chart-6"] },
+		"#1a3a5c": { "tokens": ["--color-info-surface"] },
+		"#143b6d": {
+			"tokens": ["--color-info-surface-hover"],
+			"note": "Its only use was /browse's .grouphdr:hover. Collapsing it into --color-info-surface would have made the hover state identical to the rest state — the role exists so that affordance survives."
+		},
+		"#2a5a8c": {
+			"tokens": ["--color-info-border", "--color-info"],
+			"note": "As a solid info FILL it was 2.22:1 against the panel; --color-info is lightened to #3877ac (3.33:1) and keeps white text at 4.77:1. As a chip border it is unchanged."
+		},
+
+		"#a64ac9": { "tokens": ["--color-chart-5"] },
+		"#9c5fb5": { "tokens": ["--color-chart-5"] },
+		"#b88cc0": { "tokens": ["--color-chip-fallback"] },
+
+		"rgba(0, 0, 0, 0.25)": {
+			"tokens": ["--color-surface-shade", "--shadow-sm"],
+			"note": "--shadow-sm is where it lives as a shadow. Its two uses as a BACKGROUND — the match picker's variant pip, the backup banner's inline <code> — are a wash that sinks a chip into whatever surface it sits on, which is --color-surface-shade."
+		},
+		"rgba(0, 0, 0, 0.3)": { "tokens": ["--color-surface-shade"] },
+		"rgba(0, 0, 0, 0.4)": { "tokens": ["--shadow-md"] },
+		"rgba(0, 0, 0, 0.55)": { "tokens": ["--color-scrim"] },
+		"rgba(0, 0, 0, 0.6)": { "tokens": ["--color-scrim", "--shadow-lg"] },
+		"rgba(10, 10, 30, 0.75)": { "tokens": ["--color-scrim"] },
+		"rgba(15, 52, 96, 0.95)": { "tokens": ["--color-surface-sticky"] },
+
+		"rgba(233, 69, 96, 0.06)": { "tokens": ["--color-surface-accent-wash"] },
+		"rgba(233, 69, 96, 0.07)": { "tokens": ["--color-surface-accent-wash"] },
+		"rgba(233, 69, 96, 0.1)": { "tokens": ["--color-surface-accent-wash"] },
+		"rgba(233, 69, 96, 0.12)": { "tokens": ["--color-surface-selected"] },
+		"rgba(233, 69, 96, 0.14)": { "tokens": ["--color-surface-selected"] },
+		"rgba(233, 69, 96, 0.18)": { "tokens": ["--color-surface-selected"] },
+		"rgba(233, 69, 96, 0.2)": { "tokens": ["--color-surface-selected"] },
+		"rgba(233, 162, 59, 0.12)": { "tokens": ["--color-warning-surface"] },
+		"rgba(233, 162, 59, 0.4)": { "tokens": ["--color-warning-border"] },
+
+		"rgba(255, 255, 255, 0.25)": {
+			"tokens": ["--color-border-focus"],
+			"note": "Marks the selected cell in the set-completion grid — that is a focus/selection indicator, not a white outline."
+		},
+		"rgba(255, 255, 255, 0.7)": { "tokens": ["--shadow-text-halo"] },
+		"rgba(255, 255, 255, 0.18)": { "tokens": ["--gradient-foil-streak"] },
+		"rgba(255, 0, 0, 0.08)": { "tokens": ["--gradient-foil-spectrum"] },
+		"rgba(255, 165, 0, 0.08)": { "tokens": ["--gradient-foil-spectrum"] },
+		"rgba(255, 255, 0, 0.08)": { "tokens": ["--gradient-foil-spectrum"] },
+		"rgba(0, 200, 0, 0.08)": { "tokens": ["--gradient-foil-spectrum"] },
+		"rgba(0, 140, 255, 0.08)": { "tokens": ["--gradient-foil-spectrum"] },
+		"rgba(130, 0, 255, 0.08)": { "tokens": ["--gradient-foil-spectrum"] },
+		"rgba(255, 0, 200, 0.08)": { "tokens": ["--gradient-foil-spectrum"] }
+	}
+}

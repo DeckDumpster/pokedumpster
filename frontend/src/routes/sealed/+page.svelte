@@ -4,6 +4,7 @@
 	import { api } from '$lib/api';
 	import Pokeball from '$lib/components/Pokeball.svelte';
 	import SealedModal from '$lib/components/SealedModal.svelte';
+	import { Badge, Button, EmptyState, Field, Panel, Toolbar } from '$lib/components/ui';
 	import type { SealedEntry } from '$lib/types/SealedEntry';
 	import type { SealedProduct } from '$lib/types/SealedProduct';
 
@@ -144,6 +145,22 @@
 				return status.slice(0, 3).toUpperCase();
 		}
 	}
+	// Which Badge tone a status wears. Was three `.t-<status>` CSS blocks
+	// restating the same info/success/warning palettes by hand; the tone names
+	// a state and the Badge resolves the fill, text and rule.
+	// NOTE this is still display metadata living in the frontend, same smell as
+	// `statusBadge` above — filed as pd-ex95 (tag and tone belong beside the
+	// status in a table, the way variants.json sits beside a variant code).
+	const STATUS_TONE: Record<string, 'info' | 'success' | 'warning' | 'neutral'> = {
+		listed: 'info',
+		sold: 'success',
+		traded: 'success',
+		gifted: 'success',
+		opened: 'warning'
+	};
+	function statusTone(status: string): 'info' | 'success' | 'warning' | 'neutral' {
+		return STATUS_TONE[status] ?? 'neutral';
+	}
 	function value(e: SealedEntry): number | null {
 		return e.market_price != null ? e.market_price * e.quantity : null;
 	}
@@ -219,8 +236,8 @@
 	}}
 />
 
-<header class="topbar">
-	<div class="row row1">
+<Toolbar class="topbar" direction="column" align="stretch" gap="sm" wrap={false} sticky>
+	<Toolbar gap="sm" wrap={false}>
 		<a class="brand" href="/" aria-label="Home" title="Home">
 			<span class="brandmark"><Pokeball size={26} /></span>
 		</a>
@@ -234,21 +251,25 @@
 				bind:value={searchRaw}
 			/>
 			{#if searchRaw}
-				<button
+				<Button
+					variant="link"
 					class="searchclear"
-					type="button"
 					aria-label="Clear filter"
 					title="Clear"
-					onclick={() => (searchRaw = '')}>×</button
+					onclick={() => (searchRaw = '')}>×</Button
 				>
 			{/if}
 		</div>
-		<label class="alltoggle" title="Include opened, sold, traded, and gifted products">
-			<input type="checkbox" data-testid="show-all-toggle" bind:checked={showAll} />
-			Show disposed
-		</label>
-	</div>
-	<div class="row row2">
+		<Field
+			inline
+			type="checkbox"
+			label="Show disposed"
+			data-testid="show-all-toggle"
+			title="Include opened, sold, traded, and gifted products"
+			bind:checked={showAll}
+		/>
+	</Toolbar>
+	<Toolbar gap="sm" wrap={false}>
 		<div class="viewtoggle" role="group" aria-label="View">
 			<button
 				class:on={view === 'grid'}
@@ -266,27 +287,28 @@
 			>
 		</div>
 		<div class="burgerWrap">
-			<button
+			<Button
+				variant="link"
 				class="burger"
 				onclick={() => (menuOpen = !menuOpen)}
 				aria-label="Menu"
 				aria-expanded={menuOpen}
-				title="Menu">⋯</button
+				title="Menu">⋯</Button
 			>
 			{#if menuOpen}
-				<div class="menu" role="menu">
+				<Panel variant="overlay" elevation="md" padding="sm" class="menu" role="menu">
 					<button class="menuItem" onclick={openAdd}>+ Add sealed product</button>
 					<a class="menuItem" href="/api/export/collectr/sealed.csv" download onclick={closeMenu}
 						>Export sealed (Collectr)</a
 					>
-				</div>
+				</Panel>
 			{/if}
 		</div>
 		<span class="countline muted">
 			{count(shown.length)} sealed{#if totalValue > 0}, {money(totalValue)}{/if}
 		</span>
-	</div>
-</header>
+	</Toolbar>
+</Toolbar>
 
 {#if menuOpen}
 	<div class="menuBackdrop" role="presentation" onclick={closeMenu}></div>
@@ -297,26 +319,54 @@
 {#if loading}
 	<p class="muted">Loading…</p>
 {:else if shown.length === 0}
-	<p class="muted">
-		{#if query}No sealed products match <code>{searchRaw}</code>.{:else if showAll}No sealed products
-			yet. Add one from the ⋯ menu.{:else}No sealed products in your active inventory. Add one from
-			the ⋯ menu, or turn on “Show disposed”.{/if}
-	</p>
+	{#if query}
+		<EmptyState
+			title="No sealed products match “{searchRaw}”."
+			description={showAll
+				? 'Nothing in your sealed inventory matches, opened or otherwise.'
+				: 'Nothing in your active inventory matches — turn on “Show disposed” to search opened and sold product too.'}
+		/>
+	{:else if entries.length === 0}
+		<EmptyState
+			title="No sealed products yet."
+			description="Sealed tracks boxes, packs and ETBs as inventory rather than as cards — each one keeps its own quantity, cost and status."
+		>
+			{#snippet action()}
+				<Button onclick={openAdd}>Add sealed product</Button>
+			{/snippet}
+		</EmptyState>
+	{:else}
+		<EmptyState
+			title="Nothing sealed in your active inventory."
+			description="Everything you've logged has been opened or sold. Turn on “Show disposed” to see it, or add product you still have."
+		>
+			{#snippet action()}
+				<Button onclick={openAdd}>Add sealed product</Button>
+			{/snippet}
+		</EmptyState>
+	{/if}
 {:else if view === 'grid'}
+	{#snippet sortBtn(key: string, label: string)}
+		<Button
+			variant={sortKey === key ? 'primary' : 'ghost'}
+			size="sm"
+			class="sortbtn"
+			onclick={() => sortBy(key)}
+		>
+			{label}
+			{#if sortKey === key}<span class="btncaret">{sortDir === 'asc' ? '▲' : '▼'}</span>{/if}
+		</Button>
+	{/snippet}
 	<div class="gridsort">
-		{#snippet sortBtn(key: string, label: string)}
-			<button class="sortbtn" class:active={sortKey === key} onclick={() => sortBy(key)}>
-				{label}
-				{#if sortKey === key}<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>{/if}
-			</button>
-		{/snippet}
-		{@render sortBtn('product', 'Product')}
-		{@render sortBtn('set', 'Set')}
-		{@render sortBtn('category', 'Category')}
-		{@render sortBtn('qty', 'Qty')}
-		{@render sortBtn('market', 'Market')}
-		{@render sortBtn('value', 'Value')}
-		{@render sortBtn('date', 'Date')}
+		<Toolbar gap="sm">
+			{@render sortBtn('product', 'Product')}
+			{@render sortBtn('set', 'Set')}
+			{@render sortBtn('category', 'Category')}
+			{@render sortBtn('qty', 'Qty')}
+			{@render sortBtn('market', 'Market')}
+			{@render sortBtn('value', 'Value')}
+			{@render sortBtn('date', 'Date')}
+		</Toolbar>
 	</div>
 	<div class="cardgrid">
 		{#each sorted as e (e.id)}
@@ -331,8 +381,14 @@
 				{:else}
 					<div class="tilenoart">{e.name}</div>
 				{/if}
-				{#if e.quantity > 1}<span class="qtybadge">×{e.quantity}</span>{/if}
-				{#if statusBadge(e.status)}<span class="statusbadge t-{e.status}">{statusBadge(e.status)}</span>{/if}
+				{#if e.quantity > 1}
+					<Badge tone="info" variant="solid" size="sm" class="qtybadge">×{e.quantity}</Badge>
+				{/if}
+				{#if statusBadge(e.status)}
+					<Badge tone={statusTone(e.status)} shape="tag" size="sm" class="statusbadge"
+						>{statusBadge(e.status)}</Badge
+					>
+				{/if}
 			</button>
 		{/each}
 	</div>
@@ -367,9 +423,12 @@
 									<img class="cardthumb" src={e.image_url} alt="" loading="lazy" />
 								{/if}
 								<span class="namebody">
-									<span class="cardname">{e.name}</span>{#if statusBadge(e.status)}<span
-											class="tag stag t-{e.status}"
-											title={e.status}>{statusBadge(e.status)}</span
+									<span class="cardname">{e.name}</span>{#if statusBadge(e.status)}<Badge
+											tone={statusTone(e.status)}
+											shape="tag"
+											size="sm"
+											class="stag"
+											title={e.status}>{statusBadge(e.status)}</Badge
 										>{/if}
 								</span>
 							</div>
@@ -405,25 +464,40 @@
 
 {#if adding}
 	<div class="backdrop" role="presentation" onclick={() => (adding = false)}></div>
-	<div class="addmodal" role="dialog" aria-modal="true" aria-label="Add sealed product">
+	<div class="addmodal">
+		<Panel
+			variant="overlay"
+			elevation="lg"
+			padding="lg"
+			role="dialog"
+			aria-modal="true"
+			aria-label="Add sealed product"
+		>
 		<header class="addhead">
 			<h3>Add sealed product</h3>
-			<button class="x" onclick={() => (adding = false)} aria-label="Close">×</button>
+			<Button variant="link" class="x" onclick={() => (adding = false)} aria-label="Close"
+				>×</Button
+			>
 		</header>
 		{#if chosen}
 			<p class="chosen">{chosen.name}</p>
-			<label class="addlabel"
-				>Purchase price <input type="number" min="0" step="0.01" bind:value={addPrice} /></label
-			>
-			<div class="addrow">
-				<button class="link" onclick={() => (chosen = null)}>← Back</button>
-				<button class="primary" disabled={busy} onclick={confirmAdd}>Add to collection</button>
-			</div>
+			<Field
+				label="Purchase price"
+				type="number"
+				min="0"
+				step="0.01"
+				class="addfield"
+				bind:value={addPrice}
+			/>
+			<Toolbar class="addrow" justify="between" gap="sm">
+				<Button variant="link" onclick={() => (chosen = null)}>← Back</Button>
+				<Button disabled={busy} onclick={confirmAdd}>Add to collection</Button>
+			</Toolbar>
 		{:else}
-			<input
-				class="addsearch"
+			<Field
 				type="text"
 				placeholder="Search sealed products…"
+				class="addfield"
 				bind:value={addSearch}
 				oninput={runAddSearch}
 			/>
@@ -435,42 +509,51 @@
 					</button>
 				{/each}
 				{#if addSearch.trim().length >= 2 && results.length === 0}
-					<p class="muted">No matching products.</p>
+					<EmptyState
+						size="sm"
+						title="No matching products."
+						description="Search the product name as TCGplayer lists it — “Obsidian Flames Booster Box”."
+					/>
 				{/if}
 			</div>
 		{/if}
+		</Panel>
 	</div>
 {/if}
 
 <style>
+	/*
+		What is left here after the migration is layout and geometry: where a
+		box sits, how wide it is, what shape it holds. Every surface, fill,
+		rule, text colour, radius and spacing step comes from the semantic
+		token layer or from a primitive that owns it.
+
+		The remaining bespoke controls — the search field with its clear-X, the
+		grid/table segmented toggle, the burger menu's rows — are shapes the
+		primitive set does not have yet. They are shared verbatim with
+		/collection, so inventing a private variant here would be the second
+		pattern this bead is meant to avoid — filed as pd-5fki instead.
+
+		WHERE A PRIMITIVE IS PLACED. Svelte scopes a rule to the elements in
+		this file, and a `class` handed to a component lands on markup this
+		file does not own — so `.menu { position: absolute }` would compile to
+		a selector that matches nothing. Placement of a primitive is therefore
+		written as `:global()` nested under a scoped ancestor
+		(`.burgerWrap :global(.menu)`), and where no ancestor exists the
+		primitive gets a plain wrapper element that carries it. Never a bare
+		`:global(.menu)` — that leaks the rule to every route.
+	*/
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
-		padding: 0 0.7rem;
+		color: var(--color-danger-text);
+		padding: var(--space-0) var(--space-3);
 	}
 
-	/* --- DD-style top chrome (mirrors /collection) --------------------- */
-	.topbar {
-		position: sticky;
-		top: 0;
-		z-index: 50;
-		display: flex;
-		flex-direction: column;
-		gap: 0.3rem;
-		padding: 0.4rem 0.7rem 0.45rem;
-		background: #16213e;
-		border-bottom: 1px solid #0f3460;
-	}
-	.row {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-	}
-	.row2 {
-		justify-content: flex-start;
-	}
+	/* --- DD-style top chrome (mirrors /collection) ---------------------
+	   The band itself is Toolbar `sticky`: translucent chrome that lets rows
+	   show through rather than stamping an opaque panel across the page. */
 	.brand {
 		display: inline-flex;
 		align-items: center;
@@ -495,51 +578,36 @@
 	.search {
 		flex: 1;
 		min-width: 0;
-		padding: 0.45rem 2rem 0.45rem 0.6rem;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		border-radius: 6px;
-		color: #e0e0e0;
+		padding: var(--space-2) var(--space-8) var(--space-2) var(--space-2);
+		background: var(--color-control-surface);
+		border: 1px solid var(--color-control-border);
+		border-radius: var(--radius-md);
+		color: var(--color-control-text);
 		font: inherit;
 	}
-	.searchclear {
+	.search::placeholder {
+		color: var(--color-control-placeholder);
+	}
+	.search:focus-visible {
+		outline: none;
+		border-color: var(--color-border-focus);
+		box-shadow: var(--shadow-focus);
+	}
+	/* Geometry only — the Button primitive paints it. */
+	.searchwrap :global(.searchclear) {
 		position: absolute;
-		right: 0.4rem;
+		right: var(--space-2);
 		top: 50%;
 		transform: translateY(-50%);
 		width: 1.4rem;
 		height: 1.4rem;
-		padding: 0;
-		background: none;
-		border: none;
-		color: #888;
-		font-size: 1.1rem;
+		font-size: var(--text-xl);
 		line-height: 1;
-		border-radius: 50%;
-		cursor: pointer;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-	}
-	.searchclear:hover {
-		color: #e94560;
-		background: rgba(233, 69, 96, 0.12);
-	}
-	.alltoggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.3rem;
-		color: #888;
-		font-size: 0.85rem;
-		white-space: nowrap;
-		cursor: pointer;
-	}
-	.alltoggle input {
-		cursor: pointer;
+		border-radius: var(--radius-round);
 	}
 	.countline {
-		margin: 0 0 0 auto;
-		font-size: 0.85rem;
+		margin: var(--space-0) var(--space-0) var(--space-0) auto;
+		font-size: var(--text-md);
 	}
 	.tableScroll {
 		overflow-x: auto;
@@ -549,126 +617,94 @@
 	}
 	.viewtoggle button {
 		background: none;
-		border: 1px solid #0f3460;
-		color: #888;
-		padding: 0.25rem 0.55rem;
-		font-size: 1.1rem;
+		border: 1px solid var(--color-border);
+		color: var(--color-text-subtle);
+		padding: var(--space-1) var(--space-2);
+		font-size: var(--text-xl);
 		line-height: 1;
 		cursor: pointer;
 	}
 	.viewtoggle button:first-child {
-		border-radius: 6px 0 0 6px;
+		border-radius: var(--radius-md) 0 0 var(--radius-md);
 	}
 	.viewtoggle button:last-child {
-		border-radius: 0 6px 6px 0;
+		border-radius: 0 var(--radius-md) var(--radius-md) 0;
 		border-left: none;
 	}
 	.viewtoggle button.on {
-		background: #0f3460;
-		color: #e0e0e0;
+		background: var(--color-info-surface);
+		color: var(--color-text);
 	}
 	.burgerWrap {
 		position: relative;
 		display: inline-flex;
 	}
-	.burger {
-		background: none;
-		border: 1px solid transparent;
-		color: #888;
-		font-size: 1.3rem;
+	.burgerWrap :global(.burger) {
+		font-size: var(--text-2xl);
 		line-height: 1;
-		padding: 0.25rem 0.55rem;
-		cursor: pointer;
-		border-radius: 6px;
-	}
-	.burger:hover {
-		color: #e0e0e0;
-		border-color: #0f3460;
+		padding: var(--space-1) var(--space-2);
 	}
 	.menuBackdrop {
 		position: fixed;
 		inset: 0;
 		z-index: 49;
 	}
-	.menu {
+	/* Placement only; Panel `overlay` + elevation md is the popover surface. */
+	.burgerWrap :global(.menu) {
 		position: absolute;
-		top: calc(100% + 4px);
+		top: calc(100% + var(--space-1));
 		left: 0;
 		z-index: 60;
 		display: flex;
 		flex-direction: column;
 		min-width: 200px;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		border-radius: 8px;
-		padding: 0.3rem;
-		box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
 	}
 	.menuItem {
 		background: none;
 		border: none;
-		color: #e0e0e0;
+		color: var(--color-text);
 		text-align: left;
-		padding: 0.45rem 0.7rem;
+		padding: var(--space-2) var(--space-3);
 		font: inherit;
-		font-size: 0.9rem;
-		border-radius: 5px;
+		font-size: var(--text-lg);
+		border-radius: var(--radius-sm);
 		cursor: pointer;
 		text-decoration: none;
 		display: block;
 	}
 	.menuItem:hover {
-		background: #0f3460;
-		color: #e94560;
+		background: var(--color-info-surface);
+		color: var(--color-text-accent);
 	}
 
 	/* --- Grid view ----------------------------------------------------- */
+	/* The row's own Toolbar lays the buttons out; this places the row. */
 	.gridsort {
-		display: flex;
-		gap: 0.4rem;
-		align-items: center;
-		flex-wrap: wrap;
-		margin: 0.5rem 0.7rem;
-		font-size: 0.85rem;
+		margin: var(--space-2) var(--space-3);
 	}
-	.sortbtn {
-		background: #16213e;
-		border: 1px solid #0f3460;
-		color: #888;
-		border-radius: 6px;
-		padding: 0.3rem 0.7rem;
-		font: inherit;
-		cursor: pointer;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.3rem;
+	.caret {
+		color: var(--color-text-accent);
+		font-size: var(--text-xs);
+		margin-left: var(--space-0-5);
 	}
-	.sortbtn:hover {
-		border-color: #e94560;
-		color: #e0e0e0;
-	}
-	.sortbtn.active {
-		background: #e94560;
-		border-color: #e94560;
-		color: #fff;
-	}
-	.sortbtn .caret {
+	/* Inside a sort button the caret rides the button's own ink. */
+	.btncaret {
 		color: inherit;
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		opacity: 0.9;
 	}
 	.cardgrid {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-		gap: 0.5rem;
-		padding: 0 0.7rem 1rem;
+		gap: var(--space-2);
+		padding: var(--space-0) var(--space-3) var(--space-4);
 	}
 	.cardtile {
 		position: relative;
-		padding: 0;
+		padding: var(--space-0);
 		background: none;
 		border: 2px solid transparent;
-		border-radius: 8px;
+		border-radius: var(--radius-lg);
 		cursor: pointer;
 	}
 	.cardtile img {
@@ -676,8 +712,8 @@
 		display: block;
 		aspect-ratio: 1 / 1;
 		object-fit: contain;
-		background: #0d1424;
-		border-radius: 6px;
+		background: var(--color-surface-well);
+		border-radius: var(--radius-md);
 	}
 	.cardtile.dim img,
 	.cardtile.dim .tilenoart {
@@ -688,35 +724,24 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: #16213e;
-		border-radius: 6px;
-		color: #888;
-		font-size: 0.8rem;
-		padding: 0.5rem;
+		background: var(--color-surface-panel);
+		border-radius: var(--radius-md);
+		color: var(--color-text-subtle);
+		font-size: var(--text-sm);
+		padding: var(--space-2);
 		text-align: center;
 	}
-	.qtybadge {
+	/* Both badges are Badge primitives; the route only says where they sit. */
+	.cardtile :global(.qtybadge) {
 		position: absolute;
-		top: 4px;
-		right: 4px;
-		background: rgba(15, 52, 96, 0.95);
-		color: #fff;
-		font-size: 0.72rem;
-		font-weight: 700;
-		padding: 0.1rem 0.4rem;
-		border-radius: 999px;
+		top: var(--space-1);
+		right: var(--space-1);
 		pointer-events: none;
 	}
-	.statusbadge {
+	.cardtile :global(.statusbadge) {
 		position: absolute;
-		bottom: 4px;
-		left: 4px;
-		font-size: 0.62rem;
-		font-weight: 700;
-		text-transform: uppercase;
-		padding: 1px 5px;
-		border-radius: 4px;
-		border: 1px solid;
+		bottom: var(--space-1);
+		left: var(--space-1);
 		pointer-events: none;
 	}
 
@@ -724,8 +749,8 @@
 	table.dd {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 0.9rem;
-		margin-top: 0;
+		font-size: var(--text-md);
+		margin-top: var(--space-0);
 	}
 	table.dd th.colflex,
 	table.dd td.colflex {
@@ -733,15 +758,15 @@
 	}
 	table.dd th,
 	table.dd td {
-		padding: 0.35rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		padding: var(--space-1) var(--space-2);
+		border-bottom: 1px solid var(--color-border);
 		vertical-align: middle;
 	}
 	table.dd th {
 		text-align: left;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
-		font-size: 0.72rem;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
+		font-size: var(--text-xs);
 		text-transform: uppercase;
 		white-space: nowrap;
 	}
@@ -758,10 +783,12 @@
 		cursor: pointer;
 	}
 	table.dd tbody tr:hover {
-		background: rgba(233, 69, 96, 0.07);
+		background: var(--color-surface-accent-wash);
 	}
+	/* Disposed rows recede but stay content: the subtle step of the text
+	   ladder, not the decorative one (which is exempt from AA). */
 	table.dd tbody tr.dim {
-		color: #777;
+		color: var(--color-text-subtle);
 		opacity: 0.7;
 	}
 	table.dd tbody tr.dim img {
@@ -769,97 +796,65 @@
 	}
 	table.dd td.cat {
 		text-transform: capitalize;
-		color: #bbb;
+		color: var(--color-text-muted);
 	}
 	.pricebox {
 		display: inline-block;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		border-radius: 4px;
-		padding: 1px 6px;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		padding: var(--space-px) var(--space-1);
 		font-variant-numeric: tabular-nums;
 	}
 	.pricedash {
-		color: #555;
+		color: var(--color-text-disabled);
 	}
 	.sortable {
 		cursor: pointer;
 		user-select: none;
 	}
 	.sortable:hover {
-		color: #e0e0e0;
-	}
-	.caret {
-		color: #e94560;
-		font-size: 0.65rem;
-		margin-left: 0.15rem;
+		color: var(--color-text);
 	}
 	.qty {
-		font-weight: 600;
-		color: #e0e0e0;
+		font-weight: var(--weight-semibold);
+		color: var(--color-text);
 	}
 	.namecell {
 		display: flex;
 		align-items: center;
-		gap: 0.55rem;
+		gap: var(--space-2);
 		min-width: 0;
 	}
 	.cardthumb {
 		width: 46px;
 		height: 46px;
 		object-fit: contain;
-		border-radius: 3px;
+		border-radius: var(--radius-xs);
 		flex-shrink: 0;
-		background: #0d1424;
+		background: var(--color-surface-well);
 	}
 	.cardname {
-		font-weight: 500;
-		color: #e0e0e0;
+		font-weight: var(--weight-medium);
+		color: var(--color-text);
 	}
 	.namebody {
 		min-width: 0;
-		line-height: 1.25;
+		line-height: var(--leading-tight);
 	}
-
-	/* Inline status pills — same palette as /collection's .stag. */
-	.tag {
-		display: inline-block;
-		vertical-align: middle;
-		margin-left: 0.4rem;
-		padding: 1px 4px;
-		font-size: 0.62rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		border-radius: 3px;
-		border: 1px solid;
-		letter-spacing: 0.04em;
-		white-space: nowrap;
-	}
-	.t-listed {
-		background: #1a3a5c;
-		color: #78c8f0;
-		border-color: #2a5a8c;
-	}
-	.t-sold,
-	.t-traded,
-	.t-gifted {
-		background: #1a5c3a;
-		color: #7ee8b0;
-		border-color: #2a8c5a;
-	}
-	.t-opened {
-		background: #5c3a1a;
-		color: #f0c878;
-		border-color: #8c5a2a;
+	/* Inline status marker — a Badge `tag`, placed. */
+	.namebody :global(.stag) {
+		margin-left: var(--space-1);
 	}
 
 	/* --- Add-from-catalog modal ---------------------------------------- */
 	.backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--color-scrim);
 		z-index: 100;
 	}
+	/* Placement only; Panel `overlay` is the dialog surface. */
 	.addmodal {
 		position: fixed;
 		top: 50%;
@@ -868,10 +863,6 @@
 		z-index: 101;
 		width: 440px;
 		max-width: 92vw;
-		background: #16213e;
-		border: 2px solid #0f3460;
-		border-radius: 12px;
-		padding: 1.25rem;
 	}
 	.addhead {
 		display: flex;
@@ -879,29 +870,18 @@
 		align-items: baseline;
 	}
 	h3 {
-		margin: 0;
-		color: #e94560;
+		margin: var(--space-0);
+		color: var(--color-text-accent);
 	}
-	.x {
-		background: none;
-		border: none;
-		color: #888;
-		font-size: 1.4rem;
-		cursor: pointer;
+	.addhead :global(.x) {
+		font-size: var(--text-2xl);
 	}
-	.x:hover {
-		color: #e94560;
-	}
-	.addsearch,
-	.addmodal input[type='number'] {
+	.addmodal :global(.addfield) {
 		width: 100%;
-		padding: 0.5rem;
-		margin: 0.5rem 0;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		border-radius: 6px;
-		color: #e0e0e0;
-		box-sizing: border-box;
+		margin: var(--space-2) var(--space-0);
+	}
+	.addmodal :global(.addrow) {
+		margin-top: var(--space-2);
 	}
 	.list {
 		max-height: 300px;
@@ -912,55 +892,23 @@
 		justify-content: space-between;
 		width: 100%;
 		background: none;
-		color: #e0e0e0;
+		color: var(--color-text);
 		border: none;
-		border-bottom: 1px solid #0f3460;
-		padding: 0.5rem 0.25rem;
+		border-bottom: 1px solid var(--color-border);
+		padding: var(--space-2) var(--space-1);
 		text-align: left;
 		cursor: pointer;
 	}
 	.result:hover {
-		background: rgba(233, 69, 96, 0.1);
+		background: var(--color-surface-accent-wash);
 	}
 	.cat {
-		color: #888;
-		font-size: 0.8rem;
+		color: var(--color-text-subtle);
+		font-size: var(--text-sm);
 		text-transform: capitalize;
 	}
 	.chosen {
-		font-weight: 700;
-		color: #e94560;
-	}
-	.addlabel {
-		display: block;
-		font-size: 0.85rem;
-		color: #888;
-	}
-	.addrow {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-top: 0.5rem;
-	}
-	.link {
-		background: none;
-		border: none;
-		color: #888;
-		cursor: pointer;
-		padding: 0;
-	}
-	.link:hover {
-		color: #e94560;
-	}
-	.primary {
-		background: #e94560;
-		border: none;
-		color: #fff;
-		padding: 0.4rem 0.8rem;
-		border-radius: 6px;
-		cursor: pointer;
-	}
-	.primary:disabled {
-		opacity: 0.5;
+		font-weight: var(--weight-bold);
+		color: var(--color-text-accent);
 	}
 </style>

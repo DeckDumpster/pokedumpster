@@ -90,13 +90,20 @@ cargo run --bin pkdump -- import --json collection.json
 # Frontend — SvelteKit (Svelte 5, vite, adapter-static)
 cd frontend && npm install && npm run build
 cd frontend && npm run check     # svelte-check / TypeScript
+cd frontend && npm test          # design-token gates (WCAG AA contrast, layer
+                                 #   split, raw-colour + raw-dimension ratchets)
+
+# Visual regression — every route at 1440 and 768 against a throwaway
+# container instance. A pixel diff fails; approving one is explicit.
+bash tests/visual/run.sh         # check
+bash tests/visual/run.sh --update  # approve — see tests/visual/README.md
 
 # UI test harness — Playwright + intent YAMLs              (in progress)
 cd tests/ui && npm test
 ```
 
 `$PKDUMP_HOME` overrides the data dir (default `~/.pkdump/`).
-`$PKDUMP_USER` overrides the active user (default `collection`).
+`$PKDUMP_USER` overrides the active tenant (default `collection`).
 
 ## Architecture Overview
 
@@ -116,7 +123,8 @@ Cargo workspace, five crates (`crates/`):
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).
 - **pkdump-cli** — the `pkdump` binary; clap command tree
-  (`setup`, `data`, `serve`, `seed-fixture`, `db`, `export`, `import`).
+  (`setup`, `data`, `serve`, `seed-fixture`, `db`, `tenant`, `export`,
+  `import`).
 
 Frontend: SvelteKit (Svelte 5 runes mode) in `frontend/`, built static,
 served by `pkdump-server`. Generated TypeScript bindings live under
@@ -128,12 +136,33 @@ Two SQLite databases under the data dir:
   upstream. Rebuilt by `pkdump setup`. Opens with tuned PRAGMAs
   (WAL + `synchronous=NORMAL` + 64MB cache) so variant expansion stays
   fast (see `crates/pkdump-db/src/connection.rs`).
-- **&lt;user&gt;.sqlite** (default `collection.sqlite`) — per-user mutable
-  collection. The only thing worth backing up; replicated off-box to S3 by the
-  Litestream sidecar (6-month PITR — see `deploy/RESTORE.md`).
+- **tenants/&lt;tenant&gt;.sqlite** (default `tenants/collection.sqlite`) — one
+  mutable collection per tenant. The only thing worth backing up; replicated
+  off-box to S3 by the Litestream sidecar (6-month PITR — see
+  `deploy/RESTORE.md`).
 
 At runtime the user DB `ATTACH`es the shared DB read-only and exposes
-catalog tables through TEMP VIEWs so queries can join unqualified.
+catalog tables through TEMP VIEWs so queries can join unqualified. That
+ATTACH is identical for every tenant — the catalog is ONE copy on disk,
+joined per query, never denormalised per tenant.
+
+Provisioning is `pkdump tenant create <name>` / `pkdump tenant remove
+<name> --yes`; `pkdump tenant adopt` migrates a pre-`tenants/` data dir and
+`revert` rolls it back. Layout rationale + the production migration runbook:
+`deploy/TENANTS.md`.
+
+Tenant *resolution* lives in `pkdump-server/src/tenant.rs` and is **off by
+default**: `pkdump serve` opens the one collection named by `$PKDUMP_USER`
+and does not read the tenant header at all. `--multi-tenant` (or
+`PKDUMP_MULTITENANT=1`) switches on per-request resolution from the
+`x-pkdump-tenant` header. **Nothing authenticates that header** — identity is
+a separate epic — so the flag must stay off in production. That is enforced
+rather than trusted: with the flag on and a non-loopback `--host`, the server
+refuses to start unless `PKDUMP_MULTITENANT_INSECURE_BIND=1` is also set.
+Single-tenant mode is unaffected at any address. Isolation is
+structural: `AppState` holds no connection, `blocking()` takes the tenant from
+the request scope, and one connection per tenant is opened against that
+tenant's own file. See `deploy/TENANTS.md`.
 
 ## Deployment
 
@@ -299,6 +328,66 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
   recomputed in components.
 - Per-page leaf labels (e.g. set name in the breadcrumb) are pushed into
   `$lib/breadcrumbs.svelte` from the page's `$effect`.
+
+### Design tokens
+
+`frontend/src/lib/styles/tokens.css` is the only file in `frontend/src` that
+may contain a raw colour literal. It is imported once, from `+layout.svelte`.
+
+Two layers, and the split is load-bearing:
+
+- **Reference** (`--pd-crimson-500: #e94560`) — named for what a value *is*.
+  Theme-owned. **Components must never reference `--pd-*`.**
+- **Semantic** (`--color-accent: var(--pd-crimson-500)`) — named for what a
+  value *does*. This is the only layer components may use.
+
+A future re-skin is then a new reference block, not a refactor; light mode is
+the same mechanism (`:root[data-theme='light']`), designed for and deferred.
+
+`frontend/npm test` enforces it — and enforces WCAG AA on every pairing
+declared in `contrast-pairs.json`. Contrast is a test, not a review note: add
+a colour role that gets painted on a surface, add its pairing.
+`legacy-color-map.json` maps each raw colour still left in `frontend/src` to
+the role that replaces it; migrations read the replacement off that file
+rather than inventing one.
+
+`raw-color-budget.json` is the ratchet toward zero raw colour. It records how
+many literals each file still holds; the count may only go **down**. Exceed a
+budget and the test reads it as a regression; drop below it and the test fails
+too, printing the number to write. Migrating a file means lowering its entry
+in the same commit, and deleting the entry when it reaches zero. When the
+budget is empty the target is met and any literal anywhere fails the build.
+Never raise a budget — a value that has nowhere to live needs a semantic role
+in `tokens.css`, not an exception.
+
+Colour is not the whole layer. `tokens.css` also declares **space**
+(`--space-*`), **type** (`--text-*`), **radius** (`--radius-*`) and
+**elevation** (`--shadow-*`), and `raw-dimension-budget.json` is the same
+ratchet pointed at those: every `padding`/`margin`/`gap`, `font-size`,
+`border-radius` or `box-shadow` declaration that still spells out a length
+instead of spending a step. Same rules — down only, delete at zero, never
+raise. The unit is the *declaration*, not the literal, so `padding: 0.4rem
+0.6rem` is one. Unitless `0` doesn't count; a `calc()` multiplier over a token
+doesn't either. It was seeded at the counts of the day it landed and is
+deliberately not a migration — routes shed theirs as they get touched.
+
+### UI primitives
+
+`frontend/src/lib/components/ui/` is the visual vocabulary — `Panel`, `Button`,
+`Field`, `Badge`, `ProgressBar`, `SectionHeader`, `EmptyState`, `Toolbar`,
+`SearchField`, `Segmented`, `Menu`, re-exported from `$lib/components/ui`.
+Routes render; they do not decide surfaces, fills, rules or spacing.
+
+Every primitive is styled from the **semantic** token layer only — no colour
+literal, no `--pd-*`. A route that needs a variant a primitive lacks **adds the
+variant to the primitive**; the moment two routes patch the same primitive at
+the call site, the system is back to taste.
+
+`frontend/tests/primitives/` has one render test per primitive (renders,
+respects its variants, emits no hardcoded colour). It renders components
+server-side under Node's built-in test runner — no jsdom, no testing-library
+— via the loader hook in `frontend/tests/support/svelte-hooks.js`, which
+compiles `.svelte` on import (`npm test` wires it in with `--import`).
 
 ### Performance
 

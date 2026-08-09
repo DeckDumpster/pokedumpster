@@ -14,6 +14,7 @@
 	import PriceChart from './PriceChart.svelte';
 	import ManualPriceModal from './ManualPriceModal.svelte';
 	import MissingVariantModal from './MissingVariantModal.svelte';
+	import { Badge, Button, EmptyState, SectionHeader } from '$lib/components/ui';
 
 	// The card-detail body, shared by the /card/[set]/[number] route and the
 	// collection-page modal. Self-contained: it fetches its own data.
@@ -416,11 +417,11 @@
 
 			{#if parseObjArr<AbilityData>(card.abilities).length > 0}
 				<section class="cardSection">
-					<h2>Abilities</h2>
+					<SectionHeader title="Abilities" size="md" tone="accent" />
 					{#each parseObjArr<AbilityData>(card.abilities) as ab, i (i)}
 						<div class="abilityBlock">
 							<div class="abilityHead">
-								{#if ab.type}<span class="abilityType">{ab.type}</span>{/if}
+								{#if ab.type}<Badge tone="warning" shape="tag" size="sm">{ab.type}</Badge>{/if}
 								{#if ab.name}
 									<a class="facet abilityName" href={facetHref('ability', ab.name)} title="Find all cards with the “{ab.name}” ability">{ab.name}</a>
 								{/if}
@@ -433,7 +434,7 @@
 
 			{#if parseObjArr<AttackData>(card.attacks).length > 0}
 				<section class="cardSection">
-					<h2>Attacks</h2>
+					<SectionHeader title="Attacks" size="md" tone="accent" />
 					{#each parseObjArr<AttackData>(card.attacks) as att, i (i)}
 						<div class="attackBlock">
 							<div class="attackHead">
@@ -518,14 +519,16 @@
 	{#if error}<p class="error">{error}</p>{/if}
 
 	<section>
-		<div class="printings-head">
-			<h2>Printings</h2>
-			<button
-				class="add-missing"
-				onclick={() => (missingVariantOpen = true)}
-				title="Add a copy whose variant isn't yet in the catalog"
-			>+ Missing variant</button>
-		</div>
+		<SectionHeader title="Printings" size="md" tone="accent">
+			{#snippet actions()}
+				<Button
+					variant="ghost"
+					size="sm"
+					onclick={() => (missingVariantOpen = true)}
+					title="Add a copy whose variant isn't yet in the catalog">+ Missing variant</Button
+				>
+			{/snippet}
+		</SectionHeader>
 		<ul class="printings">
 			{#each visiblePrintings
 				.slice()
@@ -592,22 +595,27 @@
 	</section>
 
 	<section>
-		<div class="prices-head">
-			<h2>Price history</h2>
-			{#if hasHiddenSeries}
-				<label class="showall">
-					<input type="checkbox" bind:checked={showAllPrices} />
-					Show all variants
-				</label>
-			{/if}
-		</div>
+		<SectionHeader title="Price history" size="md" tone="accent">
+			{#snippet actions()}
+				{#if hasHiddenSeries}
+					<label class="showall">
+						<input type="checkbox" bind:checked={showAllPrices} />
+						Show all variants
+					</label>
+				{/if}
+			{/snippet}
+		</SectionHeader>
 		<PriceChart series={chartSeries} />
 	</section>
 
 	<section>
-		<h2>Your copies ({detail.copies.length})</h2>
+		<SectionHeader title="Your copies ({detail.copies.length})" size="md" tone="accent" />
 		{#if detail.copies.length === 0}
-			<p class="muted">You don't own this card yet.</p>
+			<EmptyState
+				size="sm"
+				title="You don't own this card yet."
+				description="Register a printing above and each copy you own lands here as its own row, with its own condition and location."
+			/>
 		{:else}
 			{#snippet savedTick(key: string)}
 				{#if savedKey === key}<span class="cellSaved" transition:fade={{ duration: 120 }}
@@ -650,7 +658,11 @@
 						{#each binders as b (b.id)}<option value="b:{b.id}">Binder: {b.name}</option>{/each}
 						{#each decks as d (d.id)}<option value="d:{d.id}">Deck: {d.name}</option>{/each}
 					</select>
-					<button class="bulkclear" onclick={() => (selectedCopies = new Set())}>Clear</button>
+					<span class="bulkclear">
+						<Button variant="ghost" size="sm" onclick={() => (selectedCopies = new Set())}
+							>Clear</Button
+						>
+					</span>
 				</div>
 			{/if}
 			<table>
@@ -785,10 +797,10 @@
 
 <style>
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-danger-text);
 	}
 	/* Inline per-control save confirmation: a small green ✓ that flashes in
 	   the top-right corner of the control just edited (pokedumpster-25r). */
@@ -798,21 +810,21 @@
 		right: 2px;
 		width: 15px;
 		height: 15px;
-		border-radius: 50%;
-		background: #2f9e54;
-		color: #fff;
+		border-radius: var(--radius-round);
+		background: var(--color-success);
+		color: var(--color-on-success);
 		font-size: 0.62rem;
 		line-height: 1;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 		/* Ring so it reads as a badge sitting over the select's corner. */
-		box-shadow: 0 0 0 2px #1a1a2e;
+		box-shadow: 0 0 0 2px var(--color-surface-page);
 		pointer-events: none;
 	}
 	.detail {
 		display: flex;
-		gap: 1.5rem;
+		gap: var(--space-6);
 		flex-wrap: wrap;
 		/* Centers each flex row, so when .info wraps below .art the lone
 		   card image sits in the middle of the viewport (mirrors how DD
@@ -822,7 +834,7 @@
 	.art img {
 		width: 320px;
 		max-width: 80vw;
-		border-radius: 12px;
+		border-radius: var(--radius-xl);
 	}
 	.noart {
 		width: 320px;
@@ -830,9 +842,9 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: #16213e;
-		border-radius: 12px;
-		color: #888;
+		background: var(--color-surface-panel);
+		border-radius: var(--radius-xl);
+		color: var(--color-text-subtle);
 	}
 	.info {
 		flex: 1;
@@ -846,12 +858,12 @@
 		margin-top: 1.2rem;
 	}
 	h1 {
-		color: #e94560;
-		margin: 0;
+		color: var(--color-text-accent);
+		margin: var(--space-0);
 	}
 	.sub {
-		color: #888;
-		margin: 0.25rem 0 1rem;
+		color: var(--color-text-subtle);
+		margin: var(--space-1) var(--space-0) var(--space-4);
 		display: inline-flex;
 		align-items: center;
 		gap: 0.35rem;
@@ -873,18 +885,18 @@
 		display: grid;
 		grid-template-columns: auto 1fr;
 		gap: 0.3rem 1rem;
-		margin: 0;
+		margin: var(--space-0);
 	}
 	dt {
-		color: #888;
-		font-size: 0.85rem;
+		color: var(--color-text-subtle);
+		font-size: var(--text-md);
 	}
 	dd {
-		margin: 0;
+		margin: var(--space-0);
 	}
 	.enr {
 		display: inline-flex;
-		gap: 0.25rem;
+		gap: var(--space-1);
 		align-items: center;
 	}
 	.energy {
@@ -898,12 +910,12 @@
 		color: inherit;
 		text-decoration: none;
 		cursor: pointer;
-		border-radius: 4px;
+		border-radius: var(--radius-sm);
 		padding: 1px 3px;
 	}
 	.facet:hover {
-		background: rgba(233, 69, 96, 0.18);
-		color: #e0e0e0;
+		background: var(--color-surface-selected);
+		color: var(--color-text);
 	}
 	.facet:hover .energy,
 	.facet:hover .setsym,
@@ -913,30 +925,25 @@
 	.evolink {
 		background: none;
 		border: none;
-		color: #e94560;
+		color: var(--color-link);
 		cursor: pointer;
 		font: inherit;
-		padding: 0;
+		padding: var(--space-0);
 		text-decoration: underline dotted;
 	}
 	.evolink:hover {
-		color: #ff6b85;
+		color: var(--color-link-hover);
 	}
 	.flavor {
 		font-style: italic;
-		color: #aaa;
-		margin: 1.5rem 0 0;
+		color: var(--color-text-subtle);
+		margin: var(--space-6) var(--space-0) var(--space-0);
 	}
 	section {
-		margin-top: 2rem;
-	}
-	h2 {
-		color: #e94560;
-		font-size: 1.1rem;
-		margin: 0 0 0.4rem;
+		margin-top: var(--space-8);
 	}
 	h3 {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 		margin: 0 0 0.3rem;
@@ -945,28 +952,20 @@
 	/* Abilities + attacks: compact card-style blocks. */
 	.abilityBlock,
 	.attackBlock {
-		border-left: 3px solid #0f3460;
+		border-left: 3px solid var(--color-border);
 		padding: 0.4rem 0.7rem;
 		margin-bottom: 0.6rem;
 	}
 	.abilityHead,
 	.attackHead {
 		display: flex;
-		gap: 0.5rem;
+		gap: var(--space-2);
 		align-items: center;
-		font-weight: 600;
-	}
-	.abilityType {
-		background: #5c3a1a;
-		color: #f0c878;
-		font-size: 0.7rem;
-		text-transform: uppercase;
-		padding: 1px 5px;
-		border-radius: 3px;
+		font-weight: var(--weight-semibold);
 	}
 	.abilityName,
 	.attackName {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.attackCost {
 		display: inline-flex;
@@ -974,13 +973,13 @@
 	}
 	.attackDamage {
 		margin-left: auto;
-		color: #e94560;
-		font-weight: 700;
+		color: var(--color-text-accent);
+		font-weight: var(--weight-bold);
 		font-variant-numeric: tabular-nums;
 	}
 	.cardText {
 		margin: 0.25rem 0 0;
-		color: #ccc;
+		color: var(--color-text-muted);
 		font-size: 0.88rem;
 		line-height: 1.4;
 	}
@@ -988,7 +987,7 @@
 	/* Weakness / Resistance / Retreat: three small cells side by side. */
 	.combat {
 		display: flex;
-		gap: 1.5rem;
+		gap: var(--space-6);
 		flex-wrap: wrap;
 	}
 	.combatCell {
@@ -999,51 +998,51 @@
 		display: inline-flex;
 		gap: 0.2rem;
 		align-items: center;
-		font-size: 0.95rem;
-		color: #ddd;
+		font-size: var(--text-lg);
+		color: var(--color-text-muted);
 	}
 	.wr-empty {
-		color: #555;
-		font-size: 0.95rem;
+		color: var(--color-text-disabled);
+		font-size: var(--text-lg);
 	}
 
 	/* Printings list — one row per variant with [- N +] stepper, mirroring
 	   the browse-page VariantModal so the same muscle memory works here. */
 	.printings {
 		list-style: none;
-		padding: 0;
-		margin: 0;
+		padding: var(--space-0);
+		margin: var(--space-0);
 		max-width: 480px;
 	}
 	.printings li {
 		display: grid;
 		grid-template-columns: 1fr auto auto auto auto;
 		align-items: center;
-		gap: 0.75rem;
+		gap: var(--space-3);
 		padding: 0.45rem 0;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	.manual-price {
 		background: none;
-		border: 1px solid #0f3460;
-		color: #888;
+		border: 1px solid var(--color-border);
+		color: var(--color-text-subtle);
 		width: 28px;
 		height: 28px;
-		border-radius: 6px;
+		border-radius: var(--radius-md);
 		cursor: pointer;
 		font: inherit;
-		font-size: 0.85rem;
+		font-size: var(--text-md);
 		line-height: 1;
 	}
 	.manual-price:hover {
-		border-color: #e94560;
-		color: #e94560;
+		border-color: var(--color-border-accent);
+		color: var(--color-text-accent);
 	}
 	.printings li.dim {
 		opacity: 0.5;
 	}
 	.printings .variant {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.vlabel {
 		display: flex;
@@ -1052,13 +1051,13 @@
 		min-width: 0;
 	}
 	.provenance {
-		color: #888;
-		font-size: 0.72rem;
+		color: var(--color-text-subtle);
+		font-size: var(--text-xs);
 		line-height: 1.25;
 	}
 	.printings .market {
-		color: #888;
-		font-size: 0.85rem;
+		color: var(--color-text-subtle);
+		font-size: var(--text-md);
 		font-variant-numeric: tabular-nums;
 	}
 	.tcgp-spacer {
@@ -1070,25 +1069,28 @@
 		align-items: center;
 	}
 	.step {
-		background: #0f3460;
+		background: var(--color-info-surface);
 		border: none;
-		color: #e0e0e0;
+		color: var(--color-text);
 		width: 30px;
 		height: 30px;
 		cursor: pointer;
-		font-size: 1.1rem;
+		font-size: var(--text-xl);
 		line-height: 1;
-		padding: 0;
+		padding: var(--space-0);
 		border-radius: 0;
 	}
 	.step:first-child {
-		border-radius: 6px 0 0 6px;
+		border-radius: var(--radius-md) 0 0 var(--radius-md);
 	}
 	.step:last-child {
-		border-radius: 0 6px 6px 0;
+		border-radius: 0 var(--radius-md) var(--radius-md) 0;
 	}
 	.step:hover:not(:disabled) {
-		background: #e94560;
+		background: var(--color-accent);
+		/* The label has to leave the crimson fill legible — same pairing the
+		   Button primitive uses for `variant="primary"`. */
+		color: var(--color-on-accent);
 	}
 	.step:disabled {
 		opacity: 0.35;
@@ -1100,11 +1102,11 @@
 		line-height: 30px;
 		text-align: center;
 		font-size: 0.9rem;
-		color: #888;
-		background: #1a1a2e;
+		color: var(--color-text-subtle);
+		background: var(--color-surface-page);
 	}
 	.count.has {
-		color: #9fe7a0;
+		color: var(--color-success-text);
 	}
 
 	table {
@@ -1127,22 +1129,22 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 		/* Anchor the inline save-confirmation ✓ to each cell. */
 		position: relative;
 	}
 	select {
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
-		border-radius: 6px;
+		background: var(--color-control-surface);
+		border: 1px solid var(--color-control-border);
+		color: var(--color-control-text);
+		border-radius: var(--radius-md);
 		padding: 0.15rem;
 		font: inherit;
 	}
@@ -1151,35 +1153,29 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.5rem;
+		gap: var(--space-2);
 		margin-bottom: 0.6rem;
 		padding: 0.5rem 0.6rem;
-		background: rgba(233, 69, 96, 0.1);
-		border: 1px solid #0f3460;
-		border-radius: 8px;
+		background: var(--color-surface-accent-wash);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-lg);
 		max-width: 640px;
 	}
 	.copybulk .count {
-		color: #e0e0e0;
-		font-size: 0.85rem;
-		font-weight: 600;
+		color: var(--color-text);
+		font-size: var(--text-md);
+		font-weight: var(--weight-semibold);
 	}
 	.copybulk select {
 		max-width: 12rem;
 	}
+	/* Pushes the Clear control to the far end of the bulk bar. The layout
+	   lives on this wrapper rather than on the Button, because a class
+	   handed to a primitive is a call-site restyle — the thing the UI
+	   vocabulary exists to prevent. */
 	.bulkclear {
 		margin-left: auto;
-		background: none;
-		border: 1px solid #0f3460;
-		color: #aaa;
-		border-radius: 6px;
-		padding: 0.2rem 0.6rem;
-		cursor: pointer;
-		font: inherit;
-	}
-	.bulkclear:hover {
-		color: #e0e0e0;
-		border-color: #e94560;
+		display: inline-flex;
 	}
 	.selcol {
 		text-align: center;
@@ -1189,7 +1185,7 @@
 		cursor: pointer;
 	}
 	.copyrow.picked td {
-		background: rgba(233, 69, 96, 0.12);
+		background: var(--color-surface-selected);
 	}
 
 	/* Keep each copy and its note visually together: drop the divider between
@@ -1202,38 +1198,25 @@
 		padding-bottom: 0.5rem;
 	}
 	.noteinput {
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
-		color: #e0e0e0;
-		border-radius: 6px;
+		background: var(--color-control-surface);
+		border: 1px solid var(--color-control-border);
+		color: var(--color-control-text);
+		border-radius: var(--radius-md);
 		padding: 0.25rem 0.45rem;
 		font: inherit;
 		width: 100%;
 		box-sizing: border-box;
 	}
 	.noteinput::placeholder {
-		color: #555;
+		color: var(--color-control-placeholder);
 	}
 	.tcgp {
-		font-size: 0.8rem;
-		color: #4a8df0;
+		font-size: var(--text-sm);
+		color: var(--color-info-text);
 		text-decoration: none;
 	}
 	.tcgp:hover {
-		color: #e94560;
-	}
-	button {
-		background: #e94560;
-		border: none;
-		color: #fff;
-		padding: 0.25rem 0.6rem;
-		border-radius: 6px;
-		cursor: pointer;
-		font-size: 0.8rem;
-	}
-	button:disabled {
-		opacity: 0.5;
-		cursor: default;
+		color: var(--color-text-accent);
 	}
 
 	/* On a phone the data tables reflow to stacked label:value blocks so
@@ -1285,8 +1268,8 @@
 			display: block;
 		}
 		tr {
-			border: 1px solid #0f3460;
-			border-radius: 8px;
+			border: 1px solid var(--color-border);
+			border-radius: var(--radius-lg);
 			margin-bottom: 0.6rem;
 			padding: 0.1rem 0.6rem;
 		}
@@ -1294,14 +1277,14 @@
 			display: flex;
 			justify-content: space-between;
 			align-items: center;
-			gap: 1rem;
+			gap: var(--space-4);
 			padding: 0.35rem 0;
 			border-bottom: none;
 		}
 		td::before {
 			content: attr(data-label);
-			color: #888;
-			font-size: 0.72rem;
+			color: var(--color-text-subtle);
+			font-size: var(--text-xs);
 			text-transform: uppercase;
 			flex-shrink: 0;
 		}
@@ -1314,43 +1297,16 @@
 		}
 	}
 
-	/* Printings section header now carries the 'missing variant' button. */
-	.printings-head {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 0.75rem;
-	}
-	/* Price-history header with the owned-only / show-all toggle. */
-	.prices-head {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 0.75rem;
-	}
+	/* Price-history header's owned-only / show-all toggle, rendered into
+	   SectionHeader's `actions` slot. */
 	.showall {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.35rem;
-		color: #888;
-		font-size: 0.8rem;
+		color: var(--color-text-subtle);
+		font-size: var(--text-sm);
 		cursor: pointer;
 		white-space: nowrap;
-	}
-	.add-missing {
-		background: #16213e;
-		border: 1px dashed #0f3460;
-		color: #888;
-		border-radius: 6px;
-		padding: 0.3rem 0.6rem;
-		font: inherit;
-		font-size: 0.8rem;
-		cursor: pointer;
-	}
-	.add-missing:hover {
-		border-color: #e94560;
-		border-style: solid;
-		color: #e94560;
 	}
 
 	/* User-added printings (the missing-variant escape hatch) render
@@ -1367,8 +1323,8 @@
 		display: inline-block;
 		width: 8px;
 		height: 8px;
-		border-radius: 50%;
-		background: #777;
+		border-radius: var(--radius-round);
+		background: var(--color-text-decorative);
 		flex-shrink: 0;
 	}
 </style>

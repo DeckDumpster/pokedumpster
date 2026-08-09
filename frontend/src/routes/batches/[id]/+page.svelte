@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
+	import { EmptyState } from '$lib/components/ui';
 	import type { BatchDetail } from '$lib/types/BatchDetail';
 
 	let detail = $state<BatchDetail | null>(null);
@@ -36,7 +37,10 @@
 	{#if detail.batch.notes}<p class="notes">{detail.batch.notes}</p>{/if}
 
 	{#if detail.cards.length === 0}
-		<p class="muted">No cards in this batch.</p>
+		<EmptyState
+			title="No cards in this batch."
+			description="The run was recorded but added nothing — every copy it created has since been deleted, or it never resolved a card."
+		/>
 	{:else}
 		<table>
 			<thead>
@@ -60,23 +64,23 @@
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 		margin-bottom: 0.25rem;
 	}
 	.sub {
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 0.85rem;
 		margin: 0;
 	}
 	.notes {
-		color: #aaa;
+		color: var(--color-text-subtle);
 		font-style: italic;
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	table {
 		width: 100%;
@@ -87,19 +91,19 @@
 	th {
 		text-align: left;
 		padding: 0.4rem 0.6rem;
-		border-bottom: 2px solid #0f3460;
-		color: #888;
+		border-bottom: 2px solid var(--color-border);
+		color: var(--color-text-subtle);
 		font-size: 0.75rem;
 		text-transform: uppercase;
 	}
 	td {
 		padding: 0.4rem 0.6rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 	}
 	a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 </style>

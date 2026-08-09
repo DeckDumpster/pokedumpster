@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { variantLabel } from '$lib/variants.svelte';
+	import { EmptyState } from '$lib/components/ui';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 
 	let {
@@ -99,7 +100,15 @@
 					{#if whereOf(row)}<span class="where">{whereOf(row)}</span>{/if}
 				</label>
 			{/each}
-			{#if filtered.length === 0}<p class="muted">No matching cards.</p>{/if}
+			{#if filtered.length === 0}
+				<EmptyState
+					size="sm"
+					title={search.trim() ? 'No matching cards.' : 'Your collection is empty.'}
+					description={search.trim()
+						? 'The search matches card names only.'
+						: `Register the cards you own from a set's binder page — then they can be filed into this ${target.kind}.`}
+				/>
+			{/if}
 		</div>
 		<footer>
 			<span class="muted">{selected.size} selected</span>
@@ -114,7 +123,7 @@
 	.backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--color-scrim);
 		z-index: 100;
 	}
 	.modal {
@@ -128,8 +137,8 @@
 		max-height: 85vh;
 		display: flex;
 		flex-direction: column;
-		background: #16213e;
-		border: 2px solid #0f3460;
+		background: var(--color-surface-panel);
+		border: 2px solid var(--color-border);
 		border-radius: 12px;
 		padding: 1.25rem;
 	}
@@ -140,29 +149,29 @@
 	}
 	h3 {
 		margin: 0;
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.x {
 		background: none;
 		border: none;
-		color: #888;
+		color: var(--color-text-subtle);
 		font-size: 1.4rem;
 		cursor: pointer;
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.error {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.search {
 		width: 100%;
 		padding: 0.5rem;
 		margin: 0.75rem 0;
-		background: #1a1a2e;
-		border: 1px solid #0f3460;
+		background: var(--color-surface-page);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.list {
 		flex: 1;
@@ -174,22 +183,22 @@
 		gap: 0.5rem;
 		align-items: center;
 		padding: 0.35rem 0.4rem;
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 		cursor: pointer;
 	}
 	.row.sel {
-		background: rgba(233, 69, 96, 0.12);
+		background: var(--color-surface-selected);
 	}
 	.name {
 		flex: 1;
 	}
 	.meta {
 		font-size: 0.8rem;
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.where {
 		font-size: 0.7rem;
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	footer {
 		display: flex;
@@ -198,9 +207,9 @@
 		margin-top: 0.75rem;
 	}
 	button.primary {
-		background: #e94560;
+		background: var(--color-accent);
 		border: none;
-		color: #fff;
+		color: var(--color-on-accent);
 		padding: 0.45rem 0.9rem;
 		border-radius: 6px;
 		cursor: pointer;

@@ -1,5 +1,24 @@
 # Result — ATTACH-across-namespaces in self-hosted `sqld`
 
+> ## ⚠️ This path was NOT taken
+>
+> The libSQL/`sqld` + per-tenant-namespaces direction validated below was
+> **rejected**. The direction actually chosen is **file-per-tenant local SQLite
+> + Litestream multi-DB replication** — epic **pd-gckl** — which keeps the
+> current rusqlite stack and its connection-scoped `ATTACH` exactly as it is,
+> so the `cat.`-qualification sweep and async ripple costed below never has to
+> exist.
+>
+> These findings are kept because they are *why* that decision could be made.
+> Read them as evidence, not as a plan.
+>
+> **One statement below has been corrected.** The TEMP-VIEW follow-up
+> (spike 2) recommended attaching the catalog **once at connection open**.
+> Follow-up #2 — the Rust `libsql` client spike (spike 3) — **disproved that**:
+> attach must live inside each `transaction()`. Spike 2's recommendation was
+> written before spike 3 ran. Both are left standing, with the contradiction
+> marked in place; see "Recommended pattern for a libSQL/`sqld` port".
+
 **Issue:** pokedumpster-5jv · **Date:** 2026-06-06 · **Image:** `ghcr.io/tursodatabase/libsql-server:latest`
 
 ## Verdict: ✅ PASS (conditional on one config flag)
@@ -93,7 +112,7 @@ query unqualified" pattern (`crates/pkdump-db`) port to sqld?
 
 | Behavior | Result |
 |---|---|
-| ATTACH is **connection-scoped** (sticks after COMMIT; attach once per conn) | ✅ YES |
+| ATTACH is **connection-scoped** (sticks after COMMIT; attach once per conn) | ✅ YES **over raw Hrana only** — ❌ via the Rust `libsql` client (spike 3; see the correction below) |
 | `CREATE TEMP VIEW` supported | ❌ NO — *"unsupported statement"* (TEMP objects can't be replicated) |
 | `CREATE TEMPORARY VIEW` supported | ❌ NO — same |
 | `CREATE VIEW` (permanent) referencing `cat.*` | ❌ NO — SQLite: *"view cannot reference objects in database cat"* |
@@ -106,25 +125,51 @@ query unqualified" pattern (`crates/pkdump-db`) port to sqld?
 referencing an attached database. So there is no view layer that lets catalog
 tables be referenced unqualified.
 
-**But the foundation is solid:** ATTACH is *connection-scoped*. You attach the
-catalog **once** at connection open (`BEGIN; ATTACH "catalog" AS cat; COMMIT`),
-and every subsequent query on that connection sees `cat.*` — even outside a
-transaction.
+**And at this layer the foundation looked solid:** ATTACH measured as
+*connection-scoped* — attach the catalog **once** at connection open
+(`BEGIN; ATTACH "catalog" AS cat; COMMIT`) and every subsequent query on that
+connection saw `cat.*`, even outside a transaction.
 
-## Recommended pattern for a libSQL/sqld port
+> ### ⚠️ Correction — the paragraph above does not hold for the client we'd use
+>
+> **This spike (spike 2) measured the raw Hrana pipeline**, where a held baton
+> *is* the connection, so attach-at-open persisted. **Follow-up #2 below (spike
+> 3) re-ran the same question through the Rust `libsql` client** — the client
+> `crates/pkdump-db` would actually use — and found its mode A (ATTACH at
+> connection open, query in a separate later call) fails with `no such table:
+> cat.cards`. The remote `Connection` does not pin one Hrana stream across
+> top-level calls, so connection-scoped ATTACH does not survive the client
+> abstraction.
+>
+> **Spike 2 measured the transport; spike 3 measured the client. The client
+> governs.** Spike 2's attach-at-open recommendation was written before spike 3
+> ran; it is left visible here rather than edited away, because the two results
+> are both real and the difference between them is the finding.
 
-1. **At connection open:** issue `BEGIN; ATTACH "catalog" AS cat; COMMIT` once
+## Recommended pattern for a libSQL/`sqld` port *(revised after follow-up #2)*
+
+1. ~~**At connection open:** issue `BEGIN; ATTACH "catalog" AS cat; COMMIT`
+   once.~~ **Superseded by spike 3 — attach-at-open does not persist.**
+   Instead: **inside every transaction that reads the catalog**, open a
+   `transaction()` and issue `ATTACH "catalog" AS cat` as its first statement
    (replaces today's "create TEMP VIEWs at open" step).
 2. **In queries:** reference catalog tables **qualified** as `cat.<table>`
-   (replaces the unqualified TEMP-VIEW names).
+   (replaces the unqualified TEMP-VIEW names). *Unaffected by the correction —
+   spike 3 confirms this half.*
 
 ## Migration-cost note (revises the earlier estimate)
 
 This is a **modest, real refactor** of `crates/pkdump-db`, not a verbatim port:
-the TEMP-VIEW setup becomes ATTACH-at-open, and catalog-table references in the
+the TEMP-VIEW setup becomes an ATTACH step, and catalog-table references in the
 binder-page query and friends must be `cat.`-qualified. Bounded and mechanical,
 but it touches every query that joins the catalog — factor it into the libSQL
 decision.
+
+> **Also revised by follow-up #2.** This estimate assumed the ATTACH was a
+> one-line addition at connection open. With attach-per-transaction it becomes
+> a "with catalog attached" transaction wrapper that every catalog-reading path
+> must route through — a larger, structural change to the connection/query
+> layer, not a one-liner. See follow-up #2's own migration-cost section.
 
 ## Reproduce
 
@@ -152,7 +197,15 @@ top-level calls** — so the connection-scoped ATTACH measured at the raw-Hrana
 layer (held baton, S0 above) does NOT survive the client abstraction. ATTACH
 only holds within an explicit `transaction()`.
 
-## Pattern (supersedes "attach once at open")
+**This is the spike that disproves the TEMP-VIEW spike's recommendation.**
+Spike 2 (the TEMP-VIEW follow-up above) concluded "attach once at connection
+open"; measured over the raw Hrana pipeline that was true. This spike (spike 3)
+measured the same thing through the client PokeDumpster would actually use and
+got the opposite answer. **Where they disagree, this one is the operative
+result** — it is the layer the app runs at. A correction note is left in place
+in spike 2's section rather than rewriting it, so the discrepancy stays legible.
+
+## Pattern (supersedes spike 2's "attach once at open")
 
 ```rust
 let tx = conn.transaction().await?;

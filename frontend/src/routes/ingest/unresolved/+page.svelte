@@ -4,6 +4,7 @@
 	// an inline manual picker (reusing the search endpoints) plus Dismiss.
 	import { api } from '$lib/api';
 	import MatchPicker from '$lib/components/MatchPicker.svelte';
+	import { Button, EmptyState } from '$lib/components/ui';
 	import type { UnresolvedRow } from '$lib/types/UnresolvedRow';
 
 	let rows = $state<UnresolvedRow[]>([]);
@@ -110,7 +111,15 @@
 {#if loading}
 	<p class="muted">Loading…</p>
 {:else if rows.length === 0}
-	<p class="empty">Nothing unresolved — the queue is empty. 🎉</p>
+	<EmptyState
+		tone="success"
+		title="Nothing unresolved — the queue is empty. 🎉"
+		description="Every imported row matched a card or product. Anything a future import can't place will wait here."
+	>
+		{#snippet action()}
+			<Button variant="ghost" href="/ingest/csv">Import a CSV</Button>
+		{/snippet}
+	</EmptyState>
 {:else}
 	{#each groups as g (g.batchId ?? 'none')}
 		<section class="group">
@@ -168,29 +177,22 @@
 
 <style>
 	h1 {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.muted {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.muted a {
-		color: #e0e0e0;
+		color: var(--color-text);
 	}
 	.muted a:hover {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.flash {
-		color: #6bd968;
+		color: var(--color-success-text);
 	}
 	.error {
-		color: #e94560;
-	}
-	.empty {
-		color: #8fb7e0;
-		background: #16213e;
-		border: 1px solid #0f3460;
-		border-radius: 8px;
-		padding: 1rem;
+		color: var(--color-text-accent);
 	}
 	.group {
 		margin: 1.4rem 0;
@@ -198,21 +200,21 @@
 	h2 {
 		font-size: 0.8rem;
 		text-transform: uppercase;
-		color: #888;
-		border-bottom: 2px solid #0f3460;
+		color: var(--color-text-subtle);
+		border-bottom: 2px solid var(--color-border);
 		padding-bottom: 0.3rem;
 	}
 	h2 a {
-		color: #e94560;
+		color: var(--color-text-accent);
 	}
 	.when {
 		text-transform: none;
 		font-weight: 400;
-		color: #6a6a80;
+		color: var(--color-text-disabled);
 	}
 	.count {
 		float: right;
-		color: #e9a045;
+		color: var(--color-warning-text);
 	}
 	.rows {
 		list-style: none;
@@ -220,7 +222,7 @@
 		margin: 0.5rem 0 0;
 	}
 	.row {
-		border-bottom: 1px solid #0f3460;
+		border-bottom: 1px solid var(--color-border);
 		padding: 0.5rem 0;
 	}
 	.head {
@@ -234,24 +236,24 @@
 		text-transform: uppercase;
 		padding: 0.05rem 0.4rem;
 		border-radius: 4px;
-		background: #0f3460;
-		color: #8fb7e0;
+		background: var(--color-info-surface);
+		color: var(--color-info-text);
 	}
 	.kindtag.sealed {
-		background: #3a2f16;
-		color: #e9a045;
+		background: var(--color-warning-surface);
+		color: var(--color-warning-text);
 	}
 	.hint {
 		flex: 1;
 		min-width: 12rem;
 	}
 	.dim {
-		color: #888;
+		color: var(--color-text-subtle);
 	}
 	.reason {
 		flex: 2;
 		min-width: 14rem;
-		color: #e9a045;
+		color: var(--color-warning-text);
 		font-size: 0.82rem;
 	}
 	.actions {
@@ -262,22 +264,22 @@
 	.dismiss {
 		padding: 0.3rem 0.7rem;
 		border-radius: 6px;
-		border: 1px solid #0f3460;
-		background: #16213e;
-		color: #e0e0e0;
+		border: 1px solid var(--color-border);
+		background: var(--color-surface-panel);
+		color: var(--color-text);
 		cursor: pointer;
 	}
 	.match:hover:not(:disabled) {
-		border-color: #e94560;
-		color: #fff;
+		border-color: var(--color-border-accent);
+		color: var(--color-text-strong);
 	}
 	.dismiss {
-		color: #b8859a;
+		color: var(--color-text-subtle);
 	}
 	.dismiss:hover:not(:disabled) {
-		border-color: #e94560;
-		background: #5a1e1e;
-		color: #ffd9d9;
+		border-color: var(--color-border-accent);
+		background: var(--color-danger-surface);
+		color: var(--color-danger-text);
 	}
 	.match:disabled,
 	.dismiss:disabled {

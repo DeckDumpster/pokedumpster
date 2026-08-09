@@ -327,8 +327,11 @@ mod tests {
             )
             .unwrap();
             c.execute(
-                "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
-                 VALUES ('sv3pt5-1', 'sv3pt5', '1', 1, 'Bulbasaur', 'Common')",
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity, \
+                     artist, attacks) \
+                 VALUES ('sv3pt5-1', 'sv3pt5', '1', 1, 'Bulbasaur', 'Common', 'Narumi Sato', \
+                     '[{\"name\":\"Vine Whip\",\"damage\":\"20\",\"cost\":[\"Grass\",\"Colorless\"], \
+                        \"convertedEnergyCost\":2,\"text\":\"Nothing happens.\"}]')",
                 [],
             )
             .unwrap();
@@ -375,6 +378,26 @@ mod tests {
             .find(|p| p.variant == "reverse_holo")
             .unwrap();
         assert_eq!(rh.owned_count, 0);
+    }
+
+    // The other half of pd-lk8v. The search list stopped shipping `attacks`
+    // and `artist` because it never drew them; the card modal (CardDetailView,
+    // fed by this payload) is what does draw them, one card at a time. If this
+    // ever thinned out to match the list, the Attacks section and the artist
+    // facet link would silently go blank.
+    #[test]
+    fn card_detail_carries_the_full_attack_the_modal_renders() {
+        let (_d, conn) = user_conn();
+        let detail = get_card_detail(&conn, "sv3pt5", "1").unwrap().unwrap();
+
+        let attacks = detail.card.attacks.as_deref().expect("attacks survive");
+        for part in ["Vine Whip", "Grass", "Colorless", "20", "Nothing happens."] {
+            assert!(
+                attacks.contains(part),
+                "the modal renders {part}; the detail payload must carry it"
+            );
+        }
+        assert_eq!(detail.card.artist.as_deref(), Some("Narumi Sato"));
     }
 
     #[test]

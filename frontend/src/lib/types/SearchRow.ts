@@ -4,10 +4,10 @@ import type { CopySummary } from "./CopySummary";
 /**
  * One search result row — a single printing, owned or not (decision D3).
  *
- * **Every field here is one the search list actually draws.** The list is
- * unpaginated and catalog-wide mode returns the whole catalog, so a field
- * nobody renders costs its bytes *and* its key name ~57k times over
- * (pd-lk8v). Anything only the card modal shows belongs on `CardDetail`,
+ * **Every field here is one the search list actually draws.** A field nobody
+ * renders costs its bytes *and* its key name once per row (pd-lk8v) — which
+ * was ~57k times over before the endpoint answered in pages (pd-jsby), and is
+ * still the whole page. Anything only the card modal shows belongs on `CardDetail`,
  * which is fetched for the one card the user clicked — see
  * `list_payload_carries_only_what_the_list_renders`, which fails if a field
  * is added here without that decision being made.

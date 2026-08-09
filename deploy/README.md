@@ -72,8 +72,11 @@ bash deploy/ci.sh
 
 Steps, in order, exiting non-zero on the first failure:
 
+0. Pick the container store (see [Container storage](#container-storage)) and
+   refuse to start if either disk is under the floor.
 1. Tear down any stale `ci` instance.
 2. `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+   Then `tests/deploy/run.sh` — the store resolution and the low-disk guard.
 3. Frontend: `npm ci && npm test && npm run check && npm run build`.
 4. Build and start a `--test` container and wait for the server to answer on
    its port.
@@ -92,6 +95,68 @@ loop — it needs `ANTHROPIC_API_KEY` for Vision mode. Run it on its own:
 ```bash
 ( cd tests/ui && npx playwright install chromium && npx playwright test )
 ```
+
+## Container storage
+
+Rootless Podman keeps images, layers and volumes under `$HOME`. On the box that
+runs `prod`, `$HOME` is on the 98G LVM root that `prod` itself runs from, while
+the 938G disk holding the checkouts sits nearly empty — so every throwaway
+`--test` instance and every CI image build eats the disk prod depends on. At
+100% full a `cargo` link died with `ld terminated with signal 7 [Bus error]`,
+which reads as a toolchain bug and not a disk problem.
+
+**Non-prod storage is opt-in-relocatable; prod's never moves.**
+
+```bash
+# Build this instance's image and volume into an alternate store:
+PKDUMP_STORE_ROOT=/big/disk/pkdump-store bash deploy/setup.sh scratch --test
+
+# Podman's default store (what prod uses, and the default everywhere else):
+bash deploy/setup.sh prod 8090
+```
+
+- **Which disk is host config, not a repo constant.** Uncomment
+  `PKDUMP_STORE_ROOT` in `~/.config/pkdump/store.env` — the same directory
+  `alerts.env` and `litestream.env` live in — and `deploy/ci.sh` builds there.
+  `setup.sh` scaffolds the file commented out, so the knob is visible on a new
+  box without changing anything. An explicit `PKDUMP_STORE_ROOT` in the
+  environment wins over the file, and an explicit `PKDUMP_STORE_ROOT=` (empty)
+  is how one run opts back out on a box that opts in.
+  The store is never *inferred* from the box's disk layout: a rule like "the
+  checkout is on a different filesystem from `$HOME`" describes one machine, and
+  on any other it quietly starts a container store at the top of whatever
+  external drive or network mount the checkout happens to sit on.
+- Only `ci.sh` reads `store.env`. `setup.sh` — which is also how prod is
+  installed — honours the environment and nothing else, so a host that opts in
+  cannot relocate a prod deploy.
+- `setup.sh`, `deploy.sh`, `seed.sh` and `teardown.sh` all agree on one store per
+  instance: the generated Quadlet unit records it in a `GlobalArgs=` key, and
+  `teardown.sh` reads it back, so a bare `deploy/teardown.sh <instance>` removes
+  from the store the instance was *created* in.
+- Buildah's `--mount=type=cache` contents (the `Containerfile` caches the cargo
+  registry and `target/` that way) move with it — that was 6.7G on the prod disk.
+- **`prod` never sets the variable**, so prod's generated unit is byte-identical
+  to the pre-existing one and prod's volumes never move. `tests/deploy/run.sh`
+  asserts exactly that.
+- Not covered: `pkdump-refresh@` and `pkdump-backup-check@` are one `%i` template
+  shared by every instance, so they cannot carry per-instance store flags. An
+  instance in an alternate store is a throwaway — do not enable those timers for
+  it.
+
+Mechanism and rationale: [`deploy/store-lib.sh`](store-lib.sh).
+
+### Low-disk guard
+
+`deploy/diskcheck.sh` has two modes off one threshold source:
+
+```bash
+bash deploy/diskcheck.sh                    # alert mode — Layer 4 timer, always exits 0
+bash deploy/diskcheck.sh --floor /some/path # gate mode — exits 1 under the floor
+```
+
+Gate mode is what `ci.sh` runs before it builds anything, on both `$HOME` and the
+store root. `PKDUMP_DISK_FLOOR_GB` (default 10) sets the floor. It exists because
+running out of room mid-build does not announce itself as a disk problem.
 
 ## Seed volume (one-time, speeds up future instances)
 
@@ -155,6 +220,8 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer). The verification always runs; the ping URL controls only the ping |
 | `alarm-status.sh <inst> [--verify]` | Is alarming actually ARMED on this instance? Exit 0 = yes. `--verify` fires it for real |
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
+| `diskcheck.sh --floor [path...]` | Gate — exit non-zero under `PKDUMP_DISK_FLOOR_GB` free; run by `ci.sh` before it builds |
+| `store-lib.sh` | Sourced — resolves which Podman store an instance's image and volume live in (`PKDUMP_STORE_ROOT`) |
 | `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin) |
 | `mac-setup.sh` / `mac-deploy.sh` / `mac-teardown.sh` | macOS equivalents (no systemd) |
 

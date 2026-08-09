@@ -60,10 +60,21 @@
 # Usage:
 #   bash deploy/ci.sh
 #   PKDUMP_CI_INSTANCE=myname bash deploy/ci.sh   # pin the instance name
+#   PKDUMP_STORE_ROOT=/some/dir bash deploy/ci.sh # pin the container store
+#   PKDUMP_STORE_ROOT= bash deploy/ci.sh          # use Podman's default store
+#                                                 # (overrides host store.env)
 #
 # Parallel-safe: the container instance is named per-checkout, so several
 # polecats can run this concurrently from their own worktrees without tearing
 # down each other's containers. Do not reintroduce a fixed instance name.
+#
+# Disk: nothing this script builds belongs on the disk prod runs from. Point
+# PKDUMP_STORE_ROOT at another filesystem and the whole container store — images,
+# layers, volumes and Buildah's cache mounts — goes there instead. Which disk
+# that is on a given box is host config, not a repo constant, so it is read from
+# ~/.config/pkdump/store.env; unconfigured, Podman's default store is used. See
+# deploy/store-lib.sh. This script also refuses to start on a nearly-full disk,
+# because the failure that produces does not look like a disk problem.
 #
 set -euo pipefail
 
@@ -101,6 +112,25 @@ START_TIME=$(date +%s)
 
 CURRENT_STEP="startup"
 step() { CURRENT_STEP="$*"; echo ""; echo "==> $*"; }
+
+# --- 0. Container store + disk floor ----------------------------------------
+
+# shellcheck source=deploy/store-lib.sh
+. "$SCRIPT_DIR/store-lib.sh"
+# Unset means "not answered here, ask the host" — ~/.config/pkdump/store.env.
+# Set, including set to empty, means the caller decided and is left alone.
+# Answered nowhere means Podman's default store, which is also prod's.
+pkdump_store_load_config
+pkdump_store_activate
+
+step "Disk floor check"
+# Before the build, not after it dies: at 697M free a cargo link failed with
+# `ld terminated with signal 7 [Bus error]`, which reads as a toolchain bug and
+# cost real time to diagnose (pd-fite). Both disks matter — $HOME still holds
+# the toolchain caches and the default store even when the container store moves.
+bash "$SCRIPT_DIR/diskcheck.sh" --floor "$HOME" "${PKDUMP_STORE_ROOT:-$HOME}"
+
+DF_BEFORE="$(df -h "$HOME" | tail -n1)"
 
 # --- 1. Clean up any stale ci instance --------------------------------------
 
@@ -140,6 +170,13 @@ step "cargo clippy --all-targets"
 
 step "cargo fmt --check"
 ( cd "$REPO_DIR" && cargo fmt --check )
+
+# --- 2b. Deploy-script gates ------------------------------------------------
+# The low-disk guard and the store-root resolution are shell, so they get a
+# shell test — including one that shows the guard actually firing.
+
+step "Deploy scripts: store resolution + low-disk guard"
+bash "$REPO_DIR/tests/deploy/run.sh"
 
 # --- 3. Frontend gate -------------------------------------------------------
 
@@ -260,5 +297,12 @@ echo "    (intents UI harness not run — see the note in this script's header)"
 # --- Done -------------------------------------------------------------------
 
 ELAPSED=$(( $(date +%s) - START_TIME ))
+echo ""
+# The whole point of the alternate store: a CI run must not eat the disk prod
+# runs from. Printed every run so a regression shows up as a number, not as a
+# mystery bus error three weeks later (pd-fite).
+echo "==> Disk holding \$HOME (prod's):"
+echo "    before: ${DF_BEFORE}"
+echo "    after:  $(df -h "$HOME" | tail -n1)"
 echo ""
 echo "==> CI passed in ${ELAPSED}s."

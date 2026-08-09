@@ -13,6 +13,15 @@
 #                                          #   fixture (no network, ~seconds)
 #   bash deploy/setup.sh demo --init       # clone the pre-built seed volume
 #
+# Container storage: rootless Podman's default store lives under $HOME, which on
+# the deployment box is the same disk prod runs from. Set PKDUMP_STORE_ROOT=<dir>
+# to build this instance's image and volume into an alternate store instead —
+# opt-in, so prod (which never sets it) is unaffected. See deploy/store-lib.sh.
+# This script scaffolds the host-config file that names that directory
+# (~/.config/pkdump/store.env) but deliberately does not read it: prod is
+# installed with this script, and where prod's volumes live is not something a
+# host config file gets to change. deploy/ci.sh is what reads it.
+#
 # Modes:
 #   (plain)  Build the image + install the Quadlet. Catalog stays empty —
 #            populate it later with deploy/seed.sh.
@@ -65,6 +74,12 @@ if ! command -v podman >/dev/null 2>&1; then
     exit 1
 fi
 
+# Opt-in alternate container store (pd-fite). No-op unless PKDUMP_STORE_ROOT is
+# set — and prod never sets it.
+# shellcheck source=deploy/store-lib.sh
+. "$SCRIPT_DIR/store-lib.sh"
+pkdump_store_activate
+
 if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q "Linger=yes"; then
     echo "WARNING: linger not enabled — services stop when you log out."
     echo "  Fix: loginctl enable-linger $USER"
@@ -104,6 +119,9 @@ sed \
     -e "s|{{PORT}}:8080|${PORT_MAPPING}|g" \
     "$REPO_DIR/deploy/pkdump.container" \
     > "${QUADLET_DIR}/${SERVICE_NAME}.container"
+# systemd does not inherit the shim on PATH, so the unit carries the store flags
+# itself. No-op without PKDUMP_STORE_ROOT — prod's unit comes out unchanged.
+pkdump_store_stamp_unit "${QUADLET_DIR}/${SERVICE_NAME}.container"
 
 # --- Install per-instance timer units --------------------------------------
 # %i-templated units installed under a concrete instance name so several
@@ -156,6 +174,32 @@ EOF
     echo "    Wrote ${ALERTS_ENV} (fill PUSHOVER_TOKEN/USER)."
 fi
 
+# Scaffold the host-wide container-store config (pd-rf7c). Which disk non-prod
+# container storage belongs on is a fact about THIS box, so it is host config
+# rather than a repo constant — and it is scaffolded commented-out so a new box
+# has the knob visible instead of undiscoverable. Written but never read by this
+# script: setup.sh honours PKDUMP_STORE_ROOT from its environment only, so a
+# store.env that opts in cannot silently relocate a prod deploy.
+STORE_ENV="${HOME}/.config/pkdump/store.env"
+if [ ! -f "$STORE_ENV" ]; then
+    mkdir -p "${HOME}/.config/pkdump"
+    cat > "$STORE_ENV" <<'EOF'
+# Host-wide container-store config for PokeDumpster (pd-rf7c).
+#
+# Rootless Podman keeps images, layers and volumes under $HOME. Where $HOME
+# shares a disk with something that must not run out of space — on this
+# project's deployment box, prod itself — name a directory on another
+# filesystem here and non-prod container storage goes there instead.
+#
+# Read by deploy/ci.sh. An explicit PKDUMP_STORE_ROOT in the environment wins
+# over this file, including an explicit empty one (that is how a single run opts
+# back out). Left commented out, everything uses Podman's default store — which
+# is what prod uses, always, on every box.
+#PKDUMP_STORE_ROOT=/big/disk/pkdump-nonprod-store
+EOF
+    echo "    Wrote ${STORE_ENV} (container store; commented out = Podman's default)."
+fi
+
 # --- Install the Litestream backup sidecar (pokedumpster-8ch.3) -------------
 # Quadlet sidecar that continuously replicates the collection DB to S3. Instance
 # + repo path are sed-substituted (single-clone deployment).
@@ -164,6 +208,7 @@ sed -e "s|{{INSTANCE}}|${INSTANCE}|g" \
     -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
     "$REPO_DIR/deploy/pkdump-litestream.container" \
     > "${QUADLET_DIR}/pkdump-litestream-${INSTANCE}.container"
+pkdump_store_stamp_unit "${QUADLET_DIR}/pkdump-litestream-${INSTANCE}.container"
 
 # Scaffold the per-instance config (S3 target + AWS creds). Secrets NEVER live in
 # the repo; this only writes a template and never clobbers existing config.

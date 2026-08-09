@@ -27,6 +27,15 @@ fi
 INSTANCE="${POSITIONAL[0]}"
 SERVICE_NAME="pkdump-${INSTANCE}"
 QUADLET_FILE="$HOME/.config/containers/systemd/${SERVICE_NAME}.container"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Remove from the store the instance was CREATED in, not whichever one this
+# shell happens to point at — otherwise a throwaway instance's image and volume
+# leak into a store nothing cleans. The unit file records it (pd-fite).
+# shellcheck source=deploy/store-lib.sh
+. "$SCRIPT_DIR/store-lib.sh"
+pkdump_store_adopt_instance "$INSTANCE"
+pkdump_store_activate
 
 echo "==> Stopping ${SERVICE_NAME}..."
 systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true

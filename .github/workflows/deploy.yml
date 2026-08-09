@@ -26,6 +26,14 @@ concurrency:
 env:
   INSTANCE: ${{ github.event.inputs.instance || 'prod' }}
   CHECKOUT: /home/ryangantt/pokedumpster
+  # Container store: Podman's default, stated rather than left to chance
+  # (pd-rf7c). This job deploys prod, and prod's images and volumes live in the
+  # default store — pointing it at the non-prod store would make podman look for
+  # prod's image somewhere it has never been. It never needs the alternate store
+  # because it never builds a throwaway instance: deploy.sh rebuilds an instance
+  # that already exists and recovers its store from the installed Quadlet unit,
+  # so a --test instance dispatched here still lands where setup.sh put it.
+  PKDUMP_STORE_ROOT: ''
 
 jobs:
   deploy:

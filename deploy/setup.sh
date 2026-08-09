@@ -195,6 +195,10 @@ if [ ! -f "$STORE_ENV" ]; then
 # over this file, including an explicit empty one (that is how a single run opts
 # back out). Left commented out, everything uses Podman's default store — which
 # is what prod uses, always, on every box.
+#
+# To delete the store named here, follow the recipe in deploy/store-lib.sh's
+# header. NEVER `podman system reset`: it is not scoped by --root/--runroot, and
+# aimed at a throwaway store it took prod down (pd-rkrf).
 #PKDUMP_STORE_ROOT=/big/disk/pkdump-nonprod-store
 EOF
     echo "    Wrote ${STORE_ENV} (container store; commented out = Podman's default)."

@@ -26,11 +26,18 @@
 #      dead, with both version numbers in the log. Rollback (`pkdump tenant
 #      revert`) is only safe because of this — an older binary must refuse
 #      rather than quietly operate on a schema it does not understand.
-#   §3 REPORTING (pd-enje). `pkdump tenant list` names each tenant's own schema
-#      version — including the one §2 just made unopenable. An operator whose
-#      server will not start needs the report to say WHICH database is from the
+#   §3 REPORTING (pd-enje). `pkdump tenant list` names each user's own schema
+#      version — including one this build cannot open. An operator whose server
+#      will not start needs the report to say WHICH database is from the
 #      future; a report that failed the same way the server did would name
 #      nothing. Read-only in the same breath: asking must not stamp or migrate.
+#   §4 THE THIRD DATABASE (pd-r60h). The user registry is gated and stamped
+#      like the other two — adopted from 0, refused from the future, by the CLI
+#      *and* by `serve`, which resolves its collection through it. It was
+#      declared in `schema_version` and wired to nothing for as long as the
+#      gate and the registry were separate branches, which is exactly the kind
+#      of two-of-three a suite that only checks the databases it knows about
+#      never notices.
 #
 # Prod-safe: its own per-checkout instance name, its own volume, its own port.
 # Touches no pkdump-*@prod unit, no pkdump-prod-data volume, no real bucket.
@@ -268,17 +275,18 @@ systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
 check "the refused database is untouched" "$AHEAD" "$(read_version "$COLLECTION_DB")"
 
 # ── §3 Reporting ────────────────────────────────────────────────────────────
-# Deliberately run against the volume §2 left behind: `collection` is from the
-# future and the server will not start on it. That is the state an operator is
-# in when they reach for this command, so it is the state it is proved in.
+# Deliberately run against the volume §2 left behind: the served collection is
+# from the future and the server will not start on it. That is the state an
+# operator is in when they reach for this command, so it is the state it is
+# proved in.
 #
-# A second tenant is provisioned first so the listing has something to compare
-# against — drift is only visible next to a database that is current, and one
-# row cannot show a spread. Provisioning it also asserts something in passing:
-# per-file versions mean a tenant this build refuses is not a box-wide outage.
+# Two users are provisioned, one of them forced into the future, because drift
+# is only visible next to a database that is current and one row cannot show a
+# spread. Provisioning them also asserts something in passing: per-file
+# versions mean a user this build refuses is not a box-wide outage.
 
 echo ""
-echo "--- §3 Reporting: tenant list names each tenant's own version ---"
+echo "--- §3 Reporting: tenant list names each user's own version ---"
 
 # Both run through the shipped image against the real volume, the same one-off
 # container `deploy/seed.sh` uses — no host binary, no host data dir.
@@ -287,38 +295,132 @@ pkdump_in_volume() {
 		--entrypoint pkdump "$IMAGE" "$@" 2>&1
 }
 
-CREATE_OUT=$(pkdump_in_volume tenant create drift-probe || true)
-contains "a tenant is provisioned beside the refused one" "drift-probe" "$CREATE_OUT"
-PROBE_V=$(read_version /data/tenants/drift-probe.sqlite)
-check "the new tenant carries this build's version" "$COLLECTION_V" "$PROBE_V"
+# `tenant create` prints `Created user <handle> -> database <id> at <path>`.
+# The id is what names the file: a handle is never a path component, so the
+# database this section then reaches for cannot be spelled from the handle.
+created_id() { # created_id <handle> -> prints the minted database_id
+	pkdump_in_volume tenant create "$1" | sed -n 's/.*-> database \([A-Z0-9]*\) .*/\1/p'
+}
+
+PROBE_ID=$(created_id drift-probe)
+FUTURE_ID=$(created_id drift-future)
+check "a user is provisioned beside the refused collection" "yes" \
+	"$([[ -n "$PROBE_ID" ]] && echo yes || echo no)"
+check "and a second one to put in the future" "yes" \
+	"$([[ -n "$FUTURE_ID" ]] && echo yes || echo no)"
+
+PROBE_V=$(read_version "/data/tenants/${PROBE_ID}.sqlite")
+check "a new user's database carries this build's version" "$COLLECTION_V" "$PROBE_V"
+write_version "/data/tenants/${FUTURE_ID}.sqlite" "$AHEAD"
 
 LIST_STATUS=0
 LIST=$(pkdump_in_volume tenant list) || LIST_STATUS=$?
 echo "$LIST" | sed 's/^/        /'
 
-check "the report succeeds despite an unopenable tenant" "0" "$LIST_STATUS"
+check "the report succeeds despite an unopenable database" "0" "$LIST_STATUS"
 
-# Each row is `<name> <version> <status> …`, so the columns are read rather
-# than the whole blob searched: a bare grep for the version number would pass
-# on the OTHER tenant's row, which is the one mix-up this section exists to
-# rule out.
+# Each row is `<handle> <database id> <created> <state> <retired> <version>
+# <status…>`, so the columns are read rather than the whole blob searched: a
+# bare grep for the version number would pass on the OTHER user's row, which is
+# the one mix-up this section exists to rule out.
 row() { printf '%s\n' "$LIST" | awk -v n="$1" '$1 == n'; }
 
-check "the refused tenant is listed with ITS version" "$AHEAD" \
-	"$(row collection | awk '{print $2}')"
+check "the refused user is listed with ITS version" "$AHEAD" \
+	"$(row drift-future | awk '{print $6}')"
 check "...and reported as ahead of this build" "ahead" \
-	"$(row collection | awk '{print $3}')"
-check "the current tenant is listed with ITS version" "$PROBE_V" \
-	"$(row drift-probe | awk '{print $2}')"
+	"$(row drift-future | awk '{print $7}')"
+check "the current user is listed with ITS version" "$PROBE_V" \
+	"$(row drift-probe | awk '{print $6}')"
 check "...and reported as current" "current" \
-	"$(row drift-probe | awk '{print $3}')"
+	"$(row drift-probe | awk '{print $7}')"
 
 # Asking what version a database is must not be a way of changing it. If the
-# report opened tenants the way the app does, it would stamp and re-apply the
-# schema to every tenant on the box as a side effect of being asked.
-check "reporting left the refused tenant alone" "$AHEAD" "$(read_version "$COLLECTION_DB")"
-check "reporting left the current tenant alone" "$PROBE_V" \
-	"$(read_version /data/tenants/drift-probe.sqlite)"
+# report opened collections the way the app does, it would stamp and re-apply
+# the schema to every database on the box as a side effect of being asked.
+check "reporting left the refused database alone" "$AHEAD" \
+	"$(read_version "/data/tenants/${FUTURE_ID}.sqlite")"
+check "reporting left the current database alone" "$PROBE_V" \
+	"$(read_version "/data/tenants/${PROBE_ID}.sqlite")"
+
+# ── §4 The registry ─────────────────────────────────────────────────────────
+# The third database (pd-r60h). `Database::Registry` was declared with a
+# version and a label for as long as the gate and the registry lived on
+# separate branches, and wired to nothing — so two of the three databases were
+# gated and the one holding the map from handle to database was not.
+#
+# It is the sharpest of the three to get wrong. An older binary applying its
+# own schema over a newer registry does not damage a collection; it damages the
+# only thing that can say whose a collection is. Every registry in existence is
+# version 0, so adoption is the path that actually runs.
+
+REGISTRY_DB=/data/registry.sqlite
+
+echo ""
+echo "--- §4 The registry is gated too: adoption ---"
+REGISTRY_V=$(read_version "$REGISTRY_DB")
+check "the registry carries a version at all" "stamped" \
+	"$([[ "$REGISTRY_V" -gt 0 ]] && echo stamped || echo "still ${REGISTRY_V}")"
+
+# Back to the pre-gate shape — which is what every registry on disk is, this
+# being the first build that stamps one.
+write_version "$REGISTRY_DB" 0
+check "the registry starts unversioned" "0" "$(read_version "$REGISTRY_DB")"
+
+ADOPT_STATUS=0
+ADOPTED=$(pkdump_in_volume tenant list) || ADOPT_STATUS=$?
+check "an unversioned registry is adopted, not refused" "0" "$ADOPT_STATUS"
+contains "and its rows survived the adoption" "drift-probe" "$ADOPTED"
+check "and it comes out stamped" "$REGISTRY_V" "$(read_version "$REGISTRY_DB")"
+
+echo ""
+echo "--- §4 The registry is gated too: refusal ---"
+REGISTRY_AHEAD=$((REGISTRY_V + 1))
+write_version "$REGISTRY_DB" "$REGISTRY_AHEAD"
+
+REFUSE_STATUS=0
+REFUSED=$(pkdump_in_volume tenant list) || REFUSE_STATUS=$?
+echo "$REFUSED" | sed 's/^/        /'
+check "a registry from the future is refused" "1" \
+	"$([[ "$REFUSE_STATUS" -ne 0 ]] && echo 1 || echo 0)"
+contains "the refusal names the registry" "tenant registry" "$REFUSED"
+contains "and the file" "registry.sqlite" "$REFUSED"
+contains "and both versions" "version ${REGISTRY_AHEAD}" "$REFUSED"
+check "the refused registry is untouched" "$REGISTRY_AHEAD" "$(read_version "$REGISTRY_DB")"
+
+# And on the path that matters: single-tenant `serve` resolves its collection
+# through the registry, so a registry from the future stops the server — not
+# just the CLI. The collection is put back to a version this build accepts
+# first, so the refusal below can only be the registry's.
+write_version "$COLLECTION_DB" "$COLLECTION_V"
+systemctl --user start "$SERVICE_NAME" 2>/dev/null || true
+if PORT=$(wait_for_server 20); then
+	echo "  FAIL  server came up on port ${PORT} against a registry from the future"
+	echo "        It would apply its own schema to the map of who owns what."
+	fail=$((fail + 1))
+else
+	echo "  PASS  server refused to serve"
+	pass=$((pass + 1))
+fi
+LOG=$(journalctl --user -u "$SERVICE_NAME" --no-pager -n 200 2>/dev/null || true)
+contains "the server's refusal names the registry" "tenant registry" "$LOG"
+contains "and the registry file" "registry.sqlite" "$LOG"
+systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+
+# Mutation in the other direction: put the registry back and the same instance
+# serves again. Without this, "refused" could be any startup failure at all.
+write_version "$REGISTRY_DB" "$REGISTRY_V"
+systemctl --user start "$SERVICE_NAME" 2>/dev/null || true
+if PORT=$(wait_for_server 60); then
+	echo "  PASS  and with the registry back at v${REGISTRY_V} it serves again (port ${PORT})"
+	pass=$((pass + 1))
+	check "GET /api/sets answers 200 again" "200" \
+		"$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${PORT}/api/sets")"
+else
+	echo "  FAIL  the server did not come back up once the registry was acceptable"
+	journalctl --user -u "$SERVICE_NAME" --no-pager -n 40 2>/dev/null || true
+	fail=$((fail + 1))
+fi
+systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
 
 # ── Result ──────────────────────────────────────────────────────────────────
 

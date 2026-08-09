@@ -323,8 +323,15 @@ fn list() -> anyhow::Result<()> {
         let id = widest("DATABASE ID", &|t| &t.tenant.user.database_id);
         let created = widest("CREATED", &|t| &t.tenant.user.created_at);
         let state = widest("STATE", &|t| t.tenant.user.state.as_str());
+        // Measured like the rest, and for the same reason: a retirement is a
+        // timestamp as long as the one in CREATED, so a guessed width here
+        // would push SCHEMA and STATUS out of line on exactly the rows an
+        // operator is reading the table to compare.
+        let retired = widest("RETIRED", &|t| {
+            t.tenant.user.retired_at.as_deref().unwrap_or("-")
+        });
         println!(
-            "{:<handle$}  {:<id$}  {:<created$}  {:<state$}  {:<10}  SCHEMA  STATUS",
+            "{:<handle$}  {:<id$}  {:<created$}  {:<state$}  {:<retired$}  SCHEMA  STATUS",
             "HANDLE", "DATABASE ID", "CREATED", "STATE", "RETIRED"
         );
         for t in &tenants {
@@ -339,7 +346,7 @@ fn list() -> anyhow::Result<()> {
                 }
             };
             println!(
-                "{:<handle$}  {:<id$}  {:<created$}  {:<state$}  {:<10}  {:>6}  {status}",
+                "{:<handle$}  {:<id$}  {:<created$}  {:<state$}  {:<retired$}  {:>6}  {status}",
                 t.tenant.user.handle,
                 t.tenant.user.database_id,
                 t.tenant.user.created_at,

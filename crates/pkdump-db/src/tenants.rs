@@ -1281,10 +1281,7 @@ mod tests {
             // And reporting did not "fix" what it read: the operator's next
             // move is to run the newer build, which must find its database
             // exactly as it left it.
-            assert_eq!(
-                schema_version::version_of_file(&alice.path).unwrap(),
-                ahead
-            );
+            assert_eq!(schema_version::version_of_file(&alice.path).unwrap(), ahead);
         });
     }
 

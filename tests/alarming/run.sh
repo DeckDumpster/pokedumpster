@@ -46,6 +46,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
 
+# Host ports, from the kernel rather than picked (pd-r0ri). One definition for
+# every harness; see tests/lib/ports.sh for what a picked one costs.
+# shellcheck source=tests/lib/ports.sh
+. "${REPO_DIR}/tests/lib/ports.sh"
+
 # Unique per checkout, like deploy/ci.sh's: several polecats run this gate from
 # their own worktrees at the same time, and a shared name means run B's teardown
 # destroys run A's volume mid-suite.
@@ -79,7 +84,6 @@ LS_CTR="pkdump-${INSTANCE}-litestream"
 # box already had an unrelated `python3 -m http.server` sitting on the first
 # number chosen — which surfaced as "address already in use" three sections
 # later, looking nothing like a port clash.
-free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()'; }
 MINIO_PORT=${MINIO_PORT:-$(free_port)}
 SINK_PORT=${SINK_PORT:-$(free_port)}
 

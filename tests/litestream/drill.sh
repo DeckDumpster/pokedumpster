@@ -91,6 +91,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 . "${REPO_DIR}/deploy/store-lib.sh"
 pkdump_store_activate
 
+# Host ports, from the kernel rather than picked (pd-r0ri). One definition for
+# every harness; see tests/lib/ports.sh for what a picked one costs.
+# shellcheck source=tests/lib/ports.sh
+. "${REPO_DIR}/tests/lib/ports.sh"
+
 # PER-CHECKOUT by default, for the reason deploy/ci.sh derives its container
 # instance the same way: the swarm runs several polecats per rig, each from its
 # own worktree, and every one of them runs deploy/ci.sh — which runs this. With a
@@ -110,10 +115,10 @@ SECRET_NAME="pkdump-${INSTANCE}-s3-bootstrap"
 QUADLET_DIR="${HOME}/.config/containers/systemd"
 
 MINIO_CTR="pkdump-${INSTANCE}-minio"
-# Published on the host, so it needs its own per-checkout port. 39500-39899
-# here; tests/litestream/run.sh takes the band below it, so the two gates cannot
-# collide with each other either.
-MINIO_PORT=${MINIO_PORT:-$(( 39500 + 16#$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-3) % 400 ))}
+# Published on the host, so it comes from the kernel and not from the checkout
+# hash. A band gave this gate one deterministic number with no second chance at
+# it — see tests/lib/ports.sh and pd-r0ri.
+MINIO_PORT=${MINIO_PORT:-$(free_port)}
 
 # FOUR tenants, and the victim is #2 — a restore that grabbed the first or the
 # last prefix would still look right with one or two.

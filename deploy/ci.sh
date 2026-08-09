@@ -8,8 +8,10 @@
 #
 # Steps:
 #   1. Tear down any stale container instance belonging to THIS checkout.
-#  1b. Harness gate:  prove the shell harnesses can describe their own failure.
-#                     Hermetic and sub-second. See tests/lib/diagnostics_test.sh.
+#  1b. Harness gate:  prove the shell harnesses can describe their own failure,
+#                     and that no harness picks a host port instead of asking
+#                     the kernel. Hermetic and sub-second. See
+#                     tests/lib/diagnostics_test.sh and tests/lib/ports_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #   4. Container gate: build + start a `--test` instance, wait for the server
@@ -159,6 +161,14 @@ trap cleanup EXIT
 
 step "Harness diagnostics self-test (tests/lib/diagnostics_test.sh)"
 bash "$REPO_DIR/tests/lib/diagnostics_test.sh"
+
+# Same tier, same reason: a host port picked from a band instead of taken from
+# the kernel has been found and fixed in five files now, and each time the fix
+# reached one of them. §6-§8 of this gate assert on the tree, so a sixth
+# relapse fails here in a second rather than forty minutes in as "address
+# already in use". See tests/lib/ports.sh.
+step "Harness host-port self-test (tests/lib/ports_test.sh)"
+bash "$REPO_DIR/tests/lib/ports_test.sh"
 
 # --- 2. Rust gates ----------------------------------------------------------
 

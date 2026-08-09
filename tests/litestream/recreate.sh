@@ -75,6 +75,11 @@ SHIPPED_YML="${REPO_DIR}/deploy/litestream.yml"
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
 
+# Host ports, from the kernel rather than picked (pd-r0ri). One definition for
+# every harness; see tests/lib/ports.sh for what a picked one costs.
+# shellcheck source=tests/lib/ports.sh
+. "${REPO_DIR}/tests/lib/ports.sh"
+
 # PER-CHECKOUT, for the reason deploy/ci.sh derives its container instance the
 # same way: the swarm runs several polecats per rig, each from its own worktree,
 # and every one of them runs deploy/ci.sh — which runs this. With fixed names,
@@ -85,10 +90,11 @@ NET=pdrc-net-$SUFFIX
 MINIO_CTR=pdrc-minio-$SUFFIX
 LS_CTR=pdrc-litestream-$SUFFIX
 LEG_CTR=pdrc-legacy-$SUFFIX
-# Published on the host, so it needs a per-checkout port too. 40000-40399 here;
-# tests/litestream/run.sh takes 39000-39499 and drill.sh 39500-39899, so the
-# three gates cannot collide with each other either.
-MINIO_PORT=${MINIO_PORT:-$(( 40000 + 16#${SUFFIX:0:3} % 400 ))}
+# Published on the host, so it comes from the kernel and not from the suffix.
+# It used to be a hash of the checkout modulo a 400-wide band, which is what
+# `rootlessport listen tcp 127.0.0.1:40090: bind: address already in use` was —
+# a deterministic number this gate had no second chance at (pd-r0ri).
+MINIO_PORT=${MINIO_PORT:-$(free_port)}
 
 WORK=${WORK:-$(mktemp -d /tmp/pdrc.XXXXXX)}
 mkdir -p "$WORK/data" "$WORK/legacy/tenants" "$WORK/minio" "$WORK/restore"

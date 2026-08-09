@@ -75,6 +75,11 @@ SHIPPED_YML="${REPO_DIR}/deploy/litestream.yml"
 . "${REPO_DIR}/tests/lib/diagnostics.sh"
 diag_init
 
+# Host ports, from the kernel rather than picked (pd-r0ri). One definition for
+# every harness; see tests/lib/ports.sh for what a picked one costs.
+# shellcheck source=tests/lib/ports.sh
+. "${REPO_DIR}/tests/lib/ports.sh"
+
 # Unique per checkout, exactly as deploy/ci.sh's instance name and the alarming
 # gate's are. deploy/ci.sh is deliberately parallel-safe — several polecats run
 # it at once from their own worktrees — but it calls THIS script, and until
@@ -88,7 +93,6 @@ LS_CTR=pdls-test-litestream-${SUFFIX}
 PROBE_CTR=pdls-test-probe-${SUFFIX}
 # From the kernel, not picked: a fixed number collides both with a concurrent
 # run of this gate and with whatever else happens to hold it on the box.
-free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()'; }
 MINIO_PORT=${MINIO_PORT:-$(free_port)}
 # The bucket is inside this run's own MinIO, but keep it distinct too so that a
 # stray `mc` pointed at the wrong endpoint cannot silently share state.

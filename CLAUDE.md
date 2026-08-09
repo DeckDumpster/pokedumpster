@@ -96,6 +96,11 @@ cd frontend && npm test          # design-token gates (WCAG AA contrast, layer
 # Deploy scripts — container-store resolution + the low-disk guard (hermetic)
 bash tests/deploy/run.sh
 
+# Shell-harness self-tests — sub-second, no container. The second one also
+# greps tests/ and deploy/ for a picked host port and fails on one.
+bash tests/lib/diagnostics_test.sh
+bash tests/lib/ports_test.sh
+
 # Visual regression — every route at 1440 and 768 against a throwaway
 # container instance. A pixel diff fails; approving one is explicit.
 bash tests/visual/run.sh         # check

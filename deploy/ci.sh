@@ -8,6 +8,8 @@
 #
 # Steps:
 #   1. Tear down any stale container instance belonging to THIS checkout.
+#  1b. Harness gate:  prove the shell harnesses can describe their own failure.
+#                     Hermetic and sub-second. See tests/lib/diagnostics_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #   4. Container gate: build + start a `--test` instance, wait for the server
@@ -72,6 +74,13 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Name our own failure (pd-8gjs). A gate that dies without printing why used to
+# leave the EXIT trap's "Stopping pkdump-ci-..." as the last line in the log,
+# which reads like a clean shutdown and says nothing about the step that died.
+# shellcheck source=tests/lib/diagnostics.sh
+. "${REPO_DIR}/tests/lib/diagnostics.sh"
+diag_init
+
 # The instance name has to be unique per checkout. The swarm runs several
 # polecats per rig, each from its own worktree, and every one of them runs
 # this script; with a shared name, run B's opening teardown destroyed run A's
@@ -90,7 +99,8 @@ CONTAINER="systemd-${SERVICE_NAME}"
 
 START_TIME=$(date +%s)
 
-step() { echo ""; echo "==> $*"; }
+CURRENT_STEP="startup"
+step() { CURRENT_STEP="$*"; echo ""; echo "==> $*"; }
 
 # --- 1. Clean up any stale ci instance --------------------------------------
 
@@ -104,9 +114,21 @@ podman image prune -f --filter "until=24h" >/dev/null 2>&1 || true
 
 # Tear the ci instance down again on exit, whatever happens.
 cleanup() {
+    local rc=$?
     bash "$SCRIPT_DIR/teardown.sh" "$INSTANCE" --purge 2>/dev/null || true
+    # After the teardown noise, so "which step failed, and with what status" is
+    # the last thing in the log rather than something to infer from where it
+    # stops.
+    [[ $rc -eq 0 ]] || diag "!! CI FAILED during step: ${CURRENT_STEP} (status ${rc})"
 }
 trap cleanup EXIT
+
+# --- 1b. Harness self-test --------------------------------------------------
+# Hermetic and sub-second: proves the diagnostics above actually report a
+# silenced failure, before spending ten minutes on gates that rely on them.
+
+step "Harness diagnostics self-test (tests/lib/diagnostics_test.sh)"
+bash "$REPO_DIR/tests/lib/diagnostics_test.sh"
 
 # --- 2. Rust gates ----------------------------------------------------------
 

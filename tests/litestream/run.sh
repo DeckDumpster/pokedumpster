@@ -66,25 +66,33 @@ SHIPPED_YML="${REPO_DIR}/deploy/litestream.yml"
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
 
-# Every name and port here is PER-CHECKOUT, for the reason deploy/ci.sh derives
-# its container instance the same way: the swarm runs several polecats per rig,
-# each from its own worktree, and every one of them runs deploy/ci.sh — which
-# runs this. With fixed names, run B's opening `podman rm -f` and `volume rm`
-# destroyed run A's MinIO and sidecar mid-suite, and A then failed somewhere
-# unrelated-looking (a tenant "not picked up by watch:", an empty bucket
-# listing). Observed 2026-08-08. Hashing the whole worktree path keeps the name
-# stable per checkout — so the stale-cleanup below still finds THIS checkout's
-# leftovers — while making a cross-checkout collision impossible.
-SUFFIX="${PDLS_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)}"
-NET=pdls-test-net-$SUFFIX
-MINIO_CTR=pdls-test-minio-$SUFFIX
-LS_CTR=pdls-test-litestream-$SUFFIX
-PROBE_CTR=pdls-test-probe-$SUFFIX
-# Published on the host, so it needs a per-checkout port too — two MinIOs on one
-# port is the same collision wearing a different hat. 39000-39499 for this
-# script; tests/litestream/drill.sh takes the band above it.
-MINIO_PORT=${MINIO_PORT:-$(( 39000 + 16#${SUFFIX:0:3} % 500 ))}
-BUCKET=pdls-test
+# Failure diagnostics (pd-8gjs): an ERR trap that names the failing file, line,
+# command and status before the EXIT trap's teardown chatter, and `diag_run`,
+# which captures a command's stderr and prints it on failure through a
+# descriptor no call-site `2>/dev/null` can reach. This gate once died with a
+# bare exit 127 and an empty log; see tests/lib/diagnostics.sh.
+# shellcheck source=tests/lib/diagnostics.sh
+. "${REPO_DIR}/tests/lib/diagnostics.sh"
+diag_init
+
+# Unique per checkout, exactly as deploy/ci.sh's instance name and the alarming
+# gate's are. deploy/ci.sh is deliberately parallel-safe — several polecats run
+# it at once from their own worktrees — but it calls THIS script, and until
+# pd-8gjs these names were fixed. Run B's opening `podman rm -f` / `network rm`
+# then tore down run A's MinIO and sidecar mid-suite, and run A failed
+# somewhere downstream looking nothing like a name clash.
+SUFFIX="${PDLS_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-6)}"
+NET=pdls-test-net-${SUFFIX}
+MINIO_CTR=pdls-test-minio-${SUFFIX}
+LS_CTR=pdls-test-litestream-${SUFFIX}
+PROBE_CTR=pdls-test-probe-${SUFFIX}
+# From the kernel, not picked: a fixed number collides both with a concurrent
+# run of this gate and with whatever else happens to hold it on the box.
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()'; }
+MINIO_PORT=${MINIO_PORT:-$(free_port)}
+# The bucket is inside this run's own MinIO, but keep it distinct too so that a
+# stray `mc` pointed at the wrong endpoint cannot silently share state.
+BUCKET=pdls-test-${SUFFIX}
 AKID=pdlstestroot
 SECRET=pdlstestsecret123
 
@@ -121,6 +129,7 @@ log() { printf '\n=== %s ===\n' "$*"; }
 
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
+	local rc=$?
 	if [[ -n "${KEEP:-}" ]]; then
 		echo
 		echo "KEEP=1 — leaving containers up and WORK=$WORK in place."
@@ -133,10 +142,18 @@ cleanup() {
 	podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" "$PROBE_CTR" >/dev/null 2>&1 || true
 	podman network rm -f "$NET" >/dev/null 2>&1 || true
 	rm -rf "$WORK"
+	# Said last, after the teardown noise, so the status is never something the
+	# reader has to infer from where the log happens to stop.
+	[[ $rc -eq 0 ]] || diag "!! tests/litestream/run.sh exiting with status ${rc}"
 }
 trap cleanup EXIT
 
-mc() { podman run --rm --network "$NET" -e "MC_HOST_s=http://$AKID:$SECRET@$MINIO_CTR:9000" "$MC_IMAGE" "$@"; }
+# Every mc invocation goes through diag_run: silent while it works, and on
+# failure it prints the podman command, its exit status and everything mc wrote
+# to stderr — through $PD_DIAG_FD, so a caller's own `2>/dev/null` cannot eat
+# the explanation for that caller's own death. This is the exact call path that
+# produced a bare, unexplained 127 in pd-8gjs.
+mc() { diag_run mc podman run --rm --network "$NET" -e "MC_HOST_s=http://$AKID:$SECRET@$MINIO_CTR:9000" "$MC_IMAGE" "$@"; }
 
 # litestream, with the same credential wiring the deploy scripts use in prod
 # (a shared-credentials file selected by AWS_PROFILE — in prod that profile
@@ -398,11 +415,16 @@ check "four tenants, four prefixes" "4" "$(grep -c . "$WORK/prefixes.txt")"
 log "6. restore the NON-FIRST tenant — latest, and point-in-time"
 # Restoring tenant #1 would pass even if the derivation were off by one, so the
 # whole point of this section is that the victim is #2 of 4.
+# A failed restore must not abort the report — the checks below turn it into a
+# FAIL line instead. But "not fatal" is not the same as "not worth mentioning":
+# both of these route the failure through diag_run, so a restore that dies takes
+# litestream's (or sqlite's) own words with it into the log rather than leaving
+# `<no restored db>` as the only clue.
 restore_ok() { # restore_ok <out> <url> [flags...] — never aborts the report
 	local out="$1" url="$2"; shift 2
-	ls_run restore "$@" -o "/restore/${out}" "$url" >/dev/null 2>&1 || true
+	diag_run "restore ${out}" ls_run restore "$@" -o "/restore/${out}" "$url" >/dev/null || true
 }
-sq_restored() { sq "$WORK/restore/$1" "$2" 2>/dev/null || echo '<no restored db>'; }
+sq_restored() { diag_run "sqlite ${1}" sq "$WORK/restore/$1" "$2" || echo '<no restored db>'; }
 
 restore_ok "${VICTIM}-latest.sqlite" "$(tenant_replica_url "$VICTIM" || true)" -integrity-check full
 check "restored tenant is ${VICTIM}, not a neighbour" "$VICTIM" \

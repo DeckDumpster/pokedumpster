@@ -61,9 +61,12 @@ FIXTURES="${REPO_DIR}/tests/ui/fixtures"
 SUFFIX="${PDUP_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)}"
 IMAGE="localhost/pkdump:upgrade-${SUFFIX}"
 APP_CTR="pkdump-upgrade-${SUFFIX}"
-# 39900-39999. tests/litestream/run.sh takes 39000-39499 and drill.sh
-# 39500-39899, so the three gates cannot collide with each other either.
-PORT=${PDUP_PORT:-$(( 39900 + 16#${SUFFIX:0:2} % 100 ))}
+# The host port is PODMAN'S to pick (`-p 127.0.0.1::8080`), read back off the
+# container by `start_app` — the way deploy/setup.sh does with PORT=0. Deriving
+# it from the checkout hash gave 100 distinct values shared by 19 concurrent
+# polecat worktrees, deterministic per checkout and with no retry if the bind
+# failed. PDUP_PORT still pins it for a human who wants a known port.
+PORT=""
 
 WORK=${WORK:-$(mktemp -d /tmp/pd-upgrade.XXXXXX)}
 DATA="$WORK/data"
@@ -98,12 +101,25 @@ trap cleanup EXIT
 # would not be the thing that failed.
 start_app() {
 	podman rm -f --ignore "$APP_CTR" >/dev/null 2>&1 || true
-	podman run -d --name "$APP_CTR" -p "127.0.0.1:${PORT}:8080" \
+	# An EMPTY host port in the mapping is how Podman is asked to choose one —
+	# the same `:8080` deploy/setup.sh writes into the Quadlet unit for PORT=0.
+	podman run -d --name "$APP_CTR" -p "127.0.0.1:${PDUP_PORT:-}:8080" \
 		-v "${DATA}:/data:Z" "$IMAGE" >/dev/null
+	# Read back off the container rather than from `podman port`: the mapping is
+	# fixed at create time and inspect still reports it after the process has
+	# exited, which is exactly the case §7 asserts on.
+	PORT="$(podman inspect -f '{{ (index .NetworkSettings.Ports "8080/tcp" 0).HostPort }}' "$APP_CTR" 2>/dev/null || true)"
+	if [[ -z "$PORT" ]]; then
+		echo "  ABORT: podman published no host port for ${APP_CTR}."
+		podman logs "$APP_CTR" 2>&1 | sed 's/^/  /'
+		exit 1
+	fi
 }
 stop_app() { podman rm -f --ignore "$APP_CTR" >/dev/null 2>&1 || true; }
 
-# Wait for /health, or give up. Echoes up/down so a caller can assert on it.
+# Wait for /health, or give up. Echoes up/down so a caller can assert on it —
+# §7 is a section that WANTS `down`, so this stays a soft check. Every section
+# that needs a server uses `require_up` instead.
 wait_up() {
 	for _ in $(seq 45); do
 		if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/health"; then
@@ -115,6 +131,30 @@ wait_up() {
 		sleep 1
 	done
 	echo down
+}
+
+# A server that was supposed to come up and did not is an ABORT, not one more
+# FAIL line: every assertion after it reads the collection over HTTP, so one
+# root cause would print as a run of empty hashes and name none of them — and
+# start_app sends the container's stdout to /dev/null, so the reason would never
+# reach the log either (pd-z1xb, where this cost a manual `podman logs`).
+require_up() { # require_up <label>
+	local up
+	up="$(wait_up)"
+	check "$1" up "$up"
+	if [[ "$up" == up ]]; then
+		return
+	fi
+	echo
+	echo "  ABORT: the server never answered on 127.0.0.1:${PORT} — everything"
+	echo "         after this reads the collection over HTTP and would report"
+	echo "         an empty one, not a cause."
+	echo "  container: ${APP_CTR}  state: $(podman inspect -f '{{.State.Status}}/{{.State.ExitCode}}' "$APP_CTR" 2>/dev/null || echo missing)"
+	echo "  --- podman logs ${APP_CTR} ---"
+	podman logs "$APP_CTR" 2>&1 | sed 's/^/  /'
+	echo "  --- end of log ---"
+	echo "  ${pass} passed, ${fail} failed before the abort"
+	exit 1
 }
 
 # A one-off `pkdump` against the same data directory — how deploy/TENANTS.md
@@ -159,7 +199,7 @@ echo "  ${SEED_ROWS} collection rows on the volume"
 
 log "3. the current binary SERVES that volume, un-migrated (prod's upgrade path)"
 start_app
-check "the server came up on an un-migrated volume" "up" "$(wait_up)"
+require_up "the server came up on an un-migrated volume"
 BEFORE_HASH=$(collection_hash)
 BEFORE_LINES=$(collection_lines)
 # Belt to that braces: a hash comparison alone would be satisfied by two equally
@@ -214,7 +254,7 @@ check "the catalog stayed where it was" "present" \
 
 log "5. it serves the SAME collection from its new name"
 start_app
-check "the server came up on the migrated volume" "up" "$(wait_up)"
+require_up "the server came up on the migrated volume"
 check "it serves exactly the collection it served before the migration" "$BEFORE_HASH" \
 	"$(collection_hash)"
 check "it reports the collection as registered" "1" \
@@ -259,7 +299,7 @@ check "the rollback also cleared the Litestream state" "gone" \
 	"$([ -e "${DATA}/tenants/.collection.sqlite-litestream" ] && echo present || echo gone)"
 
 start_app
-check "the server came up on the rolled-back volume" "up" "$(wait_up)"
+require_up "the server came up on the rolled-back volume"
 check "with the same collection it started with" "$BEFORE_HASH" "$(collection_hash)"
 
 # And the volume is back in the state §4 started from, so the migration can be
@@ -269,8 +309,8 @@ pkdump tenant migrate >"$WORK/migrate-3.log" 2>&1
 check "it can be migrated again afterwards" "1" \
 	"$(tenant_stems | grep -c '^[0-9A-HJKMNP-TV-Z]\{26\}$' || true)"
 start_app
-check "still the same collection" "$BEFORE_HASH" \
-	"$([ "$(wait_up)" = up ] && collection_hash || echo '<server down>')"
+require_up "the server came up on the re-migrated volume"
+check "still the same collection" "$BEFORE_HASH" "$(collection_hash)"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"

@@ -382,6 +382,15 @@ caller. It also asserts the case production actually runs — with the flag off,
 the header is not read, so a malformed one is served exactly like any other
 request.
 
+That gate necessarily opens the second opt-in above: it publishes a port, so
+the shipped entrypoint binds `0.0.0.0`, which is the combination the refusal
+exists for. It is entitled to it — a throwaway container on `127.0.0.1`, two
+fixture collections, torn down at the end of the script — and production is
+not, which is why nothing under `deploy/` sets either variable. So the gate's
+first section runs that same container *without* the opt-in and asserts the
+refusal: exits non-zero, never listens, and names the variable. An escape
+hatch nobody tests closed is indistinguishable from a guard that was deleted.
+
 ## Migrating the existing production database
 
 The production data directory predates `tenants/`: its collection sits at

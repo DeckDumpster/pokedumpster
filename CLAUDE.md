@@ -194,7 +194,12 @@ and does not read the tenant header at all. `--multi-tenant` (or
 a separate epic — so the flag must stay off in production. That is enforced
 rather than trusted: with the flag on and a non-loopback `--host`, the server
 refuses to start unless `PKDUMP_MULTITENANT_INSECURE_BIND=1` is also set.
-Single-tenant mode is unaffected at any address.
+Single-tenant mode is unaffected at any address. A container publishes a port,
+so its entrypoint binds `0.0.0.0` — every containerised multi-tenant instance
+needs that second opt-in, which is why `tests/tenants/handles.sh` sets it and
+nothing under `deploy/` does. That gate's §3 runs the same container *without*
+it and asserts the refusal, so the escape hatch cannot quietly become the
+default.
 
 What the header carries is a *handle*, and it is only ever a lookup key: the
 user registry (`registry.sqlite`, `pkdump-db/src/registry.rs`) maps it to an

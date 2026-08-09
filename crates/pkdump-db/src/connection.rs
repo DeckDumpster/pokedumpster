@@ -115,15 +115,15 @@ pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<(
     conn.execute("ATTACH DATABASE ?1 AS shared", [uri])?;
     schema_version::gate_attached(conn, Database::Shared, "shared")?;
 
-    // Skip sqlite_* internals and the legacy refinery_schema_history
-    // table left behind on the prod DB by the pre-luo migration system.
-    // It's harmless dead weight; new installs never get it.
+    // Everything the catalog declares, minus SQLite's own internals.
+    // Nothing else is named here: a table the catalog should not have is
+    // dropped by `schema_shared.sql`, not skipped by every reader of it
+    // (pd-yj40).
     let names: Vec<String> = {
         let mut stmt = conn.prepare(
             "SELECT name FROM shared.sqlite_master \
              WHERE type IN ('table', 'view') \
-               AND name NOT LIKE 'sqlite_%' \
-               AND name <> 'refinery_schema_history'",
+               AND name NOT LIKE 'sqlite_%'",
         )?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<_>>()?
@@ -389,6 +389,14 @@ mod tests {
         u32::from_be_bytes(bytes[60..64].try_into().unwrap())
     }
 
+    /// The file change counter (header bytes 24..28), which SQLite bumps on
+    /// every write transaction. An unchanged counter is proof that an open
+    /// touched nothing.
+    fn file_change_counter(path: &Path) -> u32 {
+        let bytes = std::fs::read(path).unwrap();
+        u32::from_be_bytes(bytes[24..28].try_into().unwrap())
+    }
+
     /// The adoption path, which is the release-blocking one: every database
     /// in existence is version 0, so if this is wrong, prod does not start.
     #[test]
@@ -521,6 +529,103 @@ mod tests {
             "no file version: {msg}"
         );
         assert!(open_shared(&shared_path).is_err(), "and directly, too");
+    }
+
+    /// The migration-history table the pre-luo migration system left on
+    /// every database built before it was removed. Recreated here in the
+    /// shape refinery wrote it so the drop is exercised against the real
+    /// thing rather than an empty stand-in.
+    fn add_legacy_refinery_table(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE refinery_schema_history ( \
+                 version INT4 PRIMARY KEY, \
+                 name VARCHAR(255), \
+                 applied_on VARCHAR(255), \
+                 checksum VARCHAR(255)); \
+             INSERT INTO refinery_schema_history \
+                 VALUES (1, 'initial', '2026-05-18T00:00:00', 'deadbeef');",
+        )
+        .unwrap();
+    }
+
+    fn has_table(conn: &Connection, name: &str) -> bool {
+        conn.prepare("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?1")
+            .unwrap()
+            .exists([name])
+            .unwrap()
+    }
+
+    /// pd-yj40: the legacy table goes away on open, so no reader downstream
+    /// has to know its name. Before the drop the JSON export was the one
+    /// keeping it out of a fresh collection — by naming it.
+    #[test]
+    fn a_legacy_refinery_table_is_dropped_from_a_collection_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collection.sqlite");
+        unversioned_collection(&path);
+        add_legacy_refinery_table(&path);
+
+        let conn = open_user(&path).unwrap();
+        assert!(
+            !has_table(&conn, "refinery_schema_history"),
+            "the legacy migration table must not survive an open"
+        );
+        // ...and the collection it sat beside is untouched.
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        // The exporter no longer names it, so this is what keeps it out.
+        assert!(
+            !crate::json_backup::user_tables(&conn)
+                .unwrap()
+                .iter()
+                .any(|t| t == "refinery_schema_history"),
+            "a dropped table cannot reach the JSON envelope"
+        );
+    }
+
+    /// The catalog carries its own copy. It is dropped by `open_shared` —
+    /// `pkdump setup` / `pkdump data refresh` — because that is the only
+    /// path that holds it read-write; the server merely attaches it.
+    #[test]
+    fn a_legacy_refinery_table_is_dropped_from_the_catalog_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.sqlite");
+        seed_shared(&path);
+        add_legacy_refinery_table(&path);
+
+        let conn = open_shared(&path).unwrap();
+        assert!(!has_table(&conn, "refinery_schema_history"));
+        assert!(crate::catalog::card_exists(&conn, "sv3pt5-1").unwrap());
+    }
+
+    /// The drop is a statement in the schema, which is re-applied on every
+    /// single open — so it must cost nothing once there is nothing to drop.
+    /// A write here would be a write on every server start, replicated
+    /// off-box by Litestream each time (same standard as the version stamp).
+    #[test]
+    fn dropping_a_table_that_is_already_gone_writes_nothing_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collection.sqlite");
+        {
+            let conn = open_user(&path).unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .unwrap();
+        }
+        let before = file_change_counter(&path);
+
+        for _ in 0..3 {
+            let conn = open_user(&path).unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .unwrap();
+            assert_eq!(
+                file_change_counter(&path),
+                before,
+                "re-opening must not write to the database"
+            );
+        }
     }
 
     #[test]

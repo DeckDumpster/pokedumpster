@@ -19,6 +19,9 @@
 #   6. DR drill:       run deploy/RESTORE.md's procedure with the shipped
 #                      scripts — restore one tenant in place while the others
 #                      stay byte-identical. See tests/litestream/drill.sh.
+#  6b. Alarming gate:  make every backup-alarming layer FIRE at a local sink
+#                      standing in for healthchecks.io + Pushover, and assert on
+#                      what it sent. See tests/alarming/run.sh.
 #   7. Visual gate:    screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines.
 #                      See tests/visual/README.md for the approval workflow.
@@ -150,6 +153,16 @@ bash "$REPO_DIR/tests/litestream/run.sh"
 
 step "Multi-tenant DR drill (deploy/RESTORE.md, executed)"
 bash "$REPO_DIR/tests/litestream/drill.sh"
+
+# --- 6b. Alarming gate ------------------------------------------------------
+# A backup that is not alarmed is a backup nobody knows is broken — which is the
+# state this project was actually in for months. Every layer is made to fire at a
+# local recorder and asserted on what it sent. Its own instance, its own MinIO,
+# its own unit-name prefix, both endpoints on 127.0.0.1 — it touches no
+# pkdump-*@prod unit and contacts no external service.
+
+step "Backup alarming: every layer fires (tests/alarming/run.sh)"
+bash "$REPO_DIR/tests/alarming/run.sh"
 
 # --- 7. Visual-regression gate ---------------------------------------------
 # Runs against the container started above rather than standing up a second

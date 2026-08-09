@@ -28,8 +28,16 @@
 # have caught the 11-day outage. The Pushover push is the fast, detailed signal
 # while the box is up; the monitor is the backstop for box-down.
 #
-# Env-driven; PKDUMP_BACKUP_PING_URL unset = no-op (dev/test/unconfigured boxes
-# are unaffected). No new runtime deps beyond curl + the litestream image.
+# Env-driven, and it FAILS when it cannot verify (pd-1717). This script used to
+# print "skipping" and exit 0 when PKDUMP_BACKUP_PING_URL was unset — which is
+# how alarming ends up looking armed while being off: a green systemd unit, a
+# green `systemctl status`, and nothing whatsoever watching the backups. Running
+# at all is the operator asserting this instance is supposed to be alarmed (the
+# timer is opt-in, per instance), so an unconfigured monitor is a configuration
+# FAILURE, not a quiet pass. Dev/test boxes are unaffected because they never
+# enable the timer — not because the checker lies for them.
+#
+# No new runtime deps beyond curl + the litestream image.
 #
 # Usage: backup-check.sh <instance> [tenant ...]   (default: every tenant on the volume)
 set -euo pipefail
@@ -47,19 +55,38 @@ VOLUME="pkdump-${INSTANCE}-data"
 . "${SCRIPT_DIR}/litestream-lib.sh"
 
 # Host-wide Pushover creds, then per-instance ping URL / threshold / S3 target.
-[ -f "${HOME}/.config/pkdump/alerts.env" ] && { set -a; . "${HOME}/.config/pkdump/alerts.env"; set +a; }
-[ -f "${CONF_DIR}/alerts.env" ]            && { set -a; . "${CONF_DIR}/alerts.env";            set +a; }
-[ -f "${CONF_DIR}/litestream.env" ]        && { set -a; . "${CONF_DIR}/litestream.env";        set +a; }
+# PKDUMP_ALERTS_ENV names the host-wide file; production never sets it. Only
+# tests point it elsewhere (tests/alarming/run.sh), for the same reason
+# LITESTREAM_S3_ENDPOINT exists — so a gate can exercise the shipped script
+# without writing to the operator's real credentials.
+ALERTS_ENV="${PKDUMP_ALERTS_ENV:-${HOME}/.config/pkdump/alerts.env}"
+[ -f "$ALERTS_ENV" ]                && { set -a; . "$ALERTS_ENV";                set +a; }
+[ -f "${CONF_DIR}/alerts.env" ]     && { set -a; . "${CONF_DIR}/alerts.env";     set +a; }
+[ -f "${CONF_DIR}/litestream.env" ] && { set -a; . "${CONF_DIR}/litestream.env"; set +a; }
 
 PING="${PKDUMP_BACKUP_PING_URL:-}"
 # Snapshots are daily (litestream.yml interval=24h); the threshold must clear one
 # full interval plus margin, so a single late snapshot doesn't false-alarm.
 MAX_AGE_HOURS="${PKDUMP_BACKUP_MAX_AGE_HOURS:-36}"
 
-# No monitor configured -> nothing to do. Keep dev/test silent.
+# Asked to verify, unable to verify -> FAIL. There is no "skip" outcome: the
+# whole value of a dead-man's switch is that its silence means something, and a
+# checker that exits 0 without an off-box monitor to ping is silent in exactly
+# the way a working one is. Exiting non-zero also fires this unit's
+# OnFailure=pkdump-alert@ (Layer 2) and shows as `failed` in systemctl, so the
+# unarmed state is visible from three directions instead of none.
 if [ -z "$PING" ]; then
-    echo "backup-check: PKDUMP_BACKUP_PING_URL unset — skipping (instance: ${INSTANCE})"
-    exit 0
+    cat >&2 <<EOF
+backup-check: FAILED — no off-box monitor configured for instance '${INSTANCE}'.
+    PKDUMP_BACKUP_PING_URL is empty or unset, so nothing off this box is
+    watching whether the backups are fresh. This is a configuration failure,
+    not a pass.
+    Fix: put the healthchecks.io ping URL in ${CONF_DIR}/alerts.env, then
+         bash ${SCRIPT_DIR}/alarm-status.sh ${INSTANCE}
+    (If this instance is not meant to be alarmed, disable its timer:
+     systemctl --user disable --now pkdump-backup-check@${INSTANCE}.timer)
+EOF
+    exit 1
 fi
 
 # Mark the latest confirmed-fresh time on the data volume so the app can surface

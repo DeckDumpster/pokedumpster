@@ -28,6 +28,16 @@ The irreplaceable set is **two things**, and one sidecar replicates both.
   will restore), and we do not get to make that criticism unless our own registry
   is in the replicated set. It is. Drilled, not assumed — see the bottom of this
   file.
+
+  **And the order is now ENFORCED, not just documented** (`pd-7f46`).
+  `restore-litestream.sh` refuses to restore a database named by an opaque id
+  unless the volume's registry names that id — because the wrong order does not
+  fail on its own. It *succeeds*: every byte comes back, `integrity_check` says
+  ok, and what you are holding is anonymous. A recovery that looks finished and
+  is not is the same failure this project already owns once (`pd-1717`: the
+  sidecar `active`, "snapshot complete" in the journal, and `txid.replica` at
+  zero), so it is an error here rather than a footnote. `--unattributed` is the
+  explicit way past it, for the one case that belongs there — see scenario B2.
 - **Point-in-time recovery: 6 months**, for both. You can restore either as it was
   at *any second* within the last 180 days (daily snapshots + the transaction
   log). The `snapshot:` policy is process-global, so the registry and every
@@ -61,6 +71,14 @@ bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod 01K2C7HQ8NZ0XW3
 > is step one** (`deploy/TENANTS.md`, "Which file is whose") — a handle you
 > remember is not an answer, because a rename moves the handle and leaves the id
 > alone, and a recreated handle points at a different database entirely.
+>
+> Which is also why the restore will not run without the registry: it prints
+> `Attribution: <id> belongs to <handle>` before it touches anything, and if it
+> cannot say that, it stops. A **detached** user is still attributable (the row
+> survives under their real handle), so their data restores normally. A
+> **handle-named** database — `tenants/collection.sqlite`, which is what `prod`
+> still has — is exempt, because its filename already says whose it is; the gate
+> is about opaque ids, so `restore-litestream.sh prod` is unaffected by it.
 >
 > **A data volume mid-migration holds BOTH shapes**, so the scripts accept
 > either stem. `pkdump tenant create` has minted opaque ids since `pd-zr9n`;
@@ -259,17 +277,20 @@ merging two people onto one name (`UNIQUE constraint failed: user.handle` —
 the same `UPDATE`, or rename the live holder first.
 
 Only a **purge** destroys the local copy, and even then the S3 replica outlives
-it until retention expires (6 months). Recover it exactly like any other
-collection, addressed by the id the purge printed:
+it until retention expires (6 months). Recovering it is the one case that has to
+say `--unattributed`, because a purge takes the registry row with it and the
+attribution gate would otherwise (correctly) refuse a database nothing on the box
+can name:
 
 ```bash
-bash deploy/restore-litestream.sh prod <the purged database id>
+bash deploy/restore-litestream.sh --unattributed prod <the purged database id>
 ```
 
-The restored file is under a `database_id` that no registry row names any more,
-so `pkdump tenant list` will report it as a database no registered user claims
-until you decide who it belongs to. That is the intended shape: the bytes come
-back before the attribution does, and neither is guessed.
+Without the flag it stops and tells you this is the case to use it for. With it,
+the restored file is under a `database_id` that no registry row names any more,
+so `pkdump tenant list` reports it as a database no registered user claims until
+you decide who it belongs to. That is the intended shape: the bytes come back
+before the attribution does, and neither is guessed.
 
 ## Scenario C — total box loss (rebuild from scratch)
 
@@ -297,6 +318,16 @@ which"*. Restore the tenants first and you are holding a directory of files call
 `01K2C7HQ8N….sqlite` with no way to tell whose collection is inside any of them —
 every byte present, nothing attributable. The registry is the only thing that
 puts the names back.
+
+**The script enforces this.** Step 3 below fails if you skip step 1:
+
+```
+ERROR: refusing to restore 01K2C7HQ8N… — nothing on this box says whose it is.
+       There is no registry.sqlite on 'pkdump-prod-data'.
+```
+
+That is the whole point of the gate: without it, skipping step 1 does not look
+like a mistake. It looks like a completed recovery.
 
 ```bash
 set -a; . ~/.config/pkdump/prod/litestream.env; set +a
@@ -342,9 +373,12 @@ podman run --rm \
 
 **If the registry itself is gone** — the one case the order cannot save you from
 — the databases are still fully recoverable, but anonymous: restore each prefix
-and identify them by their contents. Assume nothing about which is which. This is
-the failure the registry being replicated exists to prevent, so if you are here,
-find out why its replica was missing before rebuilding anything on top of it.
+with `--unattributed` and identify them by their contents. Assume nothing about
+which is which. Typing that flag once per database is the intended friction: it
+is the difference between recovering anonymous data knowingly and believing you
+recovered a system. This is the failure the registry being replicated exists to
+prevent, so if you are here, find out why its replica was missing before
+rebuilding anything on top of it.
 
 The data volume does not need to be prepared: the restore creates `tenants/` if
 it is missing, so restoring onto a bare volume is the same command. Provisioning
@@ -365,10 +399,20 @@ bash deploy/backup-check.sh prod                                             # .
 ```
 
 `is-active` is liveness, not freshness — the sidecar can sit `active` while
-error-looping on bad credentials. `backup-check.sh` is the one that asks S3.
+error-looping on bad credentials. `backup-check.sh` is the one that asks S3 —
+**always**. It used to print a skip and exit 0 when `PKDUMP_BACKUP_PING_URL` was
+unset, which is a pass to anything reading its exit status; now the ping is the
+only thing that URL controls, and a stale replica fails the check whether or not
+there is a monitor to tell (`pd-7f46`).
 
 ## If something is wrong
 
+- **`refusing to restore <id> — nothing on this box says whose it is`** → the
+  attribution gate. Either the registry has not been restored yet (do that
+  first: `--registry`), or this database is one you **purged** and its row is
+  gone by design — that is what `--unattributed` is for. Do not reach for the
+  flag to get past the first case; restoring the registry takes one command and
+  is what puts a name on everything else you are about to restore.
 - **`InvalidClientTokenId` / `cannot load profile`** → the podman secret holds a
   bad/rotated key. Recreate it (`podman secret rm` + `create`) and
   `systemctl --user restart pkdump-litestream-prod.service`.
@@ -434,9 +478,28 @@ nothing — the filename already said `alpha`. So the drill prints what the buck
 alone can tell you with the registry gone (four ids, not one name), restores the
 registry first, and recovers every tenant *by handle* from what it says.
 
-**Last exercised: 2026-08-08** (pd-nd6w), **both modes, 32/32 checks each** —
-including the registry loss/restore path above. MinIO, and the production bucket
-under prefix `pd-v8zf-drill/` with the real assume-role credentials, which is
-also what confirms the backup role can write the registry's new prefix and not
-just the tenants one. The throwaway prefix was deleted afterwards (0 objects
-remaining) and `prod/tenants/` was untouched throughout.
+**The recovery matrix** (`pd-7f46`). A restore drilled only against a live,
+first, never-renamed tenant is drilled in the one state a real box is least
+likely to be in, so the four tenants are deliberately in four different states by
+the time total loss hits them: one untouched, one restored twice and rolled back,
+one **renamed**, and one **detached**. The drill asserts a collection comes back
+after a rename (same file, same replica prefix, same recovery window — only the
+label moved) and after a detach (kept, still attributable to the person who had
+it, restorable), and that total loss recovers all four *under their current
+handles*.
+
+Its last section is the load-bearing negative: it restores every prefix the
+bucket offers onto a registry-less volume, shows that all four come back
+complete and healthy and that `pkdump tenant list` cannot name a single one of
+them — and then shows the shipped script refusing to do it, without stopping a
+service to say so. Recreated handles are proved separately and completely by
+`tests/litestream/recreate.sh` (`pd-pm7b`), which `deploy/ci.sh` also runs.
+
+**Last exercised: 2026-08-09** (pd-7f46), **both modes, 77/77 checks each** — the
+whole matrix above, including the registry loss/restore path and the refusal.
+MinIO, and the production bucket under prefix `pd-v8zf-drill/` with the real
+assume-role credentials, which is also what confirms the backup role can write
+the registry's prefix and not just the tenants one. The throwaway prefix was
+deleted afterwards (0 objects remaining) and `prod/tenants/` was untouched
+throughout. `tests/litestream/recreate.sh` passed 32/32 alongside it in both
+modes, against the registry schema as of `pd-9wif`.

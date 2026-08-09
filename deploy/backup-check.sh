@@ -33,8 +33,21 @@
 # have caught the 11-day outage. The Pushover push is the fast, detailed signal
 # while the box is up; the monitor is the backstop for box-down.
 #
-# Env-driven; PKDUMP_BACKUP_PING_URL unset = no-op (dev/test/unconfigured boxes
-# are unaffected). No new runtime deps beyond curl + the litestream image.
+# ── NO CHECK MAY PASS BY SKIPPING (pd-7f46) ─────────────────────────────────
+# This script used to exit 0 without asking S3 anything when
+# PKDUMP_BACKUP_PING_URL was unset. That is a pass — indistinguishable, to a
+# caller, a CI tier or an operator reading a green unit, from "every replica is
+# fresh". A check that cannot fail is not evidence, and this project already
+# owns the scar: prod ran ACTIVE and replicating nothing while every
+# backup-shaped signal was green (pd-1717).
+#
+# So the VERIFICATION always runs. What the ping URL controls is the PING, and
+# nothing else: with no monitor configured, freshness is still checked against
+# S3 and a stale replica still fails, it just cannot arm the off-box dead-man.
+# The absence of that URL is reported on the way past, because an unarmed Layer
+# 1 is worth saying out loud on a box that has real backups.
+#
+# No new runtime deps beyond curl + the litestream image.
 #
 # Usage: backup-check.sh <instance> [tenant ...]   (default: every tenant on the volume)
 set -euo pipefail
@@ -61,10 +74,11 @@ PING="${PKDUMP_BACKUP_PING_URL:-}"
 # full interval plus margin, so a single late snapshot doesn't false-alarm.
 MAX_AGE_HOURS="${PKDUMP_BACKUP_MAX_AGE_HOURS:-36}"
 
-# No monitor configured -> nothing to do. Keep dev/test silent.
+# No monitor configured. The check still runs — see the header. Only the ping at
+# the end is skipped, and the operator is told which half they are getting.
 if [ -z "$PING" ]; then
-    echo "backup-check: PKDUMP_BACKUP_PING_URL unset — skipping (instance: ${INSTANCE})"
-    exit 0
+    echo "backup-check: PKDUMP_BACKUP_PING_URL unset — verifying freshness anyway;" \
+         "the off-box dead-man's switch is NOT armed (instance: ${INSTANCE})"
 fi
 
 # Mark the latest confirmed-fresh time on the data volume so the app can surface
@@ -79,8 +93,12 @@ stale() {
     local reason="$1"
     echo "backup-check: STALE — ${reason}" >&2
     # Trip the off-box dead-man immediately rather than waiting for the grace
-    # window to expire on a missed ping.
-    curl -fsS -m 10 "${PING}/fail" >/dev/null 2>&1 || true
+    # window to expire on a missed ping. Only if there is one to trip: an
+    # unarmed monitor changes what this failure can NOTIFY, never whether it
+    # is a failure.
+    if [ -n "$PING" ]; then
+        curl -fsS -m 10 "${PING}/fail" >/dev/null 2>&1 || true
+    fi
     # Fast, detailed push (only reaches you while the box is up; the monitor is
     # the backstop for box-down).
     "${SCRIPT_DIR}/alert.sh" "PokeDumpster backup STALE (${INSTANCE})" \
@@ -202,6 +220,11 @@ for TENANT in "${TENANTS[@]}"; do
 done
 
 # --- Fresh: ping the monitor + record the marker ---------------------------
-echo "backup-check: OK — the registry + ${#TENANTS[@]} tenant(s) fresh; pinging monitor"
 mark_fresh
-curl -fsS -m 10 "$PING" >/dev/null 2>&1 || echo "backup-check: WARNING — monitor ping failed (will retry next run)" >&2
+if [ -z "$PING" ]; then
+    echo "backup-check: OK — the registry + ${#TENANTS[@]} tenant(s) fresh; no monitor to ping" \
+         "(PKDUMP_BACKUP_PING_URL unset — Layer 1 cannot alert on a dead box)"
+else
+    echo "backup-check: OK — the registry + ${#TENANTS[@]} tenant(s) fresh; pinging monitor"
+    curl -fsS -m 10 "$PING" >/dev/null 2>&1 || echo "backup-check: WARNING — monitor ping failed (will retry next run)" >&2
+fi

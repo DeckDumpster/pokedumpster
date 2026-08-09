@@ -24,6 +24,28 @@
 #                                                the tenant list out of it, then
 #                                                restore each database it names
 #
+# ── THE RECOVERY MATRIX (pd-7f46) ───────────────────────────────────────────
+# A restore that only ever recovers a live, first, never-renamed tenant is a
+# restore tested in the one state a real box is least likely to be in. §7-§10
+# walk the states THIS design creates, and every assertion is "can this
+# person's collection be brought back", never "the sidecar is active":
+#
+#   * a NON-FIRST tenant — §4 onwards; the victim is #2 of 4, so an off-by-one
+#     in the addressing fails here instead of passing on tenant #1.
+#   * after a RENAME (§7) — the handle is a label and the database_id is the
+#     identity, so the file, the prefix and the recovery window do not move.
+#   * a DETACHED tenant (§8) — detach-not-delete is only justified if the kept
+#     data comes back, and if the surviving row still says whose it was.
+#   * a RECREATED handle — NOT here. tests/litestream/recreate.sh is the whole
+#     proof of it (pd-pm7b) and deploy/ci.sh runs it; duplicating it here would
+#     give two half-proofs instead of one.
+#   * THE LOAD-BEARING NEGATIVE (§10) — restoring the tenant files WITHOUT the
+#     registry must FAIL. It is the section that turns "restore the registry
+#     first" from a documented wish into a tested invariant, and it shows the
+#     failure first: every prefix the bucket offers, restored onto a
+#     registry-less volume, comes back complete and healthy and anonymous, and
+#     `pkdump tenant list` cannot name a single one of them.
+#
 # It runs the real scripts (deploy/restore-litestream.sh, deploy/backup-check.sh)
 # against a real Quadlet sidecar unit on a real data volume, in place — deleting
 # the live file and restoring over it, which is what an incident actually looks
@@ -104,6 +126,13 @@ MINIO_PORT=${MINIO_PORT:-$(( 39500 + 16#$(printf '%s' "$REPO_DIR" | sha1sum | cu
 # tidied: `01J8…` and `01j8…` are one file on a case-insensitive filesystem and
 # two S3 prefixes, and taking the lowercase shortcut here is what let this drill
 # pass while deploy/litestream-lib.sh still rejected every real id (pd-vgof).
+#
+# TENANTS is the list of FIXTURE LABELS, not of handles, and after §7 the two
+# are deliberately not the same thing: a rename changes the handle and touches
+# nothing else, so the label keeps naming the same database, the same replica
+# prefix, and the rows inside it (every row is `<label>-card-…`). HANDLE is the
+# handle each label currently answers to, read off the registry the way anything
+# else would have to. Nothing here derives a path or a URL from a handle.
 TENANTS=(alpha bravo charlie delta)
 declare -A DB_ID=(
 	[alpha]=01K2C7HQ8N0000000000000AAA
@@ -111,8 +140,12 @@ declare -A DB_ID=(
 	[charlie]=01K2C7HQ8N0000000000000CCC
 	[delta]=01K2C7HQ8N0000000000000DDD
 )
+declare -A HANDLE=([alpha]=alpha [bravo]=bravo [charlie]=charlie [delta]=delta)
 VICTIM=bravo
-WRITER=delta   # keeps taking writes while the victim is being recovered
+WRITER=delta      # keeps taking writes while the victim is being recovered
+RENAMED=charlie   # renamed in §7, then restored under the new handle
+DETACHED=alpha    # detached in §8, then restored from its replica
+RENAMED_TO=charlize
 
 WORK=${WORK:-$(mktemp -d /tmp/pkdump-drill.XXXXXX)}
 
@@ -210,6 +243,30 @@ rows_hash() { sqlite3 "file:$(tenant_file "$1")?mode=ro" 'SELECT id, printing_id
 rows_count() { sqlite3 "file:$(tenant_file "$1")?mode=ro" 'SELECT count(*) FROM collection;' 2>/dev/null || echo '<no db>'; }
 rows_owner() { sqlite3 "file:$(tenant_file "$1")?mode=ro" "SELECT DISTINCT substr(printing_id, 1, instr(printing_id,'-')-1) FROM collection;" 2>/dev/null || echo '<no db>'; }
 
+# The real CLI, pointed at the drill's own data volume. §7 and §8 change registry
+# state — a rename and a detach — and those are product operations: asserting
+# them against a hand-written UPDATE would prove something about this file
+# instead of about `pkdump tenant`. The rest of the drill still seeds with
+# sqlite3, because the backup layer is what it is drilling.
+PKDUMP_BIN=${PKDUMP_BIN:-${CARGO_TARGET_DIR:-${REPO_DIR}/target}/debug/pkdump}
+pk() { PKDUMP_HOME="$(mount_point)" "$PKDUMP_BIN" "$@"; }
+# The registry's own answer to "which database does this handle name?", asked of
+# the live registry through the CLI. Row state is a separate column, so the two
+# questions are two functions rather than one with a flag.
+#
+# HANDLE / DATABASE ID / CREATED / STATE / RETIRED, whitespace-separated — so
+# $4 is the state only because CREATED is a single token (see the seed in §2). A
+# row whose database is missing gets `(DATABASE MISSING)` appended, which is why
+# nothing here counts columns from the end.
+registry_id() { pk tenant list | awk -v h="$1" -v s="${2:-active}" '$1 == h && $4 == s {print $2}'; }
+registry_state() { pk tenant list | awk -v i="$1" '$2 == i {print $4}'; }
+# ...and asked of a registry FILE, which is what §9 has to do: it is reading a
+# registry that was just restored onto a bare volume, before anything is running.
+registry_file_id() { # registry_file_id <handle>
+	sqlite3 -cmd '.timeout 5000' "$(registry_file)" \
+		"SELECT database_id FROM user WHERE handle = '$1';" 2>/dev/null
+}
+
 write_phase() { # write_phase <phase>
 	local t
 	for t in "${TENANTS[@]}"; do
@@ -230,6 +287,11 @@ wait_for_replica() { # wait_for_replica <tenant> [seconds]
 	done
 	return 1
 }
+
+if [ ! -x "$PKDUMP_BIN" ]; then
+	echo "==> building pkdump (${PKDUMP_BIN} not present)..."
+	( cd "$REPO_DIR" && cargo build --quiet --bin pkdump )
+fi
 
 # ── 1. the S3 target ────────────────────────────────────────────────────────
 if [ -n "${DRILL_REAL_S3:-}" ]; then
@@ -341,13 +403,17 @@ write_phase early
 # drill exercises the BACKUP layer and should not need a build to run.
 sqlite3 "$(registry_file)" 'PRAGMA journal_mode=WAL;' >/dev/null
 sqlite3 "$(registry_file)" < "${REPO_DIR}/crates/pkdump-db/src/schema_registry.sql"
+# RFC3339, with no space in it, because that is what `registry::insert` writes —
+# and because `pkdump tenant list` prints the registry as a whitespace-separated
+# table, so a `datetime('now')` fixture (which has a space) would silently shift
+# every column after CREATED and make the STATE this drill reads back the time.
 for t in "${TENANTS[@]}"; do
 	sqlite3 "$(registry_file)" \
 		"INSERT INTO user (handle, database_id, created_at, state)
-		 VALUES ('$t', '$(db_id "$t")', datetime('now'), 'active');"
+		 VALUES ('${HANDLE[$t]}', '$(db_id "$t")', strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'active');"
 done
 echo "  ${#TENANTS[@]} tenants on ${VOLUME}, named by opaque database id:"
-for t in "${TENANTS[@]}"; do echo "    ${t} -> tenants/$(db_id "$t").sqlite"; done
+for t in "${TENANTS[@]}"; do echo "    ${HANDLE[$t]} -> tenants/$(db_id "$t").sqlite"; done
 echo "  registry.sqlite at the data root holds that mapping and nothing else does"
 
 # The shipped Quadlet sidecar unit, installed the way deploy/setup.sh installs it.
@@ -490,12 +556,28 @@ sidecar_start
 
 # ── 6. the freshness checker agrees, per tenant ─────────────────────────────
 log "6. deploy/backup-check.sh: every tenant, including the restored one"
+# backup-check.sh sources the HOST-WIDE alerts.env first and the INSTANCE's
+# second, so writing the instance's is what makes these arms deterministic on a
+# box that has a host-wide one.
+#
+# The blank Pushover pair is not tidiness. A stale verdict calls deploy/alert.sh,
+# which pushes with whatever credentials are in the environment — so without
+# this, the arm below that deliberately fails would send a real push
+# notification to a real phone on every CI run. A drill does not page anybody.
+bc() { # bc <ping url> [tenant...] -> sets BC_OUT / BC_RC
+	{
+		printf 'PKDUMP_BACKUP_PING_URL=%s\n' "$1"
+		printf 'PUSHOVER_TOKEN=\nPUSHOVER_USER=\n'
+	} > "${CONF_DIR}/alerts.env"
+	shift
+	BC_OUT="$(bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$@" 2>&1)" && BC_RC=0 || BC_RC=$?
+	printf '%s\n' "$BC_OUT" | sed 's/^/    /'
+}
+
 # The dead-man's switch is what tells the operator backups RESUMED after a
 # restore. Point its ping at a closed port: a failed ping only warns, so this
 # exercises the real S3 freshness query without needing a monitor.
-BC_OUT="$(PKDUMP_BACKUP_PING_URL=http://127.0.0.1:1/drill \
-	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" 2>&1)" && BC_RC=0 || BC_RC=$?
-printf '%s\n' "$BC_OUT" | sed 's/^/    /'
+bc http://127.0.0.1:1/drill
 check "backup-check reports every tenant fresh after the restore" "0" "$BC_RC"
 check "and it checked all four" "4" \
 	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: tenant .* OK — newest S3 replica" || true)"
@@ -504,8 +586,148 @@ check "and it checked all four" "4" \
 check "and it checked the registry as well" "1" \
 	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: the user registry OK — newest S3 replica" || true)"
 
-# ── 7. RESTORE.md scenario C — the whole volume is gone ─────────────────────
-log "7. scenario C: total loss — restore the REGISTRY FIRST, then the tenants"
+# NO CHECK MAY PASS BY SKIPPING (pd-7f46). With no monitor URL configured this
+# script used to print a skip and exit 0 — a pass, to anything reading its exit
+# status, having asked S3 nothing at all. Unarming the monitor must cost the
+# PING and nothing else.
+bc ""
+check "with the monitor unarmed, backup-check still verifies against S3" "0" "$BC_RC"
+check "and it still checked all four tenants" "4" \
+	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: tenant .* OK — newest S3 replica" || true)"
+check "and the registry" "1" \
+	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: the user registry OK — newest S3 replica" || true)"
+check "and it says the dead-man's switch is not armed" "1" \
+	"$(printf '%s\n' "$BC_OUT" | grep -c "NOT armed" || true)"
+check "and it did NOT report skipping" "0" \
+	"$(printf '%s\n' "$BC_OUT" | grep -ci "skipping" || true)"
+
+# ...and the zero above is an answer rather than an absence of one: a database
+# older than the freshness threshold with nothing under its prefix FAILS, with
+# the monitor still unarmed. `touch -d` is the only way to age a file a drill
+# created ninety seconds ago, and the age is what the judgement turns on.
+ORPHAN_ID=01K2C7HQ8N0000000000000EEE
+sidecar_stop
+sqlite3 "${MP}/tenants/${ORPHAN_ID}.sqlite" 'CREATE TABLE collection (id INTEGER PRIMARY KEY);'
+touch -d '3 days ago' "${MP}/tenants/${ORPHAN_ID}.sqlite"
+bc "" "$ORPHAN_ID"
+check "an unreplicated tenant FAILS the check even with no monitor to alert" "1" "$BC_RC"
+check "and it says which one, and why" "1" \
+	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: STALE — tenant '${ORPHAN_ID}'" || true)"
+rm -f "${MP}/tenants/${ORPHAN_ID}.sqlite"
+sidecar_start
+
+# ── 7. recovery after a RENAME ──────────────────────────────────────────────
+log "7. ${RENAMED} is renamed to ${RENAMED_TO}, then recovered under the new handle"
+# The claim this epic rests on: a handle is a LABEL and the database_id is the
+# IDENTITY. A rename is therefore one UPDATE, and the file, the replica prefix
+# and the recovery window all stay exactly where they were — which was
+# impossible while the name WAS the path (a rename moved the file, so it started
+# a new prefix and a new window, and pd-1717's silent replication loss lived in
+# that gap).
+#
+# Asserted through `pkdump tenant rename`, not through an UPDATE of our own: the
+# property belongs to the product.
+RENAMED_URL_BEFORE="$(tenant_replica_url "$(db_id "$RENAMED")")"
+RENAMED_FILE_BEFORE="$(tenant_file "$RENAMED")"
+RENAMED_ROWS_BEFORE="$(rows_hash "$RENAMED")"
+# One prefix per database, and the count is here so §7 can show that a rename
+# did not mint a fifth.
+prefix_count() {
+	aws_cli s3 ls "s3://${LITESTREAM_S3_BUCKET}/${LITESTREAM_S3_PATH}/" 2>/dev/null \
+		| grep -c 'PRE' || true
+}
+PREFIXES_BEFORE="$(prefix_count)"
+
+sidecar_stop
+for t in "${TENANTS[@]}"; do BEFORE_FILE[$t]="$(file_hash "$t")"; BEFORE_ROWS[$t]="$(rows_hash "$t")"; done
+pk tenant rename "${HANDLE[$RENAMED]}" "$RENAMED_TO" | sed 's/^/    /'
+HANDLE[$RENAMED]=$RENAMED_TO
+
+check "the new handle maps to the SAME database id" "$(db_id "$RENAMED")" \
+	"$(registry_id "$RENAMED_TO")"
+check "and the old handle resolves to nothing at all" "" "$(registry_id "$RENAMED")"
+check "the database did not move: same path, still there" "yes" \
+	"$([ "$(tenant_file "$RENAMED")" = "$RENAMED_FILE_BEFORE" ] && [ -e "$RENAMED_FILE_BEFORE" ] && echo yes || echo no)"
+check "not one byte of it changed" "${BEFORE_FILE[$RENAMED]}" "$(file_hash "$RENAMED")"
+check "and nothing on disk is named by either handle" "0" \
+	"$(find "$MP" -name "${RENAMED}*" -o -name "${RENAMED_TO}*" | grep -c . || true)"
+check "the replica prefix is unchanged, so the recovery window is unbroken" "same" \
+	"$([ "$(tenant_replica_url "$(db_id "$RENAMED")")" = "$RENAMED_URL_BEFORE" ] && echo same || echo different)"
+check "and the rename did not mint a new prefix in the bucket" "$PREFIXES_BEFORE" \
+	"$(prefix_count)"
+
+# Now the recovery itself, run the way the runbook says: ask the registry which
+# database the person called ${RENAMED_TO} is, then restore THAT.
+rm -f "$(tenant_file "$RENAMED")" "$(tenant_file "$RENAMED")-wal" "$(tenant_file "$RENAMED")-shm"
+check "${RENAMED_TO}'s live database is gone" "gone" \
+	"$([ -e "$(tenant_file "$RENAMED")" ] && echo present || echo gone)"
+RENAMED_ID="$(registry_id "$RENAMED_TO")"
+RS_OUT="$(bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$RENAMED_ID" 2>&1)"
+printf '%s\n' "$RS_OUT" | sed 's/^/    /'
+check "the restore attributes the file to the NEW handle" "1" \
+	"$(printf '%s\n' "$RS_OUT" | grep -c "Attribution: ${RENAMED_ID} belongs to ${RENAMED_TO} (active)" || true)"
+sidecar_stop
+check "${RENAMED_TO}'s collection is back, row for row" "$RENAMED_ROWS_BEFORE" "$(rows_hash "$RENAMED")"
+# And it is the collection she had BEFORE the rename — the rows still say
+# `${RENAMED}-card-…`, because a rename is not a data migration.
+check "and it is the same collection she had under her old handle" "$RENAMED" \
+	"$(rows_owner "$RENAMED")"
+untouched=0
+for t in "${TENANTS[@]}"; do
+	[ "$t" = "$RENAMED" ] && continue
+	[ "$(file_hash "$t")" = "${BEFORE_FILE[$t]}" ] && [ "$(rows_hash "$t")" = "${BEFORE_ROWS[$t]}" ] \
+		&& untouched=$((untouched + 1)) || echo "  FAIL  ${t} changed across a rename + restore of ${RENAMED_TO}"
+done
+check "the other three tenants are byte-identical across all of it" "3" "$untouched"
+sidecar_start
+
+# ── 8. recovery of a DETACHED tenant ────────────────────────────────────────
+log "8. ${DETACHED} is detached, then her KEPT collection is recovered"
+# `pkdump tenant remove` no longer deletes anything: it releases the handle and
+# keeps the database and its replica. That is only a defensible default if the
+# kept data genuinely comes back — otherwise it is a promise the box cannot
+# honour. So: detach, lose the live file, and restore it.
+sidecar_stop
+for t in "${TENANTS[@]}"; do BEFORE_FILE[$t]="$(file_hash "$t")"; BEFORE_ROWS[$t]="$(rows_hash "$t")"; done
+DETACHED_ID="$(db_id "$DETACHED")"
+DETACHED_ROWS_BEFORE="$(rows_hash "$DETACHED")"
+pk tenant detach "${HANDLE[$DETACHED]}" --yes | sed 's/^/    /'
+
+check "the handle is free the moment it is released" "" "$(registry_id "${HANDLE[$DETACHED]}")"
+# The partial unique index doing its work: no live user answers to the name, and
+# the surviving row still carries the person's REAL handle, so these bytes stay
+# attributable by reading a column rather than by parsing a composite name.
+check "the row survives under her real handle, state detached" "$DETACHED_ID" \
+	"$(registry_id "${HANDLE[$DETACHED]}" detached)"
+check "detach kept the database" "present" \
+	"$([ -e "$(tenant_file "$DETACHED")" ] && echo present || echo absent)"
+sidecar_start
+check "and it is still in the replicated set — the glob does not read state" "replicating" \
+	"$(wait_for_replica "$DETACHED" 90 && echo replicating || echo silent)"
+
+sidecar_stop
+rm -f "$(tenant_file "$DETACHED")" "$(tenant_file "$DETACHED")-wal" "$(tenant_file "$DETACHED")-shm"
+DS_OUT="$(bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$DETACHED_ID" 2>&1)"
+printf '%s\n' "$DS_OUT" | sed 's/^/    /'
+# A detached user is attributable, so the restore does not need --unattributed.
+# The row is the whole reason detach-not-delete is safe.
+check "the restore still knows whose it was" "1" \
+	"$(printf '%s\n' "$DS_OUT" | grep -c "Attribution: ${DETACHED_ID} belongs to ${DETACHED} (detached)" || true)"
+sidecar_stop
+check "a detached tenant's collection comes back row for row" "$DETACHED_ROWS_BEFORE" \
+	"$(rows_hash "$DETACHED")"
+check "and it is her own data" "$DETACHED" "$(rows_owner "$DETACHED")"
+untouched=0
+for t in "${TENANTS[@]}"; do
+	[ "$t" = "$DETACHED" ] && continue
+	[ "$(file_hash "$t")" = "${BEFORE_FILE[$t]}" ] && [ "$(rows_hash "$t")" = "${BEFORE_ROWS[$t]}" ] \
+		&& untouched=$((untouched + 1)) || echo "  FAIL  ${t} changed during a restore of the detached ${DETACHED}"
+done
+check "and the live tenants are byte-identical through it" "3" "$untouched"
+sidecar_start
+
+# ── 9. RESTORE.md scenario C — the whole volume is gone ─────────────────────
+log "9. scenario C: total loss — restore the REGISTRY FIRST, then the tenants"
 # The question this section settles: after losing the box, how does the operator
 # know which databases to restore and WHOSE they are?
 #
@@ -520,6 +742,13 @@ log "7. scenario C: total loss — restore the REGISTRY FIRST, then the tenants"
 # of opaque ids: every byte present, nothing attributable. The drill proves the
 # second half rather than asserting it — it wipes the volume, then LOOKS at what
 # S3 alone can tell you before the registry comes back.
+#
+# By this point the four tenants are in FOUR DIFFERENT registry states, which is
+# the state a box that has been running for a year is actually in and the state
+# a fresh fixture never reaches: one live and never touched (${WRITER}), one
+# restored twice and rolled back (${VICTIM}), one RENAMED (${RENAMED} ->
+# ${RENAMED_TO}), and one DETACHED (${DETACHED}). Total loss has to recover all
+# four, and the handle it hands back has to be the CURRENT one.
 sidecar_stop
 rm -rf "${MP}/tenants" "${MP}/shared.sqlite" "$(registry_file)" "$(registry_file)-wal" "$(registry_file)-shm"
 check "the data volume is empty" "0" "$(find "${MP}" -name '*.sqlite' | grep -c . || true)"
@@ -530,53 +759,168 @@ mapfile -t PREFIXES < <(aws_cli s3 ls "s3://${LITESTREAM_S3_BUCKET}/${LITESTREAM
 echo "  the tenant prefixes S3 offers, with the registry gone:"
 printf '    %s\n' "${PREFIXES[@]-}"
 check "S3 alone yields the right NUMBER of databases" "4" "${#PREFIXES[@]}"
+# Against every handle these four have ever answered to, including the one that
+# was renamed away and the one that was released.
 check "...and not one of them is a handle — the files are anonymous" "0" \
-	"$(comm -12 <(printf '%s\n' "${PREFIXES[@]-}" | sort) <(printf '%s\n' "${TENANTS[@]}" | sort) | grep -c . || true)"
+	"$(comm -12 <(printf '%s\n' "${PREFIXES[@]-}" | sort) \
+	            <(printf '%s\n%s\n' "${TENANTS[*]}" "${HANDLE[*]}" | tr ' ' '\n' | sort -u) \
+	   | grep -c . || true)"
 
 # STEP ONE: the registry. It is restorable with the volume in this state —
 # nothing has to exist first, and no tenant has to be restored first.
 bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes --registry "$INSTANCE"
-check "the registry is back on a bare volume" "4" \
-	"$(sqlite3 "file:$(registry_file)?mode=ro" "SELECT count(*) FROM user WHERE state='active';" 2>/dev/null || echo '<no db>')"
+check "the registry is back on a bare volume, with all four rows" "4" \
+	"$(sqlite3 "file:$(registry_file)?mode=ro" "SELECT count(*) FROM user;" 2>/dev/null || echo '<no db>')"
+# Three live users and one released handle. The states came back with the rows —
+# a restore that flattened them would resurrect a detached user silently.
+check "and their states survived the restore" "3 1" \
+	"$(sqlite3 "file:$(registry_file)?mode=ro" \
+		"SELECT (SELECT count(*) FROM user WHERE state='active') || ' ' ||
+		        (SELECT count(*) FROM user WHERE state='detached');" 2>/dev/null || echo '<no db>')"
 
 # STEP TWO: the tenant list comes OUT of the registry, handles and all. This is
 # the enumeration the runbook tells the operator to use, and the only one that
 # survives opaque ids.
 mapfile -t DISCOVERED < <(sqlite3 "file:$(registry_file)?mode=ro" \
-	"SELECT handle || ' ' || database_id FROM user WHERE state='active' ORDER BY handle;")
+	"SELECT handle || ' ' || database_id || ' ' || state FROM user ORDER BY handle;")
 echo "  the registry's answer:"
 printf '    %s\n' "${DISCOVERED[@]-}"
-check "every tenant is reachable BY HANDLE again" "alpha bravo charlie delta" \
+# The renamed user comes back as ${RENAMED_TO}, not as ${RENAMED}: the registry
+# is restored from the replica of the table as it stood, so the CURRENT handle is
+# what a total loss hands back.
+check "every tenant is reachable BY HANDLE again, under its current handle" \
+	"$(printf '%s\n' "${HANDLE[@]}" | sort | tr '\n' ' ' | sed 's/ $//')" \
 	"$(printf '%s\n' "${DISCOVERED[@]-}" | awk '{printf "%s ", $1}' | sed 's/ $//')"
 # And the registry's answer and the bucket's agree — neither is trusted alone.
+# ALL rows, not just the active ones: a prefix the registry cannot account for is
+# an orphan, and a detached user's kept database must not read as one.
 check "the ids it names are exactly the prefixes in the bucket" "same" \
 	"$(cmp -s <(printf '%s\n' "${DISCOVERED[@]-}" | awk '{print $2}' | sort) \
 	          <(printf '%s\n' "${PREFIXES[@]-}" | sort) && echo same || echo different)"
 
 # STEP THREE: restore each database the registry named.
 for row in "${DISCOVERED[@]}"; do
-	bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "${row##* }" >/dev/null
+	bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$(printf '%s' "$row" | awk '{print $2}')" >/dev/null
 done
 check "all four restored onto a bare volume" "2 2 2 3" \
 	"$(for t in "${TENANTS[@]}"; do printf '%s ' "$(rows_count "$t")"; done | sed 's/ $//')"
 # The closing claim of the whole scenario: handle -> database_id -> that file,
 # and the collection inside it is that person's. Resolved through the restored
-# registry, not through a filename.
+# registry, not through a filename — which is the only way it can be resolved
+# for the renamed user, whose rows still say what she was called in §2.
 resolved=0
-for row in "${DISCOVERED[@]}"; do
-	handle="${row%% *}"; id="${row##* }"
+for t in "${TENANTS[@]}"; do
+	id="$(registry_file_id "${HANDLE[$t]}")"
 	owner="$(sqlite3 "file:${MP}/tenants/${id}.sqlite?mode=ro" \
 		"SELECT DISTINCT substr(printing_id, 1, instr(printing_id,'-')-1) FROM collection;" 2>/dev/null || echo '<no db>')"
-	[ "$owner" = "$handle" ] && resolved=$((resolved + 1)) \
-		|| echo "  ${handle} resolved to tenants/${id}.sqlite, which holds '${owner}'"
+	[ "$owner" = "$t" ] && resolved=$((resolved + 1)) \
+		|| echo "  ${HANDLE[$t]} resolved to tenants/${id}.sqlite, which holds '${owner}' (expected ${t})"
 done
 check "each handle resolves to a database holding THAT person's collection" "4" "$resolved"
 check "the catalog was NOT restored (it is not backed up — pkdump setup rebuilds it)" "absent" \
 	"$([ -e "${MP}/shared.sqlite" ] && echo present || echo absent)"
 
+# ── 10. THE LOAD-BEARING NEGATIVE ───────────────────────────────────────────
+log "10. restoring the tenant files WITHOUT the registry must FAIL"
+# §9 restores in the documented order and passes. That is not the same statement
+# as "the wrong order fails" — and until this section existed, the wrong order
+# SUCCEEDED. Every byte came back, `integrity_check` said ok, and the operator
+# was holding a directory of files called 01K2C7HQ8N….sqlite with nobody's name
+# on any of them. It reads as a finished recovery. That is the exact shape of the
+# failure this project is scar tissue from: every backup-shaped signal green
+# while recovery was impossible (pd-1717).
+#
+# So this section does it in the wrong order on purpose, shows what that gets
+# you, and then shows the gate refusing it.
+sidecar_stop
+rm -rf "${MP}/tenants" "$(registry_file)" "$(registry_file)-wal" "$(registry_file)-shm"
+mkdir -p "${MP}/tenants"
+check "the volume is bare again, registry included" "0" \
+	"$(find "${MP}" -name '*.sqlite' | grep -c . || true)"
+
+# ── the failure, executed. Restore every prefix the bucket offers, straight onto
+# the volume, with no registry — which is what "restore the tenant databases"
+# means to an operator who has the bucket and has not read the runbook.
+for id in "${PREFIXES[@]}"; do
+	ls_cli restore -integrity-check full -o "/out/raw-${id}.sqlite" \
+		"$(tenant_replica_url "$id")" >/dev/null 2>&1 || true
+	cp "${WORK}/out/raw-${id}.sqlite" "${MP}/tenants/${id}.sqlite"
+done
+healthy=0
+for id in "${PREFIXES[@]}"; do
+	[ "$(sqlite3 "${MP}/tenants/${id}.sqlite" 'PRAGMA integrity_check;' 2>&1 | head -1)" = ok ] \
+		&& healthy=$((healthy + 1))
+done
+check "all four databases came back COMPLETE and HEALTHY without the registry" "4" "$healthy"
+echo "  and this is what the operator is holding:"
+find "${MP}/tenants" -name '*.sqlite' -printf '    tenants/%f\n' | sort
+# The product's own answer, which is the honest one: it can see four databases
+# and cannot name a single one of them.
+PL_OUT="$(pk tenant list 2>&1)"
+printf '%s\n' "$PL_OUT" | sed 's/^/    /'
+check "the box cannot say whose any of them are" "1" \
+	"$(printf '%s\n' "$PL_OUT" | grep -c '^No users registered' || true)"
+check "...it can only say that nobody claims them" "1" \
+	"$(printf '%s\n' "$PL_OUT" | grep -c '^4 database(s) .* that no registered user claims' || true)"
+# Asking that question CREATED a registry — an empty one; the accessor opens the
+# file lazily and opening it makes it. Delete it again, so the gate below meets
+# the real disaster state (no registry at all) rather than a file this line made.
+rm -f "$(registry_file)" "$(registry_file)-wal" "$(registry_file)-shm"
+
+# ── the gate. The shipped script refuses, and refuses BEFORE it stops anything:
+# a guard that costs an outage to trip is a guard operators route around.
+sidecar_start 3
+GATE_OUT="$(bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$(db_id "$VICTIM")" 2>&1)" \
+	&& GATE_RC=0 || GATE_RC=$?
+printf '%s\n' "$GATE_OUT" | sed 's/^/    /'
+check "the shipped restore REFUSES a database the registry cannot name" "1" "$GATE_RC"
+check "and names the thing to do first" "1" \
+	"$(printf '%s\n' "$GATE_OUT" | grep -c -- '--registry' || true)"
+check "and it refused without stopping the sidecar" "active" \
+	"$(systemctl --user is-active "${SIDECAR}.service" || true)"
+
+# ── the gate opens for the documented order. Same command, registry first.
+bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes --registry "$INSTANCE" >/dev/null
+GATE_OUT="$(bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$(db_id "$VICTIM")" 2>&1)" \
+	&& GATE_RC=0 || GATE_RC=$?
+check "with the registry restored FIRST, the same command succeeds" "0" "$GATE_RC"
+check "and says whose collection it just recovered" "1" \
+	"$(printf '%s\n' "$GATE_OUT" | grep -c "Attribution: $(db_id "$VICTIM") belongs to ${VICTIM} (active)" || true)"
+
+# ── and the one case that is legitimately on the far side of the gate: a PURGED
+# database, whose row is gone by design (RESTORE.md scenario B2). It must not be
+# unrecoverable — it must be explicit. ${DETACHED} is detached, so she can be
+# purged, which is exactly the state pd-pm7b's retention window is a safety net
+# for.
+sidecar_stop
+pk tenant purge "$DETACHED_ID" --yes | sed 's/^/    /'
+check "purge destroyed the local database and the row" "gone" \
+	"$([ -e "$(tenant_file "$DETACHED")" ] && echo present || echo gone)"
+check "and the registry no longer names it" "" "$(registry_state "$DETACHED_ID")"
+GATE_OUT="$(bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$DETACHED_ID" 2>&1)" \
+	&& GATE_RC=0 || GATE_RC=$?
+check "a purged database is refused by default, like any other orphan" "1" "$GATE_RC"
+check "and the refusal names --unattributed for exactly this case" "1" \
+	"$(printf '%s\n' "$GATE_OUT" | grep -c -- '--unattributed' || true)"
+GATE_OUT="$(bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes --unattributed "$INSTANCE" "$DETACHED_ID" 2>&1)" \
+	&& GATE_RC=0 || GATE_RC=$?
+printf '%s\n' "$GATE_OUT" | sed 's/^/    /'
+check "and comes back when the operator says so explicitly" "0" "$GATE_RC"
+check "with the gate saying out loud that it has no owner" "1" \
+	"$(printf '%s\n' "$GATE_OUT" | grep -c 'NOT CHECKED (--unattributed)' || true)"
+sidecar_stop
+check "the purged collection is genuinely back, and it is hers" "$DETACHED" \
+	"$(rows_owner "$DETACHED")"
+check "and the box says so: a database no registered user claims" "1" \
+	"$(pk tenant list 2>&1 | grep -c "^  ${DETACHED_ID}.sqlite$" || true)"
+
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"
 [[ $fail -eq 0 ]] || exit 1
-echo "  PASS — one tenant restores in place, in time, and from nothing; the other"
-echo "         tenants are byte-identical every time; and after a total loss the"
-echo "         registry comes back FIRST and puts a name back on every file."
+echo "  PASS — a collection comes back after a RENAME (same file, same prefix, new"
+echo "         handle) and after a DETACH (kept, attributable, restorable); every"
+echo "         bystander tenant is byte-identical every time; a total loss recovers"
+echo "         all four states with the registry FIRST; and restoring the tenant"
+echo "         files WITHOUT the registry is REFUSED — after being shown to come"
+echo "         back complete, healthy and anonymous, which is what made it worth a"
+echo "         gate. Recreated handles: tests/litestream/recreate.sh."

@@ -18,7 +18,11 @@
 #                      tests/litestream/run.sh.
 #   6. DR drill:       run deploy/RESTORE.md's procedure with the shipped
 #                      scripts — restore one tenant in place while the others
-#                      stay byte-identical. See tests/litestream/drill.sh.
+#                      stay byte-identical, then walk the recovery matrix: after
+#                      a RENAME, of a DETACHED tenant, and the load-bearing
+#                      negative — restoring the tenant files WITHOUT the registry
+#                      must FAIL, shown succeeding-and-anonymous first. See
+#                      tests/litestream/drill.sh.
 #   7. Recreate proof: create a user, remove her, create her again, and prove no
 #                      restore of the second one can reach the first one's card
 #                      — pd-pm7b, closed executably. See tests/litestream/recreate.sh.

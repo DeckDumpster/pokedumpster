@@ -47,6 +47,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The runner service is not a login shell, so nothing has sourced
+      # ~/.cargo/env or the profile that adds ~/.local/bin. Both toolchains are
+      # installed per-user on this box — cargo/rustc under ~/.cargo/bin, node/npm
+      # under ~/.local/bin — so without this the very first gate dies with
+      # `cargo: command not found`. (It did: the first run of this workflow.)
+      #
+      # $HOME-relative and via $GITHUB_PATH rather than a literal path in `env:`.
+      # A hardcoded /home/<user> would put this one box's layout back into the
+      # repo, which is the thing pd-rf7c took out.
+      - name: Put the per-user toolchains on PATH
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Fail with a list of what is missing, rather than partway through gate 3
+      # with whichever one happened to be reached first.
+      - name: Check the toolchain is reachable
+        run: |
+          missing=""
+          for t in cargo rustc node npm python3 podman sqlite3 curl; do
+            command -v "$t" >/dev/null || missing="$missing $t"
+          done
+          [ -z "$missing" ] || { echo "not on PATH:$missing"; exit 1; }
+          echo "toolchain OK: $(cargo --version), $(node --version), $(podman --version)"
+
       # ONE step, calling the same script a developer and a polecat run.
       #
       # Deliberately not decomposed into per-gate steps. Every drift bug this

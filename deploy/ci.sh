@@ -19,6 +19,9 @@
 #   6. DR drill:       run deploy/RESTORE.md's procedure with the shipped
 #                      scripts — restore one tenant in place while the others
 #                      stay byte-identical. See tests/litestream/drill.sh.
+#  6b. Alarming gate:  make every backup-alarming layer FIRE at a local sink
+#                      standing in for healthchecks.io + Pushover, and assert on
+#                      what it sent. See tests/alarming/run.sh.
 #   7. Visual gate:    screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines.
 #                      See tests/visual/README.md for the approval workflow.
@@ -37,17 +40,19 @@
 #   PKDUMP_CI_INSTANCE=myname bash deploy/ci.sh   # pin the instance name
 #   PKDUMP_STORE_ROOT=/some/dir bash deploy/ci.sh # pin the container store
 #   PKDUMP_STORE_ROOT= bash deploy/ci.sh          # use Podman's default store
+#                                                 # (overrides host store.env)
 #
 # Parallel-safe: the container instance is named per-checkout, so several
 # polecats can run this concurrently from their own worktrees without tearing
 # down each other's containers. Do not reintroduce a fixed instance name.
 #
-# Disk: nothing this script builds belongs on the disk prod runs from. Unless
-# told otherwise it puts the whole container store — images, layers, volumes and
-# Buildah's cache mounts — on the filesystem holding the checkout, which is only
-# a different disk from $HOME on a box where that is worth doing. See
-# deploy/store-lib.sh. It also refuses to start on a nearly-full disk, because
-# the failure that produces does not look like a disk problem.
+# Disk: nothing this script builds belongs on the disk prod runs from. Point
+# PKDUMP_STORE_ROOT at another filesystem and the whole container store — images,
+# layers, volumes and Buildah's cache mounts — goes there instead. Which disk
+# that is on a given box is host config, not a repo constant, so it is read from
+# ~/.config/pkdump/store.env; unconfigured, Podman's default store is used. See
+# deploy/store-lib.sh. This script also refuses to start on a nearly-full disk,
+# because the failure that produces does not look like a disk problem.
 #
 set -euo pipefail
 
@@ -82,11 +87,10 @@ step() { echo ""; echo "==> $*"; }
 
 # shellcheck source=deploy/store-lib.sh
 . "$SCRIPT_DIR/store-lib.sh"
-# Unset (not empty) means "choose for me". Empty means the caller deliberately
-# wants Podman's default store, so it is left alone.
-if [ -z "${PKDUMP_STORE_ROOT+set}" ]; then
-    PKDUMP_STORE_ROOT="$(pkdump_store_default_root "$REPO_DIR")"
-fi
+# Unset means "not answered here, ask the host" — ~/.config/pkdump/store.env.
+# Set, including set to empty, means the caller decided and is left alone.
+# Answered nowhere means Podman's default store, which is also prod's.
+pkdump_store_load_config
 pkdump_store_activate
 
 step "Disk floor check"
@@ -186,6 +190,16 @@ bash "$REPO_DIR/tests/litestream/run.sh"
 
 step "Multi-tenant DR drill (deploy/RESTORE.md, executed)"
 bash "$REPO_DIR/tests/litestream/drill.sh"
+
+# --- 6b. Alarming gate ------------------------------------------------------
+# A backup that is not alarmed is a backup nobody knows is broken — which is the
+# state this project was actually in for months. Every layer is made to fire at a
+# local recorder and asserted on what it sent. Its own instance, its own MinIO,
+# its own unit-name prefix, both endpoints on 127.0.0.1 — it touches no
+# pkdump-*@prod unit and contacts no external service.
+
+step "Backup alarming: every layer fires (tests/alarming/run.sh)"
+bash "$REPO_DIR/tests/alarming/run.sh"
 
 # --- 7. Visual-regression gate ---------------------------------------------
 # Runs against the container started above rather than standing up a second

@@ -17,6 +17,10 @@
 # the deployment box is the same disk prod runs from. Set PKDUMP_STORE_ROOT=<dir>
 # to build this instance's image and volume into an alternate store instead —
 # opt-in, so prod (which never sets it) is unaffected. See deploy/store-lib.sh.
+# This script scaffolds the host-config file that names that directory
+# (~/.config/pkdump/store.env) but deliberately does not read it: prod is
+# installed with this script, and where prod's volumes live is not something a
+# host config file gets to change. deploy/ci.sh is what reads it.
 #
 # Modes:
 #   (plain)  Build the image + install the Quadlet. Catalog stays empty —
@@ -91,6 +95,19 @@ podman tag pkdump:latest "pkdump:${INSTANCE}"
 
 echo "==> Installing Quadlet unit..."
 mkdir -p "$QUADLET_DIR"
+# Re-running setup.sh is how unit-file changes reach an existing instance, and
+# the port must survive that. Without this, `setup.sh prod` (no port) rewrites
+# prod's Quadlet with a RANDOM host port and the address everything reaches it
+# on changes — an outage caused by refreshing the units. An existing instance
+# keeps the port it already publishes unless one is passed explicitly.
+if [ "$PORT" = "0" ] && [ -f "${QUADLET_DIR}/${SERVICE_NAME}.container" ]; then
+    EXISTING_PORT="$(sed -n 's|^PublishPort=\([0-9]\{1,\}\):8080$|\1|p' \
+        "${QUADLET_DIR}/${SERVICE_NAME}.container" | head -1)"
+    if [ -n "$EXISTING_PORT" ]; then
+        PORT="$EXISTING_PORT"
+        echo "    Keeping the port '${INSTANCE}' already publishes: ${PORT}"
+    fi
+fi
 # PORT=0 -> ":8080" lets Podman pick a free host port.
 if [ "$PORT" = "0" ]; then
     PORT_MAPPING=":8080"
@@ -155,6 +172,32 @@ PKDUMP_DISK_PATH=
 EOF
     chmod 600 "$ALERTS_ENV"
     echo "    Wrote ${ALERTS_ENV} (fill PUSHOVER_TOKEN/USER)."
+fi
+
+# Scaffold the host-wide container-store config (pd-rf7c). Which disk non-prod
+# container storage belongs on is a fact about THIS box, so it is host config
+# rather than a repo constant — and it is scaffolded commented-out so a new box
+# has the knob visible instead of undiscoverable. Written but never read by this
+# script: setup.sh honours PKDUMP_STORE_ROOT from its environment only, so a
+# store.env that opts in cannot silently relocate a prod deploy.
+STORE_ENV="${HOME}/.config/pkdump/store.env"
+if [ ! -f "$STORE_ENV" ]; then
+    mkdir -p "${HOME}/.config/pkdump"
+    cat > "$STORE_ENV" <<'EOF'
+# Host-wide container-store config for PokeDumpster (pd-rf7c).
+#
+# Rootless Podman keeps images, layers and volumes under $HOME. Where $HOME
+# shares a disk with something that must not run out of space — on this
+# project's deployment box, prod itself — name a directory on another
+# filesystem here and non-prod container storage goes there instead.
+#
+# Read by deploy/ci.sh. An explicit PKDUMP_STORE_ROOT in the environment wins
+# over this file, including an explicit empty one (that is how a single run opts
+# back out). Left commented out, everything uses Podman's default store — which
+# is what prod uses, always, on every box.
+#PKDUMP_STORE_ROOT=/big/disk/pkdump-nonprod-store
+EOF
+    echo "    Wrote ${STORE_ENV} (container store; commented out = Podman's default)."
 fi
 
 # --- Install the Litestream backup sidecar (pokedumpster-8ch.3) -------------

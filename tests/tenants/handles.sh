@@ -23,14 +23,17 @@
 # a volume `pkdump tenant create` provisioned, with curl reading the status line.
 #
 # ── WHAT IT ASSERTS ─────────────────────────────────────────────────────────
-#   §3 Registered handle -> 200. The rule refuses nothing it should admit.
-#   §4 Malformed handle -> 400, naming the rule, NOT echoing what was sent.
-#   §5 Well-formed but not an active user -> 404: never registered, detached,
+#   §3 Multi-tenant resolution on a NON-LOOPBACK bind, with no second opt-in,
+#      refuses to start at all. That refusal is the reason §4 onwards must ask
+#      for the escape hatch, so it is pinned here rather than assumed.
+#   §4 Registered handle -> 200. The rule refuses nothing it should admit.
+#   §5 Malformed handle -> 400, naming the rule, NOT echoing what was sent.
+#   §6 Well-formed but not an active user -> 404: never registered, detached,
 #      and a real unregistered database sitting in tenants/ under that name.
-#   §6 No header at all -> 400. There is no ambient tenant.
-#   §7 Nothing above created a database, and nothing outside tenants/ was
+#   §7 No header at all -> 400. There is no ambient tenant.
+#   §8 Nothing above created a database, and nothing outside tenants/ was
 #      touched. A refusal must not provision.
-#   §8 SINGLE-TENANT MODE IS UNAFFECTED — the header is not read at all, so a
+#   §9 SINGLE-TENANT MODE IS UNAFFECTED — the header is not read at all, so a
 #      malformed one is served exactly like any other request. This is the
 #      only mode production runs, and this gate must not be what changes it.
 #
@@ -50,9 +53,13 @@ FIXTURES="${REPO_DIR}/tests/ui/fixtures"
 SUFFIX="${PDH_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)}"
 IMAGE="localhost/pkdump:handles-${SUFFIX}"
 APP_CTR="pkdump-handles-${SUFFIX}"
-# 38900-38999. run.sh takes 39000-39499, drill.sh 39500-39899 and upgrade.sh
-# 39900-39999, so the four container gates cannot collide with each other.
-PORT=${PDH_PORT:-$(( 38900 + 16#${SUFFIX:0:2} % 100 ))}
+# The host port is PODMAN'S to pick (`-p 127.0.0.1::8080`), read back off the
+# container by `start_app` — the way deploy/setup.sh does with PORT=0. Deriving
+# it from the checkout hash gave 100 distinct values shared by 19 concurrent
+# polecat worktrees, deterministic per checkout and with no retry if the bind
+# failed: the same collision class the per-checkout instance name already fixed
+# one layer up. PDH_PORT still pins it for a human who wants a known port.
+PORT=""
 
 WORK=${WORK:-$(mktemp -d /tmp/pd-handles.XXXXXX)}
 DATA="$WORK/data"
@@ -87,8 +94,19 @@ trap cleanup EXIT
 # other way would not be the thing that ships.
 start_app() { # start_app [-e VAR=VAL ...]
 	podman rm -f --ignore "$APP_CTR" >/dev/null 2>&1 || true
-	podman run -d --name "$APP_CTR" -p "127.0.0.1:${PORT}:8080" \
+	# An EMPTY host port in the mapping is how Podman is asked to choose one —
+	# the same `:8080` deploy/setup.sh writes into the Quadlet unit for PORT=0.
+	podman run -d --name "$APP_CTR" -p "127.0.0.1:${PDH_PORT:-}:8080" \
 		-v "${DATA}:/data:Z" "$@" "$IMAGE" >/dev/null
+	# Read back off the container rather than from `podman port`: the mapping is
+	# fixed at create time and inspect still reports it after the process has
+	# exited, which is exactly the case §3 asserts on.
+	PORT="$(podman inspect -f '{{ (index .NetworkSettings.Ports "8080/tcp" 0).HostPort }}' "$APP_CTR" 2>/dev/null || true)"
+	if [[ -z "$PORT" ]]; then
+		echo "  ABORT: podman published no host port for ${APP_CTR}."
+		podman logs "$APP_CTR" 2>&1 | sed 's/^/  /'
+		exit 1
+	fi
 }
 stop_app() { podman rm -f --ignore "$APP_CTR" >/dev/null 2>&1 || true; }
 
@@ -103,6 +121,36 @@ wait_up() {
 		sleep 1
 	done
 	echo down
+}
+
+# The state of the container, as one field, for both the assertion in §3 and the
+# abort below.
+app_state() { podman inspect -f '{{.State.Status}}/{{.State.ExitCode}}' "$APP_CTR" 2>/dev/null || echo missing; }
+
+# A server that never came up is an ABORT, not one more FAIL line.
+#
+# Every assertion after a start_app reads an HTTP status code, so a container
+# that exited before it listened turns ONE root cause into a run of `got 000`
+# and names none of them — which is how this gate reached CI as "10 passed, 16
+# failed" with the actual refusal (a one-line message on the container's stdout,
+# discarded by start_app) never reaching the log at all. Stop at the first one
+# and print what the container said.
+require_up() { # require_up <label>
+	local up
+	up="$(wait_up)"
+	check "$1" up "$up"
+	if [[ "$up" == up ]]; then
+		return
+	fi
+	echo
+	echo "  ABORT: the server never answered on 127.0.0.1:${PORT} — everything"
+	echo "         after this asserts over HTTP and would report 000, not a cause."
+	echo "  container: ${APP_CTR}  state: $(app_state)"
+	echo "  --- podman logs ${APP_CTR} ---"
+	podman logs "$APP_CTR" 2>&1 | sed 's/^/  /'
+	echo "  --- end of log ---"
+	echo "  ${pass} passed, ${fail} failed before the abort"
+	exit 1
 }
 
 # A one-off `pkdump` against the same data directory — how deploy/TENANTS.md
@@ -158,17 +206,41 @@ check "and bob's row survives, detached" "detached" \
 		"SELECT state FROM user WHERE handle = 'bob';")"
 BEFORE_FILES="$(tenant_files)"
 
-log "3. multi-tenant: a registered handle is served"
+log "3. an EXPOSED multi-tenant bind refuses to start — no second opt-in, no server"
+# This container publishes 8080, so the shipped ENTRYPOINT necessarily binds
+# 0.0.0.0, which is the one combination `check_bind` refuses: multi-tenant
+# resolution takes the tenant from a header nothing authenticates, so off-box
+# reachability hands every collection to whoever can reach the port.
+#
+# §4 onwards opens the escape hatch, and an escape hatch nobody ever tests
+# closed is indistinguishable from a guard that has been deleted. So the refusal
+# is asserted first, here, and this section is what makes it impossible to
+# "fix" §4 by weakening the product.
+start_app -e PKDUMP_MULTITENANT=1 -e PKDUMP_USER=alice
+check "it never listens" "down" "$(wait_up)"
+check "the process exited non-zero" "exited/1" "$(app_state)"
+check "and said which opt-in would allow it" "1" \
+	"$(podman logs "$APP_CTR" 2>&1 | grep -c 'PKDUMP_MULTITENANT_INSECURE_BIND' || true)"
+stop_app
+
+log "4. multi-tenant: a registered handle is served"
+# PKDUMP_MULTITENANT_INSECURE_BIND is the second opt-in §3 just proved is
+# required. This gate is entitled to it and production is not: this is a
+# throwaway container, published on 127.0.0.1 only, holding two fixture
+# collections that exist for the length of this script. Production's exposure is
+# real and its data is the user's, which is why deploy/ sets neither variable —
+# do NOT copy this line into a deploy script or a unit file.
+#
 # PKDUMP_USER is set even with resolution ON: `pkdump serve` resolves the
 # process's own collection up front either way, so that a data directory it
 # cannot make sense of is a startup failure and never a server that comes up
 # empty. Leave it at the default `collection` on a volume where nobody is
 # registered under that handle and the container exits before it listens.
-start_app -e PKDUMP_MULTITENANT=1 -e PKDUMP_USER=alice
-check "the server came up with resolution on" "up" "$(wait_up)"
+start_app -e PKDUMP_MULTITENANT=1 -e PKDUMP_MULTITENANT_INSECURE_BIND=1 -e PKDUMP_USER=alice
+require_up "the server came up with resolution on"
 check "alice is served" "200" "$(api_status alice)"
 
-log "4. a MALFORMED handle is a 400 — the request, not the tenant, is wrong"
+log "5. a MALFORMED handle is a 400 — the request, not the tenant, is wrong"
 # Every one of these is a string the registry's CHECK would refuse, so no row
 # could ever have held it. Under the un-validated resolver they were all 404.
 for bad in "Alice" "-flag" "a/b" "alice.sqlite" "has space" "../shared" \
@@ -181,7 +253,7 @@ check "the 400 says what a handle may be" "1" \
 check "and does not echo the header back" "0" \
 	"$(printf '%s' "$BODY" | grep -c 'A/\.\./lice' || true)"
 
-log "5. a WELL-FORMED handle that is not an active user is a 404"
+log "6. a WELL-FORMED handle that is not an active user is a 404"
 check "never registered -> 404" "404" "$(api_status mallory)"
 check "detached -> 404" "404" "$(api_status bob)"
 # The pd-rqgv canary, restated as the other half of this distinction: `ghost`
@@ -189,23 +261,23 @@ check "detached -> 404" "404" "$(api_status bob)"
 # nothing, because the header is a lookup key and not a filename.
 check "an unregistered database in tenants/ -> 404" "404" "$(api_status ghost)"
 
-log "6. no tenant named at all is a 400"
+log "7. no tenant named at all is a 400"
 check "anonymous -> 400" "400" "$(api_status_anonymous)"
 
-log "7. nothing above provisioned anything"
+log "8. nothing above provisioned anything"
 check "the tenant databases are exactly the ones we made" "$BEFORE_FILES" \
 	"$(tenant_files)"
 check "and nothing was created beside the catalog" "absent" \
 	"$([ -e "${DATA}/collection.sqlite" ] && echo present || echo absent)"
 
-log "8. SINGLE-TENANT MODE IS UNAFFECTED — the header is not read at all"
+log "9. SINGLE-TENANT MODE IS UNAFFECTED — the header is not read at all"
 # Production's mode. The check added at the boundary lives inside the
 # multi-tenant branch of the resolver, and if it did not, this is where that
 # would show: a malformed header would start refusing requests on an instance
 # that never opted in.
 stop_app
 start_app -e PKDUMP_USER=alice
-check "the server came up with resolution off" "up" "$(wait_up)"
+require_up "the server came up with resolution off"
 check "a malformed header is ignored, not refused" "200" "$(api_status Alice)"
 check "so is a traversing one" "200" "$(api_status ../shared)"
 check "so is an unknown one" "200" "$(api_status mallory)"

@@ -26,6 +26,11 @@
 #      dead, with both version numbers in the log. Rollback (`pkdump tenant
 #      revert`) is only safe because of this — an older binary must refuse
 #      rather than quietly operate on a schema it does not understand.
+#   §3 REPORTING (pd-enje). `pkdump tenant list` names each tenant's own schema
+#      version — including the one §2 just made unopenable. An operator whose
+#      server will not start needs the report to say WHICH database is from the
+#      future; a report that failed the same way the server did would name
+#      nothing. Read-only in the same breath: asking must not stamp or migrate.
 #
 # Prod-safe: its own per-checkout instance name, its own volume, its own port.
 # Touches no pkdump-*@prod unit, no pkdump-prod-data volume, no real bucket.
@@ -261,6 +266,59 @@ systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
 # operator's next move is to run the newer build, and it has to find its
 # database as it left it.
 check "the refused database is untouched" "$AHEAD" "$(read_version "$COLLECTION_DB")"
+
+# ── §3 Reporting ────────────────────────────────────────────────────────────
+# Deliberately run against the volume §2 left behind: `collection` is from the
+# future and the server will not start on it. That is the state an operator is
+# in when they reach for this command, so it is the state it is proved in.
+#
+# A second tenant is provisioned first so the listing has something to compare
+# against — drift is only visible next to a database that is current, and one
+# row cannot show a spread. Provisioning it also asserts something in passing:
+# per-file versions mean a tenant this build refuses is not a box-wide outage.
+
+echo ""
+echo "--- §3 Reporting: tenant list names each tenant's own version ---"
+
+# Both run through the shipped image against the real volume, the same one-off
+# container `deploy/seed.sh` uses — no host binary, no host data dir.
+pkdump_in_volume() {
+	podman run --rm -v "${VOLUME}:/data:Z" -e PKDUMP_HOME=/data \
+		--entrypoint pkdump "$IMAGE" "$@" 2>&1
+}
+
+CREATE_OUT=$(pkdump_in_volume tenant create drift-probe || true)
+contains "a tenant is provisioned beside the refused one" "drift-probe" "$CREATE_OUT"
+PROBE_V=$(read_version /data/tenants/drift-probe.sqlite)
+check "the new tenant carries this build's version" "$COLLECTION_V" "$PROBE_V"
+
+LIST_STATUS=0
+LIST=$(pkdump_in_volume tenant list) || LIST_STATUS=$?
+echo "$LIST" | sed 's/^/        /'
+
+check "the report succeeds despite an unopenable tenant" "0" "$LIST_STATUS"
+
+# Each row is `<name> <version> <status> …`, so the columns are read rather
+# than the whole blob searched: a bare grep for the version number would pass
+# on the OTHER tenant's row, which is the one mix-up this section exists to
+# rule out.
+row() { printf '%s\n' "$LIST" | awk -v n="$1" '$1 == n'; }
+
+check "the refused tenant is listed with ITS version" "$AHEAD" \
+	"$(row collection | awk '{print $2}')"
+check "...and reported as ahead of this build" "ahead" \
+	"$(row collection | awk '{print $3}')"
+check "the current tenant is listed with ITS version" "$PROBE_V" \
+	"$(row drift-probe | awk '{print $2}')"
+check "...and reported as current" "current" \
+	"$(row drift-probe | awk '{print $3}')"
+
+# Asking what version a database is must not be a way of changing it. If the
+# report opened tenants the way the app does, it would stamp and re-apply the
+# schema to every tenant on the box as a side effect of being asked.
+check "reporting left the refused tenant alone" "$AHEAD" "$(read_version "$COLLECTION_DB")"
+check "reporting left the current tenant alone" "$PROBE_V" \
+	"$(read_version /data/tenants/drift-probe.sqlite)"
 
 # ── Result ──────────────────────────────────────────────────────────────────
 

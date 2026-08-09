@@ -312,8 +312,13 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
   `Database::version()` is the one place the numbers live; bump one only
   when a change cannot be expressed as `CREATE … IF NOT EXISTS`, and
   never as a substitute for a migration you have not written.
+  One database per tenant means they can legitimately differ, so
+  `pkdump tenant list` reports each tenant's own version and whether it is
+  behind, current, or ahead of the running build — reading, deliberately,
+  is not gated: a tenant the server refuses to open is exactly the one the
+  report exists to name (`deploy/TENANTS.md`).
   `tests/schema-version/run.sh` (container tier, run by `deploy/ci.sh`)
-  proves both directions against a prod-shaped instance.
+  proves all of it against a prod-shaped instance.
 - **Workspace dependencies** are declared in the root `Cargo.toml`
   `[workspace.dependencies]`; crates opt in with `dep.workspace = true`.
 - **Tests that demonstrate bugs must fail** until the bug is fixed.

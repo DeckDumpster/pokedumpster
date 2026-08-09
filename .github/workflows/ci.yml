@@ -26,9 +26,15 @@ on:
 # it.
 #
 # What this does NOT cover, so nobody reads it as a guarantee: Gas Town polecats
-# run ci.sh outside Actions entirely, and deploy.yml takes its own `deploy-<instance>`
-# group so a deploy can still overlap a test run. Sharing one group with deploy was
-# considered and rejected — it would park a prod deploy behind a 60-minute suite.
+# run ci.sh outside Actions entirely, and nothing here can see them.
+#
+# It also does not decide whether deploys wait. There is ONE self-hosted runner for
+# this repo, so every job serialises on it regardless of concurrency groups —
+# measured 2026-08-09: a Deploy sat `queued` for the ~24 minutes a CI run held the
+# runner. deploy.yml keeps its own `deploy-<instance>` group purely to stop two
+# deploys of one instance racing; it has no bearing on CI. Accepted deliberately
+# while CI and prod share a host (per Ryan, 2026-08-09) — revisit when they are
+# split, at which point a second runner is the fix, not a concurrency change.
 concurrency:
   group: pokedumpster-ci
   cancel-in-progress: false

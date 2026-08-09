@@ -50,7 +50,33 @@ tenant is usable immediately. It fails if the tenant already exists.
 command here — the S3 replica outlives it, but only for as long as retention
 holds (6 months; `deploy/RESTORE.md`).
 
-Also available: `pkdump tenant list`.
+## Reading the drift: `pkdump tenant list`
+
+One database per tenant means they can legitimately hold different schema
+versions: a tenant created today carries this build's, one restored from a
+replica carries whatever it had when it was replicated, and one left over from
+before `PRAGMA user_version` landed carries 0. `list` is where that spread is
+visible — every tenant, the version read off its own file, and where that
+stands relative to the running build:
+
+```
+$ pkdump tenant list
+NAME          SCHEMA  STATUS
+alice              1  current
+bob                0  behind this build's 1 — adopted on its next open
+carol              2  ahead of this build's 1 — this build refuses to open it
+```
+
+*behind* is not a problem to fix by hand — the schema is re-applied and the
+version stamped on that tenant's next open. *ahead* is the row that matters:
+that database was written by a newer build and this one **refuses to open it**
+(the gate in `crates/pkdump-db/src/schema_version.rs`; the server will not
+start for that tenant). Run the newer build, or restore that database from a
+replica taken before the upgrade.
+
+Reading is not opening. `list` reads each file's header directly, so it neither
+stamps nor applies schema — and it still reports a tenant the server itself
+refuses, which is the case an operator is usually running it for.
 
 ## Serving more than one tenant
 
@@ -257,15 +283,21 @@ systemctl --user start pkdump-${INSTANCE} pkdump-litestream-${INSTANCE}
 ```bash
 INSTANCE=prod
 # The collection is where it should be, and has its rows.
-podman exec systemd-pkdump-${INSTANCE} pkdump tenant list        # -> collection
+podman exec systemd-pkdump-${INSTANCE} pkdump tenant list        # -> collection, schema current
 MP=$(podman volume inspect -f '{{.Mountpoint}}' pkdump-${INSTANCE}-data)
 sqlite3 "file:${MP}/tenants/collection.sqlite?mode=ro" 'SELECT count(*) FROM collection;'
 # Nothing left at the old location.
 ls "${MP}/collection.sqlite" 2>&1     # -> No such file or directory
 # The catalog did NOT move.
 ls -l "${MP}/shared.sqlite"
-# Backups are still flowing.
+# Backups are still flowing. This step is only evidence because backup-check.sh
+# now FAILS when it cannot verify (pd-1717): on 2026-08-08 this exact command
+# printed "skipping", exited 0, and was read as a pass while Litestream sat
+# ACTIVE with txid.replica pinned at zero. Non-zero exit here means the
+# migration did not finish, whatever `systemctl is-active` says.
 bash deploy/backup-check.sh ${INSTANCE}
+# And the whole alarming picture, if this instance is meant to be armed.
+bash deploy/alarm-status.sh ${INSTANCE}
 ```
 
 ### Rollback

@@ -80,6 +80,19 @@ podman tag pkdump:latest "pkdump:${INSTANCE}"
 
 echo "==> Installing Quadlet unit..."
 mkdir -p "$QUADLET_DIR"
+# Re-running setup.sh is how unit-file changes reach an existing instance, and
+# the port must survive that. Without this, `setup.sh prod` (no port) rewrites
+# prod's Quadlet with a RANDOM host port and the address everything reaches it
+# on changes — an outage caused by refreshing the units. An existing instance
+# keeps the port it already publishes unless one is passed explicitly.
+if [ "$PORT" = "0" ] && [ -f "${QUADLET_DIR}/${SERVICE_NAME}.container" ]; then
+    EXISTING_PORT="$(sed -n 's|^PublishPort=\([0-9]\{1,\}\):8080$|\1|p' \
+        "${QUADLET_DIR}/${SERVICE_NAME}.container" | head -1)"
+    if [ -n "$EXISTING_PORT" ]; then
+        PORT="$EXISTING_PORT"
+        echo "    Keeping the port '${INSTANCE}' already publishes: ${PORT}"
+    fi
+fi
 # PORT=0 -> ":8080" lets Podman pick a free host port.
 if [ "$PORT" = "0" ]; then
     PORT_MAPPING=":8080"

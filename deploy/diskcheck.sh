@@ -12,7 +12,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-[ -f "${HOME}/.config/pkdump/alerts.env" ] && { set -a; . "${HOME}/.config/pkdump/alerts.env"; set +a; }
+# PKDUMP_ALERTS_ENV names the host-wide file; production never sets it — only
+# tests point it elsewhere so they never write the operator's real credentials.
+ALERTS_ENV="${PKDUMP_ALERTS_ENV:-${HOME}/.config/pkdump/alerts.env}"
+[ -f "$ALERTS_ENV" ] && { set -a; . "$ALERTS_ENV"; set +a; }
 
 THRESHOLD="${PKDUMP_DISK_THRESHOLD:-90}"
 DISK_PATH="${PKDUMP_DISK_PATH:-$HOME}"

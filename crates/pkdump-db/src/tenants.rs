@@ -19,6 +19,7 @@ use rusqlite::Connection;
 use crate::connection::open_user;
 use crate::error::{DbError, Result};
 use crate::paths::{legacy_user_db_path, tenant_db_path, tenants_dir, validate_tenant_name};
+use crate::schema_version::{self, Database, SchemaState};
 
 /// Sidecar files SQLite keeps beside a database in WAL mode.
 const WAL_SIDECARS: [&str; 2] = ["-wal", "-shm"];
@@ -100,6 +101,45 @@ pub fn list() -> Result<Vec<String>> {
 /// Whether tenant `name` has a database on this box.
 pub fn exists(name: &str) -> Result<bool> {
     Ok(tenant_db_path(name)?.exists())
+}
+
+/// A tenant and the schema version its collection database carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantSchema {
+    /// The tenant name, as [`list`] reports it.
+    pub name: String,
+    /// `PRAGMA user_version` read off that tenant's database.
+    pub version: i64,
+}
+
+impl TenantSchema {
+    /// Where this tenant's database stands relative to this build.
+    pub fn state(&self) -> SchemaState {
+        Database::User.state_of(self.version)
+    }
+}
+
+/// Every tenant on this box with the schema version of its collection
+/// database — the answer to "which of my N databases are behind" (pd-enje).
+///
+/// One database per tenant means they can legitimately differ: a tenant
+/// created today carries this build's version, one restored from a replica
+/// carries whatever it had when it was replicated, and one left over from
+/// before the gate carries 0. Nothing could report that until now.
+///
+/// Reads each file's header without applying schema and without the gate
+/// (see [`schema_version::version_of_file`]), so a tenant this build would
+/// *refuse to open* is still listed, with the version that makes it
+/// refusable. Reporting drift that stops the server is the point; failing
+/// the same way the server does would not be a report.
+pub fn versions() -> Result<Vec<TenantSchema>> {
+    list()?
+        .into_iter()
+        .map(|name| {
+            let version = schema_version::version_of_file(&tenant_db_path(&name)?)?;
+            Ok(TenantSchema { name, version })
+        })
+        .collect()
 }
 
 /// Move a pre-`tenants/` collection database into the tenant layout:
@@ -512,6 +552,138 @@ mod tests {
             remove("alice").unwrap();
             assert!(!ls.exists());
         });
+    }
+
+    /// The drift report: three tenants at three different versions, each
+    /// read off its own file. One database per tenant means they can
+    /// legitimately differ, and until this there was no way to see it.
+    #[test]
+    fn versions_reports_each_tenants_own_schema_version() {
+        with_home(|home| {
+            let known = Database::User.version();
+            create("current").unwrap();
+            create("behind").unwrap();
+            create("ahead").unwrap();
+            set_version(&home.join("tenants").join("behind.sqlite"), 0);
+            set_version(&home.join("tenants").join("ahead.sqlite"), known + 1);
+
+            let reported = versions().unwrap();
+            assert_eq!(
+                reported,
+                vec![
+                    TenantSchema {
+                        name: "ahead".into(),
+                        version: known + 1
+                    },
+                    TenantSchema {
+                        name: "behind".into(),
+                        version: 0
+                    },
+                    TenantSchema {
+                        name: "current".into(),
+                        version: known
+                    },
+                ]
+            );
+            let states: Vec<SchemaState> = reported.iter().map(TenantSchema::state).collect();
+            assert_eq!(
+                states,
+                vec![
+                    SchemaState::Ahead,
+                    SchemaState::Behind,
+                    SchemaState::Current
+                ]
+            );
+        });
+    }
+
+    /// A tenant this build refuses to OPEN must still be REPORTED — that
+    /// tenant is the whole reason an operator is running this command. A
+    /// report that failed the same way the server did would name nothing.
+    #[test]
+    fn a_tenant_from_the_future_is_reported_not_refused() {
+        with_home(|home| {
+            let path = create("alice").unwrap();
+            create("bob").unwrap();
+            let ahead = Database::User.version() + 1;
+            set_version(&path, ahead);
+
+            assert!(
+                open_user(&path).is_err(),
+                "the fixture must be one this build refuses to open"
+            );
+
+            let reported = versions().unwrap();
+            assert_eq!(reported.len(), 2, "the refusable tenant must still appear");
+            assert_eq!(reported[0].version, ahead);
+            assert_eq!(reported[0].state(), SchemaState::Ahead);
+            // And reporting did not "fix" what it read: the operator's next
+            // move is to run the newer build, which must find its database
+            // exactly as it left it.
+            assert_eq!(
+                schema_version::version_of_file(&home.join("tenants").join("alice.sqlite"))
+                    .unwrap(),
+                ahead
+            );
+        });
+    }
+
+    /// Listing must not open a tenant the way the app does: `open_user`
+    /// applies the schema and stamps, so a report routed through it would
+    /// silently migrate every tenant on the box just by being asked what
+    /// version they are.
+    #[test]
+    fn reporting_versions_does_not_stamp_or_migrate() {
+        with_home(|home| {
+            let path = create("alice").unwrap();
+            set_version(&path, 0);
+            // Drop the tables too — an unversioned, schema-less file is what
+            // an accidental `open_user` would visibly repair.
+            Connection::open(&path)
+                .unwrap()
+                .execute_batch("DROP TABLE collection")
+                .unwrap();
+
+            assert_eq!(versions().unwrap()[0].version, 0);
+
+            let conn = Connection::open(home.join("tenants").join("alice.sqlite")).unwrap();
+            assert_eq!(schema_version::version(&conn).unwrap(), 0, "it stamped");
+            let tables: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name = 'collection'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(tables, 0, "it applied the schema");
+        });
+    }
+
+    /// Every tenant's version comes from that tenant's own file. A report
+    /// that read one database N times would look perfectly healthy while
+    /// hiding exactly the drift it exists to surface.
+    #[test]
+    fn no_tenant_reports_another_tenants_version() {
+        with_home(|home| {
+            create("alice").unwrap();
+            create("bob").unwrap();
+            set_version(&home.join("tenants").join("bob.sqlite"), 0);
+
+            let reported = versions().unwrap();
+            assert_eq!(reported[0].name, "alice");
+            assert_eq!(reported[0].version, Database::User.version());
+            assert_eq!(reported[1].name, "bob");
+            assert_eq!(reported[1].version, 0);
+        });
+    }
+
+    /// `PRAGMA user_version = n` against a live WAL database, the way an
+    /// older binary or a restore leaves one behind.
+    fn set_version(path: &Path, version: i64) {
+        Connection::open(path)
+            .unwrap()
+            .execute_batch(&format!("PRAGMA user_version = {version}"))
+            .unwrap();
     }
 
     #[test]

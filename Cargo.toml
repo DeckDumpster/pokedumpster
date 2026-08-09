@@ -43,6 +43,7 @@ flate2 = "1"
 tar = "0.4"
 csv = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
+ulid = { version = "3", default-features = false, features = ["std"] }
 
 [profile.release]
 strip = true

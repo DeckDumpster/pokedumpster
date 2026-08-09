@@ -15,7 +15,7 @@ cargo run -p pkdump-cli -- seed-fixture --out tests/ui/fixtures
 
 The command does a clean rebuild: it deletes any existing `shared.sqlite` /
 `collection.sqlite`, recreates them through `pkdump_db::open_shared` /
-`connect_user` (so refinery's migration history is populated), then seeds
+`connect_user` (so the schema and the shipped seeds are applied), then seeds
 deterministic rows. User data is inserted through the `pkdump-db` repository
 functions so app-layer validation runs. The output is byte-stable —
 timestamps and price observation dates are fixed constants.

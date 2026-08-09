@@ -12,7 +12,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use pkdump_db::{current_user, restore_db, shared_db_path, snapshot_db, user_db_path};
+use pkdump_db::{restore_db, shared_db_path, snapshot_db};
 
 /// Arguments for `pkdump db`.
 #[derive(clap::Args)]
@@ -45,7 +45,7 @@ fn backup_path(db: &Path) -> PathBuf {
 }
 
 fn snapshot() -> anyhow::Result<()> {
-    let user = user_db_path(&current_user())?;
+    let user = crate::collection::user_db()?;
     let user_bak = backup_path(&user);
     println!("Snapshot {} -> {}", user.display(), user_bak.display());
     snapshot_db(&user, &user_bak)?;
@@ -62,7 +62,7 @@ fn snapshot() -> anyhow::Result<()> {
 }
 
 fn restore() -> anyhow::Result<()> {
-    let user = user_db_path(&current_user())?;
+    let user = crate::collection::user_db()?;
     let user_bak = backup_path(&user);
     if !user_bak.exists() {
         anyhow::bail!(

@@ -182,6 +182,12 @@ export LITESTREAM_S3_BUCKET=pkdump-alarm
 export LITESTREAM_S3_REGION=us-west-2
 export LITESTREAM_S3_PATH="alarm/${INSTANCE}/tenants"
 export LITESTREAM_TENANTS_DIR=/data/tenants
+# The user registry (pd-nd6w) is part of the replicated set, and the SHIPPED
+# litestream.yml this gate mounts names it — an unset LITESTREAM_REGISTRY_DB is
+# fatal at sidecar startup by design (tests/litestream/run.sh §4c). Beside the
+# tenants prefix, never inside it, exactly as deploy/setup.sh writes it.
+export LITESTREAM_REGISTRY_DB=/data/registry.sqlite
+export LITESTREAM_S3_REGISTRY_PATH="alarm/${INSTANCE}/registry.sqlite"
 # backup-check.sh runs its `litestream ltx` container with no --network, exactly
 # as it does in production, so MinIO has to be reachable at the address
 # host.containers.internal names (same reasoning as tests/litestream/drill.sh).
@@ -215,12 +221,17 @@ printf '[profile pkdump]\nregion=%s\n' "$LITESTREAM_S3_REGION" >"${CONF_DIR}/aws
 printf '[pkdump]\naws_access_key_id=%s\naws_secret_access_key=%s\n' "$AKID" "$SECRET_KEY" \
 	| podman secret create "$SECRET_NAME" - >/dev/null
 
-write_litestream_env() { # write_litestream_env [s3-path-override]
+# The override re-points the TENANTS prefix only — the registry keeps its real
+# one, so §4a provokes a tenant that never reached S3 rather than a second,
+# simultaneous registry failure that would answer the assertion first.
+write_litestream_env() { # write_litestream_env [tenants-s3-path-override]
 	cat >"${CONF_DIR}/litestream.env" <<EOF
 LITESTREAM_S3_BUCKET=${LITESTREAM_S3_BUCKET}
 LITESTREAM_S3_REGION=${LITESTREAM_S3_REGION}
 LITESTREAM_S3_PATH=${1:-$LITESTREAM_S3_PATH}
 LITESTREAM_TENANTS_DIR=/data/tenants
+LITESTREAM_REGISTRY_DB=${LITESTREAM_REGISTRY_DB}
+LITESTREAM_S3_REGISTRY_PATH=${LITESTREAM_S3_REGISTRY_PATH}
 LITESTREAM_S3_ENDPOINT=${LITESTREAM_S3_ENDPOINT}
 AWS_PROFILE=pkdump
 EOF
@@ -258,6 +269,16 @@ for t in "${TENANTS[@]}"; do
 done
 check "the data volume carries ${#TENANTS[@]} tenants" "${TENANTS[*]}" \
 	"$(tenants_on_volume "$MP" | sort | tr '\n' ' ' | sed 's/ $//')"
+# The registry sits at the data ROOT, outside tenants/, so the glob above cannot
+# see it and it is replicated as itself. A deployed instance has one; without it
+# here, backup-check takes its "no registry on this instance yet" branch and the
+# whole registry half of Layer 1 would go unexercised by this gate.
+sqlite3 -cmd '.timeout 5000' "${MP}/registry.sqlite" \
+	"PRAGMA journal_mode=WAL;
+	 CREATE TABLE users (handle TEXT PRIMARY KEY, database_id TEXT NOT NULL);
+	 INSERT INTO users (handle, database_id) VALUES ('alpha', 'alpha'), ('bravo', 'bravo');" >/dev/null
+check "and a user registry beside them, not among them" "yes" \
+	"$([ -e "${MP}/registry.sqlite" ] && ! tenants_on_volume "$MP" | grep -qx registry && echo yes || echo no)"
 
 # The SHIPPED sidecar config, replicating for real, so the freshness query the
 # checker runs is a real S3 query against real replica data.
@@ -268,23 +289,40 @@ podman run -d --name "$LS_CTR" --user 0 \
 	-e AWS_CONFIG_FILE=/aws/config -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
 	-e AWS_PROFILE -e LITESTREAM_TENANTS_DIR -e LITESTREAM_S3_BUCKET \
 	-e LITESTREAM_S3_PATH -e LITESTREAM_S3_REGION -e LITESTREAM_S3_ENDPOINT \
+	-e LITESTREAM_REGISTRY_DB -e LITESTREAM_S3_REGISTRY_PATH \
 	"$LITESTREAM_IMAGE" replicate -config /etc/litestream.yml >/dev/null
 
-replicating=0
-for t in "${TENANTS[@]}"; do
-	url="$(tenant_replica_url "$t")"
-	deadline=$(( SECONDS + 90 ))
+# awaiting_replica <url> — poll until that replica holds real transaction data.
+#
+# "Holds data" is a TIMESTAMP, not any output at all. `ltx` prints its column
+# header even for a prefix that has never been written to, so `grep -q .` here
+# said "replicating" while the sidecar had exited at startup and nothing had
+# ever reached the bucket (measured, pd-nt1k) — which is how a dead sidecar
+# reached §3 wearing a green §2. Match what backup-check's ltx_newest parses.
+awaiting_replica() { # awaiting_replica <replica-url>
+	local url="$1" deadline=$(( SECONDS + 90 ))
 	while [ "$SECONDS" -lt "$deadline" ]; do
 		if podman run --rm --user 0:0 \
 			-v "${CONF_DIR}/aws/config:/aws/config:ro" \
 			--secret "${SECRET_NAME},type=mount,target=/aws/credentials" \
 			-e AWS_CONFIG_FILE=/aws/config -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
-			-e AWS_PROFILE=pkdump "$LITESTREAM_IMAGE" ltx -level all "$url" 2>/dev/null | grep -q .
-		then replicating=$((replicating + 1)); break; fi
+			-e AWS_PROFILE=pkdump "$LITESTREAM_IMAGE" ltx -level all "$url" 2>/dev/null \
+			| grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z'
+		then return 0; fi
 		sleep 3
 	done
+	return 1
+}
+
+replicating=0
+for t in "${TENANTS[@]}"; do
+	awaiting_replica "$(tenant_replica_url "$t")" && replicating=$((replicating + 1))
 done
 check "both tenants are replicating to S3" "2" "$replicating"
+# Separately, because losing it is the failure the tenant loop cannot see: every
+# tenant stays fresh and the table saying whose database is whose is gone.
+check "the user registry is replicating to S3 too" "yes" \
+	"$(awaiting_replica "$(registry_replica_url)" && echo yes || echo no)"
 
 # ── 3. Layer 1 GREEN: a fresh backup pings the off-box monitor ──────────────
 log "3. Layer 1 fires GREEN — the monitor is pinged only when S3 is actually fresh"
@@ -337,19 +375,46 @@ for _ in $(seq 60); do
 	sleep 1
 done
 
-# ── 5. THE SKIP (pd-1717): unable to verify is a FAILURE, not a pass ────────
-log "5. the skip is gone — no monitor configured is a FAILURE (pd-1717)"
+# ── 5. THE SKIP (pd-1717, then pd-7f46): unarming costs the PING, not the ───
+#      VERIFICATION
+log "5. the skip is gone — no monitor still verifies against S3 (pd-1717/pd-7f46)"
 # This is the bug that let alarming look armed while being off: with no ping URL
-# the checker printed 'skipping', exited 0, and every dashboard read green.
-# Mutation in both directions, because only the pair is evidence.
+# the checker printed 'skipping', exited 0, and every dashboard read green —
+# having asked S3 nothing at all. What is gone is the SKIP, not the exit code:
+# an unarmed monitor costs the ping and nothing else, so the freshness query
+# still runs and a stale replica still fails (proved in the arm below, and in
+# tests/litestream/drill.sh §6). "Is this instance armed?" is a different
+# question and alarm-status.sh answers it — see §8.
 write_alerts_env ""
 BEFORE=$(sink_total)
 OUT="$(run_check)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
-check "unset ping URL -> non-zero exit" "1" "$RC"
+check "unset ping URL still verifies -> zero exit" "0" "$RC"
 check "it does not use the word 'skipping'" "0" "$(printf '%s' "$OUT" | grep -ci 'skipping' || true)"
-check "it says FAILED" "1" "$(printf '%s' "$OUT" | grep -c 'FAILED' || true)"
+# One judgement per database it is responsible for — the registry AND every
+# tenant, not "at least one line". A count that only proved SOMETHING was asked
+# would still read green if the registry dropped out of the checked set, which
+# is the whole failure pd-nd6w added it to catch.
+check "it asked S3 about the registry and every tenant anyway" "$(( ${#TENANTS[@]} + 1 ))" \
+	"$(printf '%s' "$OUT" | grep -c 'newest S3 replica write' || true)"
+check "and it says the dead-man's switch is NOT armed" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'NOT armed' || true)"
 check "and nothing at all was sent" "0" "$(( $(sink_total) - BEFORE ))"
+
+# Mutation in the other direction, because only the pair is evidence: with the
+# monitor still unarmed, a replica that is genuinely stale must FAIL. An unarmed
+# checker that could not fail would be the old skip wearing a new message.
+podman stop -t 2 "$MINIO_CTR" >/dev/null 2>&1
+BEFORE=$(sink_total)
+OUT="$(run_check)"; RC=$?
+printf '%s\n' "$OUT" | tail -n 3 | sed 's/^/    /'
+check "unarmed, a failing freshness query is STILL a failure" "1" "$RC"
+check "and no ping was sent, there being nothing to ping" "0" "$(since_grep "$BEFORE" "$FAIL_PING")"
+podman start "$MINIO_CTR" >/dev/null 2>&1
+for _ in $(seq 60); do
+	curl -fsS "http://127.0.0.1:${MINIO_PORT}/minio/health/live" >/dev/null 2>&1 && break
+	sleep 1
+done
 
 write_alerts_env "$PING_URL"
 BEFORE=$(sink_total)

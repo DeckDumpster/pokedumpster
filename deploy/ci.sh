@@ -20,18 +20,38 @@
 #                      tests/litestream/run.sh.
 #   6. DR drill:       run deploy/RESTORE.md's procedure with the shipped
 #                      scripts — restore one tenant in place while the others
-#                      stay byte-identical. See tests/litestream/drill.sh.
+#                      keep exactly their own data, then walk the recovery matrix: after
+#                      a RENAME, of a DETACHED tenant, and the load-bearing
+#                      negative — restoring the tenant files WITHOUT the registry
+#                      must FAIL, shown succeeding-and-anonymous first. See
+#                      tests/litestream/drill.sh.
 #  6b. Alarming gate:  make every backup-alarming layer FIRE at a local sink
 #                      standing in for healthchecks.io + Pushover, and assert on
 #                      what it sent. See tests/alarming/run.sh.
-#   7. Visual gate:    screenshot every route at 1440 and 768 against that
+#   7. Recreate proof: create a user, remove her, create her again, and prove no
+#                      restore of the second one can reach the first one's card
+#                      — pd-pm7b, closed executably. See tests/litestream/recreate.sh.
+#   8. Upgrade gate:   start the SHIPPED image against a data volume built in
+#                      the OLD layout, migrate it onto opaque database ids, roll
+#                      that back, and assert it serves the same collection at
+#                      every step. See tests/tenants/upgrade.sh.
+#   9. Handle gate:    start the SHIPPED image with tenant resolution ON and
+#                      assert what it answers to a tenant header: malformed is
+#                      400, unknown is 404, and single-tenant mode does not read
+#                      the header at all. See tests/tenants/handles.sh.
+#  10. Visual gate:    screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines.
 #                      See tests/visual/README.md for the approval workflow.
+#  11. Schema-version gate: start a prod-shaped instance against a deliberately
+#                      UNVERSIONED data volume — the shape every database on
+#                      disk has, prod's included — and assert every database is
+#                      adopted and serves; then assert one from the future is
+#                      refused. See tests/schema-version/run.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
 # for Vision mode, which makes it slow and non-deterministic. (The visual gate
-# in step 7 also drives Playwright, but offline and deterministically — that is
+# in step 10 also drives Playwright, but offline and deterministically — that is
 # the difference, not the browser.) Run the intents harness on its own:
 #   (cd tests/ui && npx playwright install chromium && npx playwright test)
 #
@@ -186,12 +206,52 @@ bash "$REPO_DIR/tests/litestream/drill.sh"
 step "Backup alarming: every layer fires (tests/alarming/run.sh)"
 bash "$REPO_DIR/tests/alarming/run.sh"
 
-# --- 7. Visual-regression gate ---------------------------------------------
+# --- 7. Recreated-handle proof ----------------------------------------------
+# pd-pm7b as an executable statement rather than an argument: a handle is
+# created, removed and created again through the real `pkdump tenant` commands,
+# and no restore of the second user — latest or point-in-time inside the
+# retention window — can produce the first user's card. Its own MinIO, its own
+# $PKDUMP_HOME, its own prefix; it touches nothing else here.
+
+step "Recreated handle cannot inherit a replica (pd-pm7b)"
+bash "$REPO_DIR/tests/litestream/recreate.sh"
+
+# --- 8. Upgrade-path gate ---------------------------------------------------
+# Fresh instances are not the upgrade path. deploy/setup.sh --test creates its
+# volume already in the current layout, which is exactly why two alignment beads
+# both verified single-tenant startup and prod still went down on the first
+# automated deploy of the last migration (pd-uoph). This starts the shipped image
+# against a volume built in the OLD shape. Its own image tag, container, port and
+# temp dir — it does not touch the instance started above.
+
+step "Upgrade path: old-layout volume -> migrate -> rollback (pd-hqee)"
+bash "$REPO_DIR/tests/tenants/upgrade.sh"
+
+# --- 9. Tenant-header gate --------------------------------------------------
+# What the shipped image answers to a tenant header, over real HTTP: malformed
+# is a 400 naming the rule, well-formed-but-unknown is a 404, and single-tenant
+# mode does not read the header at all. The distinction is a status code, so it
+# has to be asserted on the wire — a 400 flattened into a 404 by the middleware
+# would satisfy every unit test in the crate. Its own image tag, container,
+# port and temp dir — it does not touch the instance started above.
+
+step "Tenant header: malformed 400 vs unknown 404 (pd-4g7c)"
+bash "$REPO_DIR/tests/tenants/handles.sh"
+
+# --- 10. Visual-regression gate ---------------------------------------------
 # Runs against the container started above rather than standing up a second
 # one. A pixel diff fails CI; approving it is explicit — tests/visual/README.md.
 
 step "Visual regression: every route, two viewports"
 PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwright.sh"
+
+# --- 11. Schema-version gate ------------------------------------------------
+# The upgrade path, not the fresh install: a prod-shaped container started
+# against a volume the PRE-GATE binary would have left behind. Its own instance
+# name, volume and port — it does not touch the instance started above.
+
+step "Schema version: an unversioned volume is adopted, a future one is refused"
+bash "$REPO_DIR/tests/schema-version/run.sh"
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

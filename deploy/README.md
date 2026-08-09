@@ -41,15 +41,25 @@ scripts instead of `setup.sh` / `deploy.sh` / `teardown.sh`.
 | Data dir in container | `/data` (`PKDUMP_HOME=/data`) |
 | Default instance | `prod` |
 
-Two SQLite databases live on each data volume:
+Three SQLite databases live on each data volume:
 
 - `shared.sqlite` — the immutable card catalog. Fully reproducible from
   upstream via `pkdump setup`; **not** backed up. One copy, `ATTACH`ed by
   every tenant.
-- `tenants/<tenant>.sqlite` — one collection per tenant (`collection` is the
-  original single user). The only thing worth backing up. See
-  [TENANTS.md](TENANTS.md) for provisioning and the migration from the old
-  flat `collection.sqlite` layout.
+- `tenants/<database_id>.sqlite` — one collection per tenant, named by an
+  opaque ULID and never by the handle of the person whose collection it is
+  (`collection` is the original single user, and the ids say nothing about
+  that). See [TENANTS.md](TENANTS.md) for provisioning, for the operator step
+  that answers **which file is whose**, and for the two migrations — out of the
+  old flat `collection.sqlite` layout, and then off handle-named files onto ids.
+- `registry.sqlite` — the user registry: handle → `database_id`. At the data
+  root, deliberately outside `tenants/` so that directory keeps meaning "one
+  file per tenant" exactly.
+
+The last two are the irreplaceable set, and both are replicated by the one
+Litestream sidecar. The registry is not an afterthought in that set: without it
+the tenant files are present but anonymous. [RESTORE.md](RESTORE.md) restores it
+**first** for exactly that reason.
 
 ## Local CI loop
 
@@ -72,7 +82,7 @@ Steps, in order, exiting non-zero on the first failure:
    non-first one restored.
 6. DR drill (`tests/litestream/drill.sh`): `deploy/RESTORE.md`'s procedure
    executed with the shipped scripts — one tenant restored in place while the
-   others stay byte-identical.
+   others keep exactly their own data.
 7. Visual regression (`tests/visual/`): every route at 1440 and 768, diffed
    against the committed baselines.
 
@@ -141,8 +151,8 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `setup.sh <name> [port] [--init] [--test]` | Create an instance. `--test` seeds from the committed fixture; `--init` clones the seed volume |
 | `deploy.sh <name>` | Rebuild image and restart one instance |
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
-| `restore-litestream.sh [--yes] [--at=<RFC3339>] <inst> [tenant]` | Restore ONE tenant's collection from the S3 backup (latest or point-in-time) — see [RESTORE.md](RESTORE.md) |
-| `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer). **Fails** if it cannot verify |
+| `restore-litestream.sh [--yes] [--at=<RFC3339>] [--unattributed] <inst> [database-id]` | Restore ONE collection from the S3 backup (latest or point-in-time). Addressed by the database's file stem, not by a handle — `pkdump tenant list` says which is whose. **Refuses a database the registry cannot name** (restore `--registry` first; `--unattributed` for a purged one). See [RESTORE.md](RESTORE.md) |
+| `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer). The verification always runs; the ping URL controls only the ping |
 | `alarm-status.sh <inst> [--verify]` | Is alarming actually ARMED on this instance? Exit 0 = yes. `--verify` fires it for real |
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin) |
@@ -176,18 +186,29 @@ timers for the instance (the host-wide disk timer is left alone).
 ## Backup & restore — Litestream → S3
 
 Backups are off-box only (no local disk): the `pkdump-litestream-<inst>` sidecar
-continuously replicates **every** `tenants/*.sqlite` to S3 with **6-month
-point-in-time recovery**. One sidecar covers all tenants — it watches the
-`tenants/` directory and derives each tenant's S3 prefix from its filename, so
-`pkdump tenant create` is the whole of "add a tenant to backups": no config
-edit, no restart. The shared catalog is not backed up (reproducible via
-`seed.sh`). Credentials are assume-role (auto-refresh) via a podman secret.
+continuously replicates **every** `tenants/*.sqlite` **and `registry.sqlite`** to
+S3 with **6-month point-in-time recovery**. One sidecar covers all of it — it
+watches the `tenants/` directory and derives each tenant's S3 prefix from its
+filename, so `pkdump tenant create` is the whole of "add a tenant to backups": no
+config edit, no restart. The registry is named explicitly instead, on its own
+prefix beside the tenants one. The shared catalog is not backed up (reproducible
+via `seed.sh`). Credentials are assume-role (auto-refresh) via a podman secret.
+
+Upgrading an instance whose `litestream.env` predates the registry: re-run
+`deploy/setup.sh <inst>` to backfill the two new keys, then restart the sidecar.
+Until you do, the sidecar refuses to start — deliberately, so the registry cannot
+be silently left out of the replicated set.
 
 ```bash
-# Restore the latest backup onto a live instance (tenant defaults to `collection`;
-# only that tenant is touched):
+# Restore the latest backup onto a live instance. The argument is the database's
+# file stem (an opaque `database_id`), not a person — `pkdump tenant list` maps
+# handles to ids. Only that one collection is touched; it defaults to `collection`:
 bash deploy/restore-litestream.sh prod
-bash deploy/restore-litestream.sh prod alice
+bash deploy/restore-litestream.sh prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
+
+# The user registry — restore this FIRST after a total loss (RESTORE.md). Not a
+# suggestion: a tenant restore refuses until the registry can say whose file it is.
+bash deploy/restore-litestream.sh --registry prod
 
 # Point-in-time restore (within the 6-month window):
 bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod
@@ -260,15 +281,20 @@ bash deploy/alarm-status.sh <inst> --verify
 ```
 
 Create a healthchecks.io check (period ~6h, grace ~3h) and wire its Pushover
-integration.
+integration. Verify end-to-end: run the check once
+(`systemctl --user start pkdump-backup-check@<inst>.service`) and confirm the
+monitor goes green, then simulate a failure (e.g. revoke the bootstrap key or
+rename the volume) and confirm the alert fires within the grace window.
 
 **There is no "unconfigured" pass.** `backup-check.sh` used to print `skipping`
 and exit 0 when `PKDUMP_BACKUP_PING_URL` was empty — a green unit, a green
-journal, and no monitor. It now **fails** (pd-1717), which also trips its own
-`OnFailure` push and shows as `failed` in `systemctl`. `alert.sh` behaves the
-same way: asked to alert with no credentials, it exits non-zero rather than
-dropping the alert quietly. Dev and test boxes are unaffected because they never
-enable the timer — not because the checker pretends.
+journal, and no monitor, having asked S3 nothing at all (pd-1717). The skip is
+gone: with that variable empty the freshness check still runs and a stale
+replica still fails (`pd-7f46`). What is missing is only the off-box dead-man,
+so a dead box or a dead timer goes unnoticed — which is a question about
+*arming*, and `alarm-status.sh` is what answers it (NOT ARMED, exit non-zero).
+`alert.sh` refuses to pass the same way: asked to alert with no credentials, it
+exits non-zero rather than dropping the alert quietly.
 
 ### Proving it fires
 

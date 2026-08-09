@@ -5,11 +5,16 @@
 //! read-only and exposes its tables through `TEMP VIEW`s so queries can join
 //! user and catalog data unqualified (PLAN.md §3.1).
 //!
-//! Schema management: single-instance project (pokedumpster-luo). The full
-//! schema lives in `schema_shared.sql` / `schema_user.sql` and is re-applied
-//! with `CREATE … IF NOT EXISTS` on every open. No migration history, no
-//! refinery — future schema changes edit those files and manually apply
-//! the diff to the one prod box.
+//! Schema management: the full schema lives in `schema_shared.sql` /
+//! `schema_user.sql` and is re-applied with `CREATE … IF NOT EXISTS` on
+//! every open. No migration history, no refinery — additive change travels
+//! by idempotent re-application (pokedumpster-luo).
+//!
+//! What that cannot express — a change that transforms or drops — is gated
+//! instead of applied: every database carries its schema version in
+//! `PRAGMA user_version`, and a file written by a newer build is REFUSED
+//! rather than opened. See [`crate::schema_version`] for the three
+//! outcomes and why the refusal is what makes rollback safe (pd-ja38).
 
 use std::path::Path;
 use std::time::Duration;
@@ -18,9 +23,11 @@ use rusqlite::Connection;
 use rusqlite::backup::Backup;
 
 use crate::error::Result;
+use crate::schema_version::{self, Database};
 
 const SCHEMA_SHARED: &str = include_str!("schema_shared.sql");
 const SCHEMA_USER: &str = include_str!("schema_user.sql");
+const SCHEMA_REGISTRY: &str = include_str!("schema_registry.sql");
 
 /// Open the shared catalog database, creating it if absent, and apply the
 /// schema (idempotent — every CREATE is IF NOT EXISTS). Read-write — for
@@ -49,6 +56,9 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
          PRAGMA foreign_keys = ON;",
     )?;
     conn.busy_timeout(Duration::from_secs(5))?;
+    // Before a single statement of schema runs: a catalog written by a newer
+    // build is refused, not migrated backwards into.
+    schema_version::gate(&conn, Database::Shared)?;
     conn.execute_batch(SCHEMA_SHARED)?;
     add_missing_columns(&conn)?;
     // Reconcile shipped seeds — variants must run first (sub_type_map
@@ -58,6 +68,8 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
     crate::bundles::reconcile(&mut conn)?;
     crate::set_aliases::reconcile(&mut conn)?;
     crate::conditions::reconcile(&mut conn)?;
+    // Stamped last: the file claims this shape only once it has it.
+    schema_version::stamp(&conn, Database::Shared)?;
     Ok(conn)
 }
 
@@ -94,19 +106,25 @@ fn add_missing_columns(conn: &Connection) -> Result<()> {
 /// `ATTACH` the shared catalog read-only as `shared`, then create a
 /// `TEMP VIEW` for every catalog table and view so they are queryable
 /// unqualified alongside the user database's own tables.
+///
+/// The catalog is version-gated here too. This is the path the *server*
+/// reaches it by — `open_shared` is `pkdump setup` / ingest — so without a
+/// check here a catalog from a newer build would be joined against
+/// silently on every request.
 pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<()> {
     let uri = format!("file:{}?mode=ro", shared_path.display());
     conn.execute("ATTACH DATABASE ?1 AS shared", [uri])?;
+    schema_version::gate_attached(conn, Database::Shared, "shared")?;
 
-    // Skip sqlite_* internals and the legacy refinery_schema_history
-    // table left behind on the prod DB by the pre-luo migration system.
-    // It's harmless dead weight; new installs never get it.
+    // Everything the catalog declares, minus SQLite's own internals.
+    // Nothing else is named here: a table the catalog should not have is
+    // dropped by `schema_shared.sql`, not skipped by every reader of it
+    // (pd-yj40).
     let names: Vec<String> = {
         let mut stmt = conn.prepare(
             "SELECT name FROM shared.sqlite_master \
              WHERE type IN ('table', 'view') \
-               AND name NOT LIKE 'sqlite_%' \
-               AND name <> 'refinery_schema_history'",
+               AND name NOT LIKE 'sqlite_%'",
         )?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<_>>()?
@@ -132,7 +150,37 @@ pub fn open_user(user_path: &Path) -> Result<Connection> {
     let conn = Connection::open(user_path)?;
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
     conn.busy_timeout(Duration::from_secs(5))?;
+    schema_version::gate(&conn, Database::User)?;
     conn.execute_batch(SCHEMA_USER)?;
+    schema_version::stamp(&conn, Database::User)?;
+    Ok(conn)
+}
+
+/// Open the user registry database, creating it if absent, and apply the
+/// registry schema (idempotent, like the other two).
+///
+/// Never attaches the catalog: the registry answers one question — which
+/// database file belongs to this handle — and joins nothing. WAL so a
+/// resolver reading it is not blocked by a `pkdump tenant create` writing
+/// it.
+///
+/// Gated and stamped exactly as [`open_user`] is, and for a sharper reason:
+/// this is the file that says whose database is whose. A build that did not
+/// understand its shape and wrote to it anyway would not corrupt a
+/// collection — it would corrupt the map, and an unattributable collection is
+/// the failure this whole layout exists to prevent (`deploy/TENANTS.md`).
+/// Every registry in existence is version 0, so the adoption path is the one
+/// that actually runs (pd-r60h).
+pub fn open_registry(path: &Path) -> Result<Connection> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let conn = Connection::open(path)?;
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    schema_version::gate(&conn, Database::Registry)?;
+    conn.execute_batch(SCHEMA_REGISTRY)?;
+    schema_version::stamp(&conn, Database::Registry)?;
     Ok(conn)
 }
 
@@ -146,8 +194,13 @@ pub fn connect_user(user_path: &Path, shared_path: &Path) -> Result<Connection> 
 
 /// Apply the user schema to an arbitrary connection. Used by tests that
 /// open an in-memory user DB without going through `connect_user`.
+///
+/// Gates and stamps exactly as [`open_user`] does, so a test connection is
+/// not a second, laxer way into the user schema.
 pub fn init_user_schema(conn: &Connection) -> Result<()> {
+    schema_version::gate(conn, Database::User)?;
     conn.execute_batch(SCHEMA_USER)?;
+    schema_version::stamp(conn, Database::User)?;
     Ok(())
 }
 
@@ -322,6 +375,422 @@ mod tests {
             restored, 1,
             "live connection must see the restored snapshot, not the WAL mutation"
         );
+    }
+
+    /// Build a collection database the way the binary that predates the
+    /// gate did: schema applied straight, no `user_version` written, rows in
+    /// it. This is the shape of every database on disk today, prod's
+    /// included — and the shape that took prod down on 2026-08-08, when
+    /// every verification was fresh-install shaped and nobody started the
+    /// new binary against a volume the old one made.
+    fn unversioned_collection(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+            .unwrap();
+        conn.execute_batch(SCHEMA_USER).unwrap();
+        conn.execute(
+            "INSERT INTO binders (name, created_at, updated_at) \
+             VALUES ('Trade Binder', '2026-08-08', '2026-08-08')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO collection (printing_id, acquired_at, source, binder_id) \
+             VALUES ('sv3pt5-1-normal', '2026-08-08', 'manual_id', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        drop(conn);
+        assert_eq!(
+            file_user_version(path),
+            0,
+            "the fixture must be genuinely unversioned"
+        );
+    }
+
+    /// `user_version` straight out of the file header (bytes 60..64,
+    /// big-endian), read without opening the database — so the assertion
+    /// cannot be satisfied by the very code under test.
+    fn file_user_version(path: &Path) -> u32 {
+        let bytes = std::fs::read(path).unwrap();
+        u32::from_be_bytes(bytes[60..64].try_into().unwrap())
+    }
+
+    /// The file change counter (header bytes 24..28), which SQLite bumps on
+    /// every write transaction. An unchanged counter is proof that an open
+    /// touched nothing.
+    fn file_change_counter(path: &Path) -> u32 {
+        let bytes = std::fs::read(path).unwrap();
+        u32::from_be_bytes(bytes[24..28].try_into().unwrap())
+    }
+
+    /// The adoption path, which is the release-blocking one: every database
+    /// in existence is version 0, so if this is wrong, prod does not start.
+    #[test]
+    fn an_unversioned_collection_is_adopted_in_place_with_its_rows() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collection.sqlite");
+        unversioned_collection(&path);
+        let before = std::fs::metadata(&path).unwrap().ino();
+
+        let conn = open_user(&path).unwrap();
+
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "adoption must not lose the collection");
+        let binder: String = conn
+            .query_row("SELECT name FROM binders WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(binder, "Trade Binder");
+        drop(conn);
+
+        assert_eq!(
+            file_user_version(&path),
+            Database::User.version() as u32,
+            "the adopted database must carry the version afterwards"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().ino(),
+            before,
+            "adoption must happen in place — the file must not be recreated"
+        );
+    }
+
+    #[test]
+    fn an_unversioned_catalog_is_adopted_and_keeps_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.sqlite");
+        seed_shared(&path);
+        // Put it back the way the pre-gate binary left it.
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch("PRAGMA user_version = 0; PRAGMA wal_checkpoint(TRUNCATE);")
+                .unwrap();
+        }
+        assert_eq!(file_user_version(&path), 0);
+
+        let conn = open_shared(&path).unwrap();
+        assert!(crate::catalog::card_exists(&conn, "sv3pt5-1").unwrap());
+        drop(conn);
+        assert_eq!(file_user_version(&path), Database::Shared.version() as u32);
+    }
+
+    /// Re-opening an up-to-date database leaves its version exactly where it
+    /// was — the gate does not creep the number on every start. (That the
+    /// stamp writes *nothing at all* in this case is asserted a level down,
+    /// in `schema_version`, against the file's change counter.)
+    #[test]
+    fn re_opening_an_up_to_date_database_writes_no_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collection.sqlite");
+        drop(open_user(&path).unwrap());
+        let stamped = file_user_version(&path);
+        assert_eq!(stamped, Database::User.version() as u32);
+
+        for _ in 0..3 {
+            let conn = open_user(&path).unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .unwrap();
+            assert_eq!(file_user_version(&path), stamped);
+        }
+    }
+
+    /// The gate itself: a collection written by a newer build is refused,
+    /// and the refusal names both versions and the file. Rollback is only
+    /// safe because of this — an older binary must stop, not quietly
+    /// operate on a schema it does not know.
+    #[test]
+    fn a_collection_from_the_future_is_refused_not_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared_path = dir.path().join("shared.sqlite");
+        seed_shared(&shared_path);
+        let path = dir.path().join("collection.sqlite");
+        drop(open_user(&path).unwrap());
+
+        let ahead = Database::User.version() + 1;
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(&format!("PRAGMA user_version = {ahead}"))
+                .unwrap();
+        }
+
+        let err = open_user(&path).unwrap_err();
+        assert!(matches!(err, crate::error::DbError::SchemaVersion(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("version {ahead}")),
+            "no file version: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("version {}", Database::User.version())),
+            "no binary version: {msg}"
+        );
+        assert!(msg.contains("collection.sqlite"), "no file named: {msg}");
+
+        // The whole way in, not just the low-level one.
+        assert!(connect_user(&path, &shared_path).is_err());
+    }
+
+    /// The server reaches the catalog by attaching it, not through
+    /// `open_shared` — so the gate has to be on that path as well.
+    #[test]
+    fn a_catalog_from_the_future_is_refused_on_attach() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared_path = dir.path().join("shared.sqlite");
+        seed_shared(&shared_path);
+        let ahead = Database::Shared.version() + 1;
+        {
+            let c = Connection::open(&shared_path).unwrap();
+            c.execute_batch(&format!("PRAGMA user_version = {ahead}"))
+                .unwrap();
+        }
+
+        let err = connect_user(&dir.path().join("collection.sqlite"), &shared_path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("shared.sqlite"), "no file named: {msg}");
+        assert!(
+            msg.contains(&format!("version {ahead}")),
+            "no file version: {msg}"
+        );
+        assert!(open_shared(&shared_path).is_err(), "and directly, too");
+    }
+
+    /// Build a registry the way the binary that predates the gate did:
+    /// schema applied straight, no `user_version` written, a real user in it.
+    /// Every registry in existence is this shape — the epic that creates the
+    /// file and the epic that added the gate were separate branches, so there
+    /// has never been a build that stamped one (pd-r60h).
+    fn unversioned_registry(path: &Path) -> String {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+            .unwrap();
+        conn.execute_batch(SCHEMA_REGISTRY).unwrap();
+        let user = crate::registry::insert(&conn, "alice").unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        drop(conn);
+        assert_eq!(
+            file_user_version(path),
+            0,
+            "the fixture must be genuinely unversioned"
+        );
+        user.database_id
+    }
+
+    /// The adoption path for the third database. It is the one that actually
+    /// runs: there is no registry anywhere carrying a version, so if this is
+    /// wrong, no box with users on it starts.
+    #[test]
+    fn an_unversioned_registry_is_adopted_in_place_with_its_rows() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry.sqlite");
+        let database_id = unversioned_registry(&path);
+        let before = std::fs::metadata(&path).unwrap().ino();
+
+        let conn = open_registry(&path).unwrap();
+
+        let user = crate::registry::lookup(&conn, "alice").unwrap().unwrap();
+        assert_eq!(
+            user.database_id, database_id,
+            "adoption must not lose the map from handle to database"
+        );
+        drop(conn);
+
+        assert_eq!(
+            file_user_version(&path),
+            Database::Registry.version() as u32,
+            "the adopted registry must carry the version afterwards"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().ino(),
+            before,
+            "adoption must happen in place — the file must not be recreated"
+        );
+    }
+
+    /// A registry from the future is refused rather than written to, and the
+    /// refusal names both versions and the file.
+    ///
+    /// Sharper here than for a collection: this is the file that says whose
+    /// database is whose. An older build that applied its own schema over a
+    /// newer registry would not damage a collection — it would damage the
+    /// only thing that can attribute one.
+    #[test]
+    fn a_registry_from_the_future_is_refused_not_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry.sqlite");
+        drop(open_registry(&path).unwrap());
+
+        let ahead = Database::Registry.version() + 1;
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(&format!(
+                "PRAGMA user_version = {ahead}; PRAGMA wal_checkpoint(TRUNCATE);"
+            ))
+            .unwrap();
+        }
+        let before = file_change_counter(&path);
+
+        let err = open_registry(&path).unwrap_err();
+        assert!(matches!(err, crate::error::DbError::SchemaVersion(_)));
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("version {ahead}")),
+            "no file version: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("version {}", Database::Registry.version())),
+            "no binary version: {msg}"
+        );
+        assert!(msg.contains("registry.sqlite"), "no file named: {msg}");
+        assert!(
+            msg.contains(Database::Registry.label()),
+            "no database named: {msg}"
+        );
+
+        // Refused means not written to. A refusal that had already applied
+        // the schema on the way past would be a refusal of the return value
+        // only, which is the failure mode the gate exists to prevent.
+        assert_eq!(
+            file_change_counter(&path),
+            before,
+            "the refused registry must not have been touched"
+        );
+        assert_eq!(file_user_version(&path), ahead as u32);
+    }
+
+    /// All THREE databases are gated, not two. The registry was declared in
+    /// `schema_version` and wired to nothing for as long as the two epics were
+    /// separate branches, and "declared" is not "enforced" (pd-r60h).
+    #[test]
+    fn every_database_refuses_a_file_from_the_future() {
+        let dir = tempfile::tempdir().unwrap();
+        let ahead_by_one = |path: &Path, db: Database| {
+            let c = Connection::open(path).unwrap();
+            c.execute_batch(&format!("PRAGMA user_version = {}", db.version() + 1))
+                .unwrap();
+        };
+
+        let shared = dir.path().join("shared.sqlite");
+        let user = dir.path().join("collection.sqlite");
+        let registry = dir.path().join("registry.sqlite");
+        drop(open_shared(&shared).unwrap());
+        drop(open_user(&user).unwrap());
+        drop(open_registry(&registry).unwrap());
+        ahead_by_one(&shared, Database::Shared);
+        ahead_by_one(&user, Database::User);
+        ahead_by_one(&registry, Database::Registry);
+
+        assert!(open_shared(&shared).is_err(), "the catalog is not gated");
+        assert!(open_user(&user).is_err(), "the collection is not gated");
+        assert!(
+            open_registry(&registry).is_err(),
+            "the registry is not gated"
+        );
+    }
+
+    /// The migration-history table the pre-luo migration system left on
+    /// every database built before it was removed. Recreated here in the
+    /// shape refinery wrote it so the drop is exercised against the real
+    /// thing rather than an empty stand-in.
+    fn add_legacy_refinery_table(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE refinery_schema_history ( \
+                 version INT4 PRIMARY KEY, \
+                 name VARCHAR(255), \
+                 applied_on VARCHAR(255), \
+                 checksum VARCHAR(255)); \
+             INSERT INTO refinery_schema_history \
+                 VALUES (1, 'initial', '2026-05-18T00:00:00', 'deadbeef');",
+        )
+        .unwrap();
+    }
+
+    fn has_table(conn: &Connection, name: &str) -> bool {
+        conn.prepare("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?1")
+            .unwrap()
+            .exists([name])
+            .unwrap()
+    }
+
+    /// pd-yj40: the legacy table goes away on open, so no reader downstream
+    /// has to know its name. Before the drop the JSON export was the one
+    /// keeping it out of a fresh collection — by naming it.
+    #[test]
+    fn a_legacy_refinery_table_is_dropped_from_a_collection_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collection.sqlite");
+        unversioned_collection(&path);
+        add_legacy_refinery_table(&path);
+
+        let conn = open_user(&path).unwrap();
+        assert!(
+            !has_table(&conn, "refinery_schema_history"),
+            "the legacy migration table must not survive an open"
+        );
+        // ...and the collection it sat beside is untouched.
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        // The exporter no longer names it, so this is what keeps it out.
+        assert!(
+            !crate::json_backup::user_tables(&conn)
+                .unwrap()
+                .iter()
+                .any(|t| t == "refinery_schema_history"),
+            "a dropped table cannot reach the JSON envelope"
+        );
+    }
+
+    /// The catalog carries its own copy. It is dropped by `open_shared` —
+    /// `pkdump setup` / `pkdump data refresh` — because that is the only
+    /// path that holds it read-write; the server merely attaches it.
+    #[test]
+    fn a_legacy_refinery_table_is_dropped_from_the_catalog_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.sqlite");
+        seed_shared(&path);
+        add_legacy_refinery_table(&path);
+
+        let conn = open_shared(&path).unwrap();
+        assert!(!has_table(&conn, "refinery_schema_history"));
+        assert!(crate::catalog::card_exists(&conn, "sv3pt5-1").unwrap());
+    }
+
+    /// The drop is a statement in the schema, which is re-applied on every
+    /// single open — so it must cost nothing once there is nothing to drop.
+    /// A write here would be a write on every server start, replicated
+    /// off-box by Litestream each time (same standard as the version stamp).
+    #[test]
+    fn dropping_a_table_that_is_already_gone_writes_nothing_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collection.sqlite");
+        {
+            let conn = open_user(&path).unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .unwrap();
+        }
+        let before = file_change_counter(&path);
+
+        for _ in 0..3 {
+            let conn = open_user(&path).unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .unwrap();
+            assert_eq!(
+                file_change_counter(&path),
+                before,
+                "re-opening must not write to the database"
+            );
+        }
     }
 
     #[test]

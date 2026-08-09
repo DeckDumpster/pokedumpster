@@ -57,9 +57,12 @@ cargo run --bin pkdump -- serve
 ```
 
 Set `$PKDUMP_HOME` to relocate the data dir (defaults to `~/.pkdump/`).
-Set `$PKDUMP_USER` to switch tenant (defaults to `collection`). Each tenant's
-collection lives at `$PKDUMP_HOME/tenants/<tenant>.sqlite`, sharing the one
-`shared.sqlite` catalog; `pkdump tenant create|list|remove` provisions them and
+Set `$PKDUMP_USER` to switch tenant (defaults to `collection`). A user is a
+`handle` joined to an opaque ULID `database_id` in `$PKDUMP_HOME/registry.sqlite`;
+their collection lives at `$PKDUMP_HOME/tenants/<database_id>.sqlite`, sharing the
+one `shared.sqlite` catalog. `pkdump tenant create|list|rename|detach` is the
+operator surface — note that `tenant remove` now *detaches* (frees the handle,
+keeps the data); hard deletion is `pkdump tenant purge <database-id> --yes`.
 `deploy/TENANTS.md` is the runbook.
 
 ## Deployment
@@ -83,7 +86,7 @@ instance over WireGuard — no application-level authentication.
 ```
 crates/
   pkdump-core/      domain types + pure logic (variant parsing, query model)
-  pkdump-db/        rusqlite persistence + refinery migrations
+  pkdump-db/        rusqlite persistence + the two schema files
   pkdump-ingest/    upstream catalog ingestion (pokemontcg.io, TCGCSV)
   pkdump-server/    Axum HTTP app + JSON API + SvelteKit static serve
   pkdump-cli/       the `pkdump` binary (setup / data / serve / seed-fixture)

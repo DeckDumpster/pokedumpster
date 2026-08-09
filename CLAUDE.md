@@ -146,10 +146,45 @@ catalog tables through TEMP VIEWs so queries can join unqualified. That
 ATTACH is identical for every tenant — the catalog is ONE copy on disk,
 joined per query, never denormalised per tenant.
 
-Provisioning is `pkdump tenant create <name>` / `pkdump tenant remove
-<name> --yes`; `pkdump tenant adopt` migrates a pre-`tenants/` data dir and
-`revert` rolls it back. Layout rationale + the production migration runbook:
-`deploy/TENANTS.md`.
+Provisioning is `pkdump tenant create|list|rename|detach`, driven by the
+**user registry** (`registry.sqlite` at the data root — see
+`crates/pkdump-db/src/registry.rs`), not by the directory listing. A user is
+a `handle` joined to an opaque ULID `database_id`; their collection is
+`tenants/<database_id>.sqlite`, so a handle is never a path component and a
+rename never moves a file.
+
+**`pkdump tenant remove <name> --yes` no longer deletes anything.** It is an
+alias for `detach`: the handle is released for reuse and the database and its
+S3 replica are kept. Hard deletion is the explicit second step `pkdump tenant
+purge <database-id> --yes`, addressed by id so it cannot be reached by
+mistyping a live person's name.
+
+Two migrations, each with a rollback, because a box can be at either point:
+`pkdump tenant adopt` moves a pre-`tenants/` data dir into `tenants/`
+(`revert` rolls it back), and `pkdump tenant migrate` puts handle-named
+databases already in there onto opaque ids, registry row and all
+(`unmigrate` rolls that back). `migrate` is idempotent and refuses a busy
+database. Layout rationale + both runbooks: `deploy/TENANTS.md`.
+
+**Neither migration gates startup**, deliberately. `pkdump serve` serves an
+un-migrated data dir exactly as it finds it and prints which database it
+opened, because a required migration is what took prod down on the first
+automated deploy of the last one (`pd-uoph`). What it will not do is come up
+*empty*: `pkdump_db::tenants::resolve` is the single resolution point, and
+every branch either finds real bytes or fails naming the command that makes
+them exist. `tests/tenants/upgrade.sh` is the container-tier gate — an
+OLD-LAYOUT volume through the shipped image, migrated, rolled back, and
+migrated again, with the served collection asserted byte-identical
+throughout. Fresh instances do not exercise the upgrade path; `deploy/setup.sh
+--test` builds its volume in the current layout, which is exactly how the last
+one shipped untested.
+
+A rename changes the file name, and `deploy/litestream.yml` derives each
+replica prefix *from* the file name — so `migrate`/`unmigrate` **delete**
+Litestream's per-database state directory instead of moving it with the file
+(`adopt`/`revert`, which keep the name, still move it). Carrying that state
+across a prefix change is what left prod replicating nothing at
+`txid.replica=0` while the unit reported healthy (`pd-1717`).
 
 Tenant *resolution* lives in `pkdump-server/src/tenant.rs` and is **off by
 default**: `pkdump serve` opens the one collection named by `$PKDUMP_USER`
@@ -159,10 +194,29 @@ and does not read the tenant header at all. `--multi-tenant` (or
 a separate epic — so the flag must stay off in production. That is enforced
 rather than trusted: with the flag on and a non-loopback `--host`, the server
 refuses to start unless `PKDUMP_MULTITENANT_INSECURE_BIND=1` is also set.
-Single-tenant mode is unaffected at any address. Isolation is
+Single-tenant mode is unaffected at any address. A container publishes a port,
+so its entrypoint binds `0.0.0.0` — every containerised multi-tenant instance
+needs that second opt-in, which is why `tests/tenants/handles.sh` sets it and
+nothing under `deploy/` does. That gate's §3 runs the same container *without*
+it and asserts the refusal, so the escape hatch cannot quietly become the
+default.
+
+What the header carries is a *handle*, and it is only ever a lookup key: the
+user registry (`registry.sqlite`, `pkdump-db/src/registry.rs`) maps it to an
+opaque `database_id`, and that id — never the header — is what
+`pkdump_db::tenant_db_file` turns into `tenants/<database_id>.sqlite`. Isolation is
 structural: `AppState` holds no connection, `blocking()` takes the tenant from
 the request scope, and one connection per tenant is opened against that
 tenant's own file. See `deploy/TENANTS.md`.
+
+The header is still validated at the boundary, before the lookup, and the two
+refusals are different answers: not a handle is a **400** quoting
+`pkdump_db::HANDLE_RULE` (and never the value sent), a handle nobody actively
+holds is a **404**. The rule has two enforcers that cannot share code — that
+validator and the `handle` `CHECK` in `schema_registry.sql` — so they share the
+`paths::HANDLE_CASES` corpus, run through each by a test on each side. Add a
+character to one and the other's test fails. `tests/tenants/handles.sh` is the
+container-tier gate for the status codes, single-tenant mode included.
 
 ## Deployment
 
@@ -299,11 +353,26 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
   binder/deck assignment.
 - **Edition 2024**, toolchain pinned in `rust-toolchain.toml`. `cargo
   fmt` and `cargo clippy` clean before every commit.
-- **Schema** — single-instance project (pokedumpster-luo). The full
-  schema for each database lives in `crates/pkdump-db/src/schema_{shared,user}.sql`
-  and is re-applied with `CREATE … IF NOT EXISTS` on every open. No
-  migration history, no refinery. Schema changes: edit the file + apply
-  the diff manually to the one prod box (`podman exec` + `sqlite3`).
+- **Schema** — the full schema for each database lives in
+  `crates/pkdump-db/src/schema_{shared,user}.sql` and is re-applied with
+  `CREATE … IF NOT EXISTS` on every open. No migration history, no
+  refinery: additive change travels by idempotent re-application.
+- **Schema versions** — every database carries its schema version in
+  `PRAGMA user_version`, and a file written by a *newer* build is
+  **refused, not opened** (`crates/pkdump-db/src/schema_version.rs`).
+  Lower or 0 is adopted in place; equal is a no-op. That refusal is what
+  makes rollback (`pkdump tenant revert`) safe — an older binary must
+  stop rather than quietly operate on a schema it does not know.
+  `Database::version()` is the one place the numbers live; bump one only
+  when a change cannot be expressed as `CREATE … IF NOT EXISTS`, and
+  never as a substitute for a migration you have not written.
+  One database per tenant means they can legitimately differ, so
+  `pkdump tenant list` reports each tenant's own version and whether it is
+  behind, current, or ahead of the running build — reading, deliberately,
+  is not gated: a tenant the server refuses to open is exactly the one the
+  report exists to name (`deploy/TENANTS.md`).
+  `tests/schema-version/run.sh` (container tier, run by `deploy/ci.sh`)
+  proves all of it against a prod-shaped instance.
 - **Workspace dependencies** are declared in the root `Cargo.toml`
   `[workspace.dependencies]`; crates opt in with `dep.workspace = true`.
 - **Tests that demonstrate bugs must fail** until the bug is fixed.

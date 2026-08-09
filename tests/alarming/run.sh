@@ -391,7 +391,12 @@ OUT="$(run_check)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
 check "unset ping URL still verifies -> zero exit" "0" "$RC"
 check "it does not use the word 'skipping'" "0" "$(printf '%s' "$OUT" | grep -ci 'skipping' || true)"
-check "it asked S3 anyway" "1" "$(printf '%s' "$OUT" | grep -c 'newest S3 replica write' || true)"
+# One judgement per database it is responsible for — the registry AND every
+# tenant, not "at least one line". A count that only proved SOMETHING was asked
+# would still read green if the registry dropped out of the checked set, which
+# is the whole failure pd-nd6w added it to catch.
+check "it asked S3 about the registry and every tenant anyway" "$(( ${#TENANTS[@]} + 1 ))" \
+	"$(printf '%s' "$OUT" | grep -c 'newest S3 replica write' || true)"
 check "and it says the dead-man's switch is NOT armed" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'NOT armed' || true)"
 check "and nothing at all was sent" "0" "$(( $(sink_total) - BEFORE ))"

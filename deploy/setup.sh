@@ -76,8 +76,16 @@ fi
 
 # Opt-in alternate container store (pd-fite). No-op unless PKDUMP_STORE_ROOT is
 # set — and prod never sets it.
+#
+# An instance that already exists keeps the store it already lives in, for the
+# same reason it keeps the port it already publishes (below): re-running setup.sh
+# is how unit-file changes reach it, and that must not silently move its image
+# and volume into whatever store the calling shell had activated, leaving the
+# real ones behind with the unit no longer pointing at them (pd-9rxf). A store
+# passed explicitly still wins, so moving an instance on purpose still works.
 # shellcheck source=deploy/store-lib.sh
 . "$SCRIPT_DIR/store-lib.sh"
+pkdump_store_adopt_instance "$INSTANCE"
 pkdump_store_activate
 
 if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q "Linger=yes"; then

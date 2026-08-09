@@ -215,6 +215,91 @@ check "an explicit root still wins" "/elsewhere" \
 check "no unit -> no store (prod's default)" "" \
 	"$(HOME="${WORK}/home" bash -c ". '${REPO_DIR}/deploy/store-lib.sh'; unset PKDUMP_STORE_ROOT; pkdump_store_adopt_instance nosuchinstance; printf '%s' \"\${PKDUMP_STORE_ROOT:-}\"")"
 
+# ---------------------------------------------------------------------------
+log "6. Adopt is authoritative in BOTH directions (pd-9rxf)"
+# ---------------------------------------------------------------------------
+
+# The failing shape: deploy/ci.sh activates the alternate store, then invokes
+# teardown.sh for a stale instance created BEFORE any of this existed — whose
+# unit therefore carries no GlobalArgs. Adopt used to return early because a
+# store was already set, so teardown's rmi/volume rm were aimed at a store that
+# instance was never in, no-op'd, and then teardown deleted the unit: the image
+# and the data volume stay in the default store with nothing able to find them.
+# Same root cause, mirrored: deploy.sh builds into the alternate store while the
+# unstamped unit keeps systemd on the default one, and the restart silently goes
+# on serving the old image.
+#
+# So: an unstamped unit adopted inside an ACTIVATED shell must land back on the
+# default store — asserted where it counts, on what a bare `podman` does.
+sed -e 's|{{INSTANCE}}|ci-plain|g' -e 's|{{PORT}}:8080|:8080|' \
+	"${REPO_DIR}/deploy/pkdump.container" > "${WORK}/home/.config/containers/systemd/pkdump-ci-plain.container"
+
+# A unit stamped for a DIFFERENT store than the shell is on, to prove adopt
+# switches stores as well as leaving them. Stamped through the real writer, in a
+# subshell so the flags do not leak into this one.
+sed -e 's|{{INSTANCE}}|ci-other|g' -e 's|{{PORT}}:8080|:8080|' \
+	"${REPO_DIR}/deploy/pkdump.container" > "${WORK}/home/.config/containers/systemd/pkdump-ci-other.container"
+(
+	PKDUMP_STORE_GLOBAL_ARGS="--root=${WORK}/other/storage --runroot=/run/nowhere"
+	pkdump_store_stamp_unit "${WORK}/home/.config/containers/systemd/pkdump-ci-other.container"
+)
+
+# Adopt inside a shell that has already activated ${WORK}/store, then activate
+# again the way every deploy script does, and report what podman resolves to.
+# TMPDIR is unset going in so its restoration is visible.
+adopt_activated() { # adopt_activated <instance>
+	HOME="${WORK}/home" PATH="${WORK}/fakebin:${ORIG_PATH}" \
+		env -u TMPDIR -u PKDUMP_STORE_ROOT -u PKDUMP_STORE_GLOBAL_ARGS -u PKDUMP_STORE_PREV_TMPDIR \
+		bash -c "
+			. '${REPO_DIR}/deploy/store-lib.sh'
+			export PKDUMP_STORE_ROOT='${WORK}/store'
+			pkdump_store_activate >/dev/null 2>&1
+			pkdump_store_adopt_instance '$1'
+			pkdump_store_activate >/dev/null 2>&1
+			podman images
+			printf 'root=[%s] tmpdir=[%s]' \"\${PKDUMP_STORE_ROOT:-}\" \"\${TMPDIR:-}\"
+		"
+}
+
+check "unstamped unit -> podman drops the store flags" "PODMAN-ARGS: images" \
+	"$(adopt_activated ci-plain | head -n1)"
+check "unstamped unit -> root cleared and TMPDIR restored" "root=[] tmpdir=[]" \
+	"$(adopt_activated ci-plain | tail -n1)"
+
+# A stamped unit is still obeyed, including when it names a store other than the
+# one the calling shell activated. The runroot is not read back from the unit —
+# activate derives it from the graph root — so only the root is asserted.
+check "stamped unit wins over the activated store" "1" \
+	"$(adopt_activated ci-other | head -n1 | grep -c -- "--root=${WORK}/other/storage" || true)"
+check "the abandoned store's shim leaves PATH" "0" \
+	"$(adopt_activated ci-other | head -n1 | grep -c -- "--root=${WORK}/store/storage" || true)"
+check "stamped unit -> root and TMPDIR follow it" \
+	"root=[${WORK}/other] tmpdir=[${WORK}/other/tmp]" \
+	"$(adopt_activated ci-other | tail -n1)"
+
+# A unit stamped for the store we are already on must change nothing.
+check "same store adopted twice is a no-op" \
+	"PODMAN-ARGS: --root=${WORK}/store/storage $(printf '%s' "$PKDUMP_STORE_GLOBAL_ARGS" | grep -o -- '--runroot=[^ ]*') images" \
+	"$(adopt_activated ci-test | head -n1)"
+
+# Prod's path through the new code: nothing activated, an unstamped unit. PATH
+# and TMPDIR must come out exactly as they went in — deactivate may only touch
+# them when there is a shim to remove.
+check "prod: adopting an unstamped unit leaves PATH and TMPDIR alone" "same" \
+	"$(HOME="${WORK}/home" TMPDIR=/var/tmp PATH="$ORIG_PATH" \
+		env -u PKDUMP_STORE_ROOT bash -c ". '${REPO_DIR}/deploy/store-lib.sh'; pkdump_store_adopt_instance ci-plain; pkdump_store_activate; [ \"\$PATH\" = '${ORIG_PATH}' ] && [ \"\${TMPDIR:-}\" = /var/tmp ] && echo same || echo differs")"
+check "prod: no store flags to stamp a unit with" "" \
+	"$(HOME="${WORK}/home" env -u PKDUMP_STORE_ROOT bash -c ". '${REPO_DIR}/deploy/store-lib.sh'; pkdump_store_adopt_instance ci-plain; printf '%s' \"\${PKDUMP_STORE_GLOBAL_ARGS:-}\"")"
+
+# The scripts that operate on an EXISTING instance must all ask it where it
+# lives; one that only activates puts the image in one store and the unit's
+# systemd lookup in another. setup.sh included: re-running it is how unit-file
+# changes reach an instance, and that must not move its store.
+for s in teardown deploy setup seed restore-litestream backup-check; do
+	check "deploy/${s}.sh adopts the instance's store" "1" \
+		"$(grep -c 'pkdump_store_adopt_instance' "${REPO_DIR}/deploy/${s}.sh" || true)"
+done
+
 reset_store
 
 # ---------------------------------------------------------------------------

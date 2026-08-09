@@ -26,6 +26,14 @@ pub enum DbError {
     #[error("import: {0}")]
     Import(String),
 
+    /// A database's `PRAGMA user_version` is higher than the version this
+    /// build understands, so it was refused rather than opened
+    /// ([`crate::schema_version`]). Its own variant because it is the one
+    /// error here that is never the caller's fault and never retryable:
+    /// the fix is a different binary, not a different request.
+    #[error("schema version: {0}")]
+    SchemaVersion(String),
+
     /// Failed to parse an embedded data file (e.g. `data/variants.json`).
     /// Compile-time `include_str!` means this is a developer-error path —
     /// a malformed JSON file ships in the binary.

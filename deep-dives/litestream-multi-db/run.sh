@@ -388,7 +388,7 @@ lstables=$(sqlite3 "$WORK/data/$OTHER_A.sqlite" \
 	 WHERE type='table' AND name LIKE '\_litestream%' ESCAPE '\\' ORDER BY name);")
 check "the tenant DB gains Litestream's own tables" "_litestream_lock _litestream_seq" "$lstables"
 note "=> pkdump's JSON export enumerates user tables from sqlite_master and"
-note "   excludes only 'sqlite_%' + refinery_schema_history, so these ride along."
+note "   excludes only 'sqlite_%', so these ride along."
 
 log "VERDICT"
 echo "checks passed: $pass   failed: $fail"

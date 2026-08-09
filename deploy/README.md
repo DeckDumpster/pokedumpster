@@ -151,8 +151,8 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `setup.sh <name> [port] [--init] [--test]` | Create an instance. `--test` seeds from the committed fixture; `--init` clones the seed volume |
 | `deploy.sh <name>` | Rebuild image and restart one instance |
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
-| `restore-litestream.sh [--yes] [--at=<RFC3339>] <inst> [database-id]` | Restore ONE collection from the S3 backup (latest or point-in-time). Addressed by the database's file stem, not by a handle — `pkdump tenant list` says which is whose. See [RESTORE.md](RESTORE.md) |
-| `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer) |
+| `restore-litestream.sh [--yes] [--at=<RFC3339>] [--unattributed] <inst> [database-id]` | Restore ONE collection from the S3 backup (latest or point-in-time). Addressed by the database's file stem, not by a handle — `pkdump tenant list` says which is whose. **Refuses a database the registry cannot name** (restore `--registry` first; `--unattributed` for a purged one). See [RESTORE.md](RESTORE.md) |
+| `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer). The verification always runs; the ping URL controls only the ping |
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin) |
 | `mac-setup.sh` / `mac-deploy.sh` / `mac-teardown.sh` | macOS equivalents (no systemd) |
@@ -205,7 +205,8 @@ be silently left out of the replicated set.
 bash deploy/restore-litestream.sh prod
 bash deploy/restore-litestream.sh prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
 
-# The user registry — restore this FIRST after a total loss (RESTORE.md):
+# The user registry — restore this FIRST after a total loss (RESTORE.md). Not a
+# suggestion: a tenant restore refuses until the registry can say whose file it is.
 bash deploy/restore-litestream.sh --registry prod
 
 # Point-in-time restore (within the 6-month window):
@@ -256,8 +257,10 @@ systemctl --user enable --now pkdump-diskcheck.timer
 ```
 
 Create a healthchecks.io check (period ~6h, grace ~3h) and wire its Pushover
-integration. With `PKDUMP_BACKUP_PING_URL` empty, Layer 1 is a no-op (dev/test
-boxes are unaffected). Verify end-to-end: run the check once
+integration. With `PKDUMP_BACKUP_PING_URL` empty the freshness check still runs
+and still fails on a stale replica — what is missing is the off-box dead-man, so
+a dead box or a dead timer goes unnoticed (`pd-7f46`: a check that skips reads as
+a check that passed, so the skip is gone). Verify end-to-end: run the check once
 (`systemctl --user start pkdump-backup-check@<inst>.service`) and confirm the
 monitor goes green, then simulate a failure (e.g. revoke the bootstrap key or
 rename the volume) and confirm the alert fires within the grace window.

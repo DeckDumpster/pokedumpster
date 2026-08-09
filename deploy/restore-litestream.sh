@@ -47,19 +47,44 @@
 #   and you have a directory of opaque ids and no way to attribute them.
 #   See deploy/RESTORE.md, scenario C.
 #
+# THE ATTRIBUTION GATE (pd-7f46)
+#   "Restore the registry FIRST" was documented and drilled, and nothing
+#   enforced it. Restoring the tenant databases on their own SUCCEEDS: every
+#   byte comes back, `integrity_check` says ok, and what you are holding is a
+#   directory of files called 01K2C7HQ8N….sqlite with nobody's name on any of
+#   them. It reads as a completed recovery. That is the same shape as the
+#   failure this whole epic is scar tissue from — every backup-shaped signal
+#   green while recovery was impossible (pd-1717) — so it is a FAILURE here:
+#
+#     restoring a database named by an opaque database_id requires the volume's
+#     registry to name that id.
+#
+#   Absent registry, or a registry silent about the id, and the restore refuses
+#   BEFORE it stops a service or writes a byte, naming `--registry` as the
+#   thing to do first. A handle-named database from before the migration is
+#   exempt: its filename is its attribution.
+#
+#   `--unattributed` is the way past it, for the one case that is legitimately
+#   on the far side: recovering a PURGED database, whose registry row is gone
+#   by design (RESTORE.md scenario B2). It has to be typed, and it says in the
+#   output that what came back has no owner on this box.
+#
 # USAGE
-#   bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] <instance> [tenant|database-id]
+#   bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] [--unattributed] <instance> [tenant|database-id]
 #   bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] --registry <instance>
-#     --yes, -y      skip the confirmation prompt (scripted use)
-#     --at=<time>    point-in-time restore, e.g. --at=2026-06-01T12:00:00Z
-#                    (default: latest; within the 6-month retention window)
-#     --registry     restore the user registry rather than a tenant database
+#     --yes, -y        skip the confirmation prompt (scripted use)
+#     --at=<time>      point-in-time restore, e.g. --at=2026-06-01T12:00:00Z
+#                      (default: latest; within the 6-month retention window)
+#     --registry       restore the user registry rather than a tenant database
+#     --unattributed   restore a database the registry does not name (a purged
+#                      one). Without it, that is an error — see above.
 #   Examples:
 #     bash deploy/restore-litestream.sh prod
 #     bash deploy/restore-litestream.sh prod alice
 #     bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod alice
 #     bash deploy/restore-litestream.sh prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
 #     bash deploy/restore-litestream.sh --registry prod
+#     bash deploy/restore-litestream.sh --unattributed prod <a purged database id>
 # ────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -68,18 +93,20 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 YES=false
 AT=""
 REGISTRY=false
+UNATTRIBUTED=false
 POSITIONAL=()
 for arg in "$@"; do
     case $arg in
         --yes|-y) YES=true ;;
         --at=*) AT="${arg#--at=}" ;;
         --registry) REGISTRY=true ;;
+        --unattributed) UNATTRIBUTED=true ;;
         *) POSITIONAL+=("$arg") ;;
     esac
 done
 
 if [ ${#POSITIONAL[@]} -lt 1 ]; then
-    echo "Usage: bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] <instance> [tenant|database-id]"
+    echo "Usage: bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] [--unattributed] <instance> [tenant|database-id]"
     echo "       bash deploy/restore-litestream.sh [--yes] [--at=<RFC3339>] --registry <instance>"
     exit 1
 fi
@@ -91,6 +118,12 @@ TENANT="${POSITIONAL[1]:-collection}"
 # did not ask for. There is exactly one registry.
 if [ "$REGISTRY" = true ] && [ ${#POSITIONAL[@]} -gt 1 ]; then
     echo "ERROR: --registry restores the registry; it takes no tenant name (got '${POSITIONAL[1]}')."
+    exit 1
+fi
+# The registry is what attributes everything else; there is nothing to attribute
+# it against, and no gate for --unattributed to open.
+if [ "$REGISTRY" = true ] && [ "$UNATTRIBUTED" = true ]; then
+    echo "ERROR: --unattributed applies to a tenant database, not to the registry itself."
     exit 1
 fi
 SERVICE_NAME="pkdump-${INSTANCE}"
@@ -118,6 +151,11 @@ command -v sqlite3 >/dev/null 2>&1 || { echo "ERROR: sqlite3 not found on host. 
 podman secret inspect "pkdump-${INSTANCE}-s3-bootstrap" >/dev/null 2>&1 || { echo "ERROR: podman secret 'pkdump-${INSTANCE}-s3-bootstrap' not found."; exit 1; }
 podman volume exists "$VOLUME" 2>/dev/null || { echo "ERROR: data volume '${VOLUME}' not found."; exit 1; }
 
+# Read before anything is stopped: the attribution gate below needs the volume's
+# registry, and a check that runs after the app has been taken down is a check
+# that costs an outage to fail.
+MOUNTPOINT="$(podman volume inspect -f '{{.Mountpoint}}' "$VOLUME")"
+
 # S3 target comes from the instance's env file (bucket / path / region / AWS_PROFILE).
 set -a; . "${CONF_DIR}/litestream.env"; set +a
 
@@ -142,6 +180,61 @@ else
     BLAST="no other tenant is read or written"
 fi
 
+# --- The attribution gate (pd-7f46) ----------------------------------------
+# Restoring a database named by an opaque id, with no registry to say whose it
+# is, is not a recovery — it is a file. See the header. The gate runs here, on
+# purpose: before the confirmation prompt, and long before anything is stopped.
+#
+# Only for opaque ids. `validate_database_id` failing means the stem is a
+# handle-named database from before `pkdump tenant migrate`, and its filename
+# already answers the question the registry would.
+REGISTRY_FILE="${MOUNTPOINT}/registry.sqlite"
+if [ "$REGISTRY" = false ] && validate_database_id "$TENANT" 2>/dev/null; then
+    # Read-WRITE open, deliberately: the registry is a WAL database, and a
+    # `mode=ro` connection cannot create the -shm it needs when one is not
+    # already there. The statement is a SELECT; the timeout is there because
+    # the sidecar and the app are both still running at this point.
+    # sqlite3's own errors are NOT swallowed: a registry that is present and
+    # unreadable is a third outcome, and under `set -e` a silenced failure here
+    # would kill the script with no message at all — the one way a gate against
+    # silent failure must not fail.
+    registry_says() {
+        sqlite3 -cmd '.timeout 5000' "$REGISTRY_FILE" \
+            "SELECT handle || ' (' || state || ')' FROM user WHERE database_id = '${TENANT}';"
+    }
+    refuse() {
+        echo ""
+        echo "ERROR: refusing to restore ${TENANT} — nothing on this box says whose it is."
+        echo "       $1"
+        echo ""
+        echo "       A collection is stored under an opaque database_id. Restored without"
+        echo "       the registry it comes back complete, healthy, and anonymous — a file"
+        echo "       called ${TENANT}.sqlite that no handle resolves to. That is not a"
+        echo "       finished recovery, and it looks exactly like one."
+        echo ""
+        echo "       Restore the registry FIRST, then re-run this command:"
+        echo "         bash deploy/restore-litestream.sh --registry ${INSTANCE}"
+        echo ""
+        echo "       If the database is one you PURGED, its row is gone by design and"
+        echo "       there is nothing to wait for (deploy/RESTORE.md, scenario B2):"
+        echo "         bash deploy/restore-litestream.sh --unattributed ${INSTANCE} ${TENANT}"
+        exit 1
+    }
+
+    if [ "$UNATTRIBUTED" = true ]; then
+        echo "    Attribution: NOT CHECKED (--unattributed). What comes back has no owner"
+        echo "                 on this box; ${RELPATH} will show up in \`pkdump tenant list\`"
+        echo "                 as a database no registered user claims until you say whose."
+    elif [ ! -e "$REGISTRY_FILE" ]; then
+        refuse "There is no registry.sqlite on '${VOLUME}'."
+    else
+        OWNER="$(registry_says)" \
+            || refuse "registry.sqlite on '${VOLUME}' is there but could not be read (above)."
+        [ -n "$OWNER" ] || refuse "registry.sqlite on '${VOLUME}' has no row for that database id."
+        echo "    Attribution: ${TENANT} belongs to ${OWNER}"
+    fi
+fi
+
 # --- Confirm ---------------------------------------------------------------
 if [ "$YES" = false ]; then
     echo ""
@@ -158,7 +251,6 @@ systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
 systemctl --user stop "${SIDECAR}.service" 2>/dev/null || true
 sleep 2
 
-MOUNTPOINT="$(podman volume inspect -f '{{.Mountpoint}}' "$VOLUME")"
 # Tenant collection DBs live under tenants/ (deploy/TENANTS.md). Restoring onto
 # a bare volume — the disaster case — reaches a data dir that has no tenants/
 # yet, and litestream will not create the parent of its -o target. (The registry

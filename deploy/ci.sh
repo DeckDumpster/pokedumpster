@@ -26,14 +26,18 @@
 #                      the OLD layout, migrate it onto opaque database ids, roll
 #                      that back, and assert it serves the same collection at
 #                      every step. See tests/tenants/upgrade.sh.
-#   9. Visual gate:    screenshot every route at 1440 and 768 against that
+#   9. Handle gate:    start the SHIPPED image with tenant resolution ON and
+#                      assert what it answers to a tenant header: malformed is
+#                      400, unknown is 404, and single-tenant mode does not read
+#                      the header at all. See tests/tenants/handles.sh.
+#  10. Visual gate:    screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines.
 #                      See tests/visual/README.md for the approval workflow.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
 # for Vision mode, which makes it slow and non-deterministic. (The visual gate
-# in step 9 also drives Playwright, but offline and deterministically — that is
+# in step 10 also drives Playwright, but offline and deterministically — that is
 # the difference, not the browser.) Run the intents harness on its own:
 #   (cd tests/ui && npx playwright install chromium && npx playwright test)
 #
@@ -179,7 +183,18 @@ bash "$REPO_DIR/tests/litestream/recreate.sh"
 step "Upgrade path: old-layout volume -> migrate -> rollback (pd-hqee)"
 bash "$REPO_DIR/tests/tenants/upgrade.sh"
 
-# --- 9. Visual-regression gate ---------------------------------------------
+# --- 9. Tenant-header gate --------------------------------------------------
+# What the shipped image answers to a tenant header, over real HTTP: malformed
+# is a 400 naming the rule, well-formed-but-unknown is a 404, and single-tenant
+# mode does not read the header at all. The distinction is a status code, so it
+# has to be asserted on the wire — a 400 flattened into a 404 by the middleware
+# would satisfy every unit test in the crate. Its own image tag, container,
+# port and temp dir — it does not touch the instance started above.
+
+step "Tenant header: malformed 400 vs unknown 404 (pd-4g7c)"
+bash "$REPO_DIR/tests/tenants/handles.sh"
+
+# --- 10. Visual-regression gate ---------------------------------------------
 # Runs against the container started above rather than standing up a second
 # one. A pixel diff fails CI; approving it is explicit — tests/visual/README.md.
 

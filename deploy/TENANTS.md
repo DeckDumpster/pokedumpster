@@ -274,11 +274,31 @@ ULID before it becomes a path. A handle that is not registered, and one whose
 registration was detached, are the same 404; neither creates anything. Nothing
 an unauthenticated caller sends is concatenated into a filename.
 
-Handles are still validated where they are *issued* — `pkdump tenant create`
-holds them to `[a-z0-9][a-z0-9_-]{0,31}`, because a handle is a name people
-type. Resolution deliberately does not re-check the charset: a hostile handle
-is refused for not being in the table, not for its characters, and a validator
-there would suggest the safety came from the charset. `pd-rqgv`.
+**The header is validated all the same, and gets a 400.** Not to protect the
+path — see above, no path is built from it — but because a boundary that
+accepts anything answers wrongly. `pkdump tenant create` holds a handle to
+`[a-z0-9][a-z0-9_-]{0,31}` and `schema_registry.sql` stores it under a `CHECK`
+of the same rule, so a header outside that rule names something no row could
+ever have held. Replying "404 no such tenant" would state that a well-formed
+name is unused, which is false, and would leave the caller nothing to fix.
+So resolution answers in three:
+
+| what was sent | answer |
+| --- | --- |
+| not a handle (`Alice`, `../shared`, `a b`, empty, non-ASCII) | **400**, quoting the rule and not the value |
+| a handle nobody actively holds (never registered, or detached) | **404** |
+| an active user's handle | their `database_id`'s database |
+
+The rule is written once, in `pkdump_db::HANDLE_RULE` beside
+`validate_tenant_name`, and its two enforcers — that function and the SQL
+`CHECK` — are held to one shared corpus (`paths::HANDLE_CASES`) by a test on
+each side, so they cannot drift into disagreeing about what a handle is.
+`pd-4g7c`; `pd-rqgv` is why the 404 half is safe without any of it.
+
+Validation is necessary and nowhere near sufficient: the header is still
+*asserted* identity, which is what the warning above is about. The auth epic
+replaces it with a verified principal, with any header demoted to a selector
+checked against that principal's entitlements.
 
 > A database still sitting at `tenants/<handle>.sqlite` names nobody in the
 > registry, so its handle is a 404 to the resolver until `pkdump tenant
@@ -290,6 +310,14 @@ The load-bearing test is
 `crates/pkdump-server/src/lib.rs`. It asserts the negative — Bob cannot read,
 and cannot delete, Alice's card — and it has been shown to fail when the
 resolver is bypassed (see `pd-5emg`).
+
+`tests/tenants/handles.sh` is the container-tier half: the shipped image with
+resolution on, and curl reading the status line for each row of the table
+above. The distinction is a status code, so a 400 the middleware flattened into
+a 404 on the way out would pass every unit test in the crate and fail every
+caller. It also asserts the case production actually runs — with the flag off,
+the header is not read, so a malformed one is served exactly like any other
+request.
 
 ## Migrating the existing production database
 

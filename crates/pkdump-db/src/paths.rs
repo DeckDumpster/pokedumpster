@@ -92,6 +92,20 @@ pub fn current_user() -> String {
     std::env::var("PKDUMP_USER").unwrap_or_else(|_| DEFAULT_USER.to_string())
 }
 
+/// What a handle may contain, in one sentence, for telling a caller what
+/// they got wrong.
+///
+/// The rule is stated three times in this codebase and that is one time too
+/// many, so the three are pinned together deliberately: [`validate_tenant_name`]
+/// below decides, the `handle` `CHECK` in `schema_registry.sql` holds every
+/// writer to the same thing, and this string is how either of them says so.
+/// [`HANDLE_CASES`] is the corpus that keeps the first two honest — one list,
+/// run through the Rust validator by `tenant_names_are_validated` and through
+/// the SQL constraint by `registry::tests::the_check_and_the_validator_agree`.
+/// Change the rule in one place only and one of those two fails.
+pub const HANDLE_RULE: &str =
+    "1-32 characters of a-z, 0-9, `-` or `_`, starting with a letter or digit";
+
 /// Reject anything that would not be safe as both a filename and an S3
 /// replica-path component: `[a-z0-9][a-z0-9_-]{0,31}`.
 ///
@@ -105,6 +119,13 @@ pub fn current_user() -> String {
 /// * No `.`, `/` or `\`. Path traversal, and a name ending in `.sqlite`
 ///   would produce `foo.sqlite.sqlite`.
 /// * No leading `-`, which reads as a flag to every CLI it is passed to.
+///
+/// This is where a *claim* is checked — a name off a CLI argument or out of
+/// the tenant header. It is not what keeps a handle from becoming a path
+/// (nothing concatenates one any more; see [`validate_database_id`]); it is
+/// what lets a malformed request be refused as malformed instead of being
+/// answered "no such tenant", which would be a false statement about a
+/// string that could never have been registered in the first place.
 pub fn validate_tenant_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(DbError::Env("tenant name is empty".into()));
@@ -130,6 +151,55 @@ pub fn validate_tenant_name(name: &str) -> Result<()> {
     }
     Ok(())
 }
+
+/// Every handle both enforcers of [`HANDLE_RULE`] are held to, and the verdict
+/// each must reach.
+///
+/// One corpus, two enforcers: [`validate_tenant_name`] in Rust and the `handle`
+/// `CHECK` in `schema_registry.sql`. They cannot share an implementation — one
+/// is a function and the other is a constraint SQLite evaluates for writers
+/// that never enter this crate — so what they share is this list and the two
+/// tests that run it through each of them. A rule relaxed on one side and not
+/// the other stops being a disagreement someone has to notice and becomes a
+/// failing test.
+///
+/// Hostile strings are in here as *cases*, not as the reason the rule exists:
+/// `../etc/passwd` is refused because it is not a handle, and separately it
+/// never becomes a path, because nothing interpolates a handle into one.
+#[cfg(test)]
+pub(crate) const HANDLE_CASES: &[(&str, bool)] = &[
+    ("collection", true),
+    ("alice", true),
+    ("a", true),
+    ("0", true),
+    ("9lives", true),
+    ("tenant-2", true),
+    ("tenant_2", true),
+    ("a-b_9", true),
+    ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true), // 32, the longest there is
+    ("", false),
+    ("Alice", false), // case-insensitive FS collides
+    // Uppercase anywhere, not just first. Seeded by mutating the SQL side to
+    // `[^a-zA-Z0-9_-]`: every other case here survived it, because they all
+    // fail the leading-character GLOB too and the corpus could not see the
+    // difference. A corpus that agrees for the wrong reason is not agreement.
+    ("aliceB", false),
+    ("../escape", false),                         // traversal
+    ("a/b", false),                               // traversal
+    ("a\\b", false),                              // traversal, Windows-flavoured
+    ("..", false),                                //
+    (".", false),                                 //
+    ("/etc/shadow", false),                       //
+    ("-flag", false),                             // reads as a CLI flag
+    ("_leading", false),                          // must start alnum
+    ("has space", false),                         //
+    ("alice ", false),                            // trailing space
+    ("dot.sqlite", false),                        // would yield dot.sqlite.sqlite
+    ("a*b", false),                               // a GLOB metacharacter, refused
+    ("alice:detached:01J", false),                // the old composite retired name
+    ("ünïcode", false),                           //
+    ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false), // 33
+];
 
 /// Path to a tenant's collection database, named by *handle*. Validates the
 /// name; does not touch the filesystem.
@@ -256,27 +326,16 @@ mod tests {
         });
     }
 
+    /// The Rust half of [`HANDLE_CASES`]. The SQL half is
+    /// `registry::tests::the_check_and_the_validator_agree`, over the same list.
     #[test]
     fn tenant_names_are_validated() {
-        for good in ["collection", "alice", "a", "tenant-2", "tenant_2", "9lives"] {
-            assert!(validate_tenant_name(good).is_ok(), "{good} should be valid");
-        }
-        for bad in [
-            "",
-            "Alice",                             // case-insensitive filesystems collide
-            "../escape",                         // traversal
-            "a/b",                               // traversal
-            "a\\b",                              // traversal, Windows-flavoured
-            "-flag",                             // reads as a CLI flag
-            "_leading",                          // must start alnum
-            "has space",                         //
-            "dot.sqlite",                        // would yield dot.sqlite.sqlite
-            "ünïcode",                           //
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // 33 chars
-        ] {
-            assert!(
-                validate_tenant_name(bad).is_err(),
-                "{bad:?} should be rejected"
+        for (name, valid) in HANDLE_CASES {
+            assert_eq!(
+                validate_tenant_name(name).is_ok(),
+                *valid,
+                "{name:?} should be {}",
+                if *valid { "accepted" } else { "rejected" }
             );
         }
     }

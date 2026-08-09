@@ -200,6 +200,15 @@ structural: `AppState` holds no connection, `blocking()` takes the tenant from
 the request scope, and one connection per tenant is opened against that
 tenant's own file. See `deploy/TENANTS.md`.
 
+The header is still validated at the boundary, before the lookup, and the two
+refusals are different answers: not a handle is a **400** quoting
+`pkdump_db::HANDLE_RULE` (and never the value sent), a handle nobody actively
+holds is a **404**. The rule has two enforcers that cannot share code — that
+validator and the `handle` `CHECK` in `schema_registry.sql` — so they share the
+`paths::HANDLE_CASES` corpus, run through each by a test on each side. Add a
+character to one and the other's test fails. `tests/tenants/handles.sh` is the
+container-tier gate for the status codes, single-tenant mode included.
+
 ## Deployment
 
 Rootless Podman + systemd-user, scripts in `deploy/`:

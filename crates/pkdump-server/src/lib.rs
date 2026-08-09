@@ -765,10 +765,11 @@ mod tests {
     /// out of it — resolves to nothing. There is no path to escape from,
     /// because no path is built from what the header carries.
     ///
-    /// The first case is the mutation canary: `ghost.sqlite` is a real
-    /// collection with a card in it, and under the old
-    /// `dir.join(format!("{name}.sqlite"))` the header `ghost` would have
-    /// been served that card.
+    /// `ghost` is the mutation canary: `ghost.sqlite` is a real collection,
+    /// and under the old `dir.join(format!("{name}.sqlite"))` that header
+    /// would have been served it. It is a perfectly well-formed handle, so
+    /// the boundary check is not what stops it — the lookup is, and this is
+    /// the 404 half of the distinction `pd-4g7c` draws.
     #[tokio::test]
     async fn a_handle_that_names_a_file_resolves_to_nothing() {
         let (_d, router, tenants_dir) = multi_tenant_app(&["alice"]);
@@ -777,19 +778,75 @@ mod tests {
         let ghost = tenants_dir.join("ghost.sqlite");
         pkdump_db::open_user(&ghost).unwrap();
 
-        for handle in ["ghost", "../shared", "../../etc/passwd", "alice/../ghost"] {
+        let resp = router
+            .clone()
+            .oneshot(request("GET", "/api/collection", Some("ghost"), None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // The traversing ones do not even get that far: they are not handles.
+        for handle in ["../shared", "../../etc/passwd", "alice/../ghost"] {
             let resp = router
                 .clone()
                 .oneshot(request("GET", "/api/collection", Some(handle), None))
                 .await
                 .unwrap();
-            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{handle:?}");
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{handle:?}");
+        }
+    }
+
+    /// **`pd-4g7c`, over HTTP.** The two refusals are different answers, and
+    /// a client can tell them apart: a header that is not a handle is a 400
+    /// naming the rule, and a handle nobody holds is a 404.
+    ///
+    /// Asserted here rather than only against `Tenants::resolve` because the
+    /// status code is the deliverable — a 400 the middleware swallowed into a
+    /// 404 on the way out would satisfy the unit test and fail the caller.
+    /// Remove the `validate_tenant_name` call in `tenant::resolve` and the
+    /// first half of this becomes 404s.
+    #[tokio::test]
+    async fn a_malformed_handle_is_a_400_and_an_unknown_one_a_404() {
+        let (d, router, _dir) = multi_tenant_app(&["alice"]);
+
+        for malformed in ["Alice", "-flag", "a/b", "alice.sqlite", "has space"] {
+            let resp = router
+                .clone()
+                .oneshot(request("GET", "/api/collection", Some(malformed), None))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{malformed:?}");
+            let body = body_string(resp).await;
+            assert!(
+                body.contains(pkdump_db::HANDLE_RULE),
+                "the 400 must say what a handle may be: {body}"
+            );
+            assert!(
+                !body.contains(malformed),
+                "the 400 echoed the header back: {body}"
+            );
+        }
+
+        // Well-formed and unregistered, well-formed and detached: both 404,
+        // and neither is a 400. A detached handle is a name that WAS held, so
+        // it is the sharpest case that the two answers are decided by
+        // different questions.
+        let registry = pkdump_db::open_registry(&d.path().join("registry.sqlite")).unwrap();
+        pkdump_db::registry::detach(&registry, "alice").unwrap();
+        for known_shaped in ["mallory", "alice"] {
+            let resp = router
+                .clone()
+                .oneshot(request("GET", "/api/collection", Some(known_shaped), None))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{known_shaped:?}");
         }
     }
 
     /// A user's `database_id` is not a second way in. Only the `handle`
     /// column resolves, so knowing where someone's bytes live does not let
-    /// a caller ask to be served from them.
+    /// a caller ask to be served from them — and a ULID is not even a
+    /// well-formed handle, so it is refused before the lookup.
     #[tokio::test]
     async fn a_database_id_is_not_a_handle() {
         let (d, router, _dir) = multi_tenant_app(&["alice"]);
@@ -807,7 +864,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     /// **Multitenancy is invisible when it is off.** The default build reads

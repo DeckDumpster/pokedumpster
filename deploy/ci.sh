@@ -78,6 +78,13 @@
 # deploy/store-lib.sh. This script also refuses to start on a nearly-full disk,
 # because the failure that produces does not look like a disk problem.
 #
+# A second store is not free: podman 4.9 lets one store's cleanup take the
+# rootless-netns state the other one is holding, after which every container on
+# a user-defined network in that store fails — steps 5, 6 and 6b create one, so
+# the whole run does. pkdump_store_activate detects and repairs that below; the
+# mechanism is in deploy/store-lib.sh (pd-yfev). `deploy/store-teardown.sh`
+# removes a store outright, which nothing did before.
+#
 set -euo pipefail
 
 # systemctl --user / podman need XDG_RUNTIME_DIR; CI runners and

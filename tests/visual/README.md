@@ -83,10 +83,12 @@ Viewports live in `playwright.config.ts`:
 
 ### Non-visual specs live here too
 
-`collection-paging.spec.ts` takes no screenshots: it asserts that
-`/collection` renders one bounded page of a 56,635-row result rather than the
-whole thing (pd-tsqd), that turning the page replaces the tiles instead of
-accumulating them, and that a selection survives the turn.
+`collection-window.spec.ts` takes no screenshots: it asserts that
+`/collection` renders a viewport-sized WINDOW of a 56,635-row result rather
+than the whole thing (pd-tsqd, pd-7z4o) — in both views — that the document
+stays as tall as the whole result while the reader moves through it, that
+scrolling moves the window instead of growing it, that a selection survives a
+row leaving the window, and that the sort stays server-side.
 
 It is here because what it needs is what this directory already has — the app
 served by a throwaway instance, driven by Playwright, offline and

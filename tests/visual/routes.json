@@ -6,7 +6,8 @@
 		"path": "URL path to visit",
 		"about": "what this route is, for whoever reads a failure",
 		"waitFor": "optional CSS selector that must be visible before the shot",
-		"mask": "optional selectors painted over — for genuinely non-deterministic pixels only, never to hide a diff you don't feel like reviewing"
+		"mask": "optional selectors painted over — for genuinely non-deterministic pixels only, never to hide a diff you don't feel like reviewing",
+		"fullPage": "optional, defaults true. Set false for a route that renders a WINDOW of its content — a virtually-scrolled list is as tall as the whole result and draws only what is on screen, so a full-page shot is mostly the blank the scroller has not drawn yet"
 	},
 
 	"unrepresented": {
@@ -50,7 +51,13 @@
 			"path": "/card/base1/4",
 			"about": "Base Set Charizard — a card with an ordered copy in flight"
 		},
-		{ "id": "collection", "path": "/collection", "about": "Collection list — paints its own chrome" },
+		{
+			"id": "collection",
+			"path": "/collection",
+			"about": "Collection list — paints its own chrome, and renders a virtual window of the result",
+			"$fullPage": "The list is virtually scrolled (pd-7z4o): the document is as tall as every matching row, and only the rows under the viewport are in it. A full-page shot is therefore mostly the blank below the window, and its height moves with measured tile geometry — a baseline of that judges the scroller's arithmetic, not the design. The viewport is what a reader sees, so the viewport is what gets judged.",
+			"fullPage": false
+		},
 		{ "id": "sealed", "path": "/sealed", "about": "Sealed collection — paints its own chrome" },
 		{ "id": "wishlist", "path": "/wishlist", "about": "Wishlist with priorities and max prices" },
 		{ "id": "recent", "path": "/recent", "about": "Recently added copies" },

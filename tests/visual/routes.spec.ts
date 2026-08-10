@@ -22,6 +22,8 @@ type Route = {
 	about: string;
 	waitFor?: string;
 	mask?: string[];
+	/** Defaults true. False shoots the viewport instead — see routes.json. */
+	fullPage?: boolean;
 };
 
 const manifest: { routes: Route[]; unrepresented: Record<string, string> } = JSON.parse(
@@ -49,8 +51,9 @@ for (const route of manifest.routes) {
 		// mismatch on a loaded one). Capture size is the cheap tell, and after
 		// settle() it must already be final — if this fails, the route needs a
 		// `waitFor` in routes.json, not a re-recorded baseline.
-		const first = await page.screenshot({ fullPage: true });
-		const second = await page.screenshot({ fullPage: true });
+		const fullPage = route.fullPage ?? true;
+		const first = await page.screenshot({ fullPage });
+		const second = await page.screenshot({ fullPage });
 		expect(
 			dimensions(first),
 			`${route.path} is still moving after settle() — its capture size changed ` +
@@ -58,7 +61,7 @@ for (const route of manifest.routes) {
 		).toBe(dimensions(second));
 
 		await expect(page).toHaveScreenshot(`${route.id}.png`, {
-			fullPage: true,
+			fullPage,
 			mask: (route.mask ?? []).map((selector) => page.locator(selector))
 		});
 	});

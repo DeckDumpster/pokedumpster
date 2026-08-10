@@ -9,7 +9,7 @@ import { defineConfig } from '@playwright/test';
  * an isolated `--test` container instance and fails on any pixel drift until
  * a human approves the new baselines.
  *
- * `collection-paging.spec.ts` runs in the same config without taking a
+ * `collection-window.spec.ts` runs in the same config without taking a
  * screenshot: some properties — "56,635 matches must not become 56,635 DOM
  * nodes" — need a browser and not a camera.
  *

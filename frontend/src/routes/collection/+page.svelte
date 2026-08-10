@@ -20,7 +20,7 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ValueHistoryModal from '$lib/components/ValueHistoryModal.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
-	import { Button, EmptyState, Pager, SectionHeader, Toolbar } from '$lib/components/ui';
+	import { Button, EmptyState, SectionHeader, Toolbar } from '$lib/components/ui';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { SearchRow } from '$lib/types/SearchRow';
 	import type { SearchVocabulary } from '$lib/types/SearchVocabulary';
@@ -51,11 +51,6 @@
 	// Printings the query matches in total — equal to `searchRows.length`, and
 	// kept as its own field because it is the endpoint that says so.
 	let searchTotal = $state(0);
-	// Rows the endpoint served, echoed back off the response. With `limit=all`
-	// that is the whole result, which is what makes the pager below draw
-	// nothing: a pager for a single page is a control that can only tell you
-	// where you already are.
-	let pageLimit = $state(0);
 
 	let loading = $state(true);
 	let error = $state<string | null>(null);
@@ -297,7 +292,6 @@
 			const res = await api.collectionSearch(query, sortKey, sortDir, allCards, 'all');
 			searchRows = res.rows;
 			searchTotal = res.total;
-			pageLimit = res.limit;
 		} catch (e) {
 			if (e instanceof SearchQueryError) {
 				searchError = { message: e.message, position: e.position };
@@ -1296,14 +1290,6 @@
 	></div>
 {/if}
 
-<!-- The collection asks for the whole result (`limit: 'all'`), so `pageLimit`
-     comes back equal to `searchTotal` and Pager — which draws nothing for a
-     single page — draws nothing. It stays for now because the control is still
-     correct for a paged result; pd-65um is the deletion. -->
-{#snippet pager()}
-	<Pager offset={0} limit={pageLimit} total={searchTotal} unit="cards" />
-{/snippet}
-
 <!-- The layout runs this route flush to the viewport edge so the bar above
      can pin edge to edge; everything below it gets its gutter back here.
      Card art needs a margin as much as it needs a gap. -->
@@ -1421,7 +1407,6 @@
 			{@render sortBtn('adj', 'Adj.')}
 			{@render sortBtn('value', 'Value')}
 		</div>
-		{@render pager()}
 		<!-- Sections are runs of `displayRows`, so tile order is exactly the
 		     server's sort order — owned and unowned printings still
 		     interleave.
@@ -1483,7 +1468,6 @@
 				<div class="vspace" style="height: {gridWindow.padBottom}px" aria-hidden="true"></div>
 			{/if}
 		</div>
-		{@render pager()}
 	{:else}
 		{#snippet sortable(key: string, label: string, extra: string, title?: string)}
 			<th class="sortable {extra}" {title} onclick={() => sortBy(key)}>
@@ -1493,7 +1477,6 @@
 				{/if}
 			</th>
 		{/snippet}
-		{@render pager()}
 		<div class="tableScroll">
 		<table class="dd">
 			<thead>
@@ -1733,7 +1716,6 @@
 			</tbody>
 		</table>
 		</div>
-		{@render pager()}
 	{/if}
 {/if}
 </div>

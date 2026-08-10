@@ -101,8 +101,10 @@ bash tests/deploy/run.sh
 bash tests/lib/diagnostics_test.sh
 bash tests/lib/ports_test.sh
 
-# Visual regression — every route at 1440 and 768 against a throwaway
-# container instance. A pixel diff fails; approving one is explicit.
+# Browser tier — every route screenshotted at 1440 and 768 against a
+# throwaway container instance, plus the DOM assertions a screenshot cannot
+# make (/collection renders ONE page of a 56k-row result). A pixel diff
+# fails; approving one is explicit.
 bash tests/visual/run.sh         # check
 bash tests/visual/run.sh --update  # approve — see tests/visual/README.md
 
@@ -464,7 +466,8 @@ deliberately not a migration — routes shed theirs as they get touched.
 
 `frontend/src/lib/components/ui/` is the visual vocabulary — `Panel`, `Button`,
 `Field`, `Badge`, `ProgressBar`, `SectionHeader`, `EmptyState`, `Toolbar`,
-`SearchField`, `Segmented`, `Menu`, re-exported from `$lib/components/ui`.
+`SearchField`, `Segmented`, `Menu`, `Pager`, re-exported from
+`$lib/components/ui`.
 Routes render; they do not decide surfaces, fills, rules or spacing.
 
 Every primitive is styled from the **semantic** token layer only — no colour

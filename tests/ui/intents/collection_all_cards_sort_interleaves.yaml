@@ -7,11 +7,14 @@
 description: >
   With "All cards" turned on, the collection shows every catalog printing —
   the ones I own as normal rows and the ones I don't as dimmed "missing"
-  rows. Sorting by a column (e.g. the Adj. price) must order owned and
+  rows. Sorting by a column (e.g. the NM price) must order owned and
   unowned printings together as one list, not sort only the cards I own and
   leave the unowned ones in a separate block at the end. This is a
   regression guard for both grid and table views: the unowned printings used
   to render in their own trailing {#each} block in raw server order, so
-  changing the sort reordered only owned rows. After clicking the Adj.
+  changing the sort reordered only owned rows. After clicking the NM
   column an owned row must appear after a dimmed missing row and a missing
   row after an owned row — proof the two are interleaved by the sort key.
+  The bug was reported against the condition-adjusted Adj. column, which no
+  longer sorts (pd-tjym); NM is the surviving price column and exercises the
+  same path.

@@ -11,7 +11,9 @@
 //! [`search::DEFAULT_LIMIT`] when absent — bounded on purpose, because the
 //! unbounded version of this endpoint shipped a 44 MB body and crashed the tab
 //! (pd-jsby). A bad `limit`/`offset` is a 400 with `{error}` and no `position`,
-//! which is how a client tells a paging complaint from a query-syntax one.
+//! which is how a client tells a paging complaint from a query-syntax one. A
+//! `sort` the query cannot order by is refused the same way, naming the keys it
+//! can — see [`sort_key`].
 //!
 //! `limit=all` asks for the whole result set instead of a page. It is not the
 //! unbounded default coming back: it is a caller stating that it can hold the
@@ -60,6 +62,24 @@ struct SearchParams {
 /// A paging complaint: HTTP 400 with `error` and no `position`.
 fn paging_error(message: String) -> AppError {
     AppError::bad_request(serde_json::json!({ "error": message }).to_string())
+}
+
+/// Validate `sort`. A key the query cannot order by is **refused**, naming what
+/// it can — never accepted and quietly served in name order.
+///
+/// `value` and `adj` are the two that used to be here and are not any more
+/// (pd-tjym). Silently falling back would hand a client asking for one of them
+/// a result that looks sorted and isn't, which is how a caller stops noticing
+/// it is asking for a column that no longer exists.
+fn sort_key(raw: Option<&str>) -> Result<Option<&str>, AppError> {
+    let Some(key) = raw else { return Ok(None) };
+    if search::is_sortable(key) {
+        return Ok(Some(key));
+    }
+    Err(paging_error(format!(
+        "sort must be one of: {}",
+        search::SORT_KEYS.join(", ")
+    )))
 }
 
 /// Parse `offset`. Anything that is not a whole number is refused — never
@@ -114,6 +134,7 @@ async fn collection_search(
     Query(p): Query<SearchParams>,
 ) -> Result<Json<SearchPage>, AppError> {
     let slice = slice_from(&p)?;
+    let sort = sort_key(p.sort.as_deref())?;
     let q = p.q.trim();
     let mut compiled = if q.is_empty() {
         search::compile_all()
@@ -128,7 +149,7 @@ async fn collection_search(
     if p.include_unowned.as_deref() == Some("1") {
         compiled.set_catalog_wide(true);
     }
-    compiled.override_order(p.sort.as_deref(), p.dir.as_deref());
+    compiled.override_order(sort, p.dir.as_deref());
 
     let page = blocking(&state, move |c| search::search_page(c, &compiled, slice)).await?;
     Ok(Json(page))
@@ -184,4 +205,58 @@ async fn keywords(State(state): State<AppState>) -> Json<SearchVocabulary> {
         })
         .collect();
     Json(SearchVocabulary { keywords, flags })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    /// The refusal a caller sees, as `(status, body)`.
+    fn refusal(sort: &str) -> (StatusCode, String) {
+        let e = sort_key(Some(sort)).expect_err("expected a refusal");
+        (e.0, e.1)
+    }
+
+    /// `value` and `adj` left the sort surface when ordering by them stopped
+    /// being index-satisfiable (pd-tjym). A client still asking for one is told
+    /// so — a silent fall back to name order is a result that looks sorted and
+    /// isn't.
+    #[test]
+    fn value_and_adj_are_refused_rather_than_silently_ignored() {
+        for key in ["value", "adj"] {
+            let (status, body) = refusal(key);
+            assert_eq!(status, StatusCode::BAD_REQUEST, "sort={key}");
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let message = json["error"].as_str().unwrap();
+            assert!(
+                message.contains("price") && message.contains("qty"),
+                "the refusal must name what IS sortable: {message}"
+            );
+            assert!(
+                !message.contains(key),
+                "naming the rejected key back reads as though it were an \
+                 option: {message}"
+            );
+            assert!(
+                json.get("position").is_none(),
+                "a sort complaint is not a query-syntax error and carries no \
+                 caret offset: {body}"
+            );
+        }
+    }
+
+    /// Every key the endpoint advertises passes, and passes through unchanged.
+    #[test]
+    fn every_advertised_sort_key_is_accepted() {
+        for key in pkdump_db::search::SORT_KEYS {
+            assert_eq!(sort_key(Some(key)).unwrap(), Some(*key), "sort={key}");
+        }
+    }
+
+    /// No `sort=` at all is the default order, not a refusal.
+    #[test]
+    fn an_absent_sort_is_not_an_error() {
+        assert_eq!(sort_key(None).unwrap(), None);
+    }
 }

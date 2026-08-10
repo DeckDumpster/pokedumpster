@@ -22,7 +22,6 @@ export { default as Button } from './Button.svelte';
 export { default as EmptyState } from './EmptyState.svelte';
 export { default as Field } from './Field.svelte';
 export { default as Menu } from './Menu.svelte';
-export { default as Pager } from './Pager.svelte';
 export { default as Panel } from './Panel.svelte';
 export { default as ProgressBar } from './ProgressBar.svelte';
 export { default as SearchField } from './SearchField.svelte';

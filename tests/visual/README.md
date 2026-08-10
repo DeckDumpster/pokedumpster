@@ -88,7 +88,9 @@ Viewports live in `playwright.config.ts`:
 than the whole thing (pd-tsqd, pd-7z4o) — in both views — that the document
 stays as tall as the whole result while the reader moves through it, that
 scrolling moves the window instead of growing it, that a selection survives a
-row leaving the window, and that the sort stays server-side.
+row leaving the window, and that the sort stays server-side. It also asserts
+that there is no pager on the page in either view and that the far end of the
+result is reached by scrolling rather than by clicking (pd-65um, pd-lbei).
 
 It is here because what it needs is what this directory already has — the app
 served by a throwaway instance, driven by Playwright, offline and

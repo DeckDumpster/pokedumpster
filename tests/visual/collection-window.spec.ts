@@ -12,6 +12,10 @@
  * selection surviving a row leaving the rendered window, and the sort staying
  * server-side — because those are exactly what windowing tends to break.
  *
+ * And it asserts that the paging is *gone*: no pager control in either view,
+ * and the far end of the result a scroll away rather than 149 clicks away
+ * (pd-65um, closing pd-lbei by deletion rather than by improvement).
+ *
  * The result set here is synthesised by intercepting the search endpoint
  * rather than seeded into the fixture, deliberately: what is under test is the
  * relationship between the result size and the node count, and the assertion
@@ -145,15 +149,52 @@ test('the client asks for the whole result, not a page of it', async ({ page }) 
 test('the grid renders a window, not the result set', async ({ page }) => {
 	await openCollection(page, 'grid');
 	await expectBounded(page.locator('.cardtile'));
-
-	// The pager is gone from the page, not merely off the top of it — the
-	// result is one scrollable run now.
-	await expect(page.locator('[data-testid="pager-position"]')).toHaveCount(0);
 });
 
 test('the table renders a window too', async ({ page }) => {
 	await openCollection(page, 'table');
 	await expectBounded(page.locator('table.dd tbody tr:not(.vspace)'));
+});
+
+/** Nothing anywhere on the page offers to move you a page at a time (pd-65um).
+    Checked by every handle the deleted control had — its test ids, its
+    landmark, and its wording — because "the pager is gone" has to mean gone,
+    not merely drawing nothing for a result that happens to be one page. */
+async function expectNoPager(page: Page) {
+	await expect(page.locator('[data-testid="pager-position"]')).toHaveCount(0);
+	await expect(page.locator('[data-testid="pager-prev"]')).toHaveCount(0);
+	await expect(page.locator('[data-testid="pager-next"]')).toHaveCount(0);
+	await expect(page.getByRole('navigation', { name: 'Pages' })).toHaveCount(0);
+	await expect(page.getByText(/Page \d+ of \d+/)).toHaveCount(0);
+}
+
+test('there is no pager on the grid', async ({ page }) => {
+	await openCollection(page, 'grid');
+	await expectNoPager(page);
+	// And still none at the far end, where the bottom pager used to sit.
+	await scrollTo(page, await documentHeight(page));
+	await expectNoPager(page);
+});
+
+test('there is no pager on the table', async ({ page }) => {
+	await openCollection(page, 'table');
+	await expectNoPager(page);
+	await scrollTo(page, await documentHeight(page));
+	await expectNoPager(page);
+});
+
+test('the far end of the result is reached by scrolling, not by clicking', async ({ page }) => {
+	// pd-lbei inverted: under Prev/Next, page 150 of 223 cost 149 clicks. The
+	// result is one run now, so the last row it holds is a scroll away and no
+	// clicks away. (`serveHugeResult` caps the payload for test speed, so the
+	// far end here is row 3,999 of a result the client is told is 56,635 —
+	// what is under test is that the end is reachable at all.)
+	await openCollection(page, 'grid');
+	await scrollTo(page, await documentHeight(page));
+
+	await expect(page.locator('.cardtile').last()).toHaveAttribute('title', /Synthetic 3999\b/);
+	// Reaching it did not mean rendering everything between.
+	await expectBounded(page.locator('.cardtile'));
 });
 
 test('the page is as tall as the whole result, and stays that tall while scrolling', async ({

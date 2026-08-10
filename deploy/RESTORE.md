@@ -327,7 +327,7 @@ before the attribution does, and neither is guessed.
 ## Scenario C — total box loss (rebuild from scratch)
 
 ```bash
-cd ~ && git clone git@github.com:rgantt/pokedumpster.git && cd pokedumpster
+cd ~ && git clone git@github.com:DeckDumpster/pokedumpster.git && cd pokedumpster
 bash deploy/setup.sh prod 8090            # build image + install units (keep the :8090 port)
 
 # Re-create the backup config + creds for this instance:

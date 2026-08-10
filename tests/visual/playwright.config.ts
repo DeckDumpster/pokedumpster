@@ -1,12 +1,17 @@
 import { defineConfig } from '@playwright/test';
 
 /**
- * Visual-regression suite — the safety net for the aesthetic overhaul.
+ * The deterministic browser tier — the safety net for the aesthetic
+ * overhaul, and for anything else that needs a real DOM.
  *
  * A pure-aesthetic change is exactly the case unit tests cannot see. This
  * suite screenshots every route in `routes.json` at both breakpoints against
  * an isolated `--test` container instance and fails on any pixel drift until
  * a human approves the new baselines.
+ *
+ * `collection-paging.spec.ts` runs in the same config without taking a
+ * screenshot: some properties — "56,635 matches must not become 56,635 DOM
+ * nodes" — need a browser and not a camera.
  *
  * Run it through `run.sh`, which stands the instance up and hands the port
  * over in PKDUMP_BASE_URL. Running `npx playwright test` directly works too,

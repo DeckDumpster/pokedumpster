@@ -81,6 +81,24 @@ Viewports live in `playwright.config.ts`:
 | `desktop-1440` | 1440×900 | the binder page at full width |
 | `mobile-768` | 768×1024 | the breakpoint where `/browse` switches to its bottom sheet |
 
+### Non-visual specs live here too
+
+`collection-paging.spec.ts` takes no screenshots: it asserts that
+`/collection` renders one bounded page of a 56,635-row result rather than the
+whole thing (pd-tsqd), that turning the page replaces the tiles instead of
+accumulating them, and that a selection survives the turn.
+
+It is here because what it needs is what this directory already has — the app
+served by a throwaway instance, driven by Playwright, offline and
+deterministic. What it does NOT need is the fixture's data: the result set is
+synthesised by intercepting `/api/collection/search`, because the property
+under test is the relationship between `total` and the node count, and no
+fixture is going to be 56,635 rows.
+
+So read this directory as the deterministic browser tier, not as "the
+screenshots". A gate that needs a real DOM in a real browser belongs here; one
+that needs a Vision call belongs in `tests/ui`.
+
 ## What makes a failure mean something
 
 `stabilize.ts` pins everything that could churn pixels for reasons unrelated to

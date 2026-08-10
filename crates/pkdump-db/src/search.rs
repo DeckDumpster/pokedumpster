@@ -36,6 +36,17 @@ const MARKET_PRICE_EXPR: &str = "COALESCE(\
      (SELECT mp.price FROM manual_prices mp \
         WHERE mp.printing_id = p.printing_id \
         ORDER BY mp.observed_at DESC LIMIT 1))";
+// The attack list projected down to exactly what the collection table's Cost
+// column draws: one energy-pip line per attack, with the attack name as its
+// tooltip. Attack `text`, `damage` and `convertedEnergyCost` are the card
+// modal's business and reach it through `/api/card/...`, one card at a time.
+// Shipping them on every row made `attacks` 54% of a 44 MB all-cards payload
+// (pd-lk8v) for a column that never rendered a byte of them.
+const ATTACK_COSTS_EXPR: &str = "CASE WHEN cd.attacks IS NULL THEN NULL ELSE ( \
+     SELECT json_group_array(json_object( \
+         'name', json_extract(value, '$.name'), \
+         'cost', json(json_extract(value, '$.cost')))) \
+     FROM json_each(cd.attacks)) END";
 // printings ⋃ user_printings, joined to cards + sets. Mirrors collection::ROW_FROM.
 const FROM_CLAUSE: &str = "FROM ( \
         SELECT printing_id, card_id, variant, tcgplayer_product_id, sub_type_name, \
@@ -66,6 +77,14 @@ pub struct CopySummary {
 }
 
 /// One search result row — a single printing, owned or not (decision D3).
+///
+/// **Every field here is one the search list actually draws.** A field nobody
+/// renders costs its bytes *and* its key name once per row (pd-lk8v) — which
+/// was ~57k times over before the endpoint answered in pages (pd-jsby), and is
+/// still the whole page. Anything only the card modal shows belongs on `CardDetail`,
+/// which is fetched for the one card the user clicked — see
+/// `list_payload_carries_only_what_the_list_renders`, which fails if a field
+/// is added here without that decision being made.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct SearchRow {
@@ -78,15 +97,16 @@ pub struct SearchRow {
     pub number: String,
     pub name: String,
     pub rarity: Option<String>,
-    pub artist: Option<String>,
     pub supertype: Option<String>,
     pub subtypes: Option<String>,
     pub types: Option<String>,
-    pub attacks: Option<String>,
+    /// JSON array of `{name, cost}`, one entry per attack — the Cost column's
+    /// energy pips and their tooltip, and nothing else. The full attack
+    /// (`text`, `damage`, …) comes from `CardDetail`.
+    pub attack_costs: Option<String>,
     pub market_price: Option<f64>,
     pub image_small: Option<String>,
     pub variant: String,
-    pub variant_description: Option<String>,
     /// True when at least one copy is owned (`owned_count > 0`).
     pub owned: bool,
     #[ts(type = "number")]
@@ -94,6 +114,32 @@ pub struct SearchRow {
     /// The owned copies of this printing (empty when unowned).
     pub copies: Vec<CopySummary>,
 }
+
+/// One page of search results plus the size of the whole result set.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct SearchPage {
+    pub rows: Vec<SearchRow>,
+    /// Rows the query matches in total, ignoring `limit`/`offset`.
+    #[ts(type = "number")]
+    pub total: i64,
+    #[ts(type = "number")]
+    pub limit: u32,
+    #[ts(type = "number")]
+    pub offset: u32,
+}
+
+/// Rows returned when a caller names no `limit`.
+///
+/// The default is bounded, not unbounded: catalog-wide mode matches one row per
+/// printing in the catalog, so an unbounded default leaves a 44 MB response one
+/// forgotten parameter away — which is exactly how it shipped. Truncation is
+/// not silent, because [`SearchPage::total`] always describes the whole result.
+pub const DEFAULT_LIMIT: u32 = 250;
+
+/// The largest page a caller may ask for. Beyond this the request is refused,
+/// not clamped — a caller that wants everything is asking the wrong endpoint.
+pub const MAX_LIMIT: u32 = 1000;
 
 #[derive(Clone, Copy, Default)]
 enum Dir {
@@ -190,12 +236,65 @@ pub fn compile(ast: &Ast, flags: &[SearchFlag]) -> CompiledSearch {
     }
 }
 
-/// Parse-compile-execute convenience used by the route and tests.
+/// Execute a compiled query **unbounded** — every matching row.
+///
+/// This is the differential-oracle and test path. Anything serving an HTTP
+/// response wants [`search_page`] instead: catalog-wide mode returns one row
+/// per printing in the catalog (56k on the real one), which is how the
+/// endpoint came to ship a 44 MB body.
 pub fn search(conn: &Connection, compiled: &CompiledSearch) -> Result<Vec<SearchRow>> {
-    let sql = build_full_sql(compiled);
+    run(conn, compiled, None)
+}
+
+/// Execute a compiled query as one page, alongside the count of the whole
+/// result set.
+///
+/// `total` is the count of the **unbounded** query, not of the page returned,
+/// so a client can render "N results" and page without a second request.
+/// `limit` and `offset` are echoed back so a response is self-describing.
+pub fn search_page(
+    conn: &Connection,
+    compiled: &CompiledSearch,
+    limit: u32,
+    offset: u32,
+) -> Result<SearchPage> {
+    let total = count(conn, compiled)?;
+    let rows = run(conn, compiled, Some((limit, offset)))?;
+    Ok(SearchPage {
+        rows,
+        total,
+        limit,
+        offset,
+    })
+}
+
+/// Count every row the compiled query matches, ignoring any paging.
+pub fn count(conn: &Connection, compiled: &CompiledSearch) -> Result<i64> {
+    let sql = format!(
+        "SELECT COUNT(*) {FROM_CLAUSE} WHERE {}",
+        where_clause(compiled)
+    );
+    let n = conn.query_row(&sql, params_from_iter(compiled.params.iter()), |r| r.get(0))?;
+    Ok(n)
+}
+
+/// Run the row query, optionally bounded to one `(limit, offset)` page.
+fn run(
+    conn: &Connection,
+    compiled: &CompiledSearch,
+    page: Option<(u32, u32)>,
+) -> Result<Vec<SearchRow>> {
+    let sql = build_full_sql(compiled, page);
+    // The paging bounds are bound parameters like every user value, appended
+    // after the WHERE clause's own params in statement order.
+    let mut params = compiled.params.clone();
+    if let Some((limit, offset)) = page {
+        params.push(Value::Integer(i64::from(limit)));
+        params.push(Value::Integer(i64::from(offset)));
+    }
     let mut stmt = conn.prepare(&sql)?;
     let mut rows: Vec<SearchRow> = stmt
-        .query_map(params_from_iter(compiled.params.iter()), row_from)?
+        .query_map(params_from_iter(params.iter()), row_from)?
         .collect::<rusqlite::Result<_>>()?;
     if !rows.is_empty() {
         attach_copies(conn, &mut rows)?;
@@ -700,14 +799,69 @@ fn order_sql(order_by: Option<&str>) -> String {
                 .to_string()
         }
         "qty" => format!("({OWNED_COUNT_SUBQ})"),
+        // Class and energy type — the two catalog columns the collection
+        // table sorts on that had no arm here. They arrived when that page
+        // stopped sorting its own rows: once results are paged, a sort the
+        // client applies orders 250 rows out of 56,635, which is the wrong
+        // 250 (pd-tsqd). `cd.types` is the stored JSON array, and ordering
+        // its text is ordering its first element — `["Fire"]` before
+        // `["Water"]` — which is what the column shows.
+        "type" => "cd.supertype".to_string(),
+        "etype" => "cd.types".to_string(),
+        // The Value column: every copy's condition-adjusted market price,
+        // summed over the printing.
+        "value" => adjusted_total_subq(),
+        // The Adj. column: the condition-adjusted price of ONE copy. The table
+        // draws one row per (printing, condition, status) group, so a printing
+        // owned Near Mint *and* Moderately Played draws two Adj. figures —
+        // while this query's unit of ordering is the printing, which has one
+        // slot. The number that fits it is the weighted average: the printing's
+        // adjusted total over its owned count, i.e. `order:value / order:qty`.
+        //
+        // Not MAX over the copies: that orders by "the best copy's adjusted
+        // price", a different column wearing the same header. The average is
+        // the honest single figure — for a one-copy printing it IS the Adj.
+        // value drawn, and for mixed conditions it lands between the copies'
+        // values instead of at an extreme (pd-sehy).
+        //
+        // The qty-0 case is not a division-by-zero to be swallowed, it is a
+        // row the table draws: catalog-wide (`is:missing`, All cards) an
+        // unowned printing's Adj. cell shows the catalog Near-Mint price,
+        // because there is no copy whose condition could adjust it. So
+        // `NULLIF(qty, 0)` turns the quotient NULL and the COALESCE falls to
+        // exactly that price — which keeps the column one sorted list across
+        // owned and unowned rows rather than parking every unowned printing at
+        // one end. A printing with no price at all is still NULL, where
+        // `order:price` already puts it.
+        //
+        // The numerator is CAST to REAL so an all-integer sum over an integer
+        // count cannot land in SQLite's integer division and quantise the
+        // average.
+        "adj" => format!(
+            "COALESCE(CAST({} AS REAL) / NULLIF(({OWNED_COUNT_SUBQ}), 0), ({MARKET_PRICE_EXPR}))",
+            adjusted_total_subq()
+        ),
         _ => "cd.name".to_string(),
     }
 }
 
-fn build_full_sql(c: &CompiledSearch) -> String {
-    // Owned mode requires an owned/ordered copy unless the query already
-    // constrains status explicitly; catalog-wide mode keeps the catalog.
-    let where_clause = if c.catalog_wide || c.has_status_filter {
+/// A printing's condition-adjusted market total: every copy's Near-Mint market
+/// price times its condition's multiplier, summed. `conditions.multiplier` is
+/// the same table `/api/conditions` serves the frontend, so this is exactly the
+/// sum of the Value cells that printing draws. A condition with no row (or none
+/// owned) leaves the multiplier at 1.0 rather than zeroing a card.
+fn adjusted_total_subq() -> String {
+    format!(
+        "(SELECT SUM(({MARKET_PRICE_EXPR}) * COALESCE(cond.multiplier, 1.0)) \
+            FROM collection col LEFT JOIN conditions cond ON cond.name = col.condition \
+           WHERE col.printing_id = p.printing_id)"
+    )
+}
+
+/// Owned mode requires an owned/ordered copy unless the query already
+/// constrains status explicitly; catalog-wide mode keeps the catalog.
+fn where_clause(c: &CompiledSearch) -> String {
+    if c.catalog_wide || c.has_status_filter {
         c.where_sql.clone()
     } else {
         format!(
@@ -715,27 +869,41 @@ fn build_full_sql(c: &CompiledSearch) -> String {
              AND c.status IN ('owned', 'ordered')) AND ({})",
             c.where_sql
         )
-    };
+    }
+}
+
+fn build_full_sql(c: &CompiledSearch, page: Option<(u32, u32)>) -> String {
+    let where_clause = where_clause(c);
     let order_col = order_sql(c.order_by.as_deref());
     let dir = if matches!(c.order_dir, Dir::Desc) {
         "DESC"
     } else {
         "ASC"
     };
+    // `p.printing_id` is unique, so the ORDER BY is a total order. Without a
+    // unique final key, rows tied on the sort column (Pikachu normal and
+    // reverse holo share a name AND a number) may sit in either order from one
+    // statement to the next, and OFFSET paging then drops and duplicates them.
+    let paging = if page.is_some() {
+        " LIMIT ? OFFSET ?"
+    } else {
+        ""
+    };
     format!(
         "SELECT p.printing_id, cd.card_id, cd.set_code, s.name AS set_name, s.ptcgo_code, \
-                s.symbol_url, cd.number, cd.name, cd.rarity, cd.artist, cd.supertype, \
-                cd.subtypes, cd.types, cd.attacks, {MARKET_PRICE_EXPR} AS market_price, \
-                cd.image_small, p.variant, p.variant_description, \
+                s.symbol_url, cd.number, cd.name, cd.rarity, cd.supertype, \
+                cd.subtypes, cd.types, {ATTACK_COSTS_EXPR} AS attack_costs, \
+                {MARKET_PRICE_EXPR} AS market_price, \
+                cd.image_small, p.variant, \
                 ({OWNED_COUNT_SUBQ}) AS owned_count \
          {FROM_CLAUSE} \
          WHERE {where_clause} \
-         ORDER BY {order_col} {dir}, cd.number_sortable ASC"
+         ORDER BY {order_col} {dir}, cd.number_sortable ASC, p.printing_id ASC{paging}"
     )
 }
 
 fn row_from(r: &rusqlite::Row) -> rusqlite::Result<SearchRow> {
-    let owned_count: i64 = r.get(18)?;
+    let owned_count: i64 = r.get(16)?;
     Ok(SearchRow {
         printing_id: r.get(0)?,
         card_id: r.get(1)?,
@@ -746,15 +914,13 @@ fn row_from(r: &rusqlite::Row) -> rusqlite::Result<SearchRow> {
         number: r.get(6)?,
         name: r.get(7)?,
         rarity: r.get(8)?,
-        artist: r.get(9)?,
-        supertype: r.get(10)?,
-        subtypes: r.get(11)?,
-        types: r.get(12)?,
-        attacks: r.get(13)?,
-        market_price: r.get(14)?,
-        image_small: r.get(15)?,
-        variant: r.get(16)?,
-        variant_description: r.get(17)?,
+        supertype: r.get(9)?,
+        subtypes: r.get(10)?,
+        types: r.get(11)?,
+        attack_costs: r.get(12)?,
+        market_price: r.get(13)?,
+        image_small: r.get(14)?,
+        variant: r.get(15)?,
         owned: owned_count > 0,
         owned_count,
         copies: Vec::new(),
@@ -826,6 +992,10 @@ mod tests {
         {
             let mut c = open_shared(&shared).unwrap();
             search_meta::reconcile(&mut c).unwrap();
+            // Real multipliers, from data/conditions.json — `order:value` is
+            // defined in terms of them, so a fixture without them could not
+            // tell a condition-adjusted sum from a raw one.
+            crate::conditions::reconcile(&mut c).unwrap();
             c.execute(
                 "INSERT INTO sets (set_code, ptcgo_code, name, series, set_sort_order, release_date)
                  VALUES ('base1','BS','Base Set','Base',1,'1999/01/09'),
@@ -842,13 +1012,19 @@ mod tests {
                  VALUES
                  ('base1-4','base1','4',4,'Charizard','Pokémon','[\"Stage 2\"]',120,'[\"Fire\"]',
                    'Rare Holo','Mitsuhiro Arita','Spits fire.',
-                   '[{\"name\":\"Fire Spin\",\"damage\":\"100\"}]','[6]','{\"unlimited\":\"Legal\"}'),
+                   '[{\"name\":\"Fire Spin\",\"damage\":\"100\",\"cost\":[\"Fire\",\"Fire\",\"Fire\",\"Fire\"],
+                      \"convertedEnergyCost\":4,\"text\":\"Discard 2 Energy cards.\"}]',
+                   '[6]','{\"unlimited\":\"Legal\"}'),
                  ('sv3pt5-25','sv3pt5','25',25,'Pikachu','Pokémon','[\"Basic\"]',60,'[\"Lightning\"]',
                    'Common','Naoki Saito','Loves ketchup.',
                    '[{\"name\":\"Thunder Jolt\",\"damage\":\"30\"}]','[25]','{\"standard\":\"Legal\"}'),
                  ('base1-2','base1','2',2,'Blastoise','Pokémon','[\"Stage 2\"]',100,'[\"Water\"]',
                    'Rare Holo','Ken Sugimori','Crushes foes.',
-                   '[{\"name\":\"Hydro Pump\",\"damage\":\"60\"}]','[9]','{\"unlimited\":\"Legal\"}')",
+                   '[{\"name\":\"Hydro Pump\",\"damage\":\"60\"}]','[9]','{\"unlimited\":\"Legal\"}'),
+                 -- A Trainer: no types, no hp, no attacks. Unowned, so it only
+                 -- surfaces catalog-wide and leaves the owned-mode tests alone.
+                 ('base1-88','base1','88',88,'Professor Oak','Trainer',NULL,NULL,NULL,
+                   'Uncommon','Ken Sugimori','Draw 7 cards.',NULL,NULL,'{\"unlimited\":\"Legal\"}')",
                 [],
             )
             .unwrap();
@@ -857,7 +1033,8 @@ mod tests {
                  ('base1-4-holo','base1-4','holo'),
                  ('sv3pt5-25-normal','sv3pt5-25','normal'),
                  ('sv3pt5-25-reverse_holo','sv3pt5-25','reverse_holo'),
-                 ('base1-2-holo','base1-2','holo')",
+                 ('base1-2-holo','base1-2','holo'),
+                 ('base1-88-normal','base1-88','normal')",
                 [],
             )
             .unwrap();
@@ -979,15 +1156,13 @@ mod tests {
             number: String::new(),
             name: String::new(),
             rarity: None,
-            artist: None,
             supertype: None,
             subtypes: None,
             types: None,
-            attacks: None,
+            attack_costs: None,
             market_price: None,
             image_small: None,
             variant: String::new(),
-            variant_description: None,
             owned: false,
             owned_count: 0,
             copies: Vec::new(),
@@ -1088,6 +1263,93 @@ mod tests {
         assert_eq!(rows[0].copies.len(), 2);
     }
 
+    // --- payload shape (pd-lk8v) -------------------------------------------
+
+    // Every field here is paid once per row — for its value *and* for its key
+    // name. `attacks` alone was 54% of a 44 MB response for a Cost column that
+    // renders only the energy pips, back when catalog-wide mode returned the
+    // whole catalog in one body (~57k rows on prod). The endpoint pages now
+    // (pd-jsby), which caps the multiplier without changing the argument.
+    //
+    // Named explicitly, not size-asserted: a byte budget rots, a key set does
+    // not. Adding a field to SearchRow fails this test, which is the point —
+    // the addition should be a decision, not a diff nobody measured.
+    #[test]
+    fn list_payload_carries_only_what_the_list_renders() {
+        let f = fixture();
+        let rows = search(&f.conn, &f.compile("charizard")).unwrap();
+        let json = serde_json::to_value(&rows[0]).unwrap();
+        let keys: Vec<&str> = json
+            .as_object()
+            .expect("SearchRow serializes to an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        // serde_json orders object keys alphabetically, so this list is too.
+        assert_eq!(
+            keys,
+            vec![
+                "attack_costs",
+                "card_id",
+                "copies",
+                "image_small",
+                "market_price",
+                "name",
+                "number",
+                "owned",
+                "owned_count",
+                "printing_id",
+                "rarity",
+                "set_code",
+                "set_name",
+                "set_ptcgo_code",
+                "set_symbol_url",
+                "subtypes",
+                "supertype",
+                "types",
+                "variant",
+            ],
+            "a field the list does not render belongs on CardDetail, not here"
+        );
+        // The three the modal owns, spelled out so a revert reads as one.
+        for gone in ["attacks", "artist", "variant_description"] {
+            assert!(
+                !keys.contains(&gone),
+                "{gone} is card-modal data — it must not ride the list payload"
+            );
+        }
+    }
+
+    // The Cost column keeps its pips and its tooltip; the bulk (text, damage,
+    // convertedEnergyCost) does not ride along.
+    #[test]
+    fn attack_costs_keeps_pips_and_tooltip_and_drops_the_prose() {
+        let f = fixture();
+        let rows = search(&f.conn, &f.compile("charizard")).unwrap();
+        let raw = rows[0]
+            .attack_costs
+            .as_deref()
+            .expect("Charizard has attacks");
+        assert_eq!(
+            raw, r#"[{"name":"Fire Spin","cost":["Fire","Fire","Fire","Fire"]}]"#,
+            "exactly the two keys the Cost column reads"
+        );
+        assert!(!raw.contains("text"), "attack text is modal-only");
+        assert!(!raw.contains("damage"), "attack damage is modal-only");
+        assert!(!raw.contains("convertedEnergyCost"));
+    }
+
+    // A Trainer has no attacks at all — json_each over a NULL column must
+    // yield NULL, not an empty array and not an error.
+    #[test]
+    fn attack_costs_is_null_when_the_card_has_no_attacks() {
+        let f = fixture();
+        let rows = search(&f.conn, &f.compile("is:missing professor oak")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].printing_id, "base1-88-normal");
+        assert!(rows[0].attack_costs.is_none());
+    }
+
     #[test]
     fn qty_counts_per_printing() {
         let f = fixture();
@@ -1128,6 +1390,418 @@ mod tests {
         assert_eq!(
             f.ids("t:fire or t:lightning"),
             vec!["base1-4-holo", "sv3pt5-25-normal"]
+        );
+    }
+
+    // --- paging (pd-jsby) ---------------------------------------------------
+
+    /// Catalog-wide, empty query: every fixture printing, the shape the
+    /// unbounded endpoint used to return 56k rows of.
+    fn all_printings() -> CompiledSearch {
+        let mut c = compile_all();
+        c.set_catalog_wide(true);
+        c
+    }
+
+    /// The printings a sort returns, in order, catalog-wide.
+    fn ordered(f: &Fix, sort: &str, dir: &str) -> Vec<String> {
+        let mut c = all_printings();
+        c.override_order(Some(sort), Some(dir));
+        search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.printing_id)
+            .collect()
+    }
+
+    /// The number a sort actually orders each printing by, keyed by printing
+    /// id. Ordering only shows relative position; this shows the value, which
+    /// is what "the average, not the max" is an assertion about.
+    fn order_values(f: &Fix, sort: &str) -> Vec<(String, Option<f64>)> {
+        let col = order_sql(Some(sort));
+        let sql = format!(
+            "SELECT p.printing_id, {col} {FROM_CLAUSE} ORDER BY p.printing_id COLLATE NOCASE"
+        );
+        let mut stmt = f.conn.prepare(&sql).unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<(String, Option<f64>)>>>()
+            .unwrap()
+    }
+
+    /// One printing's sort value.
+    fn order_value(f: &Fix, sort: &str, printing_id: &str) -> Option<f64> {
+        order_values(f, sort)
+            .into_iter()
+            .find(|(id, _)| id == printing_id)
+            .unwrap_or_else(|| panic!("no such printing: {printing_id}"))
+            .1
+    }
+
+    // --- the sort keys the collection table hands to the server ------------
+    //
+    // Paging moved that page's sort off the client (pd-tsqd): sorting 250 of
+    // 56,635 rows in the browser orders the wrong 250. Every column it offers
+    // therefore has to be expressible here, and these are the three that were
+    // not.
+
+    #[test]
+    fn order_by_type_sorts_on_supertype() {
+        let f = fixture();
+        // Three Pokémon and one Trainer (Professor Oak, base1-88-normal).
+        let asc = ordered(&f, "type", "asc");
+        assert_eq!(
+            asc.last().map(String::as_str),
+            Some("base1-88-normal"),
+            "Pokémon before Trainer: {asc:?}"
+        );
+        let desc = ordered(&f, "type", "desc");
+        assert_eq!(desc.first().map(String::as_str), Some("base1-88-normal"));
+    }
+
+    #[test]
+    fn order_by_etype_sorts_on_energy_type() {
+        let f = fixture();
+        // Fire (Charizard) < Lightning (Pikachu ×2) < Water (Blastoise); the
+        // Trainer has no types at all and NULL sorts first ascending.
+        assert_eq!(
+            ordered(&f, "etype", "asc"),
+            vec![
+                "base1-88-normal",
+                "base1-4-holo",
+                "sv3pt5-25-normal",
+                "sv3pt5-25-reverse_holo",
+                "base1-2-holo",
+            ]
+        );
+    }
+
+    #[test]
+    fn order_by_value_is_the_condition_adjusted_sum_over_a_printings_copies() {
+        let f = fixture();
+        // Charizard: two copies (Near Mint + Lightly Played) at $7 each.
+        // Pikachu:   one copy (Near Mint) at $13.
+        //
+        // Unadjusted the Charizard is worth more (14 > 13), so a sum that
+        // ignored the condition multiplier would put it first. Adjusted it is
+        // not: 7 + 7×0.85 = 12.95 < 13.
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
+                 ('base1-4-holo', 7.0, '2025-01-01'),
+                 ('sv3pt5-25-normal', 13.0, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+
+        let desc = ordered(&f, "value", "desc");
+        assert_eq!(
+            &desc[..2],
+            &["sv3pt5-25-normal", "base1-4-holo"],
+            "the Lightly Played copy is worth 0.85 of a Near Mint one: {desc:?}"
+        );
+        // And it is a SUM, not a unit price: per copy the Charizard is the
+        // cheaper card, which is what `order:price` would say.
+        let by_price = ordered(&f, "price", "desc");
+        assert_eq!(&by_price[..2], &["sv3pt5-25-normal", "base1-4-holo"]);
+
+        // Halve the Pikachu and the total flips — the two copies now win.
+        f.conn
+            .execute(
+                "UPDATE manual_prices SET price = 6.0 WHERE printing_id = 'sv3pt5-25-normal'",
+                [],
+            )
+            .unwrap();
+        let flipped = ordered(&f, "value", "desc");
+        assert_eq!(
+            flipped.first().map(String::as_str),
+            Some("base1-4-holo"),
+            "two copies at 12.95 beat one at 6: {flipped:?}"
+        );
+    }
+
+    // --- `order:adj`, the Adj. column ---------------------------------------
+    //
+    // Adj. is a COPY's condition-adjusted price and the query's unit of
+    // ordering is the PRINTING, so the sort orders by the average across a
+    // printing's copies (pd-sehy). These are the assertions that pin that
+    // choice down — an implementation that ordered by the best copy, or the
+    // worst, passes neither of the first two.
+
+    /// A printing owned in one condition has one Adj. figure, and the sort
+    /// orders by exactly the number the table draws in that cell.
+    #[test]
+    fn order_by_adj_of_a_single_copy_printing_is_the_drawn_adjusted_price() {
+        let f = fixture();
+        // The Pikachu's one copy is Near Mint (multiplier 1.00), so its Adj.
+        // cell reads the Near Mint market price itself.
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) \
+                 VALUES ('sv3pt5-25-normal', 9.0, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(order_value(&f, "adj", "sv3pt5-25-normal"), Some(9.0));
+
+        // Own a second copy, Lightly Played (0.85), and the printing now draws
+        // two Adj. cells — 9.00 and 7.65 — and sorts by neither: (9.00 + 7.65)
+        // / 2 = 8.325. Between the copies is the whole point; the max (9.00)
+        // and the min (7.65) are both a different column under this header.
+        f.conn
+            .execute(
+                "INSERT INTO collection (printing_id,condition,language,acquired_at,source,status) \
+                 VALUES ('sv3pt5-25-normal','Lightly Played','English','2025-04-01','manual_id','owned')",
+                [],
+            )
+            .unwrap();
+        let avg = order_value(&f, "adj", "sv3pt5-25-normal").unwrap();
+        assert!(
+            (avg - 8.325).abs() < 1e-9,
+            "average of 9.00 and 7.65, not either of them: {avg}"
+        );
+    }
+
+    /// And the ordering follows the average: a mixed-condition printing sorts
+    /// between two single-copy printings whose Adj. values straddle it, where
+    /// ordering by the best copy would lift it above both and by the worst
+    /// would drop it below both.
+    #[test]
+    fn order_by_adj_places_a_mixed_condition_printing_between_its_copies() {
+        let f = fixture();
+        // Charizard: Near Mint + Lightly Played at $10 → copies draw 10.00 and
+        // 8.50, average 9.25. Blastoise and Pikachu are one Near Mint copy
+        // each, priced to sit either side of that average and inside the
+        // Charizard's own spread.
+        f.conn
+            .execute(
+                "INSERT INTO collection (printing_id,condition,language,acquired_at,source,status) \
+                 VALUES ('base1-2-holo','Near Mint','English','2025-05-01','manual_id','owned')",
+                [],
+            )
+            .unwrap();
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
+                 ('base1-4-holo', 10.0, '2025-01-01'),
+                 ('base1-2-holo', 9.5, '2025-01-01'),
+                 ('sv3pt5-25-normal', 9.0, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(order_value(&f, "adj", "base1-4-holo"), Some(9.25));
+
+        let desc = ordered(&f, "adj", "desc");
+        assert_eq!(
+            &desc[..3],
+            &["base1-2-holo", "base1-4-holo", "sv3pt5-25-normal"],
+            "9.50 > 9.25 > 9.00 — MAX over the copies (10.00) would put the \
+             Charizard first, MIN (8.50) would put it last: {desc:?}"
+        );
+        // MAX is exactly what `order:price` gives here, since the Near Mint
+        // market price IS the best copy's adjusted price. That the two orders
+        // differ is the difference under test.
+        let by_price = ordered(&f, "price", "desc");
+        assert_eq!(
+            &by_price[..3],
+            &["base1-4-holo", "base1-2-holo", "sv3pt5-25-normal"]
+        );
+    }
+
+    /// A printing nobody owns has no copy whose condition could adjust
+    /// anything, and its Adj. cell draws the catalog Near Mint price. The sort
+    /// orders it by that same number rather than dividing by zero — so All
+    /// cards stays ONE sorted list instead of parking every unowned printing at
+    /// an end (`tests/ui/.../collection_all_cards_sort_interleaves`).
+    #[test]
+    fn order_by_adj_of_an_unowned_printing_is_its_catalog_price() {
+        let f = fixture();
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
+                 ('base1-4-holo', 10.0, '2025-01-01'),
+                 ('sv3pt5-25-normal', 9.0, '2025-01-01'),
+                 -- Blastoise is unowned; its price is the whole Adj. it has.
+                 ('base1-2-holo', 9.1, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(order_value(&f, "adj", "base1-2-holo"), Some(9.1));
+        // The Pikachu reverse holo and Professor Oak are unowned AND unpriced:
+        // still NULL, where `order:price` already puts a card with no price.
+        assert_eq!(order_value(&f, "adj", "sv3pt5-25-reverse_holo"), None);
+        assert_eq!(order_value(&f, "adj", "base1-88-normal"), None);
+
+        // Charizard averages 9.25 (10.00 Near Mint, 8.50 Lightly Played), so
+        // the unowned Blastoise at 9.10 sorts BETWEEN the two owned printings
+        // — interleaved, not blocked off.
+        let desc = ordered(&f, "adj", "desc");
+        assert_eq!(
+            &desc[..3],
+            &["base1-4-holo", "base1-2-holo", "sv3pt5-25-normal"],
+            "owned and unowned are one sorted list: {desc:?}"
+        );
+    }
+
+    /// Paging over the average is still a total order — an ORDER BY that ties
+    /// without a unique final key drops and repeats rows under OFFSET.
+    #[test]
+    fn order_by_adj_pages_without_gaps_or_repeats() {
+        let f = fixture();
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
+                 ('base1-4-holo', 10.0, '2025-01-01'),
+                 ('sv3pt5-25-normal', 9.0, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+        let mut c = all_printings();
+        c.override_order(Some("adj"), Some("desc"));
+        let expected: Vec<String> = search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.printing_id)
+            .collect();
+
+        let mut walked: Vec<String> = Vec::new();
+        for offset in 0..expected.len() as u32 {
+            let page = search_page(&f.conn, &c, 1, offset).unwrap();
+            assert_eq!(page.total, expected.len() as i64, "total is page-invariant");
+            walked.extend(page.rows.into_iter().map(|r| r.printing_id));
+        }
+        assert_eq!(walked, expected, "pages concatenate to the whole result");
+    }
+
+    #[test]
+    fn limit_bounds_the_page_and_total_counts_the_whole_result() {
+        let f = fixture();
+        let c = all_printings();
+        // Read the catalog size off the query rather than hardcoding it — the
+        // fixture grows as other beads land, and paging is what is under test.
+        let all = search(&f.conn, &c).unwrap().len() as i64;
+        assert!(all > 2, "fixture needs more printings than the page below");
+
+        let page = search_page(&f.conn, &c, 2, 0).unwrap();
+        assert_eq!(page.rows.len(), 2, "limit bounds the rows returned");
+        assert_eq!(
+            page.total, all,
+            "total is the unbounded count, not the page"
+        );
+        assert_eq!((page.limit, page.offset), (2, 0), "page echoes its bounds");
+
+        // A limit past the end returns what exists, not an error.
+        let over = search_page(&f.conn, &c, 100, 0).unwrap();
+        assert_eq!(over.rows.len() as i64, all);
+        assert_eq!(over.total, all);
+
+        // limit=0 is a legal count-only request.
+        let none = search_page(&f.conn, &c, 0, 0).unwrap();
+        assert!(none.rows.is_empty());
+        assert_eq!(none.total, all);
+    }
+
+    #[test]
+    fn offset_past_the_end_is_an_empty_page_with_an_honest_total() {
+        let f = fixture();
+        let c = all_printings();
+        let all = search(&f.conn, &c).unwrap().len() as i64;
+        let page = search_page(&f.conn, &c, 10, 999).unwrap();
+        assert!(page.rows.is_empty());
+        assert_eq!(page.total, all);
+    }
+
+    // The classic form of this bug: an ORDER BY that is not a total order lets
+    // SQLite return tied rows in either order between statements, so an OFFSET
+    // walk drops some rows and repeats others. The fixture has a tie pair by
+    // construction — sv3pt5-25-normal and sv3pt5-25-reverse_holo are the same
+    // card, so they share `cd.name` AND `cd.number_sortable`, the only two
+    // ORDER BY keys this query had before the printing_id tiebreaker.
+    //
+    // This asserts the SQL shape rather than a walk, deliberately: SQLite's
+    // sorter happens to be stable at four rows, so the walk below passes with
+    // or without a unique key and cannot be the guard. Uniqueness of the sort
+    // key is the property; the walk is what it buys.
+    #[test]
+    fn order_by_is_a_total_order() {
+        let sql = build_full_sql(&all_printings(), Some((1, 0)));
+        assert!(
+            sql.contains("cd.number_sortable ASC, p.printing_id ASC LIMIT ? OFFSET ?"),
+            "unique final sort key + bound paging: {sql}"
+        );
+        // And the bounds are bound parameters, never formatted into the SQL.
+        assert!(sql.ends_with("LIMIT ? OFFSET ?"), "bounds are bound: {sql}");
+        assert!(build_full_sql(&all_printings(), None).ends_with("p.printing_id ASC"));
+    }
+
+    #[test]
+    fn offset_walks_the_full_result_without_gaps_or_repeats() {
+        let f = fixture();
+        let c = all_printings();
+        let expected: Vec<String> = search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.printing_id)
+            .collect();
+
+        // Walk one row at a time — the harshest paging the client can ask for.
+        let mut walked: Vec<String> = Vec::new();
+        let mut offset = 0u32;
+        loop {
+            let page = search_page(&f.conn, &c, 1, offset).unwrap();
+            assert_eq!(page.total, expected.len() as i64, "total is page-invariant");
+            if page.rows.is_empty() {
+                break;
+            }
+            walked.extend(page.rows.into_iter().map(|r| r.printing_id));
+            offset += 1;
+        }
+        assert_eq!(walked, expected, "pages concatenate to the whole result");
+
+        // Same walk at a page size that does not divide the total evenly.
+        let mut walked3: Vec<String> = Vec::new();
+        let mut offset = 0u32;
+        while (offset as usize) < expected.len() {
+            let page = search_page(&f.conn, &c, 3, offset).unwrap();
+            walked3.extend(page.rows.into_iter().map(|r| r.printing_id));
+            offset += 3;
+        }
+        assert_eq!(walked3, expected);
+    }
+
+    #[test]
+    fn paging_survives_a_sort_column_that_is_null_for_every_row() {
+        let f = fixture();
+        // `order:price` — no prices in the fixture, so every row ties on NULL
+        // and only the tiebreakers separate them.
+        let mut c = all_printings();
+        c.override_order(Some("price"), None);
+        let expected: Vec<String> = search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.printing_id)
+            .collect();
+        let mut walked: Vec<String> = Vec::new();
+        for offset in 0..expected.len() as u32 {
+            let page = search_page(&f.conn, &c, 1, offset).unwrap();
+            walked.extend(page.rows.into_iter().map(|r| r.printing_id));
+        }
+        assert_eq!(walked, expected, "all-NULL sort still pages coherently");
+    }
+
+    #[test]
+    fn paging_respects_the_query_filter() {
+        let f = fixture();
+        // Owned mode, one match: paging must not widen or narrow the filter.
+        let c = f.compile("t:fire");
+        let page = search_page(&f.conn, &c, 10, 0).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].printing_id, "base1-4-holo");
+        assert_eq!(
+            page.rows[0].copies.len(),
+            2,
+            "copies still attach on a page"
         );
     }
 }

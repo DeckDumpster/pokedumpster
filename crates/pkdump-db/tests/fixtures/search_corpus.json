@@ -173,6 +173,8 @@
   {"query":"order:hp","category":"modifier","should_parse":true,"compiler_supported":true},
   {"query":"order:set","category":"modifier","should_parse":true,"compiler_supported":true},
   {"query":"order:number","category":"modifier","should_parse":true,"compiler_supported":true},
+  {"query":"order:value","category":"modifier","should_parse":true,"compiler_supported":true},
+  {"query":"order:adj","category":"modifier","should_parse":true,"compiler_supported":true},
 
   {"query":"t:fire t:water","category":"boolean","should_parse":true,"compiler_supported":true},
   {"query":"t:fire or t:water","category":"boolean","should_parse":true,"compiler_supported":true},

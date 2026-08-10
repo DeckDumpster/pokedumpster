@@ -138,7 +138,9 @@ pub struct SearchPage {
 pub const DEFAULT_LIMIT: u32 = 250;
 
 /// The largest page a caller may ask for. Beyond this the request is refused,
-/// not clamped — a caller that wants everything is asking the wrong endpoint.
+/// not clamped — a caller that wants everything asks for [`Slice::All`] and
+/// says so, rather than naming a number it hopes is big enough and being
+/// quietly truncated when the catalog outgrows it.
 pub const MAX_LIMIT: u32 = 1000;
 
 #[derive(Clone, Copy, Default)]
@@ -246,20 +248,51 @@ pub fn search(conn: &Connection, compiled: &CompiledSearch) -> Result<Vec<Search
     run(conn, compiled, None)
 }
 
-/// Execute a compiled query as one page, alongside the count of the whole
+/// How much of a result set a caller wants.
+#[derive(Debug, Clone, Copy)]
+pub enum Slice {
+    /// `limit` rows starting at `offset` — the bounded default, and what any
+    /// caller that draws a fixed number of rows should ask for.
+    Page { limit: u32, offset: u32 },
+    /// Every matching row, however many that is.
+    ///
+    /// What the collection page asks for (pd-7z4o): it holds the whole result
+    /// as JS objects and renders only the slice under the viewport, so a page
+    /// boundary would cut nothing a reader can see. That is affordable because
+    /// the response is compressed (pd-2r0p) — the catalog-wide payload
+    /// measures 44,334,174 B raw and 3,243,336 B gzipped, 13.7x, because 56k
+    /// near-identical records repeat their keys — and because the query itself
+    /// runs in about a second.
+    ///
+    /// There is no `offset` here on purpose. Skipping rows out of a result you
+    /// asked for in full is a contradiction, so the endpoint refuses the pair
+    /// rather than picking one of the two meanings.
+    All,
+}
+
+/// Execute a compiled query as one [`Slice`], alongside the count of the whole
 /// result set.
 ///
-/// `total` is the count of the **unbounded** query, not of the page returned,
+/// `total` is the count of the **unbounded** query, not of the rows returned,
 /// so a client can render "N results" and page without a second request.
-/// `limit` and `offset` are echoed back so a response is self-describing.
+/// `limit` and `offset` are echoed back so a response is self-describing; for
+/// [`Slice::All`] the echoed `limit` is the number of rows actually served,
+/// which is what makes such a response describe itself as unpaged.
 pub fn search_page(
     conn: &Connection,
     compiled: &CompiledSearch,
-    limit: u32,
-    offset: u32,
+    slice: Slice,
 ) -> Result<SearchPage> {
     let total = count(conn, compiled)?;
-    let rows = run(conn, compiled, Some((limit, offset)))?;
+    let page = match slice {
+        Slice::Page { limit, offset } => Some((limit, offset)),
+        Slice::All => None,
+    };
+    let rows = run(conn, compiled, page)?;
+    let (limit, offset) = match slice {
+        Slice::Page { limit, offset } => (limit, offset),
+        Slice::All => (u32::try_from(rows.len()).unwrap_or(u32::MAX), 0),
+    };
     Ok(SearchPage {
         rows,
         total,
@@ -1666,7 +1699,7 @@ mod tests {
 
         let mut walked: Vec<String> = Vec::new();
         for offset in 0..expected.len() as u32 {
-            let page = search_page(&f.conn, &c, 1, offset).unwrap();
+            let page = search_page(&f.conn, &c, Slice::Page { limit: 1, offset }).unwrap();
             assert_eq!(page.total, expected.len() as i64, "total is page-invariant");
             walked.extend(page.rows.into_iter().map(|r| r.printing_id));
         }
@@ -1682,7 +1715,15 @@ mod tests {
         let all = search(&f.conn, &c).unwrap().len() as i64;
         assert!(all > 2, "fixture needs more printings than the page below");
 
-        let page = search_page(&f.conn, &c, 2, 0).unwrap();
+        let page = search_page(
+            &f.conn,
+            &c,
+            Slice::Page {
+                limit: 2,
+                offset: 0,
+            },
+        )
+        .unwrap();
         assert_eq!(page.rows.len(), 2, "limit bounds the rows returned");
         assert_eq!(
             page.total, all,
@@ -1691,14 +1732,46 @@ mod tests {
         assert_eq!((page.limit, page.offset), (2, 0), "page echoes its bounds");
 
         // A limit past the end returns what exists, not an error.
-        let over = search_page(&f.conn, &c, 100, 0).unwrap();
+        let over = search_page(
+            &f.conn,
+            &c,
+            Slice::Page {
+                limit: 100,
+                offset: 0,
+            },
+        )
+        .unwrap();
         assert_eq!(over.rows.len() as i64, all);
         assert_eq!(over.total, all);
 
         // limit=0 is a legal count-only request.
-        let none = search_page(&f.conn, &c, 0, 0).unwrap();
+        let none = search_page(
+            &f.conn,
+            &c,
+            Slice::Page {
+                limit: 0,
+                offset: 0,
+            },
+        )
+        .unwrap();
         assert!(none.rows.is_empty());
         assert_eq!(none.total, all);
+    }
+
+    /// pd-7z4o. `Slice::All` is the whole result, and the envelope says so by
+    /// echoing the row count as the limit — a client that windows the DOM needs
+    /// to know it holds everything, not merely that it got a lot.
+    #[test]
+    fn slice_all_returns_every_row_and_echoes_what_it_served() {
+        let f = fixture();
+        let c = all_printings();
+        let all = search(&f.conn, &c).unwrap().len();
+        assert!(all > 2, "fixture needs more printings than a page");
+
+        let page = search_page(&f.conn, &c, Slice::All).unwrap();
+        assert_eq!(page.rows.len(), all);
+        assert_eq!(page.total, all as i64);
+        assert_eq!((page.limit as usize, page.offset), (all, 0));
     }
 
     #[test]
@@ -1706,7 +1779,15 @@ mod tests {
         let f = fixture();
         let c = all_printings();
         let all = search(&f.conn, &c).unwrap().len() as i64;
-        let page = search_page(&f.conn, &c, 10, 999).unwrap();
+        let page = search_page(
+            &f.conn,
+            &c,
+            Slice::Page {
+                limit: 10,
+                offset: 999,
+            },
+        )
+        .unwrap();
         assert!(page.rows.is_empty());
         assert_eq!(page.total, all);
     }
@@ -1748,7 +1829,7 @@ mod tests {
         let mut walked: Vec<String> = Vec::new();
         let mut offset = 0u32;
         loop {
-            let page = search_page(&f.conn, &c, 1, offset).unwrap();
+            let page = search_page(&f.conn, &c, Slice::Page { limit: 1, offset }).unwrap();
             assert_eq!(page.total, expected.len() as i64, "total is page-invariant");
             if page.rows.is_empty() {
                 break;
@@ -1762,7 +1843,7 @@ mod tests {
         let mut walked3: Vec<String> = Vec::new();
         let mut offset = 0u32;
         while (offset as usize) < expected.len() {
-            let page = search_page(&f.conn, &c, 3, offset).unwrap();
+            let page = search_page(&f.conn, &c, Slice::Page { limit: 3, offset }).unwrap();
             walked3.extend(page.rows.into_iter().map(|r| r.printing_id));
             offset += 3;
         }
@@ -1783,7 +1864,7 @@ mod tests {
             .collect();
         let mut walked: Vec<String> = Vec::new();
         for offset in 0..expected.len() as u32 {
-            let page = search_page(&f.conn, &c, 1, offset).unwrap();
+            let page = search_page(&f.conn, &c, Slice::Page { limit: 1, offset }).unwrap();
             walked.extend(page.rows.into_iter().map(|r| r.printing_id));
         }
         assert_eq!(walked, expected, "all-NULL sort still pages coherently");
@@ -1794,7 +1875,15 @@ mod tests {
         let f = fixture();
         // Owned mode, one match: paging must not widen or narrow the filter.
         let c = f.compile("t:fire");
-        let page = search_page(&f.conn, &c, 10, 0).unwrap();
+        let page = search_page(
+            &f.conn,
+            &c,
+            Slice::Page {
+                limit: 10,
+                offset: 0,
+            },
+        )
+        .unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.rows.len(), 1);
         assert_eq!(page.rows[0].printing_id, "base1-4-holo");

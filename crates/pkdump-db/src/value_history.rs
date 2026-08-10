@@ -14,8 +14,10 @@
 //! - [`value_history`] reads the table back for the API.
 //!
 //! VALUE model: for every OWNED copy, `market_price × conditionMultiplier`.
-//! The multiplier is data — the `conditions` table (seeded from
-//! `data/conditions.json`), defaulted to `1.0` for an unknown condition, the
+//! The multiplier is data — the collection's own `conditions` table (seeded
+//! from `data/conditions.json` on open; pd-s4c2 moved it out of the catalog,
+//! so this join no longer crosses the ATTACH boundary), defaulted to `1.0`
+//! for an unknown condition, the
 //! same defensive default the frontend uses. Cost basis is the sum of owned
 //! copies' `purchase_price`; card count is the number of owned copies.
 

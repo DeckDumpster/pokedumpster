@@ -88,13 +88,18 @@ pub enum Database {
 impl Database {
     /// The schema version this build understands.
     ///
-    /// All three start at 1. Every database on disk today is 0 — the
-    /// pre-`user_version` state — so every one of them is adopted on its
-    /// next open.
+    /// All three started at 1. Shared and User are at 2: pd-s4c2 moved
+    /// `conditions` out of the catalog and into the collection, which is a
+    /// change neither file can express with `CREATE … IF NOT EXISTS` and
+    /// which an older binary would get *wrong* rather than merely miss —
+    /// it would find no `conditions` in the catalog it attaches (its value
+    /// queries fail), and it would read the catalog's multipliers for a
+    /// collection that now carries its own. Both bumps exist to stop that
+    /// build instead of letting it serve.
     pub fn version(self) -> i64 {
         match self {
-            Database::Shared => 1,
-            Database::User => 1,
+            Database::Shared => 2,
+            Database::User => 2,
             Database::Registry => 1,
         }
     }

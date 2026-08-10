@@ -884,6 +884,50 @@ mod tests {
         assert_eq!(past_end["offset"], 5);
     }
 
+    /// pd-7z4o. `limit=all` is the whole result set, and says so in the
+    /// envelope: the echoed `limit` is the row count, which is what makes the
+    /// response describe itself as unpaged rather than as a page that happened
+    /// to fit.
+    #[tokio::test]
+    async fn search_serves_the_whole_result_for_limit_all() {
+        let (_d, router) = test_app();
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/collection/search?include_unowned=1&limit=all")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        let rows = body["rows"].as_array().unwrap().len();
+        assert_eq!(body["total"], rows, "every matching row was served");
+        assert_eq!(body["limit"], rows, "the echoed limit is what was served");
+        assert_eq!(body["offset"], 0);
+    }
+
+    /// Skipping rows out of a result you asked for in full is a contradiction,
+    /// so the pair is refused rather than one half of it quietly winning.
+    #[tokio::test]
+    async fn search_refuses_an_offset_alongside_limit_all() {
+        let (_d, router) = test_app();
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/collection/search?limit=all&offset=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert!(body["error"].as_str().unwrap().contains("limit=all"));
+        assert!(body["position"].is_null(), "not a query error");
+    }
+
     /// A paging bound that is not a whole number in range is refused — never
     /// honoured, never clamped to something the caller did not ask for. The 400
     /// body carries `error` and no `position`, which is how the client tells a

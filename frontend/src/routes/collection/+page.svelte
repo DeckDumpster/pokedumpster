@@ -8,6 +8,7 @@
 	import { CONDITIONS } from '$lib/conditions';
 	import { conditionMultiplier } from '$lib/conditions.svelte';
 	import { money, count } from '$lib/format';
+	import { stackOffsets, windowOf } from '$lib/virtual';
 
 	// Foil shimmer treatment for holo / reverse-holo / pattern-RH /
 	// cosmos_holo variants — ranks 1..3 in the variants table. Stamps
@@ -19,7 +20,7 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ValueHistoryModal from '$lib/components/ValueHistoryModal.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
-	import { Button, EmptyState, Pager, SectionHeader, Toolbar } from '$lib/components/ui';
+	import { Button, EmptyState, SectionHeader, Toolbar } from '$lib/components/ui';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { SearchRow } from '$lib/types/SearchRow';
 	import type { SearchVocabulary } from '$lib/types/SearchVocabulary';
@@ -30,33 +31,26 @@
 	// page's existing rendering is per-copy, so owned printings are flattened
 	// back into per-copy rows (`rows`); unowned printings (owned_count === 0)
 	// drive the dimmed "missing" tiles (see `displayRows`).
-	let searchRows = $state<SearchRow[]>([]);
-	// Printings the query matches in total. The endpoint answers with one
-	// bounded page (pd-jsby), so this is usually larger than `searchRows` and
-	// is what the count line speaks from.
+	//
+	// This is the WHOLE result set, not a page of it (pd-7z4o). A catalog-wide
+	// query matches 56,635 printings and that is exactly what arrives: the
+	// response is compressed, so those rows travel as ~3 MB rather than 44
+	// (pd-2r0p), and the reason the tab survived neither before was never the
+	// payload — it was 289,612 DOM nodes and a 457 MB heap (pd-5vgp). So the
+	// rows are held here as JS objects and only the slice under the viewport is
+	// put in the document. See the virtual-scroller block below.
+	//
+	// `$state.raw` and not `$state`, and at this size it is not a micro-
+	// optimisation: plain `$state` wraps every object it holds in a deep
+	// reactive proxy, which on 56,635 rows of twenty fields measured **390 MB**
+	// of retained heap and a 3.1 s first paint — within sight of the 457 MB
+	// that crashed the tab in the first place (pd-5vgp). Raw, the same result
+	// is **48 MB** and 1.3 s. Nothing here mutates a row in place; a search
+	// replaces the whole array, which is exactly what raw state is for.
+	let searchRows = $state.raw<SearchRow[]>([]);
+	// Printings the query matches in total — equal to `searchRows.length`, and
+	// kept as its own field because it is the endpoint that says so.
 	let searchTotal = $state(0);
-	// The page the endpoint served: how many rows it bounded itself to, and
-	// where that page started.
-	//
-	// This page holds ONE page and nothing else (pd-tsqd). The alternative —
-	// keep the whole result and render a window of it — is not available: a
-	// catalog-wide query matches 56,635 printings and the endpoint refuses to
-	// serve more than MAX_LIMIT of them, so there is no whole result to
-	// window. Holding a page bounds the JS objects as well as the DOM nodes.
-	//
-	// The client never names a page size. It sends no `limit` and reads back
-	// the one the endpoint used, so there is no second opinion about how big
-	// a page is — and that is why the URL carries `offset` rather than a page
-	// number: an offset needs no such agreement to be a valid link.
-	let pageLimit = $state(0);
-	/** `?offset=` as a non-negative integer; anything else is the first page. */
-	function offsetParam(raw: string | null): number {
-		const n = Number(raw ?? 0);
-		return Number.isSafeInteger(n) && n > 0 ? n : 0;
-	}
-	const initialOffset =
-		typeof window !== 'undefined' ? offsetParam(page.url.searchParams.get('offset')) : 0;
-	let offset = $state(initialOffset);
 
 	let loading = $state(true);
 	let error = $state<string | null>(null);
@@ -123,7 +117,7 @@
 	//     (api.searchKeywords); nothing here is hardcoded. (pokedumpster-cx1) ---
 	type AcItem = { insert: string; label: string; hint: string };
 	const HAS_VALUES = ['ability', 'flavor', 'attack', 'weakness', 'resistance', 'retreat'];
-	let vocab = $state<SearchVocabulary | null>(null);
+	let vocab = $state.raw<SearchVocabulary | null>(null);
 	let acFocused = $state(false);
 	let acDismissed = $state(false);
 	let acIndex = $state(0);
@@ -195,16 +189,18 @@
 			acDismissed = true;
 		}
 	}
-	// Reflect the whole view — query, All-cards, and which page of the result
-	// is on screen — in the URL, so refreshes and the back button keep state.
+	// Reflect the whole view — query and All-cards — in the URL, so refreshes
+	// and the back button keep state.
 	// goto(replaceState:true), NOT $app/navigation's replaceState: the latter
 	// only repaints the address bar and stashes the *stale* page.url as the
 	// entry's restore key, so a forward nav (card facet link) + Back drops the
 	// ?q=. goto updates page.url so Back restores it. keepFocus so the search
 	// box doesn't blur mid-type.
 	//
-	// One writer for all three params: they change together (a new query is
-	// always page one) and a second writer would race this one on goto.
+	// One writer for both params: they change together and a second writer
+	// would race this one on goto. There is no `offset` among them any more —
+	// the list is one scrollable result, so where you are in it is a scroll
+	// position (remembered below), not a slice of the URL.
 	function syncUrl() {
 		if (typeof window === 'undefined') return;
 		const url = new URL(window.location.href);
@@ -213,8 +209,6 @@
 		else url.searchParams.delete('q');
 		if (allCards) url.searchParams.set('all', '1');
 		else url.searchParams.delete('all');
-		if (offset > 0) url.searchParams.set('offset', String(offset));
-		else url.searchParams.delete('offset');
 		if (url.href !== window.location.href) {
 			void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
 		}
@@ -228,18 +222,10 @@
 		clearTimeout(debounce);
 		debounce = setTimeout(() => {
 			query = value.trim();
-			// A different result set has a different page one.
-			offset = 0;
+			// A different result set is read from the top.
+			forgetScroll();
 			syncUrl();
 		}, 200);
-	}
-
-	/** Move to the page starting at `next` and put the reader at the top of it. */
-	function goPage(next: number) {
-		if (next === offset) return;
-		offset = next;
-		syncUrl();
-		if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
 	}
 
 	// Re-sync from the URL whenever it changes — covers the case where the
@@ -252,7 +238,6 @@
 	$effect(() => {
 		const q = page.url.searchParams.get('q') ?? '';
 		const all = page.url.searchParams.get('all') === '1';
-		const off = offsetParam(page.url.searchParams.get('offset'));
 		untrack(() => {
 			if (q !== searchRaw) {
 				clearTimeout(debounce);
@@ -260,11 +245,6 @@
 				query = q.trim();
 				// Close any open modal so the filtered list is visible.
 				selectedCard = null;
-			}
-			// Which page is on screen is URL state like the other two, so Back
-			// lands on the page you left rather than on page one of it.
-			if (off !== offset) {
-				offset = off;
 			}
 			// The "All cards" param has to resync from the URL too. A
 			// client-side facet nav (e.g. a card-modal link carrying &all=1)
@@ -287,36 +267,31 @@
 	function toggleAllCards() {
 		allCards = !allCards;
 		// Widening owned-only to the whole catalog is a different result set,
-		// so it starts at its own page one.
-		offset = 0;
+		// so it is read from the top.
+		forgetScroll();
 		syncUrl();
 	}
 
-	/** Fetch the page of the current query + toggle + sort at `offset`. */
+	/** Fetch the whole result for the current query + toggle + sort. */
 	async function runSearch() {
 		loading = true;
 		error = null;
 		searchError = null;
 		try {
-			// No `limit`: the endpoint's own default is the page size, and it
-			// echoes it back in `res.limit` for the pager to step by.
+			// `limit: 'all'` — every matching row, because this page holds the
+			// result and renders a window of it. Only a caller that can hold
+			// the whole thing may ask; this one can (see `searchRows`).
 			//
 			// `sort`/`dir` are always sent, so the control wins over an
 			// `order:` written into the query itself. That is not a change:
 			// the control won before too, by re-sorting the rows after they
 			// arrived. What changed is that it now wins where the rows are
-			// chosen, so the order the control claims is the order you get.
-			const res = await api.collectionSearch(
-				query,
-				sortKey,
-				sortDir,
-				allCards,
-				undefined,
-				offset
-			);
+			// chosen, so the order the control claims is the order you get —
+			// and it has to stay server-side, because a sort applied to a
+			// window would order what the window happens to hold.
+			const res = await api.collectionSearch(query, sortKey, sortDir, allCards, 'all');
 			searchRows = res.rows;
 			searchTotal = res.total;
-			pageLimit = res.limit;
 		} catch (e) {
 			if (e instanceof SearchQueryError) {
 				searchError = { message: e.message, position: e.position };
@@ -327,34 +302,36 @@
 			}
 		} finally {
 			loading = false;
+			restoreScroll();
 		}
 	}
 
 	// Re-search whenever anything the server decides changes — the query, the
-	// All-cards toggle, the sort, or which page is wanted (also fires once on
-	// mount). The sort is in that list because it is the SERVER'S now: sorting
-	// a page of 250 in the browser would order the wrong 250 out of 56,635.
+	// All-cards toggle, or the sort (also fires once on mount). The sort is in
+	// that list because it is the SERVER'S: it decides which rows the ORDER BY
+	// puts where, and the client only ever draws them in that order.
 	$effect(() => {
 		void query;
 		void allCards;
 		void sortKey;
 		void sortDir;
-		void offset;
 		runSearch();
 	});
 
 	// --- Multi-select bulk operations. ---
-	let binders = $state<Binder[]>([]);
-	let decks = $state<Deck[]>([]);
+	let binders = $state.raw<Binder[]>([]);
+	let decks = $state.raw<Deck[]>([]);
 	let selectMode = $state(false);
 	// Selected copies, keyed by copy id — which is what makes a selection
-	// survive paging. The row that carried a copy is gone the moment you turn
-	// the page, so the selection remembers the little it needs about each one
-	// (the card, for "add to wishlist") rather than looking it back up in a
-	// list that no longer holds it. Keyed by id and not by position for the
-	// same reason: nothing here is an index into the current page.
+	// survive the window. The tile that carried a copy is gone from the DOM
+	// the moment it scrolls out, so the selection remembers the little it
+	// needs about each one (the card, for "add to wishlist") rather than
+	// looking it back up in the document. Keyed by id and not by position for
+	// the same reason: nothing here is an index into what is rendered.
 	type Picked = { card_id: string; printing_id: string };
-	let selected = $state(new Map<number, Picked>());
+	// Raw, like `searchRows`: every mutation below builds a new Map and assigns
+	// it, so there is nothing for a deep proxy to observe.
+	let selected = $state.raw(new Map<number, Picked>());
 	let busy = $state(false);
 
 	// Grid (card images) vs. table view — persisted across reloads in
@@ -386,8 +363,8 @@
 	//
 	// These are the endpoint's own key names, not a private vocabulary with a
 	// translation table in the middle: the sort is executed in SQL
-	// (`search::order_sql`), because a page holds 250 of up to 56,635 matches
-	// and sorting those 250 in the browser orders the wrong ones.
+	// (`search::order_sql`), because the browser renders a window of the
+	// result and sorting that window would order the wrong rows.
 	//
 	// `adj` is the one key whose column and sort are not the same unit. Adj. is
 	// a COPY's condition-adjusted unit price and a printing owned in two
@@ -435,10 +412,9 @@
 			sortDir =
 				key === 'qty' || key === 'price' || key === 'adj' || key === 'value' ? 'desc' : 'asc';
 		}
-		// Re-ordering the whole result set means the page you were on is a
-		// different 250 rows. Start at the top of the new order.
-		offset = 0;
-		syncUrl();
+		// Re-ordering the whole result set puts different rows where you were
+		// looking. Start at the top of the new order.
+		forgetScroll();
 	}
 
 	// Set by the modal's onMutate when a copy is added/removed/edited while
@@ -476,15 +452,12 @@
 	// the filtered rows, so it equals the sum of the per-row Value cells
 	// shown below (which also apply the multiplier).
 	//
-	// It sums the PAGE, because the page is all this client has. The count
-	// line only shows it when the page is the whole result — see the comment
-	// on that button.
+	// It sums the whole result, because the whole result is what this client
+	// holds now (pd-7z4o). Under paging it could only sum the page, which is
+	// why the figure used to be withheld unless the page WAS the result.
 	const totalValue = $derived(
 		filtered.reduce((s, r) => s + (r.market_price ?? 0) * conditionMultiplier(r.condition), 0)
 	);
-	/** Nothing matched that the page on screen doesn't already show. */
-	const wholeResultOnScreen = $derived(offset === 0 && searchTotal <= searchRows.length);
-
 
 	function toggleSelectMode() {
 		selectMode = !selectMode;
@@ -711,11 +684,11 @@
 
 	    There is no client-side sort left. The order is the ORDER BY the server
 	    executed for `sortKey`/`sortDir`, which is the only order that can be
-	    right once a page holds 250 of up to 56,635 matches — sorting the page
-	    would sort the wrong 250. Walking `searchRows` rather than concatenating
-	    owned and unowned is what keeps that order intact: a missing printing
-	    lands exactly where the sort put it, next to the owned ones around it,
-	    instead of in a clump at the end. */
+	    right when the document holds a window of up to 56,635 matches —
+	    sorting the window would sort the wrong rows. Walking `searchRows`
+	    rather than concatenating owned and unowned is what keeps that order
+	    intact: a missing printing lands exactly where the sort put it, next to
+	    the owned ones around it, instead of in a clump at the end. */
 	const displayRows = $derived.by<AggRow[]>(() => {
 		const out: AggRow[] = [];
 		for (const sr of searchRows) {
@@ -757,21 +730,224 @@
 		}
 	}
 
-	/** `displayRows`, cut into runs of equal group label. Concatenating the
-	    runs reproduces `displayRows` exactly — the grid's tile order is
-	    untouched, so owned and unowned printings still interleave by the sort
-	    key. The headings are page-local by construction: a run that reaches the
-	    end of the page continues under the same heading on the next one. */
+	/** `displayRows`, cut into runs of equal group label — as index ranges into
+	    it, not as copies of it. Concatenating the runs reproduces `displayRows`
+	    exactly, so the grid's tile order is untouched and owned and unowned
+	    printings still interleave by the sort key.
+
+	    Ranges rather than row arrays because the runs now cover the whole
+	    result: slicing 56,635 rows into a few thousand little arrays would
+	    double the heap to describe an order the flat array already has. */
 	const gridSections = $derived.by(() => {
-		const out: { label: string | null; rows: AggRow[] }[] = [];
-		for (const a of displayRows) {
-			const label = groupLabel(a);
+		const out: { label: string | null; from: number; to: number }[] = [];
+		if (view !== 'grid') return out;
+		for (let i = 0; i < displayRows.length; i++) {
+			const label = groupLabel(displayRows[i]);
 			const last = out[out.length - 1];
-			if (last && last.label === label) last.rows.push(a);
-			else out.push({ label, rows: [a] });
+			if (last && last.label === label) last.to = i + 1;
+			else out.push({ label, from: i, to: i + 1 });
 		}
 		return out;
 	});
+
+	// === Virtual scroller (pd-7z4o) ===================================
+	//
+	// The result is held above in full; the document holds a window of it.
+	// Everything below is the arithmetic that keeps those two agreeing — the
+	// spacers standing in for what isn't rendered are what make the scrollbar,
+	// the scroll position and every in-page offset describe the whole result
+	// rather than the window.
+	//
+	// The list is a stack of BLOCKS: one table row, or in the grid either a
+	// section heading or one full row of tiles. `$lib/virtual` turns block
+	// heights into offsets and offsets into a rendered range; nothing here
+	// decides what a block LOOKS like, and nothing there touches the DOM.
+
+	/** One block of the grid: a heading, or one row of `cols` tiles given as a
+	    range into `displayRows`. */
+	type GridBlock =
+		| { kind: 'header'; label: string; count: number }
+		| { kind: 'tiles'; from: number; to: number };
+
+	const gridBlocks = $derived.by<GridBlock[]>(() => {
+		const out: GridBlock[] = [];
+		for (const sec of gridSections) {
+			if (sec.label !== null) {
+				out.push({ kind: 'header', label: sec.label, count: sec.to - sec.from });
+			}
+			for (let i = sec.from; i < sec.to; i += cols) {
+				out.push({ kind: 'tiles', from: i, to: Math.min(i + cols, sec.to) });
+			}
+		}
+		return out;
+	});
+
+	// Geometry, measured off the rendered document rather than mirrored from
+	// the stylesheet — tile size, column count and gap are all decided by CSS
+	// and by the viewport, and a copy of them here would be a second opinion
+	// that drifts. The values below are seeds for the very first frame only:
+	// that frame is re-windowed from real measurements before it can be
+	// scrolled.
+	let tileH = $state(210);
+	let headerH = $state(44);
+	let gridGap = $state(16);
+	let cols = $state(1);
+	let rowH = $state(48);
+
+	/** Viewports of slack rendered either side of the visible one, so a flung
+	    scroll lands on tiles that are already there. The rendered count is a
+	    multiple of what fits on screen — never of how much matched. */
+	const OVERSCAN = 1;
+
+	/** The list container: the grid, or the table's tbody. */
+	let listEl = $state<HTMLElement | undefined>();
+	let scrollY = $state(0);
+	let viewportH = $state(0);
+	/** Where the list starts in the document, so window coordinates become
+	    list coordinates. */
+	let listTop = $state(0);
+
+	const winTop = $derived(scrollY - listTop - OVERSCAN * viewportH);
+	const winBottom = $derived(scrollY - listTop + (1 + OVERSCAN) * viewportH);
+
+	const gridOffsets = $derived(
+		stackOffsets(
+			gridBlocks.length,
+			(i) => (gridBlocks[i].kind === 'header' ? headerH : tileH),
+			gridGap
+		)
+	);
+	const gridWindow = $derived(windowOf(gridOffsets, gridGap, winTop, winBottom));
+	/** The blocks to render, carrying their absolute index so scrolling by one
+	    row rebuilds one block rather than the whole window. */
+	const gridVisible = $derived.by(() => {
+		const out: { i: number; block: GridBlock }[] = [];
+		for (let i = gridWindow.start; i < gridWindow.end; i++) out.push({ i, block: gridBlocks[i] });
+		return out;
+	});
+
+	const tableOffsets = $derived(
+		stackOffsets(view === 'table' ? displayRows.length : 0, () => rowH, 0)
+	);
+	const tableWindow = $derived(windowOf(tableOffsets, 0, winTop, winBottom));
+	const tableVisible = $derived(displayRows.slice(tableWindow.start, tableWindow.end));
+	/** Columns a spacer row has to span. */
+	const tableCols = $derived(selectMode ? 12 : 11);
+
+	/** Read the geometry the window arithmetic needs out of the rendered DOM. */
+	function measure() {
+		const el = listEl;
+		if (!el || typeof window === 'undefined') return;
+		listTop = el.getBoundingClientRect().top + window.scrollY;
+		if (view === 'grid') {
+			const style = getComputedStyle(el);
+			const tracks = style.gridTemplateColumns.split(' ').filter((t) => t !== '').length;
+			if (tracks > 0) cols = tracks;
+			const gap = parseFloat(style.rowGap);
+			if (!Number.isNaN(gap)) gridGap = gap;
+			const tile = el.querySelector('.cardtile');
+			if (tile) tileH = tile.getBoundingClientRect().height;
+			// Headings only exist for the sorts that group; the last measured
+			// value stands until one is on screen again.
+			const head = el.querySelector('.groupheader');
+			if (head) headerH = head.getBoundingClientRect().height;
+		} else {
+			// One height for every row, by construction — see `.namebody`.
+			const row = el.querySelector('tr:not(.vspace)');
+			if (row) rowH = row.getBoundingClientRect().height;
+		}
+	}
+
+	// Re-measure after every render that can change the geometry: a new view, a
+	// new sort (headings appear and disappear), a new result, select mode (an
+	// extra column). Deliberately reads none of the values it writes — that
+	// would be a cycle.
+	$effect(() => {
+		void view;
+		void sortKey;
+		void selectMode;
+		void displayRows.length;
+		measure();
+	});
+
+	// Scroll and viewport size drive the window. One rAF per scroll burst, so
+	// a fling costs one recompute per frame rather than one per event.
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		let frame = 0;
+		const onScroll = () => {
+			if (frame) return;
+			frame = requestAnimationFrame(() => {
+				frame = 0;
+				scrollY = window.scrollY;
+				rememberScroll();
+			});
+		};
+		const onResize = () => {
+			viewportH = window.innerHeight;
+			measure();
+		};
+		window.addEventListener('scroll', onScroll, { passive: true });
+		window.addEventListener('resize', onResize);
+		onResize();
+		scrollY = window.scrollY;
+		return () => {
+			cancelAnimationFrame(frame);
+			window.removeEventListener('scroll', onScroll);
+			window.removeEventListener('resize', onResize);
+		};
+	});
+
+	// A width change re-flows the grid's columns without necessarily resizing
+	// the window — a scrollbar appearing does it. Height changes are ours (the
+	// spacers) and are ignored, or this would observe its own output.
+	$effect(() => {
+		const el = listEl;
+		if (!el || typeof ResizeObserver === 'undefined') return;
+		let width = el.getBoundingClientRect().width;
+		const ro = new ResizeObserver((entries) => {
+			const next = entries[0].contentRect.width;
+			if (next === width) return;
+			width = next;
+			measure();
+		});
+		ro.observe(el);
+		return () => ro.disconnect();
+	});
+
+	// --- Where the reader was --------------------------------------------
+	//
+	// Under paging this was `?offset=`. It is a scroll position now, which is
+	// not URL state — it is per-tab and per-view, and it dies with the tab.
+	// Without it, Back out of a card's facet search lands at the top of 56,635
+	// rows instead of where you were reading.
+
+	function scrollKey(): string {
+		return `collection.scroll:${view}|${query}|${sortKey}|${sortDir}|${allCards ? 1 : 0}`;
+	}
+	let scrollSave: ReturnType<typeof setTimeout>;
+	function rememberScroll() {
+		clearTimeout(scrollSave);
+		scrollSave = setTimeout(() => {
+			sessionStorage.setItem(scrollKey(), String(window.scrollY));
+		}, 150);
+	}
+	/** A different result set is read from the top: forget where the reader was
+	    in it, and let the restore after the search put them there. */
+	function forgetScroll() {
+		if (typeof window === 'undefined') return;
+		clearTimeout(scrollSave);
+		sessionStorage.removeItem(scrollKey());
+	}
+	/** Put the reader back where they were in this result. Two frames: one for
+	    the first window to render, one for the measurement it triggers to give
+	    the spacers their real height — the document has to be tall enough to
+	    scroll to before we scroll to it. */
+	function restoreScroll() {
+		if (typeof window === 'undefined') return;
+		const saved = Number(sessionStorage.getItem(scrollKey()) ?? 0);
+		requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo({ top: saved })));
+	}
 
 	function groupChecked(ids: number[]): boolean {
 		// An unowned printing has no copies — never "checked" (empty .every is true).
@@ -832,18 +1008,19 @@
 		}
 	}
 
-	// The header checkbox in the table selects/clears every owned row ON THIS
-	// PAGE — the only rows it can see, and the only ones it claims to speak
-	// for. Selections made on other pages are left alone, which is why
-	// clearing it is a delete of these ids rather than a new empty selection.
-	const ownedOnPage = $derived(displayRows.filter((a) => a.ids.length > 0));
+	// The header checkbox in the table selects/clears every owned row in the
+	// RESULT — which is now every row the client holds, not merely the ones
+	// currently in the document. Clearing is a delete of those ids rather than
+	// a new empty selection, so a selection made under a different query
+	// survives it.
+	const ownedInResult = $derived(displayRows.filter((a) => a.ids.length > 0));
 	const tableAllSelected = $derived(
-		ownedOnPage.length > 0 && ownedOnPage.every((a) => groupChecked(a.ids))
+		ownedInResult.length > 0 && ownedInResult.every((a) => groupChecked(a.ids))
 	);
 	function toggleTableAll() {
 		const all = tableAllSelected;
 		const next = new Map(selected);
-		for (const a of ownedOnPage) {
+		for (const a of ownedInResult) {
 			for (const id of a.ids) {
 				if (all) next.delete(id);
 				else next.set(id, { card_id: a.card_id, printing_id: a.printing_id });
@@ -1080,16 +1257,12 @@
 				{/if}
 			</div>
 		{/if}
-		<!-- The count speaks for the whole result set, not for the page on
-		     screen — that is what `total` is for, and the pager below says
-		     which slice of it you are looking at.
-
-		     The money does NOT follow it, because nothing here knows it: the
-		     endpoint returns a page of rows, so the only sum this page can
-		     compute is the page's, and "2,661 cards, $412" where the $412 is
-		     250 arbitrary cards is worse than no figure at all. It is shown
-		     when the whole result IS the page, and withheld otherwise.
-		     pd-2g84 proposes the total the endpoint would have to send. -->
+		<!-- The count speaks for the whole result set, and so does the money
+		     beside it: the client holds every matching row now, so summing
+		     them is arithmetic rather than a guess about the rest (pd-7z4o).
+		     Under paging the figure had to be withheld unless the page WAS the
+		     result, because "2,661 cards, $412" where the $412 was 250
+		     arbitrary cards is worse than no figure at all. -->
 		<button
 			type="button"
 			class="countline muted"
@@ -1098,7 +1271,7 @@
 			title="Collection value over time"
 		>
 			{count(searchTotal)}
-			cards{#if wholeResultOnScreen && totalValue > 0}, {money(totalValue)}{/if}
+			cards{#if totalValue > 0}, {money(totalValue)}{/if}
 		</button>
 	</Toolbar>
 	{#if searchError}
@@ -1116,14 +1289,6 @@
 		onclick={closeMenu}
 	></div>
 {/if}
-
-<!-- Above AND below the results, in both views. A next-page control only at
-     the foot of 250 tiles means scrolling the page you have finished with in
-     order to leave it; one only at the head means scrolling back up. Two
-     instances of a control this small is the cheaper answer. -->
-{#snippet pager()}
-	<Pager offset={offset} limit={pageLimit} total={searchTotal} unit="cards" ongo={goPage} />
-{/snippet}
 
 <!-- The layout runs this route flush to the viewport edge so the bar above
      can pin edge to edge; everything below it gets its gutter back here.
@@ -1242,56 +1407,67 @@
 			{@render sortBtn('adj', 'Adj.')}
 			{@render sortBtn('value', 'Value')}
 		</div>
-		{@render pager()}
 		<!-- Sections are runs of `displayRows`, so tile order is exactly the
 		     server's sort order — owned and unowned printings still
-		     interleave. -->
-		<div class="cardgrid" data-testid="collection-grid">
-			{#each gridSections as sec, si (si)}
-				{#if sec.label !== null}
+		     interleave.
+
+		     Only the blocks under the viewport are here; the two spacers carry
+		     the height of everything else, so the grid is as tall as all
+		     56,635 tiles would make it while holding a few dozen of them
+		     (pd-7z4o). Each spacer spans the grid, which is also what makes a
+		     tile row start at column one after it. -->
+		<div class="cardgrid" data-testid="collection-grid" bind:this={listEl}>
+			{#if gridWindow.padTop > 0}
+				<div class="vspace" style="height: {gridWindow.padTop}px" aria-hidden="true"></div>
+			{/if}
+			{#each gridVisible as { i, block } (i)}
+				{#if block.kind === 'header'}
 					<div class="groupheader">
 						<SectionHeader
 							size="sm"
-							title={sec.label}
-							meta="{count(sec.rows.length)} {sec.rows.length === 1 ? 'card' : 'cards'}"
+							title={block.label}
+							meta="{count(block.count)} {block.count === 1 ? 'card' : 'cards'}"
 							divider
 						/>
 					</div>
+				{:else}
+					{#each displayRows.slice(block.from, block.to) as a (a.key)}
+						{#if a.ids.length === 0}
+							<button
+								class="cardtile missing"
+								title="{a.name} · {(a.set_ptcgo_code ?? a.set_code).toUpperCase()} #{a.number} · click to add"
+								onclick={() => (selectedCard = { set: a.set_code, number: a.number })}
+							>
+								{#if a.image_small}
+									<img src={a.image_small} alt={a.name} loading="lazy" />
+								{:else}
+									<div class="tilenoart">{a.name}</div>
+								{/if}
+							</button>
+						{:else}
+							<button
+								class="cardtile"
+								class:picked={selectMode && groupChecked(a.ids)}
+								class:foil={isFoilVariant(a.variant)}
+								title="{a.name} · {variantLabel(a.variant)}{a.qty > 1 ? ` ×${a.qty}` : ''}"
+								onclick={() => openGroup(a)}
+							>
+								{#if a.image_small}
+									<img src={a.image_small} alt={a.name} loading="lazy" />
+								{:else}
+									<div class="tilenoart">{a.name}</div>
+								{/if}
+								{#if a.qty > 1}<span class="qtybadge">×{a.qty}</span>{/if}
+								{#if selectMode && groupChecked(a.ids)}<span class="tick">✓</span>{/if}
+							</button>
+						{/if}
+					{/each}
 				{/if}
-				{#each sec.rows as a (a.key)}
-					{#if a.ids.length === 0}
-						<button
-							class="cardtile missing"
-							title="{a.name} · {(a.set_ptcgo_code ?? a.set_code).toUpperCase()} #{a.number} · click to add"
-							onclick={() => (selectedCard = { set: a.set_code, number: a.number })}
-						>
-							{#if a.image_small}
-								<img src={a.image_small} alt={a.name} loading="lazy" />
-							{:else}
-								<div class="tilenoart">{a.name}</div>
-							{/if}
-						</button>
-					{:else}
-						<button
-							class="cardtile"
-							class:picked={selectMode && groupChecked(a.ids)}
-							class:foil={isFoilVariant(a.variant)}
-							title="{a.name} · {variantLabel(a.variant)}{a.qty > 1 ? ` ×${a.qty}` : ''}"
-							onclick={() => openGroup(a)}
-						>
-							{#if a.image_small}
-								<img src={a.image_small} alt={a.name} loading="lazy" />
-							{:else}
-								<div class="tilenoart">{a.name}</div>
-							{/if}
-							{#if a.qty > 1}<span class="qtybadge">×{a.qty}</span>{/if}
-							{#if selectMode && groupChecked(a.ids)}<span class="tick">✓</span>{/if}
-						</button>
-					{/if}
-				{/each}
 			{/each}
+			{#if gridWindow.padBottom > 0}
+				<div class="vspace" style="height: {gridWindow.padBottom}px" aria-hidden="true"></div>
+			{/if}
 		</div>
-		{@render pager()}
 	{:else}
 		{#snippet sortable(key: string, label: string, extra: string, title?: string)}
 			<th class="sortable {extra}" {title} onclick={() => sortBy(key)}>
@@ -1301,7 +1477,6 @@
 				{/if}
 			</th>
 		{/snippet}
-		{@render pager()}
 		<div class="tableScroll">
 		<table class="dd">
 			<thead>
@@ -1336,18 +1511,30 @@
 					{@render sortable('value', 'Value', 'num', 'Condition-adjusted value (× qty)')}
 				</tr>
 			</thead>
-			<tbody>
-				{#each displayRows as a (a.key)}
+			<!-- Only the rows under the viewport, with a spacer row either side
+			     carrying the height of the rest — same contract as the grid
+			     above (pd-7z4o). -->
+			<tbody bind:this={listEl}>
+				{#if tableWindow.padTop > 0}
+					<tr class="vspace" aria-hidden="true">
+						<td colspan={tableCols} style="height: {tableWindow.padTop}px"></td>
+					</tr>
+				{/if}
+				{#each tableVisible as a (a.key)}
 					{#if a.ids.length === 0}
 						<tr class="missing">
 							{#if selectMode}<td class="cbcol"></td>{/if}
 							<td class="num qty"><span class="pricedash">—</span></td>
 							<td class="colflex namecol" title="Open card" onclick={(e) => openCardCell(e, a)}>
+								<!-- Same shape as the owned row's name cell below, tags
+								     aside: the `.namebody` wrapper is what keeps the name
+								     to one line, and a row that skipped it was 3px taller
+								     than its neighbours (pd-7z4o). -->
 								<div class="namecell">
 									{#if a.image_small}
 										<img class="cardthumb" src={a.image_small} alt="" loading="lazy" />
 									{/if}
-									<span class="cardname">{a.name}</span>
+									<span class="namebody"><span class="cardname">{a.name}</span></span>
 								</div>
 							</td>
 							<td class="fac" title="Find all {a.supertype ?? ''} cards" onclick={(e) => facetCell(e, 'supertype', a.supertype)}>{a.supertype ?? ''}</td>
@@ -1521,10 +1708,14 @@
 					</tr>
 					{/if}
 				{/each}
+				{#if tableWindow.padBottom > 0}
+					<tr class="vspace" aria-hidden="true">
+						<td colspan={tableCols} style="height: {tableWindow.padBottom}px"></td>
+					</tr>
+				{/if}
 			</tbody>
 		</table>
 		</div>
-		{@render pager()}
 	{/if}
 {/if}
 </div>
@@ -1918,6 +2109,14 @@
 	.groupheader {
 		grid-column: 1 / -1;
 	}
+	/* The virtual scroller's spacers (pd-7z4o) — empty boxes carrying the
+	   height of the tiles that are not in the document, so the page is as tall
+	   as the whole result. Spanning the grid is not only cosmetic: a full-width
+	   item ends the row, which is what puts the first rendered tile back at
+	   column one. */
+	.vspace {
+		grid-column: 1 / -1;
+	}
 	.cardtile {
 		position: relative;
 		padding: var(--space-0);
@@ -2107,6 +2306,25 @@
 		border-bottom: 1px solid var(--color-border);
 		vertical-align: middle;
 	}
+	/* One row height for every row, because the virtual scroller's geometry is
+	   arithmetic over a single one (pd-7z4o) — a row 3px out of step is a
+	   scrollbar 3px × 56,635 rows out of step. The thumbnail is what sets the
+	   height, so `--row-content` is the thumbnail, and nothing in a cell may
+	   grow past it: a third attack cost is clipped to two, exactly as the type
+	   cell either side of it already ellipsises its second line. */
+	table.dd {
+		--row-content: 36px;
+	}
+	table.dd tbody td > * {
+		max-height: var(--row-content);
+		overflow: hidden;
+	}
+	/* An inline image inside the foil wrapper sits on a baseline, and the
+	   descender space under it made the wrapper 3px taller than the image —
+	   the one row-height difference that was not the name wrapping. */
+	.cardthumb {
+		display: block;
+	}
 	table.dd th {
 		text-align: left;
 		border-bottom: 2px solid var(--color-border);
@@ -2129,6 +2347,16 @@
 	}
 	table.dd tbody tr:hover {
 		background: var(--color-surface-accent-wash);
+	}
+	/* A spacer is not a row: no rule under it, no hover, nothing to click. */
+	table.dd tbody tr.vspace,
+	table.dd tbody tr.vspace:hover {
+		background: none;
+		cursor: default;
+	}
+	table.dd tbody tr.vspace td {
+		padding: 0;
+		border: 0;
 	}
 	table.dd tbody tr.picked {
 		background: var(--color-surface-selected);
@@ -2213,10 +2441,22 @@
 	/* Wrap name + inline tags so the tags flow with the text. Without this
 	   wrapper they sit as flex siblings of .namecell, and a long-wrapping
 	   name shrinks to fill the remaining width, pushing the tags to the
-	   right edge of the cell instead of abutting the name. */
+	   right edge of the cell instead of abutting the name.
+
+	   One line, and truncated rather than wrapped, because the virtual
+	   scroller's geometry is arithmetic over ONE row height (pd-7z4o): a name
+	   that wrapped made its row 3px taller than its neighbours, and 3px times
+	   56,635 rows is a scrollbar that lies about where you are. Every other
+	   cell already fits inside the thumbnail's height — this was the only one
+	   that could outgrow it. The column flexes to all leftover width, so an
+	   ellipsis is a narrow-viewport event, and the type cell either side of it
+	   ellipsises on the same reasoning. */
 	.namebody {
 		min-width: 0;
 		line-height: 1.25;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	/* Type cell: main type on top, subtypes on a smaller second line —
 	   matching DeckDumpster's .type-cell / .type-sub split. */
@@ -2345,6 +2585,7 @@
 		}
 		table.dd {
 			font-size: var(--text-sm);
+			--row-content: 26px;
 		}
 		.cardthumb {
 			width: 70px;

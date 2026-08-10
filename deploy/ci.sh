@@ -44,8 +44,9 @@
 #  10. Browser gate:   screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines,
 #                      and assert the DOM bounds that a screenshot cannot see —
-#                      /collection renders ONE page of a 56,635-row result, not
-#                      the result. See tests/visual/README.md.
+#                      /collection renders a viewport-sized WINDOW of a
+#                      56,635-row result, with no pager anywhere and the far
+#                      end a scroll away. See tests/visual/README.md.
 #  11. Schema-version gate: start a prod-shaped instance against a deliberately
 #                      UNVERSIONED data volume — the shape every database on
 #                      disk has, prod's included — and assert every database is

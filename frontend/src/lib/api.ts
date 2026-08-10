@@ -101,14 +101,16 @@ export const api = {
 	 *
 	 * The response is one **page**: `total` is the size of the whole result set,
 	 * not of `rows`. Omitting `limit` does not mean "everything" — the server
-	 * applies a bounded default and reports it back in `page.limit`.
+	 * applies a bounded default and reports it back in `page.limit`. Asking for
+	 * everything is `limit: 'all'`, and only a caller that can hold the whole
+	 * result should: catalog-wide that is 56,635 rows.
 	 */
 	collectionSearch: async (
 		q: string,
 		sort?: string,
 		dir?: string,
 		includeUnowned = false,
-		limit?: number,
+		limit?: number | 'all',
 		offset?: number
 	): Promise<SearchPage> => {
 		const params = new URLSearchParams();

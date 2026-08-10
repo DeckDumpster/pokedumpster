@@ -103,8 +103,8 @@ bash tests/lib/ports_test.sh
 
 # Browser tier — every route screenshotted at 1440 and 768 against a
 # throwaway container instance, plus the DOM assertions a screenshot cannot
-# make (/collection renders ONE page of a 56k-row result). A pixel diff
-# fails; approving one is explicit.
+# make (/collection renders a viewport-sized WINDOW of a 56k-row result). A
+# pixel diff fails; approving one is explicit.
 bash tests/visual/run.sh         # check
 bash tests/visual/run.sh --update  # approve — see tests/visual/README.md
 

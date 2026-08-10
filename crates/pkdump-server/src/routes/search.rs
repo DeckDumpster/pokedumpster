@@ -12,6 +12,11 @@
 //! unbounded version of this endpoint shipped a 44 MB body and crashed the tab
 //! (pd-jsby). A bad `limit`/`offset` is a 400 with `{error}` and no `position`,
 //! which is how a client tells a paging complaint from a query-syntax one.
+//!
+//! `limit=all` asks for the whole result set instead of a page. It is not the
+//! unbounded default coming back: it is a caller stating that it can hold the
+//! result, which the collection page can now that it renders a window of the
+//! DOM rather than all of it (pd-7z4o). See [`search::Slice`].
 
 use axum::extract::{Query, State};
 use axum::routing::get;
@@ -42,31 +47,65 @@ struct SearchParams {
     /// `1` widens the result to the whole catalog (owned + unowned), backing
     /// the collection page's "All cards" toggle.
     include_unowned: Option<String>,
-    /// Rows to return, `0..=MAX_LIMIT`. Absent means [`search::DEFAULT_LIMIT`]
-    /// — the default is bounded on purpose (see the constant's own docs).
-    /// Taken as a string so a bad value is our JSON 400 and not Axum's plain
-    /// text rejection.
+    /// Rows to return, `0..=MAX_LIMIT`, or the literal `all` for the whole
+    /// result set. Absent means [`search::DEFAULT_LIMIT`] — the default is
+    /// bounded on purpose (see the constant's own docs). Taken as a string so
+    /// a bad value is our JSON 400 and not Axum's plain text rejection.
     limit: Option<String>,
     /// Rows to skip. Absent means 0. An offset past the end is an empty page
     /// with an honest `total`, not an error.
     offset: Option<String>,
 }
 
-/// Parse one paging bound. Anything that is not a whole number in range is
-/// refused — never clamped, so a caller is told rather than quietly served a
-/// different page than it asked for.
-fn paging_bound(raw: Option<&str>, name: &str, default: u32, max: u32) -> Result<u32, AppError> {
-    let Some(raw) = raw else { return Ok(default) };
-    let refuse = || {
-        AppError::bad_request(
-            serde_json::json!({
-                "error": format!("{name} must be a whole number between 0 and {max}"),
-            })
-            .to_string(),
-        )
+/// A paging complaint: HTTP 400 with `error` and no `position`.
+fn paging_error(message: String) -> AppError {
+    AppError::bad_request(serde_json::json!({ "error": message }).to_string())
+}
+
+/// Parse `offset`. Anything that is not a whole number is refused — never
+/// clamped, so a caller is told rather than quietly served a different page
+/// than it asked for.
+fn offset_bound(raw: Option<&str>) -> Result<u32, AppError> {
+    let Some(raw) = raw else { return Ok(0) };
+    raw.parse()
+        .map_err(|_| paging_error("offset must be a whole number".to_string()))
+}
+
+/// The literal `limit` that asks for the whole result set rather than a page.
+///
+/// A word and not a very large number: the client would otherwise have to name
+/// a bound it hopes exceeds the catalog, and be silently truncated on the day
+/// it doesn't. See [`search::Slice::All`].
+const LIMIT_ALL: &str = "all";
+
+/// Which slice of the result the caller asked for.
+fn slice_from(p: &SearchParams) -> Result<search::Slice, AppError> {
+    let offset = offset_bound(p.offset.as_deref())?;
+    if p.limit.as_deref() == Some(LIMIT_ALL) {
+        if offset != 0 {
+            return Err(paging_error(
+                "offset has no meaning with limit=all — the whole result starts at 0".to_string(),
+            ));
+        }
+        return Ok(search::Slice::All);
+    }
+    let Some(raw) = p.limit.as_deref() else {
+        return Ok(search::Slice::Page {
+            limit: search::DEFAULT_LIMIT,
+            offset,
+        });
     };
-    let n: u32 = raw.parse().map_err(|_| refuse())?;
-    if n > max { Err(refuse()) } else { Ok(n) }
+    let max = search::MAX_LIMIT;
+    let refuse = || {
+        paging_error(format!(
+            "limit must be `{LIMIT_ALL}` or a whole number between 0 and {max}"
+        ))
+    };
+    let limit: u32 = raw.parse().map_err(|_| refuse())?;
+    if limit > max {
+        return Err(refuse());
+    }
+    Ok(search::Slice::Page { limit, offset })
 }
 
 /// Run a search. An empty `q` is the default view (all owned printings).
@@ -74,13 +113,7 @@ async fn collection_search(
     State(state): State<AppState>,
     Query(p): Query<SearchParams>,
 ) -> Result<Json<SearchPage>, AppError> {
-    let limit = paging_bound(
-        p.limit.as_deref(),
-        "limit",
-        search::DEFAULT_LIMIT,
-        search::MAX_LIMIT,
-    )?;
-    let offset = paging_bound(p.offset.as_deref(), "offset", 0, u32::MAX)?;
+    let slice = slice_from(&p)?;
     let q = p.q.trim();
     let mut compiled = if q.is_empty() {
         search::compile_all()
@@ -97,10 +130,7 @@ async fn collection_search(
     }
     compiled.override_order(p.sort.as_deref(), p.dir.as_deref());
 
-    let page = blocking(&state, move |c| {
-        search::search_page(c, &compiled, limit, offset)
-    })
-    .await?;
+    let page = blocking(&state, move |c| search::search_page(c, &compiled, slice)).await?;
     Ok(Json(page))
 }
 

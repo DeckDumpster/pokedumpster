@@ -809,19 +809,53 @@ fn order_sql(order_by: Option<&str>) -> String {
         "type" => "cd.supertype".to_string(),
         "etype" => "cd.types".to_string(),
         // The Value column: every copy's condition-adjusted market price,
-        // summed over the printing. A copy is worth its printing's Near-Mint
-        // market times its condition's multiplier — `conditions.multiplier`,
-        // the same table /api/conditions serves the frontend — so this is
-        // exactly the sum of the Value cells that printing draws. A condition
-        // with no row (or none owned) leaves the multiplier at 1.0 rather
-        // than zeroing a card.
-        "value" => format!(
-            "(SELECT SUM(({MARKET_PRICE_EXPR}) * COALESCE(cond.multiplier, 1.0)) \
-                FROM collection col LEFT JOIN conditions cond ON cond.name = col.condition \
-               WHERE col.printing_id = p.printing_id)"
+        // summed over the printing.
+        "value" => adjusted_total_subq(),
+        // The Adj. column: the condition-adjusted price of ONE copy. The table
+        // draws one row per (printing, condition, status) group, so a printing
+        // owned Near Mint *and* Moderately Played draws two Adj. figures —
+        // while this query's unit of ordering is the printing, which has one
+        // slot. The number that fits it is the weighted average: the printing's
+        // adjusted total over its owned count, i.e. `order:value / order:qty`.
+        //
+        // Not MAX over the copies: that orders by "the best copy's adjusted
+        // price", a different column wearing the same header. The average is
+        // the honest single figure — for a one-copy printing it IS the Adj.
+        // value drawn, and for mixed conditions it lands between the copies'
+        // values instead of at an extreme (pd-sehy).
+        //
+        // The qty-0 case is not a division-by-zero to be swallowed, it is a
+        // row the table draws: catalog-wide (`is:missing`, All cards) an
+        // unowned printing's Adj. cell shows the catalog Near-Mint price,
+        // because there is no copy whose condition could adjust it. So
+        // `NULLIF(qty, 0)` turns the quotient NULL and the COALESCE falls to
+        // exactly that price — which keeps the column one sorted list across
+        // owned and unowned rows rather than parking every unowned printing at
+        // one end. A printing with no price at all is still NULL, where
+        // `order:price` already puts it.
+        //
+        // The numerator is CAST to REAL so an all-integer sum over an integer
+        // count cannot land in SQLite's integer division and quantise the
+        // average.
+        "adj" => format!(
+            "COALESCE(CAST({} AS REAL) / NULLIF(({OWNED_COUNT_SUBQ}), 0), ({MARKET_PRICE_EXPR}))",
+            adjusted_total_subq()
         ),
         _ => "cd.name".to_string(),
     }
+}
+
+/// A printing's condition-adjusted market total: every copy's Near-Mint market
+/// price times its condition's multiplier, summed. `conditions.multiplier` is
+/// the same table `/api/conditions` serves the frontend, so this is exactly the
+/// sum of the Value cells that printing draws. A condition with no row (or none
+/// owned) leaves the multiplier at 1.0 rather than zeroing a card.
+fn adjusted_total_subq() -> String {
+    format!(
+        "(SELECT SUM(({MARKET_PRICE_EXPR}) * COALESCE(cond.multiplier, 1.0)) \
+            FROM collection col LEFT JOIN conditions cond ON cond.name = col.condition \
+           WHERE col.printing_id = p.printing_id)"
+    )
 }
 
 /// Owned mode requires an owned/ordered copy unless the query already
@@ -1380,6 +1414,30 @@ mod tests {
             .collect()
     }
 
+    /// The number a sort actually orders each printing by, keyed by printing
+    /// id. Ordering only shows relative position; this shows the value, which
+    /// is what "the average, not the max" is an assertion about.
+    fn order_values(f: &Fix, sort: &str) -> Vec<(String, Option<f64>)> {
+        let col = order_sql(Some(sort));
+        let sql = format!(
+            "SELECT p.printing_id, {col} {FROM_CLAUSE} ORDER BY p.printing_id COLLATE NOCASE"
+        );
+        let mut stmt = f.conn.prepare(&sql).unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<(String, Option<f64>)>>>()
+            .unwrap()
+    }
+
+    /// One printing's sort value.
+    fn order_value(f: &Fix, sort: &str, printing_id: &str) -> Option<f64> {
+        order_values(f, sort)
+            .into_iter()
+            .find(|(id, _)| id == printing_id)
+            .unwrap_or_else(|| panic!("no such printing: {printing_id}"))
+            .1
+    }
+
     // --- the sort keys the collection table hands to the server ------------
     //
     // Paging moved that page's sort off the client (pd-tsqd): sorting 250 of
@@ -1460,6 +1518,159 @@ mod tests {
             Some("base1-4-holo"),
             "two copies at 12.95 beat one at 6: {flipped:?}"
         );
+    }
+
+    // --- `order:adj`, the Adj. column ---------------------------------------
+    //
+    // Adj. is a COPY's condition-adjusted price and the query's unit of
+    // ordering is the PRINTING, so the sort orders by the average across a
+    // printing's copies (pd-sehy). These are the assertions that pin that
+    // choice down — an implementation that ordered by the best copy, or the
+    // worst, passes neither of the first two.
+
+    /// A printing owned in one condition has one Adj. figure, and the sort
+    /// orders by exactly the number the table draws in that cell.
+    #[test]
+    fn order_by_adj_of_a_single_copy_printing_is_the_drawn_adjusted_price() {
+        let f = fixture();
+        // The Pikachu's one copy is Near Mint (multiplier 1.00), so its Adj.
+        // cell reads the Near Mint market price itself.
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) \
+                 VALUES ('sv3pt5-25-normal', 9.0, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(order_value(&f, "adj", "sv3pt5-25-normal"), Some(9.0));
+
+        // Own a second copy, Lightly Played (0.85), and the printing now draws
+        // two Adj. cells — 9.00 and 7.65 — and sorts by neither: (9.00 + 7.65)
+        // / 2 = 8.325. Between the copies is the whole point; the max (9.00)
+        // and the min (7.65) are both a different column under this header.
+        f.conn
+            .execute(
+                "INSERT INTO collection (printing_id,condition,language,acquired_at,source,status) \
+                 VALUES ('sv3pt5-25-normal','Lightly Played','English','2025-04-01','manual_id','owned')",
+                [],
+            )
+            .unwrap();
+        let avg = order_value(&f, "adj", "sv3pt5-25-normal").unwrap();
+        assert!(
+            (avg - 8.325).abs() < 1e-9,
+            "average of 9.00 and 7.65, not either of them: {avg}"
+        );
+    }
+
+    /// And the ordering follows the average: a mixed-condition printing sorts
+    /// between two single-copy printings whose Adj. values straddle it, where
+    /// ordering by the best copy would lift it above both and by the worst
+    /// would drop it below both.
+    #[test]
+    fn order_by_adj_places_a_mixed_condition_printing_between_its_copies() {
+        let f = fixture();
+        // Charizard: Near Mint + Lightly Played at $10 → copies draw 10.00 and
+        // 8.50, average 9.25. Blastoise and Pikachu are one Near Mint copy
+        // each, priced to sit either side of that average and inside the
+        // Charizard's own spread.
+        f.conn
+            .execute(
+                "INSERT INTO collection (printing_id,condition,language,acquired_at,source,status) \
+                 VALUES ('base1-2-holo','Near Mint','English','2025-05-01','manual_id','owned')",
+                [],
+            )
+            .unwrap();
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
+                 ('base1-4-holo', 10.0, '2025-01-01'),
+                 ('base1-2-holo', 9.5, '2025-01-01'),
+                 ('sv3pt5-25-normal', 9.0, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(order_value(&f, "adj", "base1-4-holo"), Some(9.25));
+
+        let desc = ordered(&f, "adj", "desc");
+        assert_eq!(
+            &desc[..3],
+            &["base1-2-holo", "base1-4-holo", "sv3pt5-25-normal"],
+            "9.50 > 9.25 > 9.00 — MAX over the copies (10.00) would put the \
+             Charizard first, MIN (8.50) would put it last: {desc:?}"
+        );
+        // MAX is exactly what `order:price` gives here, since the Near Mint
+        // market price IS the best copy's adjusted price. That the two orders
+        // differ is the difference under test.
+        let by_price = ordered(&f, "price", "desc");
+        assert_eq!(
+            &by_price[..3],
+            &["base1-4-holo", "base1-2-holo", "sv3pt5-25-normal"]
+        );
+    }
+
+    /// A printing nobody owns has no copy whose condition could adjust
+    /// anything, and its Adj. cell draws the catalog Near Mint price. The sort
+    /// orders it by that same number rather than dividing by zero — so All
+    /// cards stays ONE sorted list instead of parking every unowned printing at
+    /// an end (`tests/ui/.../collection_all_cards_sort_interleaves`).
+    #[test]
+    fn order_by_adj_of_an_unowned_printing_is_its_catalog_price() {
+        let f = fixture();
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
+                 ('base1-4-holo', 10.0, '2025-01-01'),
+                 ('sv3pt5-25-normal', 9.0, '2025-01-01'),
+                 -- Blastoise is unowned; its price is the whole Adj. it has.
+                 ('base1-2-holo', 9.1, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(order_value(&f, "adj", "base1-2-holo"), Some(9.1));
+        // The Pikachu reverse holo and Professor Oak are unowned AND unpriced:
+        // still NULL, where `order:price` already puts a card with no price.
+        assert_eq!(order_value(&f, "adj", "sv3pt5-25-reverse_holo"), None);
+        assert_eq!(order_value(&f, "adj", "base1-88-normal"), None);
+
+        // Charizard averages 9.25 (10.00 Near Mint, 8.50 Lightly Played), so
+        // the unowned Blastoise at 9.10 sorts BETWEEN the two owned printings
+        // — interleaved, not blocked off.
+        let desc = ordered(&f, "adj", "desc");
+        assert_eq!(
+            &desc[..3],
+            &["base1-4-holo", "base1-2-holo", "sv3pt5-25-normal"],
+            "owned and unowned are one sorted list: {desc:?}"
+        );
+    }
+
+    /// Paging over the average is still a total order — an ORDER BY that ties
+    /// without a unique final key drops and repeats rows under OFFSET.
+    #[test]
+    fn order_by_adj_pages_without_gaps_or_repeats() {
+        let f = fixture();
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
+                 ('base1-4-holo', 10.0, '2025-01-01'),
+                 ('sv3pt5-25-normal', 9.0, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+        let mut c = all_printings();
+        c.override_order(Some("adj"), Some("desc"));
+        let expected: Vec<String> = search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.printing_id)
+            .collect();
+
+        let mut walked: Vec<String> = Vec::new();
+        for offset in 0..expected.len() as u32 {
+            let page = search_page(&f.conn, &c, 1, offset).unwrap();
+            assert_eq!(page.total, expected.len() as i64, "total is page-invariant");
+            walked.extend(page.rows.into_iter().map(|r| r.printing_id));
+        }
+        assert_eq!(walked, expected, "pages concatenate to the whole result");
     }
 
     #[test]

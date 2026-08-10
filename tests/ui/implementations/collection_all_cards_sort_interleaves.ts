@@ -14,7 +14,12 @@
  * ownership states (owned Base Set holos at $100-$320, unowned SIRs at
  * $130-$280, plus sub-$1 commons of each), so the price order genuinely
  * interleaves them. Asserts (a) owned + unowned interleave in DOM order and
- * (b) the Adj. column is globally price-sorted — proof the two are one list.
+ * (b) the Adj. column is price-sorted — proof the two are one list.
+ *
+ * The sort itself became the server's in pd-tsqd (the page renders one bounded
+ * page, so sorting it client-side would rank an arbitrary 250 rows), which
+ * changed the granularity the order can be asserted at but not this test's
+ * subject — see assertPriceSorted.
  */
 import type { ReplayHarness } from '../replay';
 
@@ -22,6 +27,8 @@ interface Row {
   owned: boolean;
   /** Adj. column value, or null for a "—" cell. */
   price: number | null;
+  /** The printing this row's copies belong to. */
+  printing: string;
 }
 
 /** Read each table row's ownership + Adj. price (the second-to-last cell, so
@@ -35,6 +42,7 @@ async function readTableRows(h: ReplayHarness): Promise<Row[]> {
       return {
         owned: !el.classList.contains('missing'),
         price: txt === '' || txt === '—' || Number.isNaN(num) ? null : num,
+        printing: el.getAttribute('data-printing') ?? '',
       };
     }),
   );
@@ -77,7 +85,17 @@ function assertInterleaved(owned: boolean[], label: string): void {
 }
 
 /** The Adj. column must be globally ordered (asc or desc) — proof the sort
- *  engaged and spans owned + unowned together, not a per-block order. */
+ *  engaged and spans owned + unowned together, not a per-block order.
+ *
+ *  Ordered AT PRINTING GRANULARITY, which is the granularity the sort has:
+ *  the server orders printings (pd-tsqd — the page renders one bounded page,
+ *  so a client-side sort would rank an arbitrary 250 rows), while the table
+ *  draws one row per (printing, condition, status). A printing held Near Mint
+ *  and Lightly Played is therefore two rows at two Adj. prices sitting in one
+ *  slot of the global order, and the row-by-row sequence legitimately dips
+ *  inside that slot. So compare each printing's LEADING row — and separately
+ *  require the rows within a printing to be ordered too, which is the client's
+ *  job precisely because the server cannot express it. */
 function assertPriceSorted(rows: Row[], label: string): void {
   const prices = rows.map((r) => r.price);
   if (prices.some((p) => p === null)) {
@@ -86,14 +104,40 @@ function assertPriceSorted(rows: Row[], label: string): void {
         `regressed (see pokedumpster-qm9). Prices: ${prices.join(', ')}`,
     );
   }
-  const nums = prices as number[];
-  const asc = nums.every((p, i) => i === 0 || nums[i - 1]! <= p);
-  const desc = nums.every((p, i) => i === 0 || nums[i - 1]! >= p);
-  if (!asc && !desc) {
+  const monotonic = (nums: number[]) => ({
+    asc: nums.every((p, i) => i === 0 || nums[i - 1]! <= p),
+    desc: nums.every((p, i) => i === 0 || nums[i - 1]! >= p),
+  });
+
+  // One entry per printing, in DOM order — its first row's Adj. price.
+  const leads: number[] = [];
+  const runs = new Map<string, number[]>();
+  for (const r of rows) {
+    const seen = runs.get(r.printing);
+    if (seen) seen.push(r.price!);
+    else {
+      runs.set(r.printing, [r.price!]);
+      leads.push(r.price!);
+    }
+  }
+  const global = monotonic(leads);
+  if (!global.asc && !global.desc) {
     throw new Error(
-      `${label}: Adj. column not globally price-sorted — owned + unowned are ` +
-        `not one sorted list. Prices: ${nums.join(', ')}`,
+      `${label}: Adj. column not globally price-sorted across printings — ` +
+        `owned + unowned are not one sorted list. Leads: ${leads.join(', ')}`,
     );
+  }
+  // Same direction inside each printing's run of copy-groups.
+  for (const [printing, run] of runs) {
+    if (run.length < 2) continue;
+    const inner = monotonic(run);
+    if (global.desc ? !inner.desc : !inner.asc) {
+      throw new Error(
+        `${label}: ${printing}'s copy-groups are not ordered by Adj. within ` +
+          `the printing (${run.join(', ')}) — the client has to complete the ` +
+          `order the per-printing server sort cannot express`,
+      );
+    }
   }
 }
 

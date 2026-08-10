@@ -8,4 +8,19 @@ export type SearchPage = { rows: Array<SearchRow>,
 /**
  * Rows the query matches in total, ignoring `limit`/`offset`.
  */
-total: number, limit: number, offset: number, };
+total: number, 
+/**
+ * Physical copies behind those rows — a row is a printing, and a printing
+ * you own three of is one row and three cards. Same unbounded scope as
+ * [`Self::total`], and the unit [`Self::total_value`] is priced in.
+ */
+total_copies: number, 
+/**
+ * Condition-adjusted market value of every owned copy the query matches,
+ * over the **unbounded** result — the same scope as [`Self::total`].
+ *
+ * A client showing one page cannot sum this itself: adding up the page in
+ * front of it reports page 1's value under the whole query's name. `NULL`
+ * only when nothing matched has a price at all.
+ */
+total_value: number | null, limit: number, offset: number, };

@@ -239,10 +239,41 @@ Defined in the seed (so they are data, not a `match` arm). Two families:
 
 ### Modifiers (extracted, not compiled to WHERE)
 
-`order:` (name, number, set, rarity, hp, price, added, dex, qty) and
-`direction:`/`dir:` (asc/desc) are pulled out of the AST into
+`order:` and `direction:`/`dir:` (asc/desc) are pulled out of the AST into
 `CompiledQuery.order_by`/`order_dir`, exactly as DeckDumpster's
 `_extract_modifiers` does.
+
+`search::ORDER_KEYS` is the canonical list of what `order:` (and the `sort=`
+parameter) understands:
+
+| key | orders by |
+|---|---|
+| `name` (default) | `cards.name` |
+| `number` | `cards.number_sortable` |
+| `set` | `sets.set_sort_order` |
+| `rarity` | `rarities.rank` (§6) |
+| `hp` | `cards.hp` |
+| `price` | Near Mint market price |
+| `added` | latest `collection.acquired_at` |
+| `dex` / `pokedex` | lowest national Pokédex number |
+| `qty` | copies of the printing |
+| `supertype` / `class` | `cards.supertype` |
+| `etype` | the first entry of `cards.types` |
+| `adjusted` / `market` | market price × the printing's **best-conditioned** copy |
+| `value` | market price × the summed multipliers of **all** its copies |
+
+The last two read `conditions.multiplier`. A printing's price is Near Mint and
+one printing can hold copies at several conditions, so each is that one price
+times a per-printing aggregate — never a per-copy join in the outer query. An
+unknown condition counts as ×1.00, matching the frontend's
+`conditionMultiplier`; an unowned printing has no copies, so `adjusted` is its
+unadjusted price and `value` is NULL.
+
+The list is not decoration. A client that renders one page cannot sort that
+page itself — "priciest first" over page 1 of 227 ranks an arbitrary 250 rows,
+not the result — so every sort control the collection page offers must be a key
+here. `frontend/tests/collection-sort.test.js` reads `ORDER_KEYS` out of
+`search.rs` and fails when the page offers one that isn't.
 
 ---
 
@@ -359,11 +390,19 @@ necessary in real use.)
 The response is an envelope, not a bare array:
 
 ```json
-{ "rows": [ /* SearchRow */ ], "total": 56635, "limit": 250, "offset": 0 }
+{ "rows": [ /* SearchRow */ ], "total": 56635, "total_copies": 2661,
+  "total_value": 91234.5, "limit": 250, "offset": 0 }
 ```
 
 - **`total` is the count of the unbounded query**, not of the page returned, so
   a client renders "N results" and pages without a second request.
+- **`total_copies` and `total_value` are the same scope**: the physical cards
+  behind those rows and their condition-adjusted market value, over the whole
+  result. A row is a *printing* and a printing you own three of is one row and
+  three cards, so neither number can be read off the other. A client holding
+  one page cannot work either out — summing the page in front of it reports
+  page 1's collection as the whole one. `total_value` is NULL when nothing
+  matched has a price.
 - **`limit` defaults to `search::DEFAULT_LIMIT` (250) when absent — the default
   is bounded on purpose.** An unbounded default is how this endpoint shipped a
   44 MB body from `include_unowned=1` (56,635 rows) and crashed a Firefox tab.
@@ -393,6 +432,31 @@ The response is an envelope, not a bare array:
   **printing-centric rows that expand to per-copy detail**. Unowned printings
   render dimmed. Filters round-trip through the URL (`?q=&sort=&dir=`).
 - `/search-help` renders from the registry.
+
+### Paging on the client (pd-tsqd)
+
+A bounded response and a bounded DOM are two different problems, and pd-jsby
+only solved the first. The collection page renders **exactly one page** — a
+pager replaces it, never appends — so the grid holds at most `PAGE_SIZE` (250)
+tiles whatever `total` says. An append-as-you-scroll control would put the
+56,635 tiles back one screenful at a time.
+
+Three things follow from the page holding a slice rather than the result:
+
+- **The order is the server's.** The page no longer sorts what it is given: a
+  client sort over page 1 of 227 ranks an arbitrary 250 rows and labels the
+  answer "priciest first". Every sort control is a `sort=` key (§5's
+  `ORDER_KEYS`), a sort change is a refetch, and rows render in arrival order —
+  which is also why `$lib/collectionSort.ts` exists and why a test reads
+  `ORDER_KEYS` out of the Rust source to check the two agree.
+- **The headline figures come off the envelope**, not off the rows: the count
+  line reads `total_copies` and `total_value`, so "2,661 cards, $18,402"
+  describes the collection rather than page 1 of it.
+- **The cursor lives in the URL** as `?page=`, alongside `?q=` and `?all=`, so
+  refresh, Back and a shared link all land on the page you were looking at.
+  Anything that changes *which* rows match — a new query, the All-cards toggle,
+  a different sort — drops back to page 1, because page 17 of the old result
+  names nothing in the new one.
 
 `ts-rs` exports `SearchPage` / `SearchRow` / `CopySummary` into
 `frontend/src/lib/types/` via `cargo test`, as with every other type.

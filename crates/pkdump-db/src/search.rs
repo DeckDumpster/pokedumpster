@@ -36,6 +36,19 @@ const MARKET_PRICE_EXPR: &str = "COALESCE(\
      (SELECT mp.price FROM manual_prices mp \
         WHERE mp.printing_id = p.printing_id \
         ORDER BY mp.observed_at DESC LIMIT 1))";
+// A printing's market price is Near Mint, and one printing's copies can sit at
+// different conditions — so the condition-adjusted figures are that one price
+// times an aggregate of the copies' multipliers, never a per-copy join in the
+// outer query. `LEFT JOIN` + `COALESCE(..., 1.0)` treats a condition the
+// `conditions` table doesn't know as Near Mint, which is what the frontend's
+// `conditionMultiplier` already does; an unowned printing has no copies at all,
+// so MAX is NULL and it sorts at its unadjusted price.
+const COND_MULT_MAX_SUBQ: &str = "SELECT MAX(COALESCE(cond.multiplier, 1.0)) \
+     FROM collection c LEFT JOIN conditions cond ON cond.name = c.condition \
+     WHERE c.printing_id = p.printing_id";
+const COND_MULT_SUM_SUBQ: &str = "SELECT SUM(COALESCE(cond.multiplier, 1.0)) \
+     FROM collection c LEFT JOIN conditions cond ON cond.name = c.condition \
+     WHERE c.printing_id = p.printing_id";
 // The attack list projected down to exactly what the collection table's Cost
 // column draws: one energy-pip line per attack, with the attack name as its
 // tooltip. Attack `text`, `damage` and `convertedEnergyCost` are the card
@@ -123,6 +136,18 @@ pub struct SearchPage {
     /// Rows the query matches in total, ignoring `limit`/`offset`.
     #[ts(type = "number")]
     pub total: i64,
+    /// Physical copies behind those rows — a row is a printing, and a printing
+    /// you own three of is one row and three cards. Same unbounded scope as
+    /// [`Self::total`], and the unit [`Self::total_value`] is priced in.
+    #[ts(type = "number")]
+    pub total_copies: i64,
+    /// Condition-adjusted market value of every owned copy the query matches,
+    /// over the **unbounded** result — the same scope as [`Self::total`].
+    ///
+    /// A client showing one page cannot sum this itself: adding up the page in
+    /// front of it reports page 1's value under the whole query's name. `NULL`
+    /// only when nothing matched has a price at all.
+    pub total_value: Option<f64>,
     #[ts(type = "number")]
     pub limit: u32,
     #[ts(type = "number")]
@@ -258,24 +283,45 @@ pub fn search_page(
     limit: u32,
     offset: u32,
 ) -> Result<SearchPage> {
-    let total = count(conn, compiled)?;
+    let t = totals(conn, compiled)?;
     let rows = run(conn, compiled, Some((limit, offset)))?;
     Ok(SearchPage {
         rows,
-        total,
+        total: t.rows,
+        total_copies: t.copies,
+        total_value: t.value,
         limit,
         offset,
     })
 }
 
-/// Count every row the compiled query matches, ignoring any paging.
-pub fn count(conn: &Connection, compiled: &CompiledSearch) -> Result<i64> {
+/// What the whole result set adds up to — everything [`SearchPage`] reports
+/// that a client holding one page cannot work out for itself.
+struct Totals {
+    rows: i64,
+    copies: i64,
+    value: Option<f64>,
+}
+
+/// The unbounded query's row count, copy count and value, in one pass.
+///
+/// All three describe the same result set, so they share a scan: the count
+/// query already visits exactly the rows the other two aggregate over.
+fn totals(conn: &Connection, compiled: &CompiledSearch) -> Result<Totals> {
+    let value = owned_value_expr();
     let sql = format!(
-        "SELECT COUNT(*) {FROM_CLAUSE} WHERE {}",
+        "SELECT COUNT(*), COALESCE(SUM(({OWNED_COUNT_SUBQ})), 0), SUM({value}) \
+         {FROM_CLAUSE} WHERE {}",
         where_clause(compiled)
     );
-    let n = conn.query_row(&sql, params_from_iter(compiled.params.iter()), |r| r.get(0))?;
-    Ok(n)
+    conn.query_row(&sql, params_from_iter(compiled.params.iter()), |r| {
+        Ok(Totals {
+            rows: r.get(0)?,
+            copies: r.get(1)?,
+            value: r.get(2)?,
+        })
+    })
+    .map_err(Into::into)
 }
 
 /// Run the row query, optionally bounded to one `(limit, offset)` page.
@@ -783,6 +829,38 @@ fn has_flag(value: &str) -> (String, Vec<Value>) {
 // Full SQL assembly + row mapping
 // ---------------------------------------------------------------------------
 
+/// A printing's total condition-adjusted value: the Near Mint market price
+/// times the summed multipliers of its copies. NULL when the printing is
+/// unowned (no copies to sum) or has no price — which is what "—" renders from.
+fn owned_value_expr() -> String {
+    format!("({MARKET_PRICE_EXPR}) * ({COND_MULT_SUM_SUBQ})")
+}
+
+/// Every value `order:` / the `sort=` parameter understands, canonical spelling
+/// only (the aliases below are for hand-typed queries).
+///
+/// This is the contract the collection page's sort controls are checked
+/// against: a client that pages cannot sort a page itself without answering a
+/// different question than the one asked, so a sort control with no key here is
+/// a control that lies. `frontend/tests/collection-sort.test.js` reads this
+/// list out of this file and fails when the two drift — the two enforcers can't
+/// share code across the language boundary, so they share the list.
+pub const ORDER_KEYS: &[&str] = &[
+    "name",
+    "number",
+    "set",
+    "rarity",
+    "hp",
+    "price",
+    "added",
+    "dex",
+    "qty",
+    "supertype",
+    "etype",
+    "adjusted",
+    "value",
+];
+
 fn order_sql(order_by: Option<&str>) -> String {
     match order_by.unwrap_or("name") {
         "number" => "cd.number_sortable".to_string(),
@@ -790,6 +868,18 @@ fn order_sql(order_by: Option<&str>) -> String {
         "rarity" => "(SELECT rank FROM rarities WHERE name = cd.rarity)".to_string(),
         "hp" => "cd.hp".to_string(),
         "price" => format!("({MARKET_PRICE_EXPR})"),
+        // Class / energy type — the grid and table sort by these, so they are
+        // server keys or the page's sort is a sort of one arbitrary page.
+        "supertype" | "class" => "cd.supertype".to_string(),
+        "etype" => "json_extract(cd.types, '$[0]')".to_string(),
+        // The two condition-adjusted figures the table draws. `adjusted` is a
+        // printing's best-conditioned copy (one printing can hold copies at
+        // several conditions, and the sort orders printings); `value` is every
+        // copy of it added up.
+        "adjusted" | "market" => {
+            format!("({MARKET_PRICE_EXPR}) * COALESCE(({COND_MULT_MAX_SUBQ}), 1.0)")
+        }
+        "value" => owned_value_expr(),
         "added" => {
             "(SELECT MAX(c.acquired_at) FROM collection c WHERE c.printing_id = p.printing_id)"
                 .to_string()
@@ -1474,5 +1564,156 @@ mod tests {
             2,
             "copies still attach on a page"
         );
+    }
+
+    // --- sort keys a paging client depends on -------------------------------
+
+    /// Price the fixture so the two condition-adjusted keys disagree.
+    ///
+    /// Charizard: £100 with a Near Mint (×1.00) and a Lightly Played (×0.85)
+    /// copy — best copy 100.00, whole holding 185.00.
+    /// Pikachu:   £150 with one Near Mint copy — best copy 150.00, holding 150.00.
+    ///
+    /// So `adjusted` ranks Pikachu above Charizard and `value` ranks Charizard
+    /// above Pikachu. A test that priced them the same way would pass with the
+    /// two keys wired to the same expression.
+    fn price(f: &Fix) {
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
+                 ('base1-4-holo', 100.0, '2026-01-01'),
+                 ('sv3pt5-25-normal', 150.0, '2026-01-01'),
+                 ('base1-2-holo', 500.0, '2026-01-01')",
+                [],
+            )
+            .unwrap();
+    }
+
+    fn ordered(f: &Fix, sort: &str, dir: &str) -> Vec<String> {
+        let mut c = compile_all();
+        c.override_order(Some(sort), Some(dir));
+        search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.printing_id)
+            .collect()
+    }
+
+    // The collection page shows one bounded page, so a sort it applies itself
+    // ranks an arbitrary 250 rows rather than the result. Every control it
+    // offers therefore has to be a server key — including the two that read a
+    // copy's condition, which is why they exist at all.
+    #[test]
+    fn condition_adjusted_sorts_are_server_side_and_disagree_with_each_other() {
+        let f = fixture();
+        price(&f);
+        assert_eq!(
+            ordered(&f, "value", "desc"),
+            vec!["base1-4-holo", "sv3pt5-25-normal"],
+            "value ranks the whole holding: 100×1.85 beats 150×1.00"
+        );
+        assert_eq!(
+            ordered(&f, "adjusted", "desc"),
+            vec!["sv3pt5-25-normal", "base1-4-holo"],
+            "adjusted ranks the best copy: 150×1.00 beats 100×1.00"
+        );
+    }
+
+    #[test]
+    fn class_and_energy_type_are_server_sort_keys() {
+        let f = fixture();
+        let mut c = all_printings();
+        c.override_order(Some("supertype"), Some("desc"));
+        let first = &search(&f.conn, &c).unwrap()[0];
+        assert_eq!(
+            first.supertype.as_deref(),
+            Some("Trainer"),
+            "Trainer > Pokémon"
+        );
+
+        let mut c = all_printings();
+        c.override_order(Some("etype"), Some("asc"));
+        let types: Vec<Option<String>> = search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.types)
+            .collect();
+        // NULLs (the Trainer) sort first, then Fire < Lightning < Water.
+        let named: Vec<String> = types.into_iter().flatten().collect();
+        assert_eq!(
+            named,
+            vec![
+                "[\"Fire\"]",
+                "[\"Lightning\"]",
+                "[\"Lightning\"]",
+                "[\"Water\"]"
+            ]
+        );
+    }
+
+    // A key listed in ORDER_KEYS but missing from `order_sql`'s match falls
+    // through to `cd.name` — silently sorting by something else. That is the
+    // shape of the failure the frontend's cross-check cannot see.
+    #[test]
+    fn every_advertised_order_key_is_implemented() {
+        let by_name = order_sql(Some("name"));
+        for key in ORDER_KEYS {
+            let sql = order_sql(Some(key));
+            if *key == "name" {
+                continue;
+            }
+            assert_ne!(
+                sql, by_name,
+                "order:{key} is advertised but falls through to the default sort"
+            );
+        }
+    }
+
+    // --- total_value --------------------------------------------------------
+
+    #[test]
+    fn total_value_describes_the_unbounded_query_not_the_page() {
+        let f = fixture();
+        price(&f);
+        // Owned mode: Charizard 100×(1.00+0.85) + Pikachu 150×1.00 = 335.
+        // The unowned £500 Blastoise is outside the query and must not count.
+        let c = compile_all();
+        let whole = search_page(&f.conn, &c, 100, 0).unwrap();
+        assert_eq!(whole.total, 2);
+        // Two printings, THREE physical cards — the Charizard is a dupe. The
+        // count line says "cards", so the envelope has to carry both numbers.
+        assert_eq!(whole.total_copies, 3);
+        assert_eq!(whole.total_value, Some(335.0));
+
+        let one = search_page(&f.conn, &c, 1, 0).unwrap();
+        assert_eq!(one.rows.len(), 1);
+        assert_eq!(
+            one.total_value,
+            Some(335.0),
+            "a one-row page still reports the whole query's value"
+        );
+        assert_eq!(one.total_copies, 3);
+        let past_end = search_page(&f.conn, &c, 10, 99).unwrap();
+        assert!(past_end.rows.is_empty());
+        assert_eq!(past_end.total_value, Some(335.0));
+        assert_eq!(past_end.total_copies, 3);
+    }
+
+    // Catalog-wide mode matches printings you own none of, so the two counts
+    // separate: 5 printings matched, still the same 3 cards in hand.
+    #[test]
+    fn total_copies_counts_cards_while_total_counts_printings() {
+        let f = fixture();
+        let page = search_page(&f.conn, &all_printings(), 100, 0).unwrap();
+        assert_eq!(page.total, 5);
+        assert_eq!(page.total_copies, 3);
+    }
+
+    #[test]
+    fn total_value_is_null_when_nothing_matched_has_a_price() {
+        let f = fixture();
+        let page = search_page(&f.conn, &compile_all(), 100, 0).unwrap();
+        assert_eq!(page.total, 2);
+        assert_eq!(page.total_value, None);
     }
 }

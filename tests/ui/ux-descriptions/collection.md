@@ -61,6 +61,8 @@ When loaded, the page renders an `<h1>` "Collection" followed by a two-column
 | Bulk "Assign to deck…" `<select>` | Moves every selected copy into the chosen deck |
 | Bulk "Add to wishlist" button | Adds one wish per distinct card among the selection |
 | Card name link | Navigates to `/card/{set}/{number}` |
+| Pager Previous / Next / « / » | Refetches the neighbouring (or first/last) page and scrolls to the top. Disabled at the ends |
+| Grid sort pill / table column header | Re-asks the server for that order (`sort=`/`dir=`) and returns to page 1. Clicking the active one flips the direction |
 
 ---
 
@@ -83,7 +85,7 @@ When loaded, the page renders an `<h1>` "Collection" followed by a two-column
 | **Empty collection** | `rows.length === 0`, no query | Sidebar + toolbar render; content shows the EmptyState "Your collection is empty." with "Add cards from a set's binder view — click a slot and that printing is registered as a copy you own. Or turn on “All cards” to browse the catalog first." and a **Browse sets** button to /browse. The Export CSV link and Select button are hidden when there are no rows |
 | **Search matches nothing** | `searchRows.length === 0` with a query | EmptyState "No cards match “&lt;query&gt;”." — the description tells you to turn on “All cards” when it is off; a **Search syntax** button links to /search-help |
 | **Unparseable query** | `searchError` set | EmptyState "That query didn't parse." pointing at the error message under the search box |
-| **More matches than one page** | `searchTotal > searchRows.length` — the search endpoint answers with one bounded page (pd-jsby) | A muted "showing N of M matches" note (`data-testid="search-truncated"`) sits left of the toolbar count line, so the shortfall never reads as "that is all there is". Paging to the rest is pd-tsqd |
+| **More matches than one page** | `searchTotal > PAGE_SIZE` (250) — the endpoint answers with one bounded page (pd-jsby) and the list renders exactly that page (pd-tsqd) | A pager (`data-testid="search-pager"`) sits above and below the list, in the binder pager's shape: «, ← Prev, a readout `data-testid="pager-range"` reading "Page 1 of 227 · 1–250 of 56,635", Next →, ». The toolbar count line always speaks for the whole collection, so the page in view never reads as "that is all there is" |
 | **Empty filter result** | Rows exist but none match | The table renders with no body rows; the toolbar count reads "0 of N cards" |
 | **Inline error** | A saved-view or bulk operation fails after load | The error message is surfaced via the `error` state and shown as red text |
 

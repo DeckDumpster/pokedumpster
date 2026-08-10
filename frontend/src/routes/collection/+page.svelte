@@ -8,6 +8,13 @@
 	import { CONDITIONS } from '$lib/conditions';
 	import { conditionMultiplier } from '$lib/conditions.svelte';
 	import { money, count } from '$lib/format';
+	import {
+		SORT_LABELS,
+		defaultDir,
+		isSortKey,
+		type SortDir,
+		type SortKey
+	} from '$lib/collectionSort';
 
 	// Foil shimmer treatment for holo / reverse-holo / pattern-RH /
 	// cosmos_holo variants — ranks 1..3 in the variants table. Stamps
@@ -28,13 +35,19 @@
 
 	// Server-side search results (one row per printing, owned or not). The
 	// page's existing rendering is per-copy, so owned printings are flattened
-	// back into per-copy rows (`rows`); unowned printings (owned_count === 0)
-	// drive the dimmed "missing" tiles via `unownedCatalog`.
+	// back into per-copy rows (`rows`); a printing with no copies drives a
+	// dimmed "missing" tile instead (see `sorted`).
 	let searchRows = $state<SearchRow[]>([]);
-	// Printings the query matches in total. The endpoint answers with one
-	// bounded page (pd-jsby), so this is usually larger than `searchRows` and
-	// is what the count line must speak from. Paging the rest is pd-tsqd.
+	// Printings the query matches in total, and their condition-adjusted value.
+	// The endpoint answers with one bounded page, so both describe the whole
+	// result while `searchRows` holds at most PAGE_SIZE of it — the count line
+	// and the pager speak from these, never from what is on screen.
 	let searchTotal = $state(0);
+	// Physical cards behind those printings, and what they are worth. A
+	// printing you own three of is one row and three cards, so the count line
+	// cannot read either number off the other.
+	let searchTotalCopies = $state(0);
+	let searchTotalValue = $state<number | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	// A query-language parse error, shown under the search box with a caret.
@@ -49,44 +62,41 @@
 		attack_costs: string | null;
 	};
 
-	const rows = $derived<ListRow[]>(
-		searchRows.flatMap((sr) =>
-			sr.copies.map((cp) => ({
-				id: cp.id,
-				printing_id: sr.printing_id,
-				condition: cp.condition,
-				language: cp.language,
-				purchase_price: cp.purchase_price,
-				sale_price: null,
-				acquired_at: cp.acquired_at,
-				source: '',
-				notes: null,
-				status: cp.status,
-				graded: cp.graded,
-				binder_id: cp.binder_id,
-				deck_id: cp.deck_id,
-				variant: sr.variant,
-				card_id: sr.card_id,
-				set_code: sr.set_code,
-				set_name: sr.set_name,
-				set_ptcgo_code: sr.set_ptcgo_code,
-				set_symbol_url: sr.set_symbol_url,
-				number: sr.number,
-				name: sr.name,
-				rarity: sr.rarity,
-				supertype: sr.supertype,
-				subtypes: sr.subtypes,
-				types: sr.types,
-				attack_costs: sr.attack_costs,
-				market_price: sr.market_price,
-				image_small: sr.image_small
-			}))
-		)
-	);
-	// Printings the user doesn't own — surfaced when "All cards" is on or the
-	// query uses is:missing. Rendered as dimmed tiles (SearchRow carries every
-	// field the missing-tile markup reads).
-	const unownedCatalog = $derived(searchRows.filter((sr) => sr.owned_count === 0));
+	/** One ListRow per owned copy of a printing, in the server's copy order. */
+	function copyRows(sr: SearchRow): ListRow[] {
+		return sr.copies.map((cp) => ({
+			id: cp.id,
+			printing_id: sr.printing_id,
+			condition: cp.condition,
+			language: cp.language,
+			purchase_price: cp.purchase_price,
+			sale_price: null,
+			acquired_at: cp.acquired_at,
+			source: '',
+			notes: null,
+			status: cp.status,
+			graded: cp.graded,
+			binder_id: cp.binder_id,
+			deck_id: cp.deck_id,
+			variant: sr.variant,
+			card_id: sr.card_id,
+			set_code: sr.set_code,
+			set_name: sr.set_name,
+			set_ptcgo_code: sr.set_ptcgo_code,
+			set_symbol_url: sr.set_symbol_url,
+			number: sr.number,
+			name: sr.name,
+			rarity: sr.rarity,
+			supertype: sr.supertype,
+			subtypes: sr.subtypes,
+			types: sr.types,
+			attack_costs: sr.attack_costs,
+			market_price: sr.market_price,
+			image_small: sr.image_small
+		}));
+	}
+
+	const rows = $derived<ListRow[]>(searchRows.flatMap(copyRows));
 
 	// Debounced search. Initial value comes from ?q= so clickable facets
 	// on the card-detail page (artist, set, energy type, rarity, …) can
@@ -184,6 +194,9 @@
 		clearTimeout(debounce);
 		debounce = setTimeout(() => {
 			query = value.trim();
+			// A new query is a new result set: page 17 of the old one names
+			// nothing in the new one, so committing a query lands on page 1.
+			offset = 0;
 			// Reflect the active query in the URL so refreshes + back-button
 			// keep state. goto(replaceState:true), NOT $app/navigation's
 			// replaceState: the latter only repaints the address bar and
@@ -195,6 +208,7 @@
 				const url = new URL(window.location.href);
 				if (query) url.searchParams.set('q', searchRaw.trim());
 				else url.searchParams.delete('q');
+				url.searchParams.delete('page');
 				if (url.href !== window.location.href) {
 					void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
 				}
@@ -212,6 +226,7 @@
 	$effect(() => {
 		const q = page.url.searchParams.get('q') ?? '';
 		const all = page.url.searchParams.get('all') === '1';
+		const p = pageParam(page.url.searchParams.get('page'));
 		untrack(() => {
 			if (q !== searchRaw) {
 				clearTimeout(debounce);
@@ -228,6 +243,14 @@
 			if (all !== allCards) {
 				allCards = all;
 			}
+			// ?page= is the page cursor, so a reload or a pasted link lands on
+			// the page it names. The pager writes the param itself before it
+			// navigates, which makes this a no-op on its own moves; what it
+			// catches is a URL arriving from outside.
+			const fromUrl = (p - 1) * PAGE_SIZE;
+			if (fromUrl !== offset) {
+				offset = fromUrl;
+			}
 		});
 	});
 
@@ -240,6 +263,8 @@
 	let allCards = $state(initialAllCards);
 	function toggleAllCards() {
 		allCards = !allCards;
+		// Widening to the catalog renumbers every page — back to page 1.
+		offset = 0;
 		// Persist so refresh + back-button keep the choice (matches how
 		// search ?q= is reflected). goto(replaceState:true) so the param
 		// survives a forward nav + Back — see the onSearch note.
@@ -247,26 +272,139 @@
 			const url = new URL(window.location.href);
 			if (allCards) url.searchParams.set('all', '1');
 			else url.searchParams.delete('all');
+			url.searchParams.delete('page');
 			if (url.href !== window.location.href) {
 				void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
 			}
 		}
 	}
 
-	/** Run the server-side search for the current query + toggle. */
+	// --- Sort + paging =====================================================
+	//
+	// The list draws ONE page. `include_unowned=1` matches one row per printing
+	// in the catalog — 56,635 of them — and rendering that many tiles is what
+	// killed the tab (pd-tsqd); the endpoint's bound (pd-jsby) keeps the payload
+	// small, and this keeps the DOM small, which are two different problems.
+	//
+	// It follows that the ORDER is the server's. A client that sorts the page it
+	// happens to hold answers a different question than the one asked: "priciest
+	// first" over page 1 of 227 ranks an arbitrary 250 rows. So `sortKey` is a
+	// `sort=` value the endpoint understands (see $lib/collectionSort), the rows
+	// render in the order they arrive, and changing the sort is a refetch.
+
+	/** Rows per page. `search::MAX_LIMIT` is 1000; this is a DOM budget, not a
+	    payload one — enough card art to scroll through, few enough to draw. */
+	const PAGE_SIZE = 250;
+
+	function readStoredSort(): { key: SortKey; dir: SortDir } {
+		if (typeof window === 'undefined') return { key: 'name', dir: 'asc' };
+		const k = localStorage.getItem('collection.sortKey');
+		const d = localStorage.getItem('collection.sortDir');
+		// A preference stored under the pre-paging client-side key names
+		// ('nm', 'market', 'type') is not a `sort=` value; fall back rather
+		// than ask the server for a sort it would silently ignore.
+		return { key: isSortKey(k) ? k : 'name', dir: d === 'desc' ? 'desc' : 'asc' };
+	}
+	const _storedSort = readStoredSort();
+	let sortKey = $state<SortKey>(_storedSort.key);
+	let sortDir = $state<SortDir>(_storedSort.dir);
+	$effect(() => {
+		if (typeof window !== 'undefined') {
+			localStorage.setItem('collection.sortKey', sortKey);
+			localStorage.setItem('collection.sortDir', sortDir);
+		}
+	});
+
+	// Rows skipped — the page cursor. Round-trips through ?page= so a refresh
+	// or a shared link lands on the page you were looking at. replaceState,
+	// like ?q= and ?all= before it: Back should leave the collection, not walk
+	// back one page at a time through however many Nexts you clicked.
+	const initialPage =
+		typeof window !== 'undefined' ? pageParam(page.url.searchParams.get('page')) : 1;
+	let offset = $state((initialPage - 1) * PAGE_SIZE);
+
+	/** `?page=` as a 1-based page number; anything else is page 1. */
+	function pageParam(raw: string | null): number {
+		const n = Number(raw);
+		return Number.isInteger(n) && n >= 1 ? n : 1;
+	}
+
+	const pageCount = $derived(Math.max(1, Math.ceil(searchTotal / PAGE_SIZE)));
+	const pageNumber = $derived(Math.floor(offset / PAGE_SIZE) + 1);
+	// 1-based inclusive range of the rows on screen, for the pager's readout.
+	const rangeFrom = $derived(searchRows.length === 0 ? 0 : offset + 1);
+	const rangeTo = $derived(offset + searchRows.length);
+
+	/** Jump to a page, clamped, and reflect it in the URL. */
+	function goToPage(n: number) {
+		const next = Math.min(Math.max(n, 1), pageCount);
+		const nextOffset = (next - 1) * PAGE_SIZE;
+		if (nextOffset === offset) return;
+		offset = nextOffset;
+		writePageParam();
+		// A new page starts at the top; keeping the scroll position would leave
+		// you halfway down a grid you have not seen.
+		if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
+	}
+
+	function writePageParam() {
+		if (typeof window === 'undefined') return;
+		const url = new URL(window.location.href);
+		if (offset === 0) url.searchParams.delete('page');
+		else url.searchParams.set('page', String(pageNumber));
+		if (url.href !== window.location.href) {
+			void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
+		}
+	}
+
+	/** Anything that changes WHICH rows match sends you back to page 1 — page
+	    17 of the old result is not page 17 of the new one. */
+	function resetPaging() {
+		if (offset === 0) return;
+		offset = 0;
+		writePageParam();
+	}
+
+	function sortBy(key: SortKey) {
+		if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+		else {
+			sortKey = key;
+			sortDir = defaultDir(key);
+		}
+		resetPaging();
+	}
+
+	/** Run the server-side search for the current query, toggle, sort and page. */
 	async function runSearch() {
 		loading = true;
 		error = null;
 		searchError = null;
 		try {
-			const page = await api.collectionSearch(query, undefined, undefined, allCards);
-			searchRows = page.rows;
-			searchTotal = page.total;
+			const res = await api.collectionSearch(
+				query,
+				sortKey,
+				sortDir,
+				allCards,
+				PAGE_SIZE,
+				offset
+			);
+			searchRows = res.rows;
+			searchTotal = res.total;
+			searchTotalCopies = res.total_copies;
+			searchTotalValue = res.total_value;
+			// Copies deleted under us can shorten the result past the cursor.
+			// Land on the last page that still has rows rather than show an
+			// empty grid over a non-zero total.
+			if (res.rows.length === 0 && res.total > 0 && offset >= res.total) {
+				goToPage(Math.ceil(res.total / PAGE_SIZE));
+			}
 		} catch (e) {
 			if (e instanceof SearchQueryError) {
 				searchError = { message: e.message, position: e.position };
 				searchRows = [];
 				searchTotal = 0;
+				searchTotalCopies = 0;
+				searchTotalValue = null;
 			} else {
 				error = e instanceof Error ? e.message : String(e);
 			}
@@ -275,11 +413,14 @@
 		}
 	}
 
-	// Re-search whenever the committed query or the All-cards toggle changes
-	// (also fires once on mount).
+	// Re-search whenever the committed query, the All-cards toggle, the sort or
+	// the page changes (also fires once on mount).
 	$effect(() => {
 		void query;
 		void allCards;
+		void sortKey;
+		void sortDir;
+		void offset;
 		runSearch();
 	});
 
@@ -313,40 +454,6 @@
 		menuOpen = false;
 	}
 
-	// Column sort for the table view — persisted across reloads in
-	// localStorage so refreshes don't snap back to the default (mirrors
-	// the view-mode persistence above).
-	const SORT_KEYS = ['name', 'type', 'etype', 'rarity', 'set', 'number', 'nm', 'market', 'value', 'qty'];
-	function readStoredSort(): { key: string; dir: 'asc' | 'desc' } {
-		if (typeof window === 'undefined') return { key: 'name', dir: 'asc' };
-		const k = localStorage.getItem('collection.sortKey');
-		const d = localStorage.getItem('collection.sortDir');
-		return {
-			key: k && SORT_KEYS.includes(k) ? k : 'name',
-			dir: d === 'desc' ? 'desc' : 'asc'
-		};
-	}
-	const _storedSort = readStoredSort();
-	let sortKey = $state(_storedSort.key);
-	let sortDir = $state<'asc' | 'desc'>(_storedSort.dir);
-	$effect(() => {
-		if (typeof window !== 'undefined') {
-			localStorage.setItem('collection.sortKey', sortKey);
-			localStorage.setItem('collection.sortDir', sortDir);
-		}
-	});
-
-	function sortBy(key: string) {
-		if (sortKey === key) {
-			sortDir = sortDir === 'asc' ? 'desc' : 'asc';
-		} else {
-			sortKey = key;
-			// Counts and money default to high→low; everything else low→high.
-			sortDir =
-				key === 'qty' || key === 'nm' || key === 'market' || key === 'value' ? 'desc' : 'asc';
-		}
-	}
-
 	// Set by the modal's onMutate when a copy is added/removed/edited while
 	// the modal is open. Closing only re-runs the search when this is set —
 	// merely viewing a card (then closing) leaves the list untouched.
@@ -378,12 +485,12 @@
 	// The server applies the query now; `filtered` is just the owned copies it
 	// returned (kept as a name so the rest of the page is unchanged).
 	const filtered = $derived(rows);
-	// Header total is the sum of *condition-adjusted* market values across
-	// the filtered rows, so it equals the sum of the per-row Value cells
-	// shown below (which also apply the multiplier).
-	const totalValue = $derived(
-		filtered.reduce((s, r) => s + (r.market_price ?? 0) * conditionMultiplier(r.condition), 0)
-	);
+	// Header total is the sum of *condition-adjusted* market values across the
+	// whole result — `SearchPage.total_value`, not a sum of what is on screen.
+	// Adding up one page would report page 1's worth under the whole query's
+	// name; the per-row Value cells still apply the same multiplier, so this is
+	// their sum across every page.
+	const totalValue = $derived(searchTotalValue ?? 0);
 
 
 	function toggleSelectMode() {
@@ -576,87 +683,7 @@
 		);
 	}
 
-	const RARITY_RANK: Record<string, number> = {
-		Common: 1,
-		Uncommon: 2,
-		Rare: 3,
-		Promo: 4,
-		'Classic Collection': 4,
-		'Rare Holo': 5,
-		'Radiant Rare': 6,
-		'Rare Holo EX': 7,
-		'Rare Holo GX': 7,
-		'Rare Holo V': 7,
-		'Double Rare': 7,
-		'Rare Holo VMAX': 8,
-		'Rare Holo VSTAR': 8,
-		'Ultra Rare': 8,
-		'Amazing Rare': 9,
-		'Rare Shiny': 9,
-		'Rare Shiny GX': 9,
-		'Illustration Rare': 10,
-		// Mega Attack Rare slots between IR and SIR in the printed set
-		// numbering for Mega Evolution sets (me1..me4, me2pt5).
-		'Mega Attack Rare': 11,
-		'Trainer Gallery Rare Holo': 11,
-		'Rare Secret': 12,
-		'Rare Rainbow': 12,
-		'Special Illustration Rare': 13,
-		'Hyper Rare': 14,
-		'Rare Holo Star': 14,
-		'Mega Hyper Rare': 15
-	};
-	// Upstream rarity strings arrive in both 'Title Case' and
-	// 'SCREAMING_SNAKE' (e.g. MEGA_ATTACK_RARE) depending on which feed
-	// catalogued the card. Canonicalise to title case before any lookup
-	// so the rank table doesn't need both spellings.
-	function canonicalRarity(r: string): string {
-		return r
-			.toLowerCase()
-			.replace(/_/g, ' ')
-			.split(' ')
-			.filter((w) => w.length > 0)
-			.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-			.join(' ');
-	}
-	function rarityRank(r: string | null): number {
-		if (!r) return 0;
-		return RARITY_RANK[canonicalRarity(r)] ?? 6;
-	}
-
-	function numberKey(n: string): number {
-		const m = n.match(/(\d+)/);
-		return m ? parseInt(m[1], 10) : 0;
-	}
-
-	function sortValue(a: AggRow, key: string): number | string {
-		switch (key) {
-			case 'qty':
-				return a.qty;
-			case 'name':
-				return a.name.toLowerCase();
-			case 'type':
-				return `${typeMain(a)} ${typeSub(a)}`.toLowerCase();
-			case 'etype':
-				return parseJsonStrArr(a.types).join(' ').toLowerCase();
-			case 'set':
-				return (a.set_ptcgo_code ?? a.set_code).toLowerCase();
-			case 'number':
-				return numberKey(a.number);
-			case 'rarity':
-				return rarityRank(a.rarity);
-			case 'nm':
-				return a.nm_unit ?? -1;
-			case 'market':
-				return a.market_unit ?? -1;
-			case 'value':
-				return a.market_total ?? -1;
-			default:
-				return 0;
-		}
-	}
-
-	// Unowned printings become qty-0 AggRows so a single sort covers owned +
+	// Unowned printings become qty-0 AggRows so one list covers owned +
 	// unowned together (pokedumpster-ffq). They carry the catalog market price
 	// (no condition to adjust → nm_unit === market_unit) so price sorts are
 	// meaningful; market_total stays null (you own none → Value shows "—").
@@ -689,17 +716,49 @@
 		};
 	}
 
-	const aggregated = $derived([...aggregate(filtered), ...unownedCatalog.map(unownedRow)]);
+	// The rendered list, in the server's order.
+	//
+	// Walking `searchRows` rather than sorting a bag of AggRows is what makes
+	// the page boundaries mean anything: the rows arrive already ordered by
+	// `sort=`/`dir=` across the WHOLE result, and re-sorting the 250 in hand
+	// would answer a different question — plus the client's idea of, say,
+	// rarity order (a hardcoded rank table) is not the catalog's, so page 2
+	// would start above where page 1 ended. Owned and unowned printings
+	// interleave because the server interleaved them.
+	//
+	// One printing can still expand to several rows here: `aggregate` groups
+	// its copies by (condition, status), and a printing held Near Mint and
+	// Lightly Played is two rows with two different Adj. prices. The server
+	// sorts printings, so it has nothing to say about which of those two comes
+	// first — `groupCmp` below is the client completing an order the per-
+	// printing sort cannot express, not re-sorting the page.
 	const sorted = $derived.by(() => {
-		const out = [...aggregated];
-		out.sort((a, b) => {
-			const va = sortValue(a, sortKey);
-			const vb = sortValue(b, sortKey);
-			const cmp = va < vb ? -1 : va > vb ? 1 : 0;
-			return sortDir === 'asc' ? cmp : -cmp;
-		});
+		const out: AggRow[] = [];
+		for (const sr of searchRows) {
+			if (sr.copies.length === 0) out.push(unownedRow(sr));
+			else out.push(...aggregate(copyRows(sr)).sort(groupCmp));
+		}
 		return out;
 	});
+
+	/** Order two copy-groups OF THE SAME PRINTING by the active sort key.
+	 *
+	 *  Only the three condition-dependent keys separate them at all — the
+	 *  groups share a printing, so name/set/rarity/price/… are identical and
+	 *  the comparator ties, leaving them in the server's copy order. */
+	function groupCmp(a: AggRow, b: AggRow): number {
+		function keyed(r: AggRow): number | null {
+			if (sortKey === 'adjusted') return r.market_unit;
+			if (sortKey === 'value') return r.market_total;
+			if (sortKey === 'qty') return r.qty;
+			return null;
+		}
+		const va = keyed(a);
+		const vb = keyed(b);
+		if (va === null || vb === null) return 0;
+		const cmp = va < vb ? -1 : va > vb ? 1 : 0;
+		return sortDir === 'asc' ? cmp : -cmp;
+	}
 
 
 	// === Grid grouping ================================================
@@ -724,7 +783,7 @@
 				return a.set_name;
 			case 'rarity':
 				return a.rarity ?? 'No rarity';
-			case 'type':
+			case 'supertype':
 				return a.supertype ?? 'Other';
 			case 'etype':
 				return parseJsonStrArr(a.types)[0] ?? 'No type';
@@ -1053,22 +1112,17 @@
 				{/if}
 			</div>
 		{/if}
-		{#if searchTotal > searchRows.length}
-			<!-- The endpoint answers with one bounded page, so the count line
-			     below describes what is on screen, not what matched. Say so
-			     rather than let the shortfall read as "that is all there is".
-			     Paging to the rest is pd-tsqd. -->
-			<span class="truncnote muted" data-testid="search-truncated">
-				showing {count(searchRows.length)} of {count(searchTotal)} matches
-			</span>
-		{/if}
+		<!-- Cards and money, both across the WHOLE result rather than the page
+		     in front of you — `total_copies` and `total_value` off SearchPage.
+		     Summing the page would report page 1's collection as the whole
+		     one. The pager below is what says which slice is on screen. -->
 		<button
 			type="button"
 			class="countline muted"
 			onclick={() => (valueOpen = true)}
 			title="Collection value over time"
 		>
-			{count(filtered.length)}
+			{count(searchTotalCopies)}
 			cards{#if totalValue > 0}, {money(totalValue)}{/if}
 		</button>
 	</Toolbar>
@@ -1182,28 +1236,29 @@
 		     of card art was the loudest thing on the page. -->
 		<div class="gridsort" role="group" aria-label="Sort">
 			<span class="gridsortlabel">Sort</span>
-			{#snippet sortBtn(key: string, label: string)}
+			{#snippet sortBtn(key: SortKey)}
 				<button
 					class="sortbtn"
 					class:active={sortKey === key}
 					aria-pressed={sortKey === key}
 					onclick={() => sortBy(key)}
 				>
-					{label}
+					{SORT_LABELS[key]}
 					{#if sortKey === key}
 						<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>
 					{/if}
 				</button>
 			{/snippet}
-			{@render sortBtn('name', 'Name')}
-			{@render sortBtn('type', 'Class')}
-			{@render sortBtn('etype', 'Type')}
-			{@render sortBtn('rarity', 'Rarity')}
-			{@render sortBtn('set', 'Set')}
-			{@render sortBtn('number', '#')}
-			{@render sortBtn('nm', 'NM')}
-			{@render sortBtn('market', 'Adj.')}
+			{@render sortBtn('name')}
+			{@render sortBtn('supertype')}
+			{@render sortBtn('etype')}
+			{@render sortBtn('rarity')}
+			{@render sortBtn('set')}
+			{@render sortBtn('number')}
+			{@render sortBtn('price')}
+			{@render sortBtn('adjusted')}
 		</div>
+		{@render pager()}
 		<!-- Sections are runs of `sorted`, so tile order is exactly the sort
 		     order — owned and unowned printings still interleave. -->
 		<div class="cardgrid">
@@ -1252,14 +1307,15 @@
 			{/each}
 		</div>
 	{:else}
-		{#snippet sortable(key: string, label: string, extra: string, title?: string)}
+		{#snippet sortable(key: SortKey, extra: string, title?: string)}
 			<th class="sortable {extra}" {title} onclick={() => sortBy(key)}>
-				{label}
+				{SORT_LABELS[key]}
 				{#if sortKey === key}
 					<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>
 				{/if}
 			</th>
 		{/snippet}
+		{@render pager()}
 		<div class="tableScroll">
 		<table class="dd">
 			<thead>
@@ -1269,28 +1325,23 @@
 							<input type="checkbox" checked={tableAllSelected} onchange={toggleTableAll} />
 						</th>
 					{/if}
-					{@render sortable('qty', 'Qty', 'num qty')}
-					{@render sortable('name', 'Name', 'colflex')}
-					{@render sortable('type', 'Class', '')}
-					{@render sortable('etype', 'Type', 'center')}
+					{@render sortable('qty', 'num qty')}
+					{@render sortable('name', 'colflex')}
+					{@render sortable('supertype', '')}
+					{@render sortable('etype', 'center')}
 					<th>Cost</th>
-					{@render sortable('rarity', 'Rarity', 'center')}
-					{@render sortable('set', 'Set', 'center')}
-					{@render sortable('number', '#', 'num')}
-					{@render sortable('nm', 'NM', 'num', 'Near Mint market price (per copy)')}
-					{@render sortable(
-						'market',
-						'Adj.',
-						'num',
-						'Condition-adjusted price (per copy)'
-					)}
-					{@render sortable('value', 'Value', 'num', 'Condition-adjusted value (× qty)')}
+					{@render sortable('rarity', 'center')}
+					{@render sortable('set', 'center')}
+					{@render sortable('number', 'num')}
+					{@render sortable('price', 'num', 'Near Mint market price (per copy)')}
+					{@render sortable('adjusted', 'num', 'Condition-adjusted price (per copy)')}
+					{@render sortable('value', 'num', 'Condition-adjusted value (× qty)')}
 				</tr>
 			</thead>
 			<tbody>
 				{#each sorted as a (a.key)}
 					{#if a.ids.length === 0}
-						<tr class="missing">
+						<tr class="missing" data-printing={a.printing_id}>
 							{#if selectMode}<td class="cbcol"></td>{/if}
 							<td class="num qty"><span class="pricedash">—</span></td>
 							<td class="colflex namecol" title="Open card" onclick={(e) => openCardCell(e, a)}>
@@ -1366,7 +1417,11 @@
 							<td class="num"><span class="pricedash">—</span></td>
 						</tr>
 					{:else}
-					<tr class:picked={selectMode && groupChecked(a.ids)} onclick={() => { if (selectMode) toggleGroup(a.ids); }}>
+					<tr
+						data-printing={a.printing_id}
+						class:picked={selectMode && groupChecked(a.ids)}
+						onclick={() => { if (selectMode) toggleGroup(a.ids); }}
+					>
 						{#if selectMode}
 							<td class="cbcol" onclick={(e) => e.stopPropagation()}>
 								<input
@@ -1476,8 +1531,59 @@
 		</table>
 		</div>
 	{/if}
+	{#if searchRows.length > 0}
+		{@render pager()}
+	{/if}
 {/if}
 </div>
+
+<!-- The pager. It is the reason the grid is survivable: `offset` moves, the
+     page is REPLACED, and the DOM holds one page of tiles whatever `total`
+     says. An append-as-you-scroll control would put the 56,635 back one
+     screenful at a time, which is the bug (pd-tsqd), just slower.
+
+     Same shape and wording as the binder pager on /browse/[set] — ← Prev,
+     "Page n of m", Next → — plus first/last jumps, which that one does not
+     need at three pages and this one does at 227. The range readout is here
+     for the same reason: "Page 3 of 227" alone never says how much there is. -->
+{#snippet pager()}
+	{#if pageCount > 1}
+		<nav class="pager" data-testid="search-pager" aria-label="Result pages">
+			<Button
+				variant="ghost"
+				size="sm"
+				disabled={pageNumber <= 1}
+				onclick={() => goToPage(1)}
+				aria-label="First page">«</Button
+			>
+			<Button
+				variant="ghost"
+				size="sm"
+				disabled={pageNumber <= 1}
+				onclick={() => goToPage(pageNumber - 1)}
+				data-testid="pager-prev">← Prev</Button
+			>
+			<span class="pageno" data-testid="pager-range" aria-live="polite">
+				Page {count(pageNumber)} of {count(pageCount)}
+				<span class="pagerrange">· {count(rangeFrom)}–{count(rangeTo)} of {count(searchTotal)}</span>
+			</span>
+			<Button
+				variant="ghost"
+				size="sm"
+				disabled={pageNumber >= pageCount}
+				onclick={() => goToPage(pageNumber + 1)}
+				data-testid="pager-next">Next →</Button
+			>
+			<Button
+				variant="ghost"
+				size="sm"
+				disabled={pageNumber >= pageCount}
+				onclick={() => goToPage(pageCount)}
+				aria-label="Last page">»</Button
+			>
+		</nav>
+	{/if}
+{/snippet}
 
 {#if selectedCard}
 	<CardModal
@@ -1675,16 +1781,6 @@
 		background: var(--color-border);
 		flex-shrink: 0;
 	}
-	.truncnote {
-		margin-left: auto;
-		font-size: var(--text-md);
-		white-space: nowrap;
-	}
-	/* With the note present it takes the auto margin and the count line sits
-	   next to it; without one, the count line still pushes itself right. */
-	.truncnote + .countline {
-		margin-left: var(--space-2);
-	}
 	.countline {
 		margin: var(--space-0) var(--space-0) var(--space-0) auto;
 		font-size: var(--text-md);
@@ -1798,6 +1894,25 @@
 		flex-wrap: wrap;
 		margin: var(--space-0) var(--space-0) var(--space-5);
 		font-size: var(--text-md);
+	}
+	/* Above the list and below it, because a pager you have to scroll back up
+	   to reach is a pager you use once. */
+	.pager {
+		display: flex;
+		gap: var(--space-2);
+		align-items: center;
+		justify-content: center;
+		flex-wrap: wrap;
+		margin: var(--space-5) var(--space-0);
+		font-size: var(--text-md);
+	}
+	.pageno {
+		color: var(--color-text-subtle);
+		white-space: nowrap;
+		padding: var(--space-0) var(--space-2);
+	}
+	.pagerrange {
+		color: var(--color-text-muted);
 	}
 	.gridsortlabel {
 		font-size: var(--text-xs);

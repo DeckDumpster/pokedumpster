@@ -957,6 +957,56 @@ mod tests {
         }
     }
 
+    /// `value` and `adj` left the sort surface for good (pd-tjym): each ordered
+    /// through a subquery joining the tenant's `collection` to the shared
+    /// catalog's prices across the `ATTACH` boundary, and SQLite cannot index
+    /// across attached databases — so ordering by either had to materialise and
+    /// sort the whole match set before `LIMIT` could discard any of it.
+    ///
+    /// A client still asking is **told**. Falling back to name order would hand
+    /// it a result that looks sorted and isn't, which is exactly how a caller
+    /// stops noticing it is asking for a column that no longer exists.
+    #[tokio::test]
+    async fn search_refuses_a_sort_it_cannot_satisfy() {
+        let (_d, router) = test_app();
+        for key in ["value", "adj", "nonsense"] {
+            let uri = format!("/api/collection/search?sort={key}");
+            let resp = router
+                .clone()
+                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
+            let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+            let message = body["error"].as_str().unwrap_or_default();
+            // The refusal names what IS sortable — a bare "bad sort" leaves the
+            // caller guessing at a vocabulary it cannot see.
+            for named in pkdump_db::search::SORT_KEYS {
+                assert!(message.contains(named), "{uri}: {message} omits {named}");
+            }
+            assert!(
+                body["position"].is_null(),
+                "a sort complaint is not a query-syntax error: {uri}"
+            );
+        }
+    }
+
+    /// And every key the endpoint advertises is served, so the refusal above is
+    /// about the key rather than about `sort=` having stopped being read.
+    #[tokio::test]
+    async fn search_serves_every_advertised_sort_key() {
+        let (_d, router) = test_app();
+        for key in pkdump_db::search::SORT_KEYS {
+            let uri = format!("/api/collection/search?sort={key}&include_unowned=1");
+            let resp = router
+                .clone()
+                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+        }
+    }
+
     #[tokio::test]
     async fn search_rejects_unknown_keyword_with_position() {
         let (_d, router) = test_app();

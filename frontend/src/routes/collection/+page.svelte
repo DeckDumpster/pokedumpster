@@ -366,24 +366,16 @@
 	// (`search::order_sql`), because the browser renders a window of the
 	// result and sorting that window would order the wrong rows.
 	//
-	// `adj` is the one key whose column and sort are not the same unit. Adj. is
-	// a COPY's condition-adjusted unit price and a printing owned in two
-	// conditions draws two of them, while the server orders printings — so
-	// `order:adj` orders by the average across a printing's copies. For the
-	// single-copy row that is the majority of the table it IS the drawn value;
-	// where it isn't, the header says so (pd-sehy).
-	const SORT_KEYS = [
-		'name',
-		'type',
-		'etype',
-		'rarity',
-		'set',
-		'number',
-		'price',
-		'adj',
-		'value',
-		'qty'
-	];
+	// Every one of them is a stored scalar in a single database, which is what
+	// lets an index satisfy the ordering. `adj` and `value` are not, and are no
+	// longer here: both were computed by a subquery joining the collection to
+	// the shared catalog's prices across the ATTACH boundary, so ordering by
+	// either meant sorting the whole match set before LIMIT could discard any
+	// of it (pd-tjym). The server refuses them now rather than quietly ordering
+	// by name, so this list and its arms have to agree — which is also why a
+	// stored `collection.sortKey` outside it falls back to `name` below rather
+	// than being sent.
+	const SORT_KEYS = ['name', 'type', 'etype', 'rarity', 'set', 'number', 'price', 'qty'];
 	function readStoredSort(): { key: string; dir: 'asc' | 'desc' } {
 		if (typeof window === 'undefined') return { key: 'name', dir: 'asc' };
 		const k = localStorage.getItem('collection.sortKey');
@@ -409,8 +401,7 @@
 		} else {
 			sortKey = key;
 			// Counts and money default to high→low; everything else low→high.
-			sortDir =
-				key === 'qty' || key === 'price' || key === 'adj' || key === 'value' ? 'desc' : 'asc';
+			sortDir = key === 'qty' || key === 'price' ? 'desc' : 'asc';
 		}
 		// Re-ordering the whole result set puts different rows where you were
 		// looking. Start at the top of the new order.
@@ -449,8 +440,8 @@
 	// returned (kept as a name so the rest of the page is unchanged).
 	const filtered = $derived(rows);
 	// Header total is the sum of *condition-adjusted* market values across
-	// the filtered rows, so it equals the sum of the per-row Value cells
-	// shown below (which also apply the multiplier).
+	// the filtered rows — the same multiplier the Adj. column applies, summed
+	// over every copy instead of drawn per group.
 	//
 	// It sums the whole result, because the whole result is what this client
 	// holds now (pd-7z4o). Under paging it could only sum the page, which is
@@ -475,10 +466,11 @@
 		    a printing, so this is condition-independent). */
 		nm_unit: number | null;
 		/** Per-copy condition-adjusted market price (nm_unit × the copy's
-		    condition multiplier). */
+		    condition multiplier) — the Adj. column. There is no per-group total
+		    beside it any more: the Value column left with its sort (pd-tjym),
+		    and the collection's total still comes from `totalValue` above,
+		    which sums the whole result rather than a group. */
 		market_unit: number | null;
-		/** Sum across all copies in the group — market_unit × qty. */
-		market_total: number | null;
 		printing_id: string;
 		card_id: string;
 		set_code: string;
@@ -505,8 +497,9 @@
 		for (const r of input) {
 			const key = `${r.printing_id}|${r.condition}|${r.status}`;
 			// market_price is always NM market from the API; condition-adjust
-			// it here so the Value column reflects the copy's actual worth,
-			// not the NM headline (pokedumpster-qtp).
+			// it here so the Adj. column reflects the copy's actual worth,
+			// not the NM headline (pokedumpster-qtp). Every copy in a group
+			// shares a condition, so one figure covers the group.
 			const condValue =
 				r.market_price != null ? r.market_price * conditionMultiplier(r.condition) : null;
 			const existing = map.get(key);
@@ -516,9 +509,6 @@
 				if (r.purchase_price != null) {
 					existing.paid_total = (existing.paid_total ?? 0) + r.purchase_price;
 				}
-				if (condValue != null) {
-					existing.market_total = (existing.market_total ?? 0) + condValue;
-				}
 			} else {
 				map.set(key, {
 					key,
@@ -527,7 +517,6 @@
 					paid_total: r.purchase_price,
 					nm_unit: r.market_price,
 					market_unit: condValue,
-					market_total: condValue,
 					printing_id: r.printing_id,
 					card_id: r.card_id,
 					set_code: r.set_code,
@@ -638,8 +627,7 @@
 
 	// Unowned printings become qty-0 AggRows so owned and unowned draw the same
 	// way in one list (pokedumpster-ffq). They carry the catalog market price
-	// (no condition to adjust → nm_unit === market_unit); market_total stays
-	// null (you own none → Value shows "—").
+	// (no condition to adjust → nm_unit === market_unit).
 	function unownedRow(sr: SearchRow): AggRow {
 		return {
 			key: `missing|${sr.printing_id}`,
@@ -648,7 +636,6 @@
 			paid_total: null,
 			nm_unit: sr.market_price,
 			market_unit: sr.market_price,
-			market_total: null,
 			printing_id: sr.printing_id,
 			card_id: sr.card_id,
 			set_code: sr.set_code,
@@ -705,8 +692,8 @@
 	// you scroll through is organised. So the grid cuts itself into labelled
 	// sections along whatever the active sort already orders on, whenever
 	// that field is a category a person browses by — set, rarity, class,
-	// energy type, or a name's initial. The continuous fields (#, NM, Adj.,
-	// Value) group into nothing useful, so they stay one flat run.
+	// energy type, or a name's initial. The continuous fields (#, NM) group
+	// into nothing useful, so they stay one flat run.
 	//
 	// Every label is read straight off the row's own fields. No new
 	// taxonomy, no bucket table: a heading here is a value the catalog
@@ -832,7 +819,7 @@
 	const tableWindow = $derived(windowOf(tableOffsets, 0, winTop, winBottom));
 	const tableVisible = $derived(displayRows.slice(tableWindow.start, tableWindow.end));
 	/** Columns a spacer row has to span. */
-	const tableCols = $derived(selectMode ? 12 : 11);
+	const tableCols = $derived(selectMode ? 11 : 10);
 
 	/** Read the geometry the window arithmetic needs out of the rendered DOM. */
 	function measure() {
@@ -1404,8 +1391,6 @@
 			{@render sortBtn('set', 'Set')}
 			{@render sortBtn('number', '#')}
 			{@render sortBtn('price', 'NM')}
-			{@render sortBtn('adj', 'Adj.')}
-			{@render sortBtn('value', 'Value')}
 		</div>
 		<!-- Sections are runs of `displayRows`, so tile order is exactly the
 		     server's sort order — owned and unowned printings still
@@ -1495,20 +1480,17 @@
 					{@render sortable('set', 'Set', 'center')}
 					{@render sortable('number', '#', 'num')}
 					{@render sortable('price', 'NM', 'num', 'Near Mint market price (per copy)')}
-					<!-- The one header whose sort is not its cell. Adj. is a
-					     COPY's condition-adjusted price and a printing owned
-					     Near Mint AND Moderately Played draws two of them, so
-					     the server — which orders printings — sorts by the
-					     average across the copies (pd-sehy). The title says so,
-					     because a column that quietly means something else
-					     under the cursor is worse than one that doesn't sort. -->
-					{@render sortable(
-						'adj',
-						'Adj.',
-						'num',
-						'Condition-adjusted price (per copy). Sorts by the average across a printing’s copies.'
-					)}
-					{@render sortable('value', 'Value', 'num', 'Condition-adjusted value (× qty)')}
+					<!-- The one price column that does not sort. Adj. is the
+					     copy's condition-adjusted price — the collection's
+					     market price joined to the tenant's own conditions
+					     across the ATTACH boundary, which no index can span, so
+					     ordering 56k rows by it had to sort them all before
+					     LIMIT could discard any (pd-tjym). Drawing it for the
+					     rows under the viewport costs nothing, so it still
+					     draws; it is a plain header rather than a dead
+					     `.sortable` one, because a header that looks clickable
+					     and isn't is worse than one that doesn't. -->
+					<th class="num" title="Condition-adjusted price (per copy)">Adj.</th>
 				</tr>
 			</thead>
 			<!-- Only the rows under the viewport, with a spacer row either side
@@ -1599,7 +1581,6 @@
 									<span class="pricedash">—</span>
 								{/if}
 							</td>
-							<td class="num"><span class="pricedash">—</span></td>
 						</tr>
 					{:else}
 					<tr class:picked={selectMode && groupChecked(a.ids)} onclick={() => { if (selectMode) toggleGroup(a); }}>
@@ -1694,13 +1675,6 @@
 						<td class="num">
 							{#if a.market_unit != null}
 								<span class="pricebox">{money(a.market_unit)}</span>
-							{:else}
-								<span class="pricedash">—</span>
-							{/if}
-						</td>
-						<td class="num">
-							{#if a.market_total != null}
-								<span class="pricebox">{money(a.market_total)}</span>
 							{:else}
 								<span class="pricedash">—</span>
 							{/if}

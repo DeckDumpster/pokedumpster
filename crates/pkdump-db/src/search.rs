@@ -1016,10 +1016,6 @@ mod tests {
         {
             let mut c = open_shared(&shared).unwrap();
             search_meta::reconcile(&mut c).unwrap();
-            // Real multipliers, from data/conditions.json — `order:value` is
-            // defined in terms of them, so a fixture without them could not
-            // tell a condition-adjusted sum from a raw one.
-            crate::conditions::reconcile(&mut c).unwrap();
             c.execute(
                 "INSERT INTO sets (set_code, ptcgo_code, name, series, set_sort_order, release_date)
                  VALUES ('base1','BS','Base Set','Base',1,'1999/01/09'),

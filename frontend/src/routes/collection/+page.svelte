@@ -389,13 +389,24 @@
 	// (`search::order_sql`), because a page holds 250 of up to 56,635 matches
 	// and sorting those 250 in the browser orders the wrong ones.
 	//
-	// One column the table draws is missing here on purpose. `Adj.` is a
-	// copy's condition-adjusted unit price, and a printing with a Near Mint
-	// and a Moderately Played copy has two of them — there is no single value
-	// the server could order that printing by, because its unit of ordering is
-	// the printing. It still renders; it no longer sorts. `Value` survives
-	// because a sum over the copies IS a per-printing number.
-	const SORT_KEYS = ['name', 'type', 'etype', 'rarity', 'set', 'number', 'price', 'value', 'qty'];
+	// `adj` is the one key whose column and sort are not the same unit. Adj. is
+	// a COPY's condition-adjusted unit price and a printing owned in two
+	// conditions draws two of them, while the server orders printings — so
+	// `order:adj` orders by the average across a printing's copies. For the
+	// single-copy row that is the majority of the table it IS the drawn value;
+	// where it isn't, the header says so (pd-sehy).
+	const SORT_KEYS = [
+		'name',
+		'type',
+		'etype',
+		'rarity',
+		'set',
+		'number',
+		'price',
+		'adj',
+		'value',
+		'qty'
+	];
 	function readStoredSort(): { key: string; dir: 'asc' | 'desc' } {
 		if (typeof window === 'undefined') return { key: 'name', dir: 'asc' };
 		const k = localStorage.getItem('collection.sortKey');
@@ -421,7 +432,8 @@
 		} else {
 			sortKey = key;
 			// Counts and money default to high→low; everything else low→high.
-			sortDir = key === 'qty' || key === 'price' || key === 'value' ? 'desc' : 'asc';
+			sortDir =
+				key === 'qty' || key === 'price' || key === 'adj' || key === 'value' ? 'desc' : 'asc';
 		}
 		// Re-ordering the whole result set means the page you were on is a
 		// different 250 rows. Start at the top of the new order.
@@ -1227,6 +1239,7 @@
 			{@render sortBtn('set', 'Set')}
 			{@render sortBtn('number', '#')}
 			{@render sortBtn('price', 'NM')}
+			{@render sortBtn('adj', 'Adj.')}
 			{@render sortBtn('value', 'Value')}
 		</div>
 		{@render pager()}
@@ -1307,15 +1320,19 @@
 					{@render sortable('set', 'Set', 'center')}
 					{@render sortable('number', '#', 'num')}
 					{@render sortable('price', 'NM', 'num', 'Near Mint market price (per copy)')}
-					<!-- Not sortable, alone among the money columns. Adj. is a
-					     COPY's condition-adjusted price, and a printing with a
-					     Near Mint and a Moderately Played copy has two of them
-					     — so there is no one number the server could order that
-					     printing by, and ordering the page here would order 250
-					     rows out of 56,635 (pd-tsqd). Value survives because a
-					     sum over the copies is a per-printing number. pd-sehy
-					     is the follow-up. -->
-					<th class="num" title="Condition-adjusted price (per copy)">Adj.</th>
+					<!-- The one header whose sort is not its cell. Adj. is a
+					     COPY's condition-adjusted price and a printing owned
+					     Near Mint AND Moderately Played draws two of them, so
+					     the server — which orders printings — sorts by the
+					     average across the copies (pd-sehy). The title says so,
+					     because a column that quietly means something else
+					     under the cursor is worse than one that doesn't sort. -->
+					{@render sortable(
+						'adj',
+						'Adj.',
+						'num',
+						'Condition-adjusted price (per copy). Sorts by the average across a printing’s copies.'
+					)}
 					{@render sortable('value', 'Value', 'num', 'Condition-adjusted value (× qty)')}
 				</tr>
 			</thead>

@@ -17,6 +17,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Router, middleware, routing::get};
 use rusqlite::Connection;
+use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{NotForContentType, Predicate, SizeAbove};
 use tower_http::services::{ServeDir, ServeFile};
 
 use pkdump_core::query::KeywordRegistry;
@@ -111,6 +113,66 @@ where
     Ok(result?)
 }
 
+/// Responses smaller than this are sent uncompressed. (A response of exactly
+/// this size is compressed — `SizeAbove` is inclusive — and a response whose
+/// size is not known up front is compressed too, since there is nothing to
+/// compare.)
+///
+/// Compression is not free — it costs CPU on this box and a decompress on the
+/// client, and it replaces a known `content-length` with a chunked body. Under
+/// ~1 KB there is nothing to buy with that: the response already fits inside a
+/// single ~1460-byte TCP segment, so squeezing it does not remove a round trip,
+/// and gzip's own header/trailer can make a very short body *larger*. 1 KB is
+/// the first size where the saving is real, and it leaves every small JSON
+/// answer in the API (`/api/backup-status`, a 204, an error envelope)
+/// untouched.
+///
+/// The big payloads this exists for are three to four orders of magnitude
+/// above it — the catalog-wide `/api/collection/search` is ~44 MB raw — so the
+/// exact threshold only decides the fate of responses where it does not matter.
+const COMPRESS_MIN_BYTES: u16 = 1024;
+
+/// Response compression for the whole app.
+///
+/// Every response left this process uncompressed until now, including the
+/// catalog-wide search body. JSON of that shape compresses about 9x, which is
+/// the difference between a result set the browser can hold and one it cannot.
+///
+/// Three decisions are baked in here:
+///
+/// * **Algorithms: gzip and br, chosen by the client.** The layer reads
+///   `Accept-Encoding` and picks; it never forces one. Brotli usually beats
+///   gzip on JSON and every current browser offers it, while gzip is the
+///   universal floor for anything else (`curl`, a script, an old client). A
+///   request that offers neither — or no `Accept-Encoding` at all — gets the
+///   same valid uncompressed bytes it got before. zstd and deflate are
+///   deliberately absent: deflate is redundant with gzip and nothing prefers
+///   it, and zstd's marginal win over br does not pay for a second native
+///   dependency.
+/// * **Never images.** `/sym`, `/rarity` and the rest serve PNG and JPEG,
+///   which are already compressed; running them through gzip spends CPU to
+///   make the payload *bigger*. `NotForContentType::IMAGES` excludes anything
+///   `image/*`, which sweeps up `image/svg+xml` too — those are text and would
+///   compress well, but every SVG shipped here is under a kilobyte and would
+///   fall below the size floor anyway.
+/// * **A size floor.** See [`COMPRESS_MIN_BYTES`].
+///
+/// It sits on the outermost router, so it covers the SPA shell and the
+/// SvelteKit bundle under `/_app` as well as `/api`. Nothing here buffers a
+/// whole body to compress it — the layer wraps the body and compresses as it
+/// streams — so `/api/export/*`, which hands back a full collection dump,
+/// costs no more memory than it did before.
+// The predicate type is an opaque `And` tower of the four rules below; naming
+// it buys nothing. `Clone`/`Send`/`Sync` come from `Predicate` itself.
+fn compression() -> CompressionLayer<impl Predicate + 'static> {
+    CompressionLayer::new().gzip(true).br(true).compress_when(
+        SizeAbove::new(COMPRESS_MIN_BYTES)
+            .and(NotForContentType::IMAGES)
+            .and(NotForContentType::SSE)
+            .and(NotForContentType::GRPC),
+    )
+}
+
 /// Build the Axum router. `/health` and `/api/*` are handled by Rust; the
 /// SvelteKit bundle under `/_app` and `/robots.txt` are served as files;
 /// every other path returns the SPA's `index.html` so SvelteKit handles
@@ -150,6 +212,8 @@ fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
         .route_service("/robots.txt", ServeFile::new(static_dir.join("robots.txt")))
         .with_state(state)
         .fallback(get(spa))
+        // Outermost, so it sees the final response of every route above.
+        .layer(compression())
 }
 
 /// Everything `pkdump serve` needs to stand the HTTP app up.
@@ -487,6 +551,136 @@ mod tests {
             .unwrap();
         assert_eq!(spa_route.status(), StatusCode::OK);
         assert!(body_string(spa_route).await.contains("PokeDumpster"));
+    }
+
+    // ---- response compression (pd-2r0p) ----------------------------------
+    //
+    // Every response left this process uncompressed before `compression()`
+    // landed. These five tests pin the whole contract: what gets compressed,
+    // what deliberately does not, and that compressing never changes the
+    // bytes the client ends up with.
+
+    async fn body_bytes(resp: Response) -> Vec<u8> {
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec()
+    }
+
+    /// `GET uri`, optionally offering `Accept-Encoding`. Returns the response
+    /// with its `content-encoding` (as an owned `String`) alongside the body,
+    /// because reading the body consumes the response.
+    async fn get_encoding(router: &Router, uri: &str, accept: Option<&str>) -> (String, Vec<u8>) {
+        let mut b = Request::builder().uri(uri);
+        if let Some(a) = accept {
+            b = b.header(header::ACCEPT_ENCODING, a);
+        }
+        let resp = router
+            .clone()
+            .oneshot(b.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "uri: {uri}");
+        let encoding = resp
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        (encoding, body_bytes(resp).await)
+    }
+
+    fn gunzip(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Read;
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(bytes)
+            .read_to_end(&mut out)
+            .unwrap();
+        out
+    }
+
+    fn unbrotli(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Read;
+        let mut out = Vec::new();
+        brotli::Decompressor::new(bytes, 4096)
+            .read_to_end(&mut out)
+            .unwrap();
+        out
+    }
+
+    /// The keyword registry — the smallest endpoint in the seeded catalog
+    /// that clears [`COMPRESS_MIN_BYTES`], and JSON of exactly the shape the
+    /// big search payload is made of.
+    const BULKY_JSON: &str = "/api/search/keywords";
+
+    #[tokio::test]
+    async fn json_gzips_and_decodes_to_the_uncompressed_bytes() {
+        let (_d, router) = test_app();
+
+        let (plain_encoding, plain) = get_encoding(&router, BULKY_JSON, None).await;
+        // A client that asks for nothing still gets valid, unencoded JSON.
+        assert_eq!(plain_encoding, "");
+        serde_json::from_slice::<serde_json::Value>(&plain).unwrap();
+        assert!(
+            plain.len() > COMPRESS_MIN_BYTES as usize,
+            "fixture too small to exercise the threshold: {} bytes",
+            plain.len()
+        );
+
+        let (encoding, compressed) = get_encoding(&router, BULKY_JSON, Some("gzip")).await;
+        assert_eq!(encoding, "gzip");
+        assert!(
+            compressed.len() < plain.len(),
+            "gzip grew the body: {} -> {}",
+            plain.len(),
+            compressed.len()
+        );
+        // The point of the whole change: same bytes, fewer of them on the wire.
+        assert_eq!(gunzip(&compressed), plain);
+    }
+
+    #[tokio::test]
+    async fn brotli_is_used_when_the_client_offers_it() {
+        // Accept-Encoding is honoured, not overridden: offered both, the layer
+        // picks br, and a client that only speaks gzip still gets gzip.
+        let (_d, router) = test_app();
+        let (_, plain) = get_encoding(&router, BULKY_JSON, None).await;
+
+        let (encoding, compressed) =
+            get_encoding(&router, BULKY_JSON, Some("gzip, deflate, br")).await;
+        assert_eq!(encoding, "br");
+        assert_eq!(unbrotli(&compressed), plain);
+    }
+
+    #[tokio::test]
+    async fn responses_below_the_threshold_are_not_compressed() {
+        // `/api/backup-status` is a handful of fields; compressing it would
+        // cost CPU and a chunked body to save nothing.
+        let (_d, router) = test_app();
+        let (encoding, body) = get_encoding(&router, "/api/backup-status", Some("gzip, br")).await;
+        assert!(
+            body.len() < COMPRESS_MIN_BYTES as usize,
+            "no longer a small response: {} bytes",
+            body.len()
+        );
+        assert_eq!(encoding, "");
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+    }
+
+    #[tokio::test]
+    async fn images_are_never_recompressed() {
+        // Set symbols are PNG — already compressed. Re-encoding them spends
+        // CPU to make the payload bigger. This one is deliberately far above
+        // the size floor and trivially compressible, so if the content-type
+        // rule were dropped the layer would certainly compress it.
+        let (dir, router) = test_app();
+        let symbols = dir.path().join("symbols");
+        std::fs::create_dir_all(&symbols).unwrap();
+        let png = vec![b'P'; 8 * 1024];
+        std::fs::write(symbols.join("sv3pt5.png"), &png).unwrap();
+
+        let (encoding, body) = get_encoding(&router, "/sym/sv3pt5.png", Some("gzip, br")).await;
+        assert_eq!(encoding, "");
+        assert_eq!(body, png);
     }
 
     #[tokio::test]

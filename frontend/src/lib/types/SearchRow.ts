@@ -3,8 +3,22 @@ import type { CopySummary } from "./CopySummary";
 
 /**
  * One search result row — a single printing, owned or not (decision D3).
+ *
+ * **Every field here is one the search list actually draws.** A field nobody
+ * renders costs its bytes *and* its key name once per row (pd-lk8v) — which
+ * was ~57k times over before the endpoint answered in pages (pd-jsby), and is
+ * still the whole page. Anything only the card modal shows belongs on `CardDetail`,
+ * which is fetched for the one card the user clicked — see
+ * `list_payload_carries_only_what_the_list_renders`, which fails if a field
+ * is added here without that decision being made.
  */
-export type SearchRow = { printing_id: string, card_id: string, set_code: string, set_name: string, set_ptcgo_code: string | null, set_symbol_url: string | null, number: string, name: string, rarity: string | null, artist: string | null, supertype: string | null, subtypes: string | null, types: string | null, attacks: string | null, market_price: number | null, image_small: string | null, variant: string, variant_description: string | null, 
+export type SearchRow = { printing_id: string, card_id: string, set_code: string, set_name: string, set_ptcgo_code: string | null, set_symbol_url: string | null, number: string, name: string, rarity: string | null, supertype: string | null, subtypes: string | null, types: string | null, 
+/**
+ * JSON array of `{name, cost}`, one entry per attack — the Cost column's
+ * energy pips and their tooltip, and nothing else. The full attack
+ * (`text`, `damage`, …) comes from `CardDetail`.
+ */
+attack_costs: string | null, market_price: number | null, image_small: string | null, variant: string, 
 /**
  * True when at least one copy is owned (`owned_count > 0`).
  */

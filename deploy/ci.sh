@@ -41,9 +41,11 @@
 #                      assert what it answers to a tenant header: malformed is
 #                      400, unknown is 404, and single-tenant mode does not read
 #                      the header at all. See tests/tenants/handles.sh.
-#  10. Visual gate:    screenshot every route at 1440 and 768 against that
-#                      same instance and diff against the committed baselines.
-#                      See tests/visual/README.md for the approval workflow.
+#  10. Browser gate:   screenshot every route at 1440 and 768 against that
+#                      same instance and diff against the committed baselines,
+#                      and assert the DOM bounds that a screenshot cannot see —
+#                      /collection renders ONE page of a 56,635-row result, not
+#                      the result. See tests/visual/README.md.
 #  11. Schema-version gate: start a prod-shaped instance against a deliberately
 #                      UNVERSIONED data volume — the shape every database on
 #                      disk has, prod's included — and assert every database is
@@ -52,7 +54,7 @@
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
-# for Vision mode, which makes it slow and non-deterministic. (The visual gate
+# for Vision mode, which makes it slow and non-deterministic. (The browser gate
 # in step 10 also drives Playwright, but offline and deterministically — that is
 # the difference, not the browser.) Run the intents harness on its own:
 #   (cd tests/ui && npx playwright install chromium && npx playwright test)
@@ -294,11 +296,11 @@ bash "$REPO_DIR/tests/tenants/upgrade.sh"
 step "Tenant header: malformed 400 vs unknown 404 (pd-4g7c)"
 bash "$REPO_DIR/tests/tenants/handles.sh"
 
-# --- 10. Visual-regression gate ---------------------------------------------
+# --- 10. Browser gate --------------------------------------------------------
 # Runs against the container started above rather than standing up a second
 # one. A pixel diff fails CI; approving it is explicit — tests/visual/README.md.
 
-step "Visual regression: every route, two viewports"
+step "Browser: every route screenshotted, and /collection's DOM bounded"
 PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwright.sh"
 
 # --- 11. Schema-version gate ------------------------------------------------

@@ -732,8 +732,8 @@
 	// you scroll through is organised. So the grid cuts itself into labelled
 	// sections along whatever the active sort already orders on, whenever
 	// that field is a category a person browses by — set, rarity, class,
-	// energy type, or a name's initial. The continuous fields (#, NM, Value)
-	// group into nothing useful, so they stay one flat run.
+	// energy type, or a name's initial. The continuous fields (#, NM, Adj.,
+	// Value) group into nothing useful, so they stay one flat run.
 	//
 	// Every label is read straight off the row's own fields. No new
 	// taxonomy, no bucket table: a heading here is a value the catalog

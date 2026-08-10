@@ -1423,12 +1423,10 @@ mod tests {
             "SELECT p.printing_id, {col} {FROM_CLAUSE} ORDER BY p.printing_id COLLATE NOCASE"
         );
         let mut stmt = f.conn.prepare(&sql).unwrap();
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
             .collect::<rusqlite::Result<Vec<(String, Option<f64>)>>>()
-            .unwrap();
-        rows
+            .unwrap()
     }
 
     /// One printing's sort value.

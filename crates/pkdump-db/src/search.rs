@@ -799,6 +799,27 @@ fn order_sql(order_by: Option<&str>) -> String {
                 .to_string()
         }
         "qty" => format!("({OWNED_COUNT_SUBQ})"),
+        // Class and energy type — the two catalog columns the collection
+        // table sorts on that had no arm here. They arrived when that page
+        // stopped sorting its own rows: once results are paged, a sort the
+        // client applies orders 250 rows out of 56,635, which is the wrong
+        // 250 (pd-tsqd). `cd.types` is the stored JSON array, and ordering
+        // its text is ordering its first element — `["Fire"]` before
+        // `["Water"]` — which is what the column shows.
+        "type" => "cd.supertype".to_string(),
+        "etype" => "cd.types".to_string(),
+        // The Value column: every copy's condition-adjusted market price,
+        // summed over the printing. A copy is worth its printing's Near-Mint
+        // market times its condition's multiplier — `conditions.multiplier`,
+        // the same table /api/conditions serves the frontend — so this is
+        // exactly the sum of the Value cells that printing draws. A condition
+        // with no row (or none owned) leaves the multiplier at 1.0 rather
+        // than zeroing a card.
+        "value" => format!(
+            "(SELECT SUM(({MARKET_PRICE_EXPR}) * COALESCE(cond.multiplier, 1.0)) \
+                FROM collection col LEFT JOIN conditions cond ON cond.name = col.condition \
+               WHERE col.printing_id = p.printing_id)"
+        ),
         _ => "cd.name".to_string(),
     }
 }
@@ -937,6 +958,10 @@ mod tests {
         {
             let mut c = open_shared(&shared).unwrap();
             search_meta::reconcile(&mut c).unwrap();
+            // Real multipliers, from data/conditions.json — `order:value` is
+            // defined in terms of them, so a fixture without them could not
+            // tell a condition-adjusted sum from a raw one.
+            crate::conditions::reconcile(&mut c).unwrap();
             c.execute(
                 "INSERT INTO sets (set_code, ptcgo_code, name, series, set_sort_order, release_date)
                  VALUES ('base1','BS','Base Set','Base',1,'1999/01/09'),
@@ -1342,6 +1367,99 @@ mod tests {
         let mut c = compile_all();
         c.set_catalog_wide(true);
         c
+    }
+
+    /// The printings a sort returns, in order, catalog-wide.
+    fn ordered(f: &Fix, sort: &str, dir: &str) -> Vec<String> {
+        let mut c = all_printings();
+        c.override_order(Some(sort), Some(dir));
+        search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.printing_id)
+            .collect()
+    }
+
+    // --- the sort keys the collection table hands to the server ------------
+    //
+    // Paging moved that page's sort off the client (pd-tsqd): sorting 250 of
+    // 56,635 rows in the browser orders the wrong 250. Every column it offers
+    // therefore has to be expressible here, and these are the three that were
+    // not.
+
+    #[test]
+    fn order_by_type_sorts_on_supertype() {
+        let f = fixture();
+        // Three Pokémon and one Trainer (Professor Oak, base1-88-normal).
+        let asc = ordered(&f, "type", "asc");
+        assert_eq!(
+            asc.last().map(String::as_str),
+            Some("base1-88-normal"),
+            "Pokémon before Trainer: {asc:?}"
+        );
+        let desc = ordered(&f, "type", "desc");
+        assert_eq!(desc.first().map(String::as_str), Some("base1-88-normal"));
+    }
+
+    #[test]
+    fn order_by_etype_sorts_on_energy_type() {
+        let f = fixture();
+        // Fire (Charizard) < Lightning (Pikachu ×2) < Water (Blastoise); the
+        // Trainer has no types at all and NULL sorts first ascending.
+        assert_eq!(
+            ordered(&f, "etype", "asc"),
+            vec![
+                "base1-88-normal",
+                "base1-4-holo",
+                "sv3pt5-25-normal",
+                "sv3pt5-25-reverse_holo",
+                "base1-2-holo",
+            ]
+        );
+    }
+
+    #[test]
+    fn order_by_value_is_the_condition_adjusted_sum_over_a_printings_copies() {
+        let f = fixture();
+        // Charizard: two copies (Near Mint + Lightly Played) at $7 each.
+        // Pikachu:   one copy (Near Mint) at $13.
+        //
+        // Unadjusted the Charizard is worth more (14 > 13), so a sum that
+        // ignored the condition multiplier would put it first. Adjusted it is
+        // not: 7 + 7×0.85 = 12.95 < 13.
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
+                 ('base1-4-holo', 7.0, '2025-01-01'),
+                 ('sv3pt5-25-normal', 13.0, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+
+        let desc = ordered(&f, "value", "desc");
+        assert_eq!(
+            &desc[..2],
+            &["sv3pt5-25-normal", "base1-4-holo"],
+            "the Lightly Played copy is worth 0.85 of a Near Mint one: {desc:?}"
+        );
+        // And it is a SUM, not a unit price: per copy the Charizard is the
+        // cheaper card, which is what `order:price` would say.
+        let by_price = ordered(&f, "price", "desc");
+        assert_eq!(&by_price[..2], &["sv3pt5-25-normal", "base1-4-holo"]);
+
+        // Halve the Pikachu and the total flips — the two copies now win.
+        f.conn
+            .execute(
+                "UPDATE manual_prices SET price = 6.0 WHERE printing_id = 'sv3pt5-25-normal'",
+                [],
+            )
+            .unwrap();
+        let flipped = ordered(&f, "value", "desc");
+        assert_eq!(
+            flipped.first().map(String::as_str),
+            Some("base1-4-holo"),
+            "two copies at 12.95 beat one at 6: {flipped:?}"
+        );
     }
 
     #[test]

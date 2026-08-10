@@ -501,6 +501,17 @@ compiles `.svelte` on import (`npm test` wires it in with `--import`).
   PRAGMA tuning above is what makes them cheap.
 - Bulk-ensure FK targets at function entry; don't do a SELECT-per-row
   check inside the hot loop.
+- **Responses are compressed** — one `CompressionLayer` on the outermost
+  router (`compression()` in `crates/pkdump-server/src/lib.rs`), so it
+  covers `/api`, the SPA shell and the SvelteKit bundle alike. br or gzip,
+  whichever the client's `Accept-Encoding` asks for; a client that asks for
+  neither still gets valid uncompressed bytes. Two exclusions, both
+  deliberate: anything `image/*` (already-compressed PNG/JPEG — gzipping
+  those spends CPU to grow the payload) and anything at or below
+  `COMPRESS_MIN_BYTES` (1 KB, which already fits one TCP segment). JSON of
+  this shape compresses ~9x, which is what makes a catalog-wide result set
+  affordable at all. Nothing buffers a whole body to compress it, so
+  `/api/export/*` costs no more memory than before.
 
 ## Operating notes
 

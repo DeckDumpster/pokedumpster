@@ -32,7 +32,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["fs", "trace"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "compression-gzip", "compression-br"] }
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
@@ -40,6 +40,7 @@ ts-rs = "10"
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 flate2 = "1"
+brotli = "8"
 tar = "0.4"
 csv = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }

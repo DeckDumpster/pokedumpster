@@ -820,17 +820,34 @@ fn has_flag(value: &str) -> (String, Vec<Value>) {
 /// with no arm would fall through to the name fallback and quietly serve a
 /// different order than the caller asked for.
 ///
-/// **Every key is a stored scalar in ONE database.** That is the property the
-/// list exists to hold: `value` and `adj` were computed by a subquery joining
-/// the tenant's `collection` to the shared catalog's prices across the `ATTACH`
-/// boundary, and SQLite cannot index across attached databases — so ordering by
-/// one meant materialising and sorting the whole match set before `LIMIT` could
-/// discard any of it, 1,543 ms of the collection's 2,495 ms first paint on a
-/// 56k-row result (pd-tjym). They are gone from this surface permanently, not
-/// provisionally: their successor is a partitioned view whose result is small
-/// by construction, which can sort them computed in flight. Both still RENDER —
-/// on the card modal, and the Adj. column still draws — because rendering a
-/// computed value for the rows in a window was never the cost.
+/// **No key here orders across the `ATTACH` boundary from a tenant table.**
+/// That is the property the list exists to hold: `value` and `adj` were
+/// computed by a subquery joining the tenant's `collection` to the shared
+/// catalog's prices across that boundary, and SQLite cannot index across
+/// attached databases — so ordering by one could never be index-satisfied even
+/// in principle (pd-tjym). They are
+/// gone from this surface permanently, not provisionally: their successor is a
+/// partitioned view whose result is small by construction, which can sort them
+/// computed in flight. Both still RENDER — on the card modal, and the Adj.
+/// column still draws — because rendering a computed value for the rows in a
+/// window was never the cost.
+///
+/// What that is **not**, and pd-66hq measured rather than assumed: it is not
+/// "every key is a stored scalar in one database", and none of these orderings
+/// is index-satisfied. `qty` and `added` are still correlated subqueries over
+/// the tenant's `collection`, `rarity` and `dex` are subqueries, `set` is a
+/// joined column, and `price` still COALESCEs shared `latest_prices` with
+/// tenant `manual_prices` (pd-m4gw). Every one of them sorts in a temp b-tree,
+/// and no index can change that — see `SORTS_THAT_STILL_SORT` in this file's
+/// tests for the two structural reasons and pd-pvz0 for the shape that would
+/// fix it.
+///
+/// Nor was the 1,543 ms of the collection's 2,495 ms first paint the price of
+/// ordering. Measured over the same 56,672-row result, `order:value` and
+/// `order:adj` cost what `order:name` costs (±10%), and dropping the ORDER BY
+/// altogether saves 3%: the time is per-row projection — `attack_costs` alone
+/// is 36% — and it is still there. Removing `value` and `adj` fixed an
+/// affordance and an unindexable ordering, not this number (pd-66hq).
 pub const SORT_KEYS: &[&str] = &[
     "name", "number", "set", "rarity", "type", "etype", "hp", "price", "qty", "added", "dex",
     "pokedex",
@@ -1785,6 +1802,322 @@ mod tests {
             page.rows[0].copies.len(),
             2,
             "copies still attach on a page"
+        );
+    }
+
+    // --- the sort surface: stability + index satisfaction (pd-66hq) --------
+
+    /// A catalog where every sort key ties across many rows at once, so the
+    /// only thing separating two rows is the tiebreak: 40 names over 200
+    /// cards, one rarity per 4 cards, two sets, three variants per card — 600
+    /// printings where `order:name` leaves 15-row ties and `order:type`
+    /// leaves one 600-row tie. The 5-row fixture has one tie pair.
+    ///
+    /// Honest about what the walk below can and cannot prove: SQLite's sorter
+    /// is deterministic for a fixed plan and fixed data, so a paged walk and
+    /// the unpaged query agree on tied rows here whether or not the tiebreak
+    /// is in the ORDER BY — removing it does not turn the walk red. The
+    /// tiebreak's necessity is asserted where it can be, on the SQL shape
+    /// (`every_sort_key_carries_the_printing_id_tiebreak`); the walk is
+    /// what that buys, and it is what catches a *plan* that differs between a
+    /// window and the whole result — the thing a spot check cannot see.
+    fn tie_dense_fixture() -> Fix {
+        const CARDS: usize = 200;
+        const NAMES: usize = 40;
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let mut c = open_shared(&shared).unwrap();
+            search_meta::reconcile(&mut c).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, ptcgo_code, name, series, set_sort_order, release_date)
+                 VALUES ('tie1','TI1','Tie Set One','Ties',1,'2024/01/01'),
+                        ('tie2','TI2','Tie Set Two','Ties',2,'2024/06/01')",
+                [],
+            )
+            .unwrap();
+            let tx = c.transaction().unwrap();
+            {
+                let mut card = tx
+                    .prepare(
+                        "INSERT INTO cards (card_id,set_code,number,number_sortable,name,
+                             supertype,types,rarity,hp,national_pokedex_numbers)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    )
+                    .unwrap();
+                let mut pr = tx
+                    .prepare(
+                        "INSERT INTO printings (printing_id,card_id,variant,tcgplayer_product_id,
+                             sub_type_name)
+                         VALUES (?1,?2,?3,?4,'Normal')",
+                    )
+                    .unwrap();
+                let mut price = tx
+                    .prepare(
+                        "INSERT INTO latest_prices (tcgplayer_product_id,sub_type_name,source,
+                             price_type,price,observed_at)
+                         VALUES (?1,'Normal','tcgcsv','market',?2,'2026-08-09')",
+                    )
+                    .unwrap();
+                for i in 0..CARDS {
+                    let card_id = format!("tie-{i}");
+                    card.execute(rusqlite::params![
+                        card_id,
+                        if i % 2 == 0 { "tie1" } else { "tie2" },
+                        (i % 50 + 1).to_string(),
+                        (i % 50 + 1) as i64,
+                        format!("Tied Mon {}", i % NAMES),
+                        if i % 5 == 0 { "Trainer" } else { "Pokémon" },
+                        if i % 5 == 0 {
+                            None
+                        } else {
+                            Some(format!("[\"{}\"]", ["Fire", "Water", "Grass"][i % 3]))
+                        },
+                        ["Common", "Uncommon", "Rare", "Rare Holo"][(i / 4) % 4],
+                        // Ten HP buckets and ten dex buckets: `order:hp` and
+                        // `order:dex` get long ties too rather than a total
+                        // order of their own.
+                        60 + (i % 10) as i64 * 20,
+                        format!("[{}]", i % 10 + 1),
+                    ])
+                    .unwrap();
+                    for (v, variant) in ["normal", "reverse_holo", "holo"].iter().enumerate() {
+                        let product = (i * 3 + v) as i64 + 90_000;
+                        pr.execute(rusqlite::params![
+                            format!("{card_id}-{variant}"),
+                            card_id,
+                            variant,
+                            product
+                        ])
+                        .unwrap();
+                        // Prices in 20 buckets, and every fifth printing has
+                        // none at all — `order:price` must tie on NULL too.
+                        if product % 5 != 0 {
+                            price
+                                .execute(rusqlite::params![product, (i % 20) as f64 + 0.5])
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+            tx.commit().unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        // Own 0, 1 or 2 copies of the first 300 printings so `order:qty` has
+        // three buckets and the rest of the catalog ties at 0.
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            {
+                let mut ins = tx
+                    .prepare(
+                        "INSERT INTO collection (printing_id,condition,language,acquired_at,
+                             source,status)
+                         VALUES (?1,?2,'English','2025-01-01','manual_id','owned')",
+                    )
+                    .unwrap();
+                for i in 0..50 {
+                    let card_id = format!("tie-{i}");
+                    for (v, variant) in ["normal", "reverse_holo", "holo"].iter().enumerate() {
+                        let printing = format!("{card_id}-{variant}");
+                        for _ in 0..(v % 3) {
+                            ins.execute(rusqlite::params![
+                                printing,
+                                ["Near Mint", "Lightly Played"][i % 2]
+                            ])
+                            .unwrap();
+                        }
+                    }
+                }
+            }
+            tx.commit().unwrap();
+        }
+        let registry = search_meta::load_registry(&conn).unwrap();
+        let flags = search_meta::load_flags(&conn).unwrap();
+        Fix {
+            _dir: dir,
+            shared,
+            conn,
+            registry,
+            flags,
+        }
+    }
+
+    /// Every sort ends in the unique `p.printing_id` tiebreak — the
+    /// property the offset walk below depends on. Asserted per key rather than
+    /// once for the default, because `order_sql` is a match arm per key and a
+    /// new arm is exactly where the tiebreak would go missing.
+    #[test]
+    fn every_sort_key_carries_the_printing_id_tiebreak() {
+        for key in SORT_KEYS {
+            let mut c = all_printings();
+            c.override_order(Some(key), Some("desc"));
+            let sql = build_full_sql(&c, Some((250, 0)));
+            assert!(
+                sql.contains("cd.number_sortable ASC, p.printing_id ASC LIMIT ? OFFSET ?"),
+                "order:{key} must end in the unique tiebreak: {sql}"
+            );
+            // The direction applies to the sort column, never to the tiebreak:
+            // flipping the tiebreak with it would reorder tied rows between a
+            // page and the whole result.
+            assert!(
+                sql.contains("DESC, cd.number_sortable ASC"),
+                "order:{key} desc keeps an ASC tiebreak: {sql}"
+            );
+        }
+    }
+
+    /// The tiebreak is only worth having if the column it names is unique —
+    /// `printing_id` is the primary key of *both* tables the search reads
+    /// printings from, so it is unique across their union as well.
+    #[test]
+    fn the_tiebreak_column_is_unique_in_every_table_it_comes_from() {
+        let f = tie_dense_fixture();
+        // Qualified by database: `printings` is the catalog's, reached through
+        // the TEMP VIEW the ATTACH puts up, and a view has no indexes of its
+        // own — asking unqualified would ask the view and always answer no.
+        for (db, table) in [("shared", "printings"), ("main", "user_printings")] {
+            let unique_on_printing_id: bool = f
+                .conn
+                .prepare(&format!(
+                    "SELECT EXISTS (SELECT 1 FROM pragma_index_list('{table}','{db}') l
+                        WHERE l.\"unique\" = 1
+                          AND (SELECT COUNT(*) FROM pragma_index_info(l.name,'{db}')) = 1
+                          AND (SELECT name FROM pragma_index_info(l.name,'{db}')) = 'printing_id')"
+                ))
+                .unwrap()
+                .query_row([], |r| r.get(0))
+                .unwrap();
+            assert!(
+                unique_on_printing_id,
+                "{db}.{table}.printing_id must be backed by a unique index — the ORDER BY \
+                 tiebreak is a total order only if it is"
+            );
+        }
+    }
+
+    /// Walk the ENTIRE result in windows, for every sort key, in both
+    /// directions, and assert the windows concatenate to exactly the unpaged
+    /// order: no row dropped, no row served twice.
+    ///
+    /// The window size deliberately does not divide the total, so boundaries
+    /// land mid-tie — and the catalog is built so that every key has long
+    /// ties for them to land in ([`tie_dense_fixture`], which also says what
+    /// this walk does and does not prove).
+    #[test]
+    fn offset_walk_over_every_sort_key_has_no_gaps_or_repeats() {
+        let f = tie_dense_fixture();
+        for key in SORT_KEYS {
+            for dir in ["asc", "desc"] {
+                let mut c = all_printings();
+                c.override_order(Some(key), Some(dir));
+                let expected: Vec<String> = search(&f.conn, &c)
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| r.printing_id)
+                    .collect();
+                assert_eq!(expected.len(), 600, "order:{key} {dir} sees the catalog");
+
+                let mut walked: Vec<String> = Vec::new();
+                let mut offset = 0u32;
+                loop {
+                    let page = search_page(&f.conn, &c, Slice::Page { limit: 37, offset }).unwrap();
+                    assert_eq!(
+                        page.total,
+                        expected.len() as i64,
+                        "order:{key} {dir}: total is page-invariant"
+                    );
+                    if page.rows.is_empty() {
+                        break;
+                    }
+                    walked.extend(page.rows.into_iter().map(|r| r.printing_id));
+                    offset += 37;
+                }
+                assert_eq!(
+                    walked, expected,
+                    "order:{key} {dir}: windows concatenate to the whole result"
+                );
+                let mut unique: Vec<&String> = walked.iter().collect();
+                unique.sort();
+                unique.dedup();
+                assert_eq!(
+                    unique.len(),
+                    expected.len(),
+                    "order:{key} {dir}: no printing served twice"
+                );
+            }
+        }
+    }
+
+    /// Which orderings SQLite still has to sort in a temp b-tree, and — the
+    /// point of pinning it — which no longer do.
+    ///
+    /// A sort that falls back to a temp b-tree materialises and sorts the
+    /// whole match set before `LIMIT` can discard any of it, so it is "fast
+    /// today at this row count" rather than fast. `EXPLAIN QUERY PLAN` is the
+    /// only thing that tells the two apart, which is why this is a test and
+    /// not a review note.
+    ///
+    /// **Every key `sort=` accepts is still on this list** — the constant IS
+    /// [`SORT_KEYS`] — and no index closes any of them, because two things block index satisfaction structurally
+    /// (measured on SQLite 3.45.1, pd-66hq):
+    ///
+    /// 1. **The ORDER BY's unique tiebreak lives on a different table from
+    ///    its sort column.** `ORDER BY cd.name, cd.number_sortable,
+    ///    p.printing_id` needs the leading terms from `cards` and the last
+    ///    from `printings`; SQLite will not use an inner-loop index to
+    ///    satisfy a trailing ORDER BY term, even given
+    ///    `cards(name, number_sortable, card_id)` and
+    ///    `printings(card_id, printing_id)` as covering unique indexes. It
+    ///    reports `USE TEMP B-TREE FOR RIGHT PART OF ORDER BY` and sorts.
+    /// 2. **`FROM` is a cross-database `UNION ALL`** (`printings` in the
+    ///    shared catalog ⋃ `user_printings` in the tenant), which SQLite
+    ///    cannot flatten into a join and therefore cannot index. Even with the
+    ///    sort key denormalised onto the printing row, ordering over that
+    ///    compound is a temp b-tree.
+    ///
+    /// The shape that IS clean — verified against a 74,635-printing synthetic
+    /// catalog — is a compound of two *separately joined* arms, each ordered
+    /// by an index on `(sort_key, printing_id)` of its own table, which SQLite
+    /// answers with `MERGE (UNION ALL)` and no sort. Getting there means the
+    /// sort keys become stored scalars on `printings` *and* `user_printings`
+    /// and `build_full_sql` emits a compound; that is a schema and query
+    /// change, not an index, and it is filed rather than smuggled in here.
+    ///
+    /// **This list may only get shorter.** Make a sort index-satisfied and
+    /// delete its entry in the same commit; the test fails either way round,
+    /// so neither a regression nor an unclaimed win can pass quietly.
+    const SORTS_THAT_STILL_SORT: &[&str] = SORT_KEYS;
+
+    #[test]
+    fn query_plan_pins_which_sorts_are_still_temp_b_tree_sorted() {
+        let f = tie_dense_fixture();
+        let mut sorting: Vec<&str> = Vec::new();
+        for key in SORT_KEYS {
+            let mut c = f.compile("supertype:Pokémon");
+            c.set_catalog_wide(true);
+            c.override_order(Some(key), None);
+            let sql = build_full_sql(&c, Some((250, 0)));
+            let mut params = c.params.clone();
+            params.push(Value::Integer(250));
+            params.push(Value::Integer(0));
+            let mut stmt = f
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            let plan: Vec<String> = stmt
+                .query_map(params_from_iter(params.iter()), |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            if plan.iter().any(|line| line.contains("TEMP B-TREE")) {
+                sorting.push(key);
+            }
+        }
+        assert_eq!(
+            sorting, SORTS_THAT_STILL_SORT,
+            "the set of orderings SQLite sorts in a temp b-tree moved — if one \
+             became index-satisfied, take it off SORTS_THAT_STILL_SORT in this \
+             commit; if one regressed, it is a performance bug"
         );
     }
 }

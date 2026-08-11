@@ -289,24 +289,30 @@ test('no sort control on the grid offers value or adj', async ({ page }) => {
 	const labels = await page.locator('.gridsort .sortbtn').allInnerTexts();
 	expect(labels.length, 'the grid still offers sorts').toBeGreaterThan(0);
 	for (const label of labels) {
-		expect(label, `grid sort buttons: ${labels.join(', ')}`).not.toMatch(/Value|Adj\./);
+		expect(label, `grid sort buttons: ${labels.join(', ')}`).not.toMatch(/Value|Adj\./i);
 	}
 });
 
 test('the table has no Value column, and Adj. draws but does not sort', async ({ page }) => {
 	await openCollection(page, 'table');
-	const headers = await page.locator('table.dd thead th').allInnerTexts();
-	expect(headers, `headers: ${headers.join(' | ')}`).not.toContain('Value');
+	// Compared upper-cased throughout this spec: `allInnerTexts` returns
+	// *rendered* text and these headers are `text-transform: uppercase`, so a
+	// case-sensitive assertion here can only ever pass — including on the day
+	// the Value column comes back as "VALUE" (pd-66hq).
+	const headers = (await page.locator('table.dd thead th').allInnerTexts()).map((h) =>
+		h.toUpperCase()
+	);
+	expect(headers, `headers: ${headers.join(' | ')}`).not.toContain('VALUE');
 
 	// Adj. is still a column — it is the last one, and it still draws a figure.
-	expect(headers.at(-1)).toMatch(/^Adj\./);
+	expect(headers.at(-1)).toMatch(/^ADJ\./);
 	await expect(page.locator('table.dd tbody tr:not(.vspace)').first()).toBeVisible();
 
 	// But it is not clickable: no `.sortable` header carries it, so there is no
 	// affordance to order 56k rows by a column no index can satisfy.
 	const sortable = await page.locator('table.dd thead th.sortable').allInnerTexts();
 	for (const label of sortable) {
-		expect(label, `sortable headers: ${sortable.join(', ')}`).not.toMatch(/Value|Adj\./);
+		expect(label, `sortable headers: ${sortable.join(', ')}`).not.toMatch(/Value|Adj\./i);
 	}
 });
 

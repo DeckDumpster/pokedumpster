@@ -51,6 +51,18 @@ fi
 SERVICE_NAME="pkdump-${INSTANCE}"
 CONTAINER="systemd-${SERVICE_NAME}"
 
+# Same container store deploy/ci.sh uses, resolved the same way: the host config
+# names it, an explicit PKDUMP_STORE_ROOT beats that, unconfigured means Podman's
+# default. Without this, `setup.sh` below would honour PKDUMP_STORE_ROOT while
+# the bare `podman port` further down asked the DEFAULT store, find nothing, and
+# time out waiting for a server that was already answering (pd-66hq).
+# `pkdump_store_activate` puts a flag-carrying `podman` shim on PATH, so every
+# podman call in this script — and in setup.sh/teardown.sh — lands in one store.
+# shellcheck source=deploy/store-lib.sh
+. "$REPO_DIR/deploy/store-lib.sh"
+pkdump_store_load_config
+pkdump_store_activate
+
 cleanup() {
     if [ "$KEEP" = true ]; then
         echo "==> Leaving '${INSTANCE}' running (--keep). Tear down with:"

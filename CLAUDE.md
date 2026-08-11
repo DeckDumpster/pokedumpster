@@ -331,7 +331,8 @@ Three rules that are settled, and are the ones easiest to erode:
   **no default**. Asked for and unconfigured is a refusal that names the
   file, never a silent skip.
 - **There is deliberately no lifecycle rule on `raw/`.** Indefinite
-  retention is measured (~4.1 MB/day compressed) and intentional.
+  retention is measured — ~7.4 MB/night in the bucket across all four
+  datasets, from a real run (`deploy/LAKE.md` §2) — and intentional.
 
 Landing is opt-in and off by default: with the flag absent, `lake.env` is
 never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the

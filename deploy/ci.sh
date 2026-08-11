@@ -70,7 +70,9 @@
 #                      snapshot_today produces for the same tenant and date, a
 #                      second tenant who never had a snapshot row gets one
 #                      (pd-s5yn inverted), and a tenant nobody can write to is
-#                      skipped with the run exiting 2 rather than 0. See
+#                      skipped with the run exiting 2 rather than 0. §10 then
+#                      drives the SHIPPED deploy/value-snapshots.sh — the file
+#                      the nightly timer executes — over the same lake. See
 #                      tests/lake/value_snapshots.sh.
 #  15. Refresh gate:   the other half of that — a real `pkdump data refresh`,
 #                      through the shipped image, over a data directory with
@@ -230,7 +232,7 @@ step "cargo fmt --check"
 # firing, and one that drives deploy.sh over stale installed units and asserts
 # every one comes back matching the shipped template (pd-2t6u).
 
-step "Deploy scripts: unit install + store resolution + low-disk guard"
+step "Deploy scripts: unit install + store resolution + low-disk guard + scheduling"
 bash "$REPO_DIR/tests/deploy/run.sh"
 
 # --- 3. Frontend gate -------------------------------------------------------

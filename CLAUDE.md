@@ -81,7 +81,8 @@ cargo test -p pkdump-ingest --test raw_landing
 bash tests/lake/value_snapshots.sh
                                  # the transform tier: value snapshots for EVERY
                                  #   registered tenant, byte-identical to the
-                                 #   Rust aggregate they replace
+                                 #   Rust aggregate they replace — and §10, the
+                                 #   shipped wrapper its timer runs
 bash tests/refresh/tenant_bytes.sh
                                  # the other half: a real `pkdump data refresh`
                                  #   over a data dir with two tenants in it
@@ -106,7 +107,8 @@ cd frontend && npm run check     # svelte-check / TypeScript
 cd frontend && npm test          # design-token gates (WCAG AA contrast, layer
                                  #   split, raw-colour + raw-dimension ratchets)
 
-# Deploy scripts — container-store resolution + the low-disk guard (hermetic)
+# Deploy scripts — container-store resolution, the low-disk guard, the unit-file
+# install, and the transform tier's scheduling (0/2/1, ordering). Hermetic.
 bash tests/deploy/run.sh
 
 # Shell-harness self-tests — sub-second, no container. The second one also
@@ -390,6 +392,28 @@ implementations of one calculation, deliberately, because the rewrite has to
 be *observably a no-op* before it is trusted. The container gate is what holds
 them together: it diffs the transform's rows against the ones Rust's
 `snapshot_today` computed over the same fixture.
+
+**It is on a timer** (pd-8m5c) — `pkdump-value-snapshots@<instance>.timer`, whose
+service runs `deploy/value-snapshots.sh`. With step 7 deleted this job is the
+only thing that records today's value for anybody, so a job nobody scheduled is
+a value history that stops advancing, quietly, on every box. Three things about
+the scheduling are decisions:
+
+- **The ordering is declared, not timed.** `After=pkdump-refresh@%i.service`
+  is the guarantee that the two never run beside each other; the timer's
+  `OnCalendar=07:00` is *derived* from the refresh unit's own bounds (06:00 +
+  `RandomizedDelaySec` + `TimeoutStartSec`) and `tests/deploy/run.sh` §10
+  recomputes it. Not `Wants=`: the refresh is a oneshot without
+  `RemainAfterExit`, so pulling it in would re-run the catalog fetch nightly.
+- **`SuccessExitStatus=2`.** A skipped tenant is a partial run — a database
+  mid-import, a restore in flight — not a failure, and a unit that paged on it
+  would page on a normal night. It is not silent either: the wrapper names the
+  skipped tenants and pushes a warning. Exit 1 still fires `OnFailure=`.
+- **The date comes from the scheduler.** The job refuses to default `--date`
+  from the clock (backfilling an older day is the same operation), so the
+  wrapper — the one component that is allowed to know what day it is — names it.
+
+`catalog.prices` itself is still built by hand between the two (pd-up36).
 
 **The catalog refresh writes no tenant database at all** (pd-hkbc). Step 7 is
 gone; `pkdump data refresh` touches `shared.sqlite` and, with `--land-raw`, the

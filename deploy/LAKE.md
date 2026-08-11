@@ -89,11 +89,25 @@ fetch without landing, on purpose.
 **`raw/` is kept indefinitely, and the absence of a lifecycle rule on it is a
 decision, not an oversight.**
 
-It is measured rather than assumed: 295,951 price records/day × ~110 B =
-~33 MB/day raw, **~4.1 MB/day compressed, ~1.5 GB/year, ~15 GB over ten
-years** — roughly $0.03/month in year one. Cheaper than revisiting the
-decision, and far cheaper than losing the ability to rebuild a date. (Prices
-only; cards and sets are near-static.)
+It is measured rather than assumed. The first figures here were an estimate
+over the price payloads alone; these are what one real refresh actually landed
+(`pd-fet2`, 2026-08-11, English + Japanese):
+
+| dataset | parts | uncompressed | in the bucket |
+| --- | ---: | ---: | ---: |
+| `tcgcsv/products` | 671 | 73.9 MB | **6.12 MB** |
+| `tcgcsv/prices` | 671 | 11.2 MB | **1.26 MB** |
+| `tcgcsv/groups` | 2 | 135 kB | 21 kB |
+| `pokemontcgio/sets` | 1 | 58.8 kB | 6.6 kB |
+| **one night** | **1,345** | **85.3 MB** | **7.40 MB** |
+
+**~7.4 MB/night, ~2.7 GB/year, ~27 GB over ten years** — still roughly
+$0.03/month in year one, so the decision is unchanged, but note two things the
+estimate got wrong. `products` is landed every night and is **five times the
+size of `prices`**, so "prices only; cards and sets are near-static" was the
+wrong simplification: a group's product list is re-fetched whole each run
+whether or not it moved. And the bill is not really storage — 1,349 objects a
+night is ~492k PUTs/year, about $2.46, which is more than the bytes cost.
 
 If you are here because you found an unmanaged prefix and were about to tidy
 it up: **this is the one that is meant to be unmanaged.**
@@ -398,3 +412,55 @@ Both Rust tiers are hermetic. `PKDUMP_LAKE_DIR` selects a directory-backed
 store instead of a bucket, which is what lets the landing zone's behaviour be
 asserted without credentials or a network; the Python reader honours the same
 variable for the same reason.
+
+---
+
+## 8. The first real run, and what it cost
+
+Everything above shipped against fixtures, a directory-backed store, and a
+MinIO. `pd-fet2` ran it against the real bucket for the first time on
+2026-08-11. It worked — but three things are worth knowing before you run it
+yourself, and none of them were visible from a hermetic gate.
+
+### `lake.env` must spell the keys `PKDUMP_LAKE_S3_*`
+
+The file on the box had been written from the design note as
+`PKDUMP_LAKE_BUCKET` / `PKDUMP_LAKE_REGION` / `PKDUMP_LAKE_RAW_PREFIX`. Nothing
+reads those names. `--land-raw` refused at startup — correctly, and naming the
+file — but "the lake is configured" and "the lake is configured with the names
+the code reads" are not the same statement, and only §3's spelling is the
+second one. `grep PKDUMP_LAKE_S3_BUCKET ~/.config/pkdump/lake.env` before a
+first run.
+
+`PKDUMP_LAKE_S3_PREFIX` is a prefix *in front of* `raw/`. Setting it to `raw`
+lands everything at `raw/raw/…`. Leave it unset unless you mean it.
+
+### A flaky pokemontcg.io takes the whole night with it
+
+`acquire()` fetches the pokemontcg.io tail **first**, and no client here
+retries — errors propagate, by design. api.pokemontcg.io was answering 500/502
+to roughly 45% of requests that day, so most attempts died in their first
+second with nothing landed but a 728-byte manifest saying so. TCGCSV was never
+reached, so no prices landed at all; it took seven attempts to get one clean
+run.
+
+The manifest behaved exactly as designed. The ordering is the problem: prices
+are the dataset that cannot be re-fetched later, and they are behind the
+upstream most likely to be down. Tracked as `pd-nons`.
+
+### What one night is
+
+1,349 objects, 7.40 MB in the bucket, 85.3 MB uncompressed — the table in §2.
+The acquisition phase took **3m38s** (1,345 fetches, each landed before it was
+parsed); the whole `pkdump data refresh --land-raw`, derivation included, took
+**5m5s** on the deployment box. Landing costs about a PUT per fetch and does
+not measurably lengthen the run.
+
+Rebuilding `catalog.prices` for that day from those objects took **29s** and
+produced 305,648 rows, which reconcile exactly against the `shared.sqlite`
+written from the same responses: 289,327 single-card rows identical value for
+value, and every one of the 15,993 sealed prices SQLite kept present in the
+lake (the lake holds 328 more, being the sub-types `sealed_prices` cannot
+represent — §6). `shared.latest_prices` was 296,697 rows, of which exactly
+289,327 carry that day's `observed_at`; the remaining 7,370 are the most
+recent quote for products TCGCSV no longer lists.

@@ -20,8 +20,10 @@ use crate::keys::{Dataset, Source};
 /// One landed payload.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PartRecord {
-    /// The object key, relative to the bucket (including any configured
-    /// prefix), so a reader needs nothing but the manifest to fetch it.
+    /// The object key, starting at `raw/` — the key [`crate::keys`] built,
+    /// **without** any configured bucket prefix. The store adds that at PUT
+    /// time and a reader applies its own, so recording it here would make
+    /// every key double-prefixed for anyone who moved the lake.
     pub key: String,
     /// The upstream URL this payload came from, query string and all.
     pub url: String,

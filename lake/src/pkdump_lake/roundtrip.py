@@ -36,9 +36,8 @@ from __future__ import annotations
 import sys
 
 import pyarrow as pa
-import requests
 
-from .catalog import catalog, nessie_api_base
+from .catalog import catalog, head_hash
 
 NAMESPACE = "proof"
 TABLE = f"{NAMESPACE}.roundtrip"
@@ -52,13 +51,6 @@ SCHEMA = pa.schema(
 
 FIRST = [{"id": 1, "note": "first commit"}]
 SECOND = [{"id": 2, "note": "second commit"}]
-
-
-def head_hash(branch: str) -> str:
-    """The Nessie commit hash at the tip of ``branch``."""
-    resp = requests.get(f"{nessie_api_base()}/trees/{branch}", timeout=30)
-    resp.raise_for_status()
-    return resp.json()["reference"]["hash"]
 
 
 def rows(table_scan) -> list[dict]:

@@ -436,6 +436,29 @@ Measured on this box by `tests/lake/run.sh` (Nessie 0.104.3, PyIceberg 0.11.1):
 | Startup | ~29 s under the cap (~6 s uncapped) — hence `TimeoutStartSec=120` |
 | Version store on disk | **146 MB** for a two-commit toy table, of which ~200 KB is content: the rest is RocksDB WAL preallocation, so it is a floor rather than growth |
 
+### `catalog.prices` — the first table, built from `raw/` alone
+
+```bash
+podman run --rm --network pkdump-lake-prod \
+  -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-prod:19120/iceberg/ \
+  -e PKDUMP_LAKE_S3_BUCKET=<bucket> -e PKDUMP_LAKE_S3_REGION=us-west-2 \
+  localhost/pkdump-lake:prod \
+  pkdump-lake-build-prices --ingest-date 2026-08-11
+```
+
+One row per price actually quoted, at grain `(tcgplayer_product_id,
+sub_type_name, price_type, observed_date)`, partitioned by `observed_date`.
+The date is **required and never taken from the clock** — rebuilding an old
+day is the same operation as building today — and the build replaces that
+day's partition in one commit, so re-running is a replacement rather than a
+doubling.
+
+**It never calls an upstream.** That is the whole claim the landing zone is
+there to support, so `tests/lake/prices.sh` runs the job on a podman
+`--internal` network and proves the network is dead before trusting anything
+the job says. Full runbook, including what happens when a day landed no
+complete run: [LAKE.md](LAKE.md).
+
 ### Time travel, and what Nessie costs to get it
 
 Iceberg + Nessie is deliberately overkill at this data size; **time travel is

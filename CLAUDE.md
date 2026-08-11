@@ -73,6 +73,20 @@ cargo build                      # build all crates
 cargo test                       # run all tests; also regenerates the TypeScript
                                  #   types in frontend/src/lib/types/ via ts-rs
 cargo test -p pkdump-db          # test a single crate
+cargo test -p pkdump-lake        # raw-landing key layout, manifest, config
+cargo test -p pkdump-ingest --test raw_landing
+                                 # the real HTTP clients against a local
+                                 #   upstream: landing is a tee, a retry never
+                                 #   overwrites, a short run says so
+bash tests/lake/value_snapshots.sh
+                                 # the transform tier: value snapshots for EVERY
+                                 #   registered tenant, byte-identical to the
+                                 #   Rust aggregate they replace — and §10, the
+                                 #   shipped wrapper its timer runs
+bash tests/refresh/tenant_bytes.sh
+                                 # the other half: a real `pkdump data refresh`
+                                 #   over a data dir with two tenants in it
+                                 #   leaves every tenant database byte-identical
 cargo clippy --all-targets       # lint (must be clean before commit)
 cargo fmt                        # format
 
@@ -93,7 +107,8 @@ cd frontend && npm run check     # svelte-check / TypeScript
 cd frontend && npm test          # design-token gates (WCAG AA contrast, layer
                                  #   split, raw-colour + raw-dimension ratchets)
 
-# Deploy scripts — container-store resolution + the low-disk guard (hermetic)
+# Deploy scripts — container-store resolution, the low-disk guard, the unit-file
+# install, and the transform tier's scheduling (0/2/1, ordering). Hermetic.
 bash tests/deploy/run.sh
 
 # Shell-harness self-tests — sub-second, no container. The second one also
@@ -120,7 +135,7 @@ cd tests/ui && npm test
 
 ## Architecture Overview
 
-Cargo workspace, five crates (`crates/`):
+Cargo workspace, six crates (`crates/`):
 
 - **pkdump-core** — domain types + pure logic (variant code parsing,
   override matching, import format adapters). No IO.
@@ -132,6 +147,12 @@ Cargo workspace, five crates (`crates/`):
   pokemontcg.io, TCGCSV). Variant expansion lives here, as does the
   Pokémon Japan pipeline (`japan.rs`). Touched only by
   `pkdump setup` / `pkdump data refresh` — never at request time.
+  `landing.rs` is the one place an upstream response becomes bytes, so
+  "land what we fetched" is a property of a single function.
+- **pkdump-lake** — the raw landing zone: the `raw/` key layout, the
+  run manifest, the object stores, and the `lake.env` config. Write-only
+  and offline-only; nothing on the serving path touches it. See
+  `deploy/LAKE.md`.
 - **pkdump-server** — Axum HTTP app; JSON API under `/api` + serves the
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).
@@ -320,6 +341,89 @@ against it.
 All runtime card lookups read the local DB. The upstream APIs are touched
 only by `pkdump setup` / `pkdump data refresh`. See
 `architecture/CARD_DATA_ACCESS.md`.
+
+### The raw landing zone
+
+`pkdump data refresh --land-raw` (and `pkdump setup --land-raw`) writes every
+upstream response it fetches to S3, immutably, **before parsing it** —
+`raw/source=…/dataset=…/ingest_date=…/run=<ULID>/part-NNNN.<ext>.zst` plus a
+`_manifest.json` carrying the URL, HTTP status, byte count and SHA-256 of
+every part. `run=<ULID>` is what makes a retry after a partial failure land
+*beside* the first attempt rather than on it.
+
+Three rules that are settled, and are the ones easiest to erode:
+
+- **`images.pokemontcg.io` is never landed.** The retention arithmetic that
+  justifies keeping `raw/` forever is for JSON only; card art would change it
+  completely. `symbols.rs` fetches without landing, deliberately.
+- **The lake bucket is a different bucket from the Litestream backup
+  bucket**, and its name is host config in `~/.config/pkdump/lake.env` with
+  **no default**. Asked for and unconfigured is a refusal that names the
+  file, never a silent skip.
+- **There is deliberately no lifecycle rule on `raw/`.** Indefinite
+  retention is measured — ~7.4 MB/night in the bucket across all four
+  datasets, from a real run (`deploy/LAKE.md` §2) — and intentional.
+
+Landing is opt-in and off by default: with the flag absent, `lake.env` is
+never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
+runbook.
+
+### The transform tier
+
+`lake/src/pkdump_lake/value_snapshots.py` is the first job that *reads* the
+lake: it values **every registered tenant's** collection from `catalog.prices`
+at a pinned Nessie commit and writes `collection_value_snapshot` into that
+tenant's own database. Three rules hold it in shape:
+
+- **The unit of work is the registry, not the current user.** The refresh used
+  to end with a step 7 that snapshotted the one collection `$PKDUMP_USER`
+  resolves to, and reported success for everybody (pd-s5yn). Any successor to
+  it walks the registry, or it has reintroduced the bug.
+- **A failing tenant is logged and skipped; the run finishes and exits 2.**
+  Exit 0 means every tenant, 1 means the run never started. Silence over a
+  half-completed run is the failure mode being replaced.
+- **Tenant data never enters the lake.** Prices come out of Iceberg; the
+  collection is read from, and the snapshot written back to, SQLite. Neither
+  ever travels the other way, and `tests/lake/value_snapshots.sh` §9 asserts
+  the catalog still holds nothing but `catalog.prices` after a run.
+
+The aggregate itself is a transliteration of `value_history.rs` — two
+implementations of one calculation, deliberately, because the rewrite has to
+be *observably a no-op* before it is trusted. The container gate is what holds
+them together: it diffs the transform's rows against the ones Rust's
+`snapshot_today` computed over the same fixture.
+
+**It is on a timer** (pd-8m5c) — `pkdump-value-snapshots@<instance>.timer`, whose
+service runs `deploy/value-snapshots.sh`. With step 7 deleted this job is the
+only thing that records today's value for anybody, so a job nobody scheduled is
+a value history that stops advancing, quietly, on every box. Three things about
+the scheduling are decisions:
+
+- **The ordering is declared, not timed.** `After=pkdump-refresh@%i.service`
+  is the guarantee that the two never run beside each other; the timer's
+  `OnCalendar=07:00` is *derived* from the refresh unit's own bounds (06:00 +
+  `RandomizedDelaySec` + `TimeoutStartSec`) and `tests/deploy/run.sh` §10
+  recomputes it. Not `Wants=`: the refresh is a oneshot without
+  `RemainAfterExit`, so pulling it in would re-run the catalog fetch nightly.
+- **`SuccessExitStatus=2`.** A skipped tenant is a partial run — a database
+  mid-import, a restore in flight — not a failure, and a unit that paged on it
+  would page on a normal night. It is not silent either: the wrapper names the
+  skipped tenants and pushes a warning. Exit 1 still fires `OnFailure=`.
+- **The date comes from the scheduler.** The job refuses to default `--date`
+  from the clock (backfilling an older day is the same operation), so the
+  wrapper — the one component that is allowed to know what day it is — names it.
+
+`catalog.prices` itself is still built by hand between the two (pd-up36).
+
+**The catalog refresh writes no tenant database at all** (pd-hkbc). Step 7 is
+gone; `pkdump data refresh` touches `shared.sqlite` and, with `--land-raw`, the
+`raw/` prefix, and nothing else. `tests/refresh/tenant_bytes.sh` is the gate: a
+real refresh through the shipped image over a data directory with two
+provisioned tenants, every tenant database byte-identical afterwards. Its
+upstream is `tests/refresh/upstream.py`, a fixture that publishes nothing —
+reached through `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL`
+(`crates/pkdump-ingest/src/upstream.rs`, test-tier, and an override announces
+itself on stderr so a catalog can never be quietly built from the wrong place).
 
 ### Variant expansion
 

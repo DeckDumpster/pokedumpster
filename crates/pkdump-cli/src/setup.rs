@@ -13,8 +13,11 @@
 //! checkout instead of downloading. With those, setup runs fully offline.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use rusqlite::Connection;
+
+use pkdump_lake::RawLanding;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
@@ -51,71 +54,42 @@ pub struct SetupArgs {
     /// Shared catalog database path (default: ~/.pkdump/shared.sqlite).
     #[arg(long, value_name = "PATH")]
     db: Option<PathBuf>,
+
+    /// Land every upstream response in the raw landing zone before parsing
+    /// it, under `raw/source=.../ingest_date=.../run=<ULID>/`.
+    ///
+    /// Requires ~/.config/pkdump/lake.env to name the bucket; the command
+    /// refuses to start without it rather than landing nothing quietly.
+    /// Card art and set symbols are never landed. Also settable as
+    /// PKDUMP_LAND_RAW=1.
+    #[arg(long)]
+    land_raw: bool,
 }
 
 /// Execute `pkdump setup`.
 pub fn run(args: SetupArgs) -> anyhow::Result<()> {
-    let db_path = match args.db {
+    let db_path = match args.db.clone() {
         Some(p) => p,
         None => pkdump_db::shared_db_path()?,
     };
     println!("Opening shared catalog at {}", db_path.display());
     let mut conn = pkdump_db::open_shared(&db_path)?;
 
-    // 1. Bulk catalog import.
-    let stats = match &args.from_dir {
-        Some(dir) => {
-            println!("Importing pokemon-tcg-data from {}", dir.display());
-            pokemon_tcg_data::import_from_dir(&mut conn, dir)?
-        }
-        None => {
-            println!("Downloading the pokemon-tcg-data repo...");
-            pokemon_tcg_data::download_and_import(&mut conn)?
-        }
-    };
-    println!("  imported {} sets, {} cards", stats.sets, stats.cards);
+    // Resolved before anything is fetched: a landing zone that was asked for
+    // and is not configured should stop the run at the start, not after an
+    // hour of requests whose bytes then have nowhere to go.
+    let landing = crate::landing::open(args.land_raw, &observed_date())?;
 
-    // 2. pokemontcg.io tail.
-    if args.skip_tail {
-        println!("Skipping pokemontcg.io tail fetch.");
-    } else {
-        println!("Filling newest sets from pokemontcg.io...");
-        let added = import_tail(&mut conn)?;
-        println!("  added {added} set(s) not yet in the repo");
+    // 1-3b. The acquisition phase — every step that reaches an upstream we
+    //        keep bytes from. Bracketed so the landing zone's manifests are
+    //        written whichever way it ends; everything after it is local
+    //        derivation, whose failure says nothing about whether the raw
+    //        bytes arrived.
+    let acquired = acquire(&mut conn, &args, landing.as_ref());
+    if let Some(landing) = &landing {
+        crate::landing::finalize_landing(landing, acquired.as_ref().err())?;
     }
-
-    // 3. TCGCSV groups, sealed products, single-card products, prices.
-    //    Variant expansion (step 4) reads this back out as its
-    //    authoritative source.
-    if args.skip_prices {
-        println!("Skipping TCGCSV import.");
-    } else {
-        println!("Importing TCGCSV groups, products, prices...");
-        let r = import_tcgcsv(&mut conn)?;
-        println!(
-            "  {} groups, {} sealed products, {} card products, {} price rows",
-            r.0, r.1, r.2, r.3
-        );
-    }
-
-    // 3b. Pokémon Japan (TCGCSV categoryId 85). No pokemontcg.io
-    //     counterpart exists, so sets and cards are synthesized straight
-    //     from TCGCSV — see `pkdump_ingest::japan`. Runs after the
-    //     English pass so the two never contend for a set_code.
-    if args.skip_prices || args.skip_japan {
-        println!("Skipping the Pokémon Japan catalog.");
-    } else {
-        println!("Importing the Pokémon Japan catalog (TCGCSV category 85)...");
-        let j = japan::import_all(
-            &mut conn,
-            &chrono::Utc::now().to_rfc3339(),
-            &observed_date(),
-        )?;
-        println!(
-            "  {} groups, {} cards, {} card products, {} sealed products, {} price rows",
-            j.groups, j.cards, j.card_products, j.sealed_products, j.price_rows
-        );
-    }
+    acquired?;
 
     // 4. Reconcile the variants lookup table — re-apply data/variants.json
     //    and synthesize rows for any set-specific stamp codes already in
@@ -222,13 +196,95 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Everything in `setup` that reaches an upstream whose bytes we keep: the
+/// pokemon-tcg-data tarball, the pokemontcg.io tail, and both TCGCSV
+/// categories.
+///
+/// Separated from the rest of `run` because acquiring and deriving are
+/// different jobs with different failure meanings: a fetch that fails leaves
+/// the raw prefix short and its manifest has to say so, while a variant
+/// expansion that fails says nothing about the bytes, which are already
+/// landed and complete.
+///
+/// `symbols::normalize_all_symbols` also fetches, from
+/// `images.pokemontcg.io`, and is deliberately *not* here: card art and set
+/// symbols are excluded from the landing zone, because the retention
+/// arithmetic that justifies keeping `raw/` forever is for JSON only.
+fn acquire(
+    conn: &mut Connection,
+    args: &SetupArgs,
+    landing: Option<&Arc<RawLanding>>,
+) -> anyhow::Result<()> {
+    // 1. Bulk catalog import.
+    let stats = match &args.from_dir {
+        Some(dir) => {
+            println!("Importing pokemon-tcg-data from {}", dir.display());
+            pokemon_tcg_data::import_from_dir(conn, dir)?
+        }
+        None => {
+            println!("Downloading the pokemon-tcg-data repo...");
+            pokemon_tcg_data::download_and_import(conn, &landing.cloned())?
+        }
+    };
+    println!("  imported {} sets, {} cards", stats.sets, stats.cards);
+
+    // 2. pokemontcg.io tail.
+    if args.skip_tail {
+        println!("Skipping pokemontcg.io tail fetch.");
+    } else {
+        println!("Filling newest sets from pokemontcg.io...");
+        let added = import_tail(conn, landing)?;
+        println!("  added {added} set(s) not yet in the repo");
+    }
+
+    // 3. TCGCSV groups, sealed products, single-card products, prices.
+    //    Variant expansion (step 4) reads this back out as its
+    //    authoritative source.
+    if args.skip_prices {
+        println!("Skipping TCGCSV import.");
+    } else {
+        println!("Importing TCGCSV groups, products, prices...");
+        let r = import_tcgcsv(conn, landing)?;
+        println!(
+            "  {} groups, {} sealed products, {} card products, {} price rows",
+            r.0, r.1, r.2, r.3
+        );
+    }
+
+    // 3b. Pokémon Japan (TCGCSV categoryId 85). No pokemontcg.io
+    //     counterpart exists, so sets and cards are synthesized straight
+    //     from TCGCSV — see `pkdump_ingest::japan`. Runs after the
+    //     English pass so the two never contend for a set_code.
+    if args.skip_prices || args.skip_japan {
+        println!("Skipping the Pokémon Japan catalog.");
+    } else {
+        println!("Importing the Pokémon Japan catalog (TCGCSV category 85)...");
+        let j = japan::import_all(
+            conn,
+            &chrono::Utc::now().to_rfc3339(),
+            &observed_date(),
+            landing.cloned(),
+        )?;
+        println!(
+            "  {} groups, {} cards, {} card products, {} sealed products, {} price rows",
+            j.groups, j.cards, j.card_products, j.sealed_products, j.price_rows
+        );
+    }
+
+    Ok(())
+}
+
 /// Fetch the pokemontcg.io set list and import any set the repo did not have.
 ///
 /// A set row with no `ptcgio_fetched_at` was synthesized locally (a bridge
 /// entry, or TCGCSV set discovery running ahead of upstream) and counts as
 /// missing — importing it is how the real cards supersede the stubs.
-fn import_tail(conn: &mut Connection) -> anyhow::Result<usize> {
-    let client = PokemonTcgClient::new()?;
+fn import_tail(conn: &mut Connection, landing: Option<&Arc<RawLanding>>) -> anyhow::Result<usize> {
+    let client = crate::landing::with_landing(
+        PokemonTcgClient::new()?,
+        landing,
+        PokemonTcgClient::landing_in,
+    );
     let now = chrono::Utc::now().to_rfc3339();
     let mut added = 0;
     for set in client.fetch_sets()? {
@@ -251,8 +307,12 @@ fn import_tail(conn: &mut Connection) -> anyhow::Result<usize> {
 /// (persisted to `tcgcsv_products` for variant expansion to read), and a
 /// fresh price snapshot. Returns (groups, sealed products, card products,
 /// price rows).
-fn import_tcgcsv(conn: &mut Connection) -> anyhow::Result<(usize, usize, usize, usize)> {
-    let client = TcgcsvClient::new()?;
+fn import_tcgcsv(
+    conn: &mut Connection,
+    landing: Option<&Arc<RawLanding>>,
+) -> anyhow::Result<(usize, usize, usize, usize)> {
+    let client =
+        crate::landing::with_landing(TcgcsvClient::new()?, landing, TcgcsvClient::landing_in);
     let now = chrono::Utc::now().to_rfc3339();
     let observed = observed_date();
 
@@ -317,6 +377,7 @@ mod tests {
             skip_prices: true,
             skip_japan: true,
             db: Some(db_path.clone()),
+            land_raw: false,
         })
         .unwrap();
 

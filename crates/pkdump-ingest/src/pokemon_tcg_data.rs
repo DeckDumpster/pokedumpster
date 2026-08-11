@@ -10,11 +10,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use pkdump_lake::{Dataset, PartFormat, Source};
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::{IngestError, Result};
+use crate::landing::{self, Landing};
 use crate::pokemontcg::{PokemonTcgCard, PokemonTcgSet, cards_from_values};
 
 const UPSTREAM_CARD_CORRECTIONS: &str =
@@ -177,15 +179,23 @@ pub fn import_from_dir(conn: &mut Connection, dir: &Path) -> Result<ImportStats>
 }
 
 /// Download the repo tarball and import it into the shared catalog.
-pub fn download_and_import(conn: &mut Connection) -> Result<ImportStats> {
-    let bytes = reqwest::blocking::Client::builder()
+///
+/// `landing` lands the tarball exactly as fetched before a byte of it is
+/// unpacked. The corpus is one archive carrying both sets and cards, so it
+/// lands under `dataset=bulk` rather than pretending to be either.
+pub fn download_and_import(conn: &mut Connection, landing: &Landing) -> Result<ImportStats> {
+    let http = reqwest::blocking::Client::builder()
         .user_agent("pokedumpster/0.1 (+cache-population)")
         .timeout(std::time::Duration::from_secs(120))
-        .build()?
-        .get(REPO_TARBALL)
-        .send()?
-        .error_for_status()?
-        .bytes()?;
+        .build()?;
+    let bytes = landing::fetch_bytes(
+        &http,
+        http.get(REPO_TARBALL),
+        landing.as_ref(),
+        Source::PokemonTcgData,
+        Dataset::Bulk,
+        PartFormat::TarGz,
+    )?;
 
     let tmp = tempfile::tempdir()?;
     let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(bytes));

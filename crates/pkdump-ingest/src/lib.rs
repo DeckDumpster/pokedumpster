@@ -8,6 +8,7 @@
 pub mod coverage;
 mod error;
 pub mod japan;
+pub mod landing;
 pub mod overrides;
 pub mod pokemon_tcg_data;
 pub mod pokemontcg;
@@ -15,5 +16,6 @@ pub mod set_discovery;
 pub mod standalone_promos;
 pub mod symbols;
 pub mod tcgcsv;
+pub mod upstream;
 
 pub use error::{IngestError, Result};

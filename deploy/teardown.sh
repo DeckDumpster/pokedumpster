@@ -40,9 +40,12 @@ pkdump_store_activate
 echo "==> Stopping ${SERVICE_NAME}..."
 systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
 
-# Stop and disable the per-instance refresh + backup-check timers (ivq).
+# Stop and disable the per-instance refresh + backup-check timers (ivq) and the
+# transform tier's nightly run (pd-8m5c) — an instance that is gone must not
+# leave a timer behind still firing at its volume and its lake network.
 systemctl --user disable --now "pkdump-refresh@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-backup-check@${INSTANCE}.timer" 2>/dev/null || true
+systemctl --user disable --now "pkdump-value-snapshots@${INSTANCE}.timer" 2>/dev/null || true
 
 # Stop the Litestream backup sidecar (pokedumpster-8ch.3).
 systemctl --user stop "pkdump-litestream-${INSTANCE}.service" 2>/dev/null || true

@@ -157,6 +157,44 @@ EOF
     echo "    Wrote ${STORE_ENV} (container store; commented out = Podman's default)."
 fi
 
+# Scaffold the host-wide raw-landing-zone config (pd-th42). The lake bucket is a
+# fact about this AWS account, not a repo constant, so it is host config in the
+# same shape as alerts.env and store.env — and it is scaffolded commented-out so
+# a new box has the knob visible rather than undiscoverable. Nothing lands until
+# BOTH this file names a bucket AND a run passes --land-raw (or PKDUMP_LAND_RAW=1);
+# an unconfigured lake makes those commands refuse rather than land nothing.
+# See deploy/LAKE.md.
+LAKE_ENV="${HOME}/.config/pkdump/lake.env"
+if [ ! -f "$LAKE_ENV" ]; then
+    mkdir -p "${HOME}/.config/pkdump"
+    cat > "$LAKE_ENV" <<'EOF'
+# Host-wide raw-landing-zone config for PokeDumpster (pd-th42).
+#
+# `pkdump data refresh --land-raw` writes every upstream response it fetches to
+# this bucket, immutably, before parsing it:
+#
+#   raw/source=<tcgcsv|pokemontcgio|pokemon-tcg-data>/dataset=<...>/
+#       ingest_date=YYYY-MM-DD/run=<ULID>/part-NNNN.<ext>.zst  +  _manifest.json
+#
+# This MUST be a DIFFERENT bucket from LITESTREAM_S3_BUCKET. The backup bucket
+# holds the only irreplaceable data in the system — tenant databases and the
+# registry — while everything in the lake is reproducible by construction.
+# Keeping them apart is what stops a lifecycle rule written for the lake from
+# ever reaching the backups. Same account, same AWS_PROFILE=pkdump role path,
+# so there is no new credential story: the SDK assumes the role and refreshes.
+#
+# There is deliberately NO lifecycle rule on raw/. See deploy/LAKE.md.
+#PKDUMP_LAKE_S3_BUCKET=CHANGE_ME
+#PKDUMP_LAKE_S3_REGION=us-west-2
+# Optional key prefix inside the bucket; unset means raw/ sits at the root.
+#PKDUMP_LAKE_S3_PREFIX=
+# Optional endpoint override — how a MinIO stands in for S3 in a test.
+#PKDUMP_LAKE_S3_ENDPOINT=
+EOF
+    chmod 600 "$LAKE_ENV"
+    echo "    Wrote ${LAKE_ENV} (raw landing zone; commented out = landing off)."
+fi
+
 # --- Litestream backup sidecar config (pokedumpster-8ch.3) ------------------
 # The sidecar's Quadlet unit is installed above with the rest of them; what is
 # left is its per-instance config (S3 target + AWS creds). Secrets NEVER live in
@@ -319,6 +357,8 @@ echo "    Start:             systemctl --user start ${SERVICE_NAME}"
 echo "    Port:              podman port systemd-${SERVICE_NAME}"
 echo "    Logs:              journalctl --user -u ${SERVICE_NAME} -f"
 echo "    Refresh timer:     systemctl --user enable --now pkdump-refresh@${INSTANCE}.timer"
+echo "    Value snapshots:   needs the lakehouse first (bash deploy/setup-lake.sh ${INSTANCE}), then:"
+echo "                       systemctl --user enable --now pkdump-value-snapshots@${INSTANCE}.timer"
 echo "    Backup-check (L1): edit ~/.config/pkdump/${INSTANCE}/alerts.env (ping URL), then:"
 echo "                       systemctl --user enable --now pkdump-backup-check@${INSTANCE}.timer"
 echo "    Disk alert (L4):   edit ~/.config/pkdump/alerts.env (Pushover), then:"

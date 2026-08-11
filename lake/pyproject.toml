@@ -1,0 +1,31 @@
+[project]
+name = "pkdump-lake"
+version = "0.1.0"
+description = "PokeDumpster offline lakehouse jobs — PyIceberg against the Nessie catalog"
+requires-python = ">=3.11"
+
+# PyIceberg only. No Spark, no JVM in our jobs (design decision 2026-08-10):
+# Nessie is the single JVM service on this box and is treated as a black box.
+dependencies = [
+    "pyiceberg[pyarrow,s3fs]==0.11.1",
+    "requests>=2.31",
+]
+
+[project.scripts]
+# The round-trip proof (pd-fzeb). Not a pipeline — it writes to its own
+# `proof` namespace and never touches a catalog table.
+pkdump-lake-roundtrip = "pkdump_lake.roundtrip:main"
+# Build catalog.prices for one date from raw/ (pd-1ojt). Never calls upstream.
+pkdump-lake-build-prices = "pkdump_lake.prices:main"
+# Check that table against the shared.sqlite built from the same bytes.
+pkdump-lake-verify-prices = "pkdump_lake.verify:main"
+# The transform tier (pd-ruwh): per-tenant value snapshots from catalog.prices,
+# for EVERY registered tenant. Reads the lake, writes each tenant's own SQLite.
+pkdump-lake-value-snapshots = "pkdump_lake.value_snapshots:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

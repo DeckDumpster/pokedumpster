@@ -54,6 +54,31 @@
 #                      disk has, prod's included — and assert every database is
 #                      adopted and serves; then assert one from the future is
 #                      refused. See tests/schema-version/run.sh.
+#  12. Lakehouse gate: stand up Nessie on a durable ROCKSDB store plus a
+#                      throwaway MinIO, and drive the shipped PyIceberg job
+#                      through write -> read -> commit -> TIME TRAVEL, then
+#                      restart the catalog and re-read. Time travel is the only
+#                      reason Iceberg + Nessie is here, and a stack that has
+#                      lost it looks perfectly healthy. See tests/lake/run.sh.
+#  13. Table gate:     build catalog.prices from the raw landing zone on a
+#                      podman --internal network — no route to any upstream,
+#                      asserted rather than assumed — and compare it row for
+#                      row against the shared.sqlite built from the SAME
+#                      upstream bytes. See tests/lake/prices.sh.
+#  14. Transform gate: value snapshots for EVERY registered tenant, computed
+#                      from that table. Byte-identical to what Rust's
+#                      snapshot_today produces for the same tenant and date, a
+#                      second tenant who never had a snapshot row gets one
+#                      (pd-s5yn inverted), and a tenant nobody can write to is
+#                      skipped with the run exiting 2 rather than 0. §10 then
+#                      drives the SHIPPED deploy/value-snapshots.sh — the file
+#                      the nightly timer executes — over the same lake. See
+#                      tests/lake/value_snapshots.sh.
+#  15. Refresh gate:   the other half of that — a real `pkdump data refresh`,
+#                      through the shipped image, over a data directory with
+#                      two provisioned tenants in it, must leave every tenant
+#                      database byte-identical. The refresh is a SHARED-catalog
+#                      job. See tests/refresh/tenant_bytes.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
@@ -207,7 +232,7 @@ step "cargo fmt --check"
 # firing, and one that drives deploy.sh over stale installed units and asserts
 # every one comes back matching the shipped template (pd-2t6u).
 
-step "Deploy scripts: unit install + store resolution + low-disk guard"
+step "Deploy scripts: unit install + store resolution + low-disk guard + scheduling"
 bash "$REPO_DIR/tests/deploy/run.sh"
 
 # --- 3. Frontend gate -------------------------------------------------------
@@ -321,6 +346,48 @@ PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwrig
 
 step "Schema version: an unversioned volume is adopted, a future one is refused"
 bash "$REPO_DIR/tests/schema-version/run.sh"
+
+# --- 12. Lakehouse gate -----------------------------------------------------
+# The offline lakehouse substrate (pd-fzeb), end to end: the PyIceberg job image
+# builds, Nessie serves an Iceberg REST catalog over a durable version store,
+# and a table can be written, committed twice and read back AS OF the first
+# commit. Its own network, MinIO, Nessie, image tag and temp dir — it touches no
+# pkdump-* unit, no real bucket, and no tenant database.
+
+step "Lakehouse: PyIceberg + Nessie write/read/time-travel round trip"
+bash "$REPO_DIR/tests/lake/run.sh"
+
+# --- 13. catalog.prices from raw --------------------------------------------
+# The claim the landing zone exists to make good on, made mechanically: the
+# build job runs on an --internal podman network, so there is no upstream to
+# call even if it wanted one, and its output is compared row for row against
+# the shared.sqlite built from the same upstream bytes.
+
+step "Lakehouse: catalog.prices built from raw/ alone, with no network"
+bash "$REPO_DIR/tests/lake/prices.sh"
+
+# --- 14. The transform tier -------------------------------------------------
+# Value snapshots for EVERY registered tenant, computed from the lake. Two
+# claims at once: the rows are byte-identical to what value_history::
+# snapshot_today produces for the same tenant and date, and a second tenant who
+# has never had a snapshot row gets one — which is pd-s5yn inverted into a test.
+# A tenant whose database is missing or locked is skipped and the run exits 2.
+
+step "Lakehouse: per-tenant value snapshots, for every tenant"
+bash "$REPO_DIR/tests/lake/value_snapshots.sh"
+
+# --- 15. The refresh writes no tenant bytes ---------------------------------
+# The transform tier above is only half the fix for pd-s5yn; this is the other
+# half. A real `pkdump data refresh` runs through the shipped image over a data
+# directory holding two provisioned tenants — one of them the handle
+# $PKDUMP_USER defaults to, which is the exact database the deleted step 7 used
+# to write — and every tenant database has to come out byte-identical. Its
+# upstream is a local fixture that publishes nothing, so the run completes in
+# seconds and depends on nobody's uptime; §5 of the gate asserts it really ran
+# the derivation phases rather than exiting early.
+
+step "Refresh: the catalog refresh writes zero tenant bytes"
+bash "$REPO_DIR/tests/refresh/tenant_bytes.sh"
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

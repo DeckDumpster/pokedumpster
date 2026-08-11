@@ -301,3 +301,25 @@ CREATE TABLE IF NOT EXISTS collection_value_snapshot (
     card_count    INTEGER NOT NULL,
     PRIMARY KEY (date, dimension, bucket)
 );
+
+-- Where one day's snapshot rows came from (pd-ruwh). The lake transform
+-- (lake/src/pkdump_lake/value_snapshots.py) computes the rows above from
+-- `catalog.prices` at a PINNED Nessie commit, and a value derived from a
+-- versioned catalog is only worth as much as the record of which version.
+-- One row per (date, artefact), rewritten with the snapshot rows it explains,
+-- so the pair cannot drift apart.
+--
+-- Deliberately NOT a column on collection_value_snapshot: those rows are the
+-- frozen chart contract, and `tests/lake/value_snapshots.sh` requires the
+-- transform to reproduce them byte-identically to `value_history::snapshot_
+-- today`. A provenance column there would make that comparison impossible to
+-- state. Nothing on the serving path reads this table — it is for the operator
+-- asking "which catalog said my collection was worth that".
+CREATE TABLE IF NOT EXISTS collection_value_snapshot_run (
+    date        TEXT NOT NULL,               -- the snapshot date these rows are for
+    artefact    TEXT NOT NULL,               -- the lake table read, e.g. 'catalog.prices'
+    lake_ref    TEXT NOT NULL,               -- pinned Nessie ref, 'main@<commit-hash>'
+    rows        INTEGER NOT NULL,            -- snapshot rows written for that date
+    written_at  TEXT NOT NULL,               -- UTC ISO-8601
+    PRIMARY KEY (date, artefact)
+);

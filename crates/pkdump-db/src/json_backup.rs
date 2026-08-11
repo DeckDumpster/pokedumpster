@@ -473,7 +473,12 @@ mod tests {
              INSERT INTO collection_value_snapshot (date, dimension, bucket, market_value,
                                                      cost_basis, card_count)
              VALUES ('2026-07-01', 'all', NULL, 123.45, 100.0, 2),
-                    ('2026-07-01', 'set', 'sv3pt5', 123.45, 100.0, 2);",
+                    ('2026-07-01', 'set', 'sv3pt5', 123.45, 100.0, 2);
+
+             INSERT INTO collection_value_snapshot_run (date, artefact, lake_ref, rows,
+                                                        written_at)
+             VALUES ('2026-07-01', 'catalog.prices', 'main@0f1e2d3c', 2,
+                     '2026-07-01T04:00:00Z');",
         )
         .unwrap();
     }

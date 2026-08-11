@@ -58,6 +58,11 @@
 #                      restart the catalog and re-read. Time travel is the only
 #                      reason Iceberg + Nessie is here, and a stack that has
 #                      lost it looks perfectly healthy. See tests/lake/run.sh.
+#  13. Table gate:     build catalog.prices from the raw landing zone on a
+#                      podman --internal network — no route to any upstream,
+#                      asserted rather than assumed — and compare it row for
+#                      row against the shared.sqlite built from the SAME
+#                      upstream bytes. See tests/lake/prices.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
@@ -327,6 +332,15 @@ bash "$REPO_DIR/tests/schema-version/run.sh"
 
 step "Lakehouse: PyIceberg + Nessie write/read/time-travel round trip"
 bash "$REPO_DIR/tests/lake/run.sh"
+
+# --- 13. catalog.prices from raw --------------------------------------------
+# The claim the landing zone exists to make good on, made mechanically: the
+# build job runs on an --internal podman network, so there is no upstream to
+# call even if it wanted one, and its output is compared row for row against
+# the shared.sqlite built from the same upstream bytes.
+
+step "Lakehouse: catalog.prices built from raw/ alone, with no network"
+bash "$REPO_DIR/tests/lake/prices.sh"
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

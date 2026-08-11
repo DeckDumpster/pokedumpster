@@ -15,6 +15,10 @@ dependencies = [
 # The round-trip proof (pd-fzeb). Not a pipeline — it writes to its own
 # `proof` namespace and never touches a catalog table.
 pkdump-lake-roundtrip = "pkdump_lake.roundtrip:main"
+# Build catalog.prices for one date from raw/ (pd-1ojt). Never calls upstream.
+pkdump-lake-build-prices = "pkdump_lake.prices:main"
+# Check that table against the shared.sqlite built from the same bytes.
+pkdump-lake-verify-prices = "pkdump_lake.verify:main"
 
 [build-system]
 requires = ["setuptools>=68"]

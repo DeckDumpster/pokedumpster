@@ -4,7 +4,14 @@
 # The image runs `pkdump serve`; populate the catalog with deploy/seed.sh.
 
 # --- Stage 1: Rust build ----------------------------------------------------
-FROM docker.io/library/rust:1.94-slim AS builder
+# The Debian release is pinned, not inherited. `rust:1.94-slim` is a MOVING
+# tag: upstream retagged it from bookworm to trixie, the builder started
+# linking against glibc 2.39, and every image built after that shipped a
+# binary the bookworm runtime stage below cannot exec (pd-pejn). The invariant
+# is builder glibc <= runtime glibc, and the only thing that holds it is these
+# two FROM lines naming the same release. Change one, change the other — and
+# the target cache id below with them.
+FROM docker.io/library/rust:1.94-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -19,8 +26,16 @@ COPY data/ data/
 # seconds instead of triggering a 3-4 minute release rebuild from scratch.
 # `cp` the binary out at the end because the cache mount disappears after
 # the RUN, taking target/release/pkdump with it.
+#
+# The target cache is scoped by `id=` to the builder's Debian release, and that
+# is load-bearing: cargo fingerprints record crate versions and rustc version,
+# NOT which base image produced the objects. When the base drifted (pd-pejn),
+# a shared cache handed the next build the objects compiled on trixie, cargo
+# relinked nothing, and `cp` copied the unrunnable binary straight through — so
+# re-pinning the FROM line above looked applied and changed nothing, on every
+# box that had already built once. A base-image change must change this id.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked,id=pkdump-target-bookworm \
     cargo build --release --locked --bin pkdump \
  && mkdir -p /out \
  && cp target/release/pkdump /out/pkdump
@@ -28,7 +43,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # --- Stage 2: SvelteKit build -----------------------------------------------
 # adapter-static emits the SPA to frontend/build. The committed ts-rs types in
 # frontend/src/lib/types/ mean this stage needs nothing from the Rust build.
-FROM docker.io/library/node:22-slim AS frontend
+# Pinned to a release for the same reason as the builder, though this stage is
+# far less exposed — it emits static files, not a linked binary.
+FROM docker.io/library/node:22-bookworm-slim AS frontend
 
 WORKDIR /app/frontend
 

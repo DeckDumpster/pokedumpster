@@ -9,6 +9,7 @@ mod db;
 mod export;
 mod fixture;
 mod import;
+mod landing;
 mod serve;
 mod setup;
 mod tenant;

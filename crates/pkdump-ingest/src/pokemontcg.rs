@@ -5,12 +5,15 @@
 //! the primary bulk source; this client fills the tail of newest sets that
 //! the repo lags on (RESEARCH.md §2).
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use pkdump_lake::{Dataset, PartFormat, RawLanding, Source};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::{IngestError, Result};
+use crate::landing::{self, Landing};
 
 const BASE_URL: &str = "https://api.pokemontcg.io/v2";
 const PAGE_SIZE: usize = 250;
@@ -121,6 +124,8 @@ pub struct PokemonTcgClient {
     http: reqwest::blocking::Client,
     api_key: Option<String>,
     min_interval: Duration,
+    landing: Landing,
+    base_url: String,
 }
 
 impl PokemonTcgClient {
@@ -135,16 +140,44 @@ impl PokemonTcgClient {
             http,
             api_key: std::env::var("POKEMONTCG_API_KEY").ok(),
             min_interval: Duration::from_millis(100),
+            landing: None,
+            base_url: BASE_URL.to_string(),
         })
     }
 
-    fn get(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
+    /// Land every response this client receives in `landing`.
+    ///
+    /// Without this the client behaves exactly as it did before the landing
+    /// zone existed.
+    pub fn landing_in(mut self, landing: Arc<RawLanding>) -> Self {
+        self.landing = Some(landing);
+        self
+    }
+
+    /// Point the client at a different origin. Test-tier only — it is how
+    /// the landing path is driven against a local server instead of
+    /// api.pokemontcg.io.
+    pub fn base_url(mut self, base_url: &str) -> Self {
+        self.base_url = base_url.trim_end_matches('/').to_string();
+        self
+    }
+
+    fn get(&self, path: &str, query: &[(&str, String)], dataset: Dataset) -> Result<Value> {
         std::thread::sleep(self.min_interval);
-        let mut req = self.http.get(format!("{BASE_URL}{path}")).query(query);
+        let base = &self.base_url;
+        let mut req = self.http.get(format!("{base}{path}")).query(query);
         if let Some(key) = &self.api_key {
             req = req.header("X-Api-Key", key);
         }
-        Ok(req.send()?.error_for_status()?.json()?)
+        let body = landing::fetch_bytes(
+            &self.http,
+            req,
+            self.landing.as_ref(),
+            Source::PokemonTcgIo,
+            dataset,
+            PartFormat::Json,
+        )?;
+        Ok(serde_json::from_slice(&body)?)
     }
 
     /// Fetch every set in the catalog.
@@ -158,6 +191,7 @@ impl PokemonTcgClient {
                     ("page", page.to_string()),
                     ("pageSize", PAGE_SIZE.to_string()),
                 ],
+                Dataset::Sets,
             )?;
             let batch = parse_set_list(&envelope)?;
             let full = batch.len() == PAGE_SIZE;
@@ -182,6 +216,7 @@ impl PokemonTcgClient {
                     ("page", page.to_string()),
                     ("pageSize", PAGE_SIZE.to_string()),
                 ],
+                Dataset::Cards,
             )?;
             let batch = parse_card_list(&envelope)?;
             let full = batch.len() == PAGE_SIZE;

@@ -73,6 +73,11 @@ cargo build                      # build all crates
 cargo test                       # run all tests; also regenerates the TypeScript
                                  #   types in frontend/src/lib/types/ via ts-rs
 cargo test -p pkdump-db          # test a single crate
+cargo test -p pkdump-lake        # raw-landing key layout, manifest, config
+cargo test -p pkdump-ingest --test raw_landing
+                                 # the real HTTP clients against a local
+                                 #   upstream: landing is a tee, a retry never
+                                 #   overwrites, a short run says so
 cargo clippy --all-targets       # lint (must be clean before commit)
 cargo fmt                        # format
 
@@ -117,7 +122,7 @@ cd tests/ui && npm test
 
 ## Architecture Overview
 
-Cargo workspace, five crates (`crates/`):
+Cargo workspace, six crates (`crates/`):
 
 - **pkdump-core** — domain types + pure logic (variant code parsing,
   override matching, import format adapters). No IO.
@@ -129,6 +134,12 @@ Cargo workspace, five crates (`crates/`):
   pokemontcg.io, TCGCSV). Variant expansion lives here, as does the
   Pokémon Japan pipeline (`japan.rs`). Touched only by
   `pkdump setup` / `pkdump data refresh` — never at request time.
+  `landing.rs` is the one place an upstream response becomes bytes, so
+  "land what we fetched" is a property of a single function.
+- **pkdump-lake** — the raw landing zone: the `raw/` key layout, the
+  run manifest, the object stores, and the `lake.env` config. Write-only
+  and offline-only; nothing on the serving path touches it. See
+  `deploy/LAKE.md`.
 - **pkdump-server** — Axum HTTP app; JSON API under `/api` + serves the
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).
@@ -305,6 +316,31 @@ against it.
 All runtime card lookups read the local DB. The upstream APIs are touched
 only by `pkdump setup` / `pkdump data refresh`. See
 `architecture/CARD_DATA_ACCESS.md`.
+
+### The raw landing zone
+
+`pkdump data refresh --land-raw` (and `pkdump setup --land-raw`) writes every
+upstream response it fetches to S3, immutably, **before parsing it** —
+`raw/source=…/dataset=…/ingest_date=…/run=<ULID>/part-NNNN.<ext>.zst` plus a
+`_manifest.json` carrying the URL, HTTP status, byte count and SHA-256 of
+every part. `run=<ULID>` is what makes a retry after a partial failure land
+*beside* the first attempt rather than on it.
+
+Three rules that are settled, and are the ones easiest to erode:
+
+- **`images.pokemontcg.io` is never landed.** The retention arithmetic that
+  justifies keeping `raw/` forever is for JSON only; card art would change it
+  completely. `symbols.rs` fetches without landing, deliberately.
+- **The lake bucket is a different bucket from the Litestream backup
+  bucket**, and its name is host config in `~/.config/pkdump/lake.env` with
+  **no default**. Asked for and unconfigured is a refusal that names the
+  file, never a silent skip.
+- **There is deliberately no lifecycle rule on `raw/`.** Indefinite
+  retention is measured (~4.1 MB/day compressed) and intentional.
+
+Landing is opt-in and off by default: with the flag absent, `lake.env` is
+never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
+runbook.
 
 ### Variant expansion
 

@@ -110,9 +110,12 @@ cd frontend && npm test          # design-token gates (WCAG AA contrast, layer
 bash tests/deploy/run.sh
 
 # Shell-harness self-tests — sub-second, no container. The second one also
-# greps tests/ and deploy/ for a picked host port and fails on one.
+# greps tests/ and deploy/ for a picked host port and fails on one. The third
+# reads the Containerfile: builder and runtime must name the SAME Debian
+# release, and the target cache id must name it too.
 bash tests/lib/diagnostics_test.sh
 bash tests/lib/ports_test.sh
+bash tests/container/base_images_test.sh
 
 # Browser tier — every route screenshotted at 1440 and 768 against a
 # throwaway container instance, plus the DOM assertions a screenshot cannot
@@ -286,6 +289,18 @@ and the per-user collection DB. Off-box backup is the
 no local snapshots). Nightly catalog refresh comes from
 `pkdump-refresh@<instance>.timer`.
 
+Every base image in the `Containerfile` **names its Debian release**, and the
+builder's release is the runtime's. A moving tag is not a pin: upstream retagged
+`rust:1.94-slim` from bookworm to trixie, the builder started linking against
+glibc 2.39, and every image built after that shipped a binary the bookworm
+runtime could not exec (`pd-pejn`). The target cache mount carries an `id=`
+naming that same release, because cargo fingerprints do not record which base
+image produced the objects — a shared cache handed the next build the trixie
+artifacts, cargo relinked nothing, and re-pinning the `FROM` line alone looked
+like a fix while changing nothing. Move the base, move the id.
+`tests/container/base_images_test.sh` asserts all three in under a second, and
+`deploy/ci.sh` runs it before anything builds the image.
+
 There's a `deploy` skill in this repo that wraps these scripts for AI use.
 
 ## Conventions & Patterns
@@ -305,6 +320,15 @@ Concrete examples already in place:
   (`variantLabel/Rank/Color/Tag`) are pure map lookups.
 - `data/overrides/variant_augmentations.json` is the hand-curated patch
   layer applied as the last phase of variant expansion.
+- `data/overrides/catalog_prices.json` seeds `catalog_price_overrides` in
+  the shared catalog: a price for a **catalog** printing TCGplayer does not
+  price. A gap in the feed is identical for every tenant, so it is patched
+  once, in the catalog, in git — not re-entered per user. `latest_prices`
+  always wins over it, so an override left behind after upstream catches up
+  is inert rather than wrong. The tenant's own `manual_prices` survives for
+  exactly one thing: a printing that tenant invented (`user_printings`);
+  `manual_prices::insert` refuses anything else with a 400. One rule for
+  "what is this printing worth" — `pkdump-db::prices::MARKET_PRICE_EXPR`.
 
 When you find logic that should be data, file a `bd create
 --type=decision` issue and propose the schema before writing more code

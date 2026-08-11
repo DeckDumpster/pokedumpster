@@ -15,7 +15,7 @@ use pkdump_lake::RawLanding;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{japan, overrides, pokemon_tcg_data, symbols, tcgcsv};
+use pkdump_ingest::{coverage, japan, overrides, pokemon_tcg_data, symbols, tcgcsv};
 
 /// The `pkdump data` subcommand group.
 #[derive(clap::Args)]
@@ -197,6 +197,9 @@ fn expand_only(args: RefreshArgs) -> anyhow::Result<()> {
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
+
+    println!("Checking TCGplayer mapping coverage...");
+    coverage::report_unmapped_sets(&conn)?;
     Ok(())
 }
 
@@ -318,6 +321,12 @@ fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
 
+    // Report sets that mapped no printing to a TCGplayer product at all —
+    // the shape `basep` sat in, unnoticed, for the catalog's whole life
+    // (pd-0o5m). See `pkdump_ingest::coverage`.
+    println!("Checking TCGplayer mapping coverage...");
+    coverage::report_unmapped_sets(&conn)?;
+
     // 5. Normalize set symbol glyphs for any new sets the tail fetch added.
     //    Existing rows already point at /sym/<set>.png and are skipped via
     //    the http-prefix gate in normalize_all_symbols.
@@ -339,6 +348,13 @@ fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
     let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
     println!("  {n_latest} latest-price rows materialized");
 
+    //    Curated prices for catalog printings the feed does not price. Its
+    //    rows FK into `printings`, so it runs after variant expansion; and it
+    //    must land before anything values a collection from this catalog,
+    //    which reads the same effective-price rule (pd-m4gw).
+    let n_override = pkdump_db::catalog_prices::reconcile(&mut conn)?;
+    println!("  {n_override} curated catalog price overrides reconciled");
+
     // And that is the end of it. The refresh touches the SHARED catalog and
     // nothing else — no tenant database is opened, let alone written.
     //
@@ -353,8 +369,10 @@ fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
     // Nessie commit, and reports per-tenant (pd-ruwh).
     //
     // `value_history::snapshot_today` itself stays — it is the reference the
-    // transform is diffed against in tests/lake/value_snapshots.sh, and
-    // `pkdump data backfill-value-history` still calls it directly.
+    // transform is diffed against in tests/lake/value_snapshots.sh. It is no
+    // longer called from any command: `pkdump data backfill-value-history`
+    // goes through `value_history::backfill`, which reconstructs each date
+    // with `backfill_one_date`.
     //
     // tests/refresh/tenant_bytes.sh is the gate: a refresh over a data
     // directory with real tenant databases in it must leave every one of them

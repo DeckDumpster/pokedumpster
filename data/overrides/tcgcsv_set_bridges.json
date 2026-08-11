@@ -22,6 +22,11 @@
     "comment": "Synthesize MEP. pokemontcg.io has not yet published a Mega Evolution Promo set (~8 months past TCGCSV's release on 2025-09-26 as of 2026-05-24). The set row is built from TCGCSV's group metadata, and synthesize_cards=true populates the cards table from the 83 known TCGCSV products so the binder isn't empty. INSERT OR IGNORE — when pokemontcg.io eventually adds the real set, its upserts win and synthesized stubs are superseded silently."
   },
   {
+    "tcgcsv_group_id": 1418,
+    "set_code": "basep",
+    "comment": "Bridge WoTC Promo. pokemontcg.io's basep ('Wizards Black Star Promos', ptcgo_code 'PR') and TCGCSV's group 1418 ('WoTC Promo', abbreviation 'PR') agree on the code and on nothing else, and 21 English groups carry 'PR' — so the auto-linker's tier-1 coin toss handed basep to the lowest such group id, 609 ('DP Training Kit 1 Blue'), which has no products at all. All 53 basep printings mapped to zero TCGplayer products as a result; 4 of the collection's 7 manual price overrides were basep promos that only needed overriding because of it. resolve_group_set_links now refuses an abbreviation more than one group carries, which stops the theft but cannot supply the link — 'WoTC Promo' normalizes to nothing near 'Wizards Black Star Promos'. Group 1418 has 69 single-card products numbered NN/53 covering all 53 cards. See pd-0o5m."
+  },
+  {
     "tcgcsv_group_id": 1663,
     "set_code": "base1",
     "role": "shadowless",

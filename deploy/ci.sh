@@ -9,9 +9,11 @@
 # Steps:
 #   1. Tear down any stale container instance belonging to THIS checkout.
 #  1b. Harness gate:  prove the shell harnesses can describe their own failure,
-#                     and that no harness picks a host port instead of asking
-#                     the kernel. Hermetic and sub-second. See
-#                     tests/lib/diagnostics_test.sh and tests/lib/ports_test.sh.
+#                     that no harness picks a host port instead of asking the
+#                     kernel, and that the Containerfile's base images are
+#                     pinned to a Debian release. Hermetic and sub-second. See
+#                     tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh
+#                     and tests/container/base_images_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #   4. Container gate: build + start a `--test` instance, wait for the server
@@ -202,6 +204,14 @@ bash "$REPO_DIR/tests/lib/diagnostics_test.sh"
 # already in use". See tests/lib/ports.sh.
 step "Harness host-port self-test (tests/lib/ports_test.sh)"
 bash "$REPO_DIR/tests/lib/ports_test.sh"
+
+# Same tier, and it guards every gate below that builds the image: the builder
+# stage rode a moving tag, upstream retagged it from bookworm to trixie, and
+# the image started shipping a binary that cannot exec against the bookworm
+# runtime (pd-pejn). Reading the Containerfile costs a second; finding out in
+# step 4 costs the build first. See tests/container/base_images_test.sh.
+step "Container base-image pins (tests/container/base_images_test.sh)"
+bash "$REPO_DIR/tests/container/base_images_test.sh"
 
 # --- 2. Rust gates ----------------------------------------------------------
 

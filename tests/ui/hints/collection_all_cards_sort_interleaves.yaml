@@ -2,22 +2,23 @@ start_page: /collection
 involves:
   - "All cards toggle [data-testid=all-cards-toggle]"
   - "table view [data-testid=view-table], grid view [data-testid=view-grid]"
-  - "sortable Adj. column header (th.sortable, text 'Adj.')"
-  - "grid sort buttons (.gridsort .sortbtn, text 'Adj.')"
+  - "sortable NM column header (th.sortable, text 'NM')"
+  - "grid sort buttons (.gridsort .sortbtn, text 'NM')"
   - "dimmed unowned rows (tr.missing) and tiles (.cardtile.missing)"
   - "owned rows (table tbody tr without .missing) and tiles (.cardtile without .missing)"
 fixture_data:
-  sort_key: market (Adj. column)
+  sort_key: market (NM column)
 notes: >
   Navigate to /collection, enable All cards via [data-testid=all-cards-toggle]
   (the page refetches with include_unowned, so wait for tr.missing /
-  .cardtile.missing to appear). Then, in each view, click the Adj. column to
-  sort by condition-adjusted price and read the rows in DOM order. The single
+  .cardtile.missing to appear). Then, in each view, click the NM column to
+  sort by Near Mint market price and read the rows in DOM order. The single
   `sorted` list interleaves owned (qty>0) and unowned (qty 0, catalog price)
   printings, so a missing row must appear before some owned row and an owned
   row before some missing row. The committed fixture mixes cheap and
   expensive cards across both ownership states (e.g. owned Base Set holos at
   $100+ vs unowned commons under $1, and unowned SIRs at $130-$280), so the
-  Adj. sort genuinely interleaves them. Regression: if unowned printings
-  render in a separate trailing block, every owned row precedes every missing
-  row and the interleave assertion fails.
+  NM sort genuinely interleaves them. The Adj. column still draws (it is the
+  last cell) but is no longer sortable, so the NM cell is the second-to-last.
+  Regression: if unowned printings render in a separate trailing block, every
+  owned row precedes every missing row and the interleave assertion fails.

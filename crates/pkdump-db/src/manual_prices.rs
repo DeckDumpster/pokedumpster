@@ -1,14 +1,24 @@
-//! Repository for user-entered manual prices.
+//! Repository for user-entered manual prices — **for printings the user
+//! invented, and only those** (`user_printings`).
 //!
-//! Lives in the user DB (`<user>.sqlite`); shared.sqlite is rebuilt by
-//! `pkdump setup` and cannot host mutable user data. Keyed by
-//! `printing_id` so printings without a `tcgplayer_product_id` (e.g. the
-//! Wizards Black Star Promos in `basep`) can be valued.
+//! Lives in the user DB (`<user>.sqlite`). It used to accept any printing,
+//! catalog rows included, and that was the wrong shape twice over (pd-m4gw):
+//! a catalog printing the feed cannot price is missing for *every* tenant, so
+//! each one had to rediscover the same gap by hand; and pricing a catalog row
+//! from the tenant forced `ORDER BY price` to `COALESCE` across the `ATTACH`
+//! boundary, which no index can satisfy. Catalog gaps are now patched in the
+//! catalog — see [`crate::catalog_prices`].
 //!
-//! **Effective-price rule.** TCGplayer market price always wins when
-//! present; manual prices are only consulted when no `prices` row exists
-//! for the printing. Time-series visualisation still surfaces both
-//! sources so manual entries are visible alongside the TCGplayer line.
+//! What is left here is the one case the catalog genuinely cannot know about:
+//! a printing that is not in the catalog *because a user added it by hand*.
+//! [`insert`] refuses anything else rather than accepting a row nothing would
+//! ever read.
+//!
+//! **Effective-price rule.** Defined once, in [`crate::prices`]: TCGplayer
+//! market wins, then the curated catalog override, then — for a user-created
+//! printing only — the newest row here. Time-series visualisation still
+//! surfaces every source, so a manual entry stays visible alongside the
+//! TCGplayer line.
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -51,22 +61,42 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<ManualPrice> {
 
 const COLS: &str = "id, printing_id, price, observed_at, note, created_at";
 
+/// Why a catalog printing is refused, quoted back to the operator. The
+/// message names the file to edit, because "the catalog is wrong" is only
+/// actionable if you know where the catalog is authored.
+pub const CATALOG_PRINTING_RULE: &str = "a manual price belongs to a user-created printing; a catalog printing \
+     that TCGplayer does not price is a catalog gap, patched for every tenant \
+     in data/overrides/catalog_prices.json";
+
 /// Insert a manual price; returns its id.
 ///
-/// Validates the printing_id resolves against either the attached shared
-/// catalog (`printings`) or the user DB (`user_printings`) — the
-/// app-layer FK check, since SQLite cannot enforce cross-database FKs.
+/// The printing must exist in the user DB's `user_printings` — the app-layer
+/// FK check, since SQLite cannot enforce cross-database FKs.
+///
+/// A **catalog** printing is refused with [`DbError::Invalid`] rather than
+/// silently accepted: since pd-m4gw nothing reads a tenant manual price for a
+/// catalog row, so storing one would be a write the user could watch fail to
+/// change the price. A printing that is in neither table is still
+/// [`DbError::NotFound`] — the two are different mistakes and get different
+/// answers.
 pub fn insert(conn: &Connection, new: &NewManualPrice) -> Result<i64> {
-    let exists: Option<i64> = conn
-        .prepare(
-            "SELECT 1 FROM printings WHERE printing_id = ?1 \
-             UNION ALL \
-             SELECT 1 FROM user_printings WHERE printing_id = ?1",
-        )?
-        .query_row(params![new.printing_id], |r| r.get(0))
-        .optional()?;
-    if exists.is_none() {
-        return Err(DbError::NotFound(format!("printing {}", new.printing_id)));
+    let invented: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM user_printings WHERE printing_id = ?1)",
+        params![new.printing_id],
+        |r| r.get::<_, i64>(0),
+    )? == 1;
+    if !invented {
+        let in_catalog: Option<i64> = conn
+            .prepare("SELECT 1 FROM printings WHERE printing_id = ?1")?
+            .query_row(params![new.printing_id], |r| r.get(0))
+            .optional()?;
+        return Err(match in_catalog {
+            Some(_) => DbError::Invalid(format!(
+                "{} is a catalog printing — {CATALOG_PRINTING_RULE}",
+                new.printing_id
+            )),
+            None => DbError::NotFound(format!("printing {}", new.printing_id)),
+        });
     }
 
     let observed_at = new
@@ -104,6 +134,11 @@ mod tests {
     use super::*;
     use crate::{connect_user, open_shared};
 
+    /// A catalog holding `basep-14-normal`, plus a tenant that has invented
+    /// `basep-14-user-1` of its own. `PRINTING` is the one these tests may
+    /// price; the catalog printing is here to prove it is refused.
+    const PRINTING: &str = "basep-14-user-1";
+
     fn conn() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
         let shared = dir.path().join("shared.sqlite");
@@ -128,6 +163,12 @@ mod tests {
             .unwrap();
         }
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        conn.execute(
+            "INSERT INTO user_printings (printing_id, card_id, variant, created_at) \
+             VALUES (?1, 'basep-14', 'missing_variant', '2026-08-10')",
+            [PRINTING],
+        )
+        .unwrap();
         (dir, conn)
     }
 
@@ -137,7 +178,7 @@ mod tests {
         let id = insert(
             &conn,
             &NewManualPrice {
-                printing_id: "basep-14-normal".into(),
+                printing_id: PRINTING.into(),
                 price: 200.0,
                 observed_at: None,
                 note: Some("test".into()),
@@ -145,7 +186,7 @@ mod tests {
         )
         .unwrap();
         assert!(id > 0);
-        let rows = list_for_printing(&conn, "basep-14-normal").unwrap();
+        let rows = list_for_printing(&conn, PRINTING).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].price, 200.0);
         // Default observed_at should be a recent timestamp — within
@@ -168,14 +209,14 @@ mod tests {
         insert(
             &conn,
             &NewManualPrice {
-                printing_id: "basep-14-normal".into(),
+                printing_id: PRINTING.into(),
                 price: 175.0,
                 observed_at: Some("2024-03-01T00:00:00Z".into()),
                 note: None,
             },
         )
         .unwrap();
-        let rows = list_for_printing(&conn, "basep-14-normal").unwrap();
+        let rows = list_for_printing(&conn, PRINTING).unwrap();
         assert_eq!(rows[0].observed_at, "2024-03-01T00:00:00Z");
     }
 
@@ -190,7 +231,7 @@ mod tests {
             insert(
                 &conn,
                 &NewManualPrice {
-                    printing_id: "basep-14-normal".into(),
+                    printing_id: PRINTING.into(),
                     price: p,
                     observed_at: Some(t.into()),
                     note: None,
@@ -198,10 +239,40 @@ mod tests {
             )
             .unwrap();
         }
-        let rows = list_for_printing(&conn, "basep-14-normal").unwrap();
+        let rows = list_for_printing(&conn, PRINTING).unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].observed_at, "2024-06-01T00:00:00Z");
         assert_eq!(rows[2].observed_at, "2024-01-01T00:00:00Z");
+    }
+
+    /// pd-m4gw: a catalog printing's price is the catalog's business. Before
+    /// this change the insert succeeded and the row then priced the printing
+    /// for this tenant alone.
+    #[test]
+    fn insert_refuses_a_catalog_printing_and_says_where_the_price_belongs() {
+        let (_d, conn) = conn();
+        let err = insert(
+            &conn,
+            &NewManualPrice {
+                printing_id: "basep-14-normal".into(),
+                price: 29.0,
+                observed_at: None,
+                note: None,
+            },
+        )
+        .unwrap_err();
+        // Not NotFound — the printing exists, it just isn't ours to price.
+        assert!(matches!(err, DbError::Invalid(_)), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("data/overrides/catalog_prices.json"),
+            "the refusal must name the file to edit: {err}"
+        );
+        assert!(
+            list_for_printing(&conn, "basep-14-normal")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -226,7 +297,7 @@ mod tests {
         let id = insert(
             &conn,
             &NewManualPrice {
-                printing_id: "basep-14-normal".into(),
+                printing_id: PRINTING.into(),
                 price: 50.0,
                 observed_at: None,
                 note: None,
@@ -235,10 +306,6 @@ mod tests {
         .unwrap();
         assert!(delete(&conn, id).unwrap());
         assert!(!delete(&conn, id).unwrap());
-        assert!(
-            list_for_printing(&conn, "basep-14-normal")
-                .unwrap()
-                .is_empty()
-        );
+        assert!(list_for_printing(&conn, PRINTING).unwrap().is_empty());
     }
 }

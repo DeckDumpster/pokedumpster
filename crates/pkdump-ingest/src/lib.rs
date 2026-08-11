@@ -5,6 +5,7 @@
 //! pipeline (PLAN.md §2.6, §4). Runtime card lookups never touch the
 //! network — see `architecture/CARD_DATA_ACCESS.md`.
 
+pub mod coverage;
 mod error;
 pub mod japan;
 pub mod landing;

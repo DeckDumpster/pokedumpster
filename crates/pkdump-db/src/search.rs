@@ -28,14 +28,11 @@ use crate::search_meta::SearchFlag;
 // Scalar subqueries reused across the SELECT list and predicates.
 const OWNED_COUNT_SUBQ: &str =
     "SELECT COUNT(*) FROM collection c WHERE c.printing_id = p.printing_id";
-const MARKET_PRICE_EXPR: &str = "COALESCE(\
-     (SELECT lp.price FROM latest_prices lp \
-        WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-          AND lp.sub_type_name = p.sub_type_name \
-          AND lp.price_type = 'market' LIMIT 1), \
-     (SELECT mp.price FROM manual_prices mp \
-        WHERE mp.printing_id = p.printing_id \
-        ORDER BY mp.observed_at DESC LIMIT 1))";
+// One rule for "what is this printing worth", defined in `crate::prices` and
+// spent by every surface that draws or orders by a price. For a catalog
+// printing it resolves entirely inside `shared`, which is what lets
+// `ORDER BY price` stop spanning the ATTACH boundary (pd-m4gw).
+use crate::prices::MARKET_PRICE_EXPR;
 // The attack list projected down to exactly what the collection table's Cost
 // column draws: one energy-pip line per attack, with the attack name as its
 // tooltip. Attack `text`, `damage` and `convertedEnergyCost` are the card
@@ -816,6 +813,55 @@ fn has_flag(value: &str) -> (String, Vec<Value>) {
 // Full SQL assembly + row mapping
 // ---------------------------------------------------------------------------
 
+/// Every value `sort=` accepts, in the order the endpoint names them back when
+/// it refuses one.
+///
+/// Every entry has an arm in `order_sql` below, and a test pins that: an entry
+/// with no arm would fall through to the name fallback and quietly serve a
+/// different order than the caller asked for.
+///
+/// **No key here orders across the `ATTACH` boundary from a tenant table.**
+/// That is the property the list exists to hold: `value` and `adj` were
+/// computed by a subquery joining the tenant's `collection` to the shared
+/// catalog's prices across that boundary, and SQLite cannot index across
+/// attached databases — so ordering by one could never be index-satisfied even
+/// in principle (pd-tjym). They are
+/// gone from this surface permanently, not provisionally: their successor is a
+/// partitioned view whose result is small by construction, which can sort them
+/// computed in flight. Both still RENDER — on the card modal, and the Adj.
+/// column still draws — because rendering a computed value for the rows in a
+/// window was never the cost.
+///
+/// What that is **not**, and pd-66hq measured rather than assumed: it is not
+/// "every key is a stored scalar in one database", and none of these orderings
+/// is index-satisfied. `qty` and `added` are still correlated subqueries over
+/// the tenant's `collection`, `rarity` and `dex` are subqueries, `set` is a
+/// joined column, and `price` still COALESCEs shared `latest_prices` with
+/// tenant `manual_prices` (pd-m4gw). Every one of them sorts in a temp b-tree,
+/// and no index can change that — see `SORTS_THAT_STILL_SORT` in this file's
+/// tests for the two structural reasons and pd-pvz0 for the shape that would
+/// fix it.
+///
+/// Nor was the 1,543 ms of the collection's 2,495 ms first paint the price of
+/// ordering. Measured over the same 56,672-row result, `order:value` and
+/// `order:adj` cost what `order:name` costs (±10%), and dropping the ORDER BY
+/// altogether saves 3%: the time is per-row projection — `attack_costs` alone
+/// is 36% — and it is still there. Removing `value` and `adj` fixed an
+/// affordance and an unindexable ordering, not this number (pd-66hq).
+pub const SORT_KEYS: &[&str] = &[
+    "name", "number", "set", "rarity", "type", "etype", "hp", "price", "qty", "added", "dex",
+    "pokedex",
+];
+
+/// Whether `sort=<key>` names a column this query can order by.
+///
+/// Case-insensitive, because [`CompiledSearch::override_order`] lowercases what
+/// it stores and a caller validating before that point must agree with it.
+pub fn is_sortable(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    SORT_KEYS.contains(&key.as_str())
+}
+
 fn order_sql(order_by: Option<&str>) -> String {
     match order_by.unwrap_or("name") {
         "number" => "cd.number_sortable".to_string(),
@@ -841,54 +887,13 @@ fn order_sql(order_by: Option<&str>) -> String {
         // `["Water"]` — which is what the column shows.
         "type" => "cd.supertype".to_string(),
         "etype" => "cd.types".to_string(),
-        // The Value column: every copy's condition-adjusted market price,
-        // summed over the printing.
-        "value" => adjusted_total_subq(),
-        // The Adj. column: the condition-adjusted price of ONE copy. The table
-        // draws one row per (printing, condition, status) group, so a printing
-        // owned Near Mint *and* Moderately Played draws two Adj. figures —
-        // while this query's unit of ordering is the printing, which has one
-        // slot. The number that fits it is the weighted average: the printing's
-        // adjusted total over its owned count, i.e. `order:value / order:qty`.
-        //
-        // Not MAX over the copies: that orders by "the best copy's adjusted
-        // price", a different column wearing the same header. The average is
-        // the honest single figure — for a one-copy printing it IS the Adj.
-        // value drawn, and for mixed conditions it lands between the copies'
-        // values instead of at an extreme (pd-sehy).
-        //
-        // The qty-0 case is not a division-by-zero to be swallowed, it is a
-        // row the table draws: catalog-wide (`is:missing`, All cards) an
-        // unowned printing's Adj. cell shows the catalog Near-Mint price,
-        // because there is no copy whose condition could adjust it. So
-        // `NULLIF(qty, 0)` turns the quotient NULL and the COALESCE falls to
-        // exactly that price — which keeps the column one sorted list across
-        // owned and unowned rows rather than parking every unowned printing at
-        // one end. A printing with no price at all is still NULL, where
-        // `order:price` already puts it.
-        //
-        // The numerator is CAST to REAL so an all-integer sum over an integer
-        // count cannot land in SQLite's integer division and quantise the
-        // average.
-        "adj" => format!(
-            "COALESCE(CAST({} AS REAL) / NULLIF(({OWNED_COUNT_SUBQ}), 0), ({MARKET_PRICE_EXPR}))",
-            adjusted_total_subq()
-        ),
+        "name" => "cd.name".to_string(),
+        // Anything else orders by name. `sort=` never reaches here — the
+        // endpoint refuses a key outside `SORT_KEYS` — but the query language's
+        // own `order:` modifier takes a free-text value, and an unrecognised
+        // one has always fallen back rather than failed the whole query.
         _ => "cd.name".to_string(),
     }
-}
-
-/// A printing's condition-adjusted market total: every copy's Near-Mint market
-/// price times its condition's multiplier, summed. `conditions.multiplier` is
-/// the same table `/api/conditions` serves the frontend, so this is exactly the
-/// sum of the Value cells that printing draws. A condition with no row (or none
-/// owned) leaves the multiplier at 1.0 rather than zeroing a card.
-fn adjusted_total_subq() -> String {
-    format!(
-        "(SELECT SUM(({MARKET_PRICE_EXPR}) * COALESCE(cond.multiplier, 1.0)) \
-            FROM collection col LEFT JOIN conditions cond ON cond.name = col.condition \
-           WHERE col.printing_id = p.printing_id)"
-    )
 }
 
 /// Owned mode requires an owned/ordered copy unless the query already
@@ -1014,6 +1019,7 @@ mod tests {
 
     struct Fix {
         _dir: tempfile::TempDir,
+        shared: std::path::PathBuf,
         conn: Connection,
         registry: KeywordRegistry,
         flags: Vec<SearchFlag>,
@@ -1025,10 +1031,6 @@ mod tests {
         {
             let mut c = open_shared(&shared).unwrap();
             search_meta::reconcile(&mut c).unwrap();
-            // Real multipliers, from data/conditions.json — `order:value` is
-            // defined in terms of them, so a fixture without them could not
-            // tell a condition-adjusted sum from a raw one.
-            crate::conditions::reconcile(&mut c).unwrap();
             c.execute(
                 "INSERT INTO sets (set_code, ptcgo_code, name, series, set_sort_order, release_date)
                  VALUES ('base1','BS','Base Set','Base',1,'1999/01/09'),
@@ -1072,6 +1074,10 @@ mod tests {
             )
             .unwrap();
         }
+        // `connect_user` seeds the real multipliers from data/conditions.json
+        // into the collection — `order:value` is defined in terms of them, so
+        // a fixture without them could not tell a condition-adjusted sum from
+        // a raw one.
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
         // Own two Charizards (a dupe) and one Pikachu; Blastoise is unowned.
         conn.execute(
@@ -1087,6 +1093,7 @@ mod tests {
         let flags = search_meta::load_flags(&conn).unwrap();
         Fix {
             _dir: dir,
+            shared,
             conn,
             registry,
             flags,
@@ -1094,6 +1101,21 @@ mod tests {
     }
 
     impl Fix {
+        /// Price a catalog printing the way the catalog does since pd-m4gw:
+        /// a curated override in `shared`, not a tenant manual price. Reopens
+        /// the catalog read-write, because the search connection has it
+        /// attached read-only — which is the property under test.
+        fn set_catalog_price(&self, printing_id: &str, price: f64) {
+            let c = open_shared(&self.shared).unwrap();
+            c.execute(
+                "INSERT INTO catalog_price_overrides (printing_id, price, observed_at) \
+                 VALUES (?1, ?2, '2025-01-01') \
+                 ON CONFLICT(printing_id) DO UPDATE SET price = excluded.price",
+                rusqlite::params![printing_id, price],
+            )
+            .unwrap();
+        }
+
         fn compile(&self, q: &str) -> CompiledSearch {
             let ast = parse(q, &self.registry).unwrap();
             compile(&ast, &self.flags)
@@ -1447,36 +1469,11 @@ mod tests {
             .collect()
     }
 
-    /// The number a sort actually orders each printing by, keyed by printing
-    /// id. Ordering only shows relative position; this shows the value, which
-    /// is what "the average, not the max" is an assertion about.
-    fn order_values(f: &Fix, sort: &str) -> Vec<(String, Option<f64>)> {
-        let col = order_sql(Some(sort));
-        let sql = format!(
-            "SELECT p.printing_id, {col} {FROM_CLAUSE} ORDER BY p.printing_id COLLATE NOCASE"
-        );
-        let mut stmt = f.conn.prepare(&sql).unwrap();
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<(String, Option<f64>)>>>()
-            .unwrap()
-    }
-
-    /// One printing's sort value.
-    fn order_value(f: &Fix, sort: &str, printing_id: &str) -> Option<f64> {
-        order_values(f, sort)
-            .into_iter()
-            .find(|(id, _)| id == printing_id)
-            .unwrap_or_else(|| panic!("no such printing: {printing_id}"))
-            .1
-    }
-
     // --- the sort keys the collection table hands to the server ------------
     //
     // Paging moved that page's sort off the client (pd-tsqd): sorting 250 of
     // 56,635 rows in the browser orders the wrong 250. Every column it offers
-    // therefore has to be expressible here, and these are the three that were
-    // not.
+    // therefore has to be expressible here.
 
     #[test]
     fn order_by_type_sorts_on_supertype() {
@@ -1509,201 +1506,115 @@ mod tests {
         );
     }
 
+    // --- The sort surface -------------------------------------------------
+    //
+    // Every key `sort=` accepts orders by a stored scalar in ONE database.
+    // `value` and `adj` did not: each was a subquery joining the tenant's
+    // `collection` to the shared catalog's prices across the `ATTACH` boundary,
+    // which no index can span, so ordering by either had to materialise and
+    // sort the whole match set before `LIMIT` could discard any of it (pd-tjym).
+
+    /// Every advertised key has its own arm. An entry with no arm falls through
+    /// to the name fallback, which is a caller being served a different order
+    /// than it asked for without being told.
     #[test]
-    fn order_by_value_is_the_condition_adjusted_sum_over_a_printings_copies() {
-        let f = fixture();
-        // Charizard: two copies (Near Mint + Lightly Played) at $7 each.
-        // Pikachu:   one copy (Near Mint) at $13.
-        //
-        // Unadjusted the Charizard is worth more (14 > 13), so a sum that
-        // ignored the condition multiplier would put it first. Adjusted it is
-        // not: 7 + 7×0.85 = 12.95 < 13.
-        f.conn
-            .execute(
-                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
-                 ('base1-4-holo', 7.0, '2025-01-01'),
-                 ('sv3pt5-25-normal', 13.0, '2025-01-01')",
-                [],
-            )
-            .unwrap();
-
-        let desc = ordered(&f, "value", "desc");
-        assert_eq!(
-            &desc[..2],
-            &["sv3pt5-25-normal", "base1-4-holo"],
-            "the Lightly Played copy is worth 0.85 of a Near Mint one: {desc:?}"
-        );
-        // And it is a SUM, not a unit price: per copy the Charizard is the
-        // cheaper card, which is what `order:price` would say.
-        let by_price = ordered(&f, "price", "desc");
-        assert_eq!(&by_price[..2], &["sv3pt5-25-normal", "base1-4-holo"]);
-
-        // Halve the Pikachu and the total flips — the two copies now win.
-        f.conn
-            .execute(
-                "UPDATE manual_prices SET price = 6.0 WHERE printing_id = 'sv3pt5-25-normal'",
-                [],
-            )
-            .unwrap();
-        let flipped = ordered(&f, "value", "desc");
-        assert_eq!(
-            flipped.first().map(String::as_str),
-            Some("base1-4-holo"),
-            "two copies at 12.95 beat one at 6: {flipped:?}"
-        );
+    fn every_sortable_key_orders_by_something_other_than_the_name_fallback() {
+        let fallback = order_sql(None);
+        assert_eq!(fallback, "cd.name");
+        for key in SORT_KEYS {
+            if *key == "name" {
+                continue;
+            }
+            assert_ne!(
+                order_sql(Some(key)),
+                fallback,
+                "`{key}` is advertised as sortable but has no arm in order_sql"
+            );
+        }
     }
 
-    // --- `order:adj`, the Adj. column ---------------------------------------
-    //
-    // Adj. is a COPY's condition-adjusted price and the query's unit of
-    // ordering is the PRINTING, so the sort orders by the average across a
-    // printing's copies (pd-sehy). These are the assertions that pin that
-    // choice down — an implementation that ordered by the best copy, or the
-    // worst, passes neither of the first two.
-
-    /// A printing owned in one condition has one Adj. figure, and the sort
-    /// orders by exactly the number the table draws in that cell.
+    /// The two the epic removed. They are not sortable, and nothing quietly
+    /// orders by them under another name.
     #[test]
-    fn order_by_adj_of_a_single_copy_printing_is_the_drawn_adjusted_price() {
+    fn value_and_adj_are_not_sortable() {
+        assert!(!is_sortable("value"));
+        assert!(!is_sortable("adj"));
+        assert!(!SORT_KEYS.contains(&"value"));
+        assert!(!SORT_KEYS.contains(&"adj"));
+    }
+
+    /// `override_order` lowercases what it stores, so the validator a caller
+    /// runs first has to agree with it or a header click that arrives
+    /// capitalised is refused for a column that does sort.
+    #[test]
+    fn sortable_keys_are_matched_case_insensitively() {
+        assert!(is_sortable("PRICE"));
+        assert!(is_sortable("Qty"));
+        assert!(!is_sortable("Value"));
+    }
+
+    /// Nothing in a served query reaches `conditions` any more: the condition
+    /// multiplier was only ever read to order by `value`/`adj`. The table is
+    /// still there and still read at render time for one card — this asserts
+    /// the 56k-row ordering path does not touch it.
+    #[test]
+    fn no_sort_reads_the_conditions_table() {
+        for key in SORT_KEYS {
+            let sql = order_sql(Some(key));
+            assert!(
+                !sql.contains("conditions"),
+                "`{key}` orders through the conditions table: {sql}"
+            );
+        }
+        let mut c = all_printings();
+        c.override_order(Some("price"), Some("desc"));
+        assert!(!build_full_sql(&c, None).contains("conditions"));
+    }
+
+    /// `order:price` for a catalog printing is decided entirely inside
+    /// `shared` (pd-m4gw). The curated override prices it; a tenant
+    /// `manual_prices` row against the same printing — the residue every
+    /// pre-pd-m4gw collection still carries — cannot move it.
+    #[test]
+    fn order_by_price_reads_the_catalog_override_and_not_a_tenant_manual_price() {
         let f = fixture();
-        // The Pikachu's one copy is Near Mint (multiplier 1.00), so its Adj.
-        // cell reads the Near Mint market price itself.
+        f.set_catalog_price("base1-4-holo", 10.0);
+        f.set_catalog_price("sv3pt5-25-normal", 20.0);
+        // Written straight to the table, the way the old build wrote it —
+        // `manual_prices::insert` now refuses a catalog printing outright.
         f.conn
             .execute(
                 "INSERT INTO manual_prices (printing_id, price, observed_at) \
-                 VALUES ('sv3pt5-25-normal', 9.0, '2025-01-01')",
+                 VALUES ('base1-4-holo', 9999.0, '2026-08-11T00:00:00Z')",
                 [],
             )
             .unwrap();
-        assert_eq!(order_value(&f, "adj", "sv3pt5-25-normal"), Some(9.0));
 
-        // Own a second copy, Lightly Played (0.85), and the printing now draws
-        // two Adj. cells — 9.00 and 7.65 — and sorts by neither: (9.00 + 7.65)
-        // / 2 = 8.325. Between the copies is the whole point; the max (9.00)
-        // and the min (7.65) are both a different column under this header.
-        f.conn
-            .execute(
-                "INSERT INTO collection (printing_id,condition,language,acquired_at,source,status) \
-                 VALUES ('sv3pt5-25-normal','Lightly Played','English','2025-04-01','manual_id','owned')",
-                [],
-            )
-            .unwrap();
-        let avg = order_value(&f, "adj", "sv3pt5-25-normal").unwrap();
+        let desc = ordered(&f, "price", "desc");
+        assert_eq!(
+            &desc[..2],
+            &["sv3pt5-25-normal", "base1-4-holo"],
+            "the $9999 tenant row must not lift the Charizard above the Pikachu: {desc:?}"
+        );
+    }
+
+    /// The ordering expression names no tenant table for a catalog row — the
+    /// structural half of the assertion above. `manual_prices` is still
+    /// reachable, but only behind the `user_printings` guard, so a printing
+    /// the catalog knows about cannot reach across the ATTACH boundary.
+    #[test]
+    fn order_by_price_reaches_a_tenant_table_only_through_the_user_printings_guard() {
+        let sql = order_sql(Some("price"));
+        assert!(sql.contains("catalog_price_overrides"));
+        let manual = sql
+            .split_once("manual_prices")
+            .expect("price still consults manual_prices for user-created printings")
+            .1;
         assert!(
-            (avg - 8.325).abs() < 1e-9,
-            "average of 9.00 and 7.65, not either of them: {avg}"
+            manual.contains("user_printings"),
+            "the tenant arm is unguarded — a catalog printing could price from \
+             the tenant again: {sql}"
         );
-    }
-
-    /// And the ordering follows the average: a mixed-condition printing sorts
-    /// between two single-copy printings whose Adj. values straddle it, where
-    /// ordering by the best copy would lift it above both and by the worst
-    /// would drop it below both.
-    #[test]
-    fn order_by_adj_places_a_mixed_condition_printing_between_its_copies() {
-        let f = fixture();
-        // Charizard: Near Mint + Lightly Played at $10 → copies draw 10.00 and
-        // 8.50, average 9.25. Blastoise and Pikachu are one Near Mint copy
-        // each, priced to sit either side of that average and inside the
-        // Charizard's own spread.
-        f.conn
-            .execute(
-                "INSERT INTO collection (printing_id,condition,language,acquired_at,source,status) \
-                 VALUES ('base1-2-holo','Near Mint','English','2025-05-01','manual_id','owned')",
-                [],
-            )
-            .unwrap();
-        f.conn
-            .execute(
-                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
-                 ('base1-4-holo', 10.0, '2025-01-01'),
-                 ('base1-2-holo', 9.5, '2025-01-01'),
-                 ('sv3pt5-25-normal', 9.0, '2025-01-01')",
-                [],
-            )
-            .unwrap();
-        assert_eq!(order_value(&f, "adj", "base1-4-holo"), Some(9.25));
-
-        let desc = ordered(&f, "adj", "desc");
-        assert_eq!(
-            &desc[..3],
-            &["base1-2-holo", "base1-4-holo", "sv3pt5-25-normal"],
-            "9.50 > 9.25 > 9.00 — MAX over the copies (10.00) would put the \
-             Charizard first, MIN (8.50) would put it last: {desc:?}"
-        );
-        // MAX is exactly what `order:price` gives here, since the Near Mint
-        // market price IS the best copy's adjusted price. That the two orders
-        // differ is the difference under test.
-        let by_price = ordered(&f, "price", "desc");
-        assert_eq!(
-            &by_price[..3],
-            &["base1-4-holo", "base1-2-holo", "sv3pt5-25-normal"]
-        );
-    }
-
-    /// A printing nobody owns has no copy whose condition could adjust
-    /// anything, and its Adj. cell draws the catalog Near Mint price. The sort
-    /// orders it by that same number rather than dividing by zero — so All
-    /// cards stays ONE sorted list instead of parking every unowned printing at
-    /// an end (`tests/ui/.../collection_all_cards_sort_interleaves`).
-    #[test]
-    fn order_by_adj_of_an_unowned_printing_is_its_catalog_price() {
-        let f = fixture();
-        f.conn
-            .execute(
-                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
-                 ('base1-4-holo', 10.0, '2025-01-01'),
-                 ('sv3pt5-25-normal', 9.0, '2025-01-01'),
-                 -- Blastoise is unowned; its price is the whole Adj. it has.
-                 ('base1-2-holo', 9.1, '2025-01-01')",
-                [],
-            )
-            .unwrap();
-        assert_eq!(order_value(&f, "adj", "base1-2-holo"), Some(9.1));
-        // The Pikachu reverse holo and Professor Oak are unowned AND unpriced:
-        // still NULL, where `order:price` already puts a card with no price.
-        assert_eq!(order_value(&f, "adj", "sv3pt5-25-reverse_holo"), None);
-        assert_eq!(order_value(&f, "adj", "base1-88-normal"), None);
-
-        // Charizard averages 9.25 (10.00 Near Mint, 8.50 Lightly Played), so
-        // the unowned Blastoise at 9.10 sorts BETWEEN the two owned printings
-        // — interleaved, not blocked off.
-        let desc = ordered(&f, "adj", "desc");
-        assert_eq!(
-            &desc[..3],
-            &["base1-4-holo", "base1-2-holo", "sv3pt5-25-normal"],
-            "owned and unowned are one sorted list: {desc:?}"
-        );
-    }
-
-    /// Paging over the average is still a total order — an ORDER BY that ties
-    /// without a unique final key drops and repeats rows under OFFSET.
-    #[test]
-    fn order_by_adj_pages_without_gaps_or_repeats() {
-        let f = fixture();
-        f.conn
-            .execute(
-                "INSERT INTO manual_prices (printing_id, price, observed_at) VALUES
-                 ('base1-4-holo', 10.0, '2025-01-01'),
-                 ('sv3pt5-25-normal', 9.0, '2025-01-01')",
-                [],
-            )
-            .unwrap();
-        let mut c = all_printings();
-        c.override_order(Some("adj"), Some("desc"));
-        let expected: Vec<String> = search(&f.conn, &c)
-            .unwrap()
-            .into_iter()
-            .map(|r| r.printing_id)
-            .collect();
-
-        let mut walked: Vec<String> = Vec::new();
-        for offset in 0..expected.len() as u32 {
-            let page = search_page(&f.conn, &c, Slice::Page { limit: 1, offset }).unwrap();
-            assert_eq!(page.total, expected.len() as i64, "total is page-invariant");
-            walked.extend(page.rows.into_iter().map(|r| r.printing_id));
-        }
-        assert_eq!(walked, expected, "pages concatenate to the whole result");
     }
 
     #[test]
@@ -1891,6 +1802,322 @@ mod tests {
             page.rows[0].copies.len(),
             2,
             "copies still attach on a page"
+        );
+    }
+
+    // --- the sort surface: stability + index satisfaction (pd-66hq) --------
+
+    /// A catalog where every sort key ties across many rows at once, so the
+    /// only thing separating two rows is the tiebreak: 40 names over 200
+    /// cards, one rarity per 4 cards, two sets, three variants per card — 600
+    /// printings where `order:name` leaves 15-row ties and `order:type`
+    /// leaves one 600-row tie. The 5-row fixture has one tie pair.
+    ///
+    /// Honest about what the walk below can and cannot prove: SQLite's sorter
+    /// is deterministic for a fixed plan and fixed data, so a paged walk and
+    /// the unpaged query agree on tied rows here whether or not the tiebreak
+    /// is in the ORDER BY — removing it does not turn the walk red. The
+    /// tiebreak's necessity is asserted where it can be, on the SQL shape
+    /// (`every_sort_key_carries_the_printing_id_tiebreak`); the walk is
+    /// what that buys, and it is what catches a *plan* that differs between a
+    /// window and the whole result — the thing a spot check cannot see.
+    fn tie_dense_fixture() -> Fix {
+        const CARDS: usize = 200;
+        const NAMES: usize = 40;
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let mut c = open_shared(&shared).unwrap();
+            search_meta::reconcile(&mut c).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, ptcgo_code, name, series, set_sort_order, release_date)
+                 VALUES ('tie1','TI1','Tie Set One','Ties',1,'2024/01/01'),
+                        ('tie2','TI2','Tie Set Two','Ties',2,'2024/06/01')",
+                [],
+            )
+            .unwrap();
+            let tx = c.transaction().unwrap();
+            {
+                let mut card = tx
+                    .prepare(
+                        "INSERT INTO cards (card_id,set_code,number,number_sortable,name,
+                             supertype,types,rarity,hp,national_pokedex_numbers)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    )
+                    .unwrap();
+                let mut pr = tx
+                    .prepare(
+                        "INSERT INTO printings (printing_id,card_id,variant,tcgplayer_product_id,
+                             sub_type_name)
+                         VALUES (?1,?2,?3,?4,'Normal')",
+                    )
+                    .unwrap();
+                let mut price = tx
+                    .prepare(
+                        "INSERT INTO latest_prices (tcgplayer_product_id,sub_type_name,source,
+                             price_type,price,observed_at)
+                         VALUES (?1,'Normal','tcgcsv','market',?2,'2026-08-09')",
+                    )
+                    .unwrap();
+                for i in 0..CARDS {
+                    let card_id = format!("tie-{i}");
+                    card.execute(rusqlite::params![
+                        card_id,
+                        if i % 2 == 0 { "tie1" } else { "tie2" },
+                        (i % 50 + 1).to_string(),
+                        (i % 50 + 1) as i64,
+                        format!("Tied Mon {}", i % NAMES),
+                        if i % 5 == 0 { "Trainer" } else { "Pokémon" },
+                        if i % 5 == 0 {
+                            None
+                        } else {
+                            Some(format!("[\"{}\"]", ["Fire", "Water", "Grass"][i % 3]))
+                        },
+                        ["Common", "Uncommon", "Rare", "Rare Holo"][(i / 4) % 4],
+                        // Ten HP buckets and ten dex buckets: `order:hp` and
+                        // `order:dex` get long ties too rather than a total
+                        // order of their own.
+                        60 + (i % 10) as i64 * 20,
+                        format!("[{}]", i % 10 + 1),
+                    ])
+                    .unwrap();
+                    for (v, variant) in ["normal", "reverse_holo", "holo"].iter().enumerate() {
+                        let product = (i * 3 + v) as i64 + 90_000;
+                        pr.execute(rusqlite::params![
+                            format!("{card_id}-{variant}"),
+                            card_id,
+                            variant,
+                            product
+                        ])
+                        .unwrap();
+                        // Prices in 20 buckets, and every fifth printing has
+                        // none at all — `order:price` must tie on NULL too.
+                        if product % 5 != 0 {
+                            price
+                                .execute(rusqlite::params![product, (i % 20) as f64 + 0.5])
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+            tx.commit().unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        // Own 0, 1 or 2 copies of the first 300 printings so `order:qty` has
+        // three buckets and the rest of the catalog ties at 0.
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            {
+                let mut ins = tx
+                    .prepare(
+                        "INSERT INTO collection (printing_id,condition,language,acquired_at,
+                             source,status)
+                         VALUES (?1,?2,'English','2025-01-01','manual_id','owned')",
+                    )
+                    .unwrap();
+                for i in 0..50 {
+                    let card_id = format!("tie-{i}");
+                    for (v, variant) in ["normal", "reverse_holo", "holo"].iter().enumerate() {
+                        let printing = format!("{card_id}-{variant}");
+                        for _ in 0..(v % 3) {
+                            ins.execute(rusqlite::params![
+                                printing,
+                                ["Near Mint", "Lightly Played"][i % 2]
+                            ])
+                            .unwrap();
+                        }
+                    }
+                }
+            }
+            tx.commit().unwrap();
+        }
+        let registry = search_meta::load_registry(&conn).unwrap();
+        let flags = search_meta::load_flags(&conn).unwrap();
+        Fix {
+            _dir: dir,
+            shared,
+            conn,
+            registry,
+            flags,
+        }
+    }
+
+    /// Every sort ends in the unique `p.printing_id` tiebreak — the
+    /// property the offset walk below depends on. Asserted per key rather than
+    /// once for the default, because `order_sql` is a match arm per key and a
+    /// new arm is exactly where the tiebreak would go missing.
+    #[test]
+    fn every_sort_key_carries_the_printing_id_tiebreak() {
+        for key in SORT_KEYS {
+            let mut c = all_printings();
+            c.override_order(Some(key), Some("desc"));
+            let sql = build_full_sql(&c, Some((250, 0)));
+            assert!(
+                sql.contains("cd.number_sortable ASC, p.printing_id ASC LIMIT ? OFFSET ?"),
+                "order:{key} must end in the unique tiebreak: {sql}"
+            );
+            // The direction applies to the sort column, never to the tiebreak:
+            // flipping the tiebreak with it would reorder tied rows between a
+            // page and the whole result.
+            assert!(
+                sql.contains("DESC, cd.number_sortable ASC"),
+                "order:{key} desc keeps an ASC tiebreak: {sql}"
+            );
+        }
+    }
+
+    /// The tiebreak is only worth having if the column it names is unique —
+    /// `printing_id` is the primary key of *both* tables the search reads
+    /// printings from, so it is unique across their union as well.
+    #[test]
+    fn the_tiebreak_column_is_unique_in_every_table_it_comes_from() {
+        let f = tie_dense_fixture();
+        // Qualified by database: `printings` is the catalog's, reached through
+        // the TEMP VIEW the ATTACH puts up, and a view has no indexes of its
+        // own — asking unqualified would ask the view and always answer no.
+        for (db, table) in [("shared", "printings"), ("main", "user_printings")] {
+            let unique_on_printing_id: bool = f
+                .conn
+                .prepare(&format!(
+                    "SELECT EXISTS (SELECT 1 FROM pragma_index_list('{table}','{db}') l
+                        WHERE l.\"unique\" = 1
+                          AND (SELECT COUNT(*) FROM pragma_index_info(l.name,'{db}')) = 1
+                          AND (SELECT name FROM pragma_index_info(l.name,'{db}')) = 'printing_id')"
+                ))
+                .unwrap()
+                .query_row([], |r| r.get(0))
+                .unwrap();
+            assert!(
+                unique_on_printing_id,
+                "{db}.{table}.printing_id must be backed by a unique index — the ORDER BY \
+                 tiebreak is a total order only if it is"
+            );
+        }
+    }
+
+    /// Walk the ENTIRE result in windows, for every sort key, in both
+    /// directions, and assert the windows concatenate to exactly the unpaged
+    /// order: no row dropped, no row served twice.
+    ///
+    /// The window size deliberately does not divide the total, so boundaries
+    /// land mid-tie — and the catalog is built so that every key has long
+    /// ties for them to land in ([`tie_dense_fixture`], which also says what
+    /// this walk does and does not prove).
+    #[test]
+    fn offset_walk_over_every_sort_key_has_no_gaps_or_repeats() {
+        let f = tie_dense_fixture();
+        for key in SORT_KEYS {
+            for dir in ["asc", "desc"] {
+                let mut c = all_printings();
+                c.override_order(Some(key), Some(dir));
+                let expected: Vec<String> = search(&f.conn, &c)
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| r.printing_id)
+                    .collect();
+                assert_eq!(expected.len(), 600, "order:{key} {dir} sees the catalog");
+
+                let mut walked: Vec<String> = Vec::new();
+                let mut offset = 0u32;
+                loop {
+                    let page = search_page(&f.conn, &c, Slice::Page { limit: 37, offset }).unwrap();
+                    assert_eq!(
+                        page.total,
+                        expected.len() as i64,
+                        "order:{key} {dir}: total is page-invariant"
+                    );
+                    if page.rows.is_empty() {
+                        break;
+                    }
+                    walked.extend(page.rows.into_iter().map(|r| r.printing_id));
+                    offset += 37;
+                }
+                assert_eq!(
+                    walked, expected,
+                    "order:{key} {dir}: windows concatenate to the whole result"
+                );
+                let mut unique: Vec<&String> = walked.iter().collect();
+                unique.sort();
+                unique.dedup();
+                assert_eq!(
+                    unique.len(),
+                    expected.len(),
+                    "order:{key} {dir}: no printing served twice"
+                );
+            }
+        }
+    }
+
+    /// Which orderings SQLite still has to sort in a temp b-tree, and — the
+    /// point of pinning it — which no longer do.
+    ///
+    /// A sort that falls back to a temp b-tree materialises and sorts the
+    /// whole match set before `LIMIT` can discard any of it, so it is "fast
+    /// today at this row count" rather than fast. `EXPLAIN QUERY PLAN` is the
+    /// only thing that tells the two apart, which is why this is a test and
+    /// not a review note.
+    ///
+    /// **Every key `sort=` accepts is still on this list** — the constant IS
+    /// [`SORT_KEYS`] — and no index closes any of them, because two things block index satisfaction structurally
+    /// (measured on SQLite 3.45.1, pd-66hq):
+    ///
+    /// 1. **The ORDER BY's unique tiebreak lives on a different table from
+    ///    its sort column.** `ORDER BY cd.name, cd.number_sortable,
+    ///    p.printing_id` needs the leading terms from `cards` and the last
+    ///    from `printings`; SQLite will not use an inner-loop index to
+    ///    satisfy a trailing ORDER BY term, even given
+    ///    `cards(name, number_sortable, card_id)` and
+    ///    `printings(card_id, printing_id)` as covering unique indexes. It
+    ///    reports `USE TEMP B-TREE FOR RIGHT PART OF ORDER BY` and sorts.
+    /// 2. **`FROM` is a cross-database `UNION ALL`** (`printings` in the
+    ///    shared catalog ⋃ `user_printings` in the tenant), which SQLite
+    ///    cannot flatten into a join and therefore cannot index. Even with the
+    ///    sort key denormalised onto the printing row, ordering over that
+    ///    compound is a temp b-tree.
+    ///
+    /// The shape that IS clean — verified against a 74,635-printing synthetic
+    /// catalog — is a compound of two *separately joined* arms, each ordered
+    /// by an index on `(sort_key, printing_id)` of its own table, which SQLite
+    /// answers with `MERGE (UNION ALL)` and no sort. Getting there means the
+    /// sort keys become stored scalars on `printings` *and* `user_printings`
+    /// and `build_full_sql` emits a compound; that is a schema and query
+    /// change, not an index, and it is filed rather than smuggled in here.
+    ///
+    /// **This list may only get shorter.** Make a sort index-satisfied and
+    /// delete its entry in the same commit; the test fails either way round,
+    /// so neither a regression nor an unclaimed win can pass quietly.
+    const SORTS_THAT_STILL_SORT: &[&str] = SORT_KEYS;
+
+    #[test]
+    fn query_plan_pins_which_sorts_are_still_temp_b_tree_sorted() {
+        let f = tie_dense_fixture();
+        let mut sorting: Vec<&str> = Vec::new();
+        for key in SORT_KEYS {
+            let mut c = f.compile("supertype:Pokémon");
+            c.set_catalog_wide(true);
+            c.override_order(Some(key), None);
+            let sql = build_full_sql(&c, Some((250, 0)));
+            let mut params = c.params.clone();
+            params.push(Value::Integer(250));
+            params.push(Value::Integer(0));
+            let mut stmt = f
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            let plan: Vec<String> = stmt
+                .query_map(params_from_iter(params.iter()), |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            if plan.iter().any(|line| line.contains("TEMP B-TREE")) {
+                sorting.push(key);
+            }
+        }
+        assert_eq!(
+            sorting, SORTS_THAT_STILL_SORT,
+            "the set of orderings SQLite sorts in a temp b-tree moved — if one \
+             became index-satisfied, take it off SORTS_THAT_STILL_SORT in this \
+             commit; if one regressed, it is a performance bug"
         );
     }
 }

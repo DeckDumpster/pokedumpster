@@ -32,6 +32,32 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 -- ---------------------------------------------------------------------
+-- Card-condition value multipliers (data-model-is-the-product;
+-- pokedumpster-e1vo, moved here from the catalog by pd-s4c2)
+--
+-- The standard TCGplayer raw-card multipliers applied to a copy's Near-Mint
+-- market price to estimate its value at its recorded condition. Read by the
+-- frontend via /api/conditions (backs $lib/conditions.svelte), by the
+-- collection search's `order:value`, and by the Rust value-history
+-- snapshot/backfill — one source instead of a hardcoded multiplier map
+-- duplicated in TypeScript.
+--
+-- It lives beside `collection` rather than in the catalog because that is
+-- what it is joined to: `conditions.name` matches `collection.condition`,
+-- so while it sat in the catalog every value computation crossed the ATTACH
+-- boundary and every tenant shared one row set. Seeded with the five
+-- defaults from data/conditions.json by pkdump_db::conditions::seed_defaults
+-- on every open — insert-if-absent, never an overwrite, so the rows are the
+-- tenant's own.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS conditions (
+    name        TEXT PRIMARY KEY,   -- 'Near Mint' (matches collection.condition)
+    multiplier  REAL NOT NULL,      -- 1.00, 0.85, 0.65, 0.45, 0.25
+    rank        INTEGER NOT NULL    -- display/sort order, best first
+);
+
+-- ---------------------------------------------------------------------
 -- Containers: binders, decks
 -- ---------------------------------------------------------------------
 

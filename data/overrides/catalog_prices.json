@@ -1,0 +1,26 @@
+[
+  {
+    "printing_id": "basep-10-normal",
+    "price": 61.0,
+    "observed_at": "2026-05-29T06:18:59Z",
+    "note": "Meowth (Wizards Black Star Promo 10). Hand-valued while basep was 0-of-53 mapped to TCGplayer (pd-0o5m). Kept as the catalog's floor for a promo TCGplayer may still not carry — latest_prices wins the moment upstream prices it."
+  },
+  {
+    "printing_id": "basep-14-normal",
+    "price": 29.0,
+    "observed_at": "2026-05-29T06:21:13Z",
+    "note": "Mewtwo (Wizards Black Star Promo 14). Same origin as basep-10-normal."
+  },
+  {
+    "printing_id": "basep-29-normal",
+    "price": 7.0,
+    "observed_at": "2026-05-29T06:21:42Z",
+    "note": "Marill (Wizards Black Star Promo 29). Same origin as basep-10-normal."
+  },
+  {
+    "printing_id": "basep-34-normal",
+    "price": 32.0,
+    "observed_at": "2026-05-29T06:22:14Z",
+    "note": "Entei (Wizards Black Star Promo 34). Same origin as basep-10-normal."
+  }
+]

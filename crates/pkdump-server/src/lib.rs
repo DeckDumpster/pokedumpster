@@ -76,6 +76,7 @@ impl From<DbError> for AppError {
             DbError::NotFound(_) => StatusCode::NOT_FOUND,
             DbError::Conflict(_) => StatusCode::CONFLICT,
             DbError::Import(_) => StatusCode::BAD_REQUEST,
+            DbError::Invalid(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         AppError(code, e.to_string())
@@ -745,6 +746,49 @@ mod tests {
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
     }
 
+    /// The API says what kind of mistake was made, and the three answers are
+    /// different (pd-m4gw). A catalog printing is a **400** — it exists, it
+    /// just is not the tenant's to price, and the body names the file that
+    /// is. A printing nobody has heard of stays a 404.
+    #[tokio::test]
+    async fn manual_price_on_a_catalog_printing_is_a_400_naming_the_seed_file() {
+        let (_d, router) = test_app();
+
+        let refused = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/manual-prices")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"printing_id":"sv3pt5-1-normal","price":29.0}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            body_string(refused)
+                .await
+                .contains("data/overrides/catalog_prices.json")
+        );
+
+        let unknown = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/manual-prices")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"printing_id":"nope-0-normal","price":1.0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    }
+
     #[tokio::test]
     async fn card_endpoint_returns_detail_and_404() {
         let (_d, router) = test_app();
@@ -954,6 +998,56 @@ mod tests {
             let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
             assert!(body["error"].is_string(), "{uri}: {body}");
             assert!(body["position"].is_null(), "not a query error: {uri}");
+        }
+    }
+
+    /// `value` and `adj` left the sort surface for good (pd-tjym): each ordered
+    /// through a subquery joining the tenant's `collection` to the shared
+    /// catalog's prices across the `ATTACH` boundary, and SQLite cannot index
+    /// across attached databases — so ordering by either had to materialise and
+    /// sort the whole match set before `LIMIT` could discard any of it.
+    ///
+    /// A client still asking is **told**. Falling back to name order would hand
+    /// it a result that looks sorted and isn't, which is exactly how a caller
+    /// stops noticing it is asking for a column that no longer exists.
+    #[tokio::test]
+    async fn search_refuses_a_sort_it_cannot_satisfy() {
+        let (_d, router) = test_app();
+        for key in ["value", "adj", "nonsense"] {
+            let uri = format!("/api/collection/search?sort={key}");
+            let resp = router
+                .clone()
+                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
+            let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+            let message = body["error"].as_str().unwrap_or_default();
+            // The refusal names what IS sortable — a bare "bad sort" leaves the
+            // caller guessing at a vocabulary it cannot see.
+            for named in pkdump_db::search::SORT_KEYS {
+                assert!(message.contains(named), "{uri}: {message} omits {named}");
+            }
+            assert!(
+                body["position"].is_null(),
+                "a sort complaint is not a query-syntax error: {uri}"
+            );
+        }
+    }
+
+    /// And every key the endpoint advertises is served, so the refusal above is
+    /// about the key rather than about `sort=` having stopped being read.
+    #[tokio::test]
+    async fn search_serves_every_advertised_sort_key() {
+        let (_d, router) = test_app();
+        for key in pkdump_db::search::SORT_KEYS {
+            let uri = format!("/api/collection/search?sort={key}&include_unowned=1");
+            let resp = router
+                .clone()
+                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{uri}");
         }
     }
 

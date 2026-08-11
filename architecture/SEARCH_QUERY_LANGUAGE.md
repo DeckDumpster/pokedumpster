@@ -239,10 +239,20 @@ Defined in the seed (so they are data, not a `match` arm). Two families:
 
 ### Modifiers (extracted, not compiled to WHERE)
 
-`order:` (name, number, set, rarity, hp, price, added, dex, qty) and
-`direction:`/`dir:` (asc/desc) are pulled out of the AST into
+`order:` (name, number, set, rarity, type, etype, hp, price, qty, added, dex)
+and `direction:`/`dir:` (asc/desc) are pulled out of the AST into
 `CompiledQuery.order_by`/`order_dir`, exactly as DeckDumpster's
 `_extract_modifiers` does.
+
+That list is `search::SORT_KEYS`, and it is the whole sort surface: the
+endpoint's `sort=` parameter is validated against it and **refuses** anything
+else with a 400 naming the keys it accepts. Every entry is a stored scalar in
+one database, so an index can satisfy the ordering. `value` and `adj` are not
+and were removed (pd-tjym) — each ordered through a subquery joining the
+tenant's `collection` to the shared catalog's prices across the `ATTACH`
+boundary, which SQLite cannot index across, so ordering by one meant sorting
+the entire match set before `LIMIT` could discard any of it. Both still render
+where they are cheap; only the ordering is gone.
 
 ---
 

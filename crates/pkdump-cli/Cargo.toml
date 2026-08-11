@@ -13,6 +13,7 @@ path = "src/main.rs"
 pkdump-core.workspace = true
 pkdump-db.workspace = true
 pkdump-ingest.workspace = true
+pkdump-lake.workspace = true
 pkdump-server.workspace = true
 rusqlite.workspace = true
 clap.workspace = true

@@ -468,12 +468,24 @@ pub struct JapanStats {
 /// products → cards + sealed, and a price snapshot. Shared by
 /// `pkdump setup` and `pkdump data refresh`.
 ///
+/// Japanese responses land under the same `source=tcgcsv` prefixes as the
+/// English ones — same host, same endpoints, same shape. The `categoryId`
+/// that tells them apart is in each part's recorded URL.
+///
 /// Variant expansion is *not* run here — it runs once over the whole
 /// catalog (English and Japanese together) after both categories are in.
-pub fn import_all(conn: &mut Connection, now: &str, observed: &str) -> Result<JapanStats> {
+pub fn import_all(
+    conn: &mut Connection,
+    now: &str,
+    observed: &str,
+    landing: crate::landing::Landing,
+) -> Result<JapanStats> {
     use std::io::Write;
 
-    let client = TcgcsvClient::for_category(CATEGORY_POKEMON_JAPAN)?;
+    let mut client = TcgcsvClient::for_category(CATEGORY_POKEMON_JAPAN)?;
+    if let Some(landing) = landing {
+        client = client.landing_in(landing);
+    }
     let groups = client.fetch_groups()?;
     let mut stats = JapanStats {
         groups: import_groups(conn, &groups, now)?,

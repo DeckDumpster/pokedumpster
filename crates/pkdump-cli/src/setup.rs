@@ -18,7 +18,9 @@ use rusqlite::Connection;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{japan, overrides, pokemon_tcg_data, standalone_promos, symbols, tcgcsv};
+use pkdump_ingest::{
+    coverage, japan, overrides, pokemon_tcg_data, standalone_promos, symbols, tcgcsv,
+};
 
 /// Today's date in the `prices.observed_at` convention.
 fn observed_date() -> String {
@@ -183,6 +185,12 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
+
+    // 6b. Report sets that mapped no printing to a TCGplayer product at
+    //     all — the shape `basep` sat in, unnoticed, for the catalog's
+    //     whole life (pd-0o5m). See `coverage`.
+    println!("Checking TCGplayer mapping coverage...");
+    coverage::report_unmapped_sets(&conn)?;
 
     // 7. Normalize set symbol glyphs — trim transparent padding off the
     //    upstream PNGs and self-host at a uniform target height so the

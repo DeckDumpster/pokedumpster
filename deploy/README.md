@@ -300,6 +300,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `alarm-status.sh <inst> [--verify]` | Is alarming actually ARMED on this instance? Exit 0 = yes. `--verify` fires it for real |
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `diskcheck.sh --floor [path...]` | Gate — exit non-zero under `PKDUMP_DISK_FLOOR_GB` free; run by `ci.sh` before it builds |
+| `setup-lake.sh <inst> [--port N] [--remove]` | Install the offline lakehouse — the Nessie catalog's Quadlet units and the PyIceberg job image. Refuses to run without `~/.config/pkdump/lake.env`. See [Offline lakehouse](#offline-lakehouse--nessie--iceberg) |
 | `store-lib.sh` | Sourced — resolves which Podman store an instance's image and volume live in (`PKDUMP_STORE_ROOT`) |
 | `units-lib.sh` | Sourced — renders every unit template this checkout ships into `~/.config`, preserving the instance's published port. Shared by `setup.sh` and `deploy.sh` so a deploy cannot ship a binary and leave the units behind (pd-2t6u) |
 | `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin) |
@@ -370,6 +371,90 @@ bash deploy/restore-litestream.sh --at=2026-06-01T12:00:00Z prod
 
 **Full disaster-recovery procedure: [RESTORE.md](RESTORE.md)** — latest restore,
 point-in-time, total-box rebuild, verification, and troubleshooting.
+
+## Offline lakehouse — Nessie + Iceberg
+
+**Offline only.** Nothing on the serving path touches any of this: the app keeps
+reading `shared.sqlite` and tenant SQLite, and a catalog that is down costs a
+nightly batch job, not a request. **No tenant data ever enters the lake** — the
+lake holds catalog data (prices, products, sets, cards) and nothing keyed by a
+tenant, ever. Per-tenant point-in-time recovery is Litestream's job, above.
+
+Two pieces, both instance-scoped:
+
+- **`pkdump-nessie-<inst>`** — the versioned Iceberg catalog. The one JVM
+  service in this system, treated as a black box; our jobs speak the Iceberg
+  REST API to it at `/iceberg/`. Version store is **ROCKSDB on a host
+  directory**, not a podman volume: a rootless volume lives in the container
+  store, and this box's default store is the 98 G disk prod runs from.
+- **`localhost/pkdump-lake:<inst>`** — the job runtime, `lake/` in this repo.
+  PyIceberg, no JVM. Built by `setup-lake.sh`.
+
+```bash
+bash deploy/setup-lake.sh prod                 # unit + network + job image
+systemctl --user start pkdump-nessie-prod
+journalctl --user -u pkdump-nessie-prod -f
+
+# The round trip, against the live catalog (writes to the `proof` namespace only):
+podman run --rm --network pkdump-lake-prod \
+  -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-prod:19120/iceberg/ \
+  localhost/pkdump-lake:prod pkdump-lake-roundtrip
+
+bash deploy/setup-lake.sh prod --remove        # unit + network; state is kept
+```
+
+`setup-lake.sh` **refuses to run without `~/.config/pkdump/lake.env`** — host
+config beside `alerts.env`, `litestream.env` and `store.env`:
+
+```bash
+PKDUMP_LAKE_S3_BUCKET=<bucket>        # NOT the Litestream backup bucket
+PKDUMP_LAKE_S3_REGION=us-west-2
+AWS_PROFILE=pkdump                    # assume-role profile, same as Litestream
+PKDUMP_LAKE_NESSIE_DATA=/workspaces/pkdump-lake/nessie
+```
+
+The bucket is **separate from the Litestream backup bucket** — same account,
+same `AWS_PROFILE=pkdump` role path, different bucket. The backup bucket holds
+the only irreplaceable data in the system and everything in the lake is
+reproducible by construction, so a lifecycle rule written for one must not be
+able to reach the other. `setup-lake.sh` fails if the two names match.
+
+**There is no lifecycle rule on `raw/`, deliberately.** Indefinite retention was
+measured, not assumed: ~4.1 MB/day compressed, 1.5 GB/year, ~$0.03/month in year
+one — cheaper than losing the ability to rebuild a date. Do not tidy it up.
+
+**The catalog has no authentication.** Nessie says so in its own startup log.
+It publishes on `127.0.0.1` only and the jobs reach it by name over the
+`pkdump-lake-<inst>` podman network. Do not publish it on `0.0.0.0`.
+
+Measured on this box by `tests/lake/run.sh` (Nessie 0.104.3, PyIceberg 0.11.1):
+
+| | |
+|---|---|
+| Nessie RSS | **265 MiB** under a 1 GiB container cap (`PodmanArgs=--memory=1g`) |
+| Object cache | pinned to 64 MB — **unpinned it claimed 6.7 GB** on this box, sized as a fraction of the heap |
+| Startup | ~29 s under the cap (~6 s uncapped) — hence `TimeoutStartSec=120` |
+| Version store on disk | **146 MB** for a two-commit toy table, of which ~200 KB is content: the rest is RocksDB WAL preallocation, so it is a floor rather than growth |
+
+### Time travel, and what Nessie costs to get it
+
+Iceberg + Nessie is deliberately overkill at this data size; **time travel is
+the primitive being bought**, so `tests/lake/run.sh` asserts it rather than
+assuming it — write, read, commit again, then read the table as of the first
+commit. Two findings from standing it up (pd-fzeb), both measured:
+
+- **Catalog-level time travel works.** `main@<commit-hash>` addresses every
+  table at once, which is the single-value provenance handle a published
+  artefact records.
+- **Per-table Iceberg snapshot travel does not survive Nessie.** The metadata
+  Nessie hands a client carries **only the current snapshot**, so
+  `scan(snapshot_id=…)` raises `Snapshot not found` for any earlier one. The
+  same two commits through PyIceberg's service-free SQL catalog keep both
+  snapshots and travel fine. Nessie does not add history to Iceberg's — it
+  **replaces** it. Worth knowing before anything depends on a snapshot id.
+
+Whether Nessie is needed *yet* is an open recommendation, not a settled
+decision — see `pd-by3x`.
 
 ## Backup-failure alarming
 

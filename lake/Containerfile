@@ -1,0 +1,14 @@
+# The lake job runtime. PyIceberg only — no JVM in our own jobs; Nessie is the
+# single JVM service on the box and is a black box (design, 2026-08-10).
+#
+# Built by tests/lake/run.sh and deploy/setup-lake.sh, both of which tag it per
+# instance so a CI run and prod cannot share an image.
+FROM docker.io/library/python:3.12-slim
+
+WORKDIR /opt/lake
+COPY pyproject.toml ./
+COPY src ./src
+RUN pip install --no-cache-dir . && rm -rf /root/.cache
+
+# No default command: the image is a runtime for whichever job the caller asks
+# for (`pkdump-lake-roundtrip` today, the table build next).

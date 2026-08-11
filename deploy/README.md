@@ -321,6 +321,13 @@ changed.
   running container (via `podman exec`), 06:00 + jitter.
 - `pkdump-backup-check@<instance>` — backup-freshness dead-man's switch
   (Layer 1, every 6h). See [Backup-failure alarming](#backup-failure-alarming).
+- `pkdump-value-snapshots@<instance>` — the transform tier's nightly run
+  (07:00): per-tenant collection value snapshots computed from the lake, for
+  **every** registered tenant. `pkdump data refresh` no longer snapshots anybody
+  (its step 7 is deleted — pd-hkbc), so this is the only thing that records
+  today's value. Ordered `After=pkdump-refresh@%i.service`, and inert until the
+  lakehouse is configured. Exit 2 (a tenant skipped) is a partial run, not a
+  failure. See [deploy/LAKE.md](LAKE.md) §7.
 - `pkdump-diskcheck` — host-wide low-disk alert (Layer 4, daily). Not
   per-instance; enable once.
 
@@ -330,13 +337,14 @@ the instance name is the part after `@`. Enable per-instance:
 ```bash
 systemctl --user enable --now pkdump-refresh@prod.timer
 systemctl --user enable --now pkdump-backup-check@prod.timer   # after arming alerts.env
+systemctl --user enable --now pkdump-value-snapshots@prod.timer # after setup-lake.sh
 systemctl --user enable --now pkdump-diskcheck.timer           # host-wide, once
 systemctl --user list-timers 'pkdump-*'        # check schedule
 ```
 
 Backups themselves are **not** a timer — the Litestream sidecar replicates
-continuously (see below). `teardown.sh` disables the refresh + backup-check
-timers for the instance (the host-wide disk timer is left alone).
+continuously (see below). `teardown.sh` disables the refresh, backup-check and
+value-snapshot timers for the instance (the host-wide disk timer is left alone).
 
 ## Backup & restore — Litestream → S3
 

@@ -124,6 +124,21 @@ pkdump_units_install() {
             -e "s|{{REPO_DIR}}|${repo_dir}|g"
     done
 
+    # --- The transform tier's nightly run (pd-8m5c) -------------------------
+    # Per-tenant value snapshots from the lake, ordered after the refresh above.
+    # Installed for every instance and enabled for none — the lakehouse itself is
+    # opt-in (deploy/setup-lake.sh), and the unit's ConditionPathExists on
+    # lake.env keeps an enabled timer inert on a box that has no lake.
+    #
+    # Installed HERE rather than by setup-lake.sh, with the rest of them, for the
+    # reason this file exists: a unit template only reaches an instance if
+    # something re-renders it on every deploy, and setup-lake.sh is run once.
+    for ext in service timer; do
+        _pkdump_units_render "${systemd_user_dir}/pkdump-value-snapshots@.${ext}" nostamp \
+            "$repo_dir/deploy/pkdump-value-snapshots.${ext}" \
+            -e "s|{{REPO_DIR}}|${repo_dir}|g"
+    done
+
     # --- Backup-failure alarming units (pokedumpster-ivq) -------------------
     # Layer 1: backup-freshness dead-man's switch (per-instance @ template).
     # Layer 2: OnFailure -> Pushover journal-tail push (instance-by-failed-unit).

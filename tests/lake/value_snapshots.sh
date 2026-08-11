@@ -336,5 +336,85 @@ print(' '.join(sorted(
 	die "the lake holds '${TABLES}' — tenant data NEVER enters the lake, and neither does anything else this bead adds"
 echo "    ok   ${TABLES}"
 
+echo "==> §10 The SHIPPED wrapper the timer runs, over the same fixture"
+# pd-8m5c. Everything above drives the job directly, which is exactly how the
+# transform shipped: correct, and scheduled nowhere. deploy/value-snapshots.sh is
+# what pkdump-value-snapshots@<instance>.service executes, so it gets driven here
+# rather than described — it is the file that resolves an instance's network,
+# data volume and credentials, and none of that is exercised by calling the job
+# by hand.
+#
+# The unit-file half (ordering after the refresh, SuccessExitStatus=2, the
+# calendar entry derived from the refresh's own bounds) is asserted hermetically
+# in tests/deploy/run.sh §10; this is the half that needs a real lake.
+VS_HOME="$WORK/vshome"
+mkdir -p "$VS_HOME/.config/pkdump" "$VS_HOME/.config/containers/systemd"
+INST="pdvalue-${SUFFIX}"
+
+# The wrapper asks the instance's Quadlet unit which container store to use
+# (pd-fite). Rendered and stamped through the real functions, so it names the
+# store this gate is actually running in — a no-op when there is no alternate
+# store, which is prod's shape.
+sed -e "s|{{INSTANCE}}|${INST}|g" -e 's|{{PORT}}:8080|:8080|' \
+	"${REPO_DIR}/deploy/pkdump.container" >"$VS_HOME/.config/containers/systemd/pkdump-${INST}.container"
+pkdump_store_stamp_unit "$VS_HOME/.config/containers/systemd/pkdump-${INST}.container"
+
+# The host config the wrapper refuses to run without, pointed at this gate's
+# throwaway MinIO and Nessie instead of a bucket.
+cat >"$VS_HOME/.config/pkdump/lake.env" <<EOF
+PKDUMP_LAKE_NESSIE_URI=http://${NESSIE_CTR}:19120/iceberg/
+PKDUMP_LAKE_S3_BUCKET=${BUCKET}
+PKDUMP_LAKE_S3_REGION=us-west-2
+PKDUMP_LAKE_S3_ENDPOINT=http://${MINIO_CTR}:9000
+PKDUMP_LAKE_S3_ACCESS_KEY_ID=${AKID}
+PKDUMP_LAKE_S3_SECRET_ACCESS_KEY=${SECRET}
+PKDUMP_LAKE_S3_PATH_STYLE=1
+EOF
+
+wrapper() {
+	HOME="$VS_HOME" \
+		PKDUMP_ALERTS_ENV="$VS_HOME/.config/pkdump/no-alerts.env" \
+		PKDUMP_LAKE_NETWORK="$NET" \
+		PKDUMP_LAKE_JOB_IMAGE="$JOB_IMAGE" \
+		PKDUMP_LAKE_DATA="$FIXTURE/home" \
+		bash "${REPO_DIR}/deploy/value-snapshots.sh" "$INST" "$@"
+}
+
+# A day nothing has snapshotted yet, so the rows this section asserts on can only
+# have come from the run below. AFTER both partitions, not before: prices are the
+# newest quote at or before the date, so a date earlier than the whole lake has
+# nothing to value a collection with and the run would fail rather than skip.
+DATE_SCHED=2026-08-11
+WRAP_RC=0
+WRAP_OUT=$(wrapper --date "$DATE_SCHED" 2>&1) || WRAP_RC=$?
+echo "$WRAP_OUT" | sed 's/^/    | /'
+
+# ghost is registered with no database: skipped. The wrapper passes the job's
+# status through rather than flattening it — the unit is where "2 is not a
+# failure" is expressed, and a wrapper that returned 0 would leave the unit
+# unable to tell a partial run from a complete one.
+[ "$WRAP_RC" -eq 2 ] ||
+	die "the wrapper exited ${WRAP_RC} on a run that skipped a tenant, not 2"
+case "$WRAP_OUT" in
+*"PARTIAL — tenants skipped: ghost"*) ;;
+*) die "the wrapper did not name the tenant it skipped — a partial run must not be silent" ;;
+esac
+echo "    ok   exit 2 passed through, ghost named"
+
+# And it really ran the transform: every tenant with a database has that day's
+# rows, which nothing else in this file has written.
+for T in "$ALICE" "$BOB"; do
+	N=$(tenant_query "$T" "SELECT COUNT(*) FROM collection_value_snapshot WHERE date = '${DATE_SCHED}'")
+	[ "$N" -gt 0 ] ||
+		die "tenant ${T} got no rows for ${DATE_SCHED} — the scheduled path snapshots nobody"
+	echo "    ok   ${T}: ${N} row(s) for ${DATE_SCHED}"
+done
+
+# A complete run is a plain success. Same wrapper, same path, the two tenants
+# that actually exist.
+wrapper --date "$DATE_SCHED" --tenant alice --tenant bob >/dev/null ||
+	die "a wrapper run over two present tenants must exit 0"
+echo "    ok   a complete run exits 0"
+
 echo ""
 echo "==> tests/lake/value_snapshots.sh PASSED"

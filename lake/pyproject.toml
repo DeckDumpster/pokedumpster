@@ -19,6 +19,10 @@ pkdump-lake-roundtrip = "pkdump_lake.roundtrip:main"
 pkdump-lake-build-prices = "pkdump_lake.prices:main"
 # Check that table against the shared.sqlite built from the same bytes.
 pkdump-lake-verify-prices = "pkdump_lake.verify:main"
+# The transform tier (pd-ruwh): publish collection_value_snapshot into EVERY
+# registered tenant from catalog.prices at a pinned ref. The only job here that
+# writes a tenant database — and it never writes the lake.
+pkdump-lake-value-snapshot = "pkdump_lake.value_snapshot:main"
 
 [build-system]
 requires = ["setuptools>=68"]

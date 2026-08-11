@@ -301,3 +301,38 @@ CREATE TABLE IF NOT EXISTS collection_value_snapshot (
     card_count    INTEGER NOT NULL,
     PRIMARY KEY (date, dimension, bucket)
 );
+
+-- ---------------------------------------------------------------------
+-- Which version of the lake a published artefact was derived from
+-- (pd-ruwh). The transform tier reads catalog.prices at a PINNED Nessie
+-- ref and writes the artefact here alongside it, so "how stale is this
+-- chart" is a value you can read rather than an assumption.
+--
+-- `lake_ref` is a Nessie ref pinned to a commit — `main@<hash>` — which
+-- addresses the whole catalog at that commit. Deliberately not an Iceberg
+-- snapshot id: pd-fzeb MEASURED per-table snapshot travel as unavailable
+-- under Nessie 0.104.3, so a snapshot id would name something a reader
+-- cannot go back to.
+--
+-- Keyed (artefact, date), which is the publish contract's own idempotency
+-- key minus the tenant — the tenant is the database this table is in.
+-- Nothing reads it on the serving path today; it is written so that a
+-- reader can exist without a migration, and because an artefact whose
+-- provenance is untracked is one nobody can audit.
+--
+-- **This DDL is duplicated in lake/src/pkdump_lake/value_snapshot.py**,
+-- which creates it idempotently so the transform can run against a tenant
+-- database this binary has not opened since the table was added. The two
+-- cannot share an implementation — one is SQL applied by Rust, the other
+-- is a Python job — so they are held together by a test instead:
+-- crates/pkdump-db/tests/lake_publication.rs reads both files and fails on
+-- any drift.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS lake_publication (
+    artefact     TEXT NOT NULL,
+    date         TEXT NOT NULL,
+    lake_ref     TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    PRIMARY KEY (artefact, date)
+);

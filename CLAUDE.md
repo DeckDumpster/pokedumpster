@@ -86,6 +86,10 @@ cargo run --bin pkdump -- setup  # build the shared catalog (downloads upstream)
 cargo run --bin pkdump -- serve  # start the HTTP server
 cargo run --bin pkdump -- data refresh   # incremental catalog refresh
 cargo run --bin pkdump -- seed-fixture   # build the deterministic UI-test fixture
+cargo run --bin pkdump -- data snapshot-value --date 2026-08-11
+                                 # refresh's step 7 on its own: snapshot ONE
+                                 #   tenant's value from latest_prices. The old
+                                 #   path the lake transform is diffed against.
 
 # Portable collection backup — every user table in one versioned JSON
 # envelope. A whole-database restore, not a merge (--force to overwrite).
@@ -105,6 +109,19 @@ bash tests/deploy/run.sh
 # greps tests/ and deploy/ for a picked host port and fails on one.
 bash tests/lib/diagnostics_test.sh
 bash tests/lib/ports_test.sh
+
+# Lakehouse container tier — its own MinIO + Nessie, no real bucket, no
+# pkdump-* unit. The last two run on a podman --internal network, so "it
+# never calls an upstream" is proven rather than assumed.
+bash tests/lake/run.sh           # PyIceberg + Nessie write/read/TIME TRAVEL
+bash tests/lake/prices.sh        # catalog.prices built from raw/ alone
+bash tests/lake/value-snapshot.sh
+                                 # the transform tier: byte-identical to the
+                                 #   old path, then TWO tenants both published
+                                 #   with their own numbers, a missing/locked
+                                 #   one skipped into a non-zero exit, and an
+                                 #   older date backfilled from that date's
+                                 #   prices
 
 # Browser tier — every route screenshotted at 1440 and 768 against a
 # throwaway container instance, plus the DOM assertions a screenshot cannot
@@ -341,6 +358,37 @@ Three rules that are settled, and are the ones easiest to erode:
 Landing is opt-in and off by default: with the flag absent, `lake.env` is
 never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
 runbook.
+
+### The transform tier — per-tenant publishing
+
+`pkdump-lake-value-snapshot --date YYYY-MM-DD`
+(`lake/src/pkdump_lake/value_snapshot.py`) reads `catalog.prices` at a **pinned
+Nessie ref** and writes `collection_value_snapshot` into **every registered
+tenant's** database. `data.rs` step 7 reaches exactly one tenant — whichever
+`$PKDUMP_USER` names inside the container — and there is no loop, so every
+other tenant gets no value history, ever, with no error (`pd-s5yn`; latent only
+because prod has one tenant). Step 7 is still in place on purpose; deleting it
+is `pd-hkbc`.
+
+Rules that are settled here, and easy to erode:
+
+- **Prices are read *as of* the date, never from that date's partition alone.**
+  `latest_prices` is `MAX(observed_at)` per key over all of `prices`, so a
+  product last quoted days ago is still in it. A partition-only read drops
+  exactly those to a NULL price and values every collection low.
+- **A failing tenant is logged, skipped, and in the exit status** (0 all, 1
+  partial, 2 could not start). Silent partial success is the defect this tier
+  was designed to remove — "it kept going" is not enough on its own.
+- **The flow is lake → tenant, one way.** No Iceberg table carries a
+  tenant-identifying column and nothing tenant-keyed is ever written to the
+  lake. `tests/lake/value-snapshot.sh` §9 checks it mechanically.
+- **`--date` is required and never read from the clock**, which is what makes
+  backfill the same operation as today's run.
+
+Provenance lands in the tenant's own `lake_publication` table. Its DDL is in
+`schema_user.sql` *and* in the Python job (which must be able to create it);
+`crates/pkdump-db/tests/lake_publication.rs` reads both files and fails on
+drift.
 
 ### Variant expansion
 

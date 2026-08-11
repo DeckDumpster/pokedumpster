@@ -473,7 +473,15 @@ mod tests {
              INSERT INTO collection_value_snapshot (date, dimension, bucket, market_value,
                                                      cost_basis, card_count)
              VALUES ('2026-07-01', 'all', NULL, 123.45, 100.0, 2),
-                    ('2026-07-01', 'set', 'sv3pt5', 123.45, 100.0, 2);",
+                    ('2026-07-01', 'set', 'sv3pt5', 123.45, 100.0, 2);
+
+             -- Which lake commit those snapshot rows came from (pd-ruwh).
+             -- Travels with the backup for the same reason the rows do: a
+             -- restored chart whose provenance was dropped is one nobody can
+             -- date afterwards.
+             INSERT INTO lake_publication (artefact, date, lake_ref, published_at)
+             VALUES ('collection_value_snapshot', '2026-07-01',
+                     'main@f5c0ffee', '2026-07-01T03:00:00+00:00');",
         )
         .unwrap();
     }

@@ -277,7 +277,83 @@ failure, because it is SQLite dropping data rather than the lake inventing it.
 
 ---
 
-## 7. Where the code is
+## 7. Publishing back to tenants — the transform tier
+
+The tier that turns the lake into something the app shows. It reads
+`catalog.prices` at a **pinned Nessie ref**, joins it against each tenant's own
+collection, and writes `collection_value_snapshot` into **that tenant's**
+database — for **every registered tenant**, which is the part that is new.
+
+```bash
+podman run --rm --network pkdump-lake-<inst> \
+  -v ~/.pkdump:/pkdump:Z -e PKDUMP_HOME=/pkdump \
+  -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-<inst>:19120/iceberg/ \
+  -e PKDUMP_LAKE_S3_BUCKET=<bucket> -e PKDUMP_LAKE_S3_REGION=us-west-2 \
+  localhost/pkdump-lake:<inst> \
+  pkdump-lake-value-snapshot --date 2026-08-11
+```
+
+**What it replaces.** `pkdump data refresh` step 7 opens *one* tenant — the one
+`$PKDUMP_USER` names inside the container — and snapshots it. There is no loop
+(`pd-s5yn`, verified): every other tenant gets no value history, ever, with no
+error. It is latent only because prod has one tenant. Step 7 is still there on
+purpose; deleting it is `pd-hkbc`, kept separate so this job could be checked
+against the behaviour it replaces before that behaviour went away.
+
+Four things about it are decisions rather than details.
+
+**`--date` is required and never defaulted from the clock**, the same rule
+`--ingest-date` follows above — which is what makes backfill fall out. Point it
+at an older date and it reconstructs history that was never captured, because
+the snapshot is keyed by date and the write is a delete-then-insert per
+`(date, dimension)`.
+
+**Prices are taken *as of* the date, not from that date's partition.** The
+`latest_prices` table this job reproduces is `MAX(observed_at)` per key over
+all of `prices`, so a product last quoted three days ago is still in it at that
+older price. Reading only `observed_date = <date>` would drop exactly those
+products to a NULL market price and quietly value every collection low. The job
+walks partitions newest-first from the target date and stops as soon as every
+owned key has a price — normally one partition, and bounded by the size of the
+collections rather than by the years of history behind them.
+
+**A failing tenant is logged, skipped, and carried in the exit status.** A
+tenant whose database is missing or locked does not abort the run; the others
+are still published, the summary names every failure, and the exit status is
+non-zero:
+
+| exit | meaning |
+| --- | --- |
+| `0` | every active tenant was published |
+| `1` | the run finished, and at least one tenant failed — read the summary |
+| `2` | the run could not start (no data dir, no registry, no catalog) |
+
+Silent partial success is the failure mode of the in-refresh loop this design
+replaces, so "it kept going" is not enough on its own — the status has to carry
+it.
+
+**Only *active* tenants are published.** A detached user kept their bytes but
+released their handle, so nothing serves their collection; the count of skipped
+detached rows is printed rather than dropped silently.
+
+Each publication records the Nessie commit it was derived from, in the tenant's
+own `lake_publication` table (`artefact`, `date`, `lake_ref`, `published_at`).
+`lake_ref` is `main@<hash>` — the whole catalog at a commit, resolved **before**
+the first byte is read so a build landing mid-run cannot leave an artefact
+stamped with a ref it was not derived from. Deliberately not an Iceberg snapshot
+id: `pd-fzeb` measured per-table snapshot travel as *unavailable* under Nessie
+0.104.3, so a snapshot id would name something a reader cannot go back to.
+
+**Tenant data still never enters the lake.** This is the only job that opens a
+tenant database, and it only ever *writes* one — the flow is lake → tenant, one
+way. The one tenant-shaped value that reaches a lake query is the set of
+product ids used as a read predicate, which stores nothing and leaves no tenant
+column in any table. `tests/lake/value-snapshot.sh` §9 checks that mechanically
+rather than trusting this paragraph.
+
+---
+
+## 8. Where the code is
 
 | what | where |
 | --- | --- |

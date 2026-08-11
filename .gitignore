@@ -40,3 +40,7 @@ crates/pkdump-db/tests/.ptcg_cache.sqlite
 # Beads is owned by Gas Town (rig database in the town dolt server);
 # backed up via `bd dolt push` to rgantt/pokedumpster-beads.git, not tracked here.
 .beads/
+
+# Python bytecode from running the lake jobs outside a container
+__pycache__/
+*.pyc

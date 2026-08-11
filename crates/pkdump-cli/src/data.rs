@@ -49,6 +49,17 @@ enum DataCommand {
     /// `collection_value_snapshot` table. The nightly `refresh` records
     /// today going forward; this seeds the past. Idempotent.
     BackfillValueHistory(RefreshArgs),
+    /// Snapshot ONE tenant's collection value for a date, from the
+    /// materialized `latest_prices` — exactly what `refresh` does as its
+    /// step 7, runnable on its own.
+    ///
+    /// This is the *old* path. The lake transform
+    /// (`pkdump-lake-value-snapshot`, pd-ruwh) replaces it and must produce
+    /// byte-identical rows; having both runnable is what makes that
+    /// assertion something you execute rather than argue about
+    /// (`tests/lake/value-snapshot.sh` runs exactly this and diffs).
+    /// Before it, re-snapshotting a date meant a full network refresh.
+    SnapshotValue(SnapshotValueArgs),
 }
 
 /// Arguments shared by the `pkdump data` subcommands that only need a
@@ -78,6 +89,20 @@ pub struct RefreshCmdArgs {
     land_raw: bool,
 }
 
+/// Arguments for `pkdump data snapshot-value`.
+#[derive(clap::Args)]
+pub struct SnapshotValueArgs {
+    /// Shared catalog database path (default: ~/.pkdump/shared.sqlite).
+    #[arg(long, value_name = "PATH")]
+    db: Option<PathBuf>,
+    /// The snapshot date, `YYYY-MM-DD` (default: today, UTC). The prices used
+    /// are always `latest_prices` as it stands *now* — this names the row key,
+    /// it does not travel back. Reconstructing a past date's *prices* is
+    /// `backfill-value-history`, or the lake transform pinned to an older ref.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    date: Option<String>,
+}
+
 /// Arguments for `pkdump data apply-corrections`.
 #[derive(clap::Args)]
 pub struct ApplyCorrectionsArgs {
@@ -97,7 +122,34 @@ pub fn run(args: DataArgs) -> anyhow::Result<()> {
         DataCommand::Expand(args) => expand_only(args),
         DataCommand::ApplyCorrections(args) => apply_corrections(args),
         DataCommand::BackfillValueHistory(args) => backfill_value_history(args),
+        DataCommand::SnapshotValue(args) => snapshot_value(args),
     }
+}
+
+/// Execute `pkdump data snapshot-value` — step 7 of `refresh`, on its own.
+///
+/// Deliberately the same two lines the refresh runs, against the same user
+/// connection: if this diverged from step 7 it would stop being a baseline for
+/// the lake transform to be checked against, which is the whole reason it is
+/// here.
+fn snapshot_value(args: SnapshotValueArgs) -> anyhow::Result<()> {
+    let shared_db = match args.db {
+        Some(p) => p,
+        None => pkdump_db::shared_db_path()?,
+    };
+    let user_db = crate::collection::user_db()?;
+    let date = args
+        .date
+        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+    println!(
+        "Snapshotting collection value for {date} into {} (catalog {})",
+        user_db.display(),
+        shared_db.display()
+    );
+    let mut conn = pkdump_db::connect_user(&user_db, &shared_db)?;
+    let rows = pkdump_db::value_history::snapshot_today(&mut conn, &date)?;
+    println!("  {rows} value-snapshot rows written for {date}");
+    Ok(())
 }
 
 /// Execute `pkdump data apply-corrections` — heal already-ingested rows

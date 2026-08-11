@@ -63,6 +63,14 @@
 #                      asserted rather than assumed — and compare it row for
 #                      row against the shared.sqlite built from the SAME
 #                      upstream bytes. See tests/lake/prices.sh.
+#  14. Transform gate: publish collection_value_snapshot into EVERY registered
+#                      tenant from catalog.prices, and require the rows to be
+#                      byte-identical to the old in-refresh path before
+#                      trusting any of the new behaviour. Then: two tenants
+#                      both get their OWN numbers (pd-s5yn inverted), a missing
+#                      or locked tenant is skipped and named in a non-zero exit
+#                      status, and an older date reconstructs that date's
+#                      values. See tests/lake/value-snapshot.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
@@ -341,6 +349,17 @@ bash "$REPO_DIR/tests/lake/run.sh"
 
 step "Lakehouse: catalog.prices built from raw/ alone, with no network"
 bash "$REPO_DIR/tests/lake/prices.sh"
+
+# --- 14. The transform tier, for every tenant -------------------------------
+# pd-s5yn is a defect that is invisible with one tenant: the nightly refresh
+# snapshots the one tenant it happens to resolve and silently gives every other
+# one nothing. So this registers two and requires both to be published with
+# their own numbers — and requires the rewrite to be observably a no-op against
+# the old path first. Its own network, MinIO, Nessie, image tag, temp dir and
+# $PKDUMP_HOME; it touches no pkdump-* unit and no real tenant database.
+
+step "Lakehouse: per-tenant value snapshots, for EVERY tenant"
+bash "$REPO_DIR/tests/lake/value-snapshot.sh"
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

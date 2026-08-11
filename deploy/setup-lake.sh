@@ -178,6 +178,11 @@ cat <<EOF
                   -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-${INSTANCE}:19120/iceberg/ \\
                   ${JOB_IMAGE} pkdump-lake-roundtrip
 
+    Then arm the nightly transform (pd-8m5c) — nothing else records today's
+    value for any tenant, and a day it does not run is a hole in every chart:
+                systemctl --user enable --now pkdump-value-snapshots@${INSTANCE}.timer
+                bash deploy/value-snapshots.sh ${INSTANCE}   # or run one now
+
     The catalog has NO authentication (Nessie says so in its own startup log),
     which is why it publishes on 127.0.0.1 only and jobs reach it over the
     pkdump-lake-${INSTANCE} network. Do not publish it on 0.0.0.0.

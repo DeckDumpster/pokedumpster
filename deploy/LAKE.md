@@ -324,10 +324,51 @@ directory with two provisioned tenants must leave every tenant database
 byte-identical.
 
 **Nothing snapshots today's value until this job runs.** That is the operational
-consequence of the split, and it is why `pkdump-lake-value-snapshots` belongs on
-a timer beside `pkdump-refresh@<instance>.timer` rather than being remembered by
-hand. A day the job does not run is a gap in every tenant's chart — recoverable,
-because `--date` reconstructs any day still in the lake, but not self-healing.
+consequence of the split, and it is why the job is on a timer rather than
+remembered by hand (`pd-8m5c`). A day it does not run is a gap in every tenant's
+chart — recoverable, because `--date` reconstructs any day still in the lake, but
+not self-healing.
+
+```bash
+systemctl --user enable --now pkdump-value-snapshots@<instance>.timer
+systemctl --user list-timers 'pkdump-*'
+bash deploy/value-snapshots.sh <instance>                  # run one now
+bash deploy/value-snapshots.sh <instance> --date 2026-08-09 # backfill a day
+```
+
+`deploy/value-snapshots.sh` is what the unit runs: it is the podman invocation
+above with the instance's lake network, data volume and credentials resolved from
+where they actually live. Installed for every instance by `deploy/setup.sh` and
+re-rendered by every `deploy/deploy.sh`, enabled for none — the lakehouse is
+opt-in per box, and the unit's `ConditionPathExists` on `lake.env` keeps an
+enabled timer inert until `deploy/setup-lake.sh` has run.
+
+**The ordering is declared, not timed.** The transform values a collection from
+`catalog.prices`, which is built from what the nightly refresh lands, so the two
+must never run beside each other. `After=pkdump-refresh@%i.service` is what
+guarantees that: if the refresh still holds a job when this timer fires, this
+unit's start job waits for it. (Not `Wants=` — the refresh is a oneshot without
+`RemainAfterExit`, so pulling it in would re-run the whole catalog fetch a second
+time every night.) The timer's `OnCalendar=07:00` is then *derived* from the
+refresh unit's own declared bounds — `06:00` + `RandomizedDelaySec=1800` +
+`TimeoutStartSec=1800` — rather than guessed at, and `tests/deploy/run.sh` §10
+recomputes that arithmetic so moving either number fails a gate instead of
+silently overlapping two jobs.
+
+**0, 2 and 1 are three different answers, and the unit knows it.** Exit 2 —
+completed, some tenant skipped because their database is absent or someone holds
+a write lock on it — is a normal partial run, not a failure: a tenant mid-import
+or a restore in flight produces it. `SuccessExitStatus=2` keeps the unit out of
+`failed` so it does not page and does not leave the timer's last run sitting red,
+while the wrapper prints a `PARTIAL` line naming the skipped tenants and pushes a
+Pushover *warning* — so a half-completed run is neither silent nor an alarm. Exit
+1 is a real failure and `OnFailure=pkdump-alert@%n.service` pages for it.
+
+**`catalog.prices` is still built by hand** (§6). Nothing schedules
+`pkdump-lake-build-prices` yet, so a box whose price build is not re-run values
+each night's collection from the newest partition the lake happens to hold —
+correct arithmetic over stale prices. Tracked as `pd-up36`, which also has to
+decide what a nightly build does with §6's refusal on an incomplete day.
 
 **Tenant data never enters the lake.** Prices come out of Iceberg; the
 collection is read from, and the snapshot written to, the tenant's SQLite
@@ -375,6 +416,7 @@ catalog yourself.
 | `catalog.prices`, and only that | `lake/src/pkdump_lake/prices.py` |
 | the check against `shared.sqlite` | `lake/src/pkdump_lake/verify.py` |
 | per-tenant value snapshots (the transform tier) | `lake/src/pkdump_lake/value_snapshots.py` |
+| what the timer runs it as | `deploy/value-snapshots.sh` + `deploy/pkdump-value-snapshots.{service,timer}` |
 | the aggregate it must reproduce | `crates/pkdump-db/src/value_history.rs` |
 | the test-tier upstream override | `crates/pkdump-ingest/src/upstream.rs` |
 
@@ -396,7 +438,10 @@ cargo test -p pkdump-ingest --test value_snapshot_fixture
                                      #   two collections — and the snapshot rows
                                      #   Rust computes from it
 bash tests/lake/prices.sh            # the build job, on a network with no upstream
-bash tests/lake/value_snapshots.sh   # the transform, for every tenant
+bash tests/lake/value_snapshots.sh   # the transform, for every tenant — and §10
+                                     #   the SHIPPED wrapper the timer runs
+bash tests/deploy/run.sh             # §10: the scheduling itself — ordering after
+                                     #   the refresh, 0/2/1, the derived calendar
 bash tests/refresh/tenant_bytes.sh   # and the refresh writing no tenant at all
 ```
 

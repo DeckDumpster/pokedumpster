@@ -1,0 +1,30 @@
+[Unit]
+Description=Nightly PokeDumpster per-tenant value snapshots (%i)
+
+[Timer]
+# 07:00 is DERIVED from pkdump-refresh@.timer, not guessed at:
+#
+#   refresh starts   06:00 + RandomizedDelaySec=1800  -> 06:30 at the latest
+#   refresh finishes + TimeoutStartSec=1800           -> 07:00 at the latest
+#
+# So 07:00 is the first minute at which the refresh is over by its own unit's
+# declared bounds. Change either number there and this one follows.
+#
+# It is not the guarantee, though — the ordering dependency in the .service is.
+# A refresh that somehow still holds a job at 07:00 makes this unit's start job
+# wait rather than run beside it. The calendar entry only decides when the day's
+# work is asked for; systemd decides in what order it happens.
+OnCalendar=*-*-* 07:00:00
+# No RandomizedDelaySec: unlike the refresh there is no upstream to be polite to
+# — everything this job reads is the lake and the box's own SQLite — and jitter
+# would only blur the relationship to the refresh window above.
+#
+# Persistent, because a missed day is a permanent hole in every tenant's chart
+# rather than something the next run fills in: each run writes exactly the date
+# it is asked for. A box that was off at 07:00 gets today's snapshot when it
+# comes back. Days missed entirely are recoverable by hand for as long as the
+# lake holds their prices — see deploy/LAKE.md §7.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

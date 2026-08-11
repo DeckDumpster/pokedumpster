@@ -434,7 +434,8 @@ check "the published port survives the refresh" "1" \
 # tells an operator to run setup.sh when one is missing, and a deploy that
 # rewrites only the Quadlets would leave that advice permanently true.
 for U in pkdump-alert@.service pkdump-backup-check@.service pkdump-backup-check@.timer \
-	pkdump-refresh@.service pkdump-refresh@.timer pkdump-diskcheck.service pkdump-diskcheck.timer; do
+	pkdump-refresh@.service pkdump-refresh@.timer pkdump-diskcheck.service pkdump-diskcheck.timer \
+	pkdump-value-snapshots@.service pkdump-value-snapshots@.timer; do
 	check "installs ${U}" "yes" "$([ -f "${UNITS}/${U}" ] && echo yes || echo no)"
 done
 check "no {{REPO_DIR}} left unsubstituted" "0" \
@@ -621,6 +622,178 @@ set -e
 check "store-teardown.sh exits non-zero unconfigured" "1" "$CLI_RC"
 check "and removes nothing" "1" \
 	"$(printf '%s' "$CLI_OUT" | grep -c 'nothing to remove' || true)"
+
+reset_store
+
+# ---------------------------------------------------------------------------
+log "10. The transform tier is SCHEDULED, and 2 is not a failure (pd-8m5c)"
+# ---------------------------------------------------------------------------
+#
+# `pkdump data refresh` step 7 is deleted (pd-hkbc), so
+# pkdump-lake-value-snapshots is the only thing that records today's value for
+# anybody — and it shipped with no unit, no timer and nothing under deploy/
+# referencing it. deploy/LAKE.md said it "belongs on a timer" and that was the
+# whole of the scheduling. This section exists because that gap existed
+# precisely where nothing tested it.
+
+reset_store
+
+VS_SVC="${REPO_DIR}/deploy/pkdump-value-snapshots.service"
+VS_TMR="${REPO_DIR}/deploy/pkdump-value-snapshots.timer"
+
+# The ordering, which is the guarantee: the transform values a collection from
+# catalog.prices, built from what the refresh lands. They may never run beside
+# each other.
+check "ordered after the refresh" "1" \
+	"$(grep -c '^After=pkdump-refresh@%i.service$' "$VS_SVC" || true)"
+# And NOT Wants=: the refresh is a oneshot without RemainAfterExit, so pulling it
+# in would re-run the whole catalog fetch a second time every night.
+check "does not pull the refresh in" "0" \
+	"$(grep -c '^\(Wants\|Requires\)=pkdump-refresh@%i.service$' "$VS_SVC" || true)"
+
+# 0 / 2 / 1 are three answers. 2 means "completed, some tenants skipped" — a
+# tenant mid-import or a restore in flight — and a unit that called that a
+# failure would page on a normal partial run and leave the timer's last run red.
+check "exit 2 is a success for the unit" "1" \
+	"$(grep -c '^SuccessExitStatus=2$' "$VS_SVC" || true)"
+check "a real failure still pages" "1" \
+	"$(grep -c '^OnFailure=pkdump-alert@%n.service$' "$VS_SVC" || true)"
+# A box that has never had setup.sh run on it has no lake.env at all, and the unit
+# skips rather than failing. It is only half a guard — setup.sh scaffolds that file
+# commented out, so on every box that HAS been set up it exists and gates nothing;
+# the other half is the wrapper's own refusal below.
+check "skips a box with no lake config at all" "1" \
+	"$(grep -c '^ConditionPathExists=%h/.config/pkdump/lake.env$' "$VS_SVC" || true)"
+
+# The calendar entry is DERIVED from the refresh unit's own declared bounds
+# rather than guessed at: last possible start + the time it is allowed to take.
+# Move either number in pkdump-refresh.* and this fails rather than silently
+# leaving the two jobs overlapping.
+hhmm_secs() { # hhmm_secs <file> — OnCalendar's time of day, in seconds
+	sed -n 's/^OnCalendar=\*-\*-\* \([0-9]\{2\}\):\([0-9]\{2\}\):.*/\1 \2/p' "$1" |
+		awk '{print $1 * 3600 + $2 * 60; exit}'
+}
+key_secs() { # key_secs <file> <key> — a systemd seconds value, 0 if absent
+	sed -n "s/^$2=\([0-9]\{1,\}\)$/\1/p" "$1" | awk 'NR==1{print; found=1} END{if(!found) print 0}'
+}
+REFRESH_LATEST=$((
+	$(hhmm_secs "${REPO_DIR}/deploy/pkdump-refresh.timer") +
+		$(key_secs "${REPO_DIR}/deploy/pkdump-refresh.timer" RandomizedDelaySec) +
+		$(key_secs "${REPO_DIR}/deploy/pkdump-refresh.service" TimeoutStartSec)
+))
+VS_START=$(($(hhmm_secs "$VS_TMR") + $(key_secs "$VS_TMR" RandomizedDelaySec)))
+check "fires no earlier than the refresh can finish" "ok" \
+	"$([ "$VS_START" -ge "$REFRESH_LATEST" ] && echo ok || echo "starts ${VS_START}s < refresh ${REFRESH_LATEST}s")"
+
+# A missed day is a permanent hole: each run writes exactly the date it is asked
+# for, so nothing later fills it in.
+check "catches up a missed run" "1" "$(grep -c '^Persistent=true$' "$VS_TMR" || true)"
+check "timer is enablable" "1" "$(grep -c '^WantedBy=timers.target$' "$VS_TMR" || true)"
+
+# An instance that is gone must not leave a timer behind firing at its volume.
+check "teardown disables the timer" "1" \
+	"$(grep -c 'pkdump-value-snapshots@\${INSTANCE}.timer' "${REPO_DIR}/deploy/teardown.sh" || true)"
+
+# --- What the wrapper does with each exit status ----------------------------
+# Driven end to end with a fake podman standing in for the job, because "2 is
+# passed through, named and warned about; 1 is a failure; 0 is quiet" is
+# behaviour, not a grep.
+
+VS_HOME="${WORK}/vshome"
+mkdir -p "${VS_HOME}/.config/pkdump" "${WORK}/vsbin"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_REGION=us-west-2\n' \
+	> "${VS_HOME}/.config/pkdump/lake.env"
+
+# `secret inspect` fails (no bootstrap secret on a test instance) and `run`
+# replays a canned job transcript with a canned status.
+cat > "${WORK}/vsbin/podman" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+"secret inspect") exit 1 ;;
+"image exists" | "network exists") exit "${PKDUMP_TEST_NO_LAKEHOUSE:-0}" ;;
+esac
+if [ "$1" = run ]; then
+	printf '==> 2026-08-11: 1 tenant(s) snapshotted, 1 skipped\n    skipped ghost: no database at /data/tenants/01J.sqlite\n'
+	exit "${PKDUMP_TEST_JOB_RC:-0}"
+fi
+exit 0
+EOF
+chmod +x "${WORK}/vsbin/podman"
+
+run_vs() { # run_vs <job exit status>
+	set +e
+	PATH="${WORK}/vsbin:${ORIG_PATH}" HOME="$VS_HOME" \
+		PKDUMP_LAKE_ENV="${VS_HOME}/.config/pkdump/lake.env" \
+		PKDUMP_ALERTS_ENV="${VS_HOME}/.config/pkdump/nonexistent.env" \
+		PKDUMP_TEST_JOB_RC="$1" \
+		bash "${REPO_DIR}/deploy/value-snapshots.sh" vstest 2>&1
+	printf 'RC=%s' "$?"
+	set -e
+}
+
+VS_OK="$(run_vs 0)"
+check "a clean run exits 0" "1" "$(printf '%s' "$VS_OK" | grep -c 'RC=0$' || true)"
+check "and says every tenant was done" "1" \
+	"$(printf '%s' "$VS_OK" | grep -c 'value-snapshots: OK' || true)"
+
+VS_PARTIAL="$(run_vs 2)"
+check "a partial run exits 2, not 0" "1" "$(printf '%s' "$VS_PARTIAL" | grep -c 'RC=2$' || true)"
+# Not silent: the journal line names WHO was skipped, not "some".
+check "and names the tenant it skipped" "1" \
+	"$(printf '%s' "$VS_PARTIAL" | grep -c 'PARTIAL — tenants skipped: ghost' || true)"
+# And an undeliverable warning is reported rather than promoted to a failure —
+# no Pushover channel is configured here, which is every test instance.
+check "an undeliverable warning is not a failure" "1" \
+	"$(printf '%s' "$VS_PARTIAL" | grep -c 'the PARTIAL warning reached nobody' || true)"
+
+VS_FAILED="$(run_vs 1)"
+check "a run that never started exits 1" "1" "$(printf '%s' "$VS_FAILED" | grep -c 'RC=1$' || true)"
+check "and says so" "1" \
+	"$(printf '%s' "$VS_FAILED" | grep -c 'value-snapshots: FAILED' || true)"
+
+# The date the job refuses to default from the clock is supplied by the
+# scheduler, which is the one component allowed to know what day it is.
+check "the wrapper names today's date" "1" \
+	"$(printf '%s' "$VS_OK" | grep -c -- "--date $(date +%F)" || true)"
+# An explicit date wins — this is how a backfill runs through the same path.
+check "an explicit --date is not overridden" "1" \
+	"$(PATH="${WORK}/vsbin:${ORIG_PATH}" HOME="$VS_HOME" \
+		PKDUMP_LAKE_ENV="${VS_HOME}/.config/pkdump/lake.env" \
+		bash "${REPO_DIR}/deploy/value-snapshots.sh" vstest --date 2026-08-09 2>&1 |
+		grep -c -- '--date 2026-08-09' || true)"
+
+# No lake configured is a refusal that names the file to write, never a silent
+# skip — the same rule --land-raw follows.
+set +e
+VS_NOLAKE="$(PATH="${WORK}/vsbin:${ORIG_PATH}" HOME="$VS_HOME" \
+	PKDUMP_LAKE_ENV="${WORK}/nosuch.env" \
+	bash "${REPO_DIR}/deploy/value-snapshots.sh" vstest 2>&1)"
+VS_NOLAKE_RC=$?
+set -e
+check "no lake.env -> refuses" "1" "$VS_NOLAKE_RC"
+check "and names the file" "1" \
+	"$(printf '%s' "$VS_NOLAKE" | grep -c 'nosuch.env does not exist' || true)"
+
+# An instance whose lakehouse was never installed. lake.env cannot answer this —
+# deploy/setup.sh scaffolds it (commented out) on every box, so it exists
+# everywhere and gates nothing. Observed before this check existed: the run died
+# inside podman, retrying `localhost` as a container REGISTRY for a local-only
+# image and exiting 125, so the operator read a network error instead of "you
+# never ran setup-lake.sh".
+set +e
+VS_NOLAKEHOUSE="$(PATH="${WORK}/vsbin:${ORIG_PATH}" HOME="$VS_HOME" \
+	PKDUMP_LAKE_ENV="${VS_HOME}/.config/pkdump/lake.env" \
+	PKDUMP_TEST_NO_LAKEHOUSE=1 \
+	bash "${REPO_DIR}/deploy/value-snapshots.sh" vstest 2>&1)"
+VS_NOLAKEHOUSE_RC=$?
+set -e
+check "no job image -> fails (a timer armed at nothing must page)" "1" "$VS_NOLAKEHOUSE_RC"
+check "and names the command that installs it" "1" \
+	"$(printf '%s' "$VS_NOLAKEHOUSE" | grep -c 'deploy/setup-lake.sh vstest' || true)"
+# And the job image is local-only, so a pull can only ever be podman mistaking
+# `localhost` for a registry.
+check "never pulls the job image" "1" \
+	"$(grep -c '^podman run --rm --pull=never' "${REPO_DIR}/deploy/value-snapshots.sh" || true)"
 
 reset_store
 

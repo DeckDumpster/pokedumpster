@@ -367,8 +367,9 @@ fn load_set_bridges() -> Result<Vec<SetBridge>> {
 ///     pokemontcg.io's `ptcgo_code`s are independent namespaces that
 ///     collide by accident: group 1853 "EX Battle Stadium" (2005) and
 ///     set `swsh5` "Battle Styles" (2021) both read "BST", so the group
-///     claimed the set and 40 Battle Styles cards priced off unrelated
-///     EX-era products — a *wrong* price, which is worse than none. A
+///     claimed the set and Battle Styles priced off unrelated EX-era
+///     products — its Victreebel (#3) was priced as EX Battle Stadium's
+///     Blaziken. A *wrong* price, which is worse than none. A
 ///     tier-1 match is rejected when both sides carry a date and the
 ///     years are more than [`TIER1_MAX_YEAR_GAP`] apart. The window is
 ///     deliberately wide: it exists to reject an era mismatch, never to
@@ -1182,8 +1183,9 @@ mod tests {
         // TCGplayer's abbreviations and pokemontcg.io's ptcgo_codes are
         // independent namespaces, so they collide by accident: group 1853
         // "EX Battle Stadium" (2005) and set swsh5 "Battle Styles" (2021)
-        // both read "BST". The group claimed the set and 40 Battle Styles
-        // cards priced off unrelated EX-era products (pd-0o5m).
+        // both read "BST". The group claimed the set, and Battle Styles'
+        // Victreebel (#3) priced as EX Battle Stadium's Blaziken, at
+        // $28.15 (pd-0o5m).
         let (_d, mut conn) = shared_db();
         conn.execute(
             "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \

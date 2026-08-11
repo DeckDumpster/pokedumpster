@@ -12,7 +12,7 @@ use rusqlite::Connection;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{japan, overrides, pokemon_tcg_data, symbols, tcgcsv};
+use pkdump_ingest::{coverage, japan, overrides, pokemon_tcg_data, symbols, tcgcsv};
 
 /// The `pkdump data` subcommand group.
 #[derive(clap::Args)]
@@ -174,6 +174,9 @@ fn expand_only(args: RefreshArgs) -> anyhow::Result<()> {
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
+
+    println!("Checking TCGplayer mapping coverage...");
+    coverage::report_unmapped_sets(&conn)?;
     Ok(())
 }
 
@@ -320,6 +323,12 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
+
+    // Report sets that mapped no printing to a TCGplayer product at all —
+    // the shape `basep` sat in, unnoticed, for the catalog's whole life
+    // (pd-0o5m). See `pkdump_ingest::coverage`.
+    println!("Checking TCGplayer mapping coverage...");
+    coverage::report_unmapped_sets(&conn)?;
 
     // 5. Normalize set symbol glyphs for any new sets the tail fetch added.
     //    Existing rows already point at /sym/<set>.png and are skipped via

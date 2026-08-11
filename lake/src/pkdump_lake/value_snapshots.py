@@ -113,9 +113,20 @@ EXIT_PARTIAL = 2
 #: other change:
 #:
 #: * ``latest_prices`` becomes ``_lake_prices`` — the same shape, staged from
-#:   Iceberg below, which is the entire point of the rewrite.
+#:   Iceberg below, which is the entire point of the rewrite. The other two
+#:   arms of the price rule are transliterated as they stand in
+#:   ``pkdump_db::prices::MARKET_PRICE_EXPR``: the curated
+#:   ``catalog_price_overrides`` patch, and the tenant's ``manual_prices``
+#:   guarded to printings that tenant invented (pd-m4gw). Drop either and this
+#:   job values a collection by a different rule than every page that renders
+#:   it.
 #: * the catalog tables are ``shared.``-qualified. The Rust path exposes them
 #:   through TEMP VIEWs over the same ATTACH; this job just names them.
+#:
+#: ``conditions`` is deliberately NOT among them: it lives in the tenant's own
+#: database (pd-s4c2), beside the ``collection`` rows its ``name`` is joined
+#: to. Qualifying it ``shared.`` would read another tenant's multipliers, or —
+#: since the catalog no longer has the table at all — fail outright.
 #:
 #: The two implementations must agree to the byte, and are held to it: the
 #: container gate runs Rust ``snapshot_today`` and this job over one fixture
@@ -132,8 +143,12 @@ SELECT c.id,
             WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id
               AND lp.sub_type_name = p.sub_type_name
             LIMIT 1),
+         (SELECT o.price FROM shared.catalog_price_overrides o
+            WHERE o.printing_id = p.printing_id),
          (SELECT mp.price FROM manual_prices mp
             WHERE mp.printing_id = p.printing_id
+              AND EXISTS (SELECT 1 FROM user_printings up
+                           WHERE up.printing_id = mp.printing_id)
             ORDER BY mp.observed_at DESC LIMIT 1)
        ) AS market_price
   FROM collection c
@@ -145,7 +160,7 @@ SELECT c.id,
            FROM user_printings
        ) p ON c.printing_id = p.printing_id
   JOIN shared.cards cd ON p.card_id = cd.card_id
-  LEFT JOIN shared.conditions cond ON cond.name = c.condition
+  LEFT JOIN conditions cond ON cond.name = c.condition
  WHERE c.status = 'owned';
 """
 

@@ -3,7 +3,13 @@
 #
 # Built by tests/lake/run.sh and deploy/setup-lake.sh, both of which tag it per
 # instance so a CI run and prod cannot share an image.
-FROM docker.io/library/python:3.12-slim
+# The Debian release is named, not inherited: `python:3.12-slim` is a moving
+# tag, and a base that slides under a build is what shipped an unrunnable
+# binary once already (pd-pejn — see the root Containerfile). trixie is what
+# the moving tag already resolves to, so this pins today's image rather than
+# changing it. tests/container/base_images_test.sh holds the rule for every
+# build file in the tree, this one included.
+FROM docker.io/library/python:3.12-slim-trixie
 
 WORKDIR /opt/lake
 COPY pyproject.toml ./

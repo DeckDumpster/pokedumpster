@@ -147,6 +147,10 @@ fn land_run(base_url: &str, raw_root: &Path, db: &Path, ingest_date: &str) {
 /// two sets, four cards, and the printings that bridge them to the TCGplayer
 /// products the prices are quoted for — plus one printing bridged to *nothing*,
 /// which is the manual-price arm of the market-price expression.
+///
+/// The condition multipliers are not seeded here: `conditions` is a *tenant*
+/// table (pd-s4c2), and `connect_user` seeds each collection's own five rows
+/// from `data/conditions.json` on open.
 fn seed_catalog(conn: &Connection) {
     conn.execute_batch(
         "INSERT OR REPLACE INTO sets (set_code, name, series) VALUES
@@ -171,14 +175,7 @@ fn seed_catalog(conn: &Connection) {
              ('base2-64-normal', 'base2-64', 'normal', 'en', 102, 'Normal'),
              -- Priced by hand only: no product, so the market-price COALESCE
              -- has to fall through to manual_prices on both sides.
-             ('base2-99-normal', 'base2-99', 'normal', 'en', NULL, NULL);
-
-         INSERT OR REPLACE INTO conditions (name, multiplier, rank) VALUES
-             ('Near Mint',         1.00, 1),
-             ('Lightly Played',    0.85, 2),
-             ('Moderately Played', 0.65, 3),
-             ('Heavily Played',    0.45, 4),
-             ('Damaged',           0.25, 5);",
+             ('base2-99-normal', 'base2-99', 'normal', 'en', NULL, NULL);",
     )
     .expect("seed the catalog rows a collection needs");
 }

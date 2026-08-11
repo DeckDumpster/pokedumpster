@@ -334,7 +334,7 @@ fn load_set_bridges() -> Result<Vec<SetBridge>> {
 /// are supplied by the bridge overlay with role='shadowless' and don't
 /// pass through this function. `ptcgo_code` is not unique (promo codes
 /// recur, many are NULL) and TCGCSV reuses a name across the odd group,
-/// so any tier may offer the same set to several groups — the first
+/// so a tier may still offer the same set to several groups — the first
 /// group (by id, deterministic) takes it. Groups are processed in id
 /// order so the assignment is stable across re-runs.
 ///
@@ -348,18 +348,46 @@ fn load_set_bridges() -> Result<Vec<SetBridge>> {
 /// "SM06") would take the Japanese set on tier 1 and never reach the
 /// tier-2 name match that bridges it correctly. 19 English groups
 /// resolve onto a `jp-` set without this filter.
+///
+/// Tier 1 carries two guards, because an abbreviation match is only
+/// evidence when it is *specific* — and when it isn't, the set it steals
+/// is one no other group can then claim (pd-0o5m):
+///
+///   - **An abbreviation many groups share identifies none of them.**
+///     21 English groups carry "PR" and exactly one set (`basep`,
+///     Wizards Black Star Promos) carries `ptcgo_code = 'PR'`, so the
+///     lowest group id wins a coin toss: `basep` went to group 609
+///     ("DP Training Kit 1 Blue", which has *no products at all*), and
+///     group 1418 ("WoTC Promo", 69 single-card products numbered
+///     `NN/53`) found it claimed and bridged to nothing. Tier 1 is
+///     skipped entirely for an abbreviation more than one group in the
+///     batch carries; those groups fall to the tier-2 name match, and
+///     what neither tier reaches takes a bridge-overlay entry.
+///   - **Codes recur across eras.** TCGplayer's abbreviations and
+///     pokemontcg.io's `ptcgo_code`s are independent namespaces that
+///     collide by accident: group 1853 "EX Battle Stadium" (2005) and
+///     set `swsh5` "Battle Styles" (2021) both read "BST", so the group
+///     claimed the set and Battle Styles priced off unrelated EX-era
+///     products — its Victreebel (#3) was priced as EX Battle Stadium's
+///     Blaziken. A *wrong* price, which is worse than none. A
+///     tier-1 match is rejected when both sides carry a date and the
+///     years are more than [`TIER1_MAX_YEAR_GAP`] apart. The window is
+///     deliberately wide: it exists to reject an era mismatch, never to
+///     adjudicate a plausible one.
 fn resolve_group_set_links(
     conn: &Connection,
     groups: &[TcgGroup],
 ) -> Result<std::collections::HashMap<i64, String>> {
-    // ptcgo_code (lowercased) -> [set_code, ...] in release order.
-    let mut by_ptcgo: std::collections::HashMap<String, Vec<String>> = Default::default();
+    // ptcgo_code (lowercased) -> [(set_code, release year), ...] in
+    // release order.
+    let mut by_ptcgo: std::collections::HashMap<String, Vec<(String, Option<i32>)>> =
+        Default::default();
     // normalized name -> [set_code, ...]; a normalized name maps to one set
     // in real data, but a Vec keeps the claim logic uniform.
     let mut by_name: std::collections::HashMap<String, Vec<String>> = Default::default();
     {
         let mut stmt = conn.prepare(
-            "SELECT set_code, ptcgo_code, name FROM sets \
+            "SELECT set_code, ptcgo_code, name, release_date FROM sets \
               WHERE set_code NOT LIKE ?1 || '%' \
               ORDER BY release_date, set_code",
         )?;
@@ -368,20 +396,30 @@ fn resolve_group_set_links(
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
             ))
         })?;
         for row in rows {
-            let (set_code, ptcgo, name) = row?;
+            let (set_code, ptcgo, name, release_date) = row?;
             if let Some(code) = ptcgo.filter(|c| !c.is_empty()) {
                 by_ptcgo
                     .entry(code.to_ascii_lowercase())
                     .or_default()
-                    .push(set_code.clone());
+                    .push((set_code.clone(), year_of(release_date.as_deref())));
             }
             by_name
                 .entry(normalize_set_name(&name))
                 .or_default()
                 .push(set_code);
+        }
+    }
+
+    // How many groups in this batch carry each abbreviation. More than one
+    // and the abbreviation is not evidence — see the doc comment.
+    let mut abbr_groups: std::collections::HashMap<String, usize> = Default::default();
+    for g in groups {
+        if let Some(abbr) = g.abbreviation.as_deref().filter(|a| !a.is_empty()) {
+            *abbr_groups.entry(abbr.to_ascii_lowercase()).or_default() += 1;
         }
     }
 
@@ -394,9 +432,16 @@ fn resolve_group_set_links(
         // Tier 1: ptcgo_code / abbreviation.
         let mut chosen: Option<String> = None;
         if let Some(abbr) = g.abbreviation.as_deref().filter(|a| !a.is_empty())
+            && abbr_groups
+                .get(&abbr.to_ascii_lowercase())
+                .is_some_and(|n| *n == 1)
             && let Some(candidates) = by_ptcgo.get(&abbr.to_ascii_lowercase())
         {
-            chosen = candidates.iter().find(|c| !claimed.contains(*c)).cloned();
+            let published = year_of(g.published_on.as_deref());
+            chosen = candidates
+                .iter()
+                .find(|(c, released)| !claimed.contains(c) && same_era(published, *released))
+                .map(|(c, _)| c.clone());
         }
         // Tier 2: normalized set name.
         if chosen.is_none()
@@ -410,6 +455,31 @@ fn resolve_group_set_links(
         }
     }
     Ok(links)
+}
+
+/// The widest gap, in years, a tier-1 abbreviation match may span. Wide
+/// on purpose: TCGCSV's `publishedOn` is a listing date, not a release
+/// date (it is a placeholder equal to "now" on a handful of groups), so
+/// the check has to survive years of legitimate slop and only reject an
+/// outright era mismatch like 2005 ↔ 2021.
+const TIER1_MAX_YEAR_GAP: i32 = 5;
+
+/// The leading year of a `YYYY-...` / `YYYY/...` date, if it has one.
+/// Both upstreams spell the year first — pokemontcg.io as `1999/07/01`,
+/// TCGCSV as `1999-07-01T00:00:00` — and neither is worth a chrono parse
+/// when only the era matters.
+fn year_of(date: Option<&str>) -> Option<i32> {
+    date?.get(..4)?.parse().ok()
+}
+
+/// Whether a group's published year and a set's release year are close
+/// enough for a tier-1 abbreviation match to be believable. A missing
+/// date on either side is not evidence of a mismatch, so it passes.
+fn same_era(published: Option<i32>, released: Option<i32>) -> bool {
+    match (published, released) {
+        (Some(p), Some(r)) => (p - r).abs() <= TIER1_MAX_YEAR_GAP,
+        _ => true,
+    }
 }
 
 /// Import groups into `tcgplayer_groups`, bridging each to a catalog set via
@@ -1064,6 +1134,140 @@ mod tests {
     }
 
     #[test]
+    fn an_abbreviation_many_groups_share_is_not_evidence() {
+        // 21 English TCGCSV groups carry the abbreviation "PR" and
+        // exactly one set carries ptcgo_code 'PR', so tier 1 was decided
+        // by group id — an arbitrary tiebreak that handed the set to
+        // whichever group happened to sort first. The abbreviation
+        // identifies none of them; the name identifies one (pd-0o5m).
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
+             VALUES ('demop','PR','Demo Black Star Promos','Demo','1999/07/01')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![
+            TcgGroup {
+                group_id: 700,
+                name: "Demo Training Kit 1 Blue".into(),
+                abbreviation: Some("PR".into()),
+                published_on: Some("1999-07-01T00:00:00".into()),
+            },
+            TcgGroup {
+                group_id: 800,
+                name: "Demo Black Star Promos".into(),
+                abbreviation: Some("PR".into()),
+                published_on: Some("1999-07-01T00:00:00".into()),
+            },
+        ];
+        import_groups(&mut conn, &groups, "2026-08-10").unwrap();
+
+        let claimer: Option<i64> = conn
+            .query_row(
+                "SELECT group_id FROM tcgplayer_groups WHERE set_code = 'demop'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            claimer,
+            Some(800),
+            "the set belongs to the group whose name matches it, not to \
+             whichever group carrying the shared abbreviation sorts first"
+        );
+    }
+
+    #[test]
+    fn an_abbreviation_from_another_era_is_not_evidence() {
+        // TCGplayer's abbreviations and pokemontcg.io's ptcgo_codes are
+        // independent namespaces, so they collide by accident: group 1853
+        // "EX Battle Stadium" (2005) and set swsh5 "Battle Styles" (2021)
+        // both read "BST". The group claimed the set, and Battle Styles'
+        // Victreebel (#3) priced as EX Battle Stadium's Blaziken, at
+        // $28.15 (pd-0o5m).
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
+             VALUES ('swsh5','BST','Battle Styles','Sword & Shield','2021/03/19')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![
+            TcgGroup {
+                group_id: 1853,
+                name: "EX Battle Stadium".into(),
+                abbreviation: Some("BST".into()),
+                published_on: Some("2005-11-01T00:00:00".into()),
+            },
+            TcgGroup {
+                group_id: 2765,
+                name: "SWSH05: Battle Styles".into(),
+                abbreviation: Some("SWSH05".into()),
+                published_on: Some("2021-03-19T00:00:00".into()),
+            },
+        ];
+        import_groups(&mut conn, &groups, "2026-08-10").unwrap();
+
+        let claimer: Option<i64> = conn
+            .query_row(
+                "SELECT group_id FROM tcgplayer_groups WHERE set_code = 'swsh5'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            claimer,
+            Some(2765),
+            "a sixteen-year gap means the shared code is a coincidence, and \
+             a wrong product mapping is worse than none"
+        );
+    }
+
+    #[test]
+    fn wotc_promo_group_owns_wizards_black_star_promos() {
+        // The instance behind pd-0o5m, against the shipped bridge
+        // overlay. Group 1418 ("WoTC Promo") holds all 53 basep promos;
+        // group 609 ("DP Training Kit 1 Blue") holds no products at all
+        // and used to own the set because 609 < 1418.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
+             VALUES ('basep','PR','Wizards Black Star Promos','Base','1999/07/01')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![
+            TcgGroup {
+                group_id: 609,
+                name: "DP Training Kit 1 Blue".into(),
+                abbreviation: Some("PR".into()),
+                published_on: Some("2007-05-01T00:00:00".into()),
+            },
+            TcgGroup {
+                group_id: 1418,
+                name: "WoTC Promo".into(),
+                abbreviation: Some("PR".into()),
+                published_on: Some("1999-07-01T00:00:00".into()),
+            },
+        ];
+        import_groups(&mut conn, &groups, "2026-08-10").unwrap();
+
+        let linked: Vec<(i64, Option<String>)> = conn
+            .prepare("SELECT group_id, set_code FROM tcgplayer_groups ORDER BY group_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            linked,
+            vec![(609, None), (1418, Some("basep".to_string()))],
+            "basep belongs to the group that actually holds its products"
+        );
+    }
+
+    #[test]
     fn imports_only_sealed_products() {
         let (_d, mut conn) = shared_db();
         let products = vec![
@@ -1313,30 +1517,37 @@ mod tests {
 
     #[test]
     fn import_groups_keeps_link_sides_consistent() {
-        // Many groups share the "PR" promo abbreviation. Each set ↔ group
-        // bridge stored in tcgplayer_groups.set_code is the single source
-        // of truth — variant expansion and import_sealed_products both
-        // read from it, so there's only one side to keep consistent.
+        // Each set ↔ group bridge stored in tcgplayer_groups.set_code is
+        // the single source of truth — variant expansion and
+        // import_sealed_products both read from it, so there's only one
+        // side to keep consistent. One link here comes from the bridge
+        // overlay and one from the auto-linker, which is the pairing that
+        // has to agree.
+        //
+        // This test used to assert that two groups both abbreviated "PR"
+        // took one 'PR' set each. They did, but only by group id, and
+        // that tiebreak is the pd-0o5m bug — see
+        // `an_abbreviation_many_groups_share_is_not_evidence`.
         let (_d, mut conn) = shared_db();
         conn.execute(
             "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
              VALUES ('basep','PR','Wizards Black Star Promos','Promo','1999/07/01'), \
-                    ('dpp','PR','DP Black Star Promos','Promo','2007/05/01')",
+                    ('sv3pt5','MEW','151','Scarlet & Violet','2023/09/22')",
             [],
         )
         .unwrap();
         let groups = vec![
             TcgGroup {
-                group_id: 1421,
-                name: "Diamond and Pearl Promos".into(),
-                abbreviation: Some("PR".into()),
-                published_on: None,
+                group_id: 23237,
+                name: "151".into(),
+                abbreviation: Some("MEW".into()),
+                published_on: Some("2023-09-22T00:00:00".into()),
             },
             TcgGroup {
                 group_id: 1418,
                 name: "WoTC Promo".into(),
                 abbreviation: Some("PR".into()),
-                published_on: None,
+                published_on: Some("1999-07-01T00:00:00".into()),
             },
         ];
         import_groups(&mut conn, &groups, "2026-05-19").unwrap();

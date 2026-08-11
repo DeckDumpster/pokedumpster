@@ -64,8 +64,10 @@ pub enum OnExisting {
 /// Rows written per table by an import.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportSummary {
-    /// `(table, rows inserted)` for every user table, in schema order.
-    /// Tables absent from the envelope report zero.
+    /// `(table, rows)` for every user table, in schema order — counted after
+    /// the load, and since the load empties every table first, that count is
+    /// what the import put there. Tables absent from the envelope report
+    /// zero, unless the schema's own seed refilled them.
     pub tables: Vec<(String, usize)>,
 }
 
@@ -244,7 +246,7 @@ pub fn import(conn: &mut Connection, json: &str, on_existing: OnExisting) -> Res
     }
 
     if on_existing == OnExisting::Fail
-        && let Some(table) = first_non_empty(conn, &known)?
+        && let Some(table) = first_beyond_birth_state(conn, &known)?
     {
         return Err(DbError::Conflict(format!(
             "target database is not empty (rows in '{table}'); \
@@ -260,7 +262,6 @@ pub fn import(conn: &mut Connection, json: &str, on_existing: OnExisting) -> Res
         tx.execute(&format!("DELETE FROM \"{table}\""), [])?;
     }
 
-    let mut counts: Vec<(String, usize)> = known.iter().map(|t| (t.clone(), 0)).collect();
     for (table, rows) in &payload {
         for cells in rows {
             let cols: Vec<&str> = cells.iter().map(|(c, _)| c.as_str()).collect();
@@ -268,12 +269,26 @@ pub fn import(conn: &mut Connection, json: &str, on_existing: OnExisting) -> Res
             let mut stmt = tx.prepare_cached(&sql)?;
             stmt.execute(params_from_iter(cells.iter().map(|(_, v)| v)))?;
         }
-        if let Some(entry) = counts.iter_mut().find(|(t, _)| t == table) {
-            entry.1 = rows.len();
-        }
     }
 
     tx.commit()?;
+
+    // The envelope is the complete state, so an envelope written before
+    // `conditions` moved into the collection (pd-s4c2) leaves the table
+    // emptied — and an empty `conditions` is not a loud failure, it is every
+    // multiplier silently defaulting to 1.0. Re-seeding fills only what the
+    // envelope did not carry, exactly as the next open would.
+    crate::conditions::seed_defaults(conn)?;
+
+    // Counted off the database rather than off the payload. Every table was
+    // emptied above, so what each one holds now *is* what this import put
+    // there — including the rows the seed just restored, which a
+    // payload-derived count would report as zero.
+    let mut counts: Vec<(String, usize)> = Vec::with_capacity(known.len());
+    for table in &known {
+        counts.push((table.clone(), row_count(conn, table)? as usize));
+    }
+
     Ok(ImportSummary { tables: counts })
 }
 
@@ -292,17 +307,43 @@ fn insert_sql(table: &str, cols: &[&str]) -> String {
     )
 }
 
-/// The first table in `tables` holding at least one row.
-fn first_non_empty(conn: &Connection, tables: &[String]) -> Result<Option<String>> {
+/// The first table in `tables` holding more rows than a *brand-new*
+/// collection is born with — the question `OnExisting::Fail` is actually
+/// asking, which is "would this import destroy something".
+///
+/// Not "holding at least one row": a fresh collection is not empty. The user
+/// schema seeds `conditions` with five defaults on every open (pd-s4c2), so
+/// against a zero test every single `pkdump import --json` would refuse a
+/// database nobody had put anything into.
+///
+/// The birth state is measured rather than listed — an empty in-memory
+/// collection is built through the same [`crate::init_user_schema`] the real
+/// one goes through, and its row counts are the baseline. A seed added to
+/// `schema_user.sql` tomorrow is accounted for here without this file
+/// learning its name, which is the same reason the exporter walks
+/// `sqlite_master` instead of naming tables (pd-yj40).
+fn first_beyond_birth_state(conn: &Connection, tables: &[String]) -> Result<Option<String>> {
+    let newborn = Connection::open_in_memory()?;
+    crate::init_user_schema(&newborn)?;
+
     for table in tables {
-        let n: i64 = conn.query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |r| {
-            r.get(0)
-        })?;
-        if n > 0 {
+        let n = row_count(conn, table)?;
+        // A table the newborn does not have at all is entirely the caller's:
+        // any row in it is data this import would destroy.
+        let baseline = row_count(&newborn, table).unwrap_or(0);
+        if n > baseline {
             return Ok(Some(table.clone()));
         }
     }
     Ok(None)
+}
+
+fn row_count(conn: &Connection, table: &str) -> Result<i64> {
+    Ok(
+        conn.query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |r| {
+            r.get(0)
+        })?,
+    )
 }
 
 /// A JSON value as a SQLite value. Booleans are accepted as 0/1 for the
@@ -693,10 +734,81 @@ mod tests {
 
         let mut target = fx.user("target.sqlite");
         let summary = import(&mut target, &json, OnExisting::Fail).unwrap();
-        assert_eq!(summary.total(), 0);
+        // "Empty" means no collection data. The schema seeds `conditions` on
+        // open (pd-s4c2), so a brand-new collection is not a zero-row one.
+        let seeded: usize = summary
+            .tables
+            .iter()
+            .filter(|(t, _)| t != "conditions")
+            .map(|(_, n)| n)
+            .sum();
+        assert_eq!(seeded, 0);
         assert_eq!(
             without_timestamp(export_value(&target).unwrap()),
             without_timestamp(export_value(&source).unwrap())
         );
+    }
+
+    /// The default refusal asks "would this destroy something", and a fresh
+    /// collection is not empty: the schema seeds `conditions` on every open
+    /// (pd-s4c2). Tested against a zero-row baseline instead, every single
+    /// `pkdump import --json` would refuse a database nobody had put
+    /// anything into.
+    #[test]
+    fn importing_into_a_freshly_created_collection_is_not_a_conflict() {
+        let fx = Fixture::new();
+        let json = export(&fx.seeded("source.sqlite")).unwrap();
+
+        let mut target = fx.user("target.sqlite");
+        assert!(
+            crate::conditions::list_all(&target).unwrap().len() == 5,
+            "the fixture needs a target that is seeded but otherwise untouched"
+        );
+        import(&mut target, &json, OnExisting::Fail).unwrap();
+    }
+
+    /// ...and the refusal still fires on the seeded table itself once the
+    /// collection holds more of it than it was born with. The baseline is
+    /// "what a new collection has", not "this table is exempt".
+    #[test]
+    fn import_refuses_a_target_holding_more_than_its_birth_state() {
+        let fx = Fixture::new();
+        let json = export(&fx.seeded("source.sqlite")).unwrap();
+
+        let mut target = fx.user("target.sqlite");
+        target
+            .execute(
+                "INSERT INTO conditions (name, multiplier, rank) VALUES ('Graded', 1.5, 9)",
+                [],
+            )
+            .unwrap();
+
+        let err = import(&mut target, &json, OnExisting::Fail).unwrap_err();
+        assert!(
+            matches!(err, DbError::Conflict(_)),
+            "expected a conflict, got {err:?}"
+        );
+    }
+
+    /// An envelope written before `conditions` lived in the collection
+    /// carries no such key, and the import empties every table it does not
+    /// mention. Left there, that is not a loud failure — it is every
+    /// multiplier silently defaulting to 1.0 on the collection page.
+    #[test]
+    fn importing_a_pre_move_envelope_leaves_the_multipliers_seeded() {
+        let fx = Fixture::new();
+        let mut envelope = export_value(&fx.seeded("source.sqlite")).unwrap();
+        envelope
+            .as_object_mut()
+            .unwrap()
+            .remove("conditions")
+            .expect("the exporter must carry conditions");
+
+        let mut target = fx.user("target.sqlite");
+        import(&mut target, &envelope.to_string(), OnExisting::Fail).unwrap();
+
+        let m = crate::conditions::multipliers(&target).unwrap();
+        assert_eq!(m.len(), 5);
+        assert_eq!(m.get("Damaged"), Some(&0.25));
     }
 }

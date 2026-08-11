@@ -147,21 +147,14 @@ pub fn get_card_detail(
         // shows up alongside catalog rows on /card and CardModal. The
         // binder browse query (binder.rs) deliberately does NOT do
         // this — VariantModal stays catalog-only.
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(concat!(
             "SELECT p.printing_id, p.variant, p.language, p.badge_overlay, \
                     p.image_override, p.deprecated_at, \
                     (SELECT count(*) FROM collection c \
                        WHERE c.printing_id = p.printing_id) AS owned_count, \
-                    COALESCE( \
-                       (SELECT lp.price FROM latest_prices lp \
-                          WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-                            AND lp.sub_type_name = p.sub_type_name \
-                            AND lp.price_type = 'market' \
-                          LIMIT 1), \
-                       (SELECT mp.price FROM manual_prices mp \
-                          WHERE mp.printing_id = p.printing_id \
-                          ORDER BY mp.observed_at DESC LIMIT 1) \
-                    ) AS market_price, \
+                    ",
+            crate::market_price_expr!(),
+            " AS market_price, \
                     p.tcgplayer_product_id, \
                     0 AS is_user_added, \
                     NULL AS description \
@@ -180,7 +173,7 @@ pub fn get_card_detail(
                     up.description \
              FROM user_printings up WHERE up.card_id = ?1 \
              ORDER BY is_user_added, variant, printing_id",
-        )?;
+        ))?;
         let rows = stmt.query_map([&card.card_id], |r| {
             Ok(PrintingInfo {
                 printing_id: r.get(0)?,
@@ -236,13 +229,22 @@ pub struct PriceSeries {
 /// - `"market"` — TCGplayer market price from the shared `prices` table.
 ///   Printings with no `tcgplayer_product_id` (or no matching `prices`
 ///   row) yield no market series.
-/// - `"manual"` — user-entered prices from the user-DB `manual_prices`
-///   table. Surfaced so they're visible on the chart alongside TCGplayer.
+/// - `"manual"` — hand-entered prices, from whichever side of the
+///   `ATTACH` owns them (pd-m4gw): the curated `catalog_price_overrides`
+///   row for a catalog printing, the tenant's `manual_prices` rows for a
+///   printing that tenant invented. Surfaced so they're visible on the
+///   chart alongside TCGplayer.
+///
+/// A tenant `manual_prices` row against a *catalog* printing is deliberately
+/// not drawn. Nothing reads it any more, so charting it would show a line
+/// that does not price the card — the residue of the old shape, presented as
+/// if it were live.
 ///
 /// For "the effective current value of this printing" the rule is gap-fill:
 /// take the latest `market` point if one exists, otherwise the latest
-/// `manual` point. The frontend renders all series and applies that rule
-/// when computing summary stats.
+/// `manual` point — the same order [`crate::prices::MARKET_PRICE_EXPR`]
+/// applies in SQL. The frontend renders all series and applies that rule when
+/// computing summary stats.
 pub fn get_card_prices(
     conn: &Connection,
     set_code: &str,
@@ -267,9 +269,9 @@ pub fn get_card_prices(
           WHERE p.card_id = ?1 \
          UNION ALL \
          SELECT p.printing_id, p.variant, p.sub_type_name, \
-                'manual' AS price_type, mp.observed_at AS observed_at, mp.price \
+                'manual' AS price_type, o.observed_at AS observed_at, o.price \
            FROM printings p \
-           JOIN manual_prices mp ON mp.printing_id = p.printing_id \
+           JOIN catalog_price_overrides o ON o.printing_id = p.printing_id \
           WHERE p.card_id = ?1 \
          UNION ALL \
          SELECT up.printing_id, up.variant, NULL AS sub_type_name, \
@@ -464,10 +466,11 @@ mod tests {
     }
 
     #[test]
-    fn card_detail_gap_fills_market_price_from_manual_when_no_tcgplayer() {
-        // basep motivating case: printing has no tcgplayer_product_id,
-        // so latest_prices yields NULL. CardDetail.market_price should
-        // fall back to the most recent manual_prices entry.
+    fn card_detail_gap_fills_market_price_from_the_catalog_override() {
+        // basep motivating case: the printing has no tcgplayer_product_id, so
+        // latest_prices yields NULL. Since pd-m4gw the gap is filled by the
+        // curated shared-side override, not by a tenant manual price — a
+        // catalog printing prices identically for every tenant.
         let dir = tempfile::tempdir().unwrap();
         let shared = dir.path().join("shared.sqlite");
         {
@@ -490,33 +493,29 @@ mod tests {
             )
             .unwrap();
         }
+
+        {
+            let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+            // No override yet → market_price is NULL rather than guessed.
+            let detail = get_card_detail(&conn, "basep", "10").unwrap().unwrap();
+            assert_eq!(detail.printings[0].market_price, None);
+        }
+
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                // Upsert: re-opening the catalog read-write re-ran the
+                // shipped seed, which now finds its printing present and
+                // carries basep-10-normal at its own price.
+                "INSERT INTO catalog_price_overrides (printing_id, price, observed_at) \
+                 VALUES ('basep-10-normal', 12.50, '2026-05-01T00:00:00Z') \
+                 ON CONFLICT(printing_id) DO UPDATE SET price = excluded.price, \
+                                                        observed_at = excluded.observed_at",
+                [],
+            )
+            .unwrap();
+        }
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
-
-        // No manual price yet → market_price is NULL.
-        let detail = get_card_detail(&conn, "basep", "10").unwrap().unwrap();
-        assert_eq!(detail.printings[0].market_price, None);
-
-        // Add two manual entries; newest one wins.
-        crate::manual_prices::insert(
-            &conn,
-            &crate::manual_prices::NewManualPrice {
-                printing_id: "basep-10-normal".into(),
-                price: 8.0,
-                observed_at: Some("2024-01-01T00:00:00Z".into()),
-                note: None,
-            },
-        )
-        .unwrap();
-        crate::manual_prices::insert(
-            &conn,
-            &crate::manual_prices::NewManualPrice {
-                printing_id: "basep-10-normal".into(),
-                price: 12.50,
-                observed_at: Some("2026-05-01T00:00:00Z".into()),
-                note: None,
-            },
-        )
-        .unwrap();
         let detail = get_card_detail(&conn, "basep", "10").unwrap().unwrap();
         assert_eq!(detail.printings[0].market_price, Some(12.50));
     }
@@ -583,60 +582,109 @@ mod tests {
         assert!(get_card_prices(&conn, "sv3pt5", "999").unwrap().is_empty());
     }
 
+    /// A catalog with `basep-14-normal` and no TCGplayer link at all — the
+    /// basep motivating case.
+    fn unlinked_basep_catalog(dir: &std::path::Path) -> std::path::PathBuf {
+        let shared = dir.join("shared.sqlite");
+        let c = open_shared(&shared).unwrap();
+        c.execute(
+            "INSERT INTO sets (set_code, name, series) VALUES ('basep', 'Promos', 'Base')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+             VALUES ('basep-14', 'basep', '14', 14, 'Mewtwo')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO printings (printing_id, card_id, variant) \
+             VALUES ('basep-14-normal', 'basep-14', 'normal')",
+            [],
+        )
+        .unwrap();
+        shared
+    }
+
     #[test]
-    fn get_card_prices_emits_manual_series_even_without_tcgplayer_link() {
-        // Mirrors the basep motivating case: a printing with no
-        // tcgplayer_product_id but a user-entered manual price still
-        // shows up in the chart payload.
+    fn get_card_prices_charts_the_catalog_override_when_there_is_no_tcgplayer_link() {
         let dir = tempfile::tempdir().unwrap();
-        let shared = dir.path().join("shared.sqlite");
+        let shared = unlinked_basep_catalog(dir.path());
         {
             let c = open_shared(&shared).unwrap();
             c.execute(
-                "INSERT INTO sets (set_code, name, series) VALUES ('basep', 'Promos', 'Base')",
-                [],
-            )
-            .unwrap();
-            c.execute(
-                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
-                 VALUES ('basep-14', 'basep', '14', 14, 'Mewtwo')",
-                [],
-            )
-            .unwrap();
-            c.execute(
-                "INSERT INTO printings (printing_id, card_id, variant) \
-                 VALUES ('basep-14-normal', 'basep-14', 'normal')",
+                "INSERT INTO catalog_price_overrides (printing_id, price, observed_at) \
+                 VALUES ('basep-14-normal', 29.0, '2026-05-29T06:21:13Z') \
+                 ON CONFLICT(printing_id) DO UPDATE SET price = excluded.price, \
+                                                        observed_at = excluded.observed_at",
                 [],
             )
             .unwrap();
         }
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
-        crate::manual_prices::insert(
-            &conn,
-            &crate::manual_prices::NewManualPrice {
-                printing_id: "basep-14-normal".into(),
-                price: 175.0,
-                observed_at: Some("2024-03-01T00:00:00Z".into()),
-                note: None,
-            },
-        )
-        .unwrap();
-        crate::manual_prices::insert(
-            &conn,
-            &crate::manual_prices::NewManualPrice {
-                printing_id: "basep-14-normal".into(),
-                price: 200.0,
-                observed_at: Some("2024-06-01T00:00:00Z".into()),
-                note: None,
-            },
+
+        let series = get_card_prices(&conn, "basep", "14").unwrap();
+        assert_eq!(series.len(), 1, "one hand-entered series, no market");
+        assert_eq!(series[0].price_type, "manual");
+        assert_eq!(series[0].printing_id, "basep-14-normal");
+        assert_eq!(series[0].points[0].price, 29.0);
+    }
+
+    /// The residue case: a tenant that still holds a pre-pd-m4gw manual price
+    /// against a catalog printing. Nothing reads it any more, so the chart
+    /// must not draw it either — a line that does not price the card is worse
+    /// than no line.
+    #[test]
+    fn get_card_prices_ignores_a_stale_tenant_manual_price_on_a_catalog_printing() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = unlinked_basep_catalog(dir.path());
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        // Written the way the old build wrote it — straight to the table,
+        // since `manual_prices::insert` now refuses this printing.
+        conn.execute(
+            "INSERT INTO manual_prices (printing_id, price, observed_at) \
+             VALUES ('basep-14-normal', 200.0, '2024-06-01T00:00:00Z')",
+            [],
         )
         .unwrap();
 
+        assert!(get_card_prices(&conn, "basep", "14").unwrap().is_empty());
+    }
+
+    /// …while a printing the tenant invented still charts from its own rows.
+    #[test]
+    fn get_card_prices_charts_a_user_created_printings_manual_series() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = unlinked_basep_catalog(dir.path());
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        conn.execute(
+            "INSERT INTO user_printings (printing_id, card_id, variant, created_at) \
+             VALUES ('basep-14-user-1', 'basep-14', 'missing_variant', '2026-08-10')",
+            [],
+        )
+        .unwrap();
+        for (t, p) in [
+            ("2024-03-01T00:00:00Z", 175.0),
+            ("2024-06-01T00:00:00Z", 200.0),
+        ] {
+            crate::manual_prices::insert(
+                &conn,
+                &crate::manual_prices::NewManualPrice {
+                    printing_id: "basep-14-user-1".into(),
+                    price: p,
+                    observed_at: Some(t.into()),
+                    note: None,
+                },
+            )
+            .unwrap();
+        }
+
         let series = get_card_prices(&conn, "basep", "14").unwrap();
-        assert_eq!(series.len(), 1, "one manual series, no market");
+        assert_eq!(series.len(), 1);
         let s = &series[0];
         assert_eq!(s.price_type, "manual");
-        assert_eq!(s.printing_id, "basep-14-normal");
+        assert_eq!(s.printing_id, "basep-14-user-1");
         assert_eq!(s.points.len(), 2);
         // Oldest first within the series.
         assert_eq!(s.points[0].price, 175.0);
@@ -644,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn get_card_prices_emits_both_market_and_manual_series_for_same_printing() {
+    fn get_card_prices_emits_both_market_and_override_series_for_same_printing() {
         let dir = tempfile::tempdir().unwrap();
         let shared = dir.path().join("shared.sqlite");
         {
@@ -674,18 +722,14 @@ mod tests {
                 [],
             )
             .unwrap();
+            c.execute(
+                "INSERT INTO catalog_price_overrides (printing_id, price, observed_at, note) \
+                 VALUES ('sv3pt5-6-normal', 12.5, '2026-05-25T00:00:00Z', 'eBay sold')",
+                [],
+            )
+            .unwrap();
         }
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
-        crate::manual_prices::insert(
-            &conn,
-            &crate::manual_prices::NewManualPrice {
-                printing_id: "sv3pt5-6-normal".into(),
-                price: 12.5,
-                observed_at: Some("2026-05-25T00:00:00Z".into()),
-                note: Some("eBay sold".into()),
-            },
-        )
-        .unwrap();
 
         let series = get_card_prices(&conn, "sv3pt5", "6").unwrap();
         assert_eq!(series.len(), 2);

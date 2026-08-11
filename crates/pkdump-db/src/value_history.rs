@@ -14,8 +14,10 @@
 //! - [`value_history`] reads the table back for the API.
 //!
 //! VALUE model: for every OWNED copy, `market_price × conditionMultiplier`.
-//! The multiplier is data — the `conditions` table (seeded from
-//! `data/conditions.json`), defaulted to `1.0` for an unknown condition, the
+//! The multiplier is data — the collection's own `conditions` table (seeded
+//! from `data/conditions.json` on open; pd-s4c2 moved it out of the catalog,
+//! so this join no longer crosses the ATTACH boundary), defaulted to `1.0`
+//! for an unknown condition, the
 //! same defensive default the frontend uses. Cost basis is the sum of owned
 //! copies' `purchase_price`; card count is the number of owned copies.
 
@@ -55,23 +57,17 @@ pub struct ValueSeries {
 /// current market price (latest_prices → manual_prices, same COALESCE as the
 /// collection page). Built into a TEMP TABLE so the three per-dimension
 /// aggregates each scan it once.
-const OWNED_TODAY_SQL: &str = "\
+const OWNED_TODAY_SQL: &str = concat!(
+    "\
     CREATE TEMP TABLE _snap_owned AS \
     SELECT c.id, \
            c.purchase_price, \
            c.binder_id, \
            cd.set_code, \
            COALESCE(cond.multiplier, 1.0) AS mult, \
-           COALESCE( \
-             (SELECT lp.price FROM latest_prices lp \
-                WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-                  AND lp.sub_type_name = p.sub_type_name \
-                  AND lp.price_type = 'market' \
-                LIMIT 1), \
-             (SELECT mp.price FROM manual_prices mp \
-                WHERE mp.printing_id = p.printing_id \
-                ORDER BY mp.observed_at DESC LIMIT 1) \
-           ) AS market_price \
+           ",
+    crate::market_price_expr!(),
+    " AS market_price \
       FROM collection c \
       JOIN ( \
              SELECT printing_id, card_id, tcgplayer_product_id, sub_type_name \
@@ -82,7 +78,8 @@ const OWNED_TODAY_SQL: &str = "\
            ) p ON c.printing_id = p.printing_id \
       JOIN cards cd ON p.card_id = cd.card_id \
       LEFT JOIN conditions cond ON cond.name = c.condition \
-     WHERE c.status = 'owned';";
+     WHERE c.status = 'owned';"
+);
 
 /// Compute and upsert today's value rows for all three dimensions. `date` is
 /// the `YYYY-MM-DD` snapshot key (the caller passes today). Idempotent: a

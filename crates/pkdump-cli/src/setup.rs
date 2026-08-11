@@ -18,7 +18,9 @@ use rusqlite::Connection;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{japan, overrides, pokemon_tcg_data, standalone_promos, symbols, tcgcsv};
+use pkdump_ingest::{
+    coverage, japan, overrides, pokemon_tcg_data, standalone_promos, symbols, tcgcsv,
+};
 
 /// Today's date in the `prices.observed_at` convention.
 fn observed_date() -> String {
@@ -184,6 +186,12 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
 
+    // 6b. Report sets that mapped no printing to a TCGplayer product at
+    //     all — the shape `basep` sat in, unnoticed, for the catalog's
+    //     whole life (pd-0o5m). See `coverage`.
+    println!("Checking TCGplayer mapping coverage...");
+    coverage::report_unmapped_sets(&conn)?;
+
     // 7. Normalize set symbol glyphs — trim transparent padding off the
     //    upstream PNGs and self-host at a uniform target height so the
     //    /browse tiles render consistently. See `symbols.rs`.
@@ -203,6 +211,12 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     println!("Refreshing materialized latest_prices...");
     let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
     println!("  {n_latest} latest-price rows materialized");
+
+    // Curated prices for catalog printings the feed does not price. Runs
+    // last because its rows FK into `printings`, which only exist after
+    // variant expansion above (pd-m4gw).
+    let n_override = pkdump_db::catalog_prices::reconcile(&mut conn)?;
+    println!("  {n_override} curated catalog price overrides reconciled");
 
     println!("Setup complete: {}", db_path.display());
     Ok(())

@@ -12,7 +12,7 @@ use rusqlite::Connection;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{japan, overrides, pokemon_tcg_data, symbols, tcgcsv};
+use pkdump_ingest::{coverage, japan, overrides, pokemon_tcg_data, symbols, tcgcsv};
 
 /// The `pkdump data` subcommand group.
 #[derive(clap::Args)]
@@ -174,6 +174,9 @@ fn expand_only(args: RefreshArgs) -> anyhow::Result<()> {
     let overlay = overrides::load_variant_augmentations()?;
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
+
+    println!("Checking TCGplayer mapping coverage...");
+    coverage::report_unmapped_sets(&conn)?;
     Ok(())
 }
 
@@ -321,6 +324,12 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
 
+    // Report sets that mapped no printing to a TCGplayer product at all —
+    // the shape `basep` sat in, unnoticed, for the catalog's whole life
+    // (pd-0o5m). See `pkdump_ingest::coverage`.
+    println!("Checking TCGplayer mapping coverage...");
+    coverage::report_unmapped_sets(&conn)?;
+
     // 5. Normalize set symbol glyphs for any new sets the tail fetch added.
     //    Existing rows already point at /sym/<set>.png and are skipped via
     //    the http-prefix gate in normalize_all_symbols.
@@ -341,6 +350,13 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     println!("Refreshing materialized latest_prices...");
     let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
     println!("  {n_latest} latest-price rows materialized");
+
+    //    Curated prices for catalog printings the feed does not price. Its
+    //    rows FK into `printings`, so it runs after variant expansion; and
+    //    it must run before the value snapshot below, which reads the same
+    //    effective-price rule (pd-m4gw).
+    let n_override = pkdump_db::catalog_prices::reconcile(&mut conn)?;
+    println!("  {n_override} curated catalog price overrides reconciled");
 
     // 7. Snapshot today's collection value into the user DB (value-history
     //    chart, pokedumpster-e1vo). Value snapshots live in the *user* DB, so

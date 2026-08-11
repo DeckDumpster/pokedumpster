@@ -23,6 +23,25 @@
 DROP TABLE IF EXISTS refinery_schema_history;
 
 -- ---------------------------------------------------------------------
+-- Moved out of the catalog (pd-s4c2)
+--
+-- `conditions` — the card-condition value multipliers — now lives in the
+-- per-tenant collection schema (`schema_user.sql`), seeded there with the
+-- same five defaults. It was the one table in this file joined against
+-- *collection* rows, so while it sat here a value computation crossed the
+-- ATTACH boundary and a single multiplier edit would have changed the
+-- meaning of every tenant's rendered values at once.
+--
+-- This one DOES bump `user_version` (Shared 1 -> 2), unlike the drop above:
+-- an older binary attaching a catalog without `conditions` gets no TEMP
+-- VIEW for it, and its value queries fail on a table that is not there —
+-- wrong, not merely missing. The bump is what stops that build rather than
+-- letting it serve a broken collection.
+-- ---------------------------------------------------------------------
+
+DROP TABLE IF EXISTS conditions;
+
+-- ---------------------------------------------------------------------
 -- Sets and cards
 -- ---------------------------------------------------------------------
 
@@ -91,19 +110,6 @@ CREATE INDEX IF NOT EXISTS idx_cards_rarity ON cards(rarity);
 CREATE TABLE IF NOT EXISTS set_aliases (
     alias    TEXT PRIMARY KEY COLLATE NOCASE,     -- 'Scarlet & Violet Promo'
     set_code TEXT NOT NULL REFERENCES sets(set_code)
-);
-
--- Card-condition value multipliers (data-model-is-the-product; pokedumpster-e1vo).
--- The standard TCGplayer raw-card multipliers applied to a copy's Near-Mint
--- market price to estimate its value at its recorded condition. Seeded from
--- data/conditions.json by pkdump_db::conditions::reconcile. Read by the
--- frontend via /api/conditions (backs $lib/conditions.svelte) AND by the
--- Rust value-history snapshot/backfill — one source instead of a hardcoded
--- multiplier map duplicated in TypeScript.
-CREATE TABLE IF NOT EXISTS conditions (
-    name        TEXT PRIMARY KEY,   -- 'Near Mint' (matches collection.condition)
-    multiplier  REAL NOT NULL,      -- 1.00, 0.85, 0.65, 0.45, 0.25
-    rank        INTEGER NOT NULL    -- display/sort order, best first
 );
 
 -- ---------------------------------------------------------------------
@@ -275,6 +281,28 @@ CREATE TABLE IF NOT EXISTS latest_prices (
 );
 CREATE INDEX IF NOT EXISTS idx_latest_prices_lookup
     ON latest_prices(tcgplayer_product_id, sub_type_name, price_type);
+
+-- Hand-curated prices for CATALOG printings TCGplayer does not price.
+--
+-- A printing the feed cannot price is a catalog defect, not a per-user
+-- problem: the gap is identical for every tenant, so the patch belongs where
+-- every tenant benefits from it (pd-m4gw). This is the same curated-patch
+-- layer as data/overrides/variant_augmentations.json — the canonical source
+-- is data/overrides/catalog_prices.json in git, reconciled here by
+-- `crate::catalog_prices::reconcile` at open_shared. It is deliberately NOT
+-- writable at request time: shared.sqlite is reproducible-from-upstream and
+-- is not replicated off-box, so a price only entered here would be destroyed
+-- by a catalog rebuild without anyone noticing.
+--
+-- `latest_prices` always wins — see `crate::prices::MARKET_PRICE_EXPR` — so
+-- an override left in place after upstream starts pricing the printing is
+-- inert rather than wrong.
+CREATE TABLE IF NOT EXISTS catalog_price_overrides (
+    printing_id  TEXT PRIMARY KEY REFERENCES printings(printing_id),
+    price        REAL NOT NULL,
+    observed_at  TEXT NOT NULL,
+    note         TEXT
+);
 
 CREATE TABLE IF NOT EXISTS price_fetch_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,

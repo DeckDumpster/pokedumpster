@@ -265,20 +265,12 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
         |r| r.get(0),
     )?;
 
-    // Effective market price for a printing `p`. Gap-fill rule: latest
-    // TCGplayer market when present; otherwise the latest manual_prices
-    // entry — so printings without a tcgplayer_product_id (e.g. basep
-    // promos) still contribute once the user records a manual value.
-    let price_expr = "COALESCE( \
-            (SELECT lp.price FROM latest_prices lp \
-               WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-                 AND lp.sub_type_name = p.sub_type_name \
-                 AND lp.price_type = 'market' \
-               LIMIT 1), \
-            (SELECT mp.price FROM manual_prices mp \
-               WHERE mp.printing_id = p.printing_id \
-               ORDER BY mp.observed_at DESC LIMIT 1) \
-        )";
+    // Effective market price for a printing `p` — one rule, defined once in
+    // `crate::prices`. Everything this query sees is a *catalog* printing, so
+    // the gap-fill it relies on is the curated `catalog_price_overrides` row
+    // (e.g. the basep promos TCGplayer does not price), entirely inside
+    // `shared`. A tenant's own manual price cannot reach it (pd-m4gw).
+    let price_expr = crate::prices::MARKET_PRICE_EXPR;
     // "Full set" market value = the minimum cost to own one of every card,
     // i.e. the CHEAPEST printing per card summed across cards — NOT the sum
     // of every printing. WOTC sets print each card in three runs (1st

@@ -269,3 +269,65 @@ test('the sort is executed by the server and returns the reader to the top', asy
 	await page.waitForTimeout(250);
 	expect(await page.evaluate(() => window.scrollY)).toBeLessThan(50);
 });
+
+/* ── The sort surface is scalars only (pd-tjym) ────────────────────────────
+ *
+ * `value` and `adj` ordered through a subquery joining the tenant's collection
+ * to the shared catalog's prices across the ATTACH boundary. SQLite cannot
+ * index across attached databases, so ordering by either meant materialising
+ * and sorting all 56,635 matches before LIMIT could discard any of them —
+ * 1,543 ms of the 2,495 ms first paint this spec's result size stands in for.
+ *
+ * They are gone from this view for good, not hidden: the assertions below are
+ * about what the page OFFERS, because a sort you can still reach is a sort
+ * that still costs that. Adj. keeps drawing — computing it for the rows under
+ * the viewport was never the expensive part.
+ */
+
+test('no sort control on the grid offers value or adj', async ({ page }) => {
+	await openCollection(page, 'grid');
+	const labels = await page.locator('.gridsort .sortbtn').allInnerTexts();
+	expect(labels.length, 'the grid still offers sorts').toBeGreaterThan(0);
+	for (const label of labels) {
+		expect(label, `grid sort buttons: ${labels.join(', ')}`).not.toMatch(/Value|Adj\./i);
+	}
+});
+
+test('the table has no Value column, and Adj. draws but does not sort', async ({ page }) => {
+	await openCollection(page, 'table');
+	// Compared upper-cased throughout this spec: `allInnerTexts` returns
+	// *rendered* text and these headers are `text-transform: uppercase`, so a
+	// case-sensitive assertion here can only ever pass — including on the day
+	// the Value column comes back as "VALUE" (pd-66hq).
+	const headers = (await page.locator('table.dd thead th').allInnerTexts()).map((h) =>
+		h.toUpperCase()
+	);
+	expect(headers, `headers: ${headers.join(' | ')}`).not.toContain('VALUE');
+
+	// Adj. is still a column — it is the last one, and it still draws a figure.
+	expect(headers.at(-1)).toMatch(/^ADJ\./);
+	await expect(page.locator('table.dd tbody tr:not(.vspace)').first()).toBeVisible();
+
+	// But it is not clickable: no `.sortable` header carries it, so there is no
+	// affordance to order 56k rows by a column no index can satisfy.
+	const sortable = await page.locator('table.dd thead th.sortable').allInnerTexts();
+	for (const label of sortable) {
+		expect(label, `sortable headers: ${sortable.join(', ')}`).not.toMatch(/Value|Adj\./i);
+	}
+});
+
+test('the endpoint refuses a sort it cannot satisfy, naming the ones it can', async ({ page }) => {
+	// Straight at the API — the UI no longer offers these, so this is the guard
+	// against them coming back through a bookmarked URL or a stale client.
+	for (const key of ['value', 'adj']) {
+		const res = await page.request.get(`/api/collection/search?sort=${key}&limit=1`);
+		expect(res.status(), `sort=${key}`).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error, `sort=${key}`).toContain('price');
+		expect(body.error, `sort=${key}`).toContain('qty');
+	}
+	// A surviving key still works, so the refusal is about the key and not
+	// about `sort=` having stopped being read.
+	const ok = await page.request.get('/api/collection/search?sort=price&limit=1');
+	expect(ok.status()).toBe(200);
+});

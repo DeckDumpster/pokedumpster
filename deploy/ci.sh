@@ -52,6 +52,12 @@
 #                      disk has, prod's included — and assert every database is
 #                      adopted and serves; then assert one from the future is
 #                      refused. See tests/schema-version/run.sh.
+#  12. Lakehouse gate: stand up Nessie on a durable ROCKSDB store plus a
+#                      throwaway MinIO, and drive the shipped PyIceberg job
+#                      through write -> read -> commit -> TIME TRAVEL, then
+#                      restart the catalog and re-read. Time travel is the only
+#                      reason Iceberg + Nessie is here, and a stack that has
+#                      lost it looks perfectly healthy. See tests/lake/run.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
@@ -311,6 +317,16 @@ PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwrig
 
 step "Schema version: an unversioned volume is adopted, a future one is refused"
 bash "$REPO_DIR/tests/schema-version/run.sh"
+
+# --- 12. Lakehouse gate -----------------------------------------------------
+# The offline lakehouse substrate (pd-fzeb), end to end: the PyIceberg job image
+# builds, Nessie serves an Iceberg REST catalog over a durable version store,
+# and a table can be written, committed twice and read back AS OF the first
+# commit. Its own network, MinIO, Nessie, image tag and temp dir — it touches no
+# pkdump-* unit, no real bucket, and no tenant database.
+
+step "Lakehouse: PyIceberg + Nessie write/read/time-travel round trip"
+bash "$REPO_DIR/tests/lake/run.sh"
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

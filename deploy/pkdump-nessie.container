@@ -1,0 +1,95 @@
+[Unit]
+Description=PokeDumpster Nessie catalog ({{INSTANCE}})
+# The versioned Iceberg catalog for the offline lakehouse (pd-fzeb). It is the
+# ONE JVM service in this system and is treated as a black box: our own jobs are
+# PyIceberg and speak to it over the Iceberg REST API at /iceberg/ (design,
+# 2026-08-10). Nothing on the serving path touches it — the app keeps reading
+# shared.sqlite and tenant SQLite, and a Nessie that is down costs a nightly
+# batch job, not a request.
+#
+# The template is rendered by deploy/setup-lake.sh: {{INSTANCE}}, {{PORT}},
+# {{DATA_DIR}}, {{WAREHOUSE}} and {{REGION}} are sed-substituted at install
+# time, the last three from ~/.config/pkdump/lake.env.
+After=network-online.target
+Wants=network-online.target
+# Do not start (and crash-loop) until the operator has configured the lake. The
+# bucket name is host config, deliberately: the lake bucket is SEPARATE from the
+# Litestream backup bucket, and a lake unit that could invent a bucket name is
+# one typo away from writing into the bucket that holds the only irreplaceable
+# data in the system.
+ConditionPathExists=%h/.config/pkdump/lake.env
+# A hard crash-loop should page rather than sit red in `systemctl --user`.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+OnFailure=pkdump-alert@%n.service
+
+[Container]
+Image=ghcr.io/projectnessie/nessie:0.104.3
+# A predictable DNS name for the jobs on the lake network — without this the
+# name is `systemd-pkdump-nessie-<instance>`, which every job would have to know.
+ContainerName=pkdump-nessie-{{INSTANCE}}
+# Created by deploy/setup-lake.sh in the instance's own container store,
+# rather than by a .network unit — see that script for why.
+Network=pkdump-lake-{{INSTANCE}}
+# Loopback only, and for a human with curl rather than for the jobs: Nessie has
+# NO authentication (it logs that fact on every start). Left blank by
+# deploy/setup-lake.sh unless --port is given, so Podman picks a free one.
+PublishPort=127.0.0.1:{{PORT}}:19120
+
+# --- The version store ------------------------------------------------------
+# ROCKSDB, not Nessie's default IN_MEMORY store: an in-memory catalog loses
+# every table on restart and leaves the bucket full of metadata nothing points
+# at. The directory is HOST config ({{DATA_DIR}} from lake.env) rather than a
+# podman volume, because a rootless volume lives in the container store and this
+# box's default store is the 98 G disk prod runs from. State goes on /workspaces.
+# tests/lake/run.sh restarts the catalog and re-reads, which is the only way the
+# ROCKSDB/IN_MEMORY difference is observable.
+Volume={{DATA_DIR}}:/nessie:Z
+Environment=nessie.version.store.type=ROCKSDB
+Environment=nessie.version.store.persist.rocks.database-path=/nessie/rocksdb
+# Nessie sizes its object cache as a fraction of the heap; left alone it claimed
+# 6.7 GB on this box. On a box that also runs prod that is not acceptable.
+Environment=nessie.version.store.persist.cache-capacity-mb=64
+
+# --- The warehouse ----------------------------------------------------------
+# The `lake/` prefix of the lake bucket — Iceberg tables only, beside `raw/`
+# (the landing zone). The catalog vends this location, the S3 endpoint and the
+# region to clients through /iceberg/v1/config, so a job needs the catalog URL
+# and nothing else and cannot redirect the bucket from its own environment.
+Environment=nessie.catalog.default-warehouse=lake
+Environment=nessie.catalog.warehouses.lake.location={{WAREHOUSE}}
+Environment=nessie.catalog.service.s3.default-options.region={{REGION}}
+
+# --- Credentials ------------------------------------------------------------
+# Same story as the Litestream sidecar and the same AWS_PROFILE=pkdump role
+# path: auto-refreshing temporary credentials from an assumed role, never
+# long-lived static keys. No `nessie.catalog.service.s3.default-options.
+# access-key` is set, so Nessie's S3 client falls through to the AWS SDK default
+# provider chain and picks up the profile below.
+#
+# NOT YET EXERCISED AGAINST REAL S3 (pd-fzeb): the lake bucket does not exist,
+# so this half is written to the existing pattern and proven only against MinIO,
+# which takes static keys. Whoever creates the bucket runs `systemctl --user
+# start pkdump-nessie-{{INSTANCE}}` and checks the log before assuming it works.
+Volume=%h/.config/pkdump/{{INSTANCE}}/aws/config:/aws/config:ro
+Secret=pkdump-{{INSTANCE}}-s3-bootstrap,type=mount,target=/aws/credentials
+Environment=AWS_CONFIG_FILE=/aws/config
+Environment=AWS_SHARED_CREDENTIALS_FILE=/aws/credentials
+# Which profile in that config to assume — AWS_PROFILE lives in lake.env with
+# the bucket it belongs to, so the credential story and the target it reaches
+# are configured in one file rather than two.
+EnvironmentFile=%h/.config/pkdump/lake.env
+
+# --- Resource ceiling -------------------------------------------------------
+# The JVM sizes its heap from the container limit (MaxRAMPercentage=80 in the
+# image), so this one number bounds the whole service. Measured under this cap
+# by tests/lake/run.sh; see deploy/README.md for the figure.
+PodmanArgs=--memory=1g --memory-swap=1g
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

@@ -62,6 +62,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import And, EqualTo, LessThanOrEqual
 
 from .catalog import DEFAULT_REF, REF_ENV, catalog, head_hash
@@ -271,7 +272,13 @@ def market_prices(identifier: str, date: dt.date, lake_ref: str) -> dict[tuple[i
     the result is bounded by the product count. Materializing the scan first
     would make the job's memory a function of how long the lake has existed.
     """
-    table = catalog(lake_ref).load_table(identifier)
+    try:
+        table = catalog(lake_ref).load_table(identifier)
+    except NoSuchTableError as exc:
+        raise TransformError(
+            f"no {identifier} at {lake_ref} — build it first with "
+            "`pkdump-lake-build-prices --ingest-date <date>` (deploy/LAKE.md §6)"
+        ) from exc
     scan = table.scan(
         row_filter=And(
             EqualTo("price_type", PRICE_TYPE),

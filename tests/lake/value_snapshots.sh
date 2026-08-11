@@ -132,20 +132,22 @@ dump() {
 	run_job python -c "
 import sqlite3
 conn = sqlite3.connect('/fixture/home/tenants/${db}.sqlite')
-for dim, bucket, mv, cb, cc in conn.execute(
-    'SELECT dimension, COALESCE(bucket, \"-\"), market_value, cost_basis, card_count '
-    '  FROM collection_value_snapshot WHERE date = ? ORDER BY dimension, bucket', ('${date}',)):
-    print(f'{dim}\t{bucket}\t{mv:.10f}\t{cb:.10f}\t{cc}')
+for dim, bucket, mv, cb, cc in conn.execute('''
+    SELECT dimension, bucket, market_value, cost_basis, card_count
+      FROM collection_value_snapshot WHERE date = ? ORDER BY dimension, bucket''', ('${date}',)):
+    print(dim, bucket if bucket is not None else '-', f'{mv:.10f}', f'{cb:.10f}', cc, sep='\t')
 "
 }
 
-# A scalar out of a tenant's database.
+# A scalar out of a tenant's database. The SQL travels as an ARGUMENT rather
+# than interpolated into the Python source: every query below ends in a quoted
+# date, and `'...'` pasted inside `'''...'''` closes the wrong quote.
 tenant_query() {
 	local db="$1" sql="$2"
 	run_job python -c "
-import sqlite3
-print(sqlite3.connect('/fixture/home/tenants/${db}.sqlite').execute('''${sql}''').fetchone()[0])
-" | tail -1
+import sqlite3, sys
+print(sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()[0])
+" "/fixture/home/tenants/${db}.sqlite" "$sql" | tail -1
 }
 
 echo "==> §0  Build the data directory, and the snapshot Rust computes from it"

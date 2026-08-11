@@ -277,7 +277,64 @@ failure, because it is SQLite dropping data rather than the lake inventing it.
 
 ---
 
-## 7. Where the code is
+## 7. The transform tier: per-tenant value snapshots
+
+`pd-ruwh`. The first job that *reads* the lake rather than filling it:
+`pkdump-lake-value-snapshots` values every registered tenant's collection from
+`catalog.prices` and writes `collection_value_snapshot` back into that
+tenant's own database.
+
+```bash
+podman run --rm --network pkdump-lake-<inst> \
+  -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-<inst>:19120/iceberg/ \
+  -e PKDUMP_LAKE_S3_BUCKET=<bucket> -e PKDUMP_LAKE_S3_REGION=us-west-2 \
+  -v /path/to/pkdump/data:/data \
+  localhost/pkdump-lake:<inst> \
+  pkdump-lake-value-snapshots --date 2026-08-11 --data-dir /data
+```
+
+**What it replaces, and why.** `pkdump data refresh` step 7 calls
+`value_history::snapshot_today` on the one collection `$PKDUMP_USER` resolves
+to. There is no loop. Every *other* registered tenant gets no value history,
+ever, and the run reports success (`pd-s5yn`) — latent only because prod has
+one tenant. So the unit of work here is the **registry**: active users, in
+order, each valued against their own collection.
+
+**Tenant data never enters the lake.** Prices come out of Iceberg; the
+collection is read from, and the snapshot written to, the tenant's SQLite
+file. Nothing keyed by a tenant is ever written to a lake table — `§9` of
+`tests/lake/value_snapshots.sh` asserts the catalog still holds
+`catalog.prices` and nothing else after a run.
+
+**A failing tenant is skipped and the run continues.** A missing database, one
+another process holds a write lock on, a schema too old to carry the
+provenance table — each is logged, the loop moves on, and the process exits
+**2**. Exit 0 means every tenant was snapshotted; exit 1 means the run never
+started (no registry, no catalog, an empty lake). A run that half-completes
+and reports success is exactly the failure mode of the missing loop this job
+replaces.
+
+**The date is required, and pinning is automatic.** `--date` is never
+defaulted from the clock, for the reason `--ingest-date` is not: pointing the
+job at an older date **is** the backfill. Prices are the newest quote per
+(product, sub_type) at or *before* that date — the same "latest price we know"
+rule `latest_prices` implements — so an older date reconstructs what the
+collection was worth then, not now. The Nessie ref is resolved to a single
+commit once per run and recorded in `collection_value_snapshot_run`
+(`main@<hash>`), so every tenant in one run is valued from one catalog state
+and the value can be traced back to it later.
+
+**The app never blocks on any of this.** Nothing here is on the serving path;
+`GET /api/collection/value-history` reads an empty table as an empty chart.
+The job being absent, late or half-done is not an outage.
+
+Useful flags: `--tenant <handle>` (repeatable) for a one-off repair,
+`--dry-run` to compute and write nothing, `--ref main@<hash>` to pin the
+catalog yourself.
+
+---
+
+## 8. Where the code is
 
 | what | where |
 | --- | --- |
@@ -288,6 +345,8 @@ failure, because it is SQLite dropping data rather than the lake inventing it.
 | reading `raw/` back — runs, manifests, payloads | `lake/src/pkdump_lake/raw.py` |
 | `catalog.prices`, and only that | `lake/src/pkdump_lake/prices.py` |
 | the check against `shared.sqlite` | `lake/src/pkdump_lake/verify.py` |
+| per-tenant value snapshots (the transform tier) | `lake/src/pkdump_lake/value_snapshots.py` |
+| the aggregate it must reproduce | `crates/pkdump-db/src/value_history.rs` |
 
 The Rust half writes `raw/` and never reads it; the Python half reads it and
 never writes. They share nothing but the key layout and the manifest shape,
@@ -302,7 +361,12 @@ cargo test -p pkdump-lake            # key layout, manifest, config refusal
 cargo test -p pkdump-ingest --test raw_landing     # the real clients, end to end
 cargo test -p pkdump-ingest --test prices_fixture  # a landing zone + the catalog
                                                    #   built from the same bytes
+cargo test -p pkdump-ingest --test value_snapshot_fixture
+                                     # a whole data directory — catalog, registry,
+                                     #   two collections — and the snapshot rows
+                                     #   Rust computes from it
 bash tests/lake/prices.sh            # the build job, on a network with no upstream
+bash tests/lake/value_snapshots.sh   # the transform, for every tenant
 ```
 
 The `raw_landing` gate drives the real `reqwest` clients against a local
@@ -319,6 +383,16 @@ that needed an upstream could not hide. What it builds is then compared row
 for row against a `shared.sqlite` produced from the same upstream responses in
 the same pass, so "the lake and SQLite disagree" and "the upstream answered
 differently" can never be confused for each other.
+
+`value_snapshots.sh` is the one that answers "does *every* tenant get a
+snapshot, and are the numbers still the old ones?". Its fixture is a whole data
+directory built by the real code — the catalog imported from landed bytes, the
+registry and tenant files provisioned by the real `pkdump tenant create` — and
+the expectation it diffs against is what Rust's `snapshot_today` computed over
+that same fixture. So the transform is held to being *observably a no-op*
+before anything else is asked of it, while a second tenant who has never had a
+snapshot row must come out with his own, and a third whose database is missing
+must be skipped without taking the run down.
 
 Both Rust tiers are hermetic. `PKDUMP_LAKE_DIR` selects a directory-backed
 store instead of a bucket, which is what lets the landing zone's behaviour be

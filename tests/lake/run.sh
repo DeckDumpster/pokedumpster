@@ -233,10 +233,12 @@ echo "==> §6  deploy/setup-lake.sh refuses rather than guesses"
 FAKE_HOME="$WORK/home"
 mkdir -p "$FAKE_HOME/.config/pkdump/lakeinst"
 
-set +e
-NO_ENV_OUT=$(HOME="$FAKE_HOME" bash "${REPO_DIR}/deploy/setup-lake.sh" lakeinst 2>&1)
-NO_ENV_RC=$?
-set -e
+# `|| rc=$?` rather than `set +e`: the ERR trap diagnostics.sh installs fires on
+# a failing command regardless of set -e, so a bare `set +e` here would print
+# four "!! FAILED" blocks for the two failures this section is asserting. A
+# failure a `||` handles is not a failure bash reports.
+NO_ENV_RC=0
+NO_ENV_OUT=$(HOME="$FAKE_HOME" bash "${REPO_DIR}/deploy/setup-lake.sh" lakeinst 2>&1) || NO_ENV_RC=$?
 [ "$NO_ENV_RC" -ne 0 ] || die "setup-lake.sh accepted a missing lake.env"
 case "$NO_ENV_OUT" in
 *"lake.env does not exist"*) echo "    ok   no lake.env -> refuses, and names the file" ;;
@@ -251,10 +253,8 @@ printf 'PKDUMP_LAKE_S3_BUCKET=same-bucket\nPKDUMP_LAKE_S3_REGION=us-west-2\nAWS_
 	"$WORK" >"$FAKE_HOME/.config/pkdump/lake.env"
 printf 'LITESTREAM_S3_BUCKET=same-bucket\n' \
 	>"$FAKE_HOME/.config/pkdump/lakeinst/litestream.env"
-set +e
-SAME_OUT=$(HOME="$FAKE_HOME" bash "${REPO_DIR}/deploy/setup-lake.sh" lakeinst 2>&1)
-SAME_RC=$?
-set -e
+SAME_RC=0
+SAME_OUT=$(HOME="$FAKE_HOME" bash "${REPO_DIR}/deploy/setup-lake.sh" lakeinst 2>&1) || SAME_RC=$?
 [ "$SAME_RC" -ne 0 ] || die "setup-lake.sh accepted the backup bucket as the lake bucket"
 case "$SAME_OUT" in
 *"must be separate"*) echo "    ok   lake bucket == backup bucket -> refuses" ;;

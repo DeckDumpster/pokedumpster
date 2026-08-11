@@ -339,9 +339,11 @@ fn first_beyond_birth_state(conn: &Connection, tables: &[String]) -> Result<Opti
 }
 
 fn row_count(conn: &Connection, table: &str) -> Result<i64> {
-    Ok(conn.query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |r| {
-        r.get(0)
-    })?)
+    Ok(
+        conn.query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |r| {
+            r.get(0)
+        })?,
+    )
 }
 
 /// A JSON value as a SQLite value. Booleans are accepted as 0/1 for the

@@ -904,7 +904,11 @@ mod tests {
             Some(&1.0),
             "the collection's own multiplier must win over the catalog's"
         );
-        assert_eq!(m.len(), 5, "and the collection's whole seed must be visible");
+        assert_eq!(
+            m.len(),
+            5,
+            "and the collection's whole seed must be visible"
+        );
         // The catalog is still reachable when asked for by name — this is a
         // resolution rule, not a hidden table.
         let stale: f64 = conn

@@ -1,0 +1,24 @@
+[project]
+name = "pkdump-lake"
+version = "0.1.0"
+description = "PokeDumpster offline lakehouse jobs — PyIceberg against the Nessie catalog"
+requires-python = ">=3.11"
+
+# PyIceberg only. No Spark, no JVM in our jobs (design decision 2026-08-10):
+# Nessie is the single JVM service on this box and is treated as a black box.
+dependencies = [
+    "pyiceberg[pyarrow,s3fs]==0.11.1",
+    "requests>=2.31",
+]
+
+[project.scripts]
+# The round-trip proof (pd-fzeb). Not a pipeline — it writes to its own
+# `proof` namespace and never touches a catalog table.
+pkdump-lake-roundtrip = "pkdump_lake.roundtrip:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

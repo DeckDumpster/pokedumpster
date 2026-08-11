@@ -167,20 +167,13 @@ struct BundleProductRow {
 
 /// Resolve a bundle's product rows in collector-number order.
 fn fetch_bundle_products(conn: &Connection, group_id: i64) -> Result<Vec<BundleProductRow>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(concat!(
         "SELECT tp.product_id, tp.name, tp.image_url, \
                 tp.collector_number, \
                 p.printing_id, p.variant, p.deprecated_at, \
-                COALESCE( \
-                  (SELECT lp.price FROM latest_prices lp \
-                     WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-                       AND lp.sub_type_name = p.sub_type_name \
-                       AND lp.price_type = 'market' \
-                     LIMIT 1), \
-                  (SELECT mp.price FROM manual_prices mp \
-                     WHERE mp.printing_id = p.printing_id \
-                     ORDER BY mp.observed_at DESC LIMIT 1) \
-                ), \
+                ",
+        crate::market_price_expr!(),
+        ", \
                 c.card_id, c.name, c.number, c.rarity, c.image_large, \
                 s.set_code, s.name, \
                 COALESCE( \
@@ -198,7 +191,7 @@ fn fetch_bundle_products(conn: &Connection, group_id: i64) -> Result<Vec<BundleP
                    ELSE tp.collector_number END \
               AS INTEGER), \
             tp.product_id",
-    )?;
+    ))?;
     let rows = stmt.query_map([group_id], |r| {
         let collector_number: String = r.get(3)?;
         let number_sortable = collector_number

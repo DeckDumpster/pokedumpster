@@ -565,15 +565,25 @@
 					{:else}
 						<span class="tcgp-spacer"></span>
 					{/if}
-					<button
-						class="manual-price"
-						onclick={() => (priceModalFor = {
-							printing_id: p.printing_id,
-							label: `${card.name} #${card.number} — ${variantLabel(p.variant)}`
-						})}
-						title="Record a manual price"
-						aria-label="Record a manual price for {variantLabel(p.variant)}"
-					>$</button>
+					<!-- Only a printing this user invented can carry a manual price.
+					     A catalog printing the feed does not price is a catalog gap,
+					     patched once for every tenant in
+					     data/overrides/catalog_prices.json — the API refuses the write
+					     with a 400, so offering the button here would be an affordance
+					     that cannot succeed (pd-m4gw). -->
+					{#if p.is_user_added}
+						<button
+							class="manual-price"
+							onclick={() => (priceModalFor = {
+								printing_id: p.printing_id,
+								label: `${card.name} #${card.number} — ${variantLabel(p.variant)}`
+							})}
+							title="Record a manual price"
+							aria-label="Record a manual price for {variantLabel(p.variant)}"
+						>$</button>
+					{:else}
+						<span class="manual-price-spacer"></span>
+					{/if}
 					<div class="stepper">
 						<button
 							class="step"
@@ -1037,6 +1047,12 @@
 	.manual-price:hover {
 		border-color: var(--color-border-accent);
 		color: var(--color-text-accent);
+	}
+	/* Holds the button's column open for catalog printings, which cannot
+	   carry a manual price — same job as .tcgp-spacer. */
+	.manual-price-spacer {
+		display: inline-block;
+		width: 28px;
 	}
 	.printings li.dim {
 		opacity: 0.5;

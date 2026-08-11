@@ -342,6 +342,13 @@ fn refresh(args: RefreshArgs) -> anyhow::Result<()> {
     let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
     println!("  {n_latest} latest-price rows materialized");
 
+    //    Curated prices for catalog printings the feed does not price. Its
+    //    rows FK into `printings`, so it runs after variant expansion; and
+    //    it must run before the value snapshot below, which reads the same
+    //    effective-price rule (pd-m4gw).
+    let n_override = pkdump_db::catalog_prices::reconcile(&mut conn)?;
+    println!("  {n_override} curated catalog price overrides reconciled");
+
     // 7. Snapshot today's collection value into the user DB (value-history
     //    chart, pokedumpster-e1vo). Value snapshots live in the *user* DB, so
     //    this opens a separate user connection with the just-refreshed shared

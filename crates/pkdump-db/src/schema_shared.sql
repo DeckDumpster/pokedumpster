@@ -23,6 +23,25 @@
 DROP TABLE IF EXISTS refinery_schema_history;
 
 -- ---------------------------------------------------------------------
+-- Moved out of the catalog (pd-s4c2)
+--
+-- `conditions` — the card-condition value multipliers — now lives in the
+-- per-tenant collection schema (`schema_user.sql`), seeded there with the
+-- same five defaults. It was the one table in this file joined against
+-- *collection* rows, so while it sat here a value computation crossed the
+-- ATTACH boundary and a single multiplier edit would have changed the
+-- meaning of every tenant's rendered values at once.
+--
+-- This one DOES bump `user_version` (Shared 1 -> 2), unlike the drop above:
+-- an older binary attaching a catalog without `conditions` gets no TEMP
+-- VIEW for it, and its value queries fail on a table that is not there —
+-- wrong, not merely missing. The bump is what stops that build rather than
+-- letting it serve a broken collection.
+-- ---------------------------------------------------------------------
+
+DROP TABLE IF EXISTS conditions;
+
+-- ---------------------------------------------------------------------
 -- Sets and cards
 -- ---------------------------------------------------------------------
 
@@ -91,19 +110,6 @@ CREATE INDEX IF NOT EXISTS idx_cards_rarity ON cards(rarity);
 CREATE TABLE IF NOT EXISTS set_aliases (
     alias    TEXT PRIMARY KEY COLLATE NOCASE,     -- 'Scarlet & Violet Promo'
     set_code TEXT NOT NULL REFERENCES sets(set_code)
-);
-
--- Card-condition value multipliers (data-model-is-the-product; pokedumpster-e1vo).
--- The standard TCGplayer raw-card multipliers applied to a copy's Near-Mint
--- market price to estimate its value at its recorded condition. Seeded from
--- data/conditions.json by pkdump_db::conditions::reconcile. Read by the
--- frontend via /api/conditions (backs $lib/conditions.svelte) AND by the
--- Rust value-history snapshot/backfill — one source instead of a hardcoded
--- multiplier map duplicated in TypeScript.
-CREATE TABLE IF NOT EXISTS conditions (
-    name        TEXT PRIMARY KEY,   -- 'Near Mint' (matches collection.condition)
-    multiplier  REAL NOT NULL,      -- 1.00, 0.85, 0.65, 0.45, 0.25
-    rank        INTEGER NOT NULL    -- display/sort order, best first
 );
 
 -- ---------------------------------------------------------------------

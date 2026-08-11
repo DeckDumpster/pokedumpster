@@ -23,12 +23,14 @@
 //! | lower (incl. 0)| apply the schema idempotently, then [`stamp`] |
 //! | higher         | **refuse to open** — [`DbError::SchemaVersion`] |
 //!
-//! Every database in existence as this lands is version 0, prod's included,
-//! so the *lower* row is the adoption path and it has to be seamless. It is
-//! also the only path a brand-new file takes, which is why adoption and
-//! creation are not distinguished here: a fresh database and a
+//! Every database in existence when this landed was version 0, prod's
+//! included, so the *lower* row is the adoption path and it has to be
+//! seamless. It is also the only path a brand-new file takes, which is why
+//! adoption and creation are not distinguished here: a fresh database and a
 //! pre-`user_version` one are the same case, and giving them one code path
-//! is what keeps the rarely-exercised one honest.
+//! is what keeps the rarely-exercised one honest. It has stayed the common
+//! path since — the first real bump (pd-s4c2, `conditions` moving out of the
+//! catalog) reaches every database on disk through exactly this row.
 //!
 //! ## Why the refusal is the point
 //!
@@ -88,13 +90,18 @@ pub enum Database {
 impl Database {
     /// The schema version this build understands.
     ///
-    /// All three start at 1. Every database on disk today is 0 — the
-    /// pre-`user_version` state — so every one of them is adopted on its
-    /// next open.
+    /// All three started at 1. Shared and User are at 2: pd-s4c2 moved
+    /// `conditions` out of the catalog and into the collection, which is a
+    /// change neither file can express with `CREATE … IF NOT EXISTS` and
+    /// which an older binary would get *wrong* rather than merely miss —
+    /// it would find no `conditions` in the catalog it attaches (its value
+    /// queries fail), and it would read the catalog's multipliers for a
+    /// collection that now carries its own. Both bumps exist to stop that
+    /// build instead of letting it serve.
     pub fn version(self) -> i64 {
         match self {
-            Database::Shared => 1,
-            Database::User => 1,
+            Database::Shared => 2,
+            Database::User => 2,
             Database::Registry => 1,
         }
     }

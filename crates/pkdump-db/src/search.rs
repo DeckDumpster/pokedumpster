@@ -1059,6 +1059,10 @@ mod tests {
             )
             .unwrap();
         }
+        // `connect_user` seeds the real multipliers from data/conditions.json
+        // into the collection — `order:value` is defined in terms of them, so
+        // a fixture without them could not tell a condition-adjusted sum from
+        // a raw one.
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
         // Own two Charizards (a dupe) and one Pikachu; Blastoise is unowned.
         conn.execute(

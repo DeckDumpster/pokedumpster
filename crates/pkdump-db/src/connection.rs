@@ -67,7 +67,6 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
     crate::sub_type_map::reconcile(&mut conn)?;
     crate::bundles::reconcile(&mut conn)?;
     crate::set_aliases::reconcile(&mut conn)?;
-    crate::conditions::reconcile(&mut conn)?;
     // Stamped last: the file claims this shape only once it has it.
     schema_version::stamp(&conn, Database::Shared)?;
     Ok(conn)
@@ -111,20 +110,32 @@ fn add_missing_columns(conn: &Connection) -> Result<()> {
 /// reaches it by — `open_shared` is `pkdump setup` / ingest — so without a
 /// check here a catalog from a newer build would be joined against
 /// silently on every request.
+///
+/// A catalog name that the collection itself already declares gets **no
+/// view**. SQLite resolves an unqualified name in `temp` before `main`, so a
+/// TEMP VIEW would not sit beside the collection's own table — it would
+/// shade it, and every join would silently read the catalog's rows instead.
+/// That is not hypothetical: `gate_attached` deliberately accepts a catalog
+/// that is *behind* this build, so a `shared.sqlite` that has not been
+/// through `pkdump setup` / `pkdump data refresh` since `conditions` moved
+/// into the collection (pd-s4c2) still physically holds the old table. The
+/// collection's own tables win; the catalog fills in around them.
 pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<()> {
     let uri = format!("file:{}?mode=ro", shared_path.display());
     conn.execute("ATTACH DATABASE ?1 AS shared", [uri])?;
     schema_version::gate_attached(conn, Database::Shared, "shared")?;
 
-    // Everything the catalog declares, minus SQLite's own internals.
-    // Nothing else is named here: a table the catalog should not have is
-    // dropped by `schema_shared.sql`, not skipped by every reader of it
-    // (pd-yj40).
+    // Everything the catalog declares, minus SQLite's own internals and
+    // anything `main` already owns. Nothing else is named here: a table the
+    // catalog should not have is dropped by `schema_shared.sql`, not skipped
+    // by every reader of it (pd-yj40).
     let names: Vec<String> = {
         let mut stmt = conn.prepare(
             "SELECT name FROM shared.sqlite_master \
              WHERE type IN ('table', 'view') \
-               AND name NOT LIKE 'sqlite_%'",
+               AND name NOT LIKE 'sqlite_%' \
+               AND name NOT IN (SELECT name FROM main.sqlite_master \
+                                WHERE type IN ('table', 'view'))",
         )?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<_>>()?
@@ -143,6 +154,12 @@ pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<(
 /// the shared catalog. For work that touches only user tables (the JSON
 /// backup), which must also run on a box where `pkdump setup` has not built
 /// a catalog yet.
+///
+/// Seeds the collection's `conditions` with the five defaults if they are
+/// absent (pd-s4c2). One mechanism covers both cases the move created: a
+/// brand-new collection is born with its multipliers, and one written before
+/// the table lived here grows them on its next open. Insert-if-absent, so an
+/// already-seeded collection is not written to at all.
 pub fn open_user(user_path: &Path) -> Result<Connection> {
     if let Some(parent) = user_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -152,6 +169,7 @@ pub fn open_user(user_path: &Path) -> Result<Connection> {
     conn.busy_timeout(Duration::from_secs(5))?;
     schema_version::gate(&conn, Database::User)?;
     conn.execute_batch(SCHEMA_USER)?;
+    crate::conditions::seed_defaults(&conn)?;
     schema_version::stamp(&conn, Database::User)?;
     Ok(conn)
 }
@@ -200,6 +218,7 @@ pub fn connect_user(user_path: &Path, shared_path: &Path) -> Result<Connection> 
 pub fn init_user_schema(conn: &Connection) -> Result<()> {
     schema_version::gate(conn, Database::User)?;
     conn.execute_batch(SCHEMA_USER)?;
+    crate::conditions::seed_defaults(conn)?;
     schema_version::stamp(conn, Database::User)?;
     Ok(())
 }
@@ -791,6 +810,111 @@ mod tests {
                 "re-opening must not write to the database"
             );
         }
+    }
+
+    /// A collection written before `conditions` moved into the user schema
+    /// (pd-s4c2) — the restored-from-an-old-replica case, and the one
+    /// per-file versioning makes genuinely reachable.
+    fn pre_move_collection(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+            .unwrap();
+        conn.execute_batch(SCHEMA_USER).unwrap();
+        // Put it back the way the previous build left it: no `conditions`,
+        // carrying that build's user_version.
+        conn.execute_batch("DROP TABLE conditions; PRAGMA user_version = 1;")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO collection (printing_id, acquired_at, source, condition) \
+             VALUES ('sv3pt5-1-normal', '2026-08-08', 'manual_id', 'Lightly Played')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        drop(conn);
+        assert_eq!(file_user_version(path), 1, "the fixture must be pre-move");
+    }
+
+    /// The move IS the migration: an existing collection grows the table and
+    /// its five defaults on the next open, keeping its rows, and comes out
+    /// stamped with this build's version.
+    #[test]
+    fn a_collection_written_before_the_move_grows_conditions_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collection.sqlite");
+        pre_move_collection(&path);
+
+        let conn = open_user(&path).unwrap();
+        assert!(has_table(&conn, "conditions"));
+        let m = crate::conditions::multipliers(&conn).unwrap();
+        assert_eq!(m.len(), 5);
+        assert_eq!(m.get("Lightly Played"), Some(&0.85));
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "the migration must not lose the collection");
+        drop(conn);
+
+        assert_eq!(file_user_version(&path), Database::User.version() as u32);
+    }
+
+    /// The catalog sheds its copy on the one path that holds it read-write.
+    #[test]
+    fn the_catalogs_conditions_table_is_dropped_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.sqlite");
+        seed_shared(&path);
+        add_stale_catalog_conditions(&path);
+
+        let conn = open_shared(&path).unwrap();
+        assert!(!has_table(&conn, "conditions"));
+        assert!(catalog::card_exists(&conn, "sv3pt5-1").unwrap());
+    }
+
+    /// A catalog built before the move, still physically carrying the table.
+    /// `0.01` so a multiplier read from here is unmistakable.
+    fn add_stale_catalog_conditions(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE conditions ( \
+                 name TEXT PRIMARY KEY, multiplier REAL NOT NULL, rank INTEGER NOT NULL); \
+             INSERT INTO conditions VALUES ('Near Mint', 0.01, 0);",
+        )
+        .unwrap();
+    }
+
+    /// The catalog must never shade the collection's own tables. SQLite
+    /// resolves an unqualified name in `temp` before `main`, and
+    /// `gate_attached` deliberately accepts a catalog that is *behind* this
+    /// build — so a `shared.sqlite` not yet through `pkdump setup` since the
+    /// move still holds `conditions`, and a TEMP VIEW over it would silently
+    /// become the multipliers every value on the page is computed from.
+    #[test]
+    fn a_stale_catalog_table_does_not_shade_the_collections_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared_path = dir.path().join("shared.sqlite");
+        seed_shared(&shared_path);
+        add_stale_catalog_conditions(&shared_path);
+
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared_path).unwrap();
+        let m = crate::conditions::multipliers(&conn).unwrap();
+        assert_eq!(
+            m.get("Near Mint"),
+            Some(&1.0),
+            "the collection's own multiplier must win over the catalog's"
+        );
+        assert_eq!(
+            m.len(),
+            5,
+            "and the collection's whole seed must be visible"
+        );
+        // The catalog is still reachable when asked for by name — this is a
+        // resolution rule, not a hidden table.
+        let stale: f64 = conn
+            .query_row("SELECT multiplier FROM shared.conditions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stale, 0.01);
     }
 
     #[test]

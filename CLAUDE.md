@@ -286,6 +286,15 @@ Concrete examples already in place:
   (`variantLabel/Rank/Color/Tag`) are pure map lookups.
 - `data/overrides/variant_augmentations.json` is the hand-curated patch
   layer applied as the last phase of variant expansion.
+- `data/overrides/catalog_prices.json` seeds `catalog_price_overrides` in
+  the shared catalog: a price for a **catalog** printing TCGplayer does not
+  price. A gap in the feed is identical for every tenant, so it is patched
+  once, in the catalog, in git — not re-entered per user. `latest_prices`
+  always wins over it, so an override left behind after upstream catches up
+  is inert rather than wrong. The tenant's own `manual_prices` survives for
+  exactly one thing: a printing that tenant invented (`user_printings`);
+  `manual_prices::insert` refuses anything else with a 400. One rule for
+  "what is this printing worth" — `pkdump-db::prices::MARKET_PRICE_EXPR`.
 
 When you find logic that should be data, file a `bd create
 --type=decision` issue and propose the schema before writing more code

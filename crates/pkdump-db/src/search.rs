@@ -28,14 +28,11 @@ use crate::search_meta::SearchFlag;
 // Scalar subqueries reused across the SELECT list and predicates.
 const OWNED_COUNT_SUBQ: &str =
     "SELECT COUNT(*) FROM collection c WHERE c.printing_id = p.printing_id";
-const MARKET_PRICE_EXPR: &str = "COALESCE(\
-     (SELECT lp.price FROM latest_prices lp \
-        WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-          AND lp.sub_type_name = p.sub_type_name \
-          AND lp.price_type = 'market' LIMIT 1), \
-     (SELECT mp.price FROM manual_prices mp \
-        WHERE mp.printing_id = p.printing_id \
-        ORDER BY mp.observed_at DESC LIMIT 1))";
+// One rule for "what is this printing worth", defined in `crate::prices` and
+// spent by every surface that draws or orders by a price. For a catalog
+// printing it resolves entirely inside `shared`, which is what lets
+// `ORDER BY price` stop spanning the ATTACH boundary (pd-m4gw).
+use crate::prices::MARKET_PRICE_EXPR;
 // The attack list projected down to exactly what the collection table's Cost
 // column draws: one energy-pip line per attack, with the attack name as its
 // tooltip. Attack `text`, `damage` and `convertedEnergyCost` are the card
@@ -1005,6 +1002,7 @@ mod tests {
 
     struct Fix {
         _dir: tempfile::TempDir,
+        shared: std::path::PathBuf,
         conn: Connection,
         registry: KeywordRegistry,
         flags: Vec<SearchFlag>,
@@ -1078,6 +1076,7 @@ mod tests {
         let flags = search_meta::load_flags(&conn).unwrap();
         Fix {
             _dir: dir,
+            shared,
             conn,
             registry,
             flags,
@@ -1085,6 +1084,21 @@ mod tests {
     }
 
     impl Fix {
+        /// Price a catalog printing the way the catalog does since pd-m4gw:
+        /// a curated override in `shared`, not a tenant manual price. Reopens
+        /// the catalog read-write, because the search connection has it
+        /// attached read-only — which is the property under test.
+        fn set_catalog_price(&self, printing_id: &str, price: f64) {
+            let c = open_shared(&self.shared).unwrap();
+            c.execute(
+                "INSERT INTO catalog_price_overrides (printing_id, price, observed_at) \
+                 VALUES (?1, ?2, '2025-01-01') \
+                 ON CONFLICT(printing_id) DO UPDATE SET price = excluded.price",
+                rusqlite::params![printing_id, price],
+            )
+            .unwrap();
+        }
+
         fn compile(&self, q: &str) -> CompiledSearch {
             let ast = parse(q, &self.registry).unwrap();
             compile(&ast, &self.flags)
@@ -1538,6 +1552,52 @@ mod tests {
         let mut c = all_printings();
         c.override_order(Some("price"), Some("desc"));
         assert!(!build_full_sql(&c, None).contains("conditions"));
+    }
+
+    /// `order:price` for a catalog printing is decided entirely inside
+    /// `shared` (pd-m4gw). The curated override prices it; a tenant
+    /// `manual_prices` row against the same printing — the residue every
+    /// pre-pd-m4gw collection still carries — cannot move it.
+    #[test]
+    fn order_by_price_reads_the_catalog_override_and_not_a_tenant_manual_price() {
+        let f = fixture();
+        f.set_catalog_price("base1-4-holo", 10.0);
+        f.set_catalog_price("sv3pt5-25-normal", 20.0);
+        // Written straight to the table, the way the old build wrote it —
+        // `manual_prices::insert` now refuses a catalog printing outright.
+        f.conn
+            .execute(
+                "INSERT INTO manual_prices (printing_id, price, observed_at) \
+                 VALUES ('base1-4-holo', 9999.0, '2026-08-11T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+
+        let desc = ordered(&f, "price", "desc");
+        assert_eq!(
+            &desc[..2],
+            &["sv3pt5-25-normal", "base1-4-holo"],
+            "the $9999 tenant row must not lift the Charizard above the Pikachu: {desc:?}"
+        );
+    }
+
+    /// The ordering expression names no tenant table for a catalog row — the
+    /// structural half of the assertion above. `manual_prices` is still
+    /// reachable, but only behind the `user_printings` guard, so a printing
+    /// the catalog knows about cannot reach across the ATTACH boundary.
+    #[test]
+    fn order_by_price_reaches_a_tenant_table_only_through_the_user_printings_guard() {
+        let sql = order_sql(Some("price"));
+        assert!(sql.contains("catalog_price_overrides"));
+        let manual = sql
+            .split_once("manual_prices")
+            .expect("price still consults manual_prices for user-created printings")
+            .1;
+        assert!(
+            manual.contains("user_printings"),
+            "the tenant arm is unguarded — a catalog printing could price from \
+             the tenant again: {sql}"
+        );
     }
 
     #[test]

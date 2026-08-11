@@ -26,6 +26,13 @@ pub enum DbError {
     #[error("import: {0}")]
     Import(String),
 
+    /// The request is well-formed but asks for something the data model does
+    /// not allow — a manual price on a catalog printing, say. Maps to HTTP
+    /// 400. Distinct from [`DbError::Conflict`]: nothing about the current
+    /// state would make this request succeed later.
+    #[error("invalid: {0}")]
+    Invalid(String),
+
     /// A database's `PRAGMA user_version` is higher than the version this
     /// build understands, so it was refused rather than opened
     /// ([`crate::schema_version`]). Its own variant because it is the one

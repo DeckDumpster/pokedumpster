@@ -76,6 +76,7 @@ impl From<DbError> for AppError {
             DbError::NotFound(_) => StatusCode::NOT_FOUND,
             DbError::Conflict(_) => StatusCode::CONFLICT,
             DbError::Import(_) => StatusCode::BAD_REQUEST,
+            DbError::Invalid(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         AppError(code, e.to_string())
@@ -743,6 +744,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    }
+
+    /// The API says what kind of mistake was made, and the three answers are
+    /// different (pd-m4gw). A catalog printing is a **400** — it exists, it
+    /// just is not the tenant's to price, and the body names the file that
+    /// is. A printing nobody has heard of stays a 404.
+    #[tokio::test]
+    async fn manual_price_on_a_catalog_printing_is_a_400_naming_the_seed_file() {
+        let (_d, router) = test_app();
+
+        let refused = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/manual-prices")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"printing_id":"sv3pt5-1-normal","price":29.0}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            body_string(refused)
+                .await
+                .contains("data/overrides/catalog_prices.json")
+        );
+
+        let unknown = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/manual-prices")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"printing_id":"nope-0-normal","price":1.0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

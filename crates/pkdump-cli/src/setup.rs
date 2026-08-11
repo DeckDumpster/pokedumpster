@@ -204,6 +204,12 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
     println!("  {n_latest} latest-price rows materialized");
 
+    // Curated prices for catalog printings the feed does not price. Runs
+    // last because its rows FK into `printings`, which only exist after
+    // variant expansion above (pd-m4gw).
+    let n_override = pkdump_db::catalog_prices::reconcile(&mut conn)?;
+    println!("  {n_override} curated catalog price overrides reconciled");
+
     println!("Setup complete: {}", db_path.display());
     Ok(())
 }

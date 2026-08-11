@@ -282,6 +282,28 @@ CREATE TABLE IF NOT EXISTS latest_prices (
 CREATE INDEX IF NOT EXISTS idx_latest_prices_lookup
     ON latest_prices(tcgplayer_product_id, sub_type_name, price_type);
 
+-- Hand-curated prices for CATALOG printings TCGplayer does not price.
+--
+-- A printing the feed cannot price is a catalog defect, not a per-user
+-- problem: the gap is identical for every tenant, so the patch belongs where
+-- every tenant benefits from it (pd-m4gw). This is the same curated-patch
+-- layer as data/overrides/variant_augmentations.json — the canonical source
+-- is data/overrides/catalog_prices.json in git, reconciled here by
+-- `crate::catalog_prices::reconcile` at open_shared. It is deliberately NOT
+-- writable at request time: shared.sqlite is reproducible-from-upstream and
+-- is not replicated off-box, so a price only entered here would be destroyed
+-- by a catalog rebuild without anyone noticing.
+--
+-- `latest_prices` always wins — see `crate::prices::MARKET_PRICE_EXPR` — so
+-- an override left in place after upstream starts pricing the printing is
+-- inert rather than wrong.
+CREATE TABLE IF NOT EXISTS catalog_price_overrides (
+    printing_id  TEXT PRIMARY KEY REFERENCES printings(printing_id),
+    price        REAL NOT NULL,
+    observed_at  TEXT NOT NULL,
+    note         TEXT
+);
+
 CREATE TABLE IF NOT EXISTS price_fetch_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     source        TEXT NOT NULL,               -- 'tcgcsv'|'pokemontcg.io'

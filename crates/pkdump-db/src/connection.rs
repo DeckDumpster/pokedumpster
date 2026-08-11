@@ -67,6 +67,10 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
     crate::sub_type_map::reconcile(&mut conn)?;
     crate::bundles::reconcile(&mut conn)?;
     crate::set_aliases::reconcile(&mut conn)?;
+    // Last of the seeds: its rows FK into `printings`, so it writes nothing
+    // until the catalog has been ingested. `pkdump data refresh` re-opens
+    // the catalog after every ingest, which is where it lands for real.
+    crate::catalog_prices::reconcile(&mut conn)?;
     // Stamped last: the file claims this shape only once it has it.
     schema_version::stamp(&conn, Database::Shared)?;
     Ok(conn)

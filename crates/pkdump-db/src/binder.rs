@@ -292,19 +292,12 @@ pub fn get_binder_page(
     // Every printing in the set, with owned counts and market price.
     let mut printings: HashMap<String, Vec<SlotPrinting>> = HashMap::new();
     {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(concat!(
             "SELECT p.card_id, p.printing_id, p.variant, p.deprecated_at, \
                     (SELECT count(*) FROM collection c WHERE c.printing_id = p.printing_id), \
-                    COALESCE( \
-                       (SELECT lp.price FROM latest_prices lp \
-                          WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-                            AND lp.sub_type_name = p.sub_type_name \
-                            AND lp.price_type = 'market' \
-                          LIMIT 1), \
-                       (SELECT mp.price FROM manual_prices mp \
-                          WHERE mp.printing_id = p.printing_id \
-                          ORDER BY mp.observed_at DESC LIMIT 1) \
-                    ) \
+                    ",
+            crate::market_price_expr!(),
+            " \
              FROM ( \
                 SELECT card_id, printing_id, variant, deprecated_at, \
                        tcgplayer_product_id, sub_type_name FROM printings \
@@ -315,7 +308,7 @@ pub fn get_binder_page(
              ) p \
              JOIN cards cd ON p.card_id = cd.card_id \
              WHERE cd.set_code = ?1 ORDER BY cd.number_sortable, p.variant",
-        )?;
+        ))?;
         let rows = stmt.query_map([set_code], |r| {
             let card_id: String = r.get(0)?;
             Ok((

@@ -125,18 +125,9 @@ def parse_envelope(body: bytes, observed_date: dt.date, *, key: str = "<part>") 
     return rows
 
 
-def dedupe(rows: list[dict]) -> list[dict]:
-    """Collapse to one row per grain key, later parts winning.
-
-    Only reachable when several runs of a date are read together: within one
-    run a product's group is fetched once. Later-wins because runs are read
-    oldest first, so the retry that fixed a failed group is the one that
-    counts.
-    """
-    by_key: dict[tuple[int, str, str], dict] = {}
-    for row in rows:
-        by_key[(row["tcgplayer_product_id"], row["sub_type_name"], row["price_type"])] = row
-    return list(by_key.values())
+def grain(row: dict) -> tuple[int, str, str]:
+    """A row's key within one ``observed_date``."""
+    return (row["tcgplayer_product_id"], row["sub_type_name"], row["price_type"])
 
 
 def read_date(
@@ -148,26 +139,39 @@ def read_date(
 ) -> tuple[list[dict], dict[str, str]]:
     """Every price landed for one ``ingest_date``, plus how it was assembled.
 
+    Two collisions are possible at the grain, and they resolve in opposite
+    directions on purpose:
+
+    * **Within one run** — the same product quoted from two groups — the
+      *first* wins, because that is what ``INSERT OR IGNORE`` does on the
+      SQLite side and the two must not disagree by tie-break.
+    * **Across runs**, read oldest first, the *later* wins: a retry exists to
+      supersede the attempt that failed.
+
     The second return value goes into the Iceberg snapshot's properties: a
     table nobody can trace back to the objects it came from is a table you
     have to trust rather than check.
     """
     runs = select_runs(zone.runs(SOURCE, DATASET, ingest_date), allow_incomplete=allow_incomplete)
+
+    merged: dict[tuple[int, str, str], dict] = {}
     parts: list[Part] = []
+    seen = 0
     for run in runs:
         print(f"    {run.describe()}")
         parts.extend(run.parts)
+        within_run: dict[tuple[int, str, str], dict] = {}
+        for part in run.parts:
+            for row in parse_envelope(zone.payload(part), observed_date, key=part.key):
+                seen += 1
+                within_run.setdefault(grain(row), row)
+        merged.update(within_run)
     if not parts:
         raise BuildError(f"ingest_date={ingest_date} landed no price parts")
 
-    rows: list[dict] = []
-    for part in parts:
-        rows.extend(parse_envelope(zone.payload(part), observed_date, key=part.key))
-
-    before = len(rows)
-    rows = dedupe(rows)
-    if len(rows) != before:
-        print(f"    {before - len(rows)} duplicate row(s) across runs collapsed")
+    rows = list(merged.values())
+    if len(rows) != seen:
+        print(f"    {seen - len(rows)} row(s) collapsed at the grain")
 
     provenance = {
         "pkdump.built-from": "raw",

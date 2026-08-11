@@ -46,8 +46,9 @@ enum DataCommand {
     ApplyCorrections(ApplyCorrectionsArgs),
     /// One-time: reconstruct collection value history from `shared.prices`
     /// × each copy's acquisition + status history, into the user DB's
-    /// `collection_value_snapshot` table. The nightly `refresh` records
-    /// today going forward; this seeds the past. Idempotent.
+    /// `collection_value_snapshot` table. `pkdump-lake-value-snapshots`
+    /// records today going forward, for every tenant; this seeds the past
+    /// for the one `$PKDUMP_USER` names. Idempotent.
     BackfillValueHistory(RefreshArgs),
 }
 
@@ -338,21 +339,26 @@ fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
     let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
     println!("  {n_latest} latest-price rows materialized");
 
-    // 7. Snapshot today's collection value into the user DB (value-history
-    //    chart, pokedumpster-e1vo). Value snapshots live in the *user* DB, so
-    //    this opens a separate user connection with the just-refreshed shared
-    //    catalog attached — it reads the materialized latest_prices written
-    //    directly above, so it must run after that step.
-    use std::io::Write;
-    println!("Snapshotting today's collection value...");
-    std::io::stdout().flush().ok();
-    let user_db = crate::collection::user_db()?;
-    let mut user_conn = pkdump_db::connect_user(&user_db, &db_path)?;
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let n_snap = pkdump_db::value_history::snapshot_today(&mut user_conn, &today)?;
-    println!("  {n_snap} value-snapshot rows written for {today}");
-    std::io::stdout().flush().ok();
-
+    // And that is the end of it. The refresh touches the SHARED catalog and
+    // nothing else — no tenant database is opened, let alone written.
+    //
+    // It used to end with a step 7 that snapshotted today's collection value
+    // into `$PKDUMP_USER`'s database. One tenant's, out of however many the
+    // registry holds: no loop, no error, and everybody else silently without a
+    // value chart (pd-s5yn). Looping here was considered and rejected — the
+    // catalog refresh is not the place that knows about tenants, and a refresh
+    // that half-writes N collections fails in a worse way than one that writes
+    // none. `lake/src/pkdump_lake/value_snapshots.py` owns that job now: it
+    // walks the registry, values every tenant from `catalog.prices` at a pinned
+    // Nessie commit, and reports per-tenant (pd-ruwh).
+    //
+    // `value_history::snapshot_today` itself stays — it is the reference the
+    // transform is diffed against in tests/lake/value_snapshots.sh, and
+    // `pkdump data backfill-value-history` still calls it directly.
+    //
+    // tests/refresh/tenant_bytes.sh is the gate: a refresh over a data
+    // directory with real tenant databases in it must leave every one of them
+    // byte-identical.
     println!("Refresh complete: {}", db_path.display());
     Ok(())
 }

@@ -141,7 +141,7 @@ impl PokemonTcgClient {
             api_key: std::env::var("POKEMONTCG_API_KEY").ok(),
             min_interval: Duration::from_millis(100),
             landing: None,
-            base_url: BASE_URL.to_string(),
+            base_url: crate::upstream::base_url(crate::upstream::ENV_POKEMONTCG_BASE_URL, BASE_URL),
         })
     }
 

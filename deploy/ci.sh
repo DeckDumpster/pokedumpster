@@ -70,6 +70,11 @@
 #                      (pd-s5yn inverted), and a tenant nobody can write to is
 #                      skipped with the run exiting 2 rather than 0. See
 #                      tests/lake/value_snapshots.sh.
+#  15. Refresh gate:   the other half of that — a real `pkdump data refresh`,
+#                      through the shipped image, over a data directory with
+#                      two provisioned tenants in it, must leave every tenant
+#                      database byte-identical. The refresh is a SHARED-catalog
+#                      job. See tests/refresh/tenant_bytes.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
@@ -358,6 +363,19 @@ bash "$REPO_DIR/tests/lake/prices.sh"
 
 step "Lakehouse: per-tenant value snapshots, for every tenant"
 bash "$REPO_DIR/tests/lake/value_snapshots.sh"
+
+# --- 15. The refresh writes no tenant bytes ---------------------------------
+# The transform tier above is only half the fix for pd-s5yn; this is the other
+# half. A real `pkdump data refresh` runs through the shipped image over a data
+# directory holding two provisioned tenants — one of them the handle
+# $PKDUMP_USER defaults to, which is the exact database the deleted step 7 used
+# to write — and every tenant database has to come out byte-identical. Its
+# upstream is a local fixture that publishes nothing, so the run completes in
+# seconds and depends on nobody's uptime; §5 of the gate asserts it really ran
+# the derivation phases rather than exiting early.
+
+step "Refresh: the catalog refresh writes zero tenant bytes"
+bash "$REPO_DIR/tests/refresh/tenant_bytes.sh"
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

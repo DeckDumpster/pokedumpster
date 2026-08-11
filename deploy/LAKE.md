@@ -307,12 +307,27 @@ podman run --rm --network pkdump-lake-<inst> \
   pkdump-lake-value-snapshots --date 2026-08-11 --data-dir /data
 ```
 
-**What it replaces, and why.** `pkdump data refresh` step 7 calls
-`value_history::snapshot_today` on the one collection `$PKDUMP_USER` resolves
-to. There is no loop. Every *other* registered tenant gets no value history,
-ever, and the run reports success (`pd-s5yn`) — latent only because prod has
-one tenant. So the unit of work here is the **registry**: active users, in
-order, each valued against their own collection.
+**What it replaces, and why.** `pkdump data refresh` used to end with a step 7
+calling `value_history::snapshot_today` on the one collection `$PKDUMP_USER`
+resolves to. There was no loop. Every *other* registered tenant got no value
+history, ever, and the run reported success (`pd-s5yn`) — latent only because
+prod has one tenant. So the unit of work here is the **registry**: active
+users, in order, each valued against their own collection.
+
+Looping inside the refresh was considered and rejected. The catalog refresh is
+not the component that knows about tenants — it opens `shared.sqlite` and
+should have no business opening anything else — and a refresh that half-writes
+N collections fails worse than one that writes none. Step 7 is therefore
+**deleted** rather than fixed in place (`pd-hkbc`), and
+`tests/refresh/tenant_bytes.sh` holds it deleted: a real refresh over a data
+directory with two provisioned tenants must leave every tenant database
+byte-identical.
+
+**Nothing snapshots today's value until this job runs.** That is the operational
+consequence of the split, and it is why `pkdump-lake-value-snapshots` belongs on
+a timer beside `pkdump-refresh@<instance>.timer` rather than being remembered by
+hand. A day the job does not run is a gap in every tenant's chart — recoverable,
+because `--date` reconstructs any day still in the lake, but not self-healing.
 
 **Tenant data never enters the lake.** Prices come out of Iceberg; the
 collection is read from, and the snapshot written to, the tenant's SQLite
@@ -361,6 +376,7 @@ catalog yourself.
 | the check against `shared.sqlite` | `lake/src/pkdump_lake/verify.py` |
 | per-tenant value snapshots (the transform tier) | `lake/src/pkdump_lake/value_snapshots.py` |
 | the aggregate it must reproduce | `crates/pkdump-db/src/value_history.rs` |
+| the test-tier upstream override | `crates/pkdump-ingest/src/upstream.rs` |
 
 The Rust half writes `raw/` and never reads it; the Python half reads it and
 never writes. They share nothing but the key layout and the manifest shape,
@@ -381,6 +397,7 @@ cargo test -p pkdump-ingest --test value_snapshot_fixture
                                      #   Rust computes from it
 bash tests/lake/prices.sh            # the build job, on a network with no upstream
 bash tests/lake/value_snapshots.sh   # the transform, for every tenant
+bash tests/refresh/tenant_bytes.sh   # and the refresh writing no tenant at all
 ```
 
 The `raw_landing` gate drives the real `reqwest` clients against a local
@@ -407,6 +424,17 @@ that same fixture. So the transform is held to being *observably a no-op*
 before anything else is asked of it, while a second tenant who has never had a
 snapshot row must come out with his own, and a third whose database is missing
 must be skipped without taking the run down.
+
+`tenant_bytes.sh` is the mirror of that: it answers "and does the refresh still
+touch anybody?". A real `pkdump data refresh` runs through the shipped image
+over a data directory holding two tenants provisioned by the real `pkdump tenant
+create` — one of them `collection`, the handle `$PKDUMP_USER` defaults to and
+therefore the exact database the deleted step 7 wrote — and every tenant file,
+WAL and shared-memory sidecar included, has to come out byte-identical. Its
+upstream is `tests/refresh/upstream.py`, which publishes no sets and no groups,
+so the refresh completes in seconds without depending on anyone's uptime; §5
+asserts the derivation phases really ran, because a refresh that no-ops
+everything would also leave the tenants alone.
 
 Both Rust tiers are hermetic. `PKDUMP_LAKE_DIR` selects a directory-backed
 store instead of a bucket, which is what lets the landing zone's behaviour be

@@ -15,5 +15,6 @@ pub mod set_discovery;
 pub mod standalone_promos;
 pub mod symbols;
 pub mod tcgcsv;
+pub mod upstream;
 
 pub use error::{IngestError, Result};

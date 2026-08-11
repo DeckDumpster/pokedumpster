@@ -32,6 +32,10 @@
 /_deckdumpster-src
 /_pokedex-src
 
+# Python bytecode — the lake jobs and the shell harnesses' fixture servers
+__pycache__/
+*.pyc
+
 # OS
 .DS_Store
 crates/pkdump-db/tests/.ptcg_cache.sqlite

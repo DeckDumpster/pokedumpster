@@ -885,7 +885,7 @@ impl TcgcsvClient {
                 .build()?,
             category_id,
             landing: None,
-            base_url: BASE_URL.to_string(),
+            base_url: crate::upstream::base_url(crate::upstream::ENV_TCGCSV_BASE_URL, BASE_URL),
         })
     }
 

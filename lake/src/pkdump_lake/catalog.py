@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 
+import requests
 from pyiceberg.catalog.rest import RestCatalog
 
 #: Nessie's Iceberg REST endpoint, e.g. ``http://nessie:19120/iceberg/``.
@@ -84,3 +85,16 @@ def nessie_api_base(uri: str | None = None) -> str:
     if not base.endswith("/iceberg"):
         raise RuntimeError(f"expected an Iceberg REST endpoint ending in /iceberg, got {uri!r}")
     return base[: -len("/iceberg")] + "/api/v2"
+
+
+def head_hash(branch: str = DEFAULT_REF) -> str:
+    """The Nessie commit hash at the tip of ``branch``.
+
+    The provenance handle a job records: one value that addresses **the whole
+    catalog** at a commit, which a per-table snapshot id cannot express. Lives
+    here beside :func:`nessie_api_base` because it is the same crossing from
+    Iceberg's REST surface into Nessie's own.
+    """
+    resp = requests.get(f"{nessie_api_base()}/trees/{branch}", timeout=30)
+    resp.raise_for_status()
+    return resp.json()["reference"]["hash"]

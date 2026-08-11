@@ -203,7 +203,81 @@ dataset for that date, and the next run's prefix is where the rest is.
 
 ---
 
-## 6. Where the code is
+## 6. Building a table from it
+
+`raw/` is only worth keeping if a table can be built from it and nothing else.
+That is a claim, so it is a test — see §7 — and the first table to make it is
+`catalog.prices` (`pd-1ojt`).
+
+```bash
+# One day, from raw, into the Iceberg catalog:
+podman run --rm --network pkdump-lake-<inst> \
+  -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-<inst>:19120/iceberg/ \
+  -e PKDUMP_LAKE_S3_BUCKET=<bucket> -e PKDUMP_LAKE_S3_REGION=us-west-2 \
+  localhost/pkdump-lake:<inst> \
+  pkdump-lake-build-prices --ingest-date 2026-08-11
+```
+
+`--ingest-date` is **required and never defaulted from the clock**: rebuilding
+1 August is the same operation as building today, and a job that reads the
+clock has two behaviours where it should have one. The build reads
+`raw/source=tcgcsv/dataset=prices/ingest_date=<date>/`, writes one row per
+price actually quoted at grain `(tcgplayer_product_id, sub_type_name,
+price_type, observed_date)`, and replaces that `observed_date` partition in a
+single commit — so re-running is a replacement, not a doubling, and no other
+day is in the filter's reach.
+
+Three things about it are decisions rather than details.
+
+**A day can hold more than one run, and the newest *complete* one wins.**
+`run=<ULID>` means a retry lands beside the first attempt, so "rebuild this
+date" has more than one answer. `complete: true` means every fetch that prefix
+was going to get arrived, which makes that run the whole day by definition.
+With **no** complete run the build **refuses** and prints what it found:
+nothing in the landing zone can say whether two partial runs together cover a
+day — the writer never learns how many parts it was owed — so stitching them
+silently would produce a table that looks like a day and is not one.
+`--allow-incomplete` builds it anyway and records
+`pkdump.raw-complete=false` in the snapshot, along with the run ids and part
+count it used.
+
+Expect that refusal to fire on a night when something *else* failed. `complete`
+is conservative across datasets (§1): one invocation carries one `run=`, so a
+pokemontcg.io tail that died marks the `prices` manifest incomplete even though
+every price fetch succeeded. That is the flag working as designed — it says "do
+not assume this is the whole day", not "these bytes are bad". Read the
+manifest's `failures[]`, and if the failures are all in other datasets,
+`--allow-incomplete` is the right answer and the snapshot will say that is what
+you did.
+
+**Every product's prices are in the table, sealed and single alike.** A TCGCSV
+price payload does not say which kind of product it describes; that is a fact
+about the catalog, and joining it in would make this table wrong whenever the
+other dataset was. `shared.sqlite` splits the same bytes at import time into
+`prices` (single cards, narrow) and `sealed_prices` (sealed, wide, and
+`UNIQUE(product, observed_at)`), so a comparison has to account for the split.
+
+**`price` is a double, not a decimal.** TCGCSV quotes JSON numbers and
+`shared.sqlite` stores `REAL`; a double is the value that round-trips both. A
+decimal would round, and "the sampled prices match" would stop meaning what it
+says.
+
+Checking the table against the catalog we already have:
+
+```bash
+pkdump-lake-verify-prices --sqlite /path/to/shared.sqlite --observed-date 2026-08-11
+```
+
+It asserts that, restricted to single cards, the two agree **exactly** — same
+rows, same values — and that every sealed price SQLite kept is present in the
+lake. The lake legitimately holds *more* sealed rows: `sealed_prices` has no
+`sub_type_name` column, so a sealed product quoted under two sub-types loses
+one of them in SQLite. The verifier prints that as a note rather than a
+failure, because it is SQLite dropping data rather than the lake inventing it.
+
+---
+
+## 7. Where the code is
 
 | what | where |
 | --- | --- |
@@ -211,12 +285,24 @@ dataset for that date, and the next run's prefix is where the rest is.
 | the one place a response becomes bytes | `crates/pkdump-ingest/src/landing.rs` |
 | flag → landing zone, manifest finalizing | `crates/pkdump-cli/src/landing.rs` |
 | the acquisition phase it brackets | `acquire()` in `crates/pkdump-cli/src/{data,setup}.rs` |
+| reading `raw/` back — runs, manifests, payloads | `lake/src/pkdump_lake/raw.py` |
+| `catalog.prices`, and only that | `lake/src/pkdump_lake/prices.py` |
+| the check against `shared.sqlite` | `lake/src/pkdump_lake/verify.py` |
+
+The Rust half writes `raw/` and never reads it; the Python half reads it and
+never writes. They share nothing but the key layout and the manifest shape,
+which is why both spell those out rather than importing them from each other
+— and why `tests/lake/prices.sh` builds its input with the *real* writer, so a
+change on one side breaks something on the other loudly.
 
 Tests:
 
 ```bash
 cargo test -p pkdump-lake            # key layout, manifest, config refusal
-cargo test -p pkdump-ingest --test raw_landing   # the real clients, end to end
+cargo test -p pkdump-ingest --test raw_landing     # the real clients, end to end
+cargo test -p pkdump-ingest --test prices_fixture  # a landing zone + the catalog
+                                                   #   built from the same bytes
+bash tests/lake/prices.sh            # the build job, on a network with no upstream
 ```
 
 The `raw_landing` gate drives the real `reqwest` clients against a local
@@ -226,6 +312,15 @@ object actually stored; a fetch that fails partway leaves a manifest that
 says so; and a landed import writes the *same rows* as an un-landed one —
 landing is a tee, not a transform.
 
-Both tiers are hermetic. `PKDUMP_LAKE_DIR` selects a directory-backed store
-instead of a bucket, which is what lets the landing zone's behaviour be
-asserted without credentials or a network.
+`prices.sh` is the one that answers "is `raw/` sufficient, or decorative?".
+Its podman network is **`--internal`**, and §2 proves that by trying to reach
+the internet from the job image and requiring the attempt to fail — a build
+that needed an upstream could not hide. What it builds is then compared row
+for row against a `shared.sqlite` produced from the same upstream responses in
+the same pass, so "the lake and SQLite disagree" and "the upstream answered
+differently" can never be confused for each other.
+
+Both Rust tiers are hermetic. `PKDUMP_LAKE_DIR` selects a directory-backed
+store instead of a bucket, which is what lets the landing zone's behaviour be
+asserted without credentials or a network; the Python reader honours the same
+variable for the same reason.

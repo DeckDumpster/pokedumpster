@@ -63,6 +63,13 @@
 #                      asserted rather than assumed — and compare it row for
 #                      row against the shared.sqlite built from the SAME
 #                      upstream bytes. See tests/lake/prices.sh.
+#  14. Transform gate: value snapshots for EVERY registered tenant, computed
+#                      from that table. Byte-identical to what Rust's
+#                      snapshot_today produces for the same tenant and date, a
+#                      second tenant who never had a snapshot row gets one
+#                      (pd-s5yn inverted), and a tenant nobody can write to is
+#                      skipped with the run exiting 2 rather than 0. See
+#                      tests/lake/value_snapshots.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
@@ -341,6 +348,16 @@ bash "$REPO_DIR/tests/lake/run.sh"
 
 step "Lakehouse: catalog.prices built from raw/ alone, with no network"
 bash "$REPO_DIR/tests/lake/prices.sh"
+
+# --- 14. The transform tier -------------------------------------------------
+# Value snapshots for EVERY registered tenant, computed from the lake. Two
+# claims at once: the rows are byte-identical to what value_history::
+# snapshot_today produces for the same tenant and date, and a second tenant who
+# has never had a snapshot row gets one — which is pd-s5yn inverted into a test.
+# A tenant whose database is missing or locked is skipped and the run exits 2.
+
+step "Lakehouse: per-tenant value snapshots, for every tenant"
+bash "$REPO_DIR/tests/lake/value_snapshots.sh"
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

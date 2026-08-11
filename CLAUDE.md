@@ -78,6 +78,10 @@ cargo test -p pkdump-ingest --test raw_landing
                                  # the real HTTP clients against a local
                                  #   upstream: landing is a tee, a retry never
                                  #   overwrites, a short run says so
+bash tests/lake/value_snapshots.sh
+                                 # the transform tier: value snapshots for EVERY
+                                 #   registered tenant, byte-identical to the
+                                 #   Rust aggregate they replace
 cargo clippy --all-targets       # lint (must be clean before commit)
 cargo fmt                        # format
 
@@ -332,6 +336,31 @@ Three rules that are settled, and are the ones easiest to erode:
 Landing is opt-in and off by default: with the flag absent, `lake.env` is
 never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
 runbook.
+
+### The transform tier
+
+`lake/src/pkdump_lake/value_snapshots.py` is the first job that *reads* the
+lake: it values **every registered tenant's** collection from `catalog.prices`
+at a pinned Nessie commit and writes `collection_value_snapshot` into that
+tenant's own database. Three rules hold it in shape:
+
+- **The unit of work is the registry, not the current user.** `pkdump data
+  refresh` step 7 snapshots the one collection `$PKDUMP_USER` resolves to and
+  reports success for everybody (pd-s5yn). Any successor to it loops, or it
+  has reintroduced the bug.
+- **A failing tenant is logged and skipped; the run finishes and exits 2.**
+  Exit 0 means every tenant, 1 means the run never started. Silence over a
+  half-completed run is the failure mode being replaced.
+- **Tenant data never enters the lake.** Prices come out of Iceberg; the
+  collection is read from, and the snapshot written back to, SQLite. Neither
+  ever travels the other way, and `tests/lake/value_snapshots.sh` §9 asserts
+  the catalog still holds nothing but `catalog.prices` after a run.
+
+The aggregate itself is a transliteration of `value_history.rs` — two
+implementations of one calculation, deliberately, because the rewrite has to
+be *observably a no-op* before it is trusted. The container gate is what holds
+them together: it diffs the transform's rows against the ones Rust's
+`snapshot_today` computed over the same fixture.
 
 ### Variant expansion
 

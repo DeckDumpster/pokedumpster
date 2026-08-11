@@ -4,7 +4,16 @@
 # The image runs `pkdump serve`; populate the catalog with deploy/seed.sh.
 
 # --- Stage 1: Rust build ----------------------------------------------------
-FROM docker.io/library/rust:1.94-slim AS builder
+# The Debian release is pinned, not just the Rust version (pd-pejn). Stage 3
+# runs on bookworm; a builder on anything newer links the binary against a
+# glibc the runtime does not have, and the image fails at exec with
+#
+#   pkdump: /lib/.../libc.so.6: version `GLIBC_2.39' not found (required by pkdump)
+#
+# which is what happened when upstream retagged `rust:1.94-slim` onto trixie.
+# The invariant is builder glibc <= runtime glibc, and until this line it was
+# held by nothing but somebody else's tagging habits. Move both, or neither.
+FROM docker.io/library/rust:1.94-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -19,8 +28,16 @@ COPY data/ data/
 # seconds instead of triggering a 3-4 minute release rebuild from scratch.
 # `cp` the binary out at the end because the cache mount disappears after
 # the RUN, taking target/release/pkdump with it.
+#
+# `id=` carries the builder's Debian release, and it is what makes the pin above
+# actually bite (pd-pejn). Compiled objects in target/ are linked against the
+# builder's glibc, but cargo fingerprints do not know which base image produced
+# them: with one shared cache, a box that had already built on trixie saw
+# `Finished release profile in 0.80s`, relinked nothing, and copied out the same
+# unrunnable binary — the pin looking applied and changing nothing. Changing the
+# base image must change this id with it.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked,id=pkdump-target-bookworm \
     cargo build --release --locked --bin pkdump \
  && mkdir -p /out \
  && cp target/release/pkdump /out/pkdump

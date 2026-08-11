@@ -6,12 +6,20 @@ and writes ``collection_value_snapshot`` back into **that tenant's** database.
 
 ## The bug it exists to fix
 
-``pkdump data refresh`` step 7 calls ``value_history::snapshot_today`` on the
-**one** collection ``$PKDUMP_USER`` resolves to. There is no loop. Every other
-registered tenant gets no value history, ever, and nothing errors — the run
-looks perfectly successful (pd-s5yn). Latent only because prod has one tenant.
-So the unit of work here is *the registry*, not *the current user*: the loop is
-the feature.
+``pkdump data refresh`` used to end with a step 7 calling
+``value_history::snapshot_today`` on the **one** collection ``$PKDUMP_USER``
+resolves to. There was no loop. Every other registered tenant got no value
+history, ever, and nothing errored — the run looked perfectly successful
+(pd-s5yn). Latent only because prod has one tenant. So the unit of work here is
+*the registry*, not *the current user*: the loop is the feature.
+
+That step is now deleted rather than fixed in place (pd-hkbc), which makes this
+job the **only** thing that records today's value for anybody. The refresh no
+longer opens a tenant database at all — ``tests/refresh/tenant_bytes.sh`` holds
+it to that — so a day this job does not run is a gap in every tenant's chart.
+It is recoverable (``--date`` reconstructs any day still in the lake) but it is
+not self-healing, which is the argument for putting this on a timer rather than
+running it by hand.
 
 ## What it does not do
 

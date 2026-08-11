@@ -82,6 +82,10 @@ bash tests/lake/value_snapshots.sh
                                  # the transform tier: value snapshots for EVERY
                                  #   registered tenant, byte-identical to the
                                  #   Rust aggregate they replace
+bash tests/refresh/tenant_bytes.sh
+                                 # the other half: a real `pkdump data refresh`
+                                 #   over a data dir with two tenants in it
+                                 #   leaves every tenant database byte-identical
 cargo clippy --all-targets       # lint (must be clean before commit)
 cargo fmt                        # format
 
@@ -345,10 +349,10 @@ lake: it values **every registered tenant's** collection from `catalog.prices`
 at a pinned Nessie commit and writes `collection_value_snapshot` into that
 tenant's own database. Three rules hold it in shape:
 
-- **The unit of work is the registry, not the current user.** `pkdump data
-  refresh` step 7 snapshots the one collection `$PKDUMP_USER` resolves to and
-  reports success for everybody (pd-s5yn). Any successor to it loops, or it
-  has reintroduced the bug.
+- **The unit of work is the registry, not the current user.** The refresh used
+  to end with a step 7 that snapshotted the one collection `$PKDUMP_USER`
+  resolves to, and reported success for everybody (pd-s5yn). Any successor to
+  it walks the registry, or it has reintroduced the bug.
 - **A failing tenant is logged and skipped; the run finishes and exits 2.**
   Exit 0 means every tenant, 1 means the run never started. Silence over a
   half-completed run is the failure mode being replaced.
@@ -362,6 +366,16 @@ implementations of one calculation, deliberately, because the rewrite has to
 be *observably a no-op* before it is trusted. The container gate is what holds
 them together: it diffs the transform's rows against the ones Rust's
 `snapshot_today` computed over the same fixture.
+
+**The catalog refresh writes no tenant database at all** (pd-hkbc). Step 7 is
+gone; `pkdump data refresh` touches `shared.sqlite` and, with `--land-raw`, the
+`raw/` prefix, and nothing else. `tests/refresh/tenant_bytes.sh` is the gate: a
+real refresh through the shipped image over a data directory with two
+provisioned tenants, every tenant database byte-identical afterwards. Its
+upstream is `tests/refresh/upstream.py`, a fixture that publishes nothing —
+reached through `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL`
+(`crates/pkdump-ingest/src/upstream.rs`, test-tier, and an override announces
+itself on stderr so a catalog can never be quietly built from the wrong place).
 
 ### Variant expansion
 

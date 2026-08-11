@@ -7,14 +7,17 @@
 //! PokeDumpster snapshots prices daily into a time series.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
+use pkdump_lake::{Dataset, PartFormat, RawLanding, Source};
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::error::{IngestError, Result};
+use crate::landing::{self, Landing};
 
 const BASE_URL: &str = "https://tcgcsv.com/tcgplayer";
 
@@ -862,6 +865,8 @@ pub fn import_prices(
 pub struct TcgcsvClient {
     http: reqwest::blocking::Client,
     category_id: i64,
+    landing: Landing,
+    base_url: String,
 }
 
 impl TcgcsvClient {
@@ -879,7 +884,26 @@ impl TcgcsvClient {
                 .timeout(Duration::from_secs(60))
                 .build()?,
             category_id,
+            landing: None,
+            base_url: BASE_URL.to_string(),
         })
+    }
+
+    /// Land every response this client receives in `landing`.
+    ///
+    /// Without this the client behaves exactly as it did before the landing
+    /// zone existed.
+    pub fn landing_in(mut self, landing: Arc<RawLanding>) -> Self {
+        self.landing = Some(landing);
+        self
+    }
+
+    /// Point the client at a different origin. Test-tier only — it is how
+    /// the landing path is driven against a local server instead of
+    /// tcgcsv.com.
+    pub fn base_url(mut self, base_url: &str) -> Self {
+        self.base_url = base_url.trim_end_matches('/').to_string();
+        self
     }
 
     /// The TCGplayer category this client reads.
@@ -887,30 +911,34 @@ impl TcgcsvClient {
         self.category_id
     }
 
-    fn get(&self, path: &str) -> Result<Value> {
+    fn get(&self, path: &str, dataset: Dataset) -> Result<Value> {
         std::thread::sleep(Duration::from_millis(50));
         let category = self.category_id;
-        Ok(self
-            .http
-            .get(format!("{BASE_URL}/{category}{path}"))
-            .send()?
-            .error_for_status()?
-            .json()?)
+        let base = &self.base_url;
+        let body = landing::fetch_bytes(
+            &self.http,
+            self.http.get(format!("{base}/{category}{path}")),
+            self.landing.as_ref(),
+            Source::Tcgcsv,
+            dataset,
+            PartFormat::Json,
+        )?;
+        Ok(serde_json::from_slice(&body)?)
     }
 
     /// Every group (set) in this client's category.
     pub fn fetch_groups(&self) -> Result<Vec<TcgGroup>> {
-        parse_results(&self.get("/groups")?)
+        parse_results(&self.get("/groups", Dataset::Groups)?)
     }
 
     /// Every product (cards + sealed) in a group.
     pub fn fetch_products(&self, group_id: i64) -> Result<Vec<TcgProduct>> {
-        parse_results(&self.get(&format!("/{group_id}/products"))?)
+        parse_results(&self.get(&format!("/{group_id}/products"), Dataset::Products)?)
     }
 
     /// Every spot price in a group.
     pub fn fetch_prices(&self, group_id: i64) -> Result<Vec<TcgPrice>> {
-        parse_results(&self.get(&format!("/{group_id}/prices"))?)
+        parse_results(&self.get(&format!("/{group_id}/prices"), Dataset::Prices)?)
     }
 }
 

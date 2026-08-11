@@ -5,6 +5,7 @@ members = [
     "crates/pkdump-core",
     "crates/pkdump-db",
     "crates/pkdump-ingest",
+    "crates/pkdump-lake",
     "crates/pkdump-server",
 ]
 
@@ -20,6 +21,7 @@ repository = "https://github.com/DeckDumpster/pokedumpster"
 pkdump-core = { path = "crates/pkdump-core" }
 pkdump-db = { path = "crates/pkdump-db" }
 pkdump-ingest = { path = "crates/pkdump-ingest" }
+pkdump-lake = { path = "crates/pkdump-lake" }
 pkdump-server = { path = "crates/pkdump-server" }
 
 # External — crates opt in via `dep.workspace = true` as tasks need them
@@ -45,6 +47,13 @@ tar = "0.4"
 csv = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ulid = { version = "3", default-features = false, features = ["std"] }
+# Raw landing zone (pkdump-lake). zstd is the archive codec the lakehouse design
+# names for `raw/` — a different question from HTTP response compression, where
+# pkdump-server deliberately stayed on br/gzip (see its `compression()`).
+zstd = "0.13"
+sha2 = "0.10"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
 
 [profile.release]
 strip = true

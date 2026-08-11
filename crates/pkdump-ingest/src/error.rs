@@ -20,6 +20,9 @@ pub enum IngestError {
     #[error("db: {0}")]
     Db(#[from] pkdump_db::DbError),
 
+    #[error("lake: {0}")]
+    Lake(#[from] pkdump_lake::LakeError),
+
     #[error("unexpected upstream data: {0}")]
     BadResponse(String),
 }

@@ -303,7 +303,8 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `setup-lake.sh <inst> [--port N] [--remove]` | Install the offline lakehouse — the Nessie catalog's Quadlet units and the PyIceberg job image. Refuses to run without `~/.config/pkdump/lake.env`. See [Offline lakehouse](#offline-lakehouse--nessie--iceberg) |
 | `store-lib.sh` | Sourced — resolves which Podman store an instance's image and volume live in (`PKDUMP_STORE_ROOT`) |
 | `units-lib.sh` | Sourced — renders every unit template this checkout ships into `~/.config`, preserving the instance's published port. Shared by `setup.sh` and `deploy.sh` so a deploy cannot ship a binary and leave the units behind (pd-2t6u) |
-| `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin) |
+| `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin); trims to the first 900 bytes |
+| `journal-summary.sh <unit>` | Layer 2 — turn a failed unit's journal tail (on stdin, or fetched when run by hand) into one readable page: cause first, no OCI metadata, no systemd boilerplate |
 | `mac-setup.sh` / `mac-deploy.sh` / `mac-teardown.sh` | macOS equivalents (no systemd) |
 
 ## Systemd timers
@@ -504,12 +505,52 @@ S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
 - **Layer 2 — `OnFailure` push.** The Litestream sidecar, the refresh run, and
   the backup-check itself fire `pkdump-alert@.service` on failure, pushing the
   failed unit's journal tail to Pushover. Catches hard crashes fast; does *not*
-  catch never-ran (that's Layer 1).
+  catch never-ran (that's Layer 1). The tail goes through `journal-summary.sh`
+  first — see [Reading the page](#reading-the-page).
 - **Layer 4 — low-disk alert.** `diskcheck.sh` (daily, host-wide) pushes when the
   disk crosses `PKDUMP_DISK_THRESHOLD` (default 90%).
 - **Layer 3 — in-app banner.** The app shows a staleness banner when the
   `.backup-last-ok` marker goes old (`/api/backup-status`). Passive visibility;
   no paging.
+
+### Reading the page
+
+A page that arrives and says nothing is a page that did not fire. Layer 2 spent
+its whole 900-byte budget on the wrong end of the journal for its first weeks in
+service (pd-pwk8): `alert.sh` kept the LAST 900 bytes, the last lines of a failed
+unit's journal are systemd's own boilerplate, and above those a podman-backed
+unit has podman's event log — a container id and every OCI label on the image.
+The line that said what went wrong was in there, and it was not what you saw.
+
+So `pkdump-alert@.service` pipes the tail through `journal-summary.sh` before
+`alert.sh`, and the budget now buys:
+
+```
+pkdump-backup-check@prod FAILED (exit 1) — backup-check: STALE — the user
+registry: newest S3 replica write is 66h old (> 36h threshold)
+
+earlier:
+level  min_txid          max_txid          size  created
+0      0000000000000003  0000000000000003  2595  2026-08-09T21:19:15Z  (x9)
+```
+
+The manager's boilerplate and podman's event log are dropped, the service's own
+stdout/stderr is kept, the exit status becomes a suffix rather than the body,
+and the newest line that reads like a failure leads — the sidecar prints a
+heartbeat every second, so "the last line" is not the same thing as "the cause".
+A run of near-identical lines collapses to one, counted. A unit that failed
+without printing anything still gets a page naming it and how it failed.
+`alert.sh` now trims to the FIRST 900 bytes for the same reason.
+
+To see the page a unit would produce right now, without sending it:
+
+```bash
+bash deploy/journal-summary.sh pkdump-backup-check@prod.service
+```
+
+`tests/alarming/journal_summary_test.sh` (hermetic, sub-second, run by `ci.sh`)
+asserts the content against journal tails captured from the real units,
+including the 2026-08-12 failure verbatim.
 
 ### Is it armed?
 
@@ -573,9 +614,11 @@ throwaway MinIO and a local HTTP recorder in place of healthchecks.io and
 Pushover, then **makes every layer fire** and asserts on the requests that
 arrive: the green heartbeat, the `/fail` trip, the Pushover push and its
 journal tail, the low-disk push, and the freshness marker. It also mutates the
-ping URL in both directions to hold the pd-1717 fix in place. Nothing it does
-touches `pkdump-*@prod`: its units live under their own name prefix, and both
-external endpoints resolve to `127.0.0.1`.
+ping URL in both directions to hold the pd-1717 fix in place. §6 fires two
+failing units — a plain one and a podman-backed one — and asserts the push
+carries the causal line and no OCI metadata (pd-pwk8). Nothing it does touches
+`pkdump-*@prod`: its units live under their own name prefix, and both external
+endpoints resolve to `127.0.0.1`.
 
 ## Expanding to GitHub later
 

@@ -8,10 +8,16 @@ Description=PokeDumpster failure alert for %i
 # %i is the FULL failed unit name (passed as pkdump-alert@%n.service), so this
 # instance template alerts for any unit. {{REPO_DIR}} is sed-substituted by
 # deploy/setup.sh (single-clone deployment).
+#
+# The tail goes through journal-summary.sh before it reaches alert.sh (pd-pwk8):
+# raw, the last 900 bytes of a failed unit's journal are systemd boilerplate and
+# podman OCI metadata, and the line that says what went wrong is buried above
+# them. 80 lines rather than 20 because the filtering happens after the fetch —
+# the sidecar alone prints a heartbeat every second.
 
 [Service]
 Type=oneshot
 # Pushover creds are host-wide; '-' makes the file optional so the unit installs
 # cleanly before alerts.env exists (alert.sh then no-ops on unset creds).
 EnvironmentFile=-%h/.config/pkdump/alerts.env
-ExecStart=/bin/sh -c 'journalctl --user -u %i -n 20 --no-pager | bash {{REPO_DIR}}/deploy/alert.sh "PokeDumpster unit FAILED: %i"'
+ExecStart=/bin/sh -c 'journalctl --user -u %i -n 80 -o short-iso --no-pager | bash {{REPO_DIR}}/deploy/journal-summary.sh %i | bash {{REPO_DIR}}/deploy/alert.sh "PokeDumpster unit FAILED: %i"'

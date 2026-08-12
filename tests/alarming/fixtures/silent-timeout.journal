@@ -1,0 +1,5 @@
+2026-08-12T06:00:00+00:00 box systemd[1060]: Starting pkdump-refresh@prod.service - PokeDumpster nightly catalog refresh (prod)...
+2026-08-12T06:45:00+00:00 box systemd[1060]: pkdump-refresh@prod.service: start operation timed out. Terminating.
+2026-08-12T06:45:00+00:00 box systemd[1060]: pkdump-refresh@prod.service: Failed with result 'timeout'.
+2026-08-12T06:45:00+00:00 box systemd[1060]: Failed to start pkdump-refresh@prod.service - PokeDumpster nightly catalog refresh (prod).
+2026-08-12T06:45:00+00:00 box systemd[1060]: pkdump-refresh@prod.service: Triggering OnFailure= dependencies.

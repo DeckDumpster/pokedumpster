@@ -1,0 +1,8 @@
+Starting pkdump-backup-check@prod.service - PokeDumpster backup freshness check (prod)...
+2026-08-12 18:00:42.005564597 +0000 UTC m=+0.156339709 container init 695491 (image=docker.io/litestream/litestream:latest, org.opencontainers.image.source=https://github.com/benbjohnson/litestream)
+level  min_txid          max_txid          size  created
+0      0000000000000003  0000000000000003  2595  2026-08-09T21:19:15Z
+backup-check: STALE — the user registry: newest S3 replica write is 66h old (> 36h threshold)
+pkdump-backup-check@prod.service: Main process exited, code=exited, status=1/FAILURE
+pkdump-backup-check@prod.service: Failed with result 'exit-code'.
+pkdump-backup-check@prod.service: Triggering OnFailure= dependencies.

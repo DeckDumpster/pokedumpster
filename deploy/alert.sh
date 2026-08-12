@@ -43,8 +43,17 @@ if [ -z "${PUSHOVER_TOKEN:-}" ] || [ -z "${PUSHOVER_USER:-}" ] \
     exit 1
 fi
 
-# Pushover caps message length at 1024 chars; trim to stay well under.
-MSG="$(printf '%s' "$MSG" | tail -c 900)"
+# Pushover caps message length at 1024 chars; trim to stay well under. Keep the
+# HEAD, not the tail (pd-pwk8): every caller leads with the cause — the checkers
+# say what is wrong in their first line, and journal-summary.sh exists precisely
+# to put the causal line first. `tail -c` kept whatever the writer put LAST,
+# which for a journal tail is systemd's boilerplate.
+# The final sed drops a multi-byte character the cut may have split in half;
+# invalid UTF-8 would make Pushover reject the whole request.
+if [ "$(printf '%s' "$MSG" | wc -c)" -gt 900 ]; then
+    MSG="$(printf '%s' "$MSG" | head -c 897 |
+        LC_ALL=C sed '$s/[\xc0-\xff][\x80-\xbf]*$//')..."
+fi
 
 curl -fsS -m 15 \
     --form-string "token=${PUSHOVER_TOKEN}" \

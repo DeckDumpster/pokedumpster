@@ -44,6 +44,10 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 . "${REPO_DIR}/tests/lib/diagnostics.sh"
 diag_init
 
+# Bounded condition polling, in one place for every harness (pd-86er).
+# shellcheck source=tests/lib/wait.sh
+. "${REPO_DIR}/tests/lib/wait.sh"
+
 die() {
 	diag "!! $*"
 	exit 1
@@ -297,13 +301,17 @@ podman run -d --name "$LOCK_CTR" --network "$NET" -v "$FIXTURE:/fixture:Z" "$JOB
 import sqlite3, time
 conn = sqlite3.connect('/fixture/home/tenants/${BOB}.sqlite', isolation_level=None)
 conn.execute('BEGIN EXCLUSIVE')
+print('LOCK HELD', flush=True)
 time.sleep(120)
 " >/dev/null
-for _ in $(seq 1 30); do
-	podman logs "$LOCK_CTR" >/dev/null 2>&1 && break
-	sleep 1
-done
-sleep 3 # let the locker actually take the lock before the job asks for it
+# WAIT for the lock, rather than sleeping long enough that it has probably been
+# taken (pd-86er). The old form polled until the container's logs were readable
+# and then slept 3s on top — and the whole of §8 is vacuous if the lock is not
+# actually held when the job asks for it, so this is a condition worth being
+# certain of rather than one worth guessing at. The locker says when it has it.
+locker_ready() { podman logs "$LOCK_CTR" 2>/dev/null | grep -q 'LOCK HELD'; }
+wait_until 60 0.25 locker_ready ||
+	die "the locker never took an EXCLUSIVE lock on ${BOB} — §8 would prove nothing"
 
 LOCK_RC=0
 LOCK_OUT=$(snapshot --date "$DATE_NEW" --tenant alice --tenant bob 2>&1) || LOCK_RC=$?

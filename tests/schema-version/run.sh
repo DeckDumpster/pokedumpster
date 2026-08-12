@@ -180,7 +180,11 @@ wait_for_server() { # wait_for_server <seconds> -> prints the port, or fails
 			printf '%s' "$port"
 			return 0
 		fi
-		sleep 2
+		# Four times a second: the check is a `podman port` and a loopback curl,
+		# and this gate starts a container in almost every section — a two-second
+		# interval was pure latency, paid on each one (pd-86er). The caller's
+		# bound is unchanged.
+		sleep 0.25
 	done
 	return 1
 }

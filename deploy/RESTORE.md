@@ -427,12 +427,17 @@ podman exec systemd-pkdump-prod pkdump tenant list       # no (DATABASE MISSING)
 sqlite3 "file:${MP}/tenants/${DB}.sqlite?mode=ro" 'SELECT count(*) FROM collection;'
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8090/api/sets     # 200 = serving
 systemctl --user is-active pkdump-litestream-prod.service                    # backups resumed
-bash deploy/backup-check.sh prod                                             # ...and are FRESH, per tenant
+bash deploy/backup-check.sh prod                                             # ...and every replica passes
 ```
 
 `is-active` is liveness, not freshness — the sidecar can sit `active` while
 error-looping on bad credentials. `backup-check.sh` is the one that asks S3 —
-**always**. It used to print a skip and exit 0 when `PKDUMP_BACKUP_PING_URL` was
+**always**. It asks a different question per database: each tenant on
+freshness, the user registry on correspondence between its local and replica
+txid, because a static registry legitimately produces no new S3 objects for
+months (`pd-me6h`). Right after a restore the registry's answer is the useful
+one — the file has just been rewritten, and correspondence is what says the
+sidecar picked it up again. It used to print a skip and exit 0 when `PKDUMP_BACKUP_PING_URL` was
 unset, which is a pass to anything reading its exit status; now the ping is the
 only thing that URL controls, and a stale replica fails the check whether or not
 there is a monitor to tell (`pd-7f46`).

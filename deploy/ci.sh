@@ -89,12 +89,25 @@
 #
 # Exits non-zero on the first failure. Fast and re-runnable.
 #
+# TIER SELECTION (pd-s2mj). Every step above is a named tier, and a caller may
+# hand over the list of paths a change touched; the tiers those paths cannot
+# affect are then reported as skipped instead of run. It is opt-in per run and
+# it fails closed — no list means EVERY tier, and an unrecognised path means
+# every tier. .github/workflows/ci.yml passes a list for PULL REQUESTS ONLY, so
+# a developer, a polecat, `workflow_dispatch` and any push-triggered run all
+# get the full suite by construction. The rule lives in deploy/ci-select.sh and
+# tests/ci/select_test.sh asserts it, including that the names below and the
+# names there have not drifted apart.
+#
 # Usage:
 #   bash deploy/ci.sh
 #   PKDUMP_CI_INSTANCE=myname bash deploy/ci.sh   # pin the instance name
 #   PKDUMP_STORE_ROOT=/some/dir bash deploy/ci.sh # pin the container store
 #   PKDUMP_STORE_ROOT= bash deploy/ci.sh          # use Podman's default store
 #                                                 # (overrides host store.env)
+#   PKDUMP_CI_CHANGED_FILES=list bash deploy/ci.sh  # select tiers from a list
+#                                                 # of changed paths
+#   PKDUMP_CI_SELECT_ONLY=1 bash deploy/ci.sh     # print the plan, run nothing
 #
 # Parallel-safe: the container instance is named per-checkout, so several
 # polecats can run this concurrently from their own worktrees without tearing
@@ -152,7 +165,79 @@ START_TIME=$(date +%s)
 CURRENT_STEP="startup"
 step() { CURRENT_STEP="$*"; echo ""; echo "==> $*"; }
 
-# --- 0. Container store + disk floor ----------------------------------------
+# --- 0. Tier selection -------------------------------------------------------
+#
+# EVERY TIER RUNS unless a caller hands over an explicit list of changed paths.
+# A developer, a polecat, `workflow_dispatch`, and any push-triggered run
+# therefore get the full suite by construction — skipping a tier takes an
+# affirmative act by the caller, and the act is printed in the log below.
+#
+#   PKDUMP_CI_CHANGED_FILES=<file>   one changed path per line; the tiers those
+#                                    paths require are run and the rest are
+#                                    reported as skipped. .github/workflows/
+#                                    ci.yml sets this for PULL REQUESTS ONLY.
+#   PKDUMP_CI_SELECT_ONLY=1          print the plan and exit 0, touching
+#                                    nothing. This is how tests/ci/select_test.sh
+#                                    asserts on the real script rather than on a
+#                                    copy of its rules.
+#
+# The rule itself, and why it fails closed, is deploy/ci-select.sh. Nothing
+# about WHICH tiers exist lives in two places: the names below are checked
+# against that file's canonical list by tests/ci/select_test.sh.
+#
+# shellcheck source=deploy/ci-select.sh
+. "$SCRIPT_DIR/ci-select.sh"
+
+if [ -n "${PKDUMP_CI_CHANGED_FILES:-}" ]; then
+    # Named but unreadable is a refusal, not a fallback. A caller that meant to
+    # select and instead typo'd a path would otherwise get a silent full run,
+    # which is the safe direction but hides a broken workflow indefinitely.
+    [ -f "$PKDUMP_CI_CHANGED_FILES" ] || {
+        echo "ERROR: PKDUMP_CI_CHANGED_FILES=${PKDUMP_CI_CHANGED_FILES} is not a file." >&2
+        exit 1
+    }
+    PKDUMP_CI_SELECTED="$(pkdump_ci_select_tiers < "$PKDUMP_CI_CHANGED_FILES" | tr '\n' ' ')"
+    # `|| true` because an EMPTY list must reach the selector, which reads it as
+    # "we do not know what changed" and runs everything. Without it grep's exit 1
+    # on a zero count took the whole script down under `set -e` — a full-suite
+    # answer turned into a dead run, found by tests/ci/select_test.sh §4.
+    SELECTION_SOURCE="$(grep -c '' < "$PKDUMP_CI_CHANGED_FILES" || true) changed path(s) in ${PKDUMP_CI_CHANGED_FILES}"
+else
+    PKDUMP_CI_SELECTED="$(pkdump_ci_all_tiers | tr '\n' ' ')"
+    SELECTION_SOURCE="no changed-path list given — running everything"
+fi
+
+# Guard for one tier's steps. Exit status 2 from the library means the name is
+# not a tier at all — a typo, which must be fatal here rather than reading as
+# "not selected" and skipping a gate on every run from now on.
+tier() {
+    local rc=0
+    pkdump_ci_tier_selected "$1" || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        2)
+            echo "ERROR: ci.sh guards on '$1', which is not one of: ${PKDUMP_CI_ALL_TIERS}" >&2
+            exit 1
+            ;;
+    esac
+    echo ""
+    echo "==> (skipped: tier '$1' is not required by these changes)"
+    return 1
+}
+
+step "CI tiers"
+echo "    selection: ${SELECTION_SOURCE}"
+for _t in $PKDUMP_CI_ALL_TIERS; do
+    if pkdump_ci_tier_selected "$_t"; then echo "    RUN   $_t"; else echo "    skip  $_t"; fi
+done
+
+if [ -n "${PKDUMP_CI_SELECT_ONLY:-}" ]; then
+    echo ""
+    echo "==> PKDUMP_CI_SELECT_ONLY set — plan printed, nothing run."
+    exit 0
+fi
+
+# --- 0b. Container store + disk floor ----------------------------------------
 
 # shellcheck source=deploy/store-lib.sh
 . "$SCRIPT_DIR/store-lib.sh"
@@ -192,42 +277,60 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- 1b. Harness self-test --------------------------------------------------
+# --- 1b. Lint tier ------------------------------------------------------------
 # Hermetic and sub-second: proves the diagnostics above actually report a
 # silenced failure, before spending ten minutes on gates that rely on them.
+#
+# THIS TIER ALWAYS RUNS — it is what a docs-only PR gets, and what keeps such a
+# run capable of going red. Everything in it reads the tree and compiles
+# nothing, which is what makes it affordable unconditionally.
 
-step "Harness diagnostics self-test (tests/lib/diagnostics_test.sh)"
-bash "$REPO_DIR/tests/lib/diagnostics_test.sh"
+if tier lint; then
+    step "Harness diagnostics self-test (tests/lib/diagnostics_test.sh)"
+    bash "$REPO_DIR/tests/lib/diagnostics_test.sh"
 
-# Same tier, same reason: a host port picked from a band instead of taken from
-# the kernel has been found and fixed in five files now, and each time the fix
-# reached one of them. §6-§8 of this gate assert on the tree, so a sixth
-# relapse fails here in a second rather than forty minutes in as "address
-# already in use". See tests/lib/ports.sh.
-step "Harness host-port self-test (tests/lib/ports_test.sh)"
-bash "$REPO_DIR/tests/lib/ports_test.sh"
+    # Same tier, same reason: a host port picked from a band instead of taken
+    # from the kernel has been found and fixed in five files now, and each time
+    # the fix reached one of them. §6-§8 of this gate assert on the tree, so a
+    # sixth relapse fails here in a second rather than forty minutes in as
+    # "address already in use". See tests/lib/ports.sh.
+    step "Harness host-port self-test (tests/lib/ports_test.sh)"
+    bash "$REPO_DIR/tests/lib/ports_test.sh"
 
-# Same tier, and it guards every gate below that builds the image: the builder
-# stage rode a moving tag, upstream retagged it from bookworm to trixie, and
-# the image started shipping a binary that cannot exec against the bookworm
-# runtime (pd-pejn). Reading the Containerfile costs a second; finding out in
-# step 4 costs the build first. See tests/container/base_images_test.sh.
-step "Container base-image pins (tests/container/base_images_test.sh)"
-bash "$REPO_DIR/tests/container/base_images_test.sh"
+    # Same tier, and it guards every gate below that builds the image: the
+    # builder stage rode a moving tag, upstream retagged it from bookworm to
+    # trixie, and the image started shipping a binary that cannot exec against
+    # the bookworm runtime (pd-pejn). Reading the Containerfile costs a second;
+    # finding out in step 4 costs the build first. See
+    # tests/container/base_images_test.sh.
+    step "Container base-image pins (tests/container/base_images_test.sh)"
+    bash "$REPO_DIR/tests/container/base_images_test.sh"
+
+    # Path selection is itself a gate now, and one whose failure mode is a tier
+    # quietly not running. Hermetic and sub-second, so it sits here rather than
+    # behind the compile. See tests/ci/select_test.sh.
+    step "CI tier selection fails closed (tests/ci/select_test.sh)"
+    bash "$REPO_DIR/tests/ci/select_test.sh"
+
+    # A formatter check, not a compile — `cargo fmt` parses and never builds,
+    # so it costs a second and belongs with the lint tier rather than behind
+    # `cargo test`.
+    step "cargo fmt --check"
+    ( cd "$REPO_DIR" && cargo fmt --check )
+fi
 
 # --- 2. Rust gates ----------------------------------------------------------
 
-step "cargo test"
-( cd "$REPO_DIR" && cargo test )
+if tier rust; then
+    step "cargo test"
+    ( cd "$REPO_DIR" && cargo test )
 
-# --profile test so clippy REUSES what `cargo test` just built. Without it clippy
-# defaults to the dev profile -- a different artifact set -- and recompiles all 352
-# crates for the lint alone (2m11s measured 2026-08-12).
-step "cargo clippy --all-targets"
-( cd "$REPO_DIR" && cargo clippy --all-targets --profile test -- -D warnings )
-
-step "cargo fmt --check"
-( cd "$REPO_DIR" && cargo fmt --check )
+    # --profile test so clippy REUSES what `cargo test` just built. Without it
+    # clippy defaults to the dev profile -- a different artifact set -- and
+    # recompiles all 352 crates for the lint alone (2m11s measured 2026-08-12).
+    step "cargo clippy --all-targets"
+    ( cd "$REPO_DIR" && cargo clippy --all-targets --profile test -- -D warnings )
+fi
 
 # --- 2b. Deploy-script gates ------------------------------------------------
 # The low-disk guard, the store-root resolution and the unit-file install are
@@ -235,45 +338,54 @@ step "cargo fmt --check"
 # firing, and one that drives deploy.sh over stale installed units and asserts
 # every one comes back matching the shipped template (pd-2t6u).
 
-step "Deploy scripts: unit install + store resolution + low-disk guard + scheduling"
-bash "$REPO_DIR/tests/deploy/run.sh"
+if tier deploy; then
+    step "Deploy scripts: unit install + store resolution + low-disk guard + scheduling"
+    bash "$REPO_DIR/tests/deploy/run.sh"
+fi
 
 # --- 3. Frontend gate -------------------------------------------------------
 
-step "Frontend: npm ci && npm test && npm run check && npm run build"
-(
-    cd "$REPO_DIR/frontend"
-    npm ci
-    # Design-token gates: WCAG AA contrast for every declared pairing, the
-    # reference/semantic layer split, and the two ratchets — raw colour and raw
-    # dimension — which fail on any INCREASE in values chosen outside the token
-    # layer. Node's built-in runner, no extra deps.
-    npm test
-    npm run check
-    npm run build
-)
+if tier frontend; then
+    step "Frontend: npm ci && npm test && npm run check && npm run build"
+    (
+        cd "$REPO_DIR/frontend"
+        npm ci
+        # Design-token gates: WCAG AA contrast for every declared pairing, the
+        # reference/semantic layer split, and the two ratchets — raw colour and
+        # raw dimension — which fail on any INCREASE in values chosen outside
+        # the token layer. Node's built-in runner, no extra deps.
+        npm test
+        npm run check
+        npm run build
+    )
+fi
 
 # --- 4. Container gate ------------------------------------------------------
+# Selected whenever the browser tier is — the screenshots are taken against
+# this instance, and the SvelteKit build they are screenshotting is baked into
+# its image. ci-select.sh refuses a selection that has one without the other.
 
-step "Building and starting '--test' container instance..."
-bash "$SCRIPT_DIR/setup.sh" "$INSTANCE" --test
-systemctl --user start "$SERVICE_NAME"
-
-step "Waiting for the server to answer..."
 PORT=""
-for _ in $(seq 1 30); do
-    PORT=$(podman port "$CONTAINER" 8080/tcp 2>/dev/null | head -1 | cut -d: -f2 || true)
-    if [ -n "$PORT" ] && curl -sf -o /dev/null "http://localhost:${PORT}/"; then
-        echo "    Server is up on port ${PORT}."
-        break
+if tier container; then
+    step "Building and starting '--test' container instance..."
+    bash "$SCRIPT_DIR/setup.sh" "$INSTANCE" --test
+    systemctl --user start "$SERVICE_NAME"
+
+    step "Waiting for the server to answer..."
+    for _ in $(seq 1 30); do
+        PORT=$(podman port "$CONTAINER" 8080/tcp 2>/dev/null | head -1 | cut -d: -f2 || true)
+        if [ -n "$PORT" ] && curl -sf -o /dev/null "http://localhost:${PORT}/"; then
+            echo "    Server is up on port ${PORT}."
+            break
+        fi
+        PORT=""
+        sleep 2
+    done
+    if [ -z "$PORT" ]; then
+        echo "ERROR: server failed to start within timeout."
+        journalctl --user -u "$SERVICE_NAME" --no-pager -n 40 2>/dev/null || true
+        exit 1
     fi
-    PORT=""
-    sleep 2
-done
-if [ -z "$PORT" ]; then
-    echo "ERROR: server failed to start within timeout."
-    journalctl --user -u "$SERVICE_NAME" --no-pager -n 40 2>/dev/null || true
-    exit 1
 fi
 
 # --- 5. Backup gate ---------------------------------------------------------
@@ -281,37 +393,41 @@ fi
 # the right tenant's collection. Self-contained (own network, own MinIO, own
 # temp dir) — it does not touch the instance started above, nor any real bucket.
 
-step "Litestream multi-tenant replication + restore"
-bash "$REPO_DIR/tests/litestream/run.sh"
+if tier litestream; then
+    step "Litestream multi-tenant replication + restore"
+    bash "$REPO_DIR/tests/litestream/run.sh"
 
-# --- 6. DR drill ------------------------------------------------------------
-# The operator procedure in deploy/RESTORE.md, executed with the shipped scripts
-# against a real Quadlet sidecar: restore one tenant in place, in time, and onto
-# a bare volume, and assert the other tenants are byte-identical every time.
-# Its own instance name / volume / MinIO / secret — it touches nothing else.
+    # --- 6. DR drill --------------------------------------------------------
+    # The operator procedure in deploy/RESTORE.md, executed with the shipped
+    # scripts against a real Quadlet sidecar: restore one tenant in place, in
+    # time, and onto a bare volume, and assert the other tenants are
+    # byte-identical every time. Its own instance name / volume / MinIO /
+    # secret — it touches nothing else.
 
-step "Multi-tenant DR drill (deploy/RESTORE.md, executed)"
-bash "$REPO_DIR/tests/litestream/drill.sh"
+    step "Multi-tenant DR drill (deploy/RESTORE.md, executed)"
+    bash "$REPO_DIR/tests/litestream/drill.sh"
 
-# --- 6b. Alarming gate ------------------------------------------------------
-# A backup that is not alarmed is a backup nobody knows is broken — which is the
-# state this project was actually in for months. Every layer is made to fire at a
-# local recorder and asserted on what it sent. Its own instance, its own MinIO,
-# its own unit-name prefix, both endpoints on 127.0.0.1 — it touches no
-# pkdump-*@prod unit and contacts no external service.
+    # --- 6b. Alarming gate --------------------------------------------------
+    # A backup that is not alarmed is a backup nobody knows is broken — which
+    # is the state this project was actually in for months. Every layer is made
+    # to fire at a local recorder and asserted on what it sent. Its own
+    # instance, its own MinIO, its own unit-name prefix, both endpoints on
+    # 127.0.0.1 — it touches no pkdump-*@prod unit and contacts no external
+    # service.
 
-step "Backup alarming: every layer fires (tests/alarming/run.sh)"
-bash "$REPO_DIR/tests/alarming/run.sh"
+    step "Backup alarming: every layer fires (tests/alarming/run.sh)"
+    bash "$REPO_DIR/tests/alarming/run.sh"
 
-# --- 7. Recreated-handle proof ----------------------------------------------
-# pd-pm7b as an executable statement rather than an argument: a handle is
-# created, removed and created again through the real `pkdump tenant` commands,
-# and no restore of the second user — latest or point-in-time inside the
-# retention window — can produce the first user's card. Its own MinIO, its own
-# $PKDUMP_HOME, its own prefix; it touches nothing else here.
+    # --- 7. Recreated-handle proof ------------------------------------------
+    # pd-pm7b as an executable statement rather than an argument: a handle is
+    # created, removed and created again through the real `pkdump tenant`
+    # commands, and no restore of the second user — latest or point-in-time
+    # inside the retention window — can produce the first user's card. Its own
+    # MinIO, its own $PKDUMP_HOME, its own prefix; it touches nothing else here.
 
-step "Recreated handle cannot inherit a replica (pd-pm7b)"
-bash "$REPO_DIR/tests/litestream/recreate.sh"
+    step "Recreated handle cannot inherit a replica (pd-pm7b)"
+    bash "$REPO_DIR/tests/litestream/recreate.sh"
+fi
 
 # --- 8. Upgrade-path gate ---------------------------------------------------
 # Fresh instances are not the upgrade path. deploy/setup.sh --test creates its
@@ -321,34 +437,46 @@ bash "$REPO_DIR/tests/litestream/recreate.sh"
 # against a volume built in the OLD shape. Its own image tag, container, port and
 # temp dir — it does not touch the instance started above.
 
-step "Upgrade path: old-layout volume -> migrate -> rollback (pd-hqee)"
-bash "$REPO_DIR/tests/tenants/upgrade.sh"
+if tier tenants; then
+    step "Upgrade path: old-layout volume -> migrate -> rollback (pd-hqee)"
+    bash "$REPO_DIR/tests/tenants/upgrade.sh"
 
-# --- 9. Tenant-header gate --------------------------------------------------
-# What the shipped image answers to a tenant header, over real HTTP: malformed
-# is a 400 naming the rule, well-formed-but-unknown is a 404, and single-tenant
-# mode does not read the header at all. The distinction is a status code, so it
-# has to be asserted on the wire — a 400 flattened into a 404 by the middleware
-# would satisfy every unit test in the crate. Its own image tag, container,
-# port and temp dir — it does not touch the instance started above.
+    # --- 9. Tenant-header gate ----------------------------------------------
+    # What the shipped image answers to a tenant header, over real HTTP:
+    # malformed is a 400 naming the rule, well-formed-but-unknown is a 404, and
+    # single-tenant mode does not read the header at all. The distinction is a
+    # status code, so it has to be asserted on the wire — a 400 flattened into
+    # a 404 by the middleware would satisfy every unit test in the crate. Its
+    # own image tag, container, port and temp dir — it does not touch the
+    # instance started above.
 
-step "Tenant header: malformed 400 vs unknown 404 (pd-4g7c)"
-bash "$REPO_DIR/tests/tenants/handles.sh"
+    step "Tenant header: malformed 400 vs unknown 404 (pd-4g7c)"
+    bash "$REPO_DIR/tests/tenants/handles.sh"
+fi
 
 # --- 10. Browser gate --------------------------------------------------------
 # Runs against the container started above rather than standing up a second
 # one. A pixel diff fails CI; approving it is explicit — tests/visual/README.md.
+#
+# Selected for ANY change under frontend/, not just route files: a token, a
+# shared component or a rule in app.css repaints every route at once, and
+# pd-tf4h is what a selector that guessed otherwise already cost. See
+# deploy/ci-select.sh.
 
-step "Browser: every route screenshotted, and /collection's DOM bounded"
-PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwright.sh"
+if tier browser; then
+    step "Browser: every route screenshotted, and /collection's DOM bounded"
+    PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwright.sh"
+fi
 
 # --- 11. Schema-version gate ------------------------------------------------
 # The upgrade path, not the fresh install: a prod-shaped container started
 # against a volume the PRE-GATE binary would have left behind. Its own instance
 # name, volume and port — it does not touch the instance started above.
 
-step "Schema version: an unversioned volume is adopted, a future one is refused"
-bash "$REPO_DIR/tests/schema-version/run.sh"
+if tier schema; then
+    step "Schema version: an unversioned volume is adopted, a future one is refused"
+    bash "$REPO_DIR/tests/schema-version/run.sh"
+fi
 
 # --- 12. Lakehouse gate -----------------------------------------------------
 # The offline lakehouse substrate (pd-fzeb), end to end: the PyIceberg job image
@@ -357,27 +485,30 @@ bash "$REPO_DIR/tests/schema-version/run.sh"
 # commit. Its own network, MinIO, Nessie, image tag and temp dir — it touches no
 # pkdump-* unit, no real bucket, and no tenant database.
 
-step "Lakehouse: PyIceberg + Nessie write/read/time-travel round trip"
-bash "$REPO_DIR/tests/lake/run.sh"
+if tier lake; then
+    step "Lakehouse: PyIceberg + Nessie write/read/time-travel round trip"
+    bash "$REPO_DIR/tests/lake/run.sh"
 
-# --- 13. catalog.prices from raw --------------------------------------------
-# The claim the landing zone exists to make good on, made mechanically: the
-# build job runs on an --internal podman network, so there is no upstream to
-# call even if it wanted one, and its output is compared row for row against
-# the shared.sqlite built from the same upstream bytes.
+    # --- 13. catalog.prices from raw ----------------------------------------
+    # The claim the landing zone exists to make good on, made mechanically: the
+    # build job runs on an --internal podman network, so there is no upstream to
+    # call even if it wanted one, and its output is compared row for row against
+    # the shared.sqlite built from the same upstream bytes.
 
-step "Lakehouse: catalog.prices built from raw/ alone, with no network"
-bash "$REPO_DIR/tests/lake/prices.sh"
+    step "Lakehouse: catalog.prices built from raw/ alone, with no network"
+    bash "$REPO_DIR/tests/lake/prices.sh"
 
-# --- 14. The transform tier -------------------------------------------------
-# Value snapshots for EVERY registered tenant, computed from the lake. Two
-# claims at once: the rows are byte-identical to what value_history::
-# snapshot_today produces for the same tenant and date, and a second tenant who
-# has never had a snapshot row gets one — which is pd-s5yn inverted into a test.
-# A tenant whose database is missing or locked is skipped and the run exits 2.
+    # --- 14. The transform tier ---------------------------------------------
+    # Value snapshots for EVERY registered tenant, computed from the lake. Two
+    # claims at once: the rows are byte-identical to what value_history::
+    # snapshot_today produces for the same tenant and date, and a second tenant
+    # who has never had a snapshot row gets one — which is pd-s5yn inverted
+    # into a test. A tenant whose database is missing or locked is skipped and
+    # the run exits 2.
 
-step "Lakehouse: per-tenant value snapshots, for every tenant"
-bash "$REPO_DIR/tests/lake/value_snapshots.sh"
+    step "Lakehouse: per-tenant value snapshots, for every tenant"
+    bash "$REPO_DIR/tests/lake/value_snapshots.sh"
+fi
 
 # --- 15. The refresh writes no tenant bytes ---------------------------------
 # The transform tier above is only half the fix for pd-s5yn; this is the other
@@ -389,8 +520,10 @@ bash "$REPO_DIR/tests/lake/value_snapshots.sh"
 # seconds and depends on nobody's uptime; §5 of the gate asserts it really ran
 # the derivation phases rather than exiting early.
 
-step "Refresh: the catalog refresh writes zero tenant bytes"
-bash "$REPO_DIR/tests/refresh/tenant_bytes.sh"
+if tier refresh; then
+    step "Refresh: the catalog refresh writes zero tenant bytes"
+    bash "$REPO_DIR/tests/refresh/tenant_bytes.sh"
+fi
 
 # The intents UI harness is intentionally not run here — see the header.
 echo ""

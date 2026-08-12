@@ -65,7 +65,66 @@ jobs:
       CARGO_TARGET_DIR: /workspaces/ci-cargo-target
       CARGO_HOME: /workspaces/ci-cargo-home
     steps:
+      # fetch-depth: 0 so the PR's base commit is present locally and the
+      # changed-path list below can be computed without a second network round
+      # trip. The runner is self-hosted and reuses its checkout, so after the
+      # first run this is an incremental fetch.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Tier selection (pd-s2mj). Which tiers ci.sh runs is decided from the
+      # paths this PR touched — docs-only runs the lint tier, a change confined
+      # to frontend/ runs frontend + container + browser, and ANYTHING ELSE runs
+      # the whole suite. deploy/ci-select.sh holds the rule and explains why it
+      # is shaped to fail closed.
+      #
+      # PULL REQUESTS ONLY, and that is the load-bearing part of this step. The
+      # `if:` is what makes selection unreachable from anywhere else:
+      # workflow_dispatch, a developer, a polecat and any future push-triggered
+      # run all leave PKDUMP_CI_CHANGED_FILES unset, and ci.sh with no list runs
+      # every tier. Nothing has to remember to ask for the full suite.
+      #
+      # (CI does not currently run on a push to master at all — master is
+      # protected by a bypass-free ruleset, so every commit on it arrived
+      # through a green PR. If a push trigger is ever added, this step's
+      # condition is already the thing that keeps master unselectable.)
+      #
+      # Fail closed on every way this can go wrong: a base commit that is not
+      # available, a diff that errors, an empty result. Each one leaves the
+      # variable unset, and unset is the full suite.
+      - name: Select CI tiers from the changed paths (pull requests only)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          list="${RUNNER_TEMP}/pkdump-ci-changed-files.txt"
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null || true
+          fi
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "base commit ${BASE_SHA} unavailable — running the FULL suite"
+            exit 0
+          fi
+          # Two-dot against the base: actions/checkout leaves HEAD at the PR's
+          # merge commit, so this is exactly the set of paths the PR changes.
+          #
+          # --no-renames so BOTH sides of a rename are listed. With rename
+          # detection on, moving frontend/Thing.svelte to docs/thing.md reports
+          # only the destination — which reads as a docs-only PR while the
+          # frontend has lost a file. Listing the source too puts it back in the
+          # frontend bucket, where it belongs.
+          if ! git diff --no-renames --name-only "$BASE_SHA" HEAD > "$list"; then
+            echo "git diff failed — running the FULL suite"
+            exit 0
+          fi
+          if [ ! -s "$list" ]; then
+            echo "no changed paths resolved — running the FULL suite"
+            exit 0
+          fi
+          echo "changed paths:"
+          sed 's/^/  /' "$list"
+          echo "PKDUMP_CI_CHANGED_FILES=${list}" >> "$GITHUB_ENV"
 
       # The runner service is not a login shell, so nothing has sourced
       # ~/.cargo/env or the profile that adds ~/.local/bin. Both toolchains are
@@ -111,5 +170,10 @@ jobs:
       # storage at the big disk, and ci.sh reads that file itself. Setting it here
       # would put the box's disk layout back into the repo, which is the thing
       # pd-rf7c removed.
+      #
+      # PKDUMP_CI_CHANGED_FILES arrives from $GITHUB_ENV when — and only when —
+      # the step above set it. Unset means every tier; ci.sh prints the plan it
+      # is running either way, so a PR log always states which tiers were
+      # skipped and why.
       - name: deploy/ci.sh
         run: bash deploy/ci.sh

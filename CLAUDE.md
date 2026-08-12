@@ -305,6 +305,43 @@ like a fix while changing nothing. Move the base, move the id.
 
 There's a `deploy` skill in this repo that wraps these scripts for AI use.
 
+## CI
+
+`.github/workflows/ci.yml` is a thin wrapper around `deploy/ci.sh` — the same
+script a developer and a polecat run. Every step in it is a named **tier**
+(`lint rust deploy frontend container litestream tenants browser schema lake
+refresh`), and which tiers run can be selected from the paths a change touched.
+
+`deploy/ci-select.sh` is the rule, and it is two patterns wide on purpose:
+
+    docs (**.md, docs/**, wiki/**)  -> the lint tier, and nothing else
+    frontend/**                     -> frontend + container + browser
+    ANYTHING ELSE                   -> every tier
+
+Per-path requirements are **unioned** and nothing subtracts, so a mixed change
+can only ever run more. It fails closed at every edge — an unrecognised path,
+an empty list, no list at all. **Adding a bucket is a deliberate edit with a
+test beside it; the cost of forgetting is a slow run, never a missed gate.**
+
+`frontend/**` is **not** subdivided, and that is load-bearing. The obvious
+refinement — routes take the browser tier, shared lib files do not — is exactly
+pd-tf4h, where visual baselines went un-re-recorded because a change did not
+look like a UI change. A token, a shared primitive or a rule in `app.css`
+repaints every route at once, so *any* change under `frontend/` screenshots
+every route.
+
+Selection is **opt-in per run**: `deploy/ci.sh` runs everything unless handed
+`PKDUMP_CI_CHANGED_FILES`, and the only thing that hands it one is a
+`pull_request` in `ci.yml`. A developer, a polecat, `workflow_dispatch` and any
+future push-triggered run therefore get the full suite by construction —
+nothing has to remember to ask for it. `PKDUMP_CI_SELECT_ONLY=1` prints the plan
+and runs nothing.
+
+`tests/ci/select_test.sh` is the gate (hermetic, sub-second, in the lint tier,
+so a docs-only PR still runs it). A tier renamed in one file and not the other
+fails it in a second, and a guard on a name that is not a tier is fatal rather
+than a silent skip.
+
 ## Conventions & Patterns
 
 ### The data model IS the product

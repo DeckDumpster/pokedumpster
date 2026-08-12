@@ -37,6 +37,7 @@ pub struct RawLanding {
     store: Box<dyn ObjectStore>,
     run: String,
     ingest_date: String,
+    started_at: String,
     state: Mutex<Vec<DatasetState>>,
 }
 
@@ -50,20 +51,34 @@ impl RawLanding {
     /// Open a landing zone writing to `store`, stamping everything with a
     /// fresh run ULID.
     ///
-    /// `ingest_date` is the `YYYY-MM-DD` partition; it is passed in rather
-    /// than read from the clock so a backfill can land under the date it is
-    /// reconstructing.
-    pub fn new(store: Box<dyn ObjectStore>, ingest_date: &str) -> Self {
-        Self::with_run(store, ingest_date, &ulid::Ulid::generate().to_string())
+    /// `ingest_date` is the `YYYY-MM-DD` partition and `started_at` is the
+    /// run's clock, RFC 3339. Both are passed in rather than read from the
+    /// clock here, and for the same reason: a backfill lands under the date
+    /// it is reconstructing, and the *deriving* side has to be able to
+    /// reproduce the timestamps the importing side stamped into its rows.
+    /// See [`Manifest::started_at`](crate::Manifest::started_at).
+    pub fn new(store: Box<dyn ObjectStore>, ingest_date: &str, started_at: &str) -> Self {
+        Self::with_run(
+            store,
+            ingest_date,
+            started_at,
+            &ulid::Ulid::generate().to_string(),
+        )
     }
 
     /// Open a landing zone with an explicit run id. Tests use this to make
     /// two runs collide on purpose and prove that they cannot.
-    pub fn with_run(store: Box<dyn ObjectStore>, ingest_date: &str, run: &str) -> Self {
+    pub fn with_run(
+        store: Box<dyn ObjectStore>,
+        ingest_date: &str,
+        started_at: &str,
+        run: &str,
+    ) -> Self {
         Self {
             store,
             run: run.to_string(),
             ingest_date: ingest_date.to_string(),
+            started_at: started_at.to_string(),
             state: Mutex::new(Vec::new()),
         }
     }
@@ -76,6 +91,11 @@ impl RawLanding {
     /// The `ingest_date=` partition everything lands under.
     pub fn ingest_date(&self) -> &str {
         &self.ingest_date
+    }
+
+    /// The run's clock, as every manifest of this run records it.
+    pub fn started_at(&self) -> &str {
+        &self.started_at
     }
 
     /// A short description of the destination, for progress output.
@@ -98,7 +118,7 @@ impl RawLanding {
         body: &[u8],
     ) -> Result<()> {
         let mut state = self.state.lock().expect("landing state poisoned");
-        let entry = Self::entry(&mut state, source, dataset, &self.ingest_date, &self.run);
+        let entry = self.entry(&mut state, source, dataset);
         let part = entry.manifest.parts.len() as u32;
 
         let key =
@@ -137,7 +157,7 @@ impl RawLanding {
         error: &str,
     ) -> Result<()> {
         let mut state = self.state.lock().expect("landing state poisoned");
-        let entry = Self::entry(&mut state, source, dataset, &self.ingest_date, &self.run);
+        let entry = self.entry(&mut state, source, dataset);
         entry.manifest.failures.push(FailureRecord {
             url: url.to_string(),
             status,
@@ -201,11 +221,10 @@ impl RawLanding {
     }
 
     fn entry<'a>(
+        &self,
         state: &'a mut Vec<DatasetState>,
         source: Source,
         dataset: Dataset,
-        ingest_date: &str,
-        run: &str,
     ) -> &'a mut DatasetState {
         // Linear scan over at most six datasets — a map would be more
         // machinery than the search saves, and this preserves first-touch
@@ -219,7 +238,13 @@ impl RawLanding {
         state.push(DatasetState {
             source,
             dataset,
-            manifest: Manifest::new(source, dataset, ingest_date, run),
+            manifest: Manifest::new(
+                source,
+                dataset,
+                &self.ingest_date,
+                &self.run,
+                &self.started_at,
+            ),
         });
         state.last_mut().expect("just pushed")
     }
@@ -240,6 +265,8 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::manifest::Manifest;
+
+    const STARTED: &str = "2026-08-11T04:51:02Z";
     use crate::store::DirStore;
     use std::path::Path;
 
@@ -253,6 +280,7 @@ mod tests {
         let sink = RawLanding::with_run(
             Box::new(DirStore::new(tmp.path())),
             "2026-08-11",
+            STARTED,
             "01K2CJ1N0000000000000000AA",
         );
         let body = br#"{"results":[1,2,3]}"#;
@@ -277,6 +305,9 @@ mod tests {
         assert!(manifest.complete);
         assert_eq!(manifest.error, None);
         assert_eq!(manifest.parts.len(), 1);
+        // The run's clock, recorded so a later derive from these bytes can
+        // stamp the same timestamps into the same rows.
+        assert_eq!(manifest.started_at, STARTED);
 
         let part = &manifest.parts[0];
         assert_eq!(part.status, 200);
@@ -296,7 +327,7 @@ mod tests {
     #[test]
     fn every_recorded_hash_matches_the_stored_object() {
         let tmp = tempfile::tempdir().unwrap();
-        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11");
+        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11", STARTED);
         for group in 0..5 {
             sink.land(
                 Source::Tcgcsv,
@@ -334,7 +365,7 @@ mod tests {
     fn a_retry_on_the_same_date_never_overwrites_the_first_attempt() {
         let tmp = tempfile::tempdir().unwrap();
 
-        let first = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11");
+        let first = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11", STARTED);
         first
             .land(
                 Source::Tcgcsv,
@@ -349,7 +380,7 @@ mod tests {
             .finalize(Some("http: 503 Service Unavailable"))
             .unwrap();
 
-        let second = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11");
+        let second = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11", STARTED);
         second
             .land(
                 Source::Tcgcsv,
@@ -404,7 +435,7 @@ mod tests {
     #[test]
     fn a_run_that_stops_early_is_marked_incomplete() {
         let tmp = tempfile::tempdir().unwrap();
-        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11");
+        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11", STARTED);
         sink.land(
             Source::Tcgcsv,
             Dataset::Prices,
@@ -445,7 +476,7 @@ mod tests {
     #[test]
     fn a_failure_marks_only_its_own_dataset() {
         let tmp = tempfile::tempdir().unwrap();
-        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11");
+        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11", STARTED);
         sink.land(
             Source::PokemonTcgIo,
             Dataset::Sets,
@@ -483,7 +514,7 @@ mod tests {
     #[test]
     fn an_invocation_failure_marks_every_touched_dataset() {
         let tmp = tempfile::tempdir().unwrap();
-        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11");
+        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11", STARTED);
         sink.land(
             Source::Tcgcsv,
             Dataset::Groups,
@@ -518,7 +549,7 @@ mod tests {
     #[test]
     fn parts_are_numbered_per_dataset_not_per_run() {
         let tmp = tempfile::tempdir().unwrap();
-        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11");
+        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), "2026-08-11", STARTED);
         sink.land(
             Source::Tcgcsv,
             Dataset::Groups,

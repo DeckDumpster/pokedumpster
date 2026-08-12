@@ -1,0 +1,17 @@
+[package]
+name = "pkdump-derive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+pkdump-db.workspace = true
+pkdump-ingest.workspace = true
+pkdump-lake.workspace = true
+rusqlite.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

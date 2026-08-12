@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::error::{IngestError, Result};
-use crate::landing::{self, Landing};
+use crate::landing::{self, Wire};
 
 const BASE_URL: &str = "https://tcgcsv.com/tcgplayer";
 
@@ -935,7 +935,7 @@ pub fn import_prices(
 pub struct TcgcsvClient {
     http: reqwest::blocking::Client,
     category_id: i64,
-    landing: Landing,
+    wire: Wire,
     base_url: String,
 }
 
@@ -954,7 +954,7 @@ impl TcgcsvClient {
                 .timeout(Duration::from_secs(60))
                 .build()?,
             category_id,
-            landing: None,
+            wire: Wire::default(),
             base_url: crate::upstream::base_url(crate::upstream::ENV_TCGCSV_BASE_URL, BASE_URL),
         })
     }
@@ -964,7 +964,14 @@ impl TcgcsvClient {
     /// Without this the client behaves exactly as it did before the landing
     /// zone existed.
     pub fn landing_in(mut self, landing: Arc<RawLanding>) -> Self {
-        self.landing = Some(landing);
+        self.wire = self.wire.landing_in(landing);
+        self
+    }
+
+    /// Answer every request from `wire` — a landing zone to write through, a
+    /// replay source to read from, or neither.
+    pub fn on_wire(mut self, wire: Wire) -> Self {
+        self.wire = wire;
         self
     }
 
@@ -982,13 +989,17 @@ impl TcgcsvClient {
     }
 
     fn get(&self, path: &str, dataset: Dataset) -> Result<Value> {
-        std::thread::sleep(Duration::from_millis(50));
+        // See PokemonTcgClient::get — a replayed response reaches no upstream,
+        // and 450 Japanese groups at two requests each is 45s of pure sleep.
+        if !self.wire.is_replaying() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let category = self.category_id;
         let base = &self.base_url;
         let body = landing::fetch_bytes(
             &self.http,
             self.http.get(format!("{base}/{category}{path}")),
-            self.landing.as_ref(),
+            &self.wire,
             Source::Tcgcsv,
             dataset,
             PartFormat::Json,

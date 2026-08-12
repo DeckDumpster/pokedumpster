@@ -53,24 +53,27 @@ pub mod config;
 mod error;
 pub mod keys;
 pub mod manifest;
+pub mod reader;
 pub mod sink;
 pub mod store;
 
 pub use config::{Backend, LakeConfig};
 pub use error::{LakeError, Result};
 pub use keys::{Dataset, PartFormat, Source};
-pub use manifest::Manifest;
+pub use manifest::{Manifest, PartRecord};
+pub use reader::{RawZone, Run, select_run};
 pub use sink::RawLanding;
-pub use store::{DirStore, ObjectStore, S3Store};
+pub use store::{DirStore, ObjectSource, ObjectStore, S3Store};
 
-/// Build the landing zone this host is configured for.
+/// Build the landing zone this host is configured for, for **writing**.
 ///
-/// `ingest_date` is the `YYYY-MM-DD` partition every object lands under.
+/// `ingest_date` is the `YYYY-MM-DD` partition every object lands under and
+/// `started_at` is the run's clock (RFC 3339), recorded in every manifest so
+/// a later derive can reproduce the timestamps this run stamps into its rows.
 /// Fails, naming `lake.env`, when no destination is configured — an
 /// unconfigured lake refuses rather than silently landing nothing.
-pub fn open(ingest_date: &str) -> Result<RawLanding> {
-    let config = LakeConfig::load()?;
-    let store: Box<dyn ObjectStore> = match config.backend {
+pub fn open(ingest_date: &str, started_at: &str) -> Result<RawLanding> {
+    let store: Box<dyn ObjectStore> = match config()? {
         Backend::Dir(path) => Box::new(DirStore::new(path)),
         Backend::S3 {
             bucket,
@@ -84,5 +87,34 @@ pub fn open(ingest_date: &str) -> Result<RawLanding> {
             endpoint.as_deref(),
         )?),
     };
-    Ok(RawLanding::new(store, ingest_date))
+    Ok(RawLanding::new(store, ingest_date, started_at))
+}
+
+/// Build the landing zone this host is configured for, for **reading**.
+///
+/// The same `lake.env`, resolved the same way — one file configures both
+/// halves, so a derive can never end up reading a different lake from the one
+/// the refresh landed into. What differs is the handle: this one has no
+/// `put`, because `raw/` is immutable and the job that reads it must not be
+/// able to rewrite the evidence.
+pub fn open_reader() -> Result<RawZone> {
+    let source: Box<dyn ObjectSource> = match config()? {
+        Backend::Dir(path) => Box::new(DirStore::new(path)),
+        Backend::S3 {
+            bucket,
+            region,
+            prefix,
+            endpoint,
+        } => Box::new(S3Store::connect(
+            &bucket,
+            &region,
+            &prefix,
+            endpoint.as_deref(),
+        )?),
+    };
+    Ok(RawZone::new(source))
+}
+
+fn config() -> Result<Backend> {
+    Ok(LakeConfig::load()?.backend)
 }

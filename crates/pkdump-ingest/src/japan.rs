@@ -478,14 +478,11 @@ pub fn import_all(
     conn: &mut Connection,
     now: &str,
     observed: &str,
-    landing: crate::landing::Landing,
+    wire: crate::landing::Wire,
 ) -> Result<JapanStats> {
     use std::io::Write;
 
-    let mut client = TcgcsvClient::for_category(CATEGORY_POKEMON_JAPAN)?;
-    if let Some(landing) = landing {
-        client = client.landing_in(landing);
-    }
+    let client = TcgcsvClient::for_category(CATEGORY_POKEMON_JAPAN)?.on_wire(wire);
     let groups = client.fetch_groups()?;
     let mut stats = JapanStats {
         groups: import_groups(conn, &groups, now)?,

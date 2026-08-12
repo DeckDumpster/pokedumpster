@@ -19,6 +19,11 @@ pub enum LakeError {
     /// refusal, never a silent skip.
     #[error("{0}")]
     NotConfigured(String),
+
+    /// The landing zone is missing, short, or does not match its manifest.
+    /// Read-side only; the writer cannot produce one of these.
+    #[error("{0}")]
+    Raw(String),
 }
 
 /// Convenience alias for results in this crate.

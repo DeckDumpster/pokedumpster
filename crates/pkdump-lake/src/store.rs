@@ -1,11 +1,20 @@
-//! Where landed objects go.
+//! Where landed objects go, and where a rebuild reads them back from.
 //!
-//! One trait with two implementations: [`S3Store`], which is the real one,
-//! and [`DirStore`], a directory on disk that exists so the landing zone's
-//! behaviour can be asserted hermetically — the key layout, the manifest and
-//! the never-overwrite property are all properties of the *keys*, and
-//! proving them against a bucket would make the gate need credentials and a
-//! network.
+//! Two traits with two implementations each: [`S3Store`], which is the real
+//! one, and [`DirStore`], a directory on disk that exists so the landing
+//! zone's behaviour can be asserted hermetically — the key layout, the
+//! manifest and the never-overwrite property are all properties of the
+//! *keys*, and proving them against a bucket would make the gate need
+//! credentials and a network.
+//!
+//! The traits are separate on purpose. [`ObjectStore`] is what a *landing*
+//! run holds, and it is still write-only: a run knows its own key space and
+//! must not be able to look at anybody else's. [`ObjectSource`] is what the
+//! offline derive holds, and it is read-only for the mirror-image reason —
+//! `raw/` is immutable, and a job that could PUT into it could rewrite the
+//! evidence it exists to preserve. Nothing implements both halves *as one
+//! handle*; the two are constructed from the same config by different
+//! entry points ([`crate::open`] and [`crate::open_reader`]).
 
 use std::path::{Path, PathBuf};
 
@@ -23,6 +32,30 @@ pub trait ObjectStore: Send + Sync {
     fn put(&self, key: &str, body: Vec<u8>) -> Result<()>;
 
     /// A short description of where this store writes, for progress output.
+    fn describe(&self) -> String;
+}
+
+/// A read-only view of a landing zone, keyed by string.
+///
+/// The offline derive is the only caller. It needs exactly two operations —
+/// list the immediate children of a prefix (to find the `run=` directories a
+/// date holds) and read one object whole — and deliberately not a third:
+/// there is no `put`, so a job that reads `raw/` cannot write to it.
+pub trait ObjectSource: Send + Sync {
+    /// The bytes stored at `key`.
+    ///
+    /// Missing is an error rather than `None`: every key this trait is asked
+    /// for came out of a manifest, so an absent object means the landing zone
+    /// and its own record of itself disagree.
+    fn get(&self, key: &str) -> Result<Vec<u8>>;
+
+    /// The names of the immediate child "directories" of `key_prefix`, in no
+    /// particular order, with no trailing slash. A prefix that does not exist
+    /// is empty rather than an error — "this date landed nothing" is a fact
+    /// the caller turns into its own refusal, with the date in it.
+    fn child_dirs(&self, key_prefix: &str) -> Result<Vec<String>>;
+
+    /// A short description of where this source reads, for progress output.
     fn describe(&self) -> String;
 }
 
@@ -54,6 +87,33 @@ impl ObjectStore for DirStore {
         }
         std::fs::write(&path, body)?;
         Ok(())
+    }
+
+    fn describe(&self) -> String {
+        format!("dir {}", self.root.display())
+    }
+}
+
+impl ObjectSource for DirStore {
+    fn get(&self, key: &str) -> Result<Vec<u8>> {
+        Ok(std::fs::read(self.root.join(key))?)
+    }
+
+    fn child_dirs(&self, key_prefix: &str) -> Result<Vec<String>> {
+        let dir = self.root.join(key_prefix);
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut out = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                out.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        Ok(out)
     }
 
     fn describe(&self) -> String {
@@ -148,6 +208,77 @@ impl ObjectStore for S3Store {
                 })
         })?;
         Ok(())
+    }
+
+    fn describe(&self) -> String {
+        format!("s3://{}/{}", self.bucket, self.prefix)
+    }
+}
+
+impl ObjectSource for S3Store {
+    fn get(&self, key: &str) -> Result<Vec<u8>> {
+        let key = self.full_key(key);
+        let body = self.runtime.block_on(async {
+            let object = self
+                .client
+                .get_object()
+                .bucket(&self.bucket)
+                .key(&key)
+                .send()
+                .await
+                .map_err(|e| {
+                    LakeError::S3(format!(
+                        "get s3://{}/{}: {}",
+                        self.bucket,
+                        key,
+                        aws_error_text(&e)
+                    ))
+                })?;
+            object.body.collect().await.map_err(|e| {
+                LakeError::S3(format!("read s3://{}/{}: {e}", self.bucket, key))
+            })
+        })?;
+        Ok(body.into_bytes().to_vec())
+    }
+
+    fn child_dirs(&self, key_prefix: &str) -> Result<Vec<String>> {
+        // `Delimiter=/` makes S3 answer with CommonPrefixes — the object-store
+        // equivalent of "the immediate children", and the reason this does not
+        // have to list every part under a date to find its runs.
+        let prefix = self.full_key(key_prefix);
+        self.runtime.block_on(async {
+            let mut out = Vec::new();
+            let mut pages = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix)
+                .delimiter("/")
+                .into_paginator()
+                .send();
+            while let Some(page) = pages.next().await {
+                let page = page.map_err(|e| {
+                    LakeError::S3(format!(
+                        "list s3://{}/{}: {}",
+                        self.bucket,
+                        prefix,
+                        aws_error_text(&e)
+                    ))
+                })?;
+                for common in page.common_prefixes() {
+                    if let Some(p) = common.prefix() {
+                        out.push(
+                            p.trim_end_matches('/')
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or_default()
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            Ok(out)
+        })
     }
 
     fn describe(&self) -> String {

@@ -58,6 +58,24 @@ pub struct Manifest {
     pub ingest_date: String,
     /// The `run=` partition value — the run's ULID.
     pub run: String,
+    /// When the run STARTED fetching, RFC 3339 — the instant the derivation
+    /// that consumed these bytes stamped into every row it wrote.
+    ///
+    /// This is what makes a rebuild from `raw/` reproduce the original rows
+    /// exactly rather than approximately: `sets.ptcgio_fetched_at`,
+    /// `tcgcsv_products.fetched_at` and `prices.observed_at` are all derived
+    /// from the run's clock, so an offline derive that reads this back
+    /// produces the same values a second time. Taking `ingest_date` for the
+    /// same purpose would be the "old data looks new" bug the epic names:
+    /// they are the same day for almost every run and different for exactly
+    /// the run that crossed UTC midnight.
+    ///
+    /// `#[serde(default)]` because manifests landed before this field existed
+    /// are already in the bucket and must still parse. Empty is not a clock,
+    /// and the offline derive refuses such a partition by name rather than
+    /// inventing one.
+    #[serde(default)]
+    pub started_at: String,
     /// When the manifest was written, RFC 3339.
     pub finalized_at: String,
     /// Whether every fetch this prefix was going to receive arrived.
@@ -75,12 +93,21 @@ pub struct Manifest {
 
 impl Manifest {
     /// An empty manifest for a run that has landed nothing yet.
-    pub fn new(source: Source, dataset: Dataset, ingest_date: &str, run: &str) -> Self {
+    ///
+    /// `started_at` is the run's clock — see the field.
+    pub fn new(
+        source: Source,
+        dataset: Dataset,
+        ingest_date: &str,
+        run: &str,
+        started_at: &str,
+    ) -> Self {
         Self {
             source: source.as_str().to_string(),
             dataset: dataset.as_str().to_string(),
             ingest_date: ingest_date.to_string(),
             run: run.to_string(),
+            started_at: started_at.to_string(),
             finalized_at: String::new(),
             complete: false,
             error: None,
@@ -107,6 +134,8 @@ impl Manifest {
 mod tests {
     use super::*;
 
+    const STARTED: &str = "2026-08-11T04:51:02Z";
+
     fn part(key: &str, bytes: u64) -> PartRecord {
         PartRecord {
             key: key.to_string(),
@@ -119,7 +148,7 @@ mod tests {
 
     #[test]
     fn round_trips_through_json() {
-        let mut m = Manifest::new(Source::Tcgcsv, Dataset::Groups, "2026-08-11", "01K2CJ1N00");
+        let mut m = Manifest::new(Source::Tcgcsv, Dataset::Groups, "2026-08-11", "01K2CJ1N00", STARTED);
         m.parts.push(part("raw/…/part-0000.json.zst", 12));
         m.complete = true;
         m.finalized_at = "2026-08-11T04:53:17Z".to_string();
@@ -130,7 +159,7 @@ mod tests {
 
     #[test]
     fn an_incomplete_run_carries_its_error() {
-        let mut m = Manifest::new(Source::Tcgcsv, Dataset::Prices, "2026-08-11", "01K2CJ1N00");
+        let mut m = Manifest::new(Source::Tcgcsv, Dataset::Prices, "2026-08-11", "01K2CJ1N00", STARTED);
         m.parts.push(part("raw/…/part-0000.json.zst", 12));
         m.failures.push(FailureRecord {
             url: "https://tcgcsv.com/tcgplayer/3/17/prices".to_string(),
@@ -152,11 +181,28 @@ mod tests {
             Dataset::Sets,
             "2026-08-11",
             "01K2CJ1N00",
+            STARTED,
         );
         m.complete = true;
         let text = String::from_utf8(m.to_json().unwrap()).unwrap();
         assert!(!text.contains("\"error\""));
         assert!(!text.contains("\"failures\""));
+    }
+
+    /// Manifests written before `started_at` existed are already in the
+    /// bucket. They must still parse — the reader is what decides that a
+    /// clockless partition cannot be derived from, and it can only decide
+    /// that if it can read the file at all.
+    #[test]
+    fn a_manifest_from_before_started_at_still_parses() {
+        let legacy = br#"{
+          "source": "tcgcsv", "dataset": "groups", "ingest_date": "2026-08-11",
+          "run": "01K2CJ1N00", "finalized_at": "2026-08-11T04:53:17Z",
+          "complete": true, "parts": []
+        }"#;
+        let m: Manifest = serde_json::from_slice(legacy).unwrap();
+        assert!(m.complete);
+        assert_eq!(m.started_at, "");
     }
 
     #[test]
@@ -166,6 +212,7 @@ mod tests {
             Dataset::Products,
             "2026-08-11",
             "01K2CJ1N00",
+            STARTED,
         );
         m.parts.push(part("a", 10));
         m.parts.push(part("b", 32));

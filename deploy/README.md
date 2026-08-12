@@ -101,8 +101,8 @@ loop — it needs `ANTHROPIC_API_KEY` for Vision mode. Run it on its own:
 
 `ci.sh` never sets `CARGO_TARGET_DIR`, so running it from a checkout writes to
 that checkout's own `target/`, as it always did. The GitHub workflow points it
-somewhere else, and that is the difference between a 25-minute run and a
-3-minute one:
+somewhere else, and that alone takes ~5.8 minutes off every run — the Rust
+gates' whole share of it:
 
 | | where `target/` is | what a re-run compiles |
 |---|---|---|

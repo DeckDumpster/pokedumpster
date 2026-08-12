@@ -63,6 +63,10 @@ CONTAINER="systemd-${SERVICE_NAME}"
 pkdump_store_load_config
 pkdump_store_activate
 
+# Bounded condition polling, in one place for every harness (pd-86er).
+# shellcheck source=tests/lib/wait.sh
+. "$REPO_DIR/tests/lib/wait.sh"
+
 cleanup() {
     if [ "$KEEP" = true ]; then
         echo "==> Leaving '${INSTANCE}' running (--keep). Tear down with:"
@@ -82,15 +86,19 @@ systemctl --user start "$SERVICE_NAME"
 
 echo "==> Waiting for the server..."
 PORT=""
-for _ in $(seq 1 30); do
+# Four times a second, not once every two: `podman port` plus a loopback curl
+# costs nothing, and the interval was most of what this step spent on a server
+# that was already answering (pd-86er). Same 60-second bound as before.
+server_answering() {
     PORT=$(podman port "$CONTAINER" 8080/tcp 2>/dev/null | head -1 | cut -d: -f2 || true)
     if [ -n "$PORT" ] && curl -sf -o /dev/null "http://localhost:${PORT}/"; then
         echo "    Up on port ${PORT}."
-        break
+        return 0
     fi
     PORT=""
-    sleep 2
-done
+    return 1
+}
+wait_until 60 0.25 server_answering || true
 if [ -z "$PORT" ]; then
     echo "ERROR: server failed to start within timeout." >&2
     journalctl --user -u "$SERVICE_NAME" --no-pager -n 40 2>/dev/null || true

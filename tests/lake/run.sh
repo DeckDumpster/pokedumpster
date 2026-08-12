@@ -60,6 +60,10 @@ die() {
 # shellcheck source=tests/lib/ports.sh
 . "${REPO_DIR}/tests/lib/ports.sh"
 
+# Bounded condition polling, in one place for every harness (pd-86er).
+# shellcheck source=tests/lib/wait.sh
+. "${REPO_DIR}/tests/lib/wait.sh"
+
 # Non-prod container storage belongs on the data disk, not the disk prod runs
 # from — same resolution deploy/ci.sh uses, so running this gate standalone
 # lands in the same store as running it through CI.
@@ -133,10 +137,10 @@ podman run -d --name "$MINIO_CTR" --network "$NET" \
 	-v "$WORK/minio:/data:Z" \
 	"$MINIO_IMAGE" server /data >/dev/null
 
-for _ in $(seq 1 30); do
-	curl -sf -o /dev/null "http://localhost:${MINIO_PORT}/minio/health/live" && break
-	sleep 1
-done
+minio_live() { curl -sf -o /dev/null "http://localhost:${MINIO_PORT}/minio/health/live"; }
+# Four times a second against the same 30s bound: a loopback curl costs nothing
+# and the one-second interval was latency, not patience (pd-86er).
+wait_until 30 0.25 minio_live || true
 curl -sf -o /dev/null "http://localhost:${MINIO_PORT}/minio/health/live" ||
 	die "MinIO never became healthy on ${MINIO_PORT}"
 mc mb "m/${BUCKET}" >/dev/null
@@ -164,11 +168,9 @@ podman run -d --name "$NESSIE_CTR" --network "$NET" \
 	-e nessie.catalog.secrets.access-key.secret="$SECRET" \
 	"$NESSIE_IMAGE" >/dev/null
 
+nessie_answering() { curl -sf -o /dev/null "http://localhost:${NESSIE_PORT}/api/v2/config"; }
 nessie_wait() {
-	for _ in $(seq 1 60); do
-		curl -sf -o /dev/null "http://localhost:${NESSIE_PORT}/api/v2/config" && return 0
-		sleep 1
-	done
+	wait_until 60 0.25 nessie_answering && return 0
 	podman logs "$NESSIE_CTR" 2>&1 | tail -40
 	die "Nessie never answered on ${NESSIE_PORT}"
 }

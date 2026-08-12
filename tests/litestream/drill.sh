@@ -96,6 +96,12 @@ pkdump_store_activate
 # shellcheck source=tests/lib/ports.sh
 . "${REPO_DIR}/tests/lib/ports.sh"
 
+# Waiting for CONDITIONS rather than for the clock (pd-86er). This drill stops
+# and starts the sidecar seventeen times; at a fixed two seconds down and eight
+# up that was ~104 seconds a run asserting nothing but how fast this box is.
+# shellcheck source=tests/lib/wait.sh
+. "${REPO_DIR}/tests/lib/wait.sh"
+
 # PER-CHECKOUT by default, for the reason deploy/ci.sh derives its container
 # instance the same way: the swarm runs several polecats per rig, each from its
 # own worktree, and every one of them runs deploy/ci.sh — which runs this. With a
@@ -234,11 +240,50 @@ ls_cli() {
 # and its unit is deliberately rate-limited (StartLimitBurst=5 / 300s) so a
 # crash-loop pages. reset-failed clears that counter — the same thing
 # restore-litestream.sh does before its own restart.
-sidecar_stop() { systemctl --user stop "${SIDECAR}.service"; sleep 2; }
+# Quadlet names the container after the unit, and runs it with --rm — so this
+# name is what `podman logs` reads, and its log starts empty on every start.
+SIDECAR_CTR="systemd-${SIDECAR}"
+sidecar_running() {
+	[ "$(podman inspect -f '{{.State.Status}}' "$SIDECAR_CTR" 2>/dev/null || echo gone)" = running ]
+}
+# WAIT for the process to be gone, not for two seconds (pd-86er). `systemctl
+# stop` already returns when the UNIT has deactivated; what the sleep covered
+# was the container behind it, and every caller stops the sidecar precisely so
+# that nothing is writing to the volume while it measures.
+sidecar_stopped() { ! sidecar_running; }
+sidecar_stop() {
+	systemctl --user stop "${SIDECAR}.service"
+	wait_until 30 0.25 sidecar_stopped || true
+}
+# ...and on the way up, wait for LITESTREAM rather than for systemd. `systemctl
+# start` returns as soon as the unit is active, which is why this was a sleep at
+# all: the thing worth waiting for is the replicator opening the databases, and
+# it says so in its own log. A sidecar that is not running gets no wait — the
+# caller's own check is what should report that, not a stall here.
+sidecar_ready() {
+	sidecar_running || return 0
+	podman logs "$SIDECAR_CTR" 2>&1 | grep -q '\.sqlite'
+}
 sidecar_start() {
 	systemctl --user reset-failed "${SIDECAR}.service" 2>/dev/null || true
 	systemctl --user start "${SIDECAR}.service"
-	sleep "${1:-8}"
+	wait_until 60 0.25 sidecar_ready || true
+}
+
+# restored_rows <file> <replica-url> — restore out-of-place and count the rows;
+# 0 when nothing restores yet, so it is safe to poll on. `-o` refuses to
+# overwrite, and a poll asks repeatedly by definition, so the file goes first.
+#
+# This is the ground truth for "the write reached S3", and the three places
+# below that used to sleep for replication now wait on it instead.
+restored_rows() {
+	local n
+	rm -f "${WORK}/out/$1"
+	ls_cli restore -o "/out/$1" "$2" >/dev/null 2>&1 || true
+	# Always a number, whatever happened: the callers compare numerically, and an
+	# empty string there is a shell error rather than "not replicated yet".
+	n="$(sqlite3 -cmd '.timeout 5000' "${WORK}/out/$1" 'SELECT count(*) FROM collection;' 2>/dev/null)" || n=0
+	printf '%s' "${n:-0}"
 }
 
 mount_point() { podman volume inspect -f '{{.Mountpoint}}' "$VOLUME"; }
@@ -381,7 +426,10 @@ wait_for_replica() { # wait_for_replica <tenant> [seconds]
 	deadline=$(( SECONDS + ${2:-60} ))
 	while [ "$SECONDS" -lt "$deadline" ]; do
 		if ls_cli ltx -level all "$url" 2>/dev/null | grep -q .; then return 0; fi
-		sleep 2
+		# One second, not two: the body is itself a `podman run` costing the
+		# better part of one, so anything longer was latency (pd-86er). The
+		# caller's bound is unchanged.
+		sleep 1
 	done
 	return 1
 }
@@ -520,7 +568,7 @@ sed -e "s|{{INSTANCE}}|${INSTANCE}|g" -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
 	"${REPO_DIR}/deploy/pkdump-litestream.container" > "${QUADLET_DIR}/${SIDECAR}.container"
 pkdump_store_stamp_unit "${QUADLET_DIR}/${SIDECAR}.container"
 systemctl --user daemon-reload
-sidecar_start 3
+sidecar_start
 check "the shipped sidecar unit is running" "active" \
 	"$(systemctl --user is-active "${SIDECAR}.service" || true)"
 
@@ -533,12 +581,12 @@ check "every tenant is replicating from the one sidecar" "4" "$replicating"
 # The registry rides the SAME sidecar — no second process, no second unit, no
 # config edit beyond the entry deploy/litestream.yml already ships.
 REG_URL="$(registry_replica_url)"
-reg_deadline=$(( SECONDS + 90 ))
 reg_replicating=no
-while [ "$SECONDS" -lt "$reg_deadline" ]; do
-	if ls_cli ltx -level all "$REG_URL" 2>/dev/null | grep -q .; then reg_replicating=yes; break; fi
-	sleep 2
-done
+registry_replicating() {
+	ls_cli ltx -level all "$REG_URL" 2>/dev/null | grep -q . || return 1
+	reg_replicating=yes
+}
+wait_until 90 1 registry_replicating || true
 check "the registry is replicating from that same sidecar" "yes" "$reg_replicating"
 # Beside the tenants prefix, never inside it: §7 lists that parent prefix to
 # enumerate tenants, and a registry underneath it would read as one more tenant.
@@ -546,11 +594,38 @@ check "the registry's prefix is NOT under the tenants prefix" "outside" \
 	"$(case "$LITESTREAM_S3_REGISTRY_PATH" in "${LITESTREAM_S3_PATH%/}"/*) echo inside ;; *) echo outside ;; esac)"
 
 # A marker between two write phases, for the point-in-time restore in §5.
-sleep 2
+#
+# WAIT for the early phase to be IN the replica before taking the marker, rather
+# than sleeping and hoping (pd-86er). `wait_for_replica` above only proves the
+# prefix has objects; §5 rolls ${VICTIM} back TO this instant and expects the
+# early row to still be there, so what has to be true here is that the row
+# itself has landed.
+VICTIM_URL="$(tenant_replica_url "$(db_id "$VICTIM")")"
+early_replicated() { [ "$(restored_rows victim-early.sqlite "$VICTIM_URL")" -ge 1 ]; }
+wait_until 120 2 early_replicated || true
+
 MARKER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-sleep 3
+# The one sleep in this file that is not waiting for a condition, and it stays:
+# `date -u +…%SZ` truncates to the second, so the marker names the whole second
+# it was taken in and the late writes have to land in a LATER one — otherwise a
+# restore at the marker may legitimately include them. The wait is on the
+# clock's resolution itself; there is nothing to poll.
+sleep 2
 write_phase late
-sleep 10
+# ...and the far side of the marker, on the same terms: the late phase is in the
+# replica when a restore hands back both rows. Asked of the two tenants §4 and §5
+# actually restore — ${VICTIM}, whose stream has to extend past the marker for
+# the rollback to have anything to roll back FROM, and charlie, the bystander
+# whose replica must still be at CURRENT. Each of these is a container start, so
+# asking all four would be paying twice for one fact: the write phase is a single
+# loop and the sidecar syncs every database on the same interval.
+late_replicated() {
+	local t
+	for t in "$VICTIM" charlie; do
+		[ "$(restored_rows "late-${t}.sqlite" "$(tenant_replica_url "$(db_id "$t")")")" -ge 2 ] || return 1
+	done
+}
+wait_until 180 2 late_replicated || true
 check "each tenant has both write phases locally" "2 2 2 2" \
 	"$(for t in "${TENANTS[@]}"; do printf '%s ' "$(rows_count "$t")"; done | sed 's/ $//')"
 
@@ -608,7 +683,16 @@ check "and it is charlie's data, not ${VICTIM}'s" "charlie" \
 	"$(sqlite3 "${WORK}/out/charlie-after.sqlite" "SELECT DISTINCT substr(printing_id,1,instr(printing_id,'-')-1) FROM collection;" 2>/dev/null || echo '<no db>')"
 # The write taken while the sidecar was down is not lost: it is replicated when
 # the sidecar resumes. This is the whole cost of one sidecar for N tenants.
-ls_cli restore -integrity-check full -o /out/writer-after.sqlite "$(tenant_replica_url "$(db_id "$WRITER")")" >/dev/null 2>&1 || true
+#
+# WAIT for the catch-up instead of assuming eight seconds of sidecar uptime
+# covered it (pd-86er). The assertion below is unchanged and still the thing
+# being proved — a replica that never catches up fails it, boundedly, and the
+# poll is what makes the wait proportional to the box rather than to a guess.
+WRITER_URL="$(tenant_replica_url "$(db_id "$WRITER")")"
+writer_caught_up() { [ "$(restored_rows writer-probe.sqlite "$WRITER_URL")" -ge 3 ]; }
+wait_until 120 2 writer_caught_up || true
+rm -f "${WORK}/out/writer-after.sqlite"
+ls_cli restore -integrity-check full -o /out/writer-after.sqlite "$WRITER_URL" >/dev/null 2>&1 || true
 check "a write made while the sidecar was down reached S3 once it resumed" "3" \
 	"$(sqlite3 "${WORK}/out/writer-after.sqlite" 'SELECT count(*) FROM collection;' 2>/dev/null || echo '<no db>')"
 
@@ -641,6 +725,12 @@ check "a point-in-time rollback of one tenant leaves the others at CURRENT" "3" 
 # replica is append-only (the rollback lands as a new txid, it does not rewrite
 # history), so that state is still there.
 sidecar_start
+# The rolled-back database has to REACH the replica before "latest" is the
+# rollback — that is the whole claim of the next three lines, and it was a
+# fixed eight seconds of sidecar uptime. Poll for the replica to hand back one
+# row (pd-86er).
+rollback_replicated() { [ "$(restored_rows victim-rollback.sqlite "$VICTIM_URL")" = 1 ]; }
+wait_until 120 2 rollback_replicated || true
 sidecar_stop
 bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$(db_id "$VICTIM")"
 sidecar_stop
@@ -976,7 +1066,7 @@ rm -f "$(registry_file)" "$(registry_file)-wal" "$(registry_file)-shm"
 
 # ── the gate. The shipped script refuses, and refuses BEFORE it stops anything:
 # a guard that costs an outage to trip is a guard operators route around.
-sidecar_start 3
+sidecar_start
 GATE_OUT="$(bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$(db_id "$VICTIM")" 2>&1)" \
 	&& GATE_RC=0 || GATE_RC=$?
 printf '%s\n' "$GATE_OUT" | sed 's/^/    /'

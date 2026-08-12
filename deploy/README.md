@@ -73,7 +73,8 @@ bash deploy/ci.sh
 Steps, in order, exiting non-zero on the first failure:
 
 0. Pick the container store (see [Container storage](#container-storage)) and
-   refuse to start if either disk is under the floor.
+   refuse to start if any of the disks it writes to is under the floor — `$HOME`,
+   the store root, and the cargo target directory.
 1. Tear down any stale `ci` instance.
 2. `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
    Then `tests/deploy/run.sh` — the store resolution and the low-disk guard.
@@ -95,6 +96,54 @@ loop — it needs `ANTHROPIC_API_KEY` for Vision mode. Run it on its own:
 ```bash
 ( cd tests/ui && npx playwright install chromium && npx playwright test )
 ```
+
+### The build cache — GitHub Actions only
+
+`ci.sh` never sets `CARGO_TARGET_DIR`, so running it from a checkout writes to
+that checkout's own `target/`, as it always did. The GitHub workflow points it
+somewhere else, and that is the difference between a 25-minute run and a
+3-minute one:
+
+| | where `target/` is | what a re-run compiles |
+|---|---|---|
+| you, or a polecat | `<checkout>/target` | nothing — it is already there |
+| `.github/workflows/ci.yml` (before) | `<checkout>/target` | **everything**, every run |
+| `.github/workflows/ci.yml` (now) | `~/.cache/pkdump/ci-cargo-target` | nothing |
+
+`actions/checkout` runs `git clean -ffdx`, which deletes a gitignored `target/`
+before `cargo` is ever invoked. So the runner — a machine that persists, with
+`~/.cargo/registry` sitting warm on it the whole time — recompiled all 352
+dependency crates on every run, and then did most of it again for
+`clippy`: 240s + 108s of a measured 1844s. Moving the directory out of the
+checkout is the entire fix; there is no cache action, because nothing was ever
+being evicted, only deleted.
+
+- **`~/.cargo/registry` and `~/.cargo/git` need nothing.** They already persist,
+  because the runner is one user on one box and nothing sets `CARGO_HOME`. An
+  `actions/cache` step for them would tar half a gigabyte up and down each run to
+  restore a directory that never went away. Setting `CARGO_HOME` into the
+  workspace is the way to break this; don't.
+- **Which directory is host config, not a repo constant** — the `store.env`
+  rule. The default `~/.cache/pkdump/ci-cargo-target` describes no particular
+  machine; where that is the wrong filesystem, set
+  `PKDUMP_CI_CARGO_TARGET_DIR` in `~/.config/pkdump/ci.env`, beside `store.env`
+  and `alerts.env`.
+- **Every run prints `WARM` or `COLD`, with the directory's size.** `COLD` is
+  correct once — after a toolchain bump, or a manual delete. `COLD` twice running
+  means the directory is not surviving and the six minutes are quietly back.
+- **It grows without bound.** Cargo does not collect the artifacts of a
+  dependency version nothing depends on any more. Deleting the directory is
+  always safe and costs exactly one cold build.
+
+> **One runner is a load-bearing fact.** `ci.yml` serialises every job on a
+> single concurrency group and the repo has exactly one self-hosted runner, which
+> is what makes one shared target directory safe. A second runner without
+> `sccache` (or per-runner target directories) means two runs writing one target
+> directory — which does not fail cleanly, it produces intermittent nonsense that
+> reads as flaky tests. `sccache` was weighed and decided against while no second
+> runner is planned; it is the prerequisite, not an alternative. The same warning
+> is in `ci.yml` beside the concurrency group, which is where someone adding a
+> runner will be.
 
 ## Container storage
 

@@ -35,6 +35,24 @@ on:
 # deploys of one instance racing; it has no bearing on CI. Accepted deliberately
 # while CI and prod share a host (per Ryan, 2026-08-09) — revisit when they are
 # split, at which point a second runner is the fix, not a concurrency change.
+#
+# AND SINCE pd-uikc, SOMETHING ELSE RESTS ON THIS GROUP:
+#
+#   ##########################################################################
+#   # CARGO_TARGET_DIR is shared across runs because ci.yml serialises every #
+#   # job on one concurrency group and there is exactly one self-hosted      #
+#   # runner. Adding a second runner without moving to sccache (or           #
+#   # per-runner target dirs) means two runs writing one target directory,   #
+#   # which corrupts builds in ways that look like flaky tests.              #
+#   ##########################################################################
+#
+# So the paragraph above has a second reading now. "A second runner is the fix"
+# for the deploy-waits-for-CI problem is still true, but a second runner is no
+# longer a pure win: it also takes out the warm build cache, and it takes it out
+# in the worst possible way — not with an error, but with intermittent nonsense
+# from a half-written target directory. sccache was weighed and DECIDED AGAINST
+# while no second runner is planned (per Ryan, 2026-08-12); it is what a second
+# runner would need first. See the CARGO_TARGET_DIR step below.
 concurrency:
   group: pokedumpster-ci
   cancel-in-progress: false
@@ -77,6 +95,72 @@ jobs:
           done
           [ -z "$missing" ] || { echo "not on PATH:$missing"; exit 1; }
           echo "toolchain OK: $(cargo --version), $(node --version), $(podman --version)"
+
+      # --- Warm the Rust build (pd-uikc) ---------------------------------------
+      #
+      # actions/checkout runs `git clean -ffdx`, so a `target/` inside the
+      # checkout is deleted before cargo ever sees it. Every run compiled all 352
+      # dependency crates from cold, and then did most of it AGAIN because clippy
+      # checks what test had just built: 240s + 108s of the 1844s measured on run
+      # 31612843925. The runner is self-hosted and the machine persists, so the
+      # target directory goes OUTSIDE the checkout, where the clean cannot reach
+      # it, and the second run over the same code compiles nothing.
+      #
+      # That is the whole of the caching, deliberately. ~/.cargo/registry and
+      # ~/.cargo/git are ALREADY persistent, for the same reason and by the same
+      # mechanism — one user, one box, and nothing here sets CARGO_HOME — which is
+      # why there is no actions/cache step for them: on a self-hosted runner that
+      # would tar half a gigabyte up and down each run to reconstruct a directory
+      # that never went anywhere. What the repo owes them is not a cache action
+      # but the discipline of not breaking them, so the step below prints both and
+      # the run says WARM or COLD out loud.
+      #
+      #   ##########################################################################
+      #   # CARGO_TARGET_DIR is shared across runs because ci.yml serialises every #
+      #   # job on one concurrency group and there is exactly one self-hosted      #
+      #   # runner. Adding a second runner without moving to sccache (or           #
+      #   # per-runner target dirs) means two runs writing one target directory,   #
+      #   # which corrupts builds in ways that look like flaky tests.              #
+      #   ##########################################################################
+      #
+      # WHERE IT LIVES. $HOME/.cache is where a rebuildable cache belongs and it
+      # says nothing about any particular machine, so it is the default; a literal
+      # /workspaces/... here would put this one box's disk layout back into the
+      # repo, which is exactly what pd-rf7c took out. Where that is the wrong
+      # filesystem, name another directory in ~/.config/pkdump/ci.env — the
+      # host-config directory store.env and alerts.env already live in. (On the
+      # box this runs on, ~/.cache is already a symlink onto the 938G data disk,
+      # so the default lands off prod's disk without anyone configuring anything.)
+      #
+      # It grows without bound: cargo never collects an artifact for a dependency
+      # version nothing depends on any more. Hence the size in the report below.
+      # Deleting the directory is always safe and costs exactly one cold build.
+      - name: Point cargo at the persistent target directory
+        run: |
+          conf="$HOME/.config/pkdump/ci.env"
+          # shellcheck source=/dev/null
+          [ -f "$conf" ] && { set -a; . "$conf"; set +a; }
+          dir="${PKDUMP_CI_CARGO_TARGET_DIR:-$HOME/.cache/pkdump/ci-cargo-target}"
+          mkdir -p "$dir"
+          echo "CARGO_TARGET_DIR=$dir" >> "$GITHUB_ENV"
+
+      # Warm or cold as a number, printed before anything compiles, because "the
+      # cache is working" is otherwise only visible as an absence of minutes and
+      # nobody reads a log for those. COLD is correct exactly once — the first run
+      # after a toolchain bump, a Cargo.lock change wide enough to evict the world,
+      # or a manual delete. COLD on a run whose predecessor was WARM means the
+      # directory is not surviving and the ~6 minutes are quietly back.
+      - name: Report the build cache
+        run: |
+          echo "CARGO_TARGET_DIR = $CARGO_TARGET_DIR"
+          if [ -d "$CARGO_TARGET_DIR/debug" ]; then
+            rmeta=$(find "$CARGO_TARGET_DIR/debug/deps" -name '*.rmeta' 2>/dev/null | wc -l)
+            echo "  target dir     : WARM ($(du -sh "$CARGO_TARGET_DIR" | cut -f1), ${rmeta} rmeta)"
+          else
+            echo "  target dir     : COLD (nothing to reuse — this run compiles from scratch)"
+          fi
+          echo "  CARGO_HOME     = ${CARGO_HOME:-<unset, so $HOME/.cargo — keep it that way>}"
+          echo "  cargo registry : $(du -sh "${CARGO_HOME:-$HOME/.cargo}/registry" 2>/dev/null | cut -f1 || echo 'absent (cold)')"
 
       # ONE step, calling the same script a developer and a polecat run.
       #

@@ -63,7 +63,10 @@ step "Building the harness (release — a debug build measures rustc, not SQLite
 ( cd "$REPO_DIR" && cargo build --release --example attach_concurrency )
 
 step "Measuring: levels ${LEVELS}, ${REPS} rep(s) x ${SECONDS_PER}s per scenario"
-"$REPO_DIR/target/release/examples/attach_concurrency" \
+# Not $REPO_DIR/target: cargo writes wherever CARGO_TARGET_DIR says, and CI now
+# points that outside the checkout entirely (pd-uikc). Same expression the other
+# two scripts that reach for a built binary already use.
+"${CARGO_TARGET_DIR:-$REPO_DIR/target}/release/examples/attach_concurrency" \
     --work "$WORK" \
     --sets "$SETS" \
     --cards-per-set "$CARDS_PER_SET" \

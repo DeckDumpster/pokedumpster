@@ -115,6 +115,13 @@
 # mechanism is in deploy/store-lib.sh (pd-yfev). `deploy/store-teardown.sh`
 # removes a store outright, which nothing did before.
 #
+# CARGO_TARGET_DIR is honoured wherever it is set, and this script never sets it.
+# Run from a checkout it means the ordinary target/ in that checkout; the GitHub
+# workflow points it at a persistent directory outside the checkout so the Rust
+# gates are warm on the next run (pd-uikc — the rationale and the one condition
+# that makes sharing it safe are in .github/workflows/ci.yml, not here, because
+# that is the file that establishes the condition).
+#
 set -euo pipefail
 
 # systemctl --user / podman need XDG_RUNTIME_DIR; CI runners and
@@ -165,9 +172,16 @@ pkdump_store_activate
 step "Disk floor check"
 # Before the build, not after it dies: at 697M free a cargo link failed with
 # `ld terminated with signal 7 [Bus error]`, which reads as a toolchain bug and
-# cost real time to diagnose (pd-fite). Both disks matter — $HOME still holds
-# the toolchain caches and the default store even when the container store moves.
-bash "$SCRIPT_DIR/diskcheck.sh" --floor "$HOME" "${PKDUMP_STORE_ROOT:-$HOME}"
+# cost real time to diagnose (pd-fite). Three disks matter, and on this project's
+# box they are three different ones: $HOME still holds the toolchain caches and
+# the default store even when the container store moves, and since pd-uikc the
+# cargo target directory can be somewhere else again — CI points it outside the
+# checkout so it survives `git clean`. The `ld` bus error is a LINK failing, so
+# the filesystem the linker writes to is precisely the one worth checking.
+# diskcheck reports one line per device, so naming three paths on one disk costs
+# nothing.
+bash "$SCRIPT_DIR/diskcheck.sh" --floor \
+    "$HOME" "${PKDUMP_STORE_ROOT:-$HOME}" "${CARGO_TARGET_DIR:-$REPO_DIR/target}"
 
 DF_BEFORE="$(df -h "$HOME" | tail -n1)"
 
@@ -217,9 +231,24 @@ bash "$REPO_DIR/tests/container/base_images_test.sh"
 
 # --- 2. Rust gates ----------------------------------------------------------
 
+# Where the artifacts land is worth stating, because the two callers of this
+# script differ: a developer or a polecat gets the ordinary target/ in their own
+# checkout, while .github/workflows/ci.yml points CARGO_TARGET_DIR at a directory
+# OUTSIDE the checkout so it survives actions/checkout's `git clean -ffdx` and
+# the next run compiles nothing (pd-uikc). Printing it means a run that recompiled
+# the world can be told apart from one that had nowhere to reuse from, in the log,
+# without re-deriving it from the elapsed time.
 step "cargo test"
+echo "    CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset — ${REPO_DIR}/target>}"
 ( cd "$REPO_DIR" && cargo test )
 
+# clippy is a SECOND pass over the same sources — `cargo check` under
+# clippy-driver rather than a build — so cold it re-does most of what cargo test
+# just did (108s of the 1844s run measured on 31612843925, on top of test's 240s).
+# It is left in its own profile deliberately: sharing one literal profile with
+# `cargo test` is not the goal and would not help, since check units and build
+# units have separate fingerprints either way. What makes it cheap is the warm
+# directory above, which holds BOTH sets from the previous run.
 step "cargo clippy --all-targets"
 ( cd "$REPO_DIR" && cargo clippy --all-targets -- -D warnings )
 

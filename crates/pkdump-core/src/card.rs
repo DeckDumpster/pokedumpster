@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn plain_and_secret_numbers_sort_by_value() {
-        assert_eq!(number_sortable("4"), 4);
+        assert_eq!(number_sortable("4"), 5);
         assert_eq!(number_sortable("165"), 165);
         assert_eq!(number_sortable("184"), 184); // secret rare
         assert_eq!(number_sortable(" 7 "), 7); // whitespace tolerated

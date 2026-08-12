@@ -60,6 +60,15 @@ def catalog(ref: str | None = None, name: str = "lake") -> RestCatalog:
     # long-lived keys in a job's environment.
     for prop, env in (
         ("s3.endpoint", "PKDUMP_LAKE_S3_ENDPOINT"),
+        # Name the role explicitly rather than relying on AWS_PROFILE. PyIceberg's
+        # S3 IO goes through s3fs/botocore, which WOULD follow a profile's
+        # `source_profile` chain — but pyarrow (which raw.py uses) will not, and it
+        # needs AWS_PROFILE pointed at a profile holding real keys. One env var
+        # cannot satisfy both, so both name the role instead and AWS_PROFILE stays
+        # on the bootstrap credentials they each assume from. Without this, writes
+        # here go out as the bootstrap user and S3 refuses them.
+        ("s3.role-arn", "PKDUMP_LAKE_S3_ROLE_ARN"),
+        ("s3.role-session-name", "PKDUMP_LAKE_S3_ROLE_SESSION_NAME"),
         ("s3.access-key-id", "PKDUMP_LAKE_S3_ACCESS_KEY_ID"),
         ("s3.secret-access-key", "PKDUMP_LAKE_S3_SECRET_ACCESS_KEY"),
         ("s3.region", "PKDUMP_LAKE_S3_REGION"),
@@ -69,6 +78,16 @@ def catalog(ref: str | None = None, name: str = "lake") -> RestCatalog:
             props[prop] = value
     if os.environ.get("PKDUMP_LAKE_S3_PATH_STYLE"):
         props["s3.path-style-access"] = "true"
+
+    # Force the PyArrow FileIO when a role is configured. PyIceberg's default
+    # fsspec FileIO writes through s3fs, which does NOT implement `s3.role-arn` —
+    # it silently used the base credentials instead and S3 refused the PutObject as
+    # the bootstrap user. PyArrowFileIO maps the property onto the same
+    # S3FileSystem(role_arn=...) raw.py uses, so the whole job speaks to S3 through
+    # one stack with one identity. Left alone when no role is set, so a MinIO test
+    # instance with static keys keeps its existing behaviour.
+    if props.get("s3.role-arn"):
+        props.setdefault("py-io-impl", "pyiceberg.io.pyarrow.PyArrowFileIO")
 
     return RestCatalog(name, **props)
 

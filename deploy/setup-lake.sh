@@ -140,6 +140,18 @@ echo "    version store: ${PKDUMP_LAKE_NESSIE_DATA}"
 
 mkdir -p "$PKDUMP_LAKE_NESSIE_DATA" "$QUADLET_DIR"
 
+# The role profile is mounted into Nessie, which runs as the `nessie` user mapped
+# into the rootless subuid range — so a 0600 file created by the invoking user
+# arrives inside the container as root:root 0600 and is unreadable. Nessie then
+# fails with "Unable to load credentials from any of the providers in the chain",
+# which reads like a credential problem and is a permissions one. The file holds a
+# role_arn, a source_profile and a region: no secret material. The actual key is
+# the podman secret mounted at /aws/credentials, which is unaffected.
+AWS_PROFILE_CONF="${HOME}/.config/pkdump/${INSTANCE}/aws/config"
+if [ -f "$AWS_PROFILE_CONF" ]; then
+    chmod 0644 "$AWS_PROFILE_CONF"
+fi
+
 pkdump_store_adopt_instance "$INSTANCE"
 pkdump_store_activate
 

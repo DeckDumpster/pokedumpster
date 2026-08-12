@@ -53,6 +53,25 @@ DIR_ENV = "PKDUMP_LAKE_DIR"
 # catalog. Real credentials come from the AWS SDK chain — a profile whose role
 # the SDK assumes and refreshes — never from long-lived keys in a job's
 # environment.
+#: The role to assume for lake access. PyArrow uses the AWS **C++** SDK, whose
+#: credential chain is env vars -> config files -> EC2 IMDS and which does NOT
+#: follow a profile's `source_profile` role-assumption chain (botocore does, which
+#: is why PyIceberg's writes worked while our reads did not). So the role has to be
+#: named explicitly. PyArrow then assumes it and refreshes the temporary
+#: credentials every `load_frequency` seconds, so a long job cannot outlive its
+#: STS session. Base credentials still come from the C++ chain, which means
+#: AWS_PROFILE must point at a profile that holds real keys (`bootstrap`), not at
+#: one that only carries `role_arn`.
+ROLE_ARN_ENV = "PKDUMP_LAKE_S3_ROLE_ARN"
+#: The profile holding the *base* keys pyarrow assumes the role with. It differs
+#: from AWS_PROFILE on purpose: Nessie overrides `py-io-impl` to FsspecFileIO in
+#: its REST config, so the table's writes go through s3fs/botocore, which follows
+#: a profile's `source_profile` chain and therefore needs AWS_PROFILE pointed at
+#: the ROLE profile. PyArrow's C++ SDK does not follow that chain and needs a
+#: profile with real keys. One env var cannot be both, so this one is applied only
+#: while the S3FileSystem is constructed.
+BASE_PROFILE_ENV = "PKDUMP_LAKE_S3_BASE_PROFILE"
+ROLE_SESSION_ENV = "PKDUMP_LAKE_S3_ROLE_SESSION_NAME"
 ACCESS_KEY_ENV = "PKDUMP_LAKE_S3_ACCESS_KEY_ID"
 SECRET_KEY_ENV = "PKDUMP_LAKE_S3_SECRET_ACCESS_KEY"
 
@@ -239,13 +258,38 @@ def open_raw() -> RawZone:
         options["scheme"] = scheme or "https"
     access_key = os.environ.get(ACCESS_KEY_ENV, "").strip()
     secret_key = os.environ.get(SECRET_KEY_ENV, "").strip()
+    role_arn = os.environ.get(ROLE_ARN_ENV, "").strip()
     if access_key and secret_key:
+        # Static keys win when both are given — that is how a MinIO test instance
+        # is pointed at its own credentials.
         options["access_key"] = access_key
         options["secret_key"] = secret_key
+    elif role_arn:
+        options["role_arn"] = role_arn
+        options["session_name"] = (
+            os.environ.get(ROLE_SESSION_ENV, "").strip() or "pkdump-lake"
+        )
 
     prefix = os.environ.get(PREFIX_ENV, "").strip().strip("/")
     root = f"{bucket}/{prefix}" if prefix else bucket
-    return RawZone(pafs.S3FileSystem(**options), root, f"s3://{root}")
+
+    base_profile = os.environ.get(BASE_PROFILE_ENV, "").strip()
+    if role_arn and base_profile:
+        # Scoped to the constructor: the C++ SDK reads AWS_PROFILE when the
+        # filesystem is built, and botocore reads it later for its own clients.
+        previous = os.environ.get("AWS_PROFILE")
+        os.environ["AWS_PROFILE"] = base_profile
+        try:
+            filesystem = pafs.S3FileSystem(**options)
+        finally:
+            if previous is None:
+                os.environ.pop("AWS_PROFILE", None)
+            else:
+                os.environ["AWS_PROFILE"] = previous
+    else:
+        filesystem = pafs.S3FileSystem(**options)
+
+    return RawZone(filesystem, root, f"s3://{root}")
 
 
 def select_runs(runs: list[Run], *, allow_incomplete: bool = False) -> list[Run]:

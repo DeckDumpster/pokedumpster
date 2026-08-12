@@ -73,6 +73,29 @@ zstd-compressed and otherwise untouched. `_manifest.json` itself is
 uncompressed — it is the file you open when a refresh looks wrong, and
 needing a decompressor first is friction at the wrong moment.
 
+### Landing is not incremental, even where importing is
+
+Two places where a refresh fetches less than the whole picture, and lands more
+than it fetches for itself:
+
+**The cards corpus is swept every night.** `import_tail` imports a set's cards
+only when the catalog lacks the set, which on an ordinary night is no set at
+all — so until `pd-v1ca`, `dataset=cards` appeared in the bucket only on the
+nights a set was published, and the retention table below shows a real refresh
+landing none. That is fatal to the whole premise: `raw/` is supposed to be able
+to rebuild what the catalog holds, and a lake with no cards in it cannot. With
+`--land-raw` on, the refresh therefore asks pokemontcg.io for the cards of
+**every** set and lands the answers; the ones belonging to sets it already has
+are dropped unparsed. Nothing about what the refresh *imports* changes — the
+gate for that is `raw_coverage` in `crates/pkdump-cli/src/data.rs`.
+
+**Pokémon Japan (TCGCSV category 85) lands under the same prefixes as English
+(category 3).** Same host, same endpoints, same payload shape, so a bucket
+listing shows no Japanese dataset and it is easy to conclude none is landed.
+Both are there; the `categoryId` that tells them apart is in each part's
+recorded URL, and the same gate asserts both categories appear in every
+`source=tcgcsv` prefix.
+
 ### What is deliberately *not* landed
 
 `images.pokemontcg.io` — set symbols and card art. The retention arithmetic
@@ -108,6 +131,24 @@ size of `prices`**, so "prices only; cards and sets are near-static" was the
 wrong simplification: a group's product list is re-fetched whole each run
 whether or not it moved. And the bill is not really storage — 1,349 objects a
 night is ~492k PUTs/year, about $2.46, which is more than the bytes cost.
+
+Note what the table does *not* have a row for: `pokemontcgio/cards`. That
+refresh landed none, because no set was published that day — the gap
+`pd-v1ca` closed. The nightly cards sweep described above adds to every
+night, and the figure is an **estimate** until the first night after it ships
+reports a real one (read `total_bytes` out of that night's
+`pokemontcgio/cards/_manifest.json`):
+
+| | parts | uncompressed | in the bucket |
+| --- | ---: | ---: | ---: |
+| `pokemontcgio/cards`, estimated | ~170 | ~60 MB | **~5 MB** |
+| **one night, estimated total** | **~1,515** | **~145 MB** | **~12.4 MB** |
+
+The estimate is ~20k cards at ~3 kB of JSON each, compressed at the 12x
+`tcgcsv/products` actually achieved on payloads of the same shape. That is
+~4.5 GB/year and ~553k PUTs/year — call it $3/year of requests and pennies of
+storage. **The decision is unchanged**, but the arithmetic is now roughly
+1.7x what the row above it says, and it is the cards sweep that did it.
 
 If you are here because you found an unmanaged prefix and were about to tidy
 it up: **this is the one that is meant to be unmanaged.**

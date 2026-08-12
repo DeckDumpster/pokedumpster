@@ -7,16 +7,14 @@
 //! catalog built from an un-landed one.
 //!
 //! So these tests drive `TcgcsvClient` and `PokemonTcgClient` against a
-//! local server (`tests/support`), twice, and compare.
-
-mod support;
+//! local server (`pkdump_ingest::test_upstream`), twice, and compare.
 
 use std::sync::Arc;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::{self, TcgcsvClient};
+use pkdump_ingest::test_upstream::{FakeUpstream, Reply};
 use pkdump_lake::{Dataset, DirStore, Manifest, RawLanding, Source};
-use support::{FakeUpstream, Reply};
 
 const INGEST_DATE: &str = "2026-08-11";
 

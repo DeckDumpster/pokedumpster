@@ -20,5 +20,13 @@ tar.workspace = true
 tempfile.workspace = true
 image.workspace = true
 
+[features]
+# The in-process fake upstream (`test_upstream`). Test tier only: it is a
+# dependency of `pkdump-cli`'s raw-coverage gate, which drives a whole
+# acquisition phase and so cannot construct the clients itself. Off by
+# default, so nothing ships in the binary.
+test-support = []
+
 [dev-dependencies]
+pkdump-ingest = { path = ".", features = ["test-support"] }
 zstd.workspace = true

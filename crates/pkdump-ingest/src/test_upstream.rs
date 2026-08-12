@@ -10,6 +10,13 @@
 //! ever pick one (`tests/lib/ports_test.sh` is the repo-wide gate for that
 //! rule, and a test that picks a port is a test that fails when two of them
 //! run at once).
+//!
+//! It sits in the library, behind the `test-support` feature, because it has
+//! a second caller that cannot reach a `tests/` module: `pkdump-cli`'s
+//! raw-coverage gate runs a whole `pkdump data refresh` acquisition phase,
+//! which builds its own clients — so the only way to point it somewhere is
+//! `pkdump_ingest::upstream`'s environment override, and the only way to have
+//! somewhere to point it at is this server.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};

@@ -41,9 +41,6 @@
 
 // Each integration test compiles `support` separately, and this one needs
 // neither the request log nor the failure injection the others assert on.
-#[allow(dead_code)]
-mod support;
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -51,8 +48,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rusqlite::{Connection, params};
 
 use pkdump_ingest::tcgcsv::{self, TcgcsvClient};
+use pkdump_ingest::test_upstream::{FakeUpstream, Reply};
 use pkdump_lake::{DirStore, RawLanding};
-use support::{FakeUpstream, Reply};
 
 /// The older priced day. A snapshot taken *for* this date must value the
 /// collection at these prices — the backfill claim, made checkable.

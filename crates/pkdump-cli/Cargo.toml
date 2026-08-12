@@ -22,4 +22,8 @@ chrono.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+# The raw-coverage gate in `data.rs` drives a whole acquisition phase, which
+# builds its own upstream clients — so it needs the in-process fake upstream
+# to point them at. Test tier only; the feature is off in the binary.
+pkdump-ingest = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

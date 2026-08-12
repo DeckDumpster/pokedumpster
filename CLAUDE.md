@@ -78,6 +78,12 @@ cargo test -p pkdump-ingest --test raw_landing
                                  # the real HTTP clients against a local
                                  #   upstream: landing is a tee, a retry never
                                  #   overwrites, a short run says so
+cargo test -p pkdump-cli raw_coverage
+                                 # raw coverage: a whole refresh acquisition
+                                 #   against a fake upstream, on an ORDINARY
+                                 #   night — every dataset it derives the
+                                 #   catalog from is landed, every request
+                                 #   served was stored, both TCGCSV categories
 bash tests/lake/value_snapshots.sh
                                  # the transform tier: value snapshots for EVERY
                                  #   registered tenant, byte-identical to the
@@ -363,6 +369,18 @@ Three rules that are settled, and are the ones easiest to erode:
 - **There is deliberately no lifecycle rule on `raw/`.** Indefinite
   retention is measured — ~7.4 MB/night in the bucket across all four
   datasets, from a real run (`deploy/LAKE.md` §2) — and intentional.
+
+- **Landing is not incremental, even where importing is.** `import_tail`
+  imports a set's cards only when the catalog lacks the set — no set on an
+  ordinary night — so `dataset=cards` used to reach the bucket only on the
+  nights a set was published, and a lake with no cards in it cannot rebuild
+  the catalog (pd-v1ca). With landing on, the refresh sweeps the cards of
+  every set and drops the ones it already has. Japanese TCGCSV (category 85)
+  lands under the *same* `source=tcgcsv` prefixes as English (category 3);
+  the categoryId is in each part's recorded URL. The gate for both — and for
+  "every request served was landed" — is `raw_coverage` in
+  `crates/pkdump-cli/src/data.rs`, which walks `Dataset::ALL`, so a dataset
+  added later does not compile until somebody says where a refresh gets it.
 
 Landing is opt-in and off by default: with the flag absent, `lake.env` is
 never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the

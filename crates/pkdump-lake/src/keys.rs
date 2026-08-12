@@ -64,6 +64,22 @@ pub enum Dataset {
 }
 
 impl Dataset {
+    /// Every dataset there is.
+    ///
+    /// It exists so a coverage audit can be exhaustive *by construction*
+    /// rather than by a list somebody remembered to extend: the refresh's
+    /// raw-coverage test walks this array and demands a landed prefix (or a
+    /// stated exemption) for every entry. Adding a variant without adding it
+    /// here fails `all_lists_every_dataset` below.
+    pub const ALL: [Dataset; 6] = [
+        Dataset::Groups,
+        Dataset::Products,
+        Dataset::Prices,
+        Dataset::Sets,
+        Dataset::Cards,
+        Dataset::Bulk,
+    ];
+
     /// The `dataset=` partition value. On-disk layout, as with [`Source`].
     pub fn as_str(self) -> &'static str {
         match self {
@@ -233,6 +249,34 @@ mod tests {
         let ordered = keys.clone();
         keys.sort();
         assert_eq!(keys, ordered, "part-NNNN must sort in fetch order");
+    }
+
+    /// `ALL` is what the refresh's coverage audit walks, so a dataset
+    /// missing from it is a dataset nothing checks is landed. The `match` is
+    /// exhaustive on purpose: adding a variant stops compiling here, and
+    /// naming it in the arm without adding it to `ALL` then fails the
+    /// assertion.
+    #[test]
+    fn all_lists_every_dataset() {
+        fn listed(d: Dataset) -> bool {
+            match d {
+                Dataset::Groups
+                | Dataset::Products
+                | Dataset::Prices
+                | Dataset::Sets
+                | Dataset::Cards
+                | Dataset::Bulk => Dataset::ALL.contains(&d),
+            }
+        }
+        for d in Dataset::ALL {
+            assert!(listed(d), "{d} is missing from Dataset::ALL");
+        }
+
+        let mut names: Vec<&str> = Dataset::ALL.iter().map(|d| d.as_str()).collect();
+        names.sort_unstable();
+        let n = names.len();
+        names.dedup();
+        assert_eq!(names.len(), n, "two datasets share a partition value");
     }
 
     #[test]

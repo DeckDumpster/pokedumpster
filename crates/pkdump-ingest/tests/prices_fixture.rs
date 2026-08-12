@@ -37,16 +37,13 @@
 
 // Each integration test compiles `support` separately, and this one does not
 // need the request log that `raw_landing` asserts on.
-#[allow(dead_code)]
-mod support;
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use pkdump_ingest::tcgcsv::{self, TcgcsvClient};
+use pkdump_ingest::test_upstream::{FakeUpstream, Reply};
 use pkdump_lake::{DirStore, RawLanding};
-use support::{FakeUpstream, Reply};
 
 /// Only an incomplete run landed here.
 pub const DATE_INCOMPLETE: &str = "2026-08-08";

@@ -2164,6 +2164,7 @@ dependencies = [
  "image",
  "pkdump-core",
  "pkdump-db",
+ "pkdump-ingest",
  "pkdump-lake",
  "reqwest",
  "rusqlite",

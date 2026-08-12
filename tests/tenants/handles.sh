@@ -51,6 +51,11 @@ FIXTURES="${REPO_DIR}/tests/ui/fixtures"
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
 
+# The shipped image, built here or — when deploy/ci.sh already built it once for
+# every gate in the run — tagged from that one. See deploy/image-lib.sh.
+# shellcheck source=deploy/image-lib.sh
+. "${REPO_DIR}/deploy/image-lib.sh"
+
 # PER-CHECKOUT, for the reason deploy/ci.sh derives its instance the same way:
 # several polecats run this concurrently from their own worktrees, and a fixed
 # container name means run B's opening `podman rm -f` kills run A mid-suite.
@@ -192,8 +197,8 @@ api_status_anonymous() {
 # database appearing.
 tenant_files() { ls "${DATA}/tenants" 2>/dev/null | grep '\.sqlite$' | sort; }
 
-log "1. build the shipped image"
-podman build -t "$IMAGE" -f "${REPO_DIR}/Containerfile" "$REPO_DIR" >/dev/null
+log "1. the shipped image"
+pkdump_image_ensure "$IMAGE" "$REPO_DIR" >/dev/null
 echo "  $IMAGE"
 
 log "2. a data directory two users were provisioned into"

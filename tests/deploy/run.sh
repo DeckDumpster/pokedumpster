@@ -798,5 +798,96 @@ check "never pulls the job image" "1" \
 reset_store
 
 # ---------------------------------------------------------------------------
+log "11. The image is built once per run and tagged, not rebuilt per gate (pd-5l2e)"
+# ---------------------------------------------------------------------------
+#
+# Five gates in deploy/ci.sh need the shipped image and each wants its own tag,
+# so ci.sh builds it once and exports PKDUMP_PREBUILT_IMAGE. Three properties
+# are worth asserting, and the third is the one that decays quietly:
+#
+#   PROD STILL BUILDS — with the variable unset, pkdump_image_ensure is the
+#   `podman build` every caller ran before. Prod never sets it, and neither does
+#   a polecat running one gate by hand.
+#
+#   SET MEANS TAG — with it set to an image that exists, no builder runs at all.
+#
+#   SET-BUT-MISSING FAILS — a silent rebuild would turn "the build-once wiring
+#   broke" into "CI got slower again", which is a regression nobody files.
+#
+# Hermetic: podman is a stub that records its arguments.
+
+. "${REPO_DIR}/deploy/image-lib.sh"
+
+IMGBIN="${WORK}/imgbin"
+mkdir -p "$IMGBIN"
+# `image exists` answers yes only for the name in $FAKE_EXISTING_IMAGE, which is
+# how the missing-image case is driven without a store.
+cat > "${IMGBIN}/podman" <<'EOF'
+#!/usr/bin/env bash
+echo "PODMAN: $*" >> "$PKDUMP_TEST_PODMAN_LOG"
+if [ "$1" = image ] && [ "$2" = exists ]; then
+	[ "$3" = "${FAKE_EXISTING_IMAGE:-}" ] && exit 0
+	exit 1
+fi
+exit 0
+EOF
+chmod +x "${IMGBIN}/podman"
+export PKDUMP_TEST_PODMAN_LOG="${WORK}/podman-image.log"
+
+img_run() { # img_run <tag> -> podman calls, one per line
+	: > "$PKDUMP_TEST_PODMAN_LOG"
+	PATH="${IMGBIN}:${ORIG_PATH}" pkdump_image_ensure "$1" "$REPO_DIR" >/dev/null 2>&1
+	printf '%s' "$(cat "$PKDUMP_TEST_PODMAN_LOG")"
+}
+
+unset PKDUMP_PREBUILT_IMAGE
+check "unset -> builds from this checkout's Containerfile" \
+	"PODMAN: build -t pkdump:x -f ${REPO_DIR}/Containerfile ${REPO_DIR}" \
+	"$(img_run pkdump:x)"
+
+export FAKE_EXISTING_IMAGE="localhost/pkdump:build-ci"
+export PKDUMP_PREBUILT_IMAGE="$FAKE_EXISTING_IMAGE"
+IMG_TAGGED="$(img_run pkdump:upgrade-abc)"
+check "set -> tags it" \
+	"PODMAN: tag localhost/pkdump:build-ci pkdump:upgrade-abc" \
+	"$(printf '%s\n' "$IMG_TAGGED" | grep '^PODMAN: tag')"
+check "...and no builder runs" "0" \
+	"$(printf '%s\n' "$IMG_TAGGED" | grep -c '^PODMAN: build' || true)"
+
+# The failure that must not be silent.
+export PKDUMP_PREBUILT_IMAGE="localhost/pkdump:never-built"
+set +e
+IMG_MISSING="$(PATH="${IMGBIN}:${ORIG_PATH}" pkdump_image_ensure pkdump:y "$REPO_DIR" 2>&1)"
+IMG_MISSING_RC=$?
+set -e
+check "set but missing -> refuses" "1" "$IMG_MISSING_RC"
+check "and names the image it could not find" "1" \
+	"$(printf '%s' "$IMG_MISSING" | grep -c 'localhost/pkdump:never-built' || true)"
+check "and says how to build instead" "1" \
+	"$(printf '%s' "$IMG_MISSING" | grep -c 'unset it' || true)"
+unset PKDUMP_PREBUILT_IMAGE FAKE_EXISTING_IMAGE PKDUMP_TEST_PODMAN_LOG
+
+# And the wiring itself, because a sixth gate added next month will copy a
+# neighbour: nothing under tests/ and no CI-path deploy script may run the
+# builder over the shipped Containerfile directly. deploy/{ci,deploy,seed,mac-*}.sh
+# are the builders — ci.sh once per run, the others outside CI entirely.
+BUILDERS="$(
+	grep -rn --include='*.sh' -e 'podman build' "${REPO_DIR}/tests" "${REPO_DIR}/deploy" /dev/null |
+		grep -F 'Containerfile' |
+		grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' |
+		grep -vE '/(image-lib\.sh|deploy\.sh|seed\.sh|mac-deploy\.sh|mac-setup\.sh|setup-lake\.sh):' |
+		grep -vE 'lake/Containerfile' || true
+)"
+check "only image-lib.sh builds the shipped image on the CI path" "" "$BUILDERS"
+# ...and the gates that need it really do go through the helper.
+for gate in tests/tenants/upgrade.sh tests/tenants/handles.sh \
+	tests/refresh/tenant_bytes.sh deploy/setup.sh; do
+	check "${gate} tags rather than rebuilds" "1" \
+		"$(grep -c '^[[:space:]]*pkdump_image_ensure ' "${REPO_DIR}/${gate}" || true)"
+done
+
+reset_store
+
+# ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -55,6 +55,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FIXTURES="${REPO_DIR}/tests/ui/fixtures"
 
+# The shipped image, built here or — when deploy/ci.sh already built it once for
+# every gate in the run — tagged from that one. See deploy/image-lib.sh.
+# shellcheck source=deploy/image-lib.sh
+. "${REPO_DIR}/deploy/image-lib.sh"
+
 # PER-CHECKOUT, for the reason deploy/ci.sh derives its instance the same way:
 # several polecats run this concurrently from their own worktrees, and a fixed
 # container name means run B's opening `podman rm -f` kills run A mid-suite.
@@ -170,8 +175,8 @@ collection_lines() { curl -sf "http://127.0.0.1:${PORT}/api/export/csv" | grep -
 # The tenant databases on the volume, by filename stem.
 tenant_stems() { ls "${DATA}/tenants" 2>/dev/null | sed -n 's/\.sqlite$//p' | sort; }
 
-log "1. build the shipped image"
-podman build -t "$IMAGE" -f "${REPO_DIR}/Containerfile" "$REPO_DIR" >/dev/null
+log "1. the shipped image"
+pkdump_image_ensure "$IMAGE" "$REPO_DIR" >/dev/null
 echo "  $IMAGE"
 
 log "2. an OLD-LAYOUT data directory — handle-named, no registry"

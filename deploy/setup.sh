@@ -92,10 +92,20 @@ if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q "Linger=yes"; th
 fi
 
 # --- Build the image --------------------------------------------------------
+# Or tag one already built: deploy/ci.sh calls this script twice per run and
+# three other gates build the same content again, so it builds once up front and
+# exports PKDUMP_PREBUILT_IMAGE. Unset — which is prod, always — this is the
+# same `podman build` it has always been. See deploy/image-lib.sh.
 
-echo "==> Building image pkdump:${INSTANCE}..."
-podman build -t pkdump:latest -f "$REPO_DIR/Containerfile" "$REPO_DIR"
-podman tag pkdump:latest "pkdump:${INSTANCE}"
+# shellcheck source=deploy/image-lib.sh
+. "$SCRIPT_DIR/image-lib.sh"
+if [ -n "${PKDUMP_PREBUILT_IMAGE:-}" ]; then
+    echo "==> Tagging ${PKDUMP_PREBUILT_IMAGE} as pkdump:${INSTANCE} (built once this run)..."
+else
+    echo "==> Building image pkdump:${INSTANCE}..."
+fi
+pkdump_image_ensure "pkdump:${INSTANCE}" "$REPO_DIR"
+podman tag "pkdump:${INSTANCE}" pkdump:latest
 
 # --- Install the unit files -------------------------------------------------
 # Every Quadlet + systemd-user unit this checkout ships for the instance, in one

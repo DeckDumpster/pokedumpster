@@ -78,8 +78,10 @@ Steps, in order, exiting non-zero on the first failure:
 2. `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
    Then `tests/deploy/run.sh` — the store resolution and the low-disk guard.
 3. Frontend: `npm ci && npm test && npm run check && npm run build`.
-4. Build and start a `--test` container and wait for the server to answer on
-   its port.
+   Then the shipped image, built **once** — five gates below need it and each
+   wants its own tag, so they tag this one (see
+   [The image, once](#the-image-once)).
+4. Start a `--test` container and wait for the server to answer on its port.
 5. Backup gate (`tests/litestream/run.sh`): four tenant databases replicated
    through the shipped Litestream config to a throwaway MinIO, and a
    non-first one restored.
@@ -95,6 +97,34 @@ loop — it needs `ANTHROPIC_API_KEY` for Vision mode. Run it on its own:
 ```bash
 ( cd tests/ui && npx playwright install chromium && npx playwright test )
 ```
+
+### The image, once
+
+Five gates need the image built from this checkout's `Containerfile`, each
+under its own tag so one gate's teardown cannot untag another's: the container
+gate and the schema-version gate (both through `deploy/setup.sh`), plus the
+upgrade, tenant-header and refresh gates. Every one of them used to run its own
+`podman build` over identical content.
+
+`deploy/ci.sh` builds it once and exports `PKDUMP_PREBUILT_IMAGE`;
+`deploy/image-lib.sh::pkdump_image_ensure` is what each gate calls, and the
+variable decides what that means:
+
+| `PKDUMP_PREBUILT_IMAGE` | what happens |
+|---|---|
+| unset | `podman build` — prod's path, and a gate run by hand |
+| set, image present | `podman tag` — no builder runs |
+| set, image absent | refuses, naming the image |
+
+The last row is deliberate. A silent rebuild would turn "the build-once wiring
+broke" into "CI got slower again", which is a regression nobody files.
+
+The saving is smaller than it looks: podman's layer cache already made repeat
+builds ~4s rather than free (measured — first build after a Rust change 323s,
+the next two 4s each). What this removes is the *dependence* on that cache. One
+`podman image prune`, one store teardown or one cold box and those four repeats
+become four 5-7 minute compiles (`podman build --no-cache`, warm cargo mount
+cache: 447s).
 
 ## Container storage
 

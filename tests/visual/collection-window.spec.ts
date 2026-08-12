@@ -79,7 +79,7 @@ type Asked = { limit: string | null; offset: string | null; sort: string | null 
     what was asked for. Generating 56,635 rows per request is too slow for a
     test, so the payload is capped — the client is told the truth about `total`
     and `limit` either way, which is all its arithmetic reads. */
-async function serveHugeResult(page: Page, rows = 4_000): Promise<Asked[]> {
+async function serveHugeResult(page: Page, rows = 4_000, make = row): Promise<Asked[]> {
 	const asked: Asked[] = [];
 	await page.route('**/api/collection/search*', (route) => {
 		const url = new URL(route.request().url());
@@ -90,7 +90,7 @@ async function serveHugeResult(page: Page, rows = 4_000): Promise<Asked[]> {
 		});
 		return route.fulfill({
 			json: {
-				rows: Array.from({ length: rows }, (_, i) => row(i)),
+				rows: Array.from({ length: rows }, (_, i) => make(i)),
 				total: TOTAL,
 				limit: TOTAL,
 				offset: 0
@@ -100,9 +100,13 @@ async function serveHugeResult(page: Page, rows = 4_000): Promise<Asked[]> {
 	return asked;
 }
 
-async function openCollection(page: Page, view: 'grid' | 'table'): Promise<Asked[]> {
+async function openCollection(
+	page: Page,
+	view: 'grid' | 'table',
+	make = row
+): Promise<Asked[]> {
 	await stabilize(page);
-	const asked = await serveHugeResult(page);
+	const asked = await serveHugeResult(page, 4_000, make);
 	// localStorage is per-origin and the suite shares an instance; pin the view
 	// and the sort rather than inherit whatever a previous spec left behind.
 	await page.addInitScript((v) => {
@@ -114,6 +118,56 @@ async function openCollection(page: Page, view: 'grid' | 'table'): Promise<Asked
 	await page.goto('/collection?q=supertype%3APok%C3%A9mon&all=1');
 	await page.locator(view === 'grid' ? '[data-testid="collection-grid"]' : 'table.dd').waitFor();
 	return asked;
+}
+
+/* ── Column widths do not move while the window recycles (pd-hije) ─────────
+ *
+ * `row()` above is uniform — every row the same length in every column — which
+ * is what the node-count assertions want and is exactly what this one cannot
+ * use. A window's columns only shift if the WIDEST content in a column differs
+ * between windows, so `variedRow()` reproduces the catalog's real shape: long
+ * collector numbers, four-figure prices, wordy subtypes and dual types are all
+ * RARE, a few rows per thousand. A window either contains one or it doesn't,
+ * and under `table-layout: auto` that is a different column width either way.
+ *
+ * Measured on a 50,000-printing catalog before the fix: Name moved 78px, `#`
+ * 33px, and each price column 23px as the reader scrolled — "i still see the
+ * columns shifting width as i scroll."
+ */
+
+/** Rare-extreme variants of `row()`. Deterministic in `i`, not random: a
+    regression this test can only see on some seeds is not a gate. */
+function variedRow(i: number) {
+	const r = row(i);
+	return {
+		...r,
+		// A promo number is ~1 row in 97; the rest are 1-3 digits.
+		number: i % 97 === 0 ? `SWSH${200 + (i % 90)}` : String((i % 250) + 1),
+		// Bulk is the rule and a four-figure card the exception, as upstream.
+		market_price: i % 53 === 0 ? 4832.75 : i % 7 === 0 ? 128.4 : 1.5,
+		subtypes: i % 71 === 0 ? '["Stage 2","VSTAR","Ultra Beast"]' : '["Basic"]',
+		types: i % 89 === 0 ? '["Fighting","Colorless"]' : '["Fire"]',
+		attack_costs:
+			i % 3 === 0
+				? JSON.stringify([
+						{ name: 'Hyper Beam', cost: ['Fire', 'Fire', 'Colorless', 'Colorless'] },
+						{ name: 'Brave Blade', cost: ['Fire', 'Colorless'] }
+					])
+				: null,
+		name: i % 61 === 0 ? `Ancient Booster Energy Capsule ${i}` : `Synthetic ${i}`
+	};
+}
+
+/** Every column's width, keyed by its header text. */
+async function columnWidths(page: Page): Promise<Record<string, number>> {
+	return page.evaluate(() =>
+		Object.fromEntries(
+			Array.from(document.querySelectorAll('table.dd thead th')).map((el, i) => [
+				`${i}:${(el.textContent ?? '').trim().split('\n')[0]}`,
+				Math.round(el.getBoundingClientRect().width * 100) / 100
+			])
+		)
+	);
 }
 
 /** How tall the document is — the property the spacers exist to preserve. */
@@ -230,6 +284,72 @@ test('scrolling moves through the result rather than adding to it', async ({ pag
 		await page.locator('.cardtile').first().getAttribute('title'),
 		'different rows are on screen'
 	).not.toBe(first);
+});
+
+test('the table keeps every column the same width while the window recycles', async ({ page }) => {
+	await openCollection(page, 'table', variedRow);
+	// One full viewport per step, so each reading is of a window with no rows in
+	// common with the one two steps back — the recycle is the thing under test.
+	const height = await page.evaluate(() => window.innerHeight);
+	const at = await columnWidths(page);
+
+	const moved: string[] = [];
+	for (let step = 1; step <= 24; step++) {
+		await scrollTo(page, step * height);
+		const now = await columnWidths(page);
+		for (const [col, w] of Object.entries(now)) {
+			if (Math.abs(w - at[col]) > 0.5) {
+				moved.push(`${col}: ${at[col]}px at top, ${w}px at y=${step * height}`);
+			}
+		}
+	}
+	// Sub-pixel tolerance only: a declared width is a declared width. Anything
+	// larger means the column was measured from the rendered rows again.
+	expect(moved, `columns moved while scrolling:\n${moved.join('\n')}`).toEqual([]);
+
+	// And the drift is not being hidden by a table that stopped filling its
+	// container: the reader still gets the full width they had.
+	const [table, container] = await page.evaluate(() => [
+		Math.round(document.querySelector('table.dd')!.getBoundingClientRect().width),
+		document.querySelector('.tableScroll')!.clientWidth
+	]);
+	expect(table).toBeGreaterThanOrEqual(container);
+});
+
+test('the table stays usable at the mobile breakpoint', async ({ page }, testInfo) => {
+	// The scar this fix had to avoid: `display: table` + `table-layout: fixed` +
+	// a <colgroup> is what collapsed the card modal's tables into an unusable
+	// 19%-wide strip on a phone (pokedumpster-9i5, CardDetailView.svelte). This
+	// table does not block-stack, so it keeps its colgroup at every width — but
+	// "keeps it" has to mean the columns are still readable, not merely present.
+	await openCollection(page, 'table', variedRow);
+
+	// 375 is checked explicitly and not just as a project viewport: the ≤540px
+	// block re-declares every one of the column widths for the denser type it
+	// sets there, and neither project crosses that breakpoint.
+	for (const width of [null, 375]) {
+		if (width !== null) {
+			await page.setViewportSize({ width, height: 800 });
+			await page.waitForTimeout(250);
+		}
+		const widths = Object.values(await columnWidths(page));
+		const at = `${testInfo.project.name}${width ? ` @${width}` : ''}`;
+		const label = `${at}: ${widths.join(', ')}`;
+
+		// Every column wide enough for the content it draws: the narrowest thing
+		// in the table is the 22px rarity icon inside 0.35rem of padding.
+		for (const w of widths) expect(w, label).toBeGreaterThan(28);
+		// And the name column — the one that flexes, and the one that collapsed
+		// in the scar — is still the widest by a distance.
+		expect(Math.max(...widths), label).toBeGreaterThan(140);
+		// Nothing spills out of the row: the horizontal scroll belongs to
+		// `.tableScroll`, and the page itself never scrolls sideways.
+		const [docW, viewW] = await page.evaluate(() => [
+			document.documentElement.scrollWidth,
+			document.documentElement.clientWidth
+		]);
+		expect(docW, `${label} — page scrolls sideways`).toBeLessThanOrEqual(viewW + 1);
+	}
 });
 
 test('a selected copy survives scrolling out of the window and back', async ({ page }) => {

@@ -1463,7 +1463,30 @@
 			</th>
 		{/snippet}
 		<div class="tableScroll">
-		<table class="dd">
+		<table class="dd" class:selecting={selectMode}>
+			<!-- Every column's width is DECLARED here, and `table-layout: fixed`
+			     (below) makes the browser believe it. It cannot be derived from
+			     content, because this table renders a virtual WINDOW of the
+			     result (pd-7z4o): auto layout sizes each column from the rows
+			     currently in the DOM, the scroller replaces those rows on every
+			     scroll tick, and so every column re-measured and jumped as the
+			     reader moved (pd-hije — measured at 78px on the Name column,
+			     33px on `#`, 23px on each price column over a 50k-row catalog).
+			     A window cannot be sized from its own contents; the numbers here
+			     are what auto layout settled on across the WHOLE result. -->
+			<colgroup>
+				{#if selectMode}<col class="c-sel" />{/if}
+				<col class="c-qty" />
+				<col class="c-name" />
+				<col class="c-class" />
+				<col class="c-etype" />
+				<col class="c-cost" />
+				<col class="c-rarity" />
+				<col class="c-set" />
+				<col class="c-number" />
+				<col class="c-price" />
+				<col class="c-price" />
+			</colgroup>
 			<thead>
 				<tr>
 					{#if selectMode}
@@ -1472,7 +1495,7 @@
 						</th>
 					{/if}
 					{@render sortable('qty', 'Qty', 'num qty')}
-					{@render sortable('name', 'Name', 'colflex')}
+					{@render sortable('name', 'Name', '')}
 					{@render sortable('type', 'Class', '')}
 					{@render sortable('etype', 'Type', 'center')}
 					<th>Cost</th>
@@ -1507,7 +1530,7 @@
 						<tr class="missing">
 							{#if selectMode}<td class="cbcol"></td>{/if}
 							<td class="num qty"><span class="pricedash">—</span></td>
-							<td class="colflex namecol" title="Open card" onclick={(e) => openCardCell(e, a)}>
+							<td class="namecol" title="Open card" onclick={(e) => openCardCell(e, a)}>
 								<!-- Same shape as the owned row's name cell below, tags
 								     aside: the `.namebody` wrapper is what keeps the name
 								     to one line, and a row that skipped it was 3px taller
@@ -1594,7 +1617,7 @@
 							</td>
 						{/if}
 						<td class="num qty">{a.qty}</td>
-						<td class="colflex namecol" title="Open card" onclick={(e) => openCardCell(e, a)}>
+						<td class="namecol" title="Open card" onclick={(e) => openCardCell(e, a)}>
 							<div class="namecell">
 								{#if a.image_small}
 									<span class="thumbwrap" class:foil={isFoilVariant(a.variant)}>
@@ -2258,21 +2281,95 @@
 	/* --- Table view (DeckDumpster-style) ------------------------------ */
 
 	table.dd {
-		/* Span the full container so the header underline reaches the
-		   right edge on wide viewports. The Name column (`.colflex`)
-		   absorbs all leftover width — the longest text column is the
-		   natural one to flex — while other columns stay content-sized. */
+		/* One width per column, spent by the <colgroup> above and by the
+		   `min-width` below — declared in one place so the two can never
+		   disagree. The figures are what `table-layout: auto` settled each
+		   column on across a whole 50k-row catalog, rounded up a step. Where a
+		   column can want more than its share — Name and Class, the two that
+		   carry prose — the cell ellipsises; both of them already did that
+		   before, at a width that moved. */
+		--col-sel: 2.25rem;
+		--col-qty: 2.5rem;
+		/* Wide enough for "Pokémon" over a two-word subtype, which is nearly
+		   all of them. A third subtype ("Stage 2 · VSTAR · Ultra Beast") wants
+		   172px, is a few rows per thousand, and ellipsises instead: the
+		   alternative is a column permanently ~90px wider than its own content
+		   for the sake of those rows. */
+		--col-class: 8rem;
+		--col-etype: 3.5rem;
+		--col-cost: 6rem;
+		--col-rarity: 4.25rem;
+		--col-set: 4.25rem;
+		--col-number: 5.75rem;
+		--col-price: 6.75rem;
+		/* Not a column width — the narrowest the flex column may be squeezed
+		   to before the table stops shrinking and `.tableScroll` scrolls
+		   instead. Measured: the thumbnail (110px) plus its gap plus enough
+		   name to read, which is what auto layout already bottomed out at. */
+		--col-name-min: 13rem;
+		/* What the select column contributes to that floor: nothing until there
+		   IS one. Indirected rather than repeated in the `min-width` below, so
+		   the narrow-viewport block can retune `--col-sel` alone and both modes
+		   follow. Without it, turning selection on takes the checkbox column's
+		   width out of the name column instead of out of the table. */
+		--col-sel-used: 0rem;
+
+		/* Span the full container so the header underline reaches the right
+		   edge on wide viewports; the Name column absorbs the leftover. */
 		width: 100%;
+		/* Below this the table stops absorbing and the container scrolls —
+		   the same behaviour auto layout already had at 768 and narrower,
+		   except that it now happens at ONE width instead of a width that
+		   changed with whichever rows were rendered. */
+		min-width: calc(
+			var(--col-sel-used) + var(--col-qty) + var(--col-name-min) + var(--col-class) +
+				var(--col-etype) + var(--col-cost) + var(--col-rarity) + var(--col-set) +
+				var(--col-number) + var(--col-price) * 2
+		);
+		/* The point of the exercise: widths come from the declarations above,
+		   not from the handful of rows the virtual scroller happens to have in
+		   the DOM. See the <colgroup> comment in the markup. */
+		table-layout: fixed;
 		border-collapse: collapse;
 		font-size: 0.9rem;
 		margin-top: var(--space-0);
 	}
-	/* The flex column: `width: 100%` under `table-layout: auto` makes
-	   this column claim all leftover horizontal space. Today it's the
-	   Name column. */
-	table.dd th.colflex,
-	table.dd td.colflex {
-		width: 100%;
+	/* `col` carries width and nothing else — every other property on a column
+	   is ignored, so these stay one line each. */
+	table.dd.selecting {
+		--col-sel-used: var(--col-sel);
+	}
+	col.c-sel {
+		width: var(--col-sel);
+	}
+	col.c-qty {
+		width: var(--col-qty);
+	}
+	/* The flex column: the only `auto` one, so under fixed layout it takes
+	   whatever the declared columns leave. Today it's the Name column. */
+	col.c-name {
+		width: auto;
+	}
+	col.c-class {
+		width: var(--col-class);
+	}
+	col.c-etype {
+		width: var(--col-etype);
+	}
+	col.c-cost {
+		width: var(--col-cost);
+	}
+	col.c-rarity {
+		width: var(--col-rarity);
+	}
+	col.c-set {
+		width: var(--col-set);
+	}
+	col.c-number {
+		width: var(--col-number);
+	}
+	col.c-price {
+		width: var(--col-price);
 	}
 	table.dd th,
 	table.dd td {
@@ -2354,13 +2451,14 @@
 	table.dd tbody tr.missing img {
 		filter: grayscale(0.9) brightness(0.62);
 	}
+	/* Widths for these two come from the <colgroup>, like every other column —
+	   a `width` on the cell would override its `col` under fixed layout and put
+	   the two sources of truth back into disagreement. */
 	table.dd .cbcol {
-		width: 1.5rem;
 		text-align: center;
 	}
 	table.dd th.qty,
 	table.dd td.qty {
-		width: 1.5rem;
 		padding-left: 0.35rem;
 		padding-right: 0.35rem;
 	}
@@ -2439,7 +2537,9 @@
 		flex-direction: column;
 		gap: 1px;
 		line-height: 1.2;
-		max-width: 180px;
+		/* The cell is a declared width now (`--col-class`), so the column is
+		   the cap — a second number here could only disagree with it. */
+		max-width: 100%;
 	}
 	.typeMain {
 		color: var(--color-text-muted);
@@ -2560,6 +2660,22 @@
 		table.dd {
 			font-size: var(--text-sm);
 			--row-content: 26px;
+			/* The declared widths shrink with the type and the padding, or the
+			   table would keep its desktop total on a 360px screen and scroll
+			   further than it used to. Re-declared rather than derived: they
+			   are measurements of a different type size, not a ratio of the
+			   desktop ones. The thumbnail is 70px here, so the name floor
+			   drops with it. */
+			--col-sel: 1.75rem;
+			--col-qty: 2rem;
+			--col-class: 5.5rem;
+			--col-etype: 2.75rem;
+			--col-cost: 4.75rem;
+			--col-rarity: 3.25rem;
+			--col-set: 3.25rem;
+			--col-number: 4.5rem;
+			--col-price: 5.5rem;
+			--col-name-min: 9rem;
 		}
 		.cardthumb {
 			width: 70px;

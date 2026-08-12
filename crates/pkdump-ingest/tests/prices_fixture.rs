@@ -182,9 +182,14 @@ fn land_run(
     ingest_date: &str,
     into_sqlite: bool,
 ) -> Option<String> {
+    // The run's clock, the same one its rows are stamped with — recorded in
+    // every manifest so a later derive reproduces those timestamps rather than
+    // inventing its own. See `pkdump_derive::clock`.
+    let now = format!("{ingest_date}T00:00:00Z");
     let landing = Arc::new(RawLanding::new(
         Box::new(DirStore::new(raw_root)),
         ingest_date,
+        &now,
     ));
     let client = TcgcsvClient::new()
         .expect("client")
@@ -192,7 +197,6 @@ fn land_run(
         .landing_in(Arc::clone(&landing));
 
     let mut conn = pkdump_db::open_shared(db).expect("open shared catalog");
-    let now = format!("{ingest_date}T00:00:00Z");
 
     let outcome = (|| -> Result<(), String> {
         let groups = client.fetch_groups().map_err(|e| e.to_string())?;

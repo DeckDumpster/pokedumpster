@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use pkdump_ingest::{overrides, pokemon_tcg_data, symbols};
+use pkdump_ingest::{coverage, overrides, pokemon_tcg_data, symbols};
 
 /// The `pkdump data` subcommand group.
 #[derive(clap::Args)]

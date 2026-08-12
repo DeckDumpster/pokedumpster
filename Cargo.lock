@@ -2120,6 +2120,7 @@ dependencies = [
  "clap",
  "pkdump-core",
  "pkdump-db",
+ "pkdump-derive",
  "pkdump-ingest",
  "pkdump-lake",
  "pkdump-server",
@@ -2153,6 +2154,19 @@ dependencies = [
  "thiserror",
  "ts-rs",
  "ulid",
+]
+
+[[package]]
+name = "pkdump-derive"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "pkdump-db",
+ "pkdump-ingest",
+ "pkdump-lake",
+ "rusqlite",
+ "tempfile",
 ]
 
 [[package]]
@@ -2190,6 +2204,21 @@ dependencies = [
  "tokio",
  "ulid",
  "zstd",
+]
+
+[[package]]
+name = "pkdump-lakehouse"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "pkdump-db",
+ "pkdump-derive",
+ "pkdump-ingest",
+ "pkdump-lake",
+ "rusqlite",
+ "tempfile",
 ]
 
 [[package]]

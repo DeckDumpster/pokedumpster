@@ -296,7 +296,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `deploy.sh <name>` | Rebuild image, reinstall the unit files from this checkout, and restart one instance |
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
 | `restore-litestream.sh [--yes] [--at=<RFC3339>] [--unattributed] <inst> [database-id]` | Restore ONE collection from the S3 backup (latest or point-in-time). Addressed by the database's file stem, not by a handle — `pkdump tenant list` says which is whose. **Refuses a database the registry cannot name** (restore `--registry` first; `--unattributed` for a purged one). See [RESTORE.md](RESTORE.md) |
-| `backup-check.sh <inst> [user]` | Layer 1 — verify S3 replica freshness, ping the off-box monitor (run by the `pkdump-backup-check@` timer). The verification always runs; the ping URL controls only the ping |
+| `backup-check.sh <inst> [user]` | Layer 1 — verify every S3 replica (tenants on freshness, the registry on correspondence), ping the off-box monitor (run by the `pkdump-backup-check@` timer). The verification always runs; the ping URL controls only the ping |
 | `alarm-status.sh <inst> [--verify]` | Is alarming actually ARMED on this instance? Exit 0 = yes. `--verify` fires it for real |
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `diskcheck.sh --floor [path...]` | Gate — exit non-zero under `PKDUMP_DISK_FLOOR_GB` free; run by `ci.sh` before it builds |
@@ -495,12 +495,34 @@ Litestream sidecar showing systemd `active` while silently *not* replicating.
 **Liveness is not freshness** — the monitor verifies that data actually lands in
 S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
 
-- **Layer 1 — freshness dead-man's switch (primary).** `backup-check.sh` runs
-  every 6h (`pkdump-backup-check@<inst>.timer`), lists the S3 replica's
-  snapshots, and pings an **off-box** monitor (healthchecks.io) only when the
-  newest snapshot is fresh. A broken-creds / stalled / dead-box / disabled-timer
-  state stops the pings → the monitor alerts. This is the layer that catches the
-  silent modes. It also writes a `.backup-last-ok` marker for Layer 3.
+- **Layer 1 — replication dead-man's switch (primary).** `backup-check.sh` runs
+  every 6h (`pkdump-backup-check@<inst>.timer`), asks S3 about every replica,
+  and pings an **off-box** monitor (healthchecks.io) only when they all pass. A
+  broken-creds / stalled / dead-box / disabled-timer state stops the pings → the
+  monitor alerts. This is the layer that catches the silent modes. It also writes
+  a `.backup-last-ok` marker for Layer 3.
+
+  **Two databases, two different questions** (pd-me6h). A *tenant* collection
+  changes daily, so it is judged on FRESHNESS: a replica whose newest write is
+  older than `PKDUMP_BACKUP_MAX_AGE_HOURS` (36h) has stopped. The *user
+  registry* is static by design — handle → database_id changes only when a
+  tenant is added, removed or renamed, legitimately months apart — so a replica
+  with no new objects means nothing is wrong, and freshness is simply the wrong
+  question. It is judged on CORRESPONDENCE instead: Litestream's local txid for
+  the registry against the furthest txid its replica holds. That passes while
+  the two agree however old the last write is, and fails the moment the replica
+  falls behind or is missing. Do not "fix" a registry alarm by raising the
+  threshold — that was the false positive, and a bigger number only moves it.
+
+  A lag is re-asked for up to `PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS`
+  (90s) before it counts. Litestream can hold an un-uploaded checkpoint across a
+  transient S3 error and clear it at its next compaction tick ~30s later
+  (measured, `tests/alarming/run.sh` §4b); a replica that has genuinely stopped
+  never catches up, so the window only costs the run that would have paged over
+  a blip.
+
+  The checker is READ-ONLY on both sides: S3 is only ever listed, and the data
+  volume is mounted `:ro` for the one command that reads local state.
 - **Layer 2 — `OnFailure` push.** The Litestream sidecar, the refresh run, and
   the backup-check itself fire `pkdump-alert@.service` on failure, pushing the
   failed unit's journal tail to Pushover. Catches hard crashes fast; does *not*

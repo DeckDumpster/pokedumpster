@@ -20,6 +20,12 @@
 # indistinguishable from a pass in `systemctl status`, in the journal, and in
 # any dashboard. §5 mutates the config both ways and asserts the exit codes.
 #
+# The second one is the FALSE ALARM (pd-me6h). An alarm that cries wolf on a
+# schedule trains the operator to ignore it, which is strictly worse than no
+# alarm at all — and prod's very first armed run did exactly that, judging the
+# static user registry on freshness. §4c proves it stopped; §4d and §4e prove it
+# did not stop by going quiet.
+#
 # ── PROD-SAFE BY CONSTRUCTION ───────────────────────────────────────────────
 # Its own instance name (never 'prod'), its own data volume, its own MinIO, its
 # own podman secret, its own config dir, its own HTTP sink on 127.0.0.1. The
@@ -168,7 +174,15 @@ marker_epoch() { cat "${MP}/.backup-last-ok" 2>/dev/null || echo none; }
 
 # backup-check, invoked exactly as its systemd unit invokes it, with the sink
 # standing in for the two external services.
+#
+# The correspondence re-ask window is shortened to one second: §4d and §4e
+# provoke divergences that are PERMANENT, and sitting through the production
+# window twice over would buy nothing. Where the window is the point — a lag
+# that resolves itself — the gate uses run_check_default_grace instead.
 run_check() { PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS=1 \
+	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" 2>&1; }
+run_check_default_grace() { PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
 	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" 2>&1; }
 
 # ── 1. the recorder ─────────────────────────────────────────────────────────
@@ -236,17 +250,18 @@ printf '[profile pkdump]\nregion=%s\n' "$LITESTREAM_S3_REGION" >"${CONF_DIR}/aws
 printf '[pkdump]\naws_access_key_id=%s\naws_secret_access_key=%s\n' "$AKID" "$SECRET_KEY" \
 	| podman secret create "$SECRET_NAME" - >/dev/null
 
-# The override re-points the TENANTS prefix only — the registry keeps its real
-# one, so §4a provokes a tenant that never reached S3 rather than a second,
-# simultaneous registry failure that would answer the assertion first.
-write_litestream_env() { # write_litestream_env [tenants-s3-path-override]
+# Each override re-points ONE prefix and leaves the other alone, so a section
+# provokes exactly one failure: §4a wants a tenant that never reached S3, not a
+# simultaneous registry failure that would answer the assertion first (the
+# registry is judged before any tenant), and §4d/§4e want the reverse.
+write_litestream_env() { # write_litestream_env [tenants-path] [registry-path]
 	cat >"${CONF_DIR}/litestream.env" <<EOF
 LITESTREAM_S3_BUCKET=${LITESTREAM_S3_BUCKET}
 LITESTREAM_S3_REGION=${LITESTREAM_S3_REGION}
 LITESTREAM_S3_PATH=${1:-$LITESTREAM_S3_PATH}
 LITESTREAM_TENANTS_DIR=/data/tenants
 LITESTREAM_REGISTRY_DB=${LITESTREAM_REGISTRY_DB}
-LITESTREAM_S3_REGISTRY_PATH=${LITESTREAM_S3_REGISTRY_PATH}
+LITESTREAM_S3_REGISTRY_PATH=${2:-$LITESTREAM_S3_REGISTRY_PATH}
 LITESTREAM_S3_ENDPOINT=${LITESTREAM_S3_ENDPOINT}
 AWS_PROFILE=pkdump
 EOF
@@ -335,16 +350,35 @@ podman run -d --name "$LS_CTR" --user 0 \
 awaiting_replica() { # awaiting_replica <replica-url>
 	local url="$1" deadline=$(( SECONDS + 90 ))
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		if podman run --rm --user 0:0 \
-			-v "${CONF_DIR}/aws/config:/aws/config:ro" \
-			--secret "${SECRET_NAME},type=mount,target=/aws/credentials" \
-			-e AWS_CONFIG_FILE=/aws/config -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
-			-e AWS_PROFILE=pkdump "$LITESTREAM_IMAGE" ltx -level all "$url" 2>/dev/null \
-			| grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z'
+		if ltx_all "$url" | grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z'
 		then return 0; fi
 		sleep 3
 	done
 	return 1
+}
+
+ltx_all() { # ltx_all <replica-url> — what backup-check's own query sees
+	podman run --rm --user 0:0 \
+		-v "${CONF_DIR}/aws/config:/aws/config:ro" \
+		--secret "${SECRET_NAME},type=mount,target=/aws/credentials" \
+		-e AWS_CONFIG_FILE=/aws/config -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
+		-e AWS_PROFILE=pkdump "$LITESTREAM_IMAGE" ltx -level all "$1" 2>/dev/null
+}
+# The two halves of the correspondence pair, read the way backup-check reads
+# them: the furthest TXID in the replica, and the furthest Litestream has
+# ingested locally. Both are 16 hex characters, so the largest token in the
+# listing is the largest TXID.
+replica_max_txid() { # replica_max_txid <replica-url>
+	ltx_all "$1" | grep -oE '\b[0-9a-fA-F]{16}\b' | tr 'A-F' 'a-f' | LC_ALL=C sort | tail -n1
+}
+registry_local_txid() {
+	podman run --rm --user 0:0 -v "${MP}:/data:ro" \
+		-v "${REPO_DIR}/deploy/litestream.yml:/etc/litestream.yml:ro" \
+		-e LITESTREAM_TENANTS_DIR -e LITESTREAM_REGISTRY_DB -e LITESTREAM_S3_BUCKET \
+		-e LITESTREAM_S3_PATH -e LITESTREAM_S3_REGISTRY_PATH -e LITESTREAM_S3_REGION \
+		-e LITESTREAM_S3_ENDPOINT \
+		"$LITESTREAM_IMAGE" status -json "$LITESTREAM_REGISTRY_DB" 2>/dev/null \
+		| grep -oE '\b[0-9a-fA-F]{16}\b' | tr 'A-F' 'a-f' | head -n1
 }
 
 replicating=0
@@ -408,6 +442,142 @@ for _ in $(seq 60); do
 	sleep 1
 done
 
+# A TRANSIENT OUTAGE MUST NOT LEAVE THE REGISTRY ALARMING (pd-me6h). Measured
+# here, on this bed: the outage above left Litestream holding a checkpoint it
+# could not upload, so the moment MinIO returned the registry read local txid 2
+# against replica txid 1 — a real lag, on a database nobody had written to. It
+# cleared itself within 30s, at Litestream's next compaction tick.
+#
+# That is precisely what the checker's re-ask window is sized for, and this is
+# the assertion that keeps the two in step: run it at the SHIPPED window and it
+# has to come back green. Shorten the window and this goes red — which is how
+# the number stays honest rather than becoming decoration.
+OUT="$(run_check_default_grace)"; RC=$?
+printf '%s\n' "$OUT" | sed 's/^/    /'
+check "a transient S3 outage does not leave the registry alarming" "0" "$RC"
+check "the checker waited the lag out rather than paging over it" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'the user registry OK — replica in correspondence' || true)"
+GREEN_MARKER="$(marker_epoch)"
+
+# ── 4c-e. THE REGISTRY IS NOT JUDGED ON AGE (pd-me6h) ───────────────────────
+# prod's backup alarming was armed for the first time on 2026-08-11, and the
+# very first thing it did was fire a FALSE alarm: the registry's newest S3
+# object was 65h old, past the 36h freshness threshold, while Litestream was
+# demonstrably replicating it every two seconds with no errors.
+#
+# Both facts were true. The registry is STATIC by design — handle ->
+# database_id, changed only when a tenant is added, removed or renamed — and a
+# database nobody writes produces no new S3 objects however diligently the
+# sidecar syncs. Freshness is simply the wrong question about it, and a bigger
+# threshold only moves the false positive further out.
+#
+# These three sections are the replacement test in both directions: it must
+# stop firing on age (4c), and it must still fire on a replica that is missing
+# (4d) or behind (4e). An alarm never observed failing is not known to work.
+log "4c. the registry PASSES an age it would have failed — correspondence, not freshness (pd-me6h)"
+# A threshold BELOW every possible age: the same relation prod was in at 65h >
+# 36h, without waiting 65 hours for it. The tenants are judged by that
+# threshold and must fail on it; the registry is judged by correspondence and
+# must not be reached by it at all. The registry is checked FIRST, so before
+# this fix the run died on the registry and never got to a tenant.
+write_litestream_env
+write_alerts_env "$PING_URL" -1
+BEFORE=$(sink_total)
+OUT="$(run_check)"; RC=$?
+printf '%s\n' "$OUT" | sed 's/^/    /'
+check "the registry is judged on correspondence with its replica" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'the user registry OK — replica in correspondence' || true)"
+check "and it says so at a threshold every age exceeds" "0" \
+	"$(printf '%s' "$OUT" | grep -c 'STALE — the user registry' || true)"
+# The other half of the constraint: tenant freshness is untouched. A tenant past
+# the threshold still fails, so this is not "the check got quieter".
+check "a tenant past that same threshold STILL fails" "1" "$RC"
+check "and the STALE line names the tenant, not the registry" "1" \
+	"$(printf '%s' "$OUT" | grep -c "STALE — tenant '" || true)"
+
+log "4d. the registry fires RED — its replica is not there at all"
+# Correspondence has to be a test, not an exemption. Point the registry at a
+# prefix nothing has ever written to; with the grace window closed (0h), a
+# registry with no replica is a registry that is not backed up.
+write_litestream_env "$LITESTREAM_S3_PATH" "alarm/${INSTANCE}/no-such-registry"
+write_alerts_env "$PING_URL" 0
+BEFORE=$(sink_total)
+OUT="$(run_check)"; RC=$?
+printf '%s\n' "$OUT" | sed 's/^/    /'
+check "backup-check exits non-zero" "1" "$RC"
+check "and it says the registry is NOT backed up" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'STALE — the user registry: no replica data' || true)"
+check "the dead-man's switch was TRIPPED (/fail)" "1" "$(since_grep "$BEFORE" "$FAIL_PING")"
+check "a Pushover push carried the detail" "1" "$(since_grep "$BEFORE" "$PUSH")"
+check "the freshness marker was NOT refreshed" "$GREEN_MARKER" "$(marker_epoch)"
+
+log "4e. the registry fires RED — its replica has fallen BEHIND the local database"
+# The failure correspondence exists to catch, built for real rather than
+# described: freeze a copy of the replica at today's TXID, write to the
+# registry, let the live replica advance past it, then point the checker at the
+# frozen copy. Local and replica now genuinely disagree, with no clock involved
+# — the frozen copy's objects are seconds old.
+write_litestream_env
+write_alerts_env "$PING_URL"
+FROZEN_PATH="alarm/${INSTANCE}/registry-frozen.sqlite"
+REG_URL="$(registry_replica_url)"
+BEFORE_LOCAL="$(registry_local_txid)"
+mc mirror --quiet "s/${LITESTREAM_S3_BUCKET}/${LITESTREAM_S3_REGISTRY_PATH}" \
+	"s/${LITESTREAM_S3_BUCKET}/${FROZEN_PATH}" >/dev/null 2>&1
+# Addressed through the shipped derivation, not a hand-built URL, so the frozen
+# copy is read exactly the way backup-check will read it.
+FROZEN_URL="$( LITESTREAM_S3_REGISTRY_PATH="$FROZEN_PATH"; registry_replica_url )"
+FROZEN_TXID="$(replica_max_txid "$FROZEN_URL")"
+ltx_all "$FROZEN_URL" | sed 's/^/    frozen: /'
+# It has to be a REAL replica holding real transactions — that is what separates
+# this section from §4d. An empty prefix would fail for the other reason.
+check "the frozen copy holds transactions of its own" "yes" \
+	"$([ -n "$FROZEN_TXID" ] && echo yes || echo no)"
+
+sqlite3 -cmd '.timeout 5000' "${MP}/registry.sqlite" \
+	"INSERT INTO users (handle, database_id) VALUES ('charlie', 'charlie');" >/dev/null
+# Wait for the write to land on BOTH sides of the live pair. Only then is the
+# frozen copy demonstrably behind a database that is itself correctly backed up
+# — so the failure below can only be the divergence, never a slow sidecar.
+LOCAL_AFTER=""; LIVE_AFTER=""
+for _ in $(seq 60); do
+	LOCAL_AFTER="$(registry_local_txid)"
+	LIVE_AFTER="$(replica_max_txid "$REG_URL")"
+	[ -n "$LOCAL_AFTER" ] && [ "$LOCAL_AFTER" != "$BEFORE_LOCAL" ] \
+		&& [ "$LIVE_AFTER" = "$LOCAL_AFTER" ] && break
+	sleep 2
+done
+check "the write reached the local database and its live replica alike" "$LOCAL_AFTER" "$LIVE_AFTER"
+check "and left the frozen copy behind them" "yes" \
+	"$([ -n "$FROZEN_TXID" ] && [ "$FROZEN_TXID" != "$LOCAL_AFTER" ] \
+		&& [ "$(printf '%s\n%s\n' "$FROZEN_TXID" "$LOCAL_AFTER" | LC_ALL=C sort | head -n1)" = "$FROZEN_TXID" ] \
+		&& echo yes || echo no)"
+
+write_litestream_env "$LITESTREAM_S3_PATH" "$FROZEN_PATH"
+BEFORE=$(sink_total)
+OUT="$(run_check)"; RC=$?
+printf '%s\n' "$OUT" | sed 's/^/    /'
+check "backup-check exits non-zero" "1" "$RC"
+check "and it says the replica is BEHIND the local database" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'its replica is BEHIND the local database' || true)"
+check "it names both positions" "1" \
+	"$(printf '%s' "$OUT" | grep -c "S3 holds up to txid ${FROZEN_TXID}, the local database is at ${LOCAL_AFTER}" || true)"
+check "the dead-man's switch was TRIPPED (/fail)" "1" "$(since_grep "$BEFORE" "$FAIL_PING")"
+check "a Pushover push carried the detail" "1" "$(since_grep "$BEFORE" "$PUSH")"
+check "the freshness marker was NOT refreshed" "$GREEN_MARKER" "$(marker_epoch)"
+
+# Back to the live replica: the verdict has to follow the replica, not the
+# mutation. A registry that is in correspondence again passes again, at the
+# new TXID, with the freshness threshold left at its default.
+write_litestream_env
+BEFORE=$(sink_total)
+OUT="$(run_check)"; RC=$?
+check "pointed back at the live replica it is green again" "0" "$RC"
+check "in correspondence at the NEW txid" "1" \
+	"$(printf '%s' "$OUT" | grep -c "replica in correspondence at txid ${LOCAL_AFTER}" || true)"
+check "and the heartbeat resumes" "1" "$(since_grep "$BEFORE" "$GREEN_PING")"
+GREEN_MARKER="$(marker_epoch)"
+
 # ── 5. THE SKIP (pd-1717, then pd-7f46): unarming costs the PING, not the ───
 #      VERIFICATION
 log "5. the skip is gone — no monitor still verifies against S3 (pd-1717/pd-7f46)"
@@ -424,12 +594,15 @@ OUT="$(run_check)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
 check "unset ping URL still verifies -> zero exit" "0" "$RC"
 check "it does not use the word 'skipping'" "0" "$(printf '%s' "$OUT" | grep -ci 'skipping' || true)"
-# One judgement per database it is responsible for — the registry AND every
-# tenant, not "at least one line". A count that only proved SOMETHING was asked
-# would still read green if the registry dropped out of the checked set, which
-# is the whole failure pd-nd6w added it to catch.
-check "it asked S3 about the registry and every tenant anyway" "$(( ${#TENANTS[@]} + 1 ))" \
+# One judgement per database it is responsible for, not "at least one line". A
+# count that only proved SOMETHING was asked would still read green if the
+# registry dropped out of the checked set, which is the whole failure pd-nd6w
+# added it to catch — so the registry is counted SEPARATELY, by its own verdict,
+# which since pd-me6h is a different sentence because it is a different test.
+check "it asked S3 about every tenant anyway" "${#TENANTS[@]}" \
 	"$(printf '%s' "$OUT" | grep -c 'newest S3 replica write' || true)"
+check "and about the registry" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'the user registry OK — replica in correspondence' || true)"
 check "and it says the dead-man's switch is NOT armed" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'NOT armed' || true)"
 check "and nothing at all was sent" "0" "$(( $(sink_total) - BEFORE ))"

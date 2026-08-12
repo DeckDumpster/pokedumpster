@@ -44,7 +44,12 @@ PublishPort=127.0.0.1:{{PORT}}:19120
 # box's default store is the 98 G disk prod runs from. State goes on /workspaces.
 # tests/lake/run.sh restarts the catalog and re-reads, which is the only way the
 # ROCKSDB/IN_MEMORY difference is observable.
-Volume={{DATA_DIR}}:/nessie:Z
+# `U` chowns the volume to the container's mapped user. Without it, rootless
+# podman leaves the host directory owned by the invoking user while Nessie runs
+# as `nessie` (mapped into the subuid range), and RocksDB dies on startup with
+# "While mkdir if missing: /nessie/rocksdb: Permission denied" — a crash loop
+# that never serves a single request.
+Volume={{DATA_DIR}}:/nessie:Z,U
 Environment=nessie.version.store.type=ROCKSDB
 Environment=nessie.version.store.persist.rocks.database-path=/nessie/rocksdb
 # Nessie sizes its object cache as a fraction of the heap; left alone it claimed
@@ -59,11 +64,17 @@ Environment=nessie.version.store.persist.cache-capacity-mb=64
 Environment=nessie.catalog.default-warehouse=lake
 Environment=nessie.catalog.warehouses.lake.location={{WAREHOUSE}}
 Environment=nessie.catalog.service.s3.default-options.region={{REGION}}
+# Nessie's S3 auth-type defaults to STATIC, which demands an explicit
+# access-key/secret and never consults the AWS SDK credential chain. Without
+# this it refuses every table with "Missing access key and secret for STATIC
+# authentication mode", however well the chain is configured.
+Environment=nessie.catalog.service.s3.default-options.auth-type=APPLICATION_GLOBAL
 
 # --- Credentials ------------------------------------------------------------
 # Same story as the Litestream sidecar and the same AWS_PROFILE=pkdump role
 # path: auto-refreshing temporary credentials from an assumed role, never
-# long-lived static keys. No `nessie.catalog.service.s3.default-options.
+# long-lived static keys, with auth-type=APPLICATION_GLOBAL above so the chain
+# is consulted at all. No `nessie.catalog.service.s3.default-options.
 # access-key` is set, so Nessie's S3 client falls through to the AWS SDK default
 # provider chain and picks up the profile below.
 #

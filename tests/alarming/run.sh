@@ -648,7 +648,9 @@ sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" \
 	-e "s|EnvironmentFile=-%h/.config/pkdump/alerts.env|EnvironmentFile=-${TEST_ALERTS_ENV}|" \
 	"${REPO_DIR}/deploy/pkdump-alert@.service" >"${SYSTEMD_USER_DIR}/${P}-alert@.service"
 check "the alert unit still pipes a journal tail into alert.sh" "1" \
-	"$(grep -c 'journalctl --user -u %i -n 20 --no-pager | bash' "${SYSTEMD_USER_DIR}/${P}-alert@.service")"
+	"$(grep -c 'journalctl --user -u %i .* | bash .*alert\.sh' "${SYSTEMD_USER_DIR}/${P}-alert@.service")"
+check "and summarises it on the way (pd-pwk8)" "1" \
+	"$(grep -c 'journal-summary\.sh %i | bash' "${SYSTEMD_USER_DIR}/${P}-alert@.service")"
 
 cat >"${SYSTEMD_USER_DIR}/${P}-boom.service" <<EOF
 [Unit]
@@ -669,6 +671,52 @@ check "the sink is still recording" "alive" "$(sink_alive)"
 check "the failing unit produced a Pushover push" "1" "$(since_grep "$BEFORE" "$PUSH")"
 check "the push names the unit that failed" "1" "$(since_grep "$BEFORE" "unit FAILED: ${P}-boom.service")"
 check "and carries its journal tail" "1" "$(since_grep "$BEFORE" 'simulated backup unit failure')"
+# pd-pwk8: the push HAPPENING is not the same as the push being READABLE. It
+# fired correctly for weeks and said nothing — the body was the last 900 bytes
+# of the journal, which is systemd talking about the unit.
+check "the body leads with the unit and its exit status" "1" \
+	"$(since_grep "$BEFORE" "${P}-boom FAILED (exit 7)")"
+check "and not with systemd's boilerplate" "0" "$(since_grep "$BEFORE" 'Main process exited')"
+check "nor with the OnFailure= line that fired this very alert" "0" \
+	"$(since_grep "$BEFORE" 'Triggering OnFailure')"
+
+# The case that produced the unreadable page: a unit that runs a container. The
+# journal tail then carries podman's event log — a container id and every OCI
+# label on the image — between the service's own output and systemd's.
+# An absolute podman, resolved here: a systemd unit inherits none of this
+# shell's PATH, and on a box with an alternate store that PATH is where the
+# store lives (deploy/store-lib.sh writes a shim onto it). --pull=never keeps
+# the gate offline — §2 has already put this image in whichever store is active.
+PODMAN_BIN="$(command -v podman)"
+cat >"${SYSTEMD_USER_DIR}/${P}-podboom.service" <<EOF
+[Unit]
+Description=Alarming gate: a podman-backed unit that fails on purpose
+OnFailure=${P}-alert@%n.service
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '${PODMAN_BIN} run --rm --pull=never ${LITESTREAM_IMAGE} version >/dev/null 2>&1; echo "gate: podman-backed check FAILED, no replica data at s3://nowhere"; exit 1'
+EOF
+systemctl --user daemon-reload
+BEFORE=$(sink_total)
+systemctl --user start "${P}-podboom.service" >/dev/null 2>&1
+for _ in $(seq 60); do
+	[ "$(since_grep "$BEFORE" "$PUSH")" -gt 0 ] && break
+	sleep 0.5
+done
+# Assert the noise was really there before asserting it is gone — otherwise a
+# podman that stopped logging events would turn this into a test of nothing.
+OCI_LINES="$(journalctl --user -u "${P}-podboom.service" -n 80 --no-pager 2>/dev/null |
+	grep -c 'org.opencontainers' || true)"
+check "the podman-backed unit's own journal really carries OCI metadata" "yes" \
+	"$([ "${OCI_LINES:-0}" -gt 0 ] && echo yes || echo no)"
+check "the podman-backed unit produced a Pushover push" "1" "$(since_grep "$BEFORE" "$PUSH")"
+# Two greps rather than one: the sink records bodies with json.dumps, so the
+# em-dash between them arrives as the escape \\u2014, not as itself.
+check "whose body leads with the unit and its exit status" "1" \
+	"$(since_grep "$BEFORE" "${P}-podboom FAILED (exit 1)")"
+check "and with the line the service itself printed" "1" \
+	"$(since_grep "$BEFORE" 'gate: podman-backed check FAILED, no replica data')"
+check "and carries no OCI metadata at all" "0" "$(since_grep "$BEFORE" 'org.opencontainers')"
 
 # ── 7. Layer 4: low disk pushes ─────────────────────────────────────────────
 log "7. Layer 4 fires — low disk pushes, and only over the threshold"

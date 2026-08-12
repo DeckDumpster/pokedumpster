@@ -10,10 +10,12 @@
 #   1. Tear down any stale container instance belonging to THIS checkout.
 #  1b. Harness gate:  prove the shell harnesses can describe their own failure,
 #                     that no harness picks a host port instead of asking the
-#                     kernel, and that the Containerfile's base images are
-#                     pinned to a Debian release. Hermetic and sub-second. See
-#                     tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh
-#                     and tests/container/base_images_test.sh.
+#                     kernel, that the Containerfile's base images are pinned to
+#                     a Debian release, and that a Layer 2 page leads with the
+#                     line that says what went wrong. Hermetic and sub-second.
+#                     See tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh,
+#                     tests/container/base_images_test.sh and
+#                     tests/alarming/journal_summary_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #   4. Container gate: build + start a `--test` instance, wait for the server
@@ -214,6 +216,13 @@ bash "$REPO_DIR/tests/lib/ports_test.sh"
 # step 4 costs the build first. See tests/container/base_images_test.sh.
 step "Container base-image pins (tests/container/base_images_test.sh)"
 bash "$REPO_DIR/tests/container/base_images_test.sh"
+
+# Same tier again, and the same shape of bug: a layer that fires and says
+# nothing. §6 of the alarming gate proves Layer 2 PUSHES; this proves what it
+# pushes is readable — the causal line first, no OCI metadata, no systemd
+# boilerplate — against journal tails captured from the real units (pd-pwk8).
+step "Alert page content (tests/alarming/journal_summary_test.sh)"
+bash "$REPO_DIR/tests/alarming/journal_summary_test.sh"
 
 # --- 2. Rust gates ----------------------------------------------------------
 

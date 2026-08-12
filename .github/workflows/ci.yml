@@ -50,6 +50,20 @@ jobs:
       # Rootless podman and `systemctl --user` need this; a non-login runner
       # process does not get it for free.
       XDG_RUNTIME_DIR: /run/user/1000
+      # -- Warm Rust build cache -------------------------------------------
+      # Measured 2026-08-12: one run compiled 352 crates FOUR times -- cargo test
+      # (test profile, 5m18s), cargo clippy (dev profile, 2m11s), and again inside
+      # the container image -- while the tests themselves finish in seconds.
+      # Nothing was cached, on a runner that persists between runs.
+      #
+      # !! SAFE ONLY BECAUSE THERE IS EXACTLY ONE RUNNER AND THE `concurrency`
+      #    GROUP ABOVE SERIALISES EVERY JOB. Two runs writing one target directory
+      #    corrupts builds in ways that present as flaky tests. BEFORE ADDING A
+      #    SECOND RUNNER, move to sccache or per-runner target dirs.
+      #
+      # On /workspaces deliberately: / is the 98 G volume production runs from.
+      CARGO_TARGET_DIR: /workspaces/ci-cargo-target
+      CARGO_HOME: /workspaces/ci-cargo-home
     steps:
       - uses: actions/checkout@v4
 

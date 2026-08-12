@@ -220,8 +220,11 @@ bash "$REPO_DIR/tests/container/base_images_test.sh"
 step "cargo test"
 ( cd "$REPO_DIR" && cargo test )
 
+# --profile test so clippy REUSES what `cargo test` just built. Without it clippy
+# defaults to the dev profile -- a different artifact set -- and recompiles all 352
+# crates for the lint alone (2m11s measured 2026-08-12).
 step "cargo clippy --all-targets"
-( cd "$REPO_DIR" && cargo clippy --all-targets -- -D warnings )
+( cd "$REPO_DIR" && cargo clippy --all-targets --profile test -- -D warnings )
 
 step "cargo fmt --check"
 ( cd "$REPO_DIR" && cargo fmt --check )

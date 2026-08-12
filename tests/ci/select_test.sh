@@ -160,11 +160,11 @@ check "a committed baseline -> everything" "$ALL" \
 
 # The browser tier drives the instance the container tier starts, so a
 # selection can never hold one without the other.
-for paths in "frontend/src/app.css" "crates/x.rs" "README.md"; do
-	got="$(select_for "$paths")"
+for p in "frontend/src/app.css" "crates/x.rs" "README.md"; do
+	got="$(select_for "$p")"
 	has_browser="$(printf '%s\n' $got | grep -cx browser)"
 	has_container="$(printf '%s\n' $got | grep -cx container)"
-	check "browser implies container (${paths})" "0" \
+	check "browser implies container (${p})" "0" \
 		"$((has_browser > has_container ? 1 : 0))"
 done
 
@@ -235,6 +235,15 @@ check "the step that sets it is gated on pull_request, in that same step" "1" \
 # Nothing else in the tree may hand ci.sh a selection.
 check "nothing under deploy/ sets a changed-path list" "0" \
 	"$(grep -rl 'PKDUMP_CI_CHANGED_FILES=' "${REPO_DIR}/deploy" 2>/dev/null | grep -cv 'ci.sh$')"
+
+# Both sides of a rename, or the bucket is computed from half the change: with
+# rename detection on, moving frontend/Thing.svelte to docs/thing.md reports the
+# destination alone and reads as a docs-only PR while the frontend lost a file.
+check "the diff is taken with --no-renames" "1" \
+	"$(printf '%s' "$STEP" | grep -c 'git diff --no-renames --name-only')"
+# The selector's own half of that: with both sides listed, the answer is right.
+check "a rename out of frontend/ still runs the frontend set" "$FE" \
+	"$(select_for "frontend/src/lib/components/ui/Thing.svelte" "docs/thing.md")"
 
 # ---------------------------------------------------------------------------
 log "6. The tier names in ci.sh and ci-select.sh have not drifted"

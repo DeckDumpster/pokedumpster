@@ -102,7 +102,7 @@ pkdump_ci_classify_path() {
 # path this file cannot read.
 pkdump_ci_select_tiers() {
     local selected=" ${PKDUMP_CI_ALWAYS_TIERS} "
-    local saw_path=0 run_all=0 path tier
+    local saw_path=0 run_all=0 path t
 
     while IFS= read -r path; do
         [ -n "$path" ] || continue
@@ -141,9 +141,9 @@ pkdump_ci_select_tiers() {
             ;;
     esac
 
-    for tier in $PKDUMP_CI_ALL_TIERS; do
+    for t in $PKDUMP_CI_ALL_TIERS; do
         case "$selected" in
-            *" $tier "*) printf '%s\n' "$tier" ;;
+            *" $t "*) printf '%s\n' "$t" ;;
         esac
     done
 }

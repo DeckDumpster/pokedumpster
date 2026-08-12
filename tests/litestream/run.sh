@@ -80,6 +80,12 @@ diag_init
 # shellcheck source=tests/lib/ports.sh
 . "${REPO_DIR}/tests/lib/ports.sh"
 
+# Waiting for CONDITIONS rather than for the clock (pd-86er). Everything this
+# gate used to spend on `sleep 8` is now a bounded poll that names what it is
+# waiting for; see tests/lib/wait.sh.
+# shellcheck source=tests/lib/wait.sh
+. "${REPO_DIR}/tests/lib/wait.sh"
+
 # Unique per checkout, exactly as deploy/ci.sh's instance name and the alarming
 # gate's are. deploy/ci.sh is deliberately parallel-safe — several polecats run
 # it at once from their own worktrees — but it calls THIS script, and until
@@ -167,6 +173,23 @@ ls_run() { podman run --rm --network "$NET" --user 0 \
 	-e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials -e AWS_PROFILE=pkdump \
 	"$LITESTREAM_IMAGE" "$@"; }
 
+# restore_rows — restore a tenant's replica out-of-place and say how many rows
+# came back; 0 when nothing restores yet, so it is safe to poll on. The output
+# file is removed first because `litestream restore` refuses to overwrite one,
+# and a poll asks repeatedly by definition.
+#
+# This is the ground truth for "the write reached S3" — not a log line, not the
+# presence of an object. §3 waits on it, §6 asserts on it.
+restore_rows() { # restore_rows <out> <tenant>
+	local n
+	rm -f "$WORK/restore/$1"
+	ls_run restore -o "/restore/$1" "$(tenant_replica_url "$2" || true)" >/dev/null 2>&1 || true
+	# Always a number, whatever happened: the callers compare numerically, and an
+	# empty string there is a shell error rather than "not replicated yet".
+	n="$(sq "$WORK/restore/$1" 'SELECT count(*) FROM collection;' 2>/dev/null)" || n=0
+	printf '%s' "${n:-0}"
+}
+
 # tenant_prefixes — the tenant replica prefixes actually present in the bucket.
 #
 # Scoped to LITESTREAM_S3_PATH rather than listing the whole bucket, because the
@@ -193,10 +216,8 @@ podman run -d --name "$MINIO_CTR" --network "$NET" \
 	-e MINIO_ROOT_USER="$AKID" -e MINIO_ROOT_PASSWORD="$SECRET" \
 	-v "$WORK/minio:/data:Z" \
 	"$MINIO_IMAGE" server /data >/dev/null
-for _ in $(seq 60); do
-	curl -fsS "http://127.0.0.1:$MINIO_PORT/minio/health/live" >/dev/null 2>&1 && break
-	sleep 1
-done
+minio_live() { curl -fsS "http://127.0.0.1:$MINIO_PORT/minio/health/live" >/dev/null 2>&1; }
+wait_until 60 0.25 minio_live || true
 curl -fsS "http://127.0.0.1:$MINIO_PORT/minio/health/live" >/dev/null
 mc mb --ignore-existing "s/$BUCKET" >/dev/null
 mkdir -p "$WORK/aws"
@@ -229,16 +250,35 @@ podman run -d --name "$LS_CTR" --network "$NET" --user 0 \
 	-e LITESTREAM_REGISTRY_DB -e LITESTREAM_S3_REGISTRY_PATH \
 	-e LITESTREAM_S3_REGION -e LITESTREAM_S3_ENDPOINT \
 	"$LITESTREAM_IMAGE" replicate -config /etc/litestream.yml >/dev/null
-sleep 8
+
+# WAIT for the sidecar to be replicating, rather than sleeping a guessed
+# interval (pd-86er). Two conditions, both load-bearing for what follows: every
+# tenant has a prefix in the bucket, which is the set §4 reads back; and
+# ${VICTIM}'s replica actually HOLDS the early phase, which is what makes the
+# marker below a point-in-time boundary with something behind it rather than a
+# timestamp taken before there was anything to roll back to.
+early_replicated() {
+	[ "$(tenant_prefixes | grep -c .)" -eq 3 ] || return 1
+	[ "$(restore_rows early-probe.sqlite "$VICTIM")" -eq 1 ]
+}
+wait_until 120 1 early_replicated || true
 
 # A marker between two write phases, for the point-in-time restore in §4.
 MARKER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# The one sleep in this file that is NOT waiting for a condition, and it stays:
+# `date -u +…%SZ` truncates to the second, so the marker names the whole second
+# it was taken in. The late writes have to land in a LATER one or a restore at
+# the marker may legitimately include them. There is no condition to poll here —
+# the wait is on the clock's resolution itself.
 sleep 2
 for t in alpha bravo charlie; do
 	sq "$WORK/data/tenants/$t.sqlite" \
 		"INSERT INTO collection (tenant, phase) VALUES ('$t','late');" >/dev/null
 done
-sleep 8
+# ...and the same wait on the other side of the marker: the late phase is in the
+# replica when a restore returns both rows, not after eight seconds.
+late_replicated() { [ "$(restore_rows late-probe.sqlite "$VICTIM")" -eq 2 ]; }
+wait_until 120 1 late_replicated || true
 
 check "sidecar is still running (one process, N databases)" "running" \
 	"$(podman inspect -f '{{.State.Status}}' "$LS_CTR")"
@@ -285,14 +325,14 @@ sq "$WORK/data/registry.sqlite" \
 	 CREATE TABLE user (handle TEXT PRIMARY KEY, database_id TEXT NOT NULL UNIQUE,
 	                    created_at TEXT NOT NULL, state TEXT NOT NULL);
 	 INSERT INTO user VALUES ('alpha','01k2c7hq8n0000000000alpha',datetime('now'),'active');" >/dev/null
-# Poll, don't guess an interval — see the note in §5.
+# Poll, don't guess an interval — see the note in §5. `podman logs` is a local
+# read, so it can be asked twice a second without costing the runner anything.
 REG_LOGGED=0
-reg_deadline=$(( SECONDS + 90 ))
-while [ "$SECONDS" -lt "$reg_deadline" ]; do
+registry_seen() {
 	REG_LOGGED=$(podman logs "$LS_CTR" 2>&1 | grep -c 'db=registry.sqlite' || true)
-	[ "$REG_LOGGED" -gt 0 ] && break
-	sleep 2
-done
+	[ "$REG_LOGGED" -gt 0 ]
+}
+wait_until 90 0.5 registry_seen || true
 check "the registry replicates from the SAME sidecar (one process, no restart)" "yes" \
 	"$([ "$REG_LOGGED" -gt 0 ] && echo yes || echo no)"
 check "sidecar still running with both entries" "running" \
@@ -340,14 +380,15 @@ check "the registry restores and still holds its mapping" "alpha 01k2c7hq8n00000
 # and recovering from one means asking for a moment before it — so the window
 # has to actually work on THIS prefix, not just on the tenant prefixes.
 REG_MARKER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-sleep 2
+sleep 2 # second-resolution marker, as in §3 — not a wait for replication
 sq "$WORK/data/registry.sqlite" \
 	"INSERT INTO user VALUES ('bravo','01k2c7hq8n0000000000bravo',datetime('now'),'active');" >/dev/null
-for _ in $(seq 30); do
+registry_has_both() {
+	rm -f "$WORK/restore/registry-latest.sqlite"
 	restore_registry registry-latest.sqlite
-	[ "$(sq_registry registry-latest.sqlite 'SELECT count(*) FROM user;')" = 2 ] && break
-	rm -f "$WORK/restore/registry-latest.sqlite"; sleep 2
-done
+	[ "$(sq_registry registry-latest.sqlite 'SELECT count(*) FROM user;')" = 2 ]
+}
+wait_until 60 1 registry_has_both || true
 check "a later registry write reaches the replica" "2" \
 	"$(sq_registry registry-latest.sqlite 'SELECT count(*) FROM user;')"
 restore_registry registry-pit.sqlite -timestamp "$REG_MARKER"
@@ -391,12 +432,11 @@ seed_tenant delta
 # an app container, a MinIO and an image build, and 12s was not always enough
 # (observed 2026-08-08). Polling keeps the assertion and drops the guess.
 DELTA_LOGGED=0
-delta_deadline=$(( SECONDS + 90 ))
-while [ "$SECONDS" -lt "$delta_deadline" ]; do
+delta_seen() {
 	DELTA_LOGGED=$(podman logs "$LS_CTR" 2>&1 | grep -c 'delta.sqlite' || true)
-	[ "$DELTA_LOGGED" -gt 0 ] && break
-	sleep 2
-done
+	[ "$DELTA_LOGGED" -gt 0 ]
+}
+wait_until 90 0.5 delta_seen || true
 check "delta was picked up live by watch:" "yes" \
 	"$([ "$DELTA_LOGGED" -gt 0 ] && echo yes || echo no)"
 # If it never was, the sidecar's own account of why is the only useful evidence,
@@ -407,10 +447,8 @@ if [ "$DELTA_LOGGED" -eq 0 ]; then
 	echo "  --- container state: $(podman inspect -f '{{.State.Status}}' "$LS_CTR" 2>&1) ---"
 fi
 # Replication of that pickup is a second, slower step; give it its own window.
-for _ in $(seq 30); do
-	tenant_prefixes | grep -qx "${LITESTREAM_S3_PATH}/delta.sqlite" && break
-	sleep 2
-done
+delta_has_prefix() { tenant_prefixes | grep -qx "${LITESTREAM_S3_PATH}/delta.sqlite"; }
+wait_until 60 1 delta_has_prefix || true
 tenant_prefixes >"$WORK/prefixes.txt"
 check "delta has its own derived prefix" "1" \
 	"$(grep -cx "${LITESTREAM_S3_PATH}/delta.sqlite" "$WORK/prefixes.txt" || true)"
@@ -489,13 +527,12 @@ podman run -d --name "$PROBE_CTR" --network "$NET" --user 0 \
 # deploy/ci.sh is parallel-safe by design and several polecats run it at once;
 # this box was at load average 7-11 when the 15s form started failing (2026-08-08).
 SNAPSHOTS=0
-probe_deadline=$(( SECONDS + 120 ))
-while [ "$SECONDS" -lt "$probe_deadline" ]; do
+second_snapshot() {
 	sq "$WORK/probe/tenants/echo.sqlite" "INSERT INTO collection (tenant) VALUES ('echo');"
 	SNAPSHOTS=$(mc ls -r "s/$BUCKET" 2>/dev/null | grep -c 'citest/probe/echo.sqlite/0009/' || true)
-	[ "$SNAPSHOTS" -gt 1 ] && break
-	sleep 1
-done
+	[ "$SNAPSHOTS" -gt 1 ]
+}
+wait_until 120 1 second_snapshot || true
 check "the top-level snapshot interval is actually honoured (>1 snapshot)" "yes" \
 	"$([ "$SNAPSHOTS" -gt 1 ] && echo yes || echo no)"
 if [ "$SNAPSHOTS" -le 1 ]; then
@@ -594,12 +631,12 @@ sqlite3 "$WORK/data/tenants/${MIGRATED_ID}.sqlite" \
 podman start "$LS_CTR" >/dev/null
 
 # Wait for the new prefix to hold a restorable database carrying that write.
-for _ in $(seq 45); do
+migrated_restored() {
 	rm -f "$WORK/restore/migrated.sqlite"
 	restore_ok "migrated.sqlite" "$(tenant_replica_url "$MIGRATED_ID" || true)"
-	[ "$(sq_restored migrated.sqlite "SELECT count(*) FROM collection WHERE phase='post-migration';")" = 1 ] && break
-	sleep 2
-done
+	[ "$(sq_restored migrated.sqlite "SELECT count(*) FROM collection WHERE phase='post-migration';")" = 1 ]
+}
+wait_until 90 1 migrated_restored || true
 check "the renamed database restores from its NEW derived prefix" "3" \
 	"$(sq_restored migrated.sqlite 'SELECT count(*) FROM collection;')"
 check "including the write made after the rename" "1" \
@@ -618,17 +655,19 @@ check "and it is still charlie's data under its new name" "charlie" \
 # would be asserting how fast this machine is, and on a box running deploy/ci.sh
 # it caught exactly that first line (2026-08-08).
 ADVANCED=no
-advance_deadline=$(( SECONDS + 90 ))
-while [ "$SECONDS" -lt "$advance_deadline" ]; do
+replica_advanced() {
 	if podman logs "$LS_CTR" 2>&1 | grep "db=${MIGRATED_ID}.sqlite" \
 		| grep -qE 'txid\.replica=0*[1-9a-f]'; then
 		ADVANCED=yes
-		break
+		return 0
 	fi
+	# Keep giving it something to advance PAST, so a replica that is genuinely
+	# stuck is distinguishable from one with nothing to do.
 	sq "$WORK/data/tenants/${MIGRATED_ID}.sqlite" \
 		"INSERT INTO collection (tenant, phase) VALUES ('charlie','advancing');" >/dev/null
-	sleep 2
-done
+	return 1
+}
+wait_until 90 1 replica_advanced || true
 check "txid.replica advances on the new prefix, rather than sticking at 0" "yes" "$ADVANCED"
 if [ "$ADVANCED" != yes ]; then
 	echo "  --- replica sync lines for ${MIGRATED_ID}.sqlite ---"

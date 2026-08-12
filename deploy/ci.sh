@@ -10,12 +10,13 @@
 #   1. Tear down any stale container instance belonging to THIS checkout.
 #  1b. Harness gate:  prove the shell harnesses can describe their own failure,
 #                     that no harness picks a host port instead of asking the
-#                     kernel, that the Containerfile's base images are pinned to
+#                     kernel, that they wait for conditions rather than for the
+#                     clock, that the Containerfile's base images are pinned to
 #                     a Debian release, and that a Layer 2 page leads with the
 #                     line that says what went wrong. Hermetic and sub-second.
 #                     See tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh,
-#                     tests/container/base_images_test.sh and
-#                     tests/alarming/journal_summary_test.sh.
+#                     tests/lib/wait_test.sh, tests/container/base_images_test.sh
+#                     and tests/alarming/journal_summary_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #   4. Container gate: build + start a `--test` instance, wait for the server
@@ -145,6 +146,10 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=tests/lib/diagnostics.sh
 . "${REPO_DIR}/tests/lib/diagnostics.sh"
 diag_init
+
+# Bounded condition polling, in one place for every harness (pd-86er).
+# shellcheck source=tests/lib/wait.sh
+. "${REPO_DIR}/tests/lib/wait.sh"
 
 # The instance name has to be unique per checkout. The swarm runs several
 # polecats per rig, each from its own worktree, and every one of them runs
@@ -299,6 +304,15 @@ if tier lint; then
     step "Harness host-port self-test (tests/lib/ports_test.sh)"
     bash "$REPO_DIR/tests/lib/ports_test.sh"
 
+    # Same tier, same shape of ratchet: the harnesses used to spend about two
+    # minutes a run on fixed sleeps that asserted nothing except how fast this
+    # box is. §1-§4 prove the replacement asks before it sleeps and — the one
+    # that matters — that it GIVES UP, since an unbounded poll would hang CI
+    # instead of failing it. §5-§6 assert on the tree, so a `sleep 8` cannot
+    # come back one reasonable-looking line at a time. See tests/lib/wait.sh.
+    step "Harness condition-polling self-test (tests/lib/wait_test.sh)"
+    bash "$REPO_DIR/tests/lib/wait_test.sh"
+
     # Same tier, and it guards every gate below that builds the image: the
     # builder stage rode a moving tag, upstream retagged it from bookworm to
     # trixie, and the image started shipping a binary that cannot exec against
@@ -314,19 +328,20 @@ if tier lint; then
     step "CI tier selection fails closed (tests/ci/select_test.sh)"
     bash "$REPO_DIR/tests/ci/select_test.sh"
 
+    # Same tier again, and the same shape of bug: a layer that fires and says
+    # nothing. §6 of the alarming gate proves Layer 2 PUSHES; this proves what
+    # it pushes is readable — the causal line first, no OCI metadata, no
+    # systemd boilerplate — against journal tails captured from the real units
+    # (pd-pwk8).
+    step "Alert page content (tests/alarming/journal_summary_test.sh)"
+    bash "$REPO_DIR/tests/alarming/journal_summary_test.sh"
+
     # A formatter check, not a compile — `cargo fmt` parses and never builds,
     # so it costs a second and belongs with the lint tier rather than behind
     # `cargo test`.
     step "cargo fmt --check"
     ( cd "$REPO_DIR" && cargo fmt --check )
 fi
-
-# Same tier again, and the same shape of bug: a layer that fires and says
-# nothing. §6 of the alarming gate proves Layer 2 PUSHES; this proves what it
-# pushes is readable — the causal line first, no OCI metadata, no systemd
-# boilerplate — against journal tails captured from the real units (pd-pwk8).
-step "Alert page content (tests/alarming/journal_summary_test.sh)"
-bash "$REPO_DIR/tests/alarming/journal_summary_test.sh"
 
 # --- 2. Rust gates ----------------------------------------------------------
 
@@ -381,15 +396,20 @@ if tier container; then
     systemctl --user start "$SERVICE_NAME"
 
     step "Waiting for the server to answer..."
-    for _ in $(seq 1 30); do
+    # Asked four times a second rather than once every two: the check is a
+    # `podman port` and a loopback curl, both cheap, and the two-second interval
+    # was most of the time this step took on a server that was already up
+    # (pd-86er). The 60-second bound is unchanged.
+    server_answering() {
         PORT=$(podman port "$CONTAINER" 8080/tcp 2>/dev/null | head -1 | cut -d: -f2 || true)
         if [ -n "$PORT" ] && curl -sf -o /dev/null "http://localhost:${PORT}/"; then
             echo "    Server is up on port ${PORT}."
-            break
+            return 0
         fi
         PORT=""
-        sleep 2
-    done
+        return 1
+    }
+    wait_until 60 0.25 server_answering || true
     if [ -z "$PORT" ]; then
         echo "ERROR: server failed to start within timeout."
         journalctl --user -u "$SERVICE_NAME" --no-pager -n 40 2>/dev/null || true

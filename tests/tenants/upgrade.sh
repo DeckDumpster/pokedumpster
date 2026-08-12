@@ -55,6 +55,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FIXTURES="${REPO_DIR}/tests/ui/fixtures"
 
+# Bounded condition polling, in one place for every harness (pd-86er).
+# shellcheck source=tests/lib/wait.sh
+. "${REPO_DIR}/tests/lib/wait.sh"
+
 # PER-CHECKOUT, for the reason deploy/ci.sh derives its instance the same way:
 # several polecats run this concurrently from their own worktrees, and a fixed
 # container name means run B's opening `podman rm -f` kills run A mid-suite.
@@ -117,20 +121,29 @@ start_app() {
 }
 stop_app() { podman rm -f --ignore "$APP_CTR" >/dev/null 2>&1 || true; }
 
+# The condition wait_up waits on: answering, or provably never going to.
+# APP_ANSWERING is how the caller tells those two apart — `wait_until` reports
+# only that the wait ended, and §7 is a section that WANTS it to end at `exited`.
+APP_ANSWERING=0
+app_settled() {
+	if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/health"; then
+		APP_ANSWERING=1
+		return 0
+	fi
+	# A container that has already exited will never answer; stop waiting.
+	[[ "$(podman inspect -f '{{.State.Status}}' "$APP_CTR" 2>/dev/null)" == "exited" ]]
+}
 # Wait for /health, or give up. Echoes up/down so a caller can assert on it —
 # §7 is a section that WANTS `down`, so this stays a soft check. Every section
 # that needs a server uses `require_up` instead.
 wait_up() {
-	for _ in $(seq 45); do
-		if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/health"; then
-			echo up
-			return
-		fi
-		# A container that has already exited will never answer; stop waiting.
-		[[ "$(podman inspect -f '{{.State.Status}}' "$APP_CTR" 2>/dev/null)" == "exited" ]] && break
-		sleep 1
-	done
-	echo down
+	APP_ANSWERING=0
+	# Asked four times a second instead of once, against the SAME 45-second
+	# bound: this gate starts a server in nearly every section, and a
+	# one-second interval charged each of them for a container that was
+	# already answering (pd-86er).
+	wait_until 45 0.25 app_settled || true
+	[[ $APP_ANSWERING == 1 ]] && echo up || echo down
 }
 
 # A server that was supposed to come up and did not is an ABORT, not one more

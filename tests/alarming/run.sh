@@ -352,7 +352,12 @@ awaiting_replica() { # awaiting_replica <replica-url>
 	while [ "$SECONDS" -lt "$deadline" ]; do
 		if ltx_all "$url" | grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z'
 		then return 0; fi
-		sleep 3
+		# One second, not three: the body of this loop is itself a `podman run`
+		# that takes the better part of a second, so a three-second interval was
+		# ~1.5s of pure latency on every wait and this function is called once per
+		# tenant (pd-86er). The 90s bound is unchanged — nothing here waits less
+		# long for the condition, it just notices sooner when it holds.
+		sleep 1
 	done
 	return 1
 }

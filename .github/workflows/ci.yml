@@ -10,7 +10,22 @@ name: CI
 
 on:
   pull_request:
-    branches: [master]
+    # BASE branches, not head. `[master]` alone meant that every PR an epic opens
+    # into its own integration branch got NO CI AT ALL — the event simply never
+    # matched, so there was no run to be queued, cancelled or approved.
+    #
+    # Six PRs (#31-#36, the lakehouse epic) sat like that on 2026-08-13. They read
+    # as mergeable because the ruleset's required `test` check only guards master,
+    # and an admin bypass reports CLEAN regardless. Two of them had in fact FAILED
+    # their only evidence — a hand-run `workflow_dispatch`, which polecats had
+    # reached for precisely because nothing else was firing.
+    #
+    # An epic's children are the reviewable unit (a polecat branch is the PR
+    # source), so they have to be gated individually. Gating only the eventual
+    # integration -> master PR hides a broken child until the whole epic lands.
+    branches:
+      - master
+      - 'integration/**'
   workflow_dispatch:
 
 # ONE pokedumpster CI run at a time, box-wide.

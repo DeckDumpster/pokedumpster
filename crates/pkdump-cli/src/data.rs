@@ -5,17 +5,17 @@
 //! TCGCSV groups, sealed products, and prices, then re-applies the dirty-data
 //! overrides. Each run appends a fresh price snapshot (a new `observed_at`)
 //! to the `prices` table — the source for a future price-history chart.
+//!
+//! The pipeline it runs is `pkdump-derive`, shared with the offline
+//! `pkdump-lake-derive shared` job. This file is what is left once the
+//! derivation moved out: argument parsing, the database to open, and the
+//! clock. **Nothing here reads `raw/`** — that is the boundary the lakehouse
+//! epic turns on, and it is why the offline job is a different binary in a
+//! different crate rather than a `--from-raw` flag on this one.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use rusqlite::Connection;
-
-use pkdump_lake::RawLanding;
-
-use pkdump_ingest::pokemontcg::PokemonTcgClient;
-use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_ingest::{coverage, japan, overrides, pokemon_tcg_data, symbols, tcgcsv};
+use pkdump_ingest::{coverage, overrides, pokemon_tcg_data, symbols};
 
 /// The `pkdump data` subcommand group.
 #[derive(clap::Args)]
@@ -195,7 +195,10 @@ fn expand_only(args: RefreshArgs) -> anyhow::Result<()> {
 
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
-    let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
+    // `data expand` is the local re-run, so its clock is genuinely now: there
+    // are no landed bytes behind it to reproduce a timestamp from.
+    let printings =
+        overrides::expand_all_printings(&mut conn, &overlay, &chrono::Utc::now().to_rfc3339())?;
     println!("  wrote {printings} printings");
 
     println!("Checking TCGplayer mapping coverage...");
@@ -225,6 +228,16 @@ fn normalize_symbols(args: RefreshArgs) -> anyhow::Result<()> {
 }
 
 /// Execute `pkdump data refresh`.
+///
+/// The pipeline itself lives in `pkdump-derive` — the same code the offline
+/// `pkdump-lake-derive shared` job runs, so item 3's row-identical comparison
+/// is between two runs of one derivation over two sources of the same bytes,
+/// not between two implementations. What is left here is the online half: the
+/// database to open, whether to land, and reading the clock.
+///
+/// Nothing in this file reads `raw/`, and nothing in `pkdump-cli` can — that
+/// is the boundary the whole epic turns on. `--from-raw` belongs on the
+/// offline job, which is a different binary in a different crate.
 fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
     let db_path = match args.common.db {
         Some(p) => p,
@@ -233,273 +246,35 @@ fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
     println!("Opening shared catalog at {}", db_path.display());
     let mut conn = pkdump_db::open_shared(&db_path)?;
 
+    // The run's clock, read ONCE — see `pkdump_derive::clock`. It picks the
+    // ingest_date partition, it is recorded in every manifest, and it is what
+    // every fetched_at / observed_at column in this run gets, so an offline
+    // derive from the bytes this run lands can reproduce them exactly.
+    let clock = pkdump_derive::DeriveClock::now();
+
     // Resolved before anything is fetched: a landing zone that was asked for
     // and is not configured should stop the run at the start, not after an
     // hour of requests whose bytes then have nowhere to go.
-    let landing = crate::landing::open(
-        args.land_raw,
-        &chrono::Utc::now().format("%Y-%m-%d").to_string(),
-    )?;
+    let landing = crate::landing::open(args.land_raw, &clock)?;
 
-    // 1. Reconcile the variants table from data/variants.json — runs
-    //    first because it's purely local (no network) and idempotent.
-    //    Putting it ahead of the network calls means a flaky upstream
-    //    can't keep variants.json edits from landing on the next refresh.
-    println!("Reconciling variants table from data/variants.json...");
-    let n_variants = pkdump_db::variants::reconcile(&mut conn)?;
-    println!("  {n_variants} variant rows reconciled");
-
-    // 1b. Reconcile (group, sub_type) → variant map from
-    //     data/tcgcsv_sub_type_variants.json. Lives next to the
-    //     variants seed and follows the same idempotent-reconcile
-    //     pattern. Variant expansion (step 3 below) reads this back.
-    println!("Reconciling tcgcsv_sub_type_variant_map...");
-    let n_sub = pkdump_db::sub_type_map::reconcile(&mut conn)?;
-    println!("  {n_sub} (group, sub_type) → variant rows");
-
-    // 1c. Reconcile the bundles registry from data/bundles.json. Drives
-    //     the /api/sets dispatch for TTBB-style containers.
-    println!("Reconciling bundles table from data/bundles.json...");
-    let n_bundles = pkdump_db::bundles::reconcile(&mut conn)?;
-    println!("  {n_bundles} bundles registered");
-
-    // 1d. Reconcile the search query language metadata from
-    //     data/search_*.json (local + idempotent).
-    println!("Reconciling search query metadata...");
-    let sm = pkdump_db::search_meta::reconcile(&mut conn)?;
-    println!(
-        "  {} keywords, {} rarities, {} flags",
-        sm.keywords, sm.rarities, sm.flags
-    );
-
-    // 2. The acquisition phase — every step that reaches an upstream we
-    //    keep bytes from. Bracketed so the landing zone's manifests are
-    //    written whichever way it ends: a run that dies partway must leave
-    //    a manifest that says so, not a short prefix that reads as whole.
-    //    Everything after this point is local derivation, and a failure
-    //    there says nothing about whether the raw bytes arrived.
-    let acquired = acquire(&mut conn, landing.as_ref());
-    if let Some(landing) = &landing {
-        crate::landing::finalize_landing(landing, acquired.as_ref().err())?;
-    }
-    acquired?;
-
-    // 2c. Auto-discover sets TCGCSV has published and pokemontcg.io
-    //     hasn't — a numbered expansion group that bridges to nothing
-    //     becomes a set + cards on its own, no hand-authored bridge and
-    //     no waiting on upstream (pd-558b1e4f). Reads the products just
-    //     imported, so it has to run after import_tcgcsv — and after the
-    //     Japanese import, which bridges every category-85 group and so
-    //     keeps them out of the unbridged pool discovery works from.
-    println!("Discovering new sets from unbridged TCGCSV groups...");
-    for d in pkdump_ingest::set_discovery::discover_new_sets(&mut conn)? {
-        println!(
-            "  {} ({}) — {} from group {}, {} cards",
-            d.set_code, d.series, d.name, d.group_id, d.cards
-        );
-    }
-
-    // 3. Synthesize card rows for bridged TCGCSV groups whose upstream
-    //    pokemontcg.io entry doesn't exist yet (e.g. MEP). Idempotent
-    //    INSERT OR IGNORE — once pokemontcg.io publishes the real set,
-    //    upserts from import_tail win and synthesized stubs stand down.
-    println!("Synthesizing cards for bridged groups...");
-    let n_synth = tcgcsv::synthesize_cards_for_bridges(&mut conn)?;
-    println!("  {n_synth} cards synthesized");
-
-    // Curated standalone promos (Ancient Mew, etc.) — see setup.rs step 5b.
-    let n_promo = pkdump_ingest::standalone_promos::synthesize_standalone_promos(&mut conn)?;
-    println!("  {n_promo} standalone promos synthesized");
-
-    // 5. Variant expansion. TCGCSV is authoritative for which printings a
-    //    card has; the overlay still applies for cards TCGCSV can't model
-    //    (cross-group stamped promos, etc.). Each printing carries its
-    //    sub_type_name + tcgplayer_product_id so price queries stay a
-    //    straight JOIN.
-    println!("Expanding variants into printings...");
-    let overlay = overrides::load_variant_augmentations()?;
-    let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
-    println!("  wrote {printings} printings");
-
-    // Report sets that mapped no printing to a TCGplayer product at all —
-    // the shape `basep` sat in, unnoticed, for the catalog's whole life
-    // (pd-0o5m). See `pkdump_ingest::coverage`.
-    println!("Checking TCGplayer mapping coverage...");
-    coverage::report_unmapped_sets(&conn)?;
-
-    // 5. Normalize set symbol glyphs for any new sets the tail fetch added.
-    //    Existing rows already point at /sym/<set>.png and are skipped via
-    //    the http-prefix gate in normalize_all_symbols.
     let data_dir = db_path
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    println!("Normalizing set symbol glyphs...");
-    let s = symbols::normalize_all_symbols(&mut conn, &data_dir)?;
-    println!(
-        "  {} processed, {} cached, {} overrides, {} failed",
-        s.processed, s.cached, s.overrides, s.failed
-    );
 
-    // 6. Rebuild the materialized latest-prices table so the per-row
-    //    market-price lookup on the collection/search/binder pages stays a
-    //    point read rather than a GROUP BY over all of prices (vi37).
-    println!("Refreshing materialized latest_prices...");
-    let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
-    println!("  {n_latest} latest-price rows materialized");
+    pkdump_derive::derive(
+        &mut conn,
+        &pkdump_derive::Options {
+            clock,
+            data_dir: &data_dir,
+            landing,
+            // The online side never replays. It has no way to: reading the
+            // landing zone is `pkdump-lakehouse`'s job and this crate does
+            // not depend on it.
+            replay: None,
+        },
+    )?;
 
-    //    Curated prices for catalog printings the feed does not price. Its
-    //    rows FK into `printings`, so it runs after variant expansion; and it
-    //    must land before anything values a collection from this catalog,
-    //    which reads the same effective-price rule (pd-m4gw).
-    let n_override = pkdump_db::catalog_prices::reconcile(&mut conn)?;
-    println!("  {n_override} curated catalog price overrides reconciled");
-
-    // And that is the end of it. The refresh touches the SHARED catalog and
-    // nothing else — no tenant database is opened, let alone written.
-    //
-    // It used to end with a step 7 that snapshotted today's collection value
-    // into `$PKDUMP_USER`'s database. One tenant's, out of however many the
-    // registry holds: no loop, no error, and everybody else silently without a
-    // value chart (pd-s5yn). Looping here was considered and rejected — the
-    // catalog refresh is not the place that knows about tenants, and a refresh
-    // that half-writes N collections fails in a worse way than one that writes
-    // none. `lake/src/pkdump_lake/value_snapshots.py` owns that job now: it
-    // walks the registry, values every tenant from `catalog.prices` at a pinned
-    // Nessie commit, and reports per-tenant (pd-ruwh).
-    //
-    // `value_history::snapshot_today` itself stays — it is the reference the
-    // transform is diffed against in tests/lake/value_snapshots.sh. It is no
-    // longer called from any command: `pkdump data backfill-value-history`
-    // goes through `value_history::backfill`, which reconstructs each date
-    // with `backfill_one_date`.
-    //
-    // tests/refresh/tenant_bytes.sh is the gate: a refresh over a data
-    // directory with real tenant databases in it must leave every one of them
-    // byte-identical.
     println!("Refresh complete: {}", db_path.display());
     Ok(())
-}
-
-/// Everything in a refresh that reaches an upstream whose bytes we keep.
-///
-/// Separated from the rest of `refresh` because acquiring and deriving are
-/// different jobs with different failure meanings: a fetch that fails leaves
-/// the raw prefix short and its manifest has to say so, while a variant
-/// expansion that fails says nothing about the bytes, which are already
-/// landed and complete.
-///
-/// `symbols::normalize_all_symbols` also fetches, from
-/// `images.pokemontcg.io`, and is deliberately *not* here: card art and set
-/// symbols are excluded from the landing zone, because the retention
-/// arithmetic that justifies keeping `raw/` forever is for JSON only.
-fn acquire(conn: &mut Connection, landing: Option<&Arc<RawLanding>>) -> anyhow::Result<()> {
-    // 2. pokemontcg.io tail — pick up sets released since the last refresh.
-    println!("Filling newest sets from pokemontcg.io...");
-    let added = import_tail(conn, landing)?;
-    println!("  added {added} set(s) not yet in the catalog");
-
-    // 2b. Re-apply the upstream-correction registry to rows already in the
-    //     catalog. `upsert_card` above only corrects the sets import_tail
-    //     just added — a correction registered after a card landed would
-    //     otherwise never reach its row. Runs before variant expansion so
-    //     downstream phases see the corrected numbers.
-    println!("Re-applying upstream card corrections...");
-    let healed = pokemon_tcg_data::apply_corrections_to_db(conn)?;
-    for h in &healed {
-        println!(
-            "  {} number {} -> {}",
-            h.card_id, h.current_number, h.corrected_number
-        );
-    }
-    println!("  {} row(s) healed", healed.len());
-
-    // 2. TCGCSV groups, sealed products, single-card products, prices —
-    //    raw ingest of everything TCGCSV publishes. Variant expansion in
-    //    step 3 reads this back out to determine which printings actually
-    //    exist for each card.
-    println!("Importing TCGCSV groups, products, prices...");
-    let r = import_tcgcsv(conn, landing)?;
-    println!(
-        "  {} groups, {} sealed products, {} card products, {} price rows",
-        r.0, r.1, r.2, r.3
-    );
-
-    // 2b. Pokémon Japan (TCGCSV categoryId 85) — sets and cards are
-    //     synthesized straight from TCGCSV, there being no pokemontcg.io
-    //     counterpart. Runs after the English pass so the two never
-    //     contend for a set_code. See `pkdump_ingest::japan`.
-    println!("Importing the Pokémon Japan catalog (TCGCSV category 85)...");
-    let j = japan::import_all(
-        conn,
-        &chrono::Utc::now().to_rfc3339(),
-        &chrono::Utc::now().format("%Y-%m-%d").to_string(),
-        landing.cloned(),
-    )?;
-    println!(
-        "  {} groups, {} cards, {} card products, {} sealed products, {} price rows",
-        j.groups, j.cards, j.card_products, j.sealed_products, j.price_rows
-    );
-
-    Ok(())
-}
-
-/// Fetch the pokemontcg.io set list and import any set the catalog lacks.
-///
-/// A set row that exists but carries no `ptcgio_fetched_at` was
-/// synthesized locally — from a bridge entry, or by TCGCSV set discovery
-/// while upstream was still behind. Those count as missing: importing them
-/// is exactly how the real cards supersede the synthesized stubs the day
-/// pokemontcg.io publishes the set.
-fn import_tail(conn: &mut Connection, landing: Option<&Arc<RawLanding>>) -> anyhow::Result<usize> {
-    let client = crate::landing::with_landing(
-        PokemonTcgClient::new()?,
-        landing,
-        PokemonTcgClient::landing_in,
-    );
-    let now = chrono::Utc::now().to_rfc3339();
-    let mut added = 0;
-    for set in client.fetch_sets()? {
-        let exists: bool = conn
-            .prepare("SELECT 1 FROM sets WHERE set_code = ?1 AND ptcgio_fetched_at IS NOT NULL")?
-            .exists([&set.id])?;
-        if exists {
-            continue;
-        }
-        pokemon_tcg_data::upsert_set(conn, &set, &now)?;
-        for card in client.fetch_cards_for_set(&set.id)? {
-            pokemon_tcg_data::upsert_card(conn, &card, &set.id)?;
-        }
-        added += 1;
-    }
-    Ok(added)
-}
-
-/// Import every TCGCSV group: sealed products, single-card products
-/// (persisted to `tcgcsv_products` for variant expansion to read), and a
-/// fresh price snapshot. Returns (groups, sealed products, card products,
-/// price rows).
-fn import_tcgcsv(
-    conn: &mut Connection,
-    landing: Option<&Arc<RawLanding>>,
-) -> anyhow::Result<(usize, usize, usize, usize)> {
-    let client =
-        crate::landing::with_landing(TcgcsvClient::new()?, landing, TcgcsvClient::landing_in);
-    let now = chrono::Utc::now().to_rfc3339();
-    let observed = chrono::Utc::now().format("%Y-%m-%d").to_string();
-
-    let groups = client.fetch_groups()?;
-    let n_groups = tcgcsv::import_groups(conn, &groups, &now)?;
-
-    let mut n_sealed = 0;
-    let mut n_cards = 0;
-    let mut n_prices = 0;
-    for group in &groups {
-        let products = client.fetch_products(group.group_id)?;
-        n_sealed += tcgcsv::import_sealed_products(conn, &products, &now)?;
-        n_cards += tcgcsv::import_products(conn, &products, &now)?;
-        let prices = client.fetch_prices(group.group_id)?;
-        n_prices += tcgcsv::import_prices(conn, &prices, &observed)?;
-    }
-    Ok((n_groups, n_sealed, n_cards, n_prices))
 }

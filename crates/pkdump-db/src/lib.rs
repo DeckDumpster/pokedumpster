@@ -24,6 +24,7 @@ pub mod latest_prices;
 pub mod manual_prices;
 pub mod orders;
 pub mod prices;
+pub mod raw_derivation;
 pub mod registry;
 pub mod schema_version;
 pub mod sealed;

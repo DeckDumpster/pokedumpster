@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use rusqlite::Connection;
 
+use pkdump_derive::DeriveClock;
 use pkdump_lake::RawLanding;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
@@ -24,11 +25,6 @@ use pkdump_ingest::tcgcsv::TcgcsvClient;
 use pkdump_ingest::{
     coverage, japan, overrides, pokemon_tcg_data, standalone_promos, symbols, tcgcsv,
 };
-
-/// Today's date in the `prices.observed_at` convention.
-fn observed_date() -> String {
-    chrono::Utc::now().format("%Y-%m-%d").to_string()
-}
 
 /// Arguments for `pkdump setup`.
 #[derive(clap::Args)]
@@ -75,19 +71,24 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     println!("Opening shared catalog at {}", db_path.display());
     let mut conn = pkdump_db::open_shared(&db_path)?;
 
+    // The run's clock, read ONCE — see `pkdump_derive::clock`. It picks the
+    // ingest_date partition, it is recorded in every manifest, and it is what
+    // every fetched_at / observed_at column this run writes gets.
+    let clock = DeriveClock::now();
+
     // Resolved before anything is fetched: a landing zone that was asked for
     // and is not configured should stop the run at the start, not after an
     // hour of requests whose bytes then have nowhere to go.
-    let landing = crate::landing::open(args.land_raw, &observed_date())?;
+    let landing = crate::landing::open(args.land_raw, &clock)?;
 
     // 1-3b. The acquisition phase — every step that reaches an upstream we
     //        keep bytes from. Bracketed so the landing zone's manifests are
     //        written whichever way it ends; everything after it is local
     //        derivation, whose failure says nothing about whether the raw
     //        bytes arrived.
-    let acquired = acquire(&mut conn, &args, landing.as_ref());
+    let acquired = acquire(&mut conn, &args, &clock, landing.as_ref());
     if let Some(landing) = &landing {
-        crate::landing::finalize_landing(landing, acquired.as_ref().err())?;
+        pkdump_derive::finalize_landing(landing, acquired.as_ref().err())?;
     }
     acquired?;
 
@@ -157,7 +158,7 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     //    cards TCGCSV can't model (stamps, etc.).
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
-    let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
+    let printings = overrides::expand_all_printings(&mut conn, &overlay, clock.fetched_at())?;
     println!("  wrote {printings} printings");
 
     // 6b. Report sets that mapped no printing to a TCGplayer product at
@@ -213,8 +214,10 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
 fn acquire(
     conn: &mut Connection,
     args: &SetupArgs,
+    clock: &DeriveClock,
     landing: Option<&Arc<RawLanding>>,
 ) -> anyhow::Result<()> {
+    let wire = crate::landing::wire(landing);
     // 1. Bulk catalog import.
     let stats = match &args.from_dir {
         Some(dir) => {
@@ -223,7 +226,7 @@ fn acquire(
         }
         None => {
             println!("Downloading the pokemon-tcg-data repo...");
-            pokemon_tcg_data::download_and_import(conn, &landing.cloned())?
+            pokemon_tcg_data::download_and_import(conn, &wire)?
         }
     };
     println!("  imported {} sets, {} cards", stats.sets, stats.cards);
@@ -233,7 +236,7 @@ fn acquire(
         println!("Skipping pokemontcg.io tail fetch.");
     } else {
         println!("Filling newest sets from pokemontcg.io...");
-        let added = import_tail(conn, landing)?;
+        let added = import_tail(conn, clock, wire.clone())?;
         println!("  added {added} set(s) not yet in the repo");
     }
 
@@ -244,7 +247,7 @@ fn acquire(
         println!("Skipping TCGCSV import.");
     } else {
         println!("Importing TCGCSV groups, products, prices...");
-        let r = import_tcgcsv(conn, landing)?;
+        let r = import_tcgcsv(conn, clock, wire.clone())?;
         println!(
             "  {} groups, {} sealed products, {} card products, {} price rows",
             r.0, r.1, r.2, r.3
@@ -261,9 +264,9 @@ fn acquire(
         println!("Importing the Pokémon Japan catalog (TCGCSV category 85)...");
         let j = japan::import_all(
             conn,
-            &chrono::Utc::now().to_rfc3339(),
-            &observed_date(),
-            landing.cloned(),
+            clock.fetched_at(),
+            clock.observed_date(),
+            wire.clone(),
         )?;
         println!(
             "  {} groups, {} cards, {} card products, {} sealed products, {} price rows",
@@ -279,13 +282,13 @@ fn acquire(
 /// A set row with no `ptcgio_fetched_at` was synthesized locally (a bridge
 /// entry, or TCGCSV set discovery running ahead of upstream) and counts as
 /// missing — importing it is how the real cards supersede the stubs.
-fn import_tail(conn: &mut Connection, landing: Option<&Arc<RawLanding>>) -> anyhow::Result<usize> {
-    let client = crate::landing::with_landing(
-        PokemonTcgClient::new()?,
-        landing,
-        PokemonTcgClient::landing_in,
-    );
-    let now = chrono::Utc::now().to_rfc3339();
+fn import_tail(
+    conn: &mut Connection,
+    clock: &DeriveClock,
+    wire: pkdump_ingest::landing::Wire,
+) -> anyhow::Result<usize> {
+    let client = PokemonTcgClient::new()?.on_wire(wire);
+    let now = clock.fetched_at();
     let mut added = 0;
     for set in client.fetch_sets()? {
         let exists: bool = conn
@@ -294,7 +297,7 @@ fn import_tail(conn: &mut Connection, landing: Option<&Arc<RawLanding>>) -> anyh
         if exists {
             continue;
         }
-        pokemon_tcg_data::upsert_set(conn, &set, &now)?;
+        pokemon_tcg_data::upsert_set(conn, &set, now)?;
         for card in client.fetch_cards_for_set(&set.id)? {
             pokemon_tcg_data::upsert_card(conn, &card, &set.id)?;
         }
@@ -309,25 +312,25 @@ fn import_tail(conn: &mut Connection, landing: Option<&Arc<RawLanding>>) -> anyh
 /// price rows).
 fn import_tcgcsv(
     conn: &mut Connection,
-    landing: Option<&Arc<RawLanding>>,
+    clock: &DeriveClock,
+    wire: pkdump_ingest::landing::Wire,
 ) -> anyhow::Result<(usize, usize, usize, usize)> {
-    let client =
-        crate::landing::with_landing(TcgcsvClient::new()?, landing, TcgcsvClient::landing_in);
-    let now = chrono::Utc::now().to_rfc3339();
-    let observed = observed_date();
+    let client = TcgcsvClient::new()?.on_wire(wire);
+    let now = clock.fetched_at();
+    let observed = clock.observed_date();
 
     let groups = client.fetch_groups()?;
-    let n_groups = tcgcsv::import_groups(conn, &groups, &now)?;
+    let n_groups = tcgcsv::import_groups(conn, &groups, now)?;
 
     let mut n_sealed = 0;
     let mut n_cards = 0;
     let mut n_prices = 0;
     for group in &groups {
         let products = client.fetch_products(group.group_id)?;
-        n_sealed += tcgcsv::import_sealed_products(conn, &products, &now)?;
-        n_cards += tcgcsv::import_products(conn, &products, &now)?;
+        n_sealed += tcgcsv::import_sealed_products(conn, &products, now)?;
+        n_cards += tcgcsv::import_products(conn, &products, now)?;
         let prices = client.fetch_prices(group.group_id)?;
-        n_prices += tcgcsv::import_prices(conn, &prices, &observed)?;
+        n_prices += tcgcsv::import_prices(conn, &prices, observed)?;
     }
     Ok((n_groups, n_sealed, n_cards, n_prices))
 }

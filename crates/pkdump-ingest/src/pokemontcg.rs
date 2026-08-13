@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::{IngestError, Result};
-use crate::landing::{self, Landing};
+use crate::landing::{self, Wire};
 
 const BASE_URL: &str = "https://api.pokemontcg.io/v2";
 const PAGE_SIZE: usize = 250;
@@ -124,7 +124,7 @@ pub struct PokemonTcgClient {
     http: reqwest::blocking::Client,
     api_key: Option<String>,
     min_interval: Duration,
-    landing: Landing,
+    wire: Wire,
     base_url: String,
 }
 
@@ -140,7 +140,7 @@ impl PokemonTcgClient {
             http,
             api_key: std::env::var("POKEMONTCG_API_KEY").ok(),
             min_interval: Duration::from_millis(100),
-            landing: None,
+            wire: Wire::default(),
             base_url: crate::upstream::base_url(crate::upstream::ENV_POKEMONTCG_BASE_URL, BASE_URL),
         })
     }
@@ -150,7 +150,14 @@ impl PokemonTcgClient {
     /// Without this the client behaves exactly as it did before the landing
     /// zone existed.
     pub fn landing_in(mut self, landing: Arc<RawLanding>) -> Self {
-        self.landing = Some(landing);
+        self.wire = self.wire.landing_in(landing);
+        self
+    }
+
+    /// Answer every request from `wire` — a landing zone to write through, a
+    /// replay source to read from, or neither.
+    pub fn on_wire(mut self, wire: Wire) -> Self {
+        self.wire = wire;
         self
     }
 
@@ -163,7 +170,12 @@ impl PokemonTcgClient {
     }
 
     fn get(&self, path: &str, query: &[(&str, String)], dataset: Dataset) -> Result<Value> {
-        std::thread::sleep(self.min_interval);
+        // Politeness to an upstream this request may never reach: a replayed
+        // response comes out of `raw/`, and rate-limiting a bucket read would
+        // be minutes of sleep for nobody's benefit.
+        if !self.wire.is_replaying() {
+            std::thread::sleep(self.min_interval);
+        }
         let base = &self.base_url;
         let mut req = self.http.get(format!("{base}{path}")).query(query);
         if let Some(key) = &self.api_key {
@@ -172,7 +184,7 @@ impl PokemonTcgClient {
         let body = landing::fetch_bytes(
             &self.http,
             req,
-            self.landing.as_ref(),
+            &self.wire,
             Source::PokemonTcgIo,
             dataset,
             PartFormat::Json,

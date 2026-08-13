@@ -78,6 +78,12 @@ cargo test -p pkdump-ingest --test raw_landing
                                  # the real HTTP clients against a local
                                  #   upstream: landing is a tee, a retry never
                                  #   overwrites, a short run says so
+cargo test -p pkdump-lakehouse   # partition choice, replay, the comparator —
+                                 #   and tests/row_identical.rs, the acceptance
+                                 #   matrix, against the shipped binary
+bash tests/lake/derive.sh        # the whole CATALOG from raw/, in the shipped
+                                 #   image, on an --internal network with the
+                                 #   socket-to-1.1.1.1 egress assertion
 bash tests/lake/value_snapshots.sh
                                  # the transform tier: value snapshots for EVERY
                                  #   registered tenant, byte-identical to the
@@ -93,7 +99,11 @@ cargo fmt                        # format
 # CLI / server
 cargo run --bin pkdump -- setup  # build the shared catalog (downloads upstream)
 cargo run --bin pkdump -- serve  # start the HTTP server
-cargo run --bin pkdump -- data refresh   # incremental catalog refresh
+cargo run --bin pkdump -- data refresh   # incremental catalog refresh (ONLINE)
+cargo run --bin pkdump-lake-derive -- shared --ingest-date 2026-08-11 \
+                                 # the same derivation, OFFLINE, replaying raw/
+cargo run --bin pkdump-lake-derive -- diff --left a.sqlite --right b.sqlite \
+    --exclude raw_derivation     # row-by-row, never byte-by-byte
 cargo run --bin pkdump -- seed-fixture   # build the deterministic UI-test fixture
 
 # Portable collection backup — every user table in one versioned JSON
@@ -135,7 +145,7 @@ cd tests/ui && npm test
 
 ## Architecture Overview
 
-Cargo workspace, six crates (`crates/`):
+Cargo workspace, eight crates (`crates/`):
 
 - **pkdump-core** — domain types + pure logic (variant code parsing,
   override matching, import format adapters). No IO.
@@ -143,6 +153,18 @@ Cargo workspace, six crates (`crates/`):
   the schema files (`src/schema_{shared,user}.sql`, re-applied idempotently
   on every open — single-instance project, no migration history), the
   variants display table, and the binder-page query.
+- **pkdump-derive** — the catalog derivation itself: the body of what
+  `pkdump data refresh` used to do inline, moved out **verbatim** so the
+  online CLI and the offline job run the *same* code. It knows nothing about
+  `raw/`; it takes a `Wire` that is empty, or landing, or replaying. Its
+  `DeriveClock` is read once by the landing side and recovered from the
+  manifest by the deriving side, which is what makes a rebuild reproduce
+  timestamps rather than approximate them.
+- **pkdump-lakehouse** — the offline job (`pkdump-lake-derive`), the ONLY
+  thing that reads `raw/` on the derivation path. Bin-only, so no online
+  target can link it. Partition choice and its refusals, the URL-keyed
+  replay + the temporary loud fallback, and the row-by-row catalog
+  comparator. See "The offline catalog derive" below.
 - **pkdump-ingest** — upstream catalog ingestion (pokemon-tcg-data,
   pokemontcg.io, TCGCSV). Variant expansion lives here, as does the
   Pokémon Japan pipeline (`japan.rs`). Touched only by
@@ -488,6 +510,60 @@ the scheduling are decisions:
   wrapper — the one component that is allowed to know what day it is — names it.
 
 `catalog.prices` itself is still built by hand between the two (pd-up36).
+
+### The offline catalog derive
+
+`shared.sqlite` can be rebuilt from one `raw/` partition by
+`pkdump-lake-derive shared --ingest-date <date>`, replaying every upstream
+response instead of fetching it (pd-1uem). Four things about it are decisions,
+not implementation:
+
+- **It is a separate binary because of where it runs, not what it does.**
+  *Only lakehouse code reads `raw/`.* A `--from-raw` flag on `pkdump data
+  refresh` would put a raw reader inside `pkdump-cli`, on the ONLINE side,
+  which is exactly the coupling that rule exists to break. `pkdump-lakehouse`
+  is bin-only and `pkdump-cli` does not depend on it.
+- **It is a relocation, not a second implementation.** Both callers run
+  `pkdump_derive::derive`. That is what makes "row-identical" a claim about
+  provenance; two implementations agreeing would only be evidence about the
+  second one.
+- **Idempotence is keyed on the PARTITION, never the clock.** No default
+  `--ingest-date`; the partition asked for must exist and be complete, with no
+  fallback to the newest available; re-deriving a date replaces it; and
+  `shared.raw_derivation` records which run ULIDs produced the catalog, so a
+  rerun is *identifiable* rather than merely tolerated. `observed_at` stays
+  distinct from `ingest_date` — they differ for exactly the run that crossed
+  UTC midnight.
+- **The upstream fallback is temporary and LOUD.** A URL missing from `raw/`
+  means coverage has regressed; the run says so per-URL and in a summary,
+  `deploy/derive.sh` pushes a warning, and `--no-upstream-fallback` makes it
+  fatal. Item 4 of the epic removes it, as its own change, once row-identity is
+  proven in production. **Do not remove it as a side effect of anything else.**
+
+Anything that lands in a ROW is passed in rather than read: `DeriveClock`
+carries the one instant a run read, `Manifest.started_at` is where the landing
+side wrote it down, and `expand_all_printings` takes `deprecated_at` for the
+same reason. A clock read inside the derivation is the one value an offline
+rebuild can never reproduce, which is why `crates/pkdump-derive/src/clock.rs`
+is mostly argument.
+
+Two units, and the split is the point (item 5): `pkdump-refresh@` LANDS,
+`pkdump-derive@` DERIVES, so a derive can run against yesterday's raw on a
+night the fetch failed. Ordering is declared (`After=`, never `Wants=` — the
+refresh is a oneshot without `RemainAfterExit`), the calendar entry is derived
+from the refresh unit's own bounds, and the chain is land → derive → transform.
+The derive unit has **no `SuccessExitStatus=`**, unlike the transform: that job
+writes N tenant databases and "some of them" is normal, this one writes ONE
+catalog and a smaller catalog reads as cards that do not exist.
+
+Gates: `crates/pkdump-lakehouse/tests/row_identical.rs` (hermetic — row-identity
+over two days, idempotence, reproducing an older date, both refusals, a
+corrupted payload, the fallback loud one way and fatal the other) and
+`tests/lake/derive.sh` (the container tier, shipped image, `--internal`
+network, socket-to-1.1.1.1). Runbook: `deploy/LAKE.md` §8.
+
+One phase cannot be replayed: set-symbol normalisation fetches images, and
+images are deliberately not landed (pd-5w4n).
 
 **The catalog refresh writes no tenant database at all** (pd-hkbc). Step 7 is
 gone; `pkdump data refresh` touches `shared.sqlite` and, with `--land-raw`, the

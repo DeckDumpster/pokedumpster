@@ -478,14 +478,11 @@ pub fn import_all(
     conn: &mut Connection,
     now: &str,
     observed: &str,
-    landing: crate::landing::Landing,
+    wire: crate::landing::Wire,
 ) -> Result<JapanStats> {
     use std::io::Write;
 
-    let mut client = TcgcsvClient::for_category(CATEGORY_POKEMON_JAPAN)?;
-    if let Some(landing) = landing {
-        client = client.landing_in(landing);
-    }
+    let client = TcgcsvClient::for_category(CATEGORY_POKEMON_JAPAN)?.on_wire(wire);
     let groups = client.fetch_groups()?;
     let mut stats = JapanStats {
         groups: import_groups(conn, &groups, now)?,
@@ -1256,7 +1253,8 @@ mod tests {
         crate::tcgcsv::import_prices(&mut conn, &prices, "2026-07-31").unwrap();
 
         let overlay = crate::overrides::load_variant_augmentations().unwrap();
-        crate::overrides::expand_all_printings(&mut conn, &overlay).unwrap();
+        crate::overrides::expand_all_printings(&mut conn, &overlay, "2026-08-11T00:00:00Z")
+            .unwrap();
 
         let variants: Vec<String> = {
             let mut stmt = conn

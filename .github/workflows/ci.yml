@@ -10,7 +10,22 @@ name: CI
 
 on:
   pull_request:
-    branches: [master]
+    # BASE branches, not head. `[master]` alone meant that every PR an epic opens
+    # into its own integration branch got NO CI AT ALL — the event simply never
+    # matched, so there was no run to be queued, cancelled or approved.
+    #
+    # Six PRs (#31-#36, the lakehouse epic) sat like that on 2026-08-13. They read
+    # as mergeable because the ruleset's required `test` check only guards master,
+    # and an admin bypass reports CLEAN regardless. Two of them had in fact FAILED
+    # their only evidence — a hand-run `workflow_dispatch`, which polecats had
+    # reached for precisely because nothing else was firing.
+    #
+    # An epic's children are the reviewable unit (a polecat branch is the PR
+    # source), so they have to be gated individually. Gating only the eventual
+    # integration -> master PR hides a broken child until the whole epic lands.
+    branches:
+      - master
+      - 'integration/**'
   workflow_dispatch:
 
 # ONE pokedumpster CI run at a time, box-wide.
@@ -182,8 +197,53 @@ jobs:
       # the step above set it. Unset means every tier; ci.sh prints the plan it
       # is running either way, so a PR log always states which tiers were
       # skipped and why.
+      # TREE-HASH CACHE (read). The runner is serialised box-wide and the suite is
+      # ~17 minutes, so re-proving a tree that already passed is the most expensive
+      # no-op here: a rebase that changes nothing, a docs commit on a tested branch,
+      # two PRs converging on the same content.
+      #
+      # The key is (epoch, tree, TIER SET). The tier set is not decoration — a
+      # docs-only PR runs `lint` alone, and keying on the tree alone would let that
+      # pass later certify a run that needed eleven container gates which never
+      # executed. deploy/ci-cache.sh --self-test asserts that in both directions.
+      #
+      # On pull_request, actions/checkout leaves HEAD at the MERGE commit, so the
+      # tree hashed is exactly the tree tested.
+      - name: Tree-hash cache — has this exact tree already passed these tiers?
+        id: treecache
+        run: |
+          if [ -n "${PKDUMP_CI_CHANGED_FILES:-}" ]; then
+            tiers="$(bash deploy/ci-select.sh < "$PKDUMP_CI_CHANGED_FILES")"
+          else
+            tiers="$(bash deploy/ci-select.sh --all-tiers)"
+          fi
+          echo "tier plan: $(echo $tiers | tr '\n' ' ')"
+          if ! key="$(bash deploy/ci-cache.sh key $tiers)"; then
+            echo "could not key this tree — running the suite"; exit 0
+          fi
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          if bash deploy/ci-cache.sh lookup "$key"; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "CACHE HIT — this tree already passed these tiers; skipping the suite"
+          else
+            echo "cache miss — running the suite"
+          fi
+
       - name: deploy/ci.sh
+        if: steps.treecache.outputs.hit != 'true'
         run: bash deploy/ci.sh
+
+      # TREE-HASH CACHE (write). Successes only, and only because this step is
+      # reached only when nothing above failed — a cached RED would be a tree that
+      # can never go green again without a human clearing it, and flakiness is what
+      # motivated the cache in the first place. Skipped on a hit: rewriting the
+      # entry would refresh its mtime and let one result live past its TTL forever.
+      - name: Tree-hash cache — record the pass
+        if: success() && steps.treecache.outputs.hit != 'true' && steps.treecache.outputs.key != ''
+        run: |
+          bash deploy/ci-cache.sh store "${{ steps.treecache.outputs.key }}" \
+            "${{ github.event_name }} ${{ github.run_id }}"
+          bash deploy/ci-cache.sh prune
 
       # BELT AND BRACES: report this run as a commit status, whatever triggered it.
       #

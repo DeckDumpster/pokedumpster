@@ -112,7 +112,7 @@ makes running them at the same time a scheduling change and not a correctness
 one.
 
 So they do not run where they are written. Each **queues** itself under its own
-tier guard and the last step runs the queue, three at a time
+tier guard and the last step runs the queue, two at a time
 (`deploy/ci-parallel.sh`).
 
 ```bash
@@ -147,8 +147,8 @@ ceiling is clamped, out loud.
 
 **The disk floor is checked before every dispatch**, not once at startup.
 Startup was enough when one gate ran at a time and the previous one's teardown
-had already returned its space; three at a time can be three images, three
-volumes and three MinIO stores deep at once. It is the same
+had already returned its space; two at a time can be two images, two
+volumes and two MinIO stores deep at once. It is the same
 `deploy/diskcheck.sh --floor` guard as everywhere else, over the same two
 filesystems, so `PKDUMP_DISK_FLOOR_GB` moves all of them together. Below the
 floor with gates still running, the runner **holds** — the thing most likely to

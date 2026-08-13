@@ -2217,8 +2217,11 @@ dependencies = [
  "pkdump-derive",
  "pkdump-ingest",
  "pkdump-lake",
+ "reqwest",
  "rusqlite",
+ "serde_json",
  "tempfile",
+ "zstd",
 ]
 
 [[package]]

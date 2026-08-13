@@ -287,7 +287,10 @@ fn acquire(
     // 2. pokemontcg.io tail — pick up sets released since the last refresh.
     println!("Filling newest sets from pokemontcg.io...");
     report.sets_added = import_tail(conn, options)?;
-    println!("  added {} set(s) not yet in the catalog", report.sets_added);
+    println!(
+        "  added {} set(s) not yet in the catalog",
+        report.sets_added
+    );
 
     // 2b. Re-apply the upstream-correction registry to rows already in the
     //     catalog. `upsert_card` above only corrects the sets import_tail

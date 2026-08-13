@@ -366,3 +366,43 @@ JOIN (SELECT tcgplayer_product_id, MAX(observed_at) AS observed_at
       FROM sealed_prices GROUP BY 1) m
   ON sp.tcgplayer_product_id = m.tcgplayer_product_id
  AND sp.observed_at = m.observed_at;
+
+-- ---------------------------------------------------------------------
+-- Provenance: which raw runs produced this catalog (pd-1uem)
+-- ---------------------------------------------------------------------
+--
+-- Written ONLY by the offline derive (`pkdump-lake-derive shared`), one row
+-- per (ingest_date, source, dataset) it replayed. The online `pkdump data
+-- refresh` writes nothing here — it fetched from upstream, so there is no raw
+-- run to name, and a row claiming otherwise would be a lie about where the
+-- bytes came from.
+--
+-- The point is that a RERUN IS IDENTIFIABLE, not merely tolerable. Two
+-- derives of one date are indistinguishable in every other table by design
+-- (that is what idempotence means); this is where the difference that does
+-- exist is recorded: which run ULID was replayed, how many parts it held, and
+-- when the derive happened.
+--
+-- `observed_at` is the run's clock day, and it is deliberately NOT the same
+-- column as `ingest_date`. They are the same day for almost every run and
+-- differ for exactly the run that crossed UTC midnight — the run where taking
+-- the partition for the observation date would file yesterday's prices under
+-- today. Keeping both is what makes that case legible after the fact.
+--
+-- Delete-then-insert per ingest_date, so re-deriving a date replaces that
+-- date's provenance rather than accumulating a row per attempt.
+--
+-- No `user_version` bump: additive CREATE ... IF NOT EXISTS, and a build that
+-- predates this table simply does not read it. Nothing on the serving path
+-- does either — this is a record for an operator, not an input.
+CREATE TABLE IF NOT EXISTS raw_derivation (
+    ingest_date  TEXT    NOT NULL,           -- the raw/ partition derived from
+    source       TEXT    NOT NULL,           -- 'tcgcsv' | 'pokemontcgio' | ...
+    dataset      TEXT    NOT NULL,           -- 'groups' | 'products' | ...
+    run_id       TEXT    NOT NULL,           -- the run= ULID that was replayed
+    parts        INTEGER NOT NULL,           -- how many payloads that run held
+    complete     INTEGER NOT NULL,           -- the manifest's complete flag
+    observed_at  TEXT    NOT NULL,           -- the run's clock day (see above)
+    derived_at   TEXT    NOT NULL,           -- when this derive ran, RFC 3339
+    PRIMARY KEY (ingest_date, source, dataset)
+);

@@ -148,7 +148,13 @@ mod tests {
 
     #[test]
     fn round_trips_through_json() {
-        let mut m = Manifest::new(Source::Tcgcsv, Dataset::Groups, "2026-08-11", "01K2CJ1N00", STARTED);
+        let mut m = Manifest::new(
+            Source::Tcgcsv,
+            Dataset::Groups,
+            "2026-08-11",
+            "01K2CJ1N00",
+            STARTED,
+        );
         m.parts.push(part("raw/…/part-0000.json.zst", 12));
         m.complete = true;
         m.finalized_at = "2026-08-11T04:53:17Z".to_string();
@@ -159,7 +165,13 @@ mod tests {
 
     #[test]
     fn an_incomplete_run_carries_its_error() {
-        let mut m = Manifest::new(Source::Tcgcsv, Dataset::Prices, "2026-08-11", "01K2CJ1N00", STARTED);
+        let mut m = Manifest::new(
+            Source::Tcgcsv,
+            Dataset::Prices,
+            "2026-08-11",
+            "01K2CJ1N00",
+            STARTED,
+        );
         m.parts.push(part("raw/…/part-0000.json.zst", 12));
         m.failures.push(FailureRecord {
             url: "https://tcgcsv.com/tcgplayer/3/17/prices".to_string(),

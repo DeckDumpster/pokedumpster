@@ -1,0 +1,64 @@
+[Unit]
+Description=PokeDumpster offline catalog derive (%i)
+# pd-1uem, item 5 of the lake-as-source epic: LANDING AND DERIVING ARE TWO UNITS.
+#
+# pkdump-refresh@%i is the landing unit — it fetches from the upstreams and,
+# with --land-raw, puts every response in the bucket. This unit is the deriving
+# one: it rebuilds shared.sqlite from ONE raw/ partition, replaying those bytes
+# instead of fetching anything.
+#
+# Splitting them is what lets a derive run against yesterday's raw on a night the
+# fetch failed, and eventually what lets the two halves run on different machines
+# — the boundary the whole epic turns on is which side of that split code is on,
+# not which language it is written in.
+#
+# {{REPO_DIR}} is sed-substituted by deploy/units-lib.sh (single-clone
+# deployment). Installed for every instance, enabled for none — see the timer.
+#
+# ── ORDERING: after the landing, never beside it ────────────────────────────
+# Both units write shared.sqlite today (the online refresh still derives inline;
+# epic item 6 is what changes that). Running them concurrently would have two
+# processes rebuilding one catalog, so the ordering is declared rather than
+# assumed:
+#
+#   After=pkdump-refresh@%i.service   — a systemd ordering dependency, enforced
+#   whenever both units have a job in the queue. If the landing is still running
+#   (its own TimeoutStartSec is 1800s, so it may be) when this timer fires, this
+#   unit's start job WAITS instead of racing it.
+#
+# Deliberately NOT `Wants=pkdump-refresh@%i.service`: the refresh is a oneshot
+# without RemainAfterExit, so a Wants= would find it inactive and re-run the
+# whole catalog fetch a second time every night. Exactly the trap
+# pkdump-value-snapshots@.service documents.
+After=pkdump-refresh@%i.service
+# raw/ is in S3.
+After=network-online.target
+Wants=network-online.target
+# The same guard the transform tier carries: a box with no lake configuration at
+# all skips rather than failing. It is only half a guard, deliberately —
+# deploy/setup.sh scaffolds lake.env commented out, so on any box that has been
+# set up the file exists and this condition passes. The other half is in the
+# wrapper, which refuses by name when the instance has no image; a condition
+# cannot ask podman anything.
+ConditionPathExists=%h/.config/pkdump/lake.env
+# Layer 2 (pokedumpster-ivq.3): push the journal tail to Pushover on failure.
+OnFailure=pkdump-alert@%n.service
+
+[Service]
+Type=oneshot
+# ── THERE IS NO PARTIAL SUCCESS HERE ────────────────────────────────────────
+#   0  the catalog was derived from the partition it was asked for.
+#   1  it was not: the partition is absent, incomplete, clockless, or the
+#      derivation failed.
+#
+# No SuccessExitStatus=, unlike pkdump-value-snapshots@.service. That job writes
+# N tenant databases and "some of them" is a real and normal outcome worth
+# distinguishing. This one writes ONE catalog — it either holds that date's data
+# or it does not, and a catalog that is quietly smaller reads as cards that do
+# not exist. So every non-zero status pages.
+ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/derive.sh %i'
+# The bound the timer below is derived from. Variant expansion walks ~50k cards
+# with a transaction each; measured in minutes on a real catalog, and the
+# ceiling is here so a lake that never answers fails the unit rather than
+# hanging the timer until the next one.
+TimeoutStartSec=1800

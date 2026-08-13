@@ -404,19 +404,153 @@ catalog yourself.
 
 ---
 
-## 8. Where the code is
+## 8. The offline catalog derive: `shared.sqlite` from `raw/`
+
+The transform tier above produces a *tenant* artifact. This one produces the
+**catalog** — the 1.5 GB, 20-table `shared.sqlite` every instance serves — from
+one `raw/` partition, replaying the responses that partition holds rather than
+fetching anything.
+
+```bash
+# Rebuild the catalog from a specific day's raw. There is no default date.
+podman run --rm -v pkdump-prod-data:/data:Z \
+    -e PKDUMP_LAKE_S3_BUCKET=... -e PKDUMP_LAKE_S3_REGION=... \
+    --entrypoint pkdump-lake-derive localhost/pkdump:prod \
+    shared --ingest-date 2026-08-11 --db /data/shared.sqlite --data-dir /data
+
+# Or the way the timer runs it, which resolves all of that from the box:
+bash deploy/derive.sh prod                            # today (UTC)
+bash deploy/derive.sh prod --ingest-date 2026-08-09   # rebuild an older day
+bash deploy/derive.sh prod --no-upstream-fallback     # refuse a gap in raw/
+
+# Compare two catalogs row by row — the acceptance instrument, shipped:
+podman run --rm -v /some/dir:/c:Z --entrypoint pkdump-lake-derive \
+    localhost/pkdump:prod diff --left /c/a.sqlite --right /c/b.sqlite \
+    --exclude raw_derivation
+```
+
+### The rule this is shaped by
+
+> Only lakehouse code reads `raw/`. The shared and tenant databases are derived
+> from that, so whatever produces them is **also** lakehouse code.
+
+That is why this is a separate binary in a separate crate and not a
+`--from-raw` flag on `pkdump data refresh`: a flag would put a raw reader
+inside `pkdump-cli`, on the **online** side, which is exactly the coupling the
+rule exists to break. `pkdump-lakehouse` is bin-only, so no online target can
+link it even by accident.
+
+It is not a second derivation either. The pipeline it runs is
+`pkdump_derive::derive` — the same function the online refresh calls, moved out
+of the CLI unchanged. Only where the bytes come from differs.
+
+### Two units, and the trap they are arranged against
+
+| unit | what it does |
+| --- | --- |
+| `pkdump-refresh@<instance>` | **lands**: fetches the upstreams, and with `--land-raw` puts every response in the bucket |
+| `pkdump-derive@<instance>` | **derives**: rebuilds `shared.sqlite` from one partition |
+| `pkdump-value-snapshots@<instance>` | **transforms**: values every tenant from `catalog.prices` |
+
+Separate units are what let a derive run against yesterday's raw on a night the
+fetch failed. The trap on the other side of that is *yesterday's raw silently
+deriving today's catalog and looking current*, and four things close it:
+
+- **`--ingest-date` never defaults from the clock.** Rebuilding an older day is
+  the same operation, and a job that reads the clock has two behaviours where
+  it should have one. `deploy/derive.sh` names today's UTC date explicitly —
+  the scheduler is the component allowed to know what day it is.
+- **The partition it was asked for must EXIST and be COMPLETE.** No fallback to
+  the newest available. A date that landed nothing refuses; a date whose only
+  run died partway refuses, because nothing in the landing zone can say whether
+  an incomplete run's parts add up to a day, and a catalog that is quietly
+  smaller reads as *cards that do not exist*.
+- **Re-deriving a date replaces it.** Twice equals once.
+- **Provenance**: `shared.raw_derivation` records which run ULIDs produced the
+  catalog, how many parts each held, and when the derive ran — so a rerun is
+  *identifiable*, not merely tolerated.
+
+```sql
+-- which bytes is this catalog actually made of?
+SELECT ingest_date, source, dataset, run_id, parts, observed_at, derived_at
+  FROM raw_derivation ORDER BY ingest_date DESC, source, dataset;
+```
+
+`observed_at` is the run's clock **day** and is deliberately not the same column
+as `ingest_date`. They agree for almost every run and differ for exactly the one
+that crossed UTC midnight — the run where taking the partition for the
+observation date would file yesterday's prices under today.
+
+### The clock
+
+Row-identity needs the derive to reproduce timestamps, not approximate them.
+`Manifest.started_at` is where the landing run wrote down the instant it read
+once; the derive reads it back and stamps the same values into
+`sets.ptcgio_fetched_at`, `tcgcsv_products.fetched_at`, `prices.observed_at` and
+`printings.deprecated_at`. A partition landed before that field existed is
+**refused by name**, not defaulted — see `crates/pkdump-derive/src/clock.rs`.
+
+Runs that disagree about it are refused too. A derive reproduces *one fetch*,
+and rows built from one run's bytes and another run's clock are neither run's
+output. It happens when one date was landed by two invocations (a `setup` and a
+`refresh` the same day); derive a date one run landed, or re-land it.
+
+### The upstream fallback is temporary, and loud
+
+A URL the partition has no record of means raw coverage has regressed. Item 2
+of the epic ships with a fallback for that; item 4 removes it as its own
+change, once row-identity is proven in production. While it exists:
+
+- every miss prints `!! raw coverage has REGRESSED` naming the URL,
+- the run ends with a summary and `deploy/derive.sh` pushes a Pushover warning,
+- and `--no-upstream-fallback` makes the first miss fatal.
+
+A run that needed the fallback is **correct but not reproducible from the
+lake**. That is a warning rather than a failure — the catalog is right, the
+lineage is not.
+
+### Enabling it
+
+Installed for every instance and enabled for none:
+
+```bash
+systemctl --user enable --now pkdump-derive@prod.timer
+```
+
+Think before you do. Today `pkdump data refresh` still derives the catalog
+inline, so an enabled derive timer rebuilds it a second time from raw — correct
+and idempotent, but redundant. It becomes the only builder in item 6 of the
+epic. What is worth having now is the mechanism, the provenance, and the proof.
+
+### The one phase a replay cannot supply
+
+`symbols::normalize_all_symbols` fetches PNGs from `images.pokemontcg.io`, and
+images are deliberately **not** landed — the retention arithmetic that justifies
+keeping `raw/` forever is for JSON only. On a box with no egress every symbol
+fetch fails, is counted, and the affected sets keep their upstream symbol URL
+(which still renders). The derive says so out loud rather than leaving it to be
+discovered from a row count. Filed as **pd-5w4n**.
+
+---
+
+## 9. Where the code is
 
 | what | where |
 | --- | --- |
 | key layout, manifest, stores, config | `crates/pkdump-lake/` |
 | the one place a response becomes bytes | `crates/pkdump-ingest/src/landing.rs` |
-| flag → landing zone, manifest finalizing | `crates/pkdump-cli/src/landing.rs` |
-| the acquisition phase it brackets | `acquire()` in `crates/pkdump-cli/src/{data,setup}.rs` |
+| flag → landing zone (the WRITING half only) | `crates/pkdump-cli/src/landing.rs` |
+| the acquisition phase it brackets | `acquire()` in `crates/pkdump-derive/src/lib.rs` and `crates/pkdump-cli/src/setup.rs` |
 | reading `raw/` back — runs, manifests, payloads | `lake/src/pkdump_lake/raw.py` |
 | `catalog.prices`, and only that | `lake/src/pkdump_lake/prices.py` |
 | the check against `shared.sqlite` | `lake/src/pkdump_lake/verify.py` |
 | per-tenant value snapshots (the transform tier) | `lake/src/pkdump_lake/value_snapshots.py` |
 | what the timer runs it as | `deploy/value-snapshots.sh` + `deploy/pkdump-value-snapshots.{service,timer}` |
+| reading `raw/` back, in Rust — the twin of `raw.py` | `crates/pkdump-lake/src/reader.rs` |
+| the catalog derivation itself, both callers share it | `crates/pkdump-derive/` |
+| the offline derive: partition choice, replay, the diff | `crates/pkdump-lakehouse/` |
+| what its timer runs it as | `deploy/derive.sh` + `deploy/pkdump-derive.{service,timer}` |
+| the provenance table | `crates/pkdump-db/src/raw_derivation.rs` |
 | the aggregate it must reproduce | `crates/pkdump-db/src/value_history.rs` |
 | the test-tier upstream override | `crates/pkdump-ingest/src/upstream.rs` |
 
@@ -437,11 +571,19 @@ cargo test -p pkdump-ingest --test value_snapshot_fixture
                                      # a whole data directory — catalog, registry,
                                      #   two collections — and the snapshot rows
                                      #   Rust computes from it
+cargo test -p pkdump-lakehouse       # partition choice, replay, the comparator —
+                                     #   and tests/row_identical.rs, the whole
+                                     #   acceptance matrix against the shipped
+                                     #   binary as a subprocess
 bash tests/lake/prices.sh            # the build job, on a network with no upstream
+bash tests/lake/derive.sh            # the whole CATALOG from raw/, in the shipped
+                                     #   image, with egress provably blocked
 bash tests/lake/value_snapshots.sh   # the transform, for every tenant — and §10
                                      #   the SHIPPED wrapper the timer runs
-bash tests/deploy/run.sh             # §10: the scheduling itself — ordering after
-                                     #   the refresh, 0/2/1, the derived calendar
+bash tests/deploy/run.sh             # §10 the transform's scheduling — ordering
+                                     #   after the refresh, 0/2/1, the derived
+                                     #   calendar; §11 the derive's, plus the
+                                     #   shipped wrapper its timer runs
 bash tests/refresh/tenant_bytes.sh   # and the refresh writing no tenant at all
 ```
 
@@ -459,6 +601,16 @@ that needed an upstream could not hide. What it builds is then compared row
 for row against a `shared.sqlite` produced from the same upstream responses in
 the same pass, so "the lake and SQLite disagree" and "the upstream answered
 differently" can never be confused for each other.
+
+`derive.sh` makes the same argument one level up, about the whole catalog
+rather than one table. `pkdump-lake-derive` runs in the **shipped image** on an
+`--internal` network — §2 tries to reach 1.1.1.1 from that image and requires
+the attempt to fail — and its output is compared row by row against the
+`shared.sqlite` the online refresh built from the same responses in the same
+pass. **Row-identical, never byte-identical**: SQLite files differ on page
+layout and vacuum state for identical content, so a file hash would fail for
+reasons that mean nothing. The comparator is the shipped `pkdump-lake-derive
+diff`, and every table it skips has to be named on its command line.
 
 `value_snapshots.sh` is the one that answers "does *every* tenant get a
 snapshot, and are the numbers still the old ones?". Its fixture is a whole data
@@ -488,7 +640,7 @@ variable for the same reason.
 
 ---
 
-## 8. The first real run, and what it cost
+## 10. The first real run, and what it cost
 
 Everything above shipped against fixtures, a directory-backed store, and a
 MinIO. `pd-fet2` ran it against the real bucket for the first time on

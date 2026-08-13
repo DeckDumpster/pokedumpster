@@ -67,7 +67,11 @@
 #                      podman --internal network — no route to any upstream,
 #                      asserted rather than assumed — and compare it row for
 #                      row against the shared.sqlite built from the SAME
-#                      upstream bytes. See tests/lake/prices.sh.
+#                      upstream bytes. See tests/lake/prices.sh. And the same
+#                      claim for the whole CATALOG: shared.sqlite derived from
+#                      raw/ by the shipped image with egress provably blocked,
+#                      row-identical to the online refresh. See
+#                      tests/lake/derive.sh.
 #  14. Transform gate: value snapshots for EVERY registered tenant, computed
 #                      from that table. Byte-identical to what Rust's
 #                      snapshot_today produces for the same tenant and date, a
@@ -537,6 +541,20 @@ if tier lake; then
 
     step "Lakehouse: per-tenant value snapshots, for every tenant"
     bash "$REPO_DIR/tests/lake/value_snapshots.sh"
+
+    # --- 14b. shared.sqlite from raw ----------------------------------------
+    # The same claim as §13, one level up: the whole CATALOG, not one table.
+    # `pkdump-lake-derive` runs in the SHIPPED image on an --internal podman
+    # network — §2 of the gate proves egress is gone by trying to reach
+    # 1.1.1.1 from that image — and its output is compared row by row against
+    # the shared.sqlite the online refresh built from the same upstream bytes.
+    #
+    # It lives in this tier rather than `container` because it is a lakehouse
+    # claim: a frontend change cannot affect whether a catalog rebuilds from
+    # raw/, and the container tier is what a frontend change selects.
+
+    step "Lakehouse: shared.sqlite derived from raw/ alone, with no network"
+    bash "$REPO_DIR/tests/lake/derive.sh"
 fi
 
 # --- 15. The refresh writes no tenant bytes ---------------------------------

@@ -228,10 +228,10 @@ log "8. a date nobody landed is REFUSED, not derived from the newest one"
 RC=0
 derive 2001-01-01 --no-upstream-fallback >"${WORK}/refuse.log" 2>&1 || RC=$?
 check "the derive refused" "yes" "$([[ "$RC" -ne 0 ]] && echo yes || echo no)"
-check "it named the date it was asked for" "1" \
-	"$(grep -c '2001-01-01' "${WORK}/refuse.log" || true)"
-check "it said it never falls back" "1" \
-	"$(grep -c 'never falls back' "${WORK}/refuse.log" || true)"
+check "it named the date it was asked for" "yes" \
+	"$(grep -q '2001-01-01' "${WORK}/refuse.log" && echo yes || echo no)"
+check "it said it never falls back" "yes" \
+	"$(grep -q 'never falls back' "${WORK}/refuse.log" && echo yes || echo no)"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"

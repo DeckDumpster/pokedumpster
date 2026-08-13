@@ -798,7 +798,9 @@ fn a_date_that_was_never_landed_refuses_by_name() {
 /// has to be told what it was.
 #[test]
 fn the_fixture_the_container_gate_reads() {
-    let out = std::env::var("PKDUMP_DERIVE_FIXTURE_OUT").ok().map(PathBuf::from);
+    let out = std::env::var("PKDUMP_DERIVE_FIXTURE_OUT")
+        .ok()
+        .map(PathBuf::from);
     let keep = out.is_some();
     let h = Harness::at(out);
 
@@ -813,10 +815,11 @@ fn the_fixture_the_container_gate_reads() {
     // Both dates landed, each by one complete run.
     for date in [DAY1, DAY2] {
         assert!(
-            h.raw().join(format!(
-                "raw/source=tcgcsv/dataset=prices/ingest_date={date}"
-            ))
-            .exists(),
+            h.raw()
+                .join(format!(
+                    "raw/source=tcgcsv/dataset=prices/ingest_date={date}"
+                ))
+                .exists(),
             "{date} landed no prices"
         );
     }

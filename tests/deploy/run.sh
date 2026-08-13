@@ -435,7 +435,8 @@ check "the published port survives the refresh" "1" \
 # rewrites only the Quadlets would leave that advice permanently true.
 for U in pkdump-alert@.service pkdump-backup-check@.service pkdump-backup-check@.timer \
 	pkdump-refresh@.service pkdump-refresh@.timer pkdump-diskcheck.service pkdump-diskcheck.timer \
-	pkdump-value-snapshots@.service pkdump-value-snapshots@.timer; do
+	pkdump-value-snapshots@.service pkdump-value-snapshots@.timer \
+	pkdump-derive@.service pkdump-derive@.timer; do
 	check "installs ${U}" "yes" "$([ -f "${UNITS}/${U}" ] && echo yes || echo no)"
 done
 check "no {{REPO_DIR}} left unsubstituted" "0" \
@@ -794,6 +795,153 @@ check "and names the command that installs it" "1" \
 # `localhost` for a registry.
 check "never pulls the job image" "1" \
 	"$(grep -c '^podman run --rm --pull=never' "${REPO_DIR}/deploy/value-snapshots.sh" || true)"
+
+reset_store
+
+# ---------------------------------------------------------------------------
+log "11. Landing and deriving are TWO units, and the derive is scheduled (pd-1uem)"
+# ---------------------------------------------------------------------------
+#
+# Item 5 of the lake-as-source epic. A derive that shared a unit with the
+# landing could not run on a night the fetch failed, which is the whole reason
+# the two are split — and a split that nothing schedules is a catalog nobody
+# rebuilds. Same failure shape as pd-8m5c one section up, so the same kind of
+# assertions.
+
+reset_store
+
+DV_SVC="${REPO_DIR}/deploy/pkdump-derive.service"
+DV_TMR="${REPO_DIR}/deploy/pkdump-derive.timer"
+
+# They are separate units. Stated as an assertion because "two units" is the
+# requirement, not an implementation detail: the landing unit must not have
+# grown a derive step.
+check "the landing unit does not derive from raw" "0" \
+	"$(grep -c 'pkdump-lake-derive' "${REPO_DIR}/deploy/pkdump-refresh.service" || true)"
+check "the derive unit does not fetch upstream" "0" \
+	"$(grep -c 'data refresh' "$DV_SVC" || true)"
+
+# The ordering, which is the guarantee: both write shared.sqlite today, so they
+# may never run beside each other.
+check "ordered after the landing" "1" \
+	"$(grep -c '^After=pkdump-refresh@%i.service$' "$DV_SVC" || true)"
+# And NOT Wants=: the landing is a oneshot without RemainAfterExit, so pulling it
+# in would re-run the whole catalog fetch a second time every night.
+check "does not pull the landing in" "0" \
+	"$(grep -c '^\(Wants\|Requires\)=pkdump-refresh@%i.service$' "$DV_SVC" || true)"
+# …and the transform runs after the derive, so the nightly chain is total.
+check "the transform is ordered after the derive" "1" \
+	"$(grep -c '^After=pkdump-derive@%i.service$' "${REPO_DIR}/deploy/pkdump-value-snapshots.service" || true)"
+
+# There is no partial success for a catalog. Unlike the transform tier, which
+# writes N tenant databases and legitimately exits 2, this job writes ONE
+# catalog: it either holds that date's data or it does not.
+check "no exit status is silently a success" "0" \
+	"$(grep -c '^SuccessExitStatus=' "$DV_SVC" || true)"
+check "a failure pages" "1" \
+	"$(grep -c '^OnFailure=pkdump-alert@%n.service$' "$DV_SVC" || true)"
+check "skips a box with no lake config at all" "1" \
+	"$(grep -c '^ConditionPathExists=%h/.config/pkdump/lake.env$' "$DV_SVC" || true)"
+
+# The calendar entry is DERIVED from the landing unit's own declared bounds
+# rather than guessed at — the same computation §10 makes for the transform.
+DV_START=$(($(hhmm_secs "$DV_TMR") + $(key_secs "$DV_TMR" RandomizedDelaySec)))
+check "fires no earlier than the landing can finish" "ok" \
+	"$([ "$DV_START" -ge "$REFRESH_LATEST" ] && echo ok || echo "starts ${DV_START}s < landing ${REFRESH_LATEST}s")"
+check "catches up a missed run" "1" "$(grep -c '^Persistent=true$' "$DV_TMR" || true)"
+check "timer is enablable" "1" "$(grep -c '^WantedBy=timers.target$' "$DV_TMR" || true)"
+check "teardown disables the timer" "1" \
+	"$(grep -c 'pkdump-derive@\${INSTANCE}.timer' "${REPO_DIR}/deploy/teardown.sh" || true)"
+
+# --- What the wrapper actually does -----------------------------------------
+# Driven end to end with a fake podman standing in for the job, because "the
+# scheduler names the date", "a fallback is warned about but not a failure" and
+# "no lake.env refuses by name" are behaviour, not greps.
+
+DV_HOME="${WORK}/dvhome"
+mkdir -p "${DV_HOME}/.config/pkdump" "${WORK}/dvbin"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_REGION=us-west-2\n' \
+	> "${DV_HOME}/.config/pkdump/lake.env"
+
+cat > "${WORK}/dvbin/podman" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+"secret inspect") exit 1 ;;
+"image exists") exit "${PKDUMP_TEST_NO_IMAGE:-0}" ;;
+esac
+if [ "$1" = run ]; then
+	printf 'Deriving ingest_date=... from dir /raw\n'
+	[ -n "${PKDUMP_TEST_FELL_BACK:-}" ] &&
+		printf '!! raw coverage has REGRESSED: https://tcgcsv.com/tcgplayer/3/9/prices is not in raw/\n'
+	printf 'Derive complete: /data/shared.sqlite\n'
+	exit "${PKDUMP_TEST_JOB_RC:-0}"
+fi
+exit 0
+EOF
+chmod +x "${WORK}/dvbin/podman"
+
+run_derive() { # run_derive [extra args...]
+	set +e
+	PATH="${WORK}/dvbin:${ORIG_PATH}" HOME="$DV_HOME" \
+		PKDUMP_LAKE_ENV="${DV_HOME}/.config/pkdump/lake.env" \
+		PKDUMP_ALERTS_ENV="${DV_HOME}/.config/pkdump/nonexistent.env" \
+		bash "${REPO_DIR}/deploy/derive.sh" dvtest "$@" 2>&1
+	printf 'RC=%s' "$?"
+	set -e
+}
+
+DV_OK="$(run_derive)"
+check "a clean run exits 0" "1" "$(printf '%s' "$DV_OK" | grep -c 'RC=0$' || true)"
+check "and says the catalog was rebuilt" "1" \
+	"$(printf '%s' "$DV_OK" | grep -c 'derive: OK' || true)"
+# The date the job refuses to default from the clock is supplied by the
+# scheduler — the one component allowed to know what day it is. UTC, because
+# that is what the ingest_date partition is named in.
+check "the wrapper names today's UTC date" "1" \
+	"$(printf '%s' "$DV_OK" | grep -c -- "--ingest-date $(date -u +%F)" || true)"
+check "an explicit --ingest-date is not overridden" "1" \
+	"$(run_derive --ingest-date 2026-08-09 | grep -c -- '--ingest-date 2026-08-09' || true)"
+
+# A run that needed the temporary upstream fallback is CORRECT but not
+# reproducible from the lake. That is a warning, not a failure, and it must not
+# be swallowed just because the job exited 0.
+DV_FELLBACK="$(PKDUMP_TEST_FELL_BACK=1 run_derive)"
+check "a fallback still exits 0" "1" "$(printf '%s' "$DV_FELLBACK" | grep -c 'RC=0$' || true)"
+check "…and is warned about, loudly" "1" \
+	"$(printf '%s' "$DV_FELLBACK" | grep -c 'WARNING — raw coverage has regressed' || true)"
+check "an undeliverable warning is not a failure" "1" \
+	"$(printf '%s' "$DV_FELLBACK" | grep -c 'the coverage warning reached nobody' || true)"
+
+DV_FAILED="$(PKDUMP_TEST_JOB_RC=1 run_derive)"
+check "a failed derive exits 1" "1" "$(printf '%s' "$DV_FAILED" | grep -c 'RC=1$' || true)"
+check "and says the catalog was NOT rebuilt" "1" \
+	"$(printf '%s' "$DV_FAILED" | grep -c 'derive: FAILED' || true)"
+
+# No lake configured is a refusal that names the file, never a silent skip.
+set +e
+DV_NOLAKE="$(PATH="${WORK}/dvbin:${ORIG_PATH}" HOME="$DV_HOME" \
+	PKDUMP_LAKE_ENV="${WORK}/nosuch-derive.env" \
+	bash "${REPO_DIR}/deploy/derive.sh" dvtest 2>&1)"
+DV_NOLAKE_RC=$?
+set -e
+check "no lake.env -> refuses" "1" "$DV_NOLAKE_RC"
+check "and names the file" "1" \
+	"$(printf '%s' "$DV_NOLAKE" | grep -c 'nosuch-derive.env does not exist' || true)"
+
+# An instance that was never built on this box. Without this the run dies inside
+# podman retrying `localhost` as a container REGISTRY for a local-only image.
+set +e
+DV_NOIMAGE="$(PATH="${WORK}/dvbin:${ORIG_PATH}" HOME="$DV_HOME" \
+	PKDUMP_LAKE_ENV="${DV_HOME}/.config/pkdump/lake.env" \
+	PKDUMP_TEST_NO_IMAGE=1 \
+	bash "${REPO_DIR}/deploy/derive.sh" dvtest 2>&1)"
+DV_NOIMAGE_RC=$?
+set -e
+check "no image -> fails naming the command that builds it" "1" "$DV_NOIMAGE_RC"
+check "and names setup.sh" "1" \
+	"$(printf '%s' "$DV_NOIMAGE" | grep -c 'deploy/setup.sh dvtest' || true)"
+check "never pulls the image" "1" \
+	"$(grep -c '^podman run --rm --pull=never' "${REPO_DIR}/deploy/derive.sh" || true)"
 
 reset_store
 

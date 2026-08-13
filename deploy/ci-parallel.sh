@@ -210,7 +210,14 @@ pkdump_par_run() {
 		return 0
 	fi
 
-	local cap="${PKDUMP_CI_JOBS:-3}"
+	# TWO, not three (2026-08-13). Three concurrent container gates each stand up a
+	# 1 GB nessie JVM, a MinIO, the app and a litestream sidecar; measured during CI
+	# this box sits at 0 free of 16 GB with swap 100% consumed. No kernel OOM kills,
+	# so it is contention rather than a hard limit — but it is enough to make
+	# replication lag by seconds, and two litestream gates were failing on that lag
+	# rather than on anything they assert. Red CI costs more than the ~13 min the
+	# third slot bought (pd-2nl9 measured 1982s -> 1175s at three).
+	local cap="${PKDUMP_CI_JOBS:-2}"
 	case "$cap" in
 	'' | *[!0-9]*)
 		echo "ERROR: PKDUMP_CI_JOBS='${cap}' is not a positive integer." >&2

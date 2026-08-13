@@ -92,7 +92,7 @@
 #                      job. See tests/refresh/tenant_bytes.sh.
 #
 # Steps 5-9 and 11-15 do not run where they are written. Each one QUEUES itself
-# under its own tier guard and they are run together, three at a time, by step
+# under its own tier guard and they are run together, two at a time, by step
 # 16 — see the "PARALLEL GATES" note below and deploy/ci-parallel.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
@@ -109,7 +109,7 @@
 # containers and share nothing — every name each of them uses is derived from
 # its own prefix plus a per-checkout hash, because concurrent polecats already
 # run whole suites of this script beside each other. So they are queued rather
-# than run in place, and step 16 runs them three at a time. The cap, the disk
+# than run in place, and step 16 runs them two at a time. The cap, the disk
 # floor checked before every dispatch, and why a failure in one is never masked
 # by the others in its wave, are all in deploy/ci-parallel.sh.
 #
@@ -698,7 +698,7 @@ if tier refresh; then
 fi
 
 # --- 16. Run the queued gates -----------------------------------------------
-# Everything queued above, three at a time, with the disk floor checked before
+# Everything queued above, two at a time, with the disk floor checked before
 # every dispatch and each gate's whole output printed under its own name as it
 # finishes. Nothing here decides WHICH gates run — that was settled by the tier
 # guards above, so a skipped tier queues nothing and this step simply has less

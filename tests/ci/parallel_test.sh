@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Parallel CI gate runner (pd-2nl9, item 4 of pd-6onp).
 #
-# deploy/ci-parallel.sh runs eleven container gates three at a time. Making a
+# deploy/ci-parallel.sh runs eleven container gates two at a time (the default;
+# every case below sets PKDUMP_CI_JOBS explicitly). Making a
 # test suite faster is only ever worth doing if it stays exactly as capable of
 # going red, so the properties this file asserts are the ones whose failure
 # would be invisible in a green run:

@@ -509,18 +509,111 @@ A run that needed the fallback is **correct but not reproducible from the
 lake**. That is a warning rather than a failure — the catalog is right, the
 lineage is not.
 
+### Proving it, on real data (pd-aer9)
+
+Three gates, and each proves something the other two cannot:
+
+| gate | upstream | what only it proves |
+| --- | --- | --- |
+| `crates/pkdump-lakehouse/tests/row_identical.rs` | a fixture on loopback | row-identity, idempotence, every refusal, the loud fallback — hermetic, in CI |
+| `tests/lake/derive.sh` | none: an `--internal` network | the shipped image needs **no network** |
+| `tests/lake/real_upstream_derive.sh` | **the real tcgcsv.com and api.pokemontcg.io** | row-identity on **real payloads at real scale** |
+
+The third is not a CI gate and must not become one: it fetches ~1,350 real
+responses and takes a few minutes of somebody's evening. It exists because the
+first two have never seen a real byte, and a replay that got the 450-group
+Japanese catalog, set discovery or a real pagination edge subtly wrong would
+pass both.
+
+```bash
+cargo build --release -p pkdump-cli -p pkdump-lakehouse
+PKDUMP_REAL_DERIVE=1 bash tests/lake/real_upstream_derive.sh
+```
+
+It builds a baseline catalog, copies it to both sides, runs `pkdump data
+refresh --land-raw` into a landing zone **on local disk**, rebuilds the same
+date from that partition with `--no-upstream-fallback`, and diffs the two row
+by row. It writes nothing to any bucket and touches no instance.
+
+**The run of 2026-08-13** (`ingest_date=2026-08-13`, `run=01KZWST5KCAXBK5JTGKNJ811AS`):
+1,345 parts landed, 85.3 MB uncompressed / 11 MB stored; the online refresh took
+**132s**, the offline rebuild from raw **35s**, and every one of the 1,345 URLs
+was answered from `raw/` (`raw coverage: complete`). All 21 tables compared
+equal, `raw_derivation` excluded and named:
+
+| table | rows | table | rows |
+| --- | --- | --- | --- |
+| `cards` | 47,640 | `printings` | 75,627 |
+| `sets` | 630 | `prices` | 289,255 |
+| `tcgcsv_products` | 57,716 | `latest_prices` | 289,255 |
+| `sealed_products` | 5,191 | `sealed_prices` | 4,136 |
+| `tcgplayer_groups` | 671 | `variants` | 290 |
+
+The clock was recovered from the manifests
+(`2026-08-13T05:34:09.516217300+00:00`) rather than read, which is what makes
+those `observed_at` and `fetched_at` columns compare equal at all.
+
+Two honest caveats, both visible in the run's own output:
+
+- **The symbol phase distinguished nothing here** — `0 processed, 0 cached, 175
+  overrides, 0 failed` on both sides. A warm catalog's `sets.symbol_url` values
+  already name `/sym/<set>.png`, so the http-prefix gate skips them. The gap in
+  the section below is real; this run does not exercise it.
+- **`pokemontcgio/cards` landed nothing**, because no set was new that night.
+  That is the ordinary case (the dataset is `Optional` for exactly this
+  reason), and it means the replay of *that* dataset is still only proven
+  against the fixture.
+
+### What is still NOT proven: prod's own `raw/`
+
+The lake holds exactly one partition today, `ingest_date=2026-08-11`, landed by
+hand by pd-fet2. **The derive refuses it**, correctly:
+
+```
+$ pkdump-lake-derive shared --ingest-date 2026-08-11 --no-upstream-fallback
+Deriving ingest_date=2026-08-11 from s3://pkdump-lake-…/
+  tcgcsv/products 2026-08-11: 01KZRWPR39WMHMARZ9WK5S0ND7 (671 part(s))
+  …
+Error: …: the run's manifest records no started_at, so the clock its rows were
+stamped with cannot be recovered.
+```
+
+It predates `Manifest.started_at`. And the nights since have landed nothing at
+all — `--ingest-date 2026-08-12` against the real bucket answers `no runs
+landed … never falls back`, which is `pd-kncd` (the nightly's env never reaches
+the process) seen from the reading end.
+
+So the sequence, and it cannot be short-circuited: **pd-kncd lands** → one
+night's raw lands with a clock in its manifests → derive *that* date from the
+bucket and diff it against the catalog the same refresh built. Until then the
+strongest available statement is the one above: row-identical on real upstream
+payloads at real catalog scale, over a partition landed by the same writer prod
+uses.
+
 ### Enabling it
 
 Installed for every instance and enabled for none:
 
 ```bash
+# On the deployment box, as the pkdump user:
 systemctl --user enable --now pkdump-derive@prod.timer
+
+# What it will run, and what to watch the first morning after:
+systemctl --user list-timers 'pkdump-*'
+journalctl --user -u pkdump-derive@prod.service -n 100
+sqlite3 ~/.local/share/containers/storage/volumes/pkdump-prod-data/_data/shared.sqlite \
+  'SELECT ingest_date, source, dataset, run_id, parts, derived_at FROM raw_derivation'
 ```
 
-Think before you do. Today `pkdump data refresh` still derives the catalog
-inline, so an enabled derive timer rebuilds it a second time from raw — correct
-and idempotent, but redundant. It becomes the only builder in item 6 of the
-epic. What is worth having now is the mechanism, the provenance, and the proof.
+Do not arm it before `pkdump-refresh@prod` is provably landing raw (pd-kncd):
+a derive with nothing to read is a refusal every night, and the unit has **no**
+`SuccessExitStatus=`, so it will page.
+
+Think before you do, even then. Today `pkdump data refresh` still derives the
+catalog inline, so an enabled derive timer rebuilds it a second time from raw —
+correct and idempotent, but redundant. It becomes the only builder in item 6 of
+the epic. What is worth having now is the mechanism, the provenance, and the
+proof.
 
 ### The one phase a replay cannot supply
 

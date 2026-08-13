@@ -426,7 +426,11 @@ stopped replicating paged nobody (pd-2t6u). A deploy now names the units it
 changed.
 
 - `pkdump-refresh@<instance>` — nightly `pkdump data refresh` inside the
-  running container (via `podman exec`), 06:00 + jitter.
+  running container (via `podman exec`), 06:00 + jitter. Exit 2 is a **partial**
+  run: the pokemontcg.io tail failed every retry, so the set list is stale, but
+  the run continued and TCGCSV's prices — the half a night cannot get back —
+  landed (pd-nons). Unlike the transform tier's, it is deliberately not declared
+  a success, so a partial run still pages; the unit file has the argument.
 - `pkdump-backup-check@<instance>` — backup-freshness dead-man's switch
   (Layer 1, every 6h). See [Backup-failure alarming](#backup-failure-alarming).
 - `pkdump-value-snapshots@<instance>` — the transform tier's nightly run

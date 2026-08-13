@@ -35,5 +35,9 @@ Type=oneshot
 # PKDUMP_HTTP_RETRY_ATTEMPTS / PKDUMP_HTTP_RETRY_BASE_MS (see
 # crates/pkdump-ingest/src/retry.rs) widen the retry budget without a rebuild,
 # for a stretch of bad upstream weather. Unset is 4 attempts at 500ms doubling.
+# This is a `podman exec` into the already-running instance, so they belong on
+# the exec — `podman exec -e PKDUMP_HTTP_RETRY_ATTEMPTS=8 …` — or on the
+# container itself via Environment= in deploy/pkdump.container. An
+# Environment= here would only reach the podman client.
 ExecStart=/bin/sh -c 'exec podman exec systemd-pkdump-%i pkdump data refresh'
 TimeoutStartSec=1800

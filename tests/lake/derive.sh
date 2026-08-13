@@ -27,9 +27,9 @@
 #     (raw/ is keyed by URL, so a replay must build the URLs the fetch built).
 #     It points at a host port that is unreachable from an --internal network,
 #     which is exactly the property being asserted: a single request would fail
-#     the run rather than silently succeed.
-#   * `--no-upstream-fallback` on top, so "it needed the network" is a refusal
-#     rather than a slow success.
+#     the run rather than silently succeed. A URL the partition does not hold is
+#     a refusal in the job itself (item 4 removed the fallback), so "it needed
+#     the network" cannot be a slow success either way.
 #
 # And the comparison is against a catalog built by the OTHER path from the SAME
 # bytes: §0 lands raw and derives online in one pass over one set of responses.
@@ -175,7 +175,7 @@ check "egress from the shipped image is blocked" "blocked" "$EGRESS"
 	die "the derive container can reach the internet — 'built from raw alone' would prove nothing"
 
 log "3. derive ${DAY1} from raw/, with nowhere to fetch from"
-derive "$DAY1" --no-upstream-fallback >"${WORK}/derive1.log" 2>&1 || {
+derive "$DAY1" >"${WORK}/derive1.log" 2>&1 || {
 	sed 's/^/  /' "${WORK}/derive1.log"
 	die "the derive failed for ${DAY1}"
 }
@@ -201,7 +201,7 @@ log "5. and so is the SECOND day, deprecations included"
 # Day two renumbers a TCGCSV product, so a printing is soft-deprecated and the
 # run's clock is stamped into `printings.deprecated_at` — the one value an
 # offline rebuild could not reproduce while variant expansion read its own.
-derive "$DAY2" --no-upstream-fallback >"${WORK}/derive2.log" 2>&1 || {
+derive "$DAY2" >"${WORK}/derive2.log" 2>&1 || {
 	sed 's/^/  /' "${WORK}/derive2.log"
 	die "the derive failed for ${DAY2}"
 }
@@ -214,7 +214,7 @@ check "${DAY2} derived from raw == ${DAY2} derived online" "1" \
 
 log "6. re-deriving the same date changes nothing"
 cp "${FIXTURE}/derived.sqlite" "${FIXTURE}/before-rerun.sqlite"
-derive "$DAY2" --no-upstream-fallback >"${WORK}/derive2b.log" 2>&1 ||
+derive "$DAY2" >"${WORK}/derive2b.log" 2>&1 ||
 	die "the second derive of ${DAY2} failed"
 diff_catalogs /fixture/before-rerun.sqlite /fixture/derived.sqlite >"${WORK}/diff3.log" 2>&1 || {
 	sed 's/^/  /' "${WORK}/diff3.log"
@@ -231,7 +231,7 @@ check "raw_derivation is where the rerun shows" "1" \
 
 log "8. a date nobody landed is REFUSED, not derived from the newest one"
 RC=0
-derive 2001-01-01 --no-upstream-fallback >"${WORK}/refuse.log" 2>&1 || RC=$?
+derive 2001-01-01 >"${WORK}/refuse.log" 2>&1 || RC=$?
 check "the derive refused" "yes" "$([[ "$RC" -ne 0 ]] && echo yes || echo no)"
 check "it named the date it was asked for" "yes" \
 	"$(grep -q '2001-01-01' "${WORK}/refuse.log" && echo yes || echo no)"

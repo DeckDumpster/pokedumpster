@@ -21,6 +21,7 @@ chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+image.workspace = true
 zstd.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true

@@ -9,6 +9,9 @@
 //! So these tests drive `TcgcsvClient` and `PokemonTcgClient` against a
 //! local server (`tests/support`), twice, and compare.
 
+// As in the three other test binaries that share this module: it serves four
+// of them, so a helper only some of them need is not dead code.
+#[allow(dead_code)]
 mod support;
 
 use std::sync::Arc;
@@ -31,10 +34,7 @@ fn tcgcsv_route(target: &str, _n: usize) -> Reply {
         ),
         "/3/1/products" | "/3/2/products" => Reply::ok(r#"{"results":[]}"#),
         "/3/1/prices" | "/3/2/prices" => Reply::ok(r#"{"results":[]}"#),
-        other => Reply {
-            status: 404,
-            body: format!(r#"{{"error":"no route for {other}"}}"#),
-        },
+        other => Reply::status(404, format!(r#"{{"error":"no route for {other}"}}"#)),
     }
 }
 
@@ -211,10 +211,7 @@ fn a_run_that_fails_partway_leaves_a_manifest_that_says_so() {
                ]}"#,
         ),
         "/3/1/products" => Reply::ok(r#"{"results":[]}"#),
-        _ => Reply {
-            status: 503,
-            body: "upstream is down".into(),
-        },
+        _ => Reply::status(503, "upstream is down"),
     });
     let tmp = tempfile::tempdir().unwrap();
     let landing = landing_in(tmp.path());
@@ -262,11 +259,8 @@ fn a_run_that_fails_partway_leaves_a_manifest_that_says_so() {
 #[test]
 fn a_retry_lands_beside_the_first_attempt_not_on_it() {
     let upstream = FakeUpstream::start(|target, n| match (target, n) {
-        // The first run's groups call fails; the second run's succeeds.
-        ("/3/groups", 0) => Reply {
-            status: 503,
-            body: "upstream is down".into(),
-        },
+        // The first run's groups call fails; the retry's succeeds.
+        ("/3/groups", 0) => Reply::status(503, "upstream is down"),
         ("/3/groups", _) => Reply::ok(r#"{"results":[{"groupId":1,"name":"Base Set"}]}"#),
         _ => Reply::ok(r#"{"results":[]}"#),
     });

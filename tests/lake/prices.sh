@@ -28,7 +28,10 @@
 #
 # Prod-safe: its own podman network, MinIO, Nessie, temp dir and image tag.
 # Touches no pkdump-* unit, no pkdump-*-data volume, no real S3 bucket and no
-# tenant database — the lake never holds tenant data at all.
+# tenant database — the lake never holds tenant data at all, which
+# tests/lake/tenant_isolation_test.sh asserts on the tree in the lint tier
+# (pd-cgi9): catalog.prices carries no tenant-identifying column, and the module
+# that builds it opens no database.
 set -euo pipefail
 
 NESSIE_IMAGE=${NESSIE_IMAGE:-ghcr.io/projectnessie/nessie:0.104.3}
@@ -291,6 +294,140 @@ print(t.current_snapshot().summary['pkdump.raw-complete'])
 [ "$COMPLETE_PROP" = "false" ] ||
 	die "the partial day's snapshot claims pkdump.raw-complete=${COMPLETE_PROP}"
 echo "    ok   --allow-incomplete builds it and records pkdump.raw-complete=false"
+
+echo "==> §10 The freshness check judges the newest partition, not completeness"
+# pd-up36. A lake whose price build has quietly stopped keeps producing correct
+# arithmetic over stale prices, advancing nightly, with nothing saying the
+# numbers stopped moving. That is detected by the AGE of the newest partition
+# and by nothing else — in particular NOT by whether a day was complete, which
+# is conservative across datasets and would page on a normal flaky night
+# (pd-me6h). §9 just built an INCOMPLETE day into this table; the verdict below
+# has to be about ${DATE_NEW} regardless.
+AGE_RC=0
+AGE_OUT=$(run_job pkdump-lake-prices-age --as-of "$DATE_NEW" --max-age-days 2 2>&1) || AGE_RC=$?
+[ "$AGE_RC" -eq 0 ] ||
+	die "the day the table was just built for read as stale (rc ${AGE_RC}): ${AGE_OUT}"
+case "$AGE_OUT" in
+*"observed_date=${DATE_NEW}"*) ;;
+*) die "the check did not judge the newest partition: ${AGE_OUT}" ;;
+esac
+case "$AGE_OUT" in
+*"incomplete"* | *"complete"*) die "the age verdict mentions completeness: ${AGE_OUT}" ;;
+esac
+echo "    ok   fresh at ${DATE_NEW}, and the incomplete day in the table changed nothing"
+
+# The boundary, from both sides. Derived from the fixture's own dates so this
+# stays true as the calendar moves past them.
+AT_LIMIT=$(date -u -d "${DATE_NEW} +2 days" +%F)
+PAST_LIMIT=$(date -u -d "${DATE_NEW} +3 days" +%F)
+run_job pkdump-lake-prices-age --as-of "$AT_LIMIT" --max-age-days 2 >/dev/null 2>&1 ||
+	die "exactly 2 days behind read as stale at a 2-day limit"
+
+STALE_RC=0
+STALE_OUT=$(run_job pkdump-lake-prices-age --as-of "$PAST_LIMIT" --max-age-days 2 2>&1) || STALE_RC=$?
+[ "$STALE_RC" -eq 3 ] ||
+	die "3 days behind a 2-day limit exited ${STALE_RC}, expected 3 (stale)"
+case "$STALE_OUT" in
+*STALE*) echo "    ok   2 days behind is fresh, 3 days behind is STALE and says so" ;;
+*) die "it went stale without saying so: ${STALE_OUT}" ;;
+esac
+
+echo "==> §11 A table nothing has ever built is stale, not an error"
+# The most extreme form of "prices are not arriving". It must not read as a
+# crash: a lakehouse armed and producing nothing is exactly what should page.
+NOTABLE_RC=0
+NOTABLE_OUT=$(run_job pkdump-lake-prices-age --table catalog.nosuchprices \
+	--as-of "$DATE_NEW" 2>&1) || NOTABLE_RC=$?
+[ "$NOTABLE_RC" -eq 3 ] ||
+	die "a table that does not exist exited ${NOTABLE_RC}, expected 3 (stale)"
+case "$NOTABLE_OUT" in
+*"there is no catalog.nosuchprices"*) echo "    ok   refused as STALE, naming the table" ;;
+*) die "it did not say which table was missing: ${NOTABLE_OUT}" ;;
+esac
+
+echo "==> §12 The SHIPPED wrapper, end to end, against this lake"
+# deploy/prices.sh is what pkdump-prices@<instance>.service runs. Everything
+# above tests the jobs; this tests the thing a timer actually invokes — build a
+# day, then judge the table, then decide which of 0/2/1 the night was.
+cat > "$WORK/lake.env" <<EOF
+PKDUMP_LAKE_NESSIE_URI=http://${NESSIE_CTR}:19120/iceberg/
+PKDUMP_LAKE_S3_BUCKET=${BUCKET}
+PKDUMP_LAKE_S3_REGION=us-west-2
+PKDUMP_LAKE_S3_ENDPOINT=http://${MINIO_CTR}:9000
+PKDUMP_LAKE_S3_ACCESS_KEY_ID=${AKID}
+PKDUMP_LAKE_S3_SECRET_ACCESS_KEY=${SECRET}
+PKDUMP_LAKE_S3_PATH_STYLE=1
+EOF
+
+# A window wide enough that the fixture's fixed dates stay "recent" forever;
+# §10 already pinned where the boundary is.
+FOREVER=36500
+wrapper() { # wrapper <max-age-days> [args...] — prints output, returns its status
+	local max_age="$1"
+	shift
+	# The credentials are blanked, not merely left unconfigured. (c) below
+	# provokes a real alarm on purpose, and a gate that pages an operator when
+	# it works as designed is pd-n0lf: nine real pushes overnight from drills
+	# tearing themselves down, after which nobody trusts the pager. alert.sh
+	# reads an empty token as unconfigured and refuses, which is what the
+	# wrapper's "reached nobody" path expects.
+	PKDUMP_LAKE_ENV="$WORK/lake.env" \
+		PKDUMP_ALERTS_ENV="$WORK/no-such-alerts.env" \
+		PUSHOVER_TOKEN= PUSHOVER_USER= \
+		PKDUMP_LAKE_NETWORK="$NET" \
+		PKDUMP_LAKE_JOB_IMAGE="$JOB_IMAGE" \
+		PKDUMP_LAKE_PRICES_MAX_AGE_DAYS="$max_age" \
+		bash "${REPO_DIR}/deploy/prices.sh" "pdprices-${SUFFIX}" "$@" 2>&1
+}
+
+# (a) The decision this bead had to make, made against a real refusal: §9 proved
+# the bare job REFUSES ${DATE_INCOMPLETE}. The nightly wrapper passes
+# --allow-incomplete, so the same day builds — and an incomplete-but-recent day
+# raises nothing at all.
+W_RC=0
+W_OUT=$(wrapper "$FOREVER" --ingest-date "$DATE_INCOMPLETE") || W_RC=$?
+[ "$W_RC" -eq 0 ] ||
+	die "the wrapper failed on the day the bare job refuses (rc ${W_RC}):
+${W_OUT}"
+case "$W_OUT" in
+*"prices: OK"*) ;;
+*) die "the wrapper did not report a clean night: ${W_OUT}" ;;
+esac
+case "$W_OUT" in
+*STALE* | *MISSED*) die "an incomplete-but-recent day raised an alarm: ${W_OUT}" ;;
+esac
+echo "    ok   an incomplete day builds and does not alarm"
+
+# (b) A night whose raw never landed. Today has no partition in this fixture, so
+# the build genuinely fails — over a table that is still recent. Not an outage:
+# tomorrow's build fills the day in, and the unit's SuccessExitStatus=2 keeps it
+# out of `failed`.
+W_RC=0
+W_OUT=$(wrapper "$FOREVER") || W_RC=$?
+[ "$W_RC" -eq 2 ] ||
+	die "a missed day over a fresh table exited ${W_RC}, expected 2:
+${W_OUT}"
+case "$W_OUT" in
+*"prices: MISSED"*) echo "    ok   a missed day over a fresh table is a warning, exit 2" ;;
+*) die "it exited 2 without saying what was missed: ${W_OUT}" ;;
+esac
+
+# (c) The alarm the bead exists for, and it fires on a night the BUILD SUCCEEDED
+# — which is the whole point of judging the table rather than the job's report
+# of itself.
+W_RC=0
+W_OUT=$(wrapper 0 --ingest-date "$DATE_NEW") || W_RC=$?
+[ "$W_RC" -eq 1 ] ||
+	die "a stale table exited ${W_RC}, expected 1:
+${W_OUT}"
+case "$W_OUT" in
+*"prices: built"*) ;;
+*) die "the build did not run before the freshness check: ${W_OUT}" ;;
+esac
+case "$W_OUT" in
+*"prices: STALE"*) echo "    ok   a stale table pages even after a clean build, exit 1" ;;
+*) die "it failed for the wrong reason: ${W_OUT}" ;;
+esac
 
 echo ""
 echo "==> tests/lake/prices.sh PASSED"

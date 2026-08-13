@@ -106,10 +106,7 @@ fn start_upstream(day: Arc<AtomicUsize>) -> FakeUpstream {
             ["3", "groups"] => Reply::ok(GROUPS),
             ["3", _group, "products"] => Reply::ok(PRODUCTS),
             ["3", _group, "prices"] => Reply::ok(prices_json(day.load(Ordering::SeqCst))),
-            _ => Reply {
-                status: 404,
-                body: format!(r#"{{"error":"no route for {target}"}}"#),
-            },
+            _ => Reply::status(404, format!(r#"{{"error":"no route for {target}"}}"#)),
         }
     })
 }

@@ -29,6 +29,10 @@
 // crate in the workspace whose only job is to be a dev-dependency — is more
 // scaffolding than the 100 lines it would hold.
 #[path = "../../pkdump-ingest/tests/support/mod.rs"]
+// Shared scaffolding: this binary uses Reply::status but not Reply::png, which only
+// pkdump-lakehouse's row_identical.rs needs. CI runs clippy with -D warnings, so the
+// unused half is a build failure without this. Same allow prices_fixture.rs carries.
+#[allow(dead_code)]
 mod support;
 
 use std::path::Path;
@@ -110,10 +114,7 @@ fn price_rows(dir: &Path) -> i64 {
 fn a_dead_pokemontcg_io_no_longer_costs_the_nights_prices() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let upstream = FakeUpstream::start(|target, _| {
-        route(target, |_| Reply {
-            status: 502,
-            body: "bad gateway".into(),
-        })
+        route(target, |_| Reply::status(502, "bad gateway"))
     });
     let tmp = tempfile::tempdir().unwrap();
 

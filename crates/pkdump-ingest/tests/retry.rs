@@ -13,6 +13,10 @@
 //! duration. `the_backoff_actually_waits` is the one exception, and it uses
 //! a budget small enough to measure without being slow.
 
+// Shared scaffolding: this binary uses Reply::status but not Reply::png, which only
+// pkdump-lakehouse's row_identical.rs needs. CI runs clippy with -D warnings, so the
+// unused half is a build failure without this. Same allow prices_fixture.rs carries.
+#[allow(dead_code)]
 mod support;
 
 use std::sync::Arc;
@@ -52,10 +56,7 @@ fn manifest_of(
 }
 
 fn down(status: u16) -> Reply {
-    Reply {
-        status,
-        body: format!(r#"{{"error":"upstream says {status}"}}"#),
-    }
+    Reply::status(status, format!(r#"{{"error":"upstream says {status}"}}"#))
 }
 
 const ONE_GROUP: &str = r#"{"results":[{"groupId":1,"name":"Base Set","abbreviation":"BS"}]}"#;

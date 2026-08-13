@@ -1,0 +1,82 @@
+[Unit]
+Description=PokeDumpster nightly catalog.prices build (%i)
+# pd-up36. The middle of the nightly chain, and the piece that was missing.
+#
+# pd-8m5c put the transform tier on a timer; it values every tenant's collection
+# from the newest quote in `catalog.prices`. Nothing built that table on a
+# schedule — `pkdump-lake-build-prices` was a hand-run podman invocation
+# (deploy/LAKE.md §6). So on a box with the lakehouse armed the nightly value
+# snapshot was correct arithmetic over whatever day someone last built by hand:
+# advancing every night, with nothing anywhere saying the prices had stopped
+# moving. Same failure class as pd-s5yn — a job that looks like it ran.
+#
+# {{REPO_DIR}} is sed-substituted by deploy/units-lib.sh (single-clone
+# deployment). Installed for every instance, enabled for none — see the timer.
+#
+# ── ORDERING: the chain is land -> derive -> prices -> transform ────────────
+# This job reads the bytes the landing unit put in the bucket, and the transform
+# reads the table this job writes. Both are declared as ordering dependencies
+# rather than assumed from the calendar:
+#
+#   After=pkdump-refresh@%i.service   — the landing. Its own TimeoutStartSec is
+#   1800s, so it may still be running when this timer fires; this unit's start
+#   job then WAITS for it instead of reading a half-landed run.
+#
+#   After=pkdump-derive@%i.service    — the offline catalog derive. There is no
+#   data dependency between the two (one writes shared.sqlite, the other writes
+#   Iceberg), so this line buys sequencing rather than correctness: the derive
+#   walks ~50k cards with a transaction each, and a four-core box that also
+#   serves prod should not run it beside anything heavy. One chain, in order.
+#
+# The transform's own `After=pkdump-prices@%i.service` closes the chain — it is
+# declared there, next to the job that has to wait, which is where every other
+# ordering line in this set lives.
+#
+# Deliberately NOT `Wants=` on either: the refresh is a oneshot without
+# RemainAfterExit, so pulling it in would re-run the whole catalog fetch a second
+# time every night. The trap pkdump-value-snapshots@.service documents.
+After=pkdump-refresh@%i.service
+After=pkdump-derive@%i.service
+# raw/ is in S3 and the catalog is Nessie on the lake network.
+After=network-online.target
+Wants=network-online.target
+# The same guard the rest of the lake units carry: a box with no lake
+# configuration at all skips rather than failing. It is only half a guard,
+# deliberately — deploy/setup.sh scaffolds lake.env commented out, so on any box
+# that has been set up the file exists and this condition passes. The other half
+# is in the wrapper, which refuses by name when the instance has no lake job
+# image or network; a condition cannot ask podman anything.
+ConditionPathExists=%h/.config/pkdump/lake.env
+# Layer 2 (pokedumpster-ivq.3): push the journal tail on a real failure. Exit 2
+# is not one — see SuccessExitStatus below.
+OnFailure=pkdump-alert@%n.service
+
+[Service]
+Type=oneshot
+# ── 0 / 2 / 1 ARE THREE DIFFERENT ANSWERS ──────────────────────────────────
+#   0  today's partition was built AND catalog.prices is fresh.
+#   2  the build produced no partition for today, and the table is still within
+#      its freshness window. A single missed night — a landing that failed, a
+#      transient S3 error, a day whose raw never arrived — is not an outage:
+#      yesterday's prices value today's collection, and tomorrow's build fills
+#      the day in. A unit that paged on it would page on a normal flaky night,
+#      which is how an operator learns to ignore a pager (pd-me6h). The wrapper
+#      still says MISSED and pushes a warning, so it is not silent either.
+#   1  catalog.prices is STALE — nothing has landed in it for longer than the
+#      window — or its age could not be established at all. Both page, via
+#      OnFailure= above and via the wrapper's own push, which leads with the
+#      cause.
+#
+# Note where the alarm is NOT: on one day's completeness. The build passes
+# --allow-incomplete and records `pkdump.raw-complete=false`, because `complete`
+# is conservative across datasets — a pokemontcg.io tail that died marks the
+# prices manifest incomplete even though every price fetch succeeded, which is
+# the normal shape of a flaky night. Age is the property that actually matters
+# and it does not cry wolf.
+SuccessExitStatus=2
+ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/prices.sh %i'
+# The bound the timer below is derived from. A day's price payloads are read
+# from S3, parsed and committed in one Iceberg overwrite — minutes on a real
+# lake — and the ceiling is here so a Nessie that never answers fails the unit
+# rather than hanging the timer until the next one.
+TimeoutStartSec=1800

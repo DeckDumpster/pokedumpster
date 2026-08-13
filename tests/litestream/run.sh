@@ -464,6 +464,31 @@ log "6. restore the NON-FIRST tenant — latest, and point-in-time"
 # `<no restored db>` as the only clue.
 restore_ok() { # restore_ok <out> <url> [flags...] — never aborts the report
 	local out="$1" url="$2"; shift 2
+	local i
+	# RETRY, because a restore failing and a restore returning the wrong bytes are
+	# different findings that used to look identical. A one-shot restore that loses
+	# a race with replication produces no file, `sq_restored` prints
+	# `<no restored db>`, and the check below reports it as a DATA mismatch —
+	# "expected 1, got <no restored db>" — which reads as a derivation bug.
+	#
+	# Observed 2026-08-13: the same commit failed twice in a row on this box, once
+	# here and once in drill/, in different assertions each time. The point-in-time
+	# restore is the sensitive one — it can only succeed once the replica covers
+	# ${MARKER}, and under load (three container gates at a time on a 16 GB box with
+	# swap exhausted) that lag is seconds, not milliseconds.
+	#
+	# Waiting on the condition rather than on the clock, per pd-86er. The final
+	# attempt goes through diag_run so a genuine failure still takes Litestream's
+	# own words into the log rather than leaving `<no restored db>` as the clue.
+	for i in 1 2 3 4 5 6 7 8 9; do
+		rm -f "${WORK}/restore/${out}"
+		if ls_run restore "$@" -o "/restore/${out}" "$url" >/dev/null 2>&1 \
+			&& [ -s "${WORK}/restore/${out}" ]; then
+			return 0
+		fi
+		sleep 3
+	done
+	rm -f "${WORK}/restore/${out}"
 	diag_run "restore ${out}" ls_run restore "$@" -o "/restore/${out}" "$url" >/dev/null || true
 }
 sq_restored() { diag_run "sqlite ${1}" sq "$WORK/restore/$1" "$2" || echo '<no restored db>'; }

@@ -277,5 +277,41 @@ check "ci.sh exits on the not-a-tier answer" "1" \
 	"$(grep -c 'which is not one of' "$CI_SH")"
 
 # ---------------------------------------------------------------------------
+log "7. The container image is built only for tiers that need it (pd-5l2e)"
+
+# ci.sh builds the shipped image ONCE and every gate that needs it tags that
+# one. Built unconditionally, a docs-only PR would pay for a container build to
+# run a lint tier — which is precisely the cost §1-§5 exist to remove — so the
+# build is guarded on whether any image-consuming tier was selected.
+#
+# The guard names its tiers, and that list is the thing that decays: a sixth
+# gate that starts tagging the image, under a tier nobody added here, would
+# find no image and refuse. So the list is not read from the guard and trusted —
+# every consumer is located in ci.sh and its OWN tier is what gets checked.
+
+IMAGE_TIERS="$(grep -oE '^for _t in [a-z ]+; do' "$CI_SH" | head -1 |
+	sed -e 's/^for _t in //' -e 's/; do$//')"
+check "the build is guarded, not unconditional" "1" \
+	"$(grep -c 'if \[ "\$NEEDS_IMAGE" = yes \]; then' "$CI_SH")"
+check "and the guard asks about tiers" "yes" \
+	"$([ -n "$IMAGE_TIERS" ] && echo yes || echo no)"
+
+# Every consumer of the image, and the tier whose block it sits in: the last
+# `if tier X;` before the line that invokes it.
+tier_of() { # tier_of <needle> -> the tier whose block first invokes it
+	awk -v needle="$1" '
+		/^ *if tier [a-z]+;/ { t = $3; sub(/;$/, "", t) }
+		index($0, needle) && !/^ *#/ && !found { print t; found = 1 }
+	' "$CI_SH"
+}
+
+for consumer in tests/tenants/upgrade.sh tests/tenants/handles.sh \
+	tests/refresh/tenant_bytes.sh tests/schema-version/run.sh "setup.sh\" \"\$INSTANCE\""; do
+	t="$(tier_of "$consumer")"
+	check "the image consumer ${consumer} runs in a tier the build covers" "yes" \
+		"$([[ " ${IMAGE_TIERS} " == *" ${t} "* ]] && echo yes || echo "no (tier '${t}' not in '${IMAGE_TIERS}')")"
+done
+
+# ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

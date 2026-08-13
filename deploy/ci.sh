@@ -19,6 +19,10 @@
 #                     and tests/alarming/journal_summary_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
+#  3b. The image:      built ONCE, here. Five gates below need the shipped image
+#                      and each wants its own tag; they tag this one rather than
+#                      each running a builder over identical content. See
+#                      deploy/image-lib.sh.
 #   4. Container gate: build + start a `--test` instance, wait for the server
 #                      to answer on its port, then tear it down.
 #   5. Backup gate:    replicate four tenant databases through the SHIPPED
@@ -115,6 +119,9 @@
 #   PKDUMP_CI_CHANGED_FILES=list bash deploy/ci.sh  # select tiers from a list
 #                                                 # of changed paths
 #   PKDUMP_CI_SELECT_ONLY=1 bash deploy/ci.sh     # print the plan, run nothing
+#   PKDUMP_PREBUILT_IMAGE=localhost/pkdump:x bash deploy/ci.sh
+#                                                 # skip even the one build and
+#                                                 # test that image instead
 #
 # Parallel-safe: the container instance is named per-checkout, so several
 # polecats can run this concurrently from their own worktrees without tearing
@@ -171,6 +178,11 @@ INSTANCE="${PKDUMP_CI_INSTANCE:-ci-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1
 SERVICE_NAME="pkdump-${INSTANCE}"
 CONTAINER="systemd-${SERVICE_NAME}"
 
+# The one image this run builds. Five gates need it and each wants its own tag,
+# so it is built once under this name and every gate tags it — per-checkout for
+# the same reason the instance name is, since concurrent polecats share a store.
+BUILD_IMAGE="localhost/pkdump:build-${INSTANCE}"
+
 START_TIME=$(date +%s)
 
 CURRENT_STEP="startup"
@@ -221,8 +233,15 @@ fi
 # Guard for one tier's steps. Exit status 2 from the library means the name is
 # not a tier at all — a typo, which must be fatal here rather than reading as
 # "not selected" and skipping a gate on every run from now on.
+# `-q` asks the same question without announcing a skip — for a caller that has
+# to ask about several tiers to answer one question (does anything below need
+# the image built?) and would otherwise print a skip line per tier it asks about.
 tier() {
-    local rc=0
+    local rc=0 quiet=""
+    if [ "$1" = "-q" ]; then
+        quiet=yes
+        shift
+    fi
     pkdump_ci_tier_selected "$1" || rc=$?
     case "$rc" in
         0) return 0 ;;
@@ -231,8 +250,10 @@ tier() {
             exit 1
             ;;
     esac
-    echo ""
-    echo "==> (skipped: tier '$1' is not required by these changes)"
+    if [ -z "$quiet" ]; then
+        echo ""
+        echo "==> (skipped: tier '$1' is not required by these changes)"
+    fi
     return 1
 }
 
@@ -281,6 +302,12 @@ podman image prune -f --filter "until=24h" >/dev/null 2>&1 || true
 cleanup() {
     local rc=$?
     bash "$SCRIPT_DIR/teardown.sh" "$INSTANCE" --purge 2>/dev/null || true
+    # The one name this run added purely to hand the image to the gates. Every
+    # tier tagged the same image under its own name, and untagging one name of a
+    # multi-named image leaves the image and the other names alone — so this
+    # cannot pull the image out from under a gate, and the next run's build
+    # still finds the layers.
+    podman rmi "$BUILD_IMAGE" 2>/dev/null || true
     # After the teardown noise, so "which step failed, and with what status" is
     # the last thing in the log rather than something to infer from where it
     # stops.
@@ -386,6 +413,48 @@ if tier frontend; then
         npm run check
         npm run build
     )
+fi
+
+# --- 3b. The image, once ----------------------------------------------------
+# Five gates below need the shipped image: the container gate and the
+# schema-version gate through deploy/setup.sh, and the upgrade, tenant-header
+# and refresh gates directly. Each used to run its own `podman build` over
+# identical content — five invocations of the builder per run.
+#
+# Podman's layer cache made four of them cheap rather than free — measured on
+# the CI box: ~4s for a repeat over identical content, against 5m23s when the
+# sources changed and 7m27s with the layer cache dropped. Nothing GUARANTEES the
+# cheap case: a `podman image prune`, a store teardown or a cold box turns the
+# four repeats back into four full compiles, and that regression reads as "CI is
+# slow again" rather than as a bug. Building here and exporting the name makes it
+# structural. Standalone runs of any of those gates still build their own image;
+# see deploy/image-lib.sh for the contract.
+#
+# It is built only if one of those tiers is actually selected. A build nobody
+# needs is exactly the cost pd-s2mj removed, and a docs-only PR must not pay it
+# just because the build moved up here. `tier` prints a skip line per call, so
+# the question is asked through the raw predicate and answered once.
+
+# Through `tier -q`, so a typo in this list is the same fatal error it is
+# anywhere else rather than reading as "not selected" and quietly never
+# building. No `break`: every name is put to the library.
+NEEDS_IMAGE=no
+for _t in container tenants schema refresh; do
+    if tier -q "$_t"; then NEEDS_IMAGE=yes; fi
+done
+
+if [ "$NEEDS_IMAGE" = yes ]; then
+    step "Building the container image (once — every gate below tags this one)"
+    # Through the same helper the gates use, so a caller who already has the
+    # image (PKDUMP_PREBUILT_IMAGE set in the environment) skips even this build.
+    # shellcheck source=deploy/image-lib.sh
+    . "$SCRIPT_DIR/image-lib.sh"
+    pkdump_image_ensure "$BUILD_IMAGE" "$REPO_DIR"
+    export PKDUMP_PREBUILT_IMAGE="$BUILD_IMAGE"
+    echo "    ${BUILD_IMAGE} ($(podman image inspect --format '{{.Id}}' "$BUILD_IMAGE" | cut -c1-12))"
+else
+    echo ""
+    echo "==> (skipped: no selected tier needs the container image)"
 fi
 
 # --- 4. Container gate ------------------------------------------------------

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Parallel CI gate runner (pd-2nl9, item 4 of pd-6onp).
 #
-# deploy/ci-parallel.sh runs eleven container gates two at a time (the default;
+# deploy/ci-parallel.sh runs thirteen container gates two at a time (the default;
 # every case below sets PKDUMP_CI_JOBS explicitly). Making a
 # test suite faster is only ever worth doing if it stays exactly as capable of
 # going red, so the properties this file asserts are the ones whose failure
@@ -337,7 +337,8 @@ log "7. deploy/ci.sh queues every gate, under a real tier, and runs the queue on
 GATES="tests/litestream/run.sh tests/litestream/drill.sh tests/alarming/run.sh
 tests/litestream/recreate.sh tests/tenants/upgrade.sh tests/tenants/handles.sh
 tests/schema-version/run.sh tests/lake/run.sh tests/lake/prices.sh
-tests/lake/value_snapshots.sh tests/refresh/tenant_bytes.sh"
+tests/lake/value_snapshots.sh tests/lake/derive.sh tests/lake/tenant_zone.sh
+tests/refresh/tenant_bytes.sh"
 
 for g in $GATES; do
 	check "${g} is queued exactly once" "1" \

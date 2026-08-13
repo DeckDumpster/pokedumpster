@@ -85,6 +85,14 @@
 #                      drives the SHIPPED deploy/value-snapshots.sh — the file
 #                      the nightly timer executes — over the same lake. See
 #                      tests/lake/value_snapshots.sh.
+#  14b.Tenant-zone gate: the tenant zone shares the lake's bucket and is
+#                      separated from it by a prefix — which is to say by two
+#                      credential policies and a lifecycle rule, and by nothing
+#                      else. Assert the boundary in BOTH directions against a
+#                      MinIO, then BREAK it deliberately and assert the same
+#                      checks go red; assert the 90-day retention is mechanical
+#                      and that no rule can reach raw/, whose retention is
+#                      indefinite by decision. See tests/lake/tenant_zone.sh.
 #  15. Refresh gate:   the other half of that — a real `pkdump data refresh`,
 #                      through the shipped image, over a data directory with
 #                      two provisioned tenants in it, must leave every tenant
@@ -105,7 +113,7 @@
 # Exits non-zero on the first failure of the sequential steps. Fast and
 # re-runnable.
 #
-# PARALLEL GATES (pd-2nl9). Eleven of the steps above stand up their own
+# PARALLEL GATES (pd-2nl9). Thirteen of the steps above stand up their own
 # containers and share nothing — every name each of them uses is derived from
 # its own prefix plus a per-checkout hash, because concurrent polecats already
 # run whole suites of this script beside each other. So they are queued rather
@@ -380,7 +388,7 @@ if tier lint; then
     # into a backup that quietly stopped running and nobody hears about it.
     # Same tier, and it guards a gate that can SKIP the whole suite. The key is
     # (epoch, tree, tier set); if the tier set ever falls out of the key, a
-    # docs-only pass silently certifies eleven container gates that never ran.
+    # docs-only pass silently certifies thirteen container gates that never ran.
     # §1 asserts exactly that, in both directions, along with the TTL, the epoch
     # and the refusal to key a dirty tree.
     step "Tree-hash cache (deploy/ci-cache.sh --self-test)"
@@ -688,6 +696,22 @@ if tier lake; then
 
     step "Queueing: Lakehouse — shared.sqlite derived from raw/ alone, no network"
     pkdump_par_add derive bash "$REPO_DIR/tests/lake/derive.sh"
+
+    # --- 14c. The tenant zone is governed -------------------------------------
+    # The tenant zone shares the lake's bucket and is separated from it by a
+    # prefix — which is to say by a pair of credential policies and a lifecycle
+    # rule, and by nothing else. A policy is one misconfiguration from being
+    # nothing at all while looking identical from outside, so this gate asserts
+    # the boundary in BOTH directions and then deliberately breaks it and
+    # asserts the same checks go RED. It also proves the 90-day retention is
+    # mechanical rather than documented, and that no rule can reach `raw/`,
+    # whose retention is indefinite by decision.
+    #
+    # It lives in this tier for the same reason the derive does: it is a
+    # lakehouse claim about a bucket, not something a frontend change can move.
+
+    step "Queueing: Lakehouse — the tenant zone's credential boundary and its 90-day retention"
+    pkdump_par_add tenant-zone bash "$REPO_DIR/tests/lake/tenant_zone.sh"
 fi
 
 # --- 15. The refresh writes no tenant bytes ---------------------------------

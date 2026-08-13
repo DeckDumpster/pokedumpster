@@ -89,6 +89,9 @@ bash tests/lake/value_snapshots.sh
                                  #   registered tenant, byte-identical to the
                                  #   Rust aggregate they replace — and §10, the
                                  #   shipped wrapper its timer runs
+bash tests/lake/tenant_zone.sh   # the tenant zone's credential boundary, BOTH
+                                 #   directions, seen green AND red — plus the
+                                 #   90-day retention, mechanically
 bash tests/refresh/tenant_bytes.sh
                                  # the other half: a real `pkdump data refresh`
                                  #   over a data dir with two tenants in it
@@ -453,7 +456,7 @@ the cap is reached and never exceeded, that a failure among passes is red and
 named, that output survives concurrency, that the *real* `diskcheck.sh` trips
 against an impossible floor, that the hold branch waits rather than aborts, that
 a background job of the *caller's* is never mistaken for a gate, and that every
-one of the eleven gate scripts is still queued exactly once under a real tier.
+one of the thirteen gate scripts is still queued exactly once under a real tier.
 That last one is the refactor's own failure mode: a gate queued nowhere runs
 never, and a green run cannot show you that.
 
@@ -519,6 +522,61 @@ Three rules that are settled, and are the ones easiest to erode:
 Landing is opt-in and off by default: with the flag absent, `lake.env` is
 never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
 runbook.
+
+### The tenant zone
+
+Everything above is the **catalog zone**. The same bucket also holds the
+**tenant zone** under `tenant/` — holdings and valuations, and it is a
+different object under different governance that happens to share a bucket
+(pd-uz8q, item 2 of the inbound-leg epic pd-8lw7). The standing "tenant data
+never enters the lake" rule is **restated by it, not broken**: that rule was
+always about the catalog — cross-tenant, shared, retained forever.
+
+```text
+tenant/database_id=<id>/dataset=<holdings|valuations>/as_of=YYYY-MM-DD/part-NNNN.parquet
+```
+
+Five things are decisions, not implementation:
+
+- **`database_id` is the FIRST partition**, above `dataset=`, so deleting a
+  tenant is ONE prefix drop covering their holdings *and* their valuations.
+  Derived artifacts inherit the deletion obligation; a layout with `dataset=`
+  on top would make every future dataset another thing a deletion has to
+  remember.
+- **Plain partitioned Parquet, not Iceberg.** Iceberg records absolute paths
+  in its metadata, so a later bucket split would mean rewriting manifests.
+  It also gives up snapshots/time-travel deliberately — holdings want current
+  state per tenant, deletable, not history. The catalog wants the opposite,
+  which is why the catalog *is* Iceberg.
+- **90-day retention, and it is a product limit rather than a tunable.** The
+  catalog's indefinite window is justified by "we may need to rebuild any
+  historical price"; nothing equivalent covers holdings. 90 days IS the
+  backfill window, and it is what bounds a missed deletion's blast radius.
+  Enforced by a lifecycle rule that `deploy/setup-tenant-zone.sh` applies
+  **and then reads back** — a PUT that scoped itself to the wrong prefix
+  succeeds identically to one that did not.
+- **Separate credentials from day one**, and the boundary is a TEST. One
+  bucket means a pair of IAM documents is the *only* thing separating the
+  zones. `TenantZoneConfig` refuses an unset `PKDUMP_TENANT_AWS_PROFILE`, and
+  refuses one equal to `AWS_PROFILE` — one profile for both zones is not a
+  wide policy, it is no boundary, and it looks exactly like a correct one.
+- **The explicit `Deny` statements are load-bearing.** A whole-bucket grant
+  added *beside* either policy still cannot cross, because an explicit Deny
+  beats any Allow — so a later broad grant elsewhere cannot silently widen a
+  zone. Asserted (gate §6b), not assumed.
+
+The prefixes and the window live in three places that cannot share code —
+Rust (the shipper reads them at runtime), the policy documents (AWS reads
+them) and the bash script — so `tests/lake/tenant_zone.sh` §8 holds them
+together. A prefix changed in one and not the others does not fail loudly; it
+silently widens a policy.
+
+`tests/lake/tenant_zone.sh` is the gate, and every claim in it is seen **both
+green and red**: the boundary in both directions, then the *same assertion
+functions* re-run against a credential replaced by a whole-bucket grant; the
+retention check refused three separate ways of getting the rule wrong. The
+zone is deliberately **empty** — this builds the governance, not the data
+flow (the shipper is item 4). Runbook: `deploy/TENANT_ZONE.md`.
 
 ### The transform tier
 

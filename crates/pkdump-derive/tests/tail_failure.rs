@@ -113,9 +113,8 @@ fn price_rows(dir: &Path) -> i64 {
 #[test]
 fn a_dead_pokemontcg_io_no_longer_costs_the_nights_prices() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let upstream = FakeUpstream::start(|target, _| {
-        route(target, |_| Reply::status(502, "bad gateway"))
-    });
+    let upstream =
+        FakeUpstream::start(|target, _| route(target, |_| Reply::status(502, "bad gateway")));
     let tmp = tempfile::tempdir().unwrap();
 
     let report = derive_against(&upstream, tmp.path(), "3");

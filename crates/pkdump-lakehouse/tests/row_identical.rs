@@ -270,8 +270,17 @@ struct Harness {
 
 impl Harness {
     fn start() -> Self {
+        Self::at(None)
+    }
+
+    /// A harness whose working directory is `out` rather than a temp dir —
+    /// how `tests/lake/derive.sh` gets a landing zone produced by the REAL
+    /// writer instead of a shell's idea of the key layout. The temp dir is
+    /// still created and still cleans up; it is simply unused.
+    fn at(out: Option<PathBuf>) -> Self {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let root = tmp.path().to_path_buf();
+        let root = out.unwrap_or_else(|| tmp.path().to_path_buf());
+        std::fs::create_dir_all(&root).expect("create the working directory");
         let script = Arc::new(Script {
             day: AtomicUsize::new(1),
             fail_group: AtomicUsize::new(0),
@@ -763,6 +772,59 @@ fn a_date_that_was_never_landed_refuses_by_name() {
     assert!(said.contains("no runs landed"), "{said}");
     assert!(said.contains("2001-01-01"), "{said}");
     assert!(said.contains("never falls back"), "{said}");
+}
+
+/// The fixture `tests/lake/derive.sh` reads, built by the real client through
+/// the real landing zone.
+///
+/// Hand-writing zstd parts and a manifest in the shell would be easier and
+/// would prove nothing — it would assert that the reader can read *the
+/// shell's* idea of the layout. Change the key layout, the manifest fields or
+/// the zstd level and the container gate downstream notices.
+///
+/// Run bare it builds into a temp dir and asserts what it built. Point
+/// `PKDUMP_DERIVE_FIXTURE_OUT` at a directory and it writes there instead:
+///
+/// ```sh
+/// PKDUMP_DERIVE_FIXTURE_OUT=/tmp/fixture \
+///   cargo test -p pkdump-lakehouse --test row_identical the_fixture
+/// ```
+///
+/// It emits two days, the catalog each day's online refresh produced, and the
+/// fixture upstream's origin. That last file is the awkward one and it is
+/// honest: `raw/` is keyed by URL, so a replay has to build the same URLs the
+/// fetch did. In production that is automatic — both sides are the compiled-in
+/// constant — but a fixture upstream's port is ephemeral, so the container gate
+/// has to be told what it was.
+#[test]
+fn the_fixture_the_container_gate_reads() {
+    let out = std::env::var("PKDUMP_DERIVE_FIXTURE_OUT").ok().map(PathBuf::from);
+    let keep = out.is_some();
+    let h = Harness::at(out);
+
+    h.day(1);
+    assert!(h.online(&h.db("day1"), DAY1, DAY1_CLOCK, false), "day 1");
+    std::fs::copy(h.db("day1"), h.db("online")).expect("carry day 1 forward");
+    h.day(2);
+    assert!(h.online(&h.db("online"), DAY2, DAY2_CLOCK, false), "day 2");
+    std::fs::write(h.root.join("upstream-origin.txt"), h.upstream.base_url())
+        .expect("record the fixture upstream's origin");
+
+    // Both dates landed, each by one complete run.
+    for date in [DAY1, DAY2] {
+        assert!(
+            h.raw().join(format!(
+                "raw/source=tcgcsv/dataset=prices/ingest_date={date}"
+            ))
+            .exists(),
+            "{date} landed no prices"
+        );
+    }
+    assert!(scalar::<i64>(&h.db("day1"), "SELECT COUNT(*) FROM prices") > 0);
+
+    if keep {
+        println!("fixture written to {}", h.root.display());
+    }
 }
 
 /// There is no default `--ingest-date`. Deriving an older day is the same

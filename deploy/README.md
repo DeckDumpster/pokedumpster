@@ -425,8 +425,12 @@ alerting the repo had carried since Jun 2026, so the sidecar that silently
 stopped replicating paged nobody (pd-2t6u). A deploy now names the units it
 changed.
 
-- `pkdump-refresh@<instance>` — nightly `pkdump data refresh` inside the
-  running container (via `podman exec`), 06:00 + jitter.
+- `pkdump-refresh@<instance>` — nightly `pkdump data refresh`, 06:00 + jitter.
+  Runs `deploy/refresh.sh`, which starts its own container from the instance's
+  image over the instance's data volume — the same shape as the derive and
+  transform wrappers. It used to `podman exec` into the running server, which
+  silently dropped the environment the drop-in that turns raw landing on sets
+  (pd-kncd); see [deploy/LAKE.md](LAKE.md) §4.
 - `pkdump-backup-check@<instance>` — backup-freshness dead-man's switch
   (Layer 1, every 6h). See [Backup-failure alarming](#backup-failure-alarming).
 - `pkdump-value-snapshots@<instance>` — the transform tier's nightly run

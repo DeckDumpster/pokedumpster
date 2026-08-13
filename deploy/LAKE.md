@@ -189,9 +189,77 @@ EOF
 systemctl --user daemon-reload
 ```
 
-The refresh runs inside the container, so the container also needs the AWS
-config and the lake settings — the same mount pattern the Litestream sidecar
-already uses for `~/.config/pkdump/<instance>/aws/`.
+That drop-in sets the variable in the *unit's* environment, and the unit runs
+`deploy/refresh.sh`, which forwards it into the container along with the
+bucket, region and profile from `lake.env` and mounts the instance's
+`~/.config/pkdump/<instance>/aws/config` beside the
+`pkdump-<instance>-s3-bootstrap` secret. Nothing else is needed: everything
+landing requires comes from that one file plus the credentials the Litestream
+sidecar already uses.
+
+Verify it reached the process — the run says where it is landing, before the
+first fetch:
+
+```bash
+systemctl --user start pkdump-refresh@<instance>.service
+journalctl --user -u pkdump-refresh@<instance>.service | grep 'Landing raw'
+#   Landing raw upstream responses in s3://<bucket> (ingest_date=YYYY-MM-DD)
+```
+
+#### Why the refresh runs in its own container
+
+Until Aug 2026 the unit was `podman exec systemd-pkdump-<instance> pkdump data
+refresh`, reaching into the already-running server. **`podman exec` does not
+forward the calling process's environment** — the exec'd process gets the
+container's env plus explicit `-e` flags and nothing else — so the drop-in
+above reached the unit and never reached the refresh (`pd-vk22`):
+
+```console
+$ PKDUMP_LAND_RAW=1 podman exec systemd-pkdump-mutant sh -c 'echo ${PKDUMP_LAND_RAW:-<unset>}'
+<unset>
+```
+
+The result was a green nightly timer that landed nothing, with no error
+anywhere — the one state §3 says must not exist.
+
+`-e` would have fixed half of it. The app container mounts the data volume and
+nothing else (`pd-8gjd`): no AWS config, no bootstrap secret, no lake settings.
+`podman exec` cannot add a mount to a running container, and mounting the
+lake's credentials on the app container would hand the always-on web server
+ambient write access to the lake bucket — the coupling `pkdump-lake` is
+offline-only to prevent. It would also make the bootstrap secret a hard start
+dependency of the *server*, so every instance without one would stop serving.
+
+So the refresh runs in its own container from the same image over the same
+volume, which is what `deploy/derive.sh` and `deploy/value-snapshots.sh`
+already do. The landing half was the last job still borrowing the server's
+container to get its work done.
+
+Four refusals keep the silent no-op from coming back, and
+`tests/deploy/run.sh` §13 drives all of them:
+
+| you did | it does |
+| --- | --- |
+| asked to land with no `lake.env` on the box | refuses before the first fetch, naming the file to write |
+| asked to land with a `lake.env` that does not set `PKDUMP_LAKE_S3_BUCKET` / `_REGION` | refuses before a container starts, naming the **host** file and both variables |
+| asked to land into S3 with no credentials mounted | says so by name, then fails at the first PUT |
+| asked to land, and the run never opened a landing zone | **fails the unit** — the catalog is fine, the wiring is not |
+
+The second one is checked on the host rather than left to the binary
+deliberately. The binary refuses too, but from inside the container, where
+`$HOME` is `/root` — so its message names `/root/.config/pkdump/lake.env`, a
+path that exists on neither side and says nothing about the file the operator
+has to fix. The wrapper is the process that read the real file, so it is the
+one that can name it. This is `pd-ub8n`'s exact failure: the file on the box was
+written from the design note as `PKDUMP_LAKE_BUCKET` / `_REGION` /
+`_RAW_PREFIX`, which nothing reads.
+
+It stays a refusal rather than an alias table. Teaching the code to accept both
+spellings is the fallback logic this project's No-Fallback convention forbids,
+and a half-configured lake that half-works is worse than one that stops.
+
+A refresh nobody asked to land is untouched by any of it, on a box with no
+lake configuration at all.
 
 ---
 

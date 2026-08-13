@@ -509,6 +509,43 @@ A run that needed the fallback is **correct but not reproducible from the
 lake**. That is a warning rather than a failure — the catalog is right, the
 lineage is not.
 
+### Row-identity, proven against the real bucket (pd-vves)
+
+Item 4's precondition is met. On **2026-08-13**, run
+**`01KZWVREQ5AWYP7XGQKD4GVFJX`**, both halves were run from one snapshot of
+prod's own catalog and compared row by row:
+
+- the ONLINE half — `pkdump data refresh --land-raw`, fetching upstream and
+  landing 1,349 objects to the real lake bucket;
+- the OFFLINE half — `pkdump-lake-derive shared --ingest-date 2026-08-13
+  --no-upstream-fallback`, replaying **1,345 URLs** from those same bytes,
+  reporting `raw coverage: complete` and recovering the clock
+  (`2026-08-13T06:08:10.451647792+00:00`) from the run's manifests;
+- the diff — **20 tables, 10,366,128 rows, zero differences**, `raw_derivation`
+  excluded as the one table that is *supposed* to differ. Among them
+  `prices` (9,696,961), `latest_prices` (297,359), `printings` (70,054),
+  `cards` (47,640), `sealed_prices` (189,291), `tcgcsv_products` (57,816).
+
+Three things about how it was run are the reason it is evidence:
+
+- **Both halves started from byte-identical copies** of one `sqlite3 .backup`
+  of prod's live catalog. They must: a failed earlier attempt showed the online
+  path mutates the catalog (variants, bundles, search metadata reconcile
+  *before* the fetch), so a retry that re-copies only one side is comparing
+  drift, not derivation.
+- **Prod's `raw/` root was never written to.** The landing was scoped to
+  `PKDUMP_LAKE_S3_PREFIX=verify-pd-vves`; `raw/` still holds only
+  `ingest_date=2026-08-11`. The proof does not depend on prod's nightly landing
+  being armed, which it is not.
+- **The binaries were `origin/master` Rust** — the checkout they came from
+  differs from `origin/master` in `deploy/` and docs only, so this is a claim
+  about shipped code.
+
+It also exercised run-scoped landing for real: that day's first attempt died on
+a 500 from `api.pokemontcg.io` and left an incomplete run
+(`01KZWVMN393A766Z75VM798S6C`, 0 parts) under the same date. The derive selected
+the complete run and ignored it, which is exactly what `run=<ULID>` is for.
+
 ### Enabling it
 
 Installed for every instance and enabled for none:

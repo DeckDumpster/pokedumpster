@@ -902,6 +902,28 @@ sidecar_start
 check "and it is still in the replicated set — the glob does not read state" "replicating" \
 	"$(wait_for_replica "$DETACHED" 90 && echo replicating || echo silent)"
 
+# WAIT FOR THE DETACH ITSELF TO REACH S3 before the sidecar stops again.
+#
+# The detach above was written to the registry while the sidecar was STOPPED, so
+# nothing had replicated it yet. The wait immediately above proves the detached
+# TENANT is replicating — a different database. Without this, whether §11's
+# restore sees the detach comes down to how much Litestream happened to flush in
+# the few seconds this sidecar is up, and on a loaded box it flushes nothing:
+# §11 then restores the PRE-detach registry and reports
+# "expected 3 1, got 4 0" — a state assertion 70 lines away from its own cause.
+#
+# Asserted rather than `|| true`: if the detach never lands, the honest failure is
+# "the registry replica never caught up", not "the states did not survive".
+reg_detach_replicated() {
+	rm -f "${WORK}/out/reg-detach.sqlite"
+	ls_cli restore -o "/out/reg-detach.sqlite" "$REG_URL" >/dev/null 2>&1 || return 1
+	[ "$(sqlite3 -cmd '.timeout 5000' "${WORK}/out/reg-detach.sqlite" \
+		"SELECT count(*) FROM user WHERE state='detached';" 2>/dev/null || echo 0)" -ge 1 ]
+}
+wait_until 180 2 reg_detach_replicated || true
+check "the detach itself reached the registry replica" "yes" \
+	"$(reg_detach_replicated && echo yes || echo no)"
+
 sidecar_stop
 rm -f "$(tenant_file "$DETACHED")" "$(tenant_file "$DETACHED")-wal" "$(tenant_file "$DETACHED")-shm"
 DS_OUT="$(bash "${REPO_DIR}/deploy/restore-litestream.sh" --yes "$INSTANCE" "$DETACHED_ID" 2>&1)"

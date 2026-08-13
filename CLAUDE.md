@@ -84,6 +84,10 @@ cargo test -p pkdump-lakehouse   # partition choice, replay, the comparator —
 bash tests/lake/derive.sh        # the whole CATALOG from raw/, in the shipped
                                  #   image, on an --internal network with the
                                  #   socket-to-1.1.1.1 egress assertion
+PKDUMP_REAL_DERIVE=1 bash tests/lake/real_upstream_derive.sh
+                                 # NOT in CI: the same claim against the REAL
+                                 #   upstreams at real catalog scale, ~5min and
+                                 #   ~1,350 live fetches. Run per milestone.
 bash tests/lake/value_snapshots.sh
                                  # the transform tier: value snapshots for EVERY
                                  #   registered tenant, byte-identical to the
@@ -691,6 +695,18 @@ over two days, idempotence, reproducing an older date, both refusals, a
 corrupted payload, the fallback loud one way and fatal the other) and
 `tests/lake/derive.sh` (the container tier, shipped image, `--internal`
 network, socket-to-1.1.1.1). Runbook: `deploy/LAKE.md` §8.
+
+Both of those upstreams are fixtures, so a third gate exists and is deliberately
+**not** in CI: `tests/lake/real_upstream_derive.sh` makes the same claim against
+the REAL tcgcsv.com and api.pokemontcg.io, at real catalog scale (pd-aer9). On
+2026-08-13 it landed 1,345 real responses and rebuilt them into a catalog
+row-identical across all 21 tables — 47,640 cards, 75,627 printings, 289,255
+prices. What it cannot yet be run against is **prod's own `raw/`**: the lake's
+only partition (2026-08-11) predates `Manifest.started_at` and is refused for
+having no clock, and nothing has landed since because `pd-kncd` is unmerged. The
+sequence is pd-kncd → one night's raw → derive that date from the bucket. Do not
+arm `pkdump-derive@prod` before then: it has no `SuccessExitStatus=`, so a
+refusal every night is a page every night.
 
 One phase cannot be replayed: set-symbol normalisation fetches images, and
 images are deliberately not landed (pd-5w4n).

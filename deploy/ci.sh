@@ -378,6 +378,14 @@ if tier lint; then
     # who may page, and it has to be right in BOTH directions: the assertions that
     # matter most are the prod ones, because a gate that silences too much turns
     # into a backup that quietly stopped running and nobody hears about it.
+    # Same tier, and it guards a gate that can SKIP the whole suite. The key is
+    # (epoch, tree, tier set); if the tier set ever falls out of the key, a
+    # docs-only pass silently certifies eleven container gates that never ran.
+    # §1 asserts exactly that, in both directions, along with the TTL, the epoch
+    # and the refusal to key a dirty tree.
+    step "Tree-hash cache (deploy/ci-cache.sh --self-test)"
+    bash "$REPO_DIR/deploy/ci-cache.sh" --self-test
+
     step "Alert gate (deploy/alert-gate.sh --self-test)"
     bash "$REPO_DIR/deploy/alert-gate.sh" --self-test
 

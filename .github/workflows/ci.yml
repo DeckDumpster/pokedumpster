@@ -42,6 +42,13 @@ concurrency:
 jobs:
   test:
     runs-on: [self-hosted, rgantt]
+    # statuses:write for the final step, which posts this run's result as a COMMIT
+    # STATUS. The repo default is read-only (default_workflow_permissions=read), so
+    # without this the POST 403s and the belt-and-braces below silently does
+    # nothing — the exact failure mode it exists to prevent.
+    permissions:
+      contents: read
+      statuses: write
     # The suite builds a container, drives Playwright over every route at two
     # viewports, and executes two DR drills against a throwaway MinIO. It is not
     # a two-minute job; the default 360m is just too loose to catch a hang.
@@ -177,3 +184,39 @@ jobs:
       # skipped and why.
       - name: deploy/ci.sh
         run: bash deploy/ci.sh
+
+      # BELT AND BRACES: report this run as a commit status, whatever triggered it.
+      #
+      # GitHub creates one check suite per (commit, app). A `workflow_dispatch` run
+      # creates that suite, so opening a PR on the same SHA afterwards produces no
+      # new run and the PR shows NO CHECKS — the required `test` context reads as
+      # missing rather than green, even though the commit WAS tested. On 2026-08-13
+      # five of six open PRs were in that state and two had actually FAILED.
+      #
+      # A commit status has no such coupling: it attaches to the SHA and shows in the
+      # merge box whatever triggered the run. Context is `test`, matching the check
+      # run's name and the ruleset's required context, and it is posted with
+      # GITHUB_TOKEN so it is attributed to the same github-actions app
+      # (integration_id 15368) the ruleset names.
+      #
+      # `if: always()` because a FAILING run must post `failure`. A step that ran
+      # only on success would leave a red run looking untested — worse than no
+      # status at all.
+      #
+      # The SHA must be the PR HEAD, not github.sha: on a pull_request event
+      # github.sha is the ephemeral merge commit, and a status there is invisible to
+      # the merge box.
+      - name: Report result as a commit status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
+            -f state="${STATE}" \
+            -f context=test \
+            -f target_url="${RUN_URL}" \
+            -f description="deploy/ci.sh (${{ github.event_name }})" >/dev/null
+          echo "posted commit status ${STATE} for ${SHA} (context: test)"

@@ -28,7 +28,10 @@
 #
 # Prod-safe: its own podman network, MinIO, Nessie, temp dir and image tag.
 # Touches no pkdump-* unit, no pkdump-*-data volume, no real S3 bucket and no
-# tenant database — the lake never holds tenant data at all.
+# tenant database — the lake never holds tenant data at all, which
+# tests/lake/tenant_isolation_test.sh asserts on the tree in the lint tier
+# (pd-cgi9): catalog.prices carries no tenant-identifying column, and the module
+# that builds it opens no database.
 set -euo pipefail
 
 NESSIE_IMAGE=${NESSIE_IMAGE:-ghcr.io/projectnessie/nessie:0.104.3}

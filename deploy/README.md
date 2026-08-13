@@ -496,6 +496,16 @@ nightly batch job, not a request. **No tenant data ever enters the lake** — th
 lake holds catalog data (prices, products, sets, cards) and nothing keyed by a
 tenant, ever. Per-tenant point-in-time recovery is Litestream's job, above.
 
+That rule is mechanical rather than a convention people remember
+(`tests/lake/tenant_isolation_test.sh`, lint tier, pd-cgi9). It asserts the two
+halves separately: no Iceberg schema field name is tenant-identifying, and no
+lake write path can open a tenant database — `crates/pkdump-lake` links no
+SQLite crate at all, and the Python write-path modules import no `sqlite3`, so
+both are true by construction the way "images are never landed" is true of the
+closed `Source` enum. The transform tier (`value_snapshots.py`) is the one job
+that opens tenant databases on purpose, and its half of the rule is the other
+direction: it reads the lake and never writes to it.
+
 Two pieces, both instance-scoped:
 
 - **`pkdump-nessie-<inst>`** — the versioned Iceberg catalog. The one JVM

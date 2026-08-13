@@ -423,6 +423,16 @@ if tier lint; then
     step "Alert page content (tests/alarming/journal_summary_test.sh)"
     bash "$REPO_DIR/tests/alarming/journal_summary_test.sh"
 
+    # The standing decision the whole lake design rests on — no tenant data ever
+    # enters it — existed only as comments in five files, so adding a tenant_id
+    # column to an Iceberg schema or opening a tenant SQLite in a lake job broke
+    # nothing (pd-cgi9). This is the missing mechanical half. It reads the tree
+    # and stands up no MinIO and no Nessie, so it runs HERE rather than in the
+    # two-minute lake tier it is named after — and a docs-only PR runs it too.
+    # See tests/lake/tenant_isolation_test.sh.
+    step "Tenant data stays out of the lake (tests/lake/tenant_isolation_test.sh)"
+    bash "$REPO_DIR/tests/lake/tenant_isolation_test.sh"
+
     # A formatter check, not a compile — `cargo fmt` parses and never builds,
     # so it costs a second and belongs with the lint tier rather than behind
     # `cargo test`.

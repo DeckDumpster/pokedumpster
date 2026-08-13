@@ -482,6 +482,16 @@ tenant's own database. Three rules hold it in shape:
   collection is read from, and the snapshot written back to, SQLite. Neither
   ever travels the other way, and `tests/lake/value_snapshots.sh` §9 asserts
   the catalog still holds nothing but `catalog.prices` after a run.
+  That is the runtime half. The static half is
+  `tests/lake/tenant_isolation_test.sh` (lint tier, hermetic, pd-cgi9): no
+  Iceberg schema field name is tenant-identifying, and no lake write path *can*
+  open a tenant database — `crates/pkdump-lake` links no SQLite crate and the
+  Python write-path modules import no `sqlite3`, so both hold by construction
+  rather than by review, the way the closed `Source` enum holds "images are
+  never landed". Adding a tenant column or a tenant DB open now fails in a
+  second instead of nothing at all. The transform tier is the deliberate
+  exception the guard encodes: it opens every tenant's database, and is
+  asserted to only ever READ the lake.
 
 The aggregate itself is a transliteration of `value_history.rs` — two
 implementations of one calculation, deliberately, because the rewrite has to

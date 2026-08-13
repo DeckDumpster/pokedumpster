@@ -20,4 +20,14 @@ Type=oneshot
 # Pushover creds are host-wide; '-' makes the file optional so the unit installs
 # cleanly before alerts.env exists (alert.sh then no-ops on unset creds).
 EnvironmentFile=-%h/.config/pkdump/alerts.env
-ExecStart=/bin/sh -c 'journalctl --user -u %i -n 80 -o short-iso --no-pager | bash {{REPO_DIR}}/deploy/journal-summary.sh %i | bash {{REPO_DIR}}/deploy/alert.sh "PokeDumpster unit FAILED: %i"'
+# pd-n0lf: only instances that may page get past the gate. Drills and --test
+# instances fail routinely by design; a pager that cries wolf gets swiped away,
+# and then the real one does too.
+#
+# The `[ ! -r ] ||` is deliberate and load-bearing: an ABSENT gate must PAGE, not
+# stay silent. A plain `gate || exit 0` would turn deployment skew — unit updated,
+# script not yet on disk — into total silent disarmament of prod alerting, which
+# is indistinguishable from the backup-stopped-running failure this layer exists
+# to catch. A gate present but broken at runtime is covered by its --self-test in CI.
+# No shell variables here on purpose: systemd would expand `$?` itself.
+ExecStart=/bin/sh -c 'if [ ! -r {{REPO_DIR}}/deploy/alert-gate.sh ] || bash {{REPO_DIR}}/deploy/alert-gate.sh %i; then journalctl --user -u %i -n 80 -o short-iso --no-pager | bash {{REPO_DIR}}/deploy/journal-summary.sh %i | bash {{REPO_DIR}}/deploy/alert.sh "PokeDumpster unit FAILED: %i"; fi'

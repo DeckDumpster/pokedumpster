@@ -371,6 +371,16 @@ if tier lint; then
     # the fix reached one of them. §6-§8 of this gate assert on the tree, so a
     # sixth relapse fails here in a second rather than forty minutes in as
     # "address already in use". See tests/lib/ports.sh.
+    # Same tier, and it guards the pager itself. Alarming's first real page was a
+    # false one: every unit ships OnFailure=pkdump-alert@%n, so each CI
+    # disaster-recovery drill paged Ryan's phone when it tore itself down as
+    # intended — nine times overnight on 2026-08-12/13 (pd-n0lf). The gate decides
+    # who may page, and it has to be right in BOTH directions: the assertions that
+    # matter most are the prod ones, because a gate that silences too much turns
+    # into a backup that quietly stopped running and nobody hears about it.
+    step "Alert gate (deploy/alert-gate.sh --self-test)"
+    bash "$REPO_DIR/deploy/alert-gate.sh" --self-test
+
     step "Harness host-port self-test (tests/lib/ports_test.sh)"
     bash "$REPO_DIR/tests/lib/ports_test.sh"
 

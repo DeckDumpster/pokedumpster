@@ -120,6 +120,23 @@ PKDUMP_CI_JOBS=1 bash deploy/ci.sh   # one at a time — first thing to try if a
                                      # parallel run misbehaves
 ```
 
+Measured, two full green runs back to back on the CI box, same checkout and the
+same warm caches, the cap the only difference:
+
+| | cap 1 | cap 3 | |
+|---|---|---|---|
+| the eleven gates | 1683s | 728s | 2.31x |
+| the whole suite | 1982s | 1175s | 1.69x |
+
+Individual gates get **slower** — `prices` 141s → 371s, `value-snapshots`
+93s → 257s — because three of them share four cores. The wave still finishes in
+43% of the time, which is the argument: these gates are latency, not
+throughput. They spend their time waiting on containers to come up, replicate
+and stop, and sequentially that waiting is most of a CI run's wall clock.
+
+Both runs sat on a shared box under a 1-min load between 2 and 16, and the cap-1
+baseline drew the quieter half of that, so those ratios are a floor.
+
 Three by default, **four at the very most**. This is a 15G box with four cores
 that also runs prod, and each of these gates stands up two or three containers
 — a MinIO, sometimes a JVM (Nessie), sometimes a whole pkdump instance with a

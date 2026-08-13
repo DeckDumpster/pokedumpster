@@ -50,6 +50,14 @@
 #                      assert what it answers to a tenant header: malformed is
 #                      400, unknown is 404, and single-tenant mode does not read
 #                      the header at all. See tests/tenants/handles.sh.
+#  9b. Key custody:    mint the tenant-zone master key with the SHIPPED binary
+#                      and stat the file ON THE HOST — "the code sets 600" and
+#                      "the file is 600" are different claims. Then the property
+#                      the whole item turns on, on a real box: with the master
+#                      key moved away, a tombstoned tenant still reads as
+#                      REVOKED while a live one reads as an OPERATIONAL failure.
+#                      A lost key never reports as a deleted tenant. See
+#                      tests/keys/run.sh.
 #  10. Browser gate:   screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines,
 #                      and assert the DOM bounds that a screenshot cannot see —
@@ -91,7 +99,7 @@
 #                      database byte-identical. The refresh is a SHARED-catalog
 #                      job. See tests/refresh/tenant_bytes.sh.
 #
-# Steps 5-9 and 11-15 do not run where they are written. Each one QUEUES itself
+# Steps 5-9b and 11-15 do not run where they are written. Each one QUEUES itself
 # under its own tier guard and they are run together, two at a time, by step
 # 16 — see the "PARALLEL GATES" note below and deploy/ci-parallel.sh.
 #
@@ -105,7 +113,7 @@
 # Exits non-zero on the first failure of the sequential steps. Fast and
 # re-runnable.
 #
-# PARALLEL GATES (pd-2nl9). Eleven of the steps above stand up their own
+# PARALLEL GATES (pd-2nl9). Twelve of the steps above stand up their own
 # containers and share nothing — every name each of them uses is derived from
 # its own prefix plus a per-checkout hash, because concurrent polecats already
 # run whole suites of this script beside each other. So they are queued rather
@@ -380,7 +388,7 @@ if tier lint; then
     # into a backup that quietly stopped running and nobody hears about it.
     # Same tier, and it guards a gate that can SKIP the whole suite. The key is
     # (epoch, tree, tier set); if the tier set ever falls out of the key, a
-    # docs-only pass silently certifies eleven container gates that never ran.
+    # docs-only pass silently certifies twelve container gates that never ran.
     # §1 asserts exactly that, in both directions, along with the TTL, the epoch
     # and the refusal to key a dirty tree.
     step "Tree-hash cache (deploy/ci-cache.sh --self-test)"
@@ -618,6 +626,22 @@ if tier tenants; then
 
     step "Queueing: Tenant header — malformed 400 vs unknown 404 (pd-4g7c)"
     pkdump_par_add tenant-header bash "$REPO_DIR/tests/tenants/handles.sh"
+
+    # --- 9b. Key custody ----------------------------------------------------
+    # Tenant-zone key custody in the SHIPPED image (pd-ulds). Two claims the
+    # hermetic Rust tests cannot make: that the master key file is mode 600
+    # WHERE IT IS DEPLOYED (a umask, a mount or a later chmod all sit between
+    # "the code sets 600" and "the file is 600"), and that deploy/keys.sh — the
+    # one layer that could quietly undo the backup/destruction separation by
+    # mounting everything for everything — does not. Its own image tag, temp
+    # dir and fake HOME; the data "volume" is a host path under its own temp
+    # dir, so it touches no pkdump-*-data volume.
+    #
+    # In the tenants tier because key state is keyed on database_id and lives
+    # in registry.sqlite — the same file this tier's other two gates are about.
+
+    step "Queueing: Key custody — mode 600 deployed, and a lost key is not a deletion (pd-ulds)"
+    pkdump_par_add keys bash "$REPO_DIR/tests/keys/run.sh"
 fi
 
 # --- 10. Browser gate --------------------------------------------------------

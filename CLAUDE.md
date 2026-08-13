@@ -419,10 +419,10 @@ reports the conclusion whatever the trigger was. Never conclude a PR is green fr
 If a branch has already been dispatched and needs a real PR check, push another
 commit: a new SHA gets a new suite, and the `pull_request` event creates it.
 
-**Eleven of the gates run in parallel, two at a time** (pd-2nl9; lowered from
+**Twelve of the gates run in parallel, two at a time** (pd-2nl9; lowered from
 three on 2026-08-13 — see `PKDUMP_CI_JOBS` in `deploy/ci-parallel.sh`) —
-litestream, drill, alarming, recreate, upgrade, tenant-header, schema-version,
-the three lake gates and refresh. They do not run where they are written: each
+litestream, drill, alarming, recreate, upgrade, tenant-header, keys,
+schema-version, the three lake gates and refresh. They do not run where they are written: each
 **queues** itself under its own tier guard and `deploy/ci-parallel.sh` runs the
 queue at the end. What makes that safe is not new — every one of those scripts
 already derives every name it uses (network, container, volume, image tag, unit
@@ -453,7 +453,7 @@ the cap is reached and never exceeded, that a failure among passes is red and
 named, that output survives concurrency, that the *real* `diskcheck.sh` trips
 against an impossible floor, that the hold branch waits rather than aborts, that
 a background job of the *caller's* is never mistaken for a gate, and that every
-one of the eleven gate scripts is still queued exactly once under a real tier.
+one of the twelve gate scripts is still queued exactly once under a real tier.
 That last one is the refactor's own failure mode: a gate queued nowhere runs
 never, and a green run cannot show you that.
 
@@ -519,6 +519,61 @@ Three rules that are settled, and are the ones easiest to erode:
 Landing is opt-in and off by default: with the flag absent, `lake.env` is
 never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
 runbook.
+
+### Key custody for the tenant zone
+
+`pkdump-keys` is crypto-shredding for the tenant zone, defence in depth beside
+the partition-drop deletion. One **master key** on the box (mode 600, in
+`~/.config/pkdump/<instance>/` beside `litestream.env`), per-tenant keys
+**derived** — `HKDF-SHA256(master, database_id)` — and a `tenant_key` table in
+`registry.sqlite` mapping `database_id` to `active | tombstoned`. No key
+service, no per-tenant secret to rotate or lose. Runbook: `deploy/KEYS.md`.
+
+The whole thing is arranged around one property:
+
+> **A lost key is indistinguishable from a deleted tenant, by design.**
+
+True of the ciphertext, and it must not become true of the *system* — the two
+call for opposite responses (do nothing; page somebody). Four things hold it:
+
+- **Backup and destruction are different code paths**, and the difference is
+  structural rather than nominal. `backup.rs` is about a **file** and never
+  opens the registry; `destroy.rs` is about a **row** and never opens the key
+  file. `crates/pkdump-keys/tests/separation.rs` reads both sources and fails
+  if either grows a reference to the other's world, so it stays true of code
+  nobody has written yet. Sharing a helper is how "we lost it" becomes "we
+  destroyed it"; sharing a name is not.
+- **The order of the two lookups in `derive::tenant_key` is the design.** The
+  registry is consulted FIRST, so a tombstone answers *even with the master
+  key gone* — and a live tenant whose key is missing answers
+  `MasterKeyUnavailable`, never `Tombstoned`. Invert it and the two collapse
+  exactly when somebody is trying to tell them apart.
+- **`KeyError::is_deliberate_revocation()` is the only sanctioned way to ask
+  "was this on purpose".** It answers `true` for one variant. Item 8's
+  deletion path goes through it; `Err(_) => "deleted"` is one keystroke from
+  turning a missing backup into a compliance claim.
+- **Absence is not permission.** An unregistered `database_id` is refused, not
+  derived for — a registry restored empty is missing its tombstones too, and
+  fail-closed is the direction where that is loud. The tombstone table has no
+  foreign key to `user`, deliberately: it must outlive the row it names or
+  `tenant purge` would un-revoke the key it just destroyed.
+
+The backup **mechanism is matched, not invented**: the master key goes in the
+operator's password manager, exactly like the Litestream bootstrap key, and
+comes back in `deploy/RESTORE.md` Scenario C. Nothing replicates it to S3 —
+that is where the data it protects lives.
+
+The trade is stated, not hidden: one master key means destroying *it* destroys
+everything, which is why `keys init` refuses to overwrite (no `--force`) and
+why the destruction path cannot reach the file. A tombstone stops OUR code
+deriving a key; it is not itself an unrecoverable erasure. Stored per-tenant
+random keys are a documented future option — a re-encrypt of at most 90 days,
+the zone's whole retention window — and are deliberately not built.
+
+Gates: the hermetic crate tests (45 of them, including RFC 5869 vectors and
+the separation gate) and `tests/keys/run.sh`, the container tier, which stats
+the **deployed** key file for mode 600 — "the code sets 600" and "the file is
+600" are different claims — and re-runs the crux on a real box.
 
 ### The transform tier
 

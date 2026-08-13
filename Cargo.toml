@@ -6,6 +6,7 @@ members = [
     "crates/pkdump-db",
     "crates/pkdump-derive",
     "crates/pkdump-ingest",
+    "crates/pkdump-keys",
     "crates/pkdump-lake",
     "crates/pkdump-lakehouse",
     "crates/pkdump-server",
@@ -24,6 +25,7 @@ pkdump-core = { path = "crates/pkdump-core" }
 pkdump-db = { path = "crates/pkdump-db" }
 pkdump-derive = { path = "crates/pkdump-derive" }
 pkdump-ingest = { path = "crates/pkdump-ingest" }
+pkdump-keys = { path = "crates/pkdump-keys" }
 pkdump-lake = { path = "crates/pkdump-lake" }
 pkdump-server = { path = "crates/pkdump-server" }
 
@@ -55,6 +57,15 @@ ulid = { version = "3", default-features = false, features = ["std"] }
 # pkdump-server deliberately stayed on br/gzip (see its `compression()`).
 zstd = "0.13"
 sha2 = "0.10"
+# Key custody (pkdump-keys). HKDF-SHA256 is the whole of the derivation — one
+# master key, per-tenant keys derived from it, nothing stored per tenant. The
+# RustCrypto `hkdf` crate rather than a hand-rolled HMAC ladder: RFC 5869 is
+# easy to get subtly wrong and this is the one place in the codebase where
+# subtly wrong is unrecoverable.
+hkdf = "0.12"
+getrandom = "0.3"
+hex = "0.4"
+zeroize = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1"
 

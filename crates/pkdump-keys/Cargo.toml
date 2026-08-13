@@ -1,0 +1,20 @@
+[package]
+name = "pkdump-keys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+pkdump-db.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+hkdf.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

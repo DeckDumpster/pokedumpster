@@ -670,6 +670,11 @@ if tier lake; then
     # build job runs on an --internal podman network, so there is no upstream to
     # call even if it wanted one, and its output is compared row for row against
     # the shared.sqlite built from the same upstream bytes.
+    #
+    # It also drives the SHIPPED nightly wrapper (deploy/prices.sh, pd-up36)
+    # against that lake: an incomplete day builds and raises nothing, a day whose
+    # raw never landed is a warning over a still-fresh table, and a table that
+    # has stopped advancing pages even on a night the build itself succeeded.
 
     step "Queueing: Lakehouse — catalog.prices built from raw/ alone, with no network"
     pkdump_par_add prices bash "$REPO_DIR/tests/lake/prices.sh"

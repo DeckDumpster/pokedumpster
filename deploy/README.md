@@ -585,6 +585,15 @@ there to support, so `tests/lake/prices.sh` runs the job on a podman
 the job says. Full runbook, including what happens when a day landed no
 complete run: [LAKE.md](LAKE.md).
 
+**Nightly it is `pkdump-prices@<instance>.timer`**, running
+`deploy/prices.sh` — the middle of the chain land → derive → prices →
+transform. That job builds the day even when the landing run did not finish
+(and records `pkdump.raw-complete=false`), because completeness is
+conservative across datasets and failing on it would page most nights. The
+alarm is on the **age** of the newest partition instead: more than two days
+behind pages, which is the shape that actually matters — collections valued
+nightly from prices that stopped arriving.
+
 ### Time travel, and what Nessie costs to get it
 
 Iceberg + Nessie is deliberately overkill at this data size; **time travel is

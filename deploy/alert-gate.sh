@@ -73,6 +73,7 @@ _gate_self_test() {
     check pkdump-backup-check@prod.service         page
     check pkdump-value-snapshots@prod.service      page
     check pkdump-derive@prod.timer                 page
+    check pkdump-prices@prod.service               page
     echo "host-wide guards must page:"
     check pkdump-diskcheck.service                 page
     check pkdump-nessie.service                    page

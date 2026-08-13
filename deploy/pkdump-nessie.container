@@ -98,6 +98,18 @@ EnvironmentFile=%h/.config/pkdump/lake.env
 PodmanArgs=--memory=1g --memory-swap=1g
 
 [Service]
+# A clean stop is not a failure. The JVM exits 143 (128+SIGTERM) whenever systemd
+# or Podman asks it to stop — `systemctl restart`, a deploy, a host maintenance
+# window — and without this line systemd books that as a failure, pages through
+# OnFailure=, AND retriggers Restart=on-failure against a service that was
+# deliberately being stopped. 24 of the 30 genuine prod pages in the 48h to
+# 2026-08-13 were this, every one clustered on a restart, with Nessie healthy
+# throughout (pd-n0lf follow-up).
+#
+# This whitelists a DELIBERATE signal, not a crash: an OOM kill is 137 and a JVM
+# fatal error is 1, both of which still fail and still page. Same treatment
+# pkdump-value-snapshots@ already gives its exit 2.
+SuccessExitStatus=143
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=120

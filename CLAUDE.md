@@ -631,6 +631,61 @@ reached through `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL`
 (`crates/pkdump-ingest/src/upstream.rs`, test-tier, and an override announces
 itself on stderr so a catalog can never be quietly built from the wrong place).
 
+### The ownership outbox
+
+The inbound leg — online tenant state into the lakehouse — starts at
+`ownership_outbox` in `schema_user.sql` (pd-5m54). Every change to
+`collection` is appended there as an event, in the SAME TRANSACTION as the
+change. The offline side is fed from those events, so it is eventually
+consistent *by construction*: a dual write to SQLite and a bucket has no
+atomicity, and the disagreement a crash leaves behind is undetectable.
+
+**The writer is three triggers, not the call sites, and that is the whole
+point.** A trigger fires inside the statement's own transaction, so there is
+no instant at which a holding has changed and the event has not — no window
+to crash in, and nothing to remember to call. It also covers the paths that
+write `collection` in raw SQL (`orders.rs`, `import.rs`, `json_backup.rs`,
+the fixture seeder) and the ones no Rust performs at all (`ON DELETE SET
+NULL` from `binders`/`decks`), without any of them knowing the table exists.
+
+Four things about it are decisions:
+
+- **`seq` is AUTOINCREMENT**, so a number is never reused after the shipper
+  trims a shipped prefix and a missing one means an event was LOST rather
+  than deleted. A rolled-back write burns nothing (`sqlite_sequence` rolls
+  back with it) — asserted, because phantom gaps would make gap detection
+  useless. `occurred_at` is metadata; `datetime('now')` ties inside one
+  transaction and cannot order anything.
+- **`payload` is the whole row as JSON** — post-image for insert/update,
+  pre-image for delete. Whole, so a later consumer needing a column nobody
+  anticipated costs no schema change here, and so nothing can be silently
+  omitted: `outbox.rs` asserts the payload keys against `PRAGMA
+  table_info(collection)`, which is what catches a column added to the table
+  and forgotten in the three hand-written `json_object` lists.
+- **The outbox is not collection state**, so `pkdump export --json` does not
+  carry it and an import neither restores nor clears it — the import's own
+  deletes and inserts fire the triggers and describe the restore correctly.
+  This is the one exception to pd-yj40's "no exclusion list in the exporter",
+  and it is in one place (`json_backup::envelope_tables`).
+- **Sealed holdings are deliberately not in it** (pd-4gop): valuation reads
+  `collection` alone, and tenant data with no offline consumer is exactly
+  what the tenant zone's governance exists to avoid. `source_table` is
+  already there, so adding them later is three triggers and no migration.
+
+Changing a trigger body needs a deliberate `DROP TRIGGER` in the schema file
+— `IF NOT EXISTS` will not replace one an existing collection already
+carries, and a stale trigger writes a stale payload forever.
+
+Gates: `outbox.rs`'s unit tests (every mutation path, the payload-coverage
+comparison, rollback, the sequence under concurrent writers, the envelope
+rules) and `crates/pkdump-db/tests/outbox_atomicity.rs` — a child process
+writing batches, SIGKILLed mid-transaction, the outbox replayed from seq 1
+and compared to the collection table row by row, sixteen times. It fails
+unless at least one kill actually landed inside a transaction, because a
+crash test that never crashed anything proves nothing.
+
+Nothing reads the outbox yet. The shipper is its own change (pd-dxn3).
+
 ### Variant expansion
 
 `pkdump-ingest/src/overrides.rs::expand_all_printings` is the per-card

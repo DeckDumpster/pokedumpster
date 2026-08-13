@@ -39,7 +39,7 @@ pub const TABLE: &str = "ownership_outbox";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{collection, connect_user, DbError};
+    use crate::{DbError, collection, connect_user};
     use rusqlite::Connection;
 
     /// A user connection whose catalog holds two printings of one card and
@@ -57,14 +57,14 @@ mod tests {
             )
             .unwrap();
             c.execute(
-                "INSERT INTO cards (card_id, set_code, number, name) \
-                 VALUES ('sv3pt5-1', 'sv3pt5', '1', 'Bulbasaur')",
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('sv3pt5-1', 'sv3pt5', '1', 1, 'Bulbasaur')",
                 [],
             )
             .unwrap();
             c.execute(
-                "INSERT INTO cards (card_id, set_code, number, name) \
-                 VALUES ('sv3pt5-2', 'sv3pt5', '2', 'Ivysaur')",
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('sv3pt5-2', 'sv3pt5', '2', 2, 'Ivysaur')",
                 [],
             )
             .unwrap();
@@ -231,9 +231,14 @@ mod tests {
         collection::set_status(&mut conn, id, "listed", None).unwrap();
         assert_eq!(count(&conn), 3, "set_status");
 
-        conn.execute("INSERT INTO binders (name) VALUES ('b')", [])
-            .unwrap();
-        let binder = conn.last_insert_rowid();
+        let binder = crate::binders::create(
+            &conn,
+            &crate::binders::NewBinder {
+                name: "b".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         collection::move_to(&mut conn, id, Some(binder), None, None).unwrap();
         assert_eq!(count(&conn), 4, "move_to");
 
@@ -262,30 +267,52 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("UPDATE collection SET notes = 'x'", []).unwrap();
+        conn.execute("UPDATE collection SET notes = 'x'", [])
+            .unwrap();
         conn.execute("DELETE FROM collection", []).unwrap();
         assert_eq!(ops(&conn), ["insert", "update", "delete"]);
     }
 
-    /// A binder delete sets `collection.binder_id` to NULL through
-    /// `ON DELETE SET NULL` — a mutation nothing in Rust performs. It is
-    /// still a change to a holding, and it is still recorded.
+    /// Deleting a binder sets `collection.binder_id` to NULL through
+    /// `ON DELETE SET NULL` — SQLite mutating a holding, with no Rust
+    /// anywhere in the write. A writer bolted onto `binders::delete` would
+    /// have to know that a foreign key elsewhere touches the collection; the
+    /// trigger is on the table the change lands in, so it does not.
+    ///
+    /// (The copy is added straight into the binder rather than moved into
+    /// it, because a `move_to` leaves a `movement_log` row whose own foreign
+    /// key refuses the binder delete outright — pd-hj2w.)
     #[test]
     fn a_foreign_key_cascade_is_a_mutation_too() {
         let (_dir, mut conn) = user_conn();
-        conn.execute("INSERT INTO binders (name) VALUES ('b')", [])
-            .unwrap();
-        let binder = conn.last_insert_rowid();
-        let id = collection::add(&mut conn, &new_copy("sv3pt5-1-normal")).unwrap();
-        collection::move_to(&mut conn, id, Some(binder), None, None).unwrap();
+        let binder = crate::binders::create(
+            &conn,
+            &crate::binders::NewBinder {
+                name: "b".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let id = collection::add(
+            &mut conn,
+            &collection::NewCopy {
+                binder_id: Some(binder),
+                ..new_copy("sv3pt5-1-normal")
+            },
+        )
+        .unwrap();
+        assert_eq!(count(&conn), 1);
 
-        conn.execute("DELETE FROM binders WHERE id = ?1", [binder])
-            .unwrap();
+        assert!(crate::binders::delete(&conn, binder).unwrap());
 
         let evs = events(&conn);
-        assert_eq!(ops(&conn), ["insert", "update", "update"]);
-        let payload: serde_json::Value = serde_json::from_str(&evs[2].3).unwrap();
-        assert!(payload["binder_id"].is_null());
+        assert_eq!(ops(&conn), ["insert", "update"]);
+        assert_eq!(evs[1].2, id);
+        let payload: serde_json::Value = serde_json::from_str(&evs[1].3).unwrap();
+        assert!(
+            payload["binder_id"].is_null(),
+            "the event carries the holding as the cascade left it"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -355,9 +382,11 @@ mod tests {
 
         assert_eq!(count(&conn), 1, "only the add");
         let printing: String = conn
-            .query_row("SELECT printing_id FROM collection WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT printing_id FROM collection WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(printing, "sv3pt5-1-normal");
     }
@@ -461,8 +490,12 @@ mod tests {
         let before = count(&conn);
         assert_eq!(before, 2);
 
-        crate::json_backup::import(&mut conn, &envelope, crate::json_backup::OnExisting::Replace)
-            .unwrap();
+        crate::json_backup::import(
+            &mut conn,
+            &envelope,
+            crate::json_backup::OnExisting::Replace,
+        )
+        .unwrap();
 
         let after = ops(&conn);
         assert_eq!(

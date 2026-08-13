@@ -1,0 +1,20 @@
+{
+  "Rules": [
+    {
+      "ID": "pkdump-tenant-zone-90-day-expiry",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "tenant/"
+      },
+      "Expiration": {
+        "Days": 90
+      },
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 90
+      },
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 7
+      }
+    }
+  ]
+}

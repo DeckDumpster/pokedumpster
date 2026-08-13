@@ -143,7 +143,7 @@ pub fn config_path() -> Option<PathBuf> {
 
 /// Parse a dotenv file. Missing is not an error — it is simply no settings,
 /// which the caller turns into the refusal above.
-fn read_env_file(path: &Path) -> Result<BTreeMap<String, String>> {
+pub(crate) fn read_env_file(path: &Path) -> Result<BTreeMap<String, String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(parse_env(&text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
@@ -154,7 +154,7 @@ fn read_env_file(path: &Path) -> Result<BTreeMap<String, String>> {
 /// The same subset of dotenv the deploy scripts' `set -a; . file` handles:
 /// `KEY=value`, `#` comments, blank lines, an optional `export ` prefix, and
 /// optional surrounding quotes.
-fn parse_env(text: &str) -> BTreeMap<String, String> {
+pub(crate) fn parse_env(text: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for line in text.lines() {
         let line = line.trim();

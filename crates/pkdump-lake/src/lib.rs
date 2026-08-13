@@ -48,6 +48,17 @@
 //! A bucket named by `~/.config/pkdump/lake.env` — host configuration, no
 //! default, deliberately a *different* bucket from the Litestream backup
 //! bucket. See [`config`].
+//!
+//! ## The other zone in that bucket
+//!
+//! Everything above describes the **catalog zone**: `raw/` and the `lake/`
+//! warehouse beside it, cross-tenant, shared, retained indefinitely. The
+//! same bucket also holds the **tenant zone** under `tenant/` — holdings and
+//! valuations, always tenant-keyed, retained 90 days, reachable only by
+//! credentials that reach nothing else. It is a different object under
+//! different governance that happens to share a bucket, and [`tenant`] is
+//! where its layout, its retention and its credential rule live. Nothing in
+//! this crate writes it; the shipper is its own item.
 
 pub mod config;
 mod error;
@@ -56,6 +67,7 @@ pub mod manifest;
 pub mod reader;
 pub mod sink;
 pub mod store;
+pub mod tenant;
 
 pub use config::{Backend, LakeConfig};
 pub use error::{LakeError, Result};
@@ -64,6 +76,7 @@ pub use manifest::{Manifest, PartRecord};
 pub use reader::{RawZone, Run, select_run};
 pub use sink::RawLanding;
 pub use store::{DirStore, ObjectSource, ObjectStore, S3Store};
+pub use tenant::{RETENTION_DAYS, TENANT_ROOT, TenantZoneConfig};
 
 /// Build the landing zone this host is configured for, for **writing**.
 ///

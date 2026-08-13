@@ -16,6 +16,15 @@ This is step 1 of the offline-lakehouse design
 lands raw only. Building Iceberg tables from it is `pd-1ojt`; the per-tenant
 transform tier is `pd-hkbc`.
 
+> **This file is about the CATALOG zone** — `raw/` and the `lake/` warehouse
+> beside it: cross-tenant, shared, retained indefinitely, reached with the
+> broad catalog credentials. The same bucket also holds the **tenant zone**
+> under `tenant/`, which is a different object under different governance:
+> always tenant-keyed, 90-day retention, its own credentials, plain Parquet.
+> Its runbook is [`TENANT_ZONE.md`](TENANT_ZONE.md). Nothing in this file
+> applies to it, and that separation is the reason "tenant data never enters
+> the lake" still holds.
+
 ---
 
 ## 1. The key layout

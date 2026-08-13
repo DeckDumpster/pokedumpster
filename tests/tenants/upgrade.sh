@@ -55,6 +55,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FIXTURES="${REPO_DIR}/tests/ui/fixtures"
 
+# The shipped image, built here or — when deploy/ci.sh already built it once for
+# every gate in the run — tagged from that one. See deploy/image-lib.sh.
+# shellcheck source=deploy/image-lib.sh
+. "${REPO_DIR}/deploy/image-lib.sh"
 # Bounded condition polling, in one place for every harness (pd-86er).
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"

@@ -364,6 +364,29 @@ so a docs-only PR still runs it). A tier renamed in one file and not the other
 fails it in a second, and a guard on a name that is not a tier is fatal rather
 than a silent skip.
 
+### CI triggers on the PR's BASE branch — master and `integration/**`
+
+`ci.yml` is `on: pull_request: branches: [master, 'integration/**']`, and that
+filter matches the **base**, not the head. A PR opened into anything else gets no
+CI at all — not queued, not cancelled, not awaiting approval. No run is created.
+
+`[master]` alone was the original, which meant **every child PR of every epic went
+untested**, because an epic's children target its integration branch. Six PRs
+(#31-#36) sat that way on 2026-08-13, and it is why polecats had been reaching for
+`workflow_dispatch`: it was the only thing that produced any signal.
+
+Two things made it invisible:
+
+- the ruleset's required `test` check guards `master` only, so nothing complained
+- an admin bypass reports `CLEAN` regardless, so the merge box looked fine
+
+**An epic's children are the reviewable unit** — a polecat branch is the PR source.
+Gating only the eventual `integration -> master` PR hides a broken child until the
+whole epic lands, which is the opposite of what the integration branch is for.
+
+If you add another long-lived base branch, add it here too, or its PRs are
+silently untested.
+
 ### Never `workflow_dispatch` a branch that is going to become a PR
 
 **Open the PR first and let `pull_request` be the only trigger.** Running CI by

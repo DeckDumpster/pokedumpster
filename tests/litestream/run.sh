@@ -454,6 +454,27 @@ check "delta has its own derived prefix" "1" \
 	"$(grep -cx "${LITESTREAM_S3_PATH}/delta.sqlite" "$WORK/prefixes.txt" || true)"
 check "four tenants, four prefixes" "4" "$(grep -c . "$WORK/prefixes.txt")"
 
+# WAIT FOR THE LATE WRITES TO REPLICATE before restoring to ${MARKER}.
+#
+# §3 waits for the EARLY phase so the marker has something behind it. Nothing
+# waited for the LATE phase, so the marker could sit AHEAD of the replica's newest
+# transaction — and Litestream refuses a timestamp outside the range it holds:
+#
+#     Error: timestamp does not exist
+#
+# which surfaced as `expected 1, got <no restored db>` and read like a derivation
+# bug. Retrying cannot fix it, and did not: the bounded retry added for the lag
+# case burned all nine attempts against a timestamp the replica would never be
+# able to serve.
+#
+# drill.sh has had this wait since it was written (`late_replicated`); run.sh
+# simply never grew one. Asserted rather than `|| true`, so if the late phase
+# never lands the failure says so instead of blaming the restore two lines later.
+late_replicated() { [ "$(restore_rows late-probe.sqlite "$VICTIM")" -ge 2 ]; }
+wait_until 180 2 late_replicated || true
+check "the late writes reached ${VICTIM}'s replica, so the marker is inside its range" "yes" \
+	"$(late_replicated && echo yes || echo no)"
+
 log "6. restore the NON-FIRST tenant — latest, and point-in-time"
 # Restoring tenant #1 would pass even if the derivation were off by one, so the
 # whole point of this section is that the victim is #2 of 4.

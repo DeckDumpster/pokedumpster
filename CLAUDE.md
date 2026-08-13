@@ -396,7 +396,8 @@ reports the conclusion whatever the trigger was. Never conclude a PR is green fr
 If a branch has already been dispatched and needs a real PR check, push another
 commit: a new SHA gets a new suite, and the `pull_request` event creates it.
 
-**Eleven of the gates run in parallel, three at a time** (pd-2nl9) —
+**Eleven of the gates run in parallel, two at a time** (pd-2nl9; lowered from
+three on 2026-08-13 — see `PKDUMP_CI_JOBS` in `deploy/ci-parallel.sh`) —
 litestream, drill, alarming, recreate, upgrade, tenant-header, schema-version,
 the three lake gates and refresh. They do not run where they are written: each
 **queues** itself under its own tier guard and `deploy/ci-parallel.sh` runs the

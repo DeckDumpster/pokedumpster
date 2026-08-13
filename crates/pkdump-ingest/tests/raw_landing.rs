@@ -252,10 +252,17 @@ fn a_run_that_fails_partway_leaves_a_manifest_that_says_so() {
 /// Two runs on the same ingest date land in disjoint prefixes and neither
 /// overwrites the other — the retry-after-partial-failure property, proved
 /// through the real client rather than only at the key layer.
+///
+/// "Retry" here is a whole SECOND RUN with its own ULID — an operator or a
+/// timer starting the job again — not the in-request retry
+/// `pkdump_ingest::retry` added in pd-nons. The two are different mechanisms
+/// at different scales and this test is about the outer one, which is why the
+/// first run is given no request-level budget: with one, the client would
+/// simply ask again and there would be no failed run to land beside.
 #[test]
 fn a_retry_lands_beside_the_first_attempt_not_on_it() {
     let upstream = FakeUpstream::start(|target, n| match (target, n) {
-        // The first run's groups call fails; the retry's succeeds.
+        // The first run's groups call fails; the second run's succeeds.
         ("/3/groups", 0) => Reply {
             status: 503,
             body: "upstream is down".into(),
@@ -270,8 +277,9 @@ fn a_retry_lands_beside_the_first_attempt_not_on_it() {
         .unwrap()
         .base_url(&upstream.base_url())
         .landing_in(Arc::clone(&first))
+        .retry(pkdump_ingest::retry::RetryPolicy::none())
         .fetch_groups()
-        .expect_err("first attempt fails");
+        .expect_err("first run fails");
     first.finalize(Some(&err.to_string())).unwrap();
 
     let second = landing_in(tmp.path());

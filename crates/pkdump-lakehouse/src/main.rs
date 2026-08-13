@@ -175,6 +175,22 @@ fn shared(args: SharedArgs) -> anyhow::Result<()> {
         },
     )?;
 
+    // A partial derivation is a failure HERE, unlike in `pkdump data refresh`
+    // (pd-nons). The online refresh may end with a stale set list because the
+    // dataset it could not lose — a day's prices — is already in the catalog
+    // by then, and it says so with exit status 2. This job makes a different
+    // claim: that `shared.sqlite` is what this partition derives to. A catalog
+    // missing the sets the partition holds does not answer that claim, and the
+    // unit that runs this has no SuccessExitStatus= precisely because a
+    // quietly smaller catalog reads as cards that do not exist.
+    if let Some(e) = &report.tail_error {
+        anyhow::bail!(
+            "the pokemontcg.io tail did not complete, so this catalog is NOT the derivation of \
+             ingest_date={}: {e}",
+            args.ingest_date
+        );
+    }
+
     // Provenance, written only on success: a row saying this catalog came from
     // that run is a claim about a catalog that exists.
     let rows = partition::provenance(&chosen, &args.ingest_date, &clock);

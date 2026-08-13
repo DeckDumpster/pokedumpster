@@ -70,21 +70,14 @@ pub trait ReplaySource: Send + Sync {
 /// Cloneable and cheap: every client of one invocation holds the same two
 /// `Arc`s. A default `Wire` neither lands nor replays — the client that
 /// existed before any of this, now with [`crate::retry`]'s budget behind it.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Wire {
     landing: Landing,
     replay: Option<Arc<dyn ReplaySource>>,
+    /// Defaults through [`RetryPolicy::default`], which reads the
+    /// environment — so a `Wire` nobody configured still retries, and a unit
+    /// file can widen the budget without a rebuild.
     retry: RetryPolicy,
-}
-
-impl Default for Wire {
-    fn default() -> Self {
-        Self {
-            landing: None,
-            replay: None,
-            retry: RetryPolicy::from_env(),
-        }
-    }
 }
 
 impl Wire {

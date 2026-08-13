@@ -38,6 +38,11 @@
 # changed. Empty means the installed units already matched this checkout.
 PKDUMP_UNITS_CHANGED=()
 
+# The alerting predicate + the OnFailure gate live in alert-gate.sh so the alert
+# unit and the renderer cannot disagree about which instances may page (pd-n0lf).
+# shellcheck source=deploy/alert-gate.sh
+. "$(dirname "${BASH_SOURCE[0]}")/alert-gate.sh"
+
 # _pkdump_units_render <dest> <stamp|nostamp> <template> [sed -e args...]
 #
 # Render a template to <dest>, but only replace the file when the result
@@ -54,6 +59,7 @@ _pkdump_units_render() {
     tmp="${dir}/.${base}.new.$$"
 
     sed "$@" "$template" > "$tmp"
+
     if [ "$stamp" = stamp ]; then
         # systemd does not inherit our PATH, so the unit carries the store flags
         # itself. A no-op without an active alternate store — which is prod.
@@ -80,6 +86,8 @@ _pkdump_units_render() {
 # Quadlet with a random host port and take prod off 8090 — an outage caused by
 # shipping a unit-file fix.
 pkdump_units_install() {
+    local _alert_sed=()
+    pkdump_units_alerting "$1" || _alert_sed=(-e '/^OnFailure=/d')
     local instance="$1" port="${2:-0}"
     local repo_dir quadlet_dir systemd_user_dir service_name
     repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -110,7 +118,8 @@ pkdump_units_install() {
     _pkdump_units_render "${quadlet_dir}/${service_name}.container" stamp \
         "$repo_dir/deploy/pkdump.container" \
         -e "s|{{INSTANCE}}|${instance}|g" \
-        -e "s|{{PORT}}:8080|${port_mapping}|g"
+        -e "s|{{PORT}}:8080|${port_mapping}|g" \
+        "${_alert_sed[@]}"
 
     # --- Per-instance timer units -------------------------------------------
     # %i-templated units installed under a concrete instance name so several
@@ -173,7 +182,8 @@ pkdump_units_install() {
     _pkdump_units_render "${quadlet_dir}/pkdump-litestream-${instance}.container" stamp \
         "$repo_dir/deploy/pkdump-litestream.container" \
         -e "s|{{INSTANCE}}|${instance}|g" \
-        -e "s|{{REPO_DIR}}|${repo_dir}|g"
+        -e "s|{{REPO_DIR}}|${repo_dir}|g" \
+        "${_alert_sed[@]}"
 }
 
 # pkdump_units_report — say what the last install actually changed.

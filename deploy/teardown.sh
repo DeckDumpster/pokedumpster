@@ -56,6 +56,20 @@ rm -f "$QUADLET_FILE" \
       "$HOME/.config/containers/systemd/pkdump-litestream-${INSTANCE}.container"
 systemctl --user daemon-reload
 
+# Clear this instance's failed state (pd-n0lf). A unit stopped as part of a
+# teardown is not a failure, but systemd keeps it in `--failed` forever, and once
+# the unit file is gone it lingers as an unclearable `not-found` ghost. 125 had
+# accumulated by 2026-08-13, 61 of them ghosts, which is enough noise to hide a
+# real failure in the same listing.
+for _u in "$SERVICE_NAME" \
+          "pkdump-litestream-${INSTANCE}.service" \
+          "pkdump-refresh@${INSTANCE}."{service,timer} \
+          "pkdump-backup-check@${INSTANCE}."{service,timer} \
+          "pkdump-derive@${INSTANCE}."{service,timer} \
+          "pkdump-value-snapshots@${INSTANCE}."{service,timer}; do
+    systemctl --user reset-failed "$_u" 2>/dev/null || true
+done
+
 podman rmi "pkdump:${INSTANCE}" 2>/dev/null || true
 
 if [ "$PURGE" = true ]; then

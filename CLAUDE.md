@@ -102,6 +102,8 @@ cargo run --bin pkdump -- serve  # start the HTTP server
 cargo run --bin pkdump -- data refresh   # incremental catalog refresh (ONLINE)
 cargo run --bin pkdump-lake-derive -- shared --ingest-date 2026-08-11 \
                                  # the same derivation, OFFLINE, replaying raw/
+                                 #   a URL not in raw/ refuses; there is no
+                                 #   fallback to the live upstream
 cargo run --bin pkdump-lake-derive -- diff --left a.sqlite --right b.sqlite \
     --exclude raw_derivation     # row-by-row, never byte-by-byte
 cargo run --bin pkdump -- seed-fixture   # build the deterministic UI-test fixture
@@ -534,11 +536,25 @@ not implementation:
   rerun is *identifiable* rather than merely tolerated. `observed_at` stays
   distinct from `ingest_date` — they differ for exactly the run that crossed
   UTC midnight.
-- **The upstream fallback is temporary and LOUD.** A URL missing from `raw/`
-  means coverage has regressed; the run says so per-URL and in a summary,
-  `deploy/derive.sh` pushes a warning, and `--no-upstream-fallback` makes it
-  fatal. Item 4 of the epic removes it, as its own change, once row-identity is
-  proven in production. **Do not remove it as a side effect of anything else.**
+- **A URL missing from `raw/` is FATAL, unconditionally.** Coverage has
+  regressed; the run refuses, naming the URL and saying to re-land the date.
+  Item 2's temporary fallback — fetch live, print `!! raw coverage has
+  REGRESSED`, finish anyway — and its `--no-upstream-fallback` opt-out are
+  **gone** (item 4, pd-6yql), removed once pd-vves proved row-identity against
+  the real bucket. The flag is rejected by name rather than ignored, so an old
+  invocation fails loudly instead of appearing to work. A fallback is not a
+  safety net to restore: it makes the landing zone decorative, producing a
+  correct catalog whose lineage cannot be reproduced, which surfaces on the day
+  an upstream is down — the day the lake was bought for.
+- **Set symbols are not an exception to that rule, and never went through it.**
+  `symbols::normalize_all_symbols` takes `(&mut Connection, &Path)` — no `Wire`
+  — and builds its own HTTP client, because images are deliberately outside
+  `raw/`. So an offline derive still fetches them live, and a fetch that fails
+  is counted, logged, and **not** fatal: the set keeps its upstream URL, which
+  still renders. `row_identical.rs::a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it`
+  is the gate, on a catalog whose symbols have never been normalised — the shape
+  pd-vves's proof could not exercise, because prod's catalog was already
+  normalised and both sides skipped the phase (pd-5w4n).
 
 Anything that lands in a ROW is passed in rather than read: `DeriveClock`
 carries the one instant a run read, `Manifest.started_at` is where the landing

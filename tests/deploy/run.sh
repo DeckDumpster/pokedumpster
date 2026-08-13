@@ -943,8 +943,8 @@ check "teardown disables the timer" "1" \
 
 # --- What the wrapper actually does -----------------------------------------
 # Driven end to end with a fake podman standing in for the job, because "the
-# scheduler names the date", "a fallback is warned about but not a failure" and
-# "no lake.env refuses by name" are behaviour, not greps.
+# scheduler names the date" and "no lake.env refuses by name" are behaviour,
+# not greps.
 
 DV_HOME="${WORK}/dvhome"
 mkdir -p "${DV_HOME}/.config/pkdump" "${WORK}/dvbin"
@@ -959,8 +959,6 @@ case "$1 $2" in
 esac
 if [ "$1" = run ]; then
 	printf 'Deriving ingest_date=... from dir /raw\n'
-	[ -n "${PKDUMP_TEST_FELL_BACK:-}" ] &&
-		printf '!! raw coverage has REGRESSED: https://tcgcsv.com/tcgplayer/3/9/prices is not in raw/\n'
 	printf 'Derive complete: /data/shared.sqlite\n'
 	exit "${PKDUMP_TEST_JOB_RC:-0}"
 fi
@@ -990,15 +988,20 @@ check "the wrapper names today's UTC date" "1" \
 check "an explicit --ingest-date is not overridden" "1" \
 	"$(run_derive --ingest-date 2026-08-09 | grep -c -- '--ingest-date 2026-08-09' || true)"
 
-# A run that needed the temporary upstream fallback is CORRECT but not
-# reproducible from the lake. That is a warning, not a failure, and it must not
-# be swallowed just because the job exited 0.
-DV_FELLBACK="$(PKDUMP_TEST_FELL_BACK=1 run_derive)"
-check "a fallback still exits 0" "1" "$(printf '%s' "$DV_FELLBACK" | grep -c 'RC=0$' || true)"
-check "…and is warned about, loudly" "1" \
-	"$(printf '%s' "$DV_FELLBACK" | grep -c 'WARNING — raw coverage has regressed' || true)"
-check "an undeliverable warning is not a failure" "1" \
-	"$(printf '%s' "$DV_FELLBACK" | grep -c 'the coverage warning reached nobody' || true)"
+# The wrapper no longer reads the job's output at all. Item 4 made a gap in
+# raw/ a refusal inside the job, so the "correct catalog, unreproducible
+# lineage" outcome the old coverage warning existed for cannot occur — that
+# shape now exits 1 and pages through OnFailure= like any other failure. A
+# wrapper that still grepped for it would be dead code pretending to be a
+# safety net.
+check "the wrapper greps the job's output for nothing" "0" \
+	"$(grep -c 'raw coverage' "${REPO_DIR}/deploy/derive.sh" || true)"
+check "and pushes no alert of its own" "0" \
+	"$(grep -c 'alert.sh' "${REPO_DIR}/deploy/derive.sh" || true)"
+# The retired flag is gone from the runbook line too — an invocation carrying
+# it would now be rejected by clap rather than quietly accepted.
+check "the retired flag is not documented as usable" "0" \
+	"$(grep -c -- '--no-upstream-fallback' "${REPO_DIR}/deploy/derive.sh" || true)"
 
 DV_FAILED="$(PKDUMP_TEST_JOB_RC=1 run_derive)"
 check "a failed derive exits 1" "1" "$(printf '%s' "$DV_FAILED" | grep -c 'RC=1$' || true)"

@@ -185,6 +185,155 @@ CREATE TABLE IF NOT EXISTS movement_log (
 CREATE INDEX IF NOT EXISTS idx_movement_log_collection ON movement_log(collection_id);
 
 -- ---------------------------------------------------------------------
+-- The ownership outbox (pd-5m54)
+--
+-- Every change to `collection` — the tenant's holdings — appended as an
+-- event, IN THE SAME TRANSACTION as the change itself. The offline side
+-- (the lakehouse tenant zone) is fed from this table, so that it is
+-- eventually consistent BY CONSTRUCTION rather than by a second write
+-- that a crash can lose: dual-writing SQLite and a bucket has no
+-- atomicity, and the disagreement it leaves behind is undetectable.
+--
+-- The writer is the three triggers below, NOT the Rust call sites, and
+-- that is the whole point. A trigger fires inside the statement's own
+-- transaction, so there is no instant at which a holding has changed and
+-- the event has not — no window to crash in, nothing to remember to
+-- call. It also means the paths that write `collection` in raw SQL
+-- (orders.rs, import.rs, json_backup.rs, the fixture seeder) are covered
+-- without knowing this table exists, and a path added tomorrow is
+-- covered before it is written.
+--
+-- `seq` is the ordering authority and the gap detector: AUTOINCREMENT, so
+-- a value is never reused after the shipper trims a shipped prefix, and a
+-- missing number is a LOST EVENT rather than a deleted one. `occurred_at`
+-- is metadata — `datetime('now')` ties at millisecond resolution and
+-- cannot order two events inside one transaction.
+--
+-- `payload` is the whole row as JSON: the post-image for insert/update,
+-- the pre-image for delete. Whole, so that a consumer needing a column
+-- nobody anticipated does not need a schema change here, and so that no
+-- column can be silently omitted — `outbox.rs` asserts the payload keys
+-- against `PRAGMA table_info(collection)`.
+--
+-- `source_table` is constant today (every row says 'collection'; sealed
+-- holdings are deliberately out of scope, see pd-4gop) and carries no
+-- CHECK. It exists because this file has no migration mechanism: a column
+-- added later needs an ALTER nothing here can express, whereas another
+-- source only needs three more triggers.
+--
+-- No tenant column. One collection is one database file, so the file IS
+-- the tenant; a `database_id` here would be a second, staler copy of what
+-- the registry already says, and handles are renameable.
+--
+-- CHANGING A TRIGGER BODY needs a deliberate `DROP TRIGGER` above the
+-- CREATE, exactly like the refinery drop at the top of this file:
+-- `IF NOT EXISTS` will not replace a trigger that an existing collection
+-- already carries, and a stale trigger writes a stale payload forever.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ownership_outbox (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at   TEXT NOT NULL,             -- UTC ISO-8601, millisecond
+    source_table  TEXT NOT NULL,             -- 'collection'
+    op            TEXT NOT NULL CHECK (op IN ('insert', 'update', 'delete')),
+    row_id        INTEGER NOT NULL,          -- collection.id
+    payload       TEXT NOT NULL              -- JSON object: the whole row
+);
+
+CREATE TRIGGER IF NOT EXISTS collection_outbox_insert
+AFTER INSERT ON collection
+BEGIN
+    INSERT INTO ownership_outbox
+        (occurred_at, source_table, op, row_id, payload)
+    VALUES (
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'collection', 'insert', NEW.id,
+        json_object(
+            'id',             NEW.id,
+            'printing_id',    NEW.printing_id,
+            'condition',      NEW.condition,
+            'language',       NEW.language,
+            'purchase_price', NEW.purchase_price,
+            'sale_price',     NEW.sale_price,
+            'acquired_at',    NEW.acquired_at,
+            'source',         NEW.source,
+            'notes',          NEW.notes,
+            'tags',           NEW.tags,
+            'graded',         NEW.graded,
+            'grade_company',  NEW.grade_company,
+            'grade_value',    NEW.grade_value,
+            'grade_cert',     NEW.grade_cert,
+            'status',         NEW.status,
+            'order_id',       NEW.order_id,
+            'binder_id',      NEW.binder_id,
+            'deck_id',        NEW.deck_id,
+            'batch_id',       NEW.batch_id
+        )
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS collection_outbox_update
+AFTER UPDATE ON collection
+BEGIN
+    INSERT INTO ownership_outbox
+        (occurred_at, source_table, op, row_id, payload)
+    VALUES (
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'collection', 'update', NEW.id,
+        json_object(
+            'id',             NEW.id,
+            'printing_id',    NEW.printing_id,
+            'condition',      NEW.condition,
+            'language',       NEW.language,
+            'purchase_price', NEW.purchase_price,
+            'sale_price',     NEW.sale_price,
+            'acquired_at',    NEW.acquired_at,
+            'source',         NEW.source,
+            'notes',          NEW.notes,
+            'tags',           NEW.tags,
+            'graded',         NEW.graded,
+            'grade_company',  NEW.grade_company,
+            'grade_value',    NEW.grade_value,
+            'grade_cert',     NEW.grade_cert,
+            'status',         NEW.status,
+            'order_id',       NEW.order_id,
+            'binder_id',      NEW.binder_id,
+            'deck_id',        NEW.deck_id,
+            'batch_id',       NEW.batch_id
+        )
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS collection_outbox_delete
+AFTER DELETE ON collection
+BEGIN
+    INSERT INTO ownership_outbox
+        (occurred_at, source_table, op, row_id, payload)
+    VALUES (
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'collection', 'delete', OLD.id,
+        json_object(
+            'id',             OLD.id,
+            'printing_id',    OLD.printing_id,
+            'condition',      OLD.condition,
+            'language',       OLD.language,
+            'purchase_price', OLD.purchase_price,
+            'sale_price',     OLD.sale_price,
+            'acquired_at',    OLD.acquired_at,
+            'source',         OLD.source,
+            'notes',          OLD.notes,
+            'tags',           OLD.tags,
+            'graded',         OLD.graded,
+            'grade_company',  OLD.grade_company,
+            'grade_value',    OLD.grade_value,
+            'grade_cert',     OLD.grade_cert,
+            'status',         OLD.status,
+            'order_id',       OLD.order_id,
+            'binder_id',      OLD.binder_id,
+            'deck_id',        OLD.deck_id,
+            'batch_id',       OLD.batch_id
+        )
+    );
+END;
+
+-- ---------------------------------------------------------------------
 -- Wishlist
 -- ---------------------------------------------------------------------
 

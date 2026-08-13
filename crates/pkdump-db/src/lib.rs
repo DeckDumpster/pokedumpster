@@ -23,6 +23,7 @@ pub mod json_backup;
 pub mod latest_prices;
 pub mod manual_prices;
 pub mod orders;
+pub mod outbox;
 pub mod prices;
 pub mod raw_derivation;
 pub mod registry;

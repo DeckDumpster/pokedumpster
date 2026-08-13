@@ -52,6 +52,11 @@ FIXTURES="${REPO_DIR}/tests/ui/fixtures"
 # shellcheck source=tests/lib/ports.sh
 . "${REPO_DIR}/tests/lib/ports.sh"
 
+# The shipped image, built here or — when deploy/ci.sh already built it once for
+# every gate in the run — tagged from that one. See deploy/image-lib.sh.
+# shellcheck source=deploy/image-lib.sh
+. "${REPO_DIR}/deploy/image-lib.sh"
+
 # PER-CHECKOUT: several polecats run deploy/ci.sh concurrently from their own
 # worktrees, and a fixed image tag means one run's teardown pulls the image out
 # from under another.
@@ -120,8 +125,8 @@ tenant_fingerprint() {
 # registry row, a fresh tenants/ entry, a snapshot file — cannot hide.
 data_inventory() { (cd "$DATA" && find . -type f -printf '%P\n' | sort); }
 
-log "1. build the shipped image"
-podman build -t "$IMAGE" -f "${REPO_DIR}/Containerfile" "$REPO_DIR" >/dev/null
+log "1. the shipped image"
+pkdump_image_ensure "$IMAGE" "$REPO_DIR" >/dev/null
 echo "  $IMAGE"
 
 log "2. a data directory with real tenant databases in it"

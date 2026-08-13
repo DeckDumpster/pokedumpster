@@ -158,7 +158,7 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     //    cards TCGCSV can't model (stamps, etc.).
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
-    let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
+    let printings = overrides::expand_all_printings(&mut conn, &overlay, clock.fetched_at())?;
     println!("  wrote {printings} printings");
 
     // 6b. Report sets that mapped no printing to a TCGplayer product at

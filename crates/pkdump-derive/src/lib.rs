@@ -202,7 +202,7 @@ pub fn derive(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<Re
     //    straight JOIN.
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
-    report.printings = overrides::expand_all_printings(conn, &overlay)?;
+    report.printings = overrides::expand_all_printings(conn, &overlay, options.clock.fetched_at())?;
     println!("  wrote {} printings", report.printings);
 
     // Report sets that mapped no printing to a TCGplayer product at all —

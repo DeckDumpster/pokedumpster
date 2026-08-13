@@ -1253,7 +1253,7 @@ mod tests {
         crate::tcgcsv::import_prices(&mut conn, &prices, "2026-07-31").unwrap();
 
         let overlay = crate::overrides::load_variant_augmentations().unwrap();
-        crate::overrides::expand_all_printings(&mut conn, &overlay).unwrap();
+        crate::overrides::expand_all_printings(&mut conn, &overlay, "2026-08-11T00:00:00Z").unwrap();
 
         let variants: Vec<String> = {
             let mut stmt = conn

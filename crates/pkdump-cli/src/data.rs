@@ -195,7 +195,10 @@ fn expand_only(args: RefreshArgs) -> anyhow::Result<()> {
 
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
-    let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
+    // `data expand` is the local re-run, so its clock is genuinely now: there
+    // are no landed bytes behind it to reproduce a timestamp from.
+    let printings =
+        overrides::expand_all_printings(&mut conn, &overlay, &chrono::Utc::now().to_rfc3339())?;
     println!("  wrote {printings} printings");
 
     println!("Checking TCGplayer mapping coverage...");

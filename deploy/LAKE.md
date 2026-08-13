@@ -276,6 +276,54 @@ other dataset was. `shared.sqlite` splits the same bytes at import time into
 decimal would round, and "the sampled prices match" would stop meaning what it
 says.
 
+### It is on a timer (`pd-up36`)
+
+`pkdump-prices@<instance>.timer`, whose service runs `deploy/prices.sh` — the
+invocation above with the instance's network, image and lake credentials
+resolved from where they actually live.
+
+```bash
+systemctl --user enable --now pkdump-prices@prod.timer
+bash deploy/prices.sh prod                            # or run one now
+bash deploy/prices.sh prod --ingest-date 2026-08-09   # rebuild an older day
+```
+
+It sits in the middle of the nightly chain — **land → derive → prices →
+transform** — and each link is a declared ordering dependency, never an
+inference from three timers sharing 07:00. Without it, the transform tier (§7)
+valued every tenant's collection from whatever day someone last built by hand:
+correct arithmetic over stale prices, advancing every night, with nothing
+anywhere saying the numbers had stopped moving.
+
+Three things about the scheduling are decisions:
+
+**The nightly build passes `--allow-incomplete`.** The refusal above is right
+for a hand run and wrong for a timer: `complete` is conservative across
+datasets, so a pokemontcg.io tail that died marks the *prices* manifest
+incomplete on a night when every price fetch succeeded — the normal shape of a
+flaky night. A unit that failed there would page most nights, and a pager that
+cries wolf gets ignored (this project has already paid a day for that shape,
+`pd-me6h`). So the day is built and the snapshot records
+`pkdump.raw-complete=false`, which is the difference between not knowing and
+knowing-and-having-written-it-down.
+
+**The alarm is on AGE instead**, and that is what `pkdump-lake-prices-age`
+answers: how far behind today the newest `catalog.prices` partition is. More
+than two days behind (`PKDUMP_LAKE_PRICES_MAX_AGE_DAYS`) pages; a table nothing
+has ever built is the same verdict. It reads partition *metadata*, not data
+files, so the cost does not grow with the lake. It runs on **every** run, not
+only after a failed build: a check wired to the failure path fires on almost no
+night and nobody would notice it had broken — and on the success path it is
+also the only thing that asks the table rather than believing the build's
+report of itself.
+
+**0, 2 and 1 are three different answers.** 0 is today's partition built over a
+fresh table. 2 is a build that produced nothing today over a table still inside
+the window — one missed night, which tomorrow's build fills in; the unit's
+`SuccessExitStatus=2` keeps it out of `failed` while the wrapper prints
+`MISSED` and pushes a warning. 1 is a stale table, or an age that could not be
+established at all: not being able to ask is not the same answer as "fine".
+
 Checking the table against the catalog we already have:
 
 ```bash
@@ -364,11 +412,14 @@ while the wrapper prints a `PARTIAL` line naming the skipped tenants and pushes 
 Pushover *warning* — so a half-completed run is neither silent nor an alarm. Exit
 1 is a real failure and `OnFailure=pkdump-alert@%n.service` pages for it.
 
-**`catalog.prices` is still built by hand** (§6). Nothing schedules
-`pkdump-lake-build-prices` yet, so a box whose price build is not re-run values
-each night's collection from the newest partition the lake happens to hold —
-correct arithmetic over stale prices. Tracked as `pd-up36`, which also has to
-decide what a nightly build does with §6's refusal on an incomplete day.
+**`catalog.prices` is built by the unit before this one** (§6, `pd-up36`).
+`pkdump-prices@%i` is ordered `After=` the derive and this unit is ordered
+`After=` it, so the night runs land → derive → prices → transform in sequence
+however long each takes. Until that unit existed this job valued each night's
+collection from the newest partition the lake happened to hold — correct
+arithmetic over stale prices, advancing nightly. Arming this timer without
+arming that one reintroduces exactly that, which is why `deploy/setup-lake.sh`
+now names both.
 
 **Tenant data never enters the lake.** Prices come out of Iceberg; the
 collection is read from, and the snapshot written to, the tenant's SQLite

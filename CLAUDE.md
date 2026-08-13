@@ -509,7 +509,41 @@ the scheduling are decisions:
   from the clock (backfilling an older day is the same operation), so the
   wrapper — the one component that is allowed to know what day it is — names it.
 
-`catalog.prices` itself is still built by hand between the two (pd-up36).
+### The nightly price build
+
+`catalog.prices` is what the transform tier reads, and until pd-up36 nothing
+built it on a schedule — `pkdump-lake-build-prices` was a hand-run podman
+invocation. The transform therefore valued every tenant's collection from
+whatever day someone last built: **correct arithmetic over stale prices,
+advancing every night, with nothing anywhere saying the numbers had stopped
+moving.** Same failure class as pd-s5yn — a job that looks like it ran.
+
+`pkdump-prices@<instance>.timer` closes it, running `deploy/prices.sh`. Two
+things about it are decisions:
+
+- **The nightly build passes `--allow-incomplete`; the alarm is on AGE.** A
+  hand run should refuse a day holding no complete run, but `complete` is
+  conservative across datasets — a pokemontcg.io tail that died marks the
+  *prices* manifest incomplete on a night when every price fetch succeeded,
+  which is the normal shape of a flaky night. A unit that failed there would
+  page most nights, and a pager that cries wolf gets ignored (pd-me6h). So the
+  day is built, the snapshot records `pkdump.raw-complete=false`, and
+  `pkdump-lake-prices-age` (`lake/src/pkdump_lake/freshness.py`) pages when the
+  newest partition falls more than two days behind. That check runs on **every**
+  run, not only after a failed build: a check wired to the failure path fires on
+  almost no night and nobody would notice it had broken — and on the success
+  path it is the only thing that asks the table rather than believing the
+  build's report of itself.
+- **0 / 2 / 1 are three answers**, as for the transform: built-and-fresh, a
+  missed day over a still-fresh table (`SuccessExitStatus=2`, warned not paged),
+  and a stale table or an age that could not be established at all — both page.
+
+The chain is now total and every link is declared, never inferred from three
+timers sharing 07:00: **land → derive → prices → transform**. Arming one of the
+lake timers without the others is what reintroduces the bug, which is why
+`deploy/setup-lake.sh` names them together. Gates: `tests/deploy/run.sh` §13
+(units + the wrapper's whole exit mapping, hermetic) and `tests/lake/prices.sh`
+§10–§12 (the real freshness job and the shipped wrapper against a real lake).
 
 ### The offline catalog derive
 

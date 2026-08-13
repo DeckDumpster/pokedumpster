@@ -436,7 +436,8 @@ check "the published port survives the refresh" "1" \
 for U in pkdump-alert@.service pkdump-backup-check@.service pkdump-backup-check@.timer \
 	pkdump-refresh@.service pkdump-refresh@.timer pkdump-diskcheck.service pkdump-diskcheck.timer \
 	pkdump-value-snapshots@.service pkdump-value-snapshots@.timer \
-	pkdump-derive@.service pkdump-derive@.timer; do
+	pkdump-derive@.service pkdump-derive@.timer \
+	pkdump-prices@.service pkdump-prices@.timer; do
 	check "installs ${U}" "yes" "$([ -f "${UNITS}/${U}" ] && echo yes || echo no)"
 done
 check "no {{REPO_DIR}} left unsubstituted" "0" \
@@ -1030,6 +1031,253 @@ check "and names setup.sh" "1" \
 	"$(printf '%s' "$DV_NOIMAGE" | grep -c 'deploy/setup.sh dvtest' || true)"
 check "never pulls the image" "1" \
 	"$(grep -c '^podman run --rm --pull=never' "${REPO_DIR}/deploy/derive.sh" || true)"
+
+reset_store
+
+# ---------------------------------------------------------------------------
+log "13. The price build is SCHEDULED, and the alarm is on AGE (pd-up36)"
+# ---------------------------------------------------------------------------
+#
+# pd-8m5c scheduled the transform, which values every tenant from
+# catalog.prices. Nothing scheduled the job that FILLS catalog.prices — it was
+# a hand-run podman invocation. So the nightly snapshot was correct arithmetic
+# over whatever day someone last built by hand: advancing every night, with
+# nothing anywhere saying the prices had stopped moving.
+#
+# Two properties, and the second is the one that decays quietly:
+#
+#   THE CHAIN IS TOTAL — land -> derive -> prices -> transform, each ordered
+#   after the last. A unit missing from the middle is the bug above.
+#
+#   THE ALARM IS ON AGE, NOT ON COMPLETENESS — `complete` is conservative
+#   across datasets, so a pokemontcg.io tail that died marks the prices
+#   manifest incomplete on a night when every price fetch succeeded. Failing
+#   there would page most nights, and a pager that cries wolf gets ignored
+#   (pd-me6h). So the build passes --allow-incomplete and the alarm moves onto
+#   how old the newest partition is.
+
+reset_store
+
+PX_SVC="${REPO_DIR}/deploy/pkdump-prices.service"
+PX_TMR="${REPO_DIR}/deploy/pkdump-prices.timer"
+
+# The chain, declared rather than assumed from three timers sharing a calendar
+# entry. Each link is an ordering dependency on the unit before it.
+check "ordered after the landing" "1" \
+	"$(grep -c '^After=pkdump-refresh@%i.service$' "$PX_SVC" || true)"
+check "ordered after the derive" "1" \
+	"$(grep -c '^After=pkdump-derive@%i.service$' "$PX_SVC" || true)"
+check "the transform is ordered after the price build" "1" \
+	"$(grep -c '^After=pkdump-prices@%i.service$' "${REPO_DIR}/deploy/pkdump-value-snapshots.service" || true)"
+# And NOT Wants=: the landing is a oneshot without RemainAfterExit, so pulling
+# it in would re-run the whole catalog fetch a second time every night.
+check "does not pull the landing in" "0" \
+	"$(grep -c '^\(Wants\|Requires\)=pkdump-\(refresh\|derive\)@%i.service$' "$PX_SVC" || true)"
+
+# 0 / 2 / 1 are three answers. 2 means "no partition for today, and the table is
+# still fresh" — one missed night, which tomorrow's build fills in. A unit that
+# called that a failure would page on a normal flaky night.
+check "exit 2 is a success for the unit" "1" \
+	"$(grep -c '^SuccessExitStatus=2$' "$PX_SVC" || true)"
+check "a stale table still pages" "1" \
+	"$(grep -c '^OnFailure=pkdump-alert@%n.service$' "$PX_SVC" || true)"
+check "skips a box with no lake config at all" "1" \
+	"$(grep -c '^ConditionPathExists=%h/.config/pkdump/lake.env$' "$PX_SVC" || true)"
+
+# The calendar entry is DERIVED from the landing unit's own declared bounds —
+# the same computation §10 and §12 make. REFRESH_LATEST is theirs.
+PX_START=$(($(hhmm_secs "$PX_TMR") + $(key_secs "$PX_TMR" RandomizedDelaySec)))
+check "fires no earlier than the landing can finish" "ok" \
+	"$([ "$PX_START" -ge "$REFRESH_LATEST" ] && echo ok || echo "starts ${PX_START}s < landing ${REFRESH_LATEST}s")"
+check "catches up a missed run" "1" "$(grep -c '^Persistent=true$' "$PX_TMR" || true)"
+check "timer is enablable" "1" "$(grep -c '^WantedBy=timers.target$' "$PX_TMR" || true)"
+check "the deploy installs it" "1" \
+	"$(grep -c 'pkdump-prices@\.\${ext}' "${REPO_DIR}/deploy/units-lib.sh" || true)"
+check "teardown disables the timer" "1" \
+	"$(grep -c 'pkdump-prices@\${INSTANCE}.timer' "${REPO_DIR}/deploy/teardown.sh" || true)"
+
+# --- What the wrapper does with each combination ----------------------------
+# Driven end to end with a fake podman standing in for both jobs, because "the
+# freshness check runs on EVERY path", "a missed day over a fresh table is a
+# warning" and "a stale table is an alarm" are behaviour, not greps.
+
+PX_HOME="${WORK}/pxhome"
+mkdir -p "${PX_HOME}/.config/pkdump" "${WORK}/pxbin"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_REGION=us-west-2\n' \
+	> "${PX_HOME}/.config/pkdump/lake.env"
+
+# Each job's status is dialled independently, and every invocation is logged so
+# a test can assert which jobs actually ran and with what arguments.
+cat > "${WORK}/pxbin/podman" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+"secret inspect") exit 1 ;;
+"image exists" | "network exists") exit "${PKDUMP_TEST_NO_LAKEHOUSE:-0}" ;;
+esac
+if [ "$1" = run ]; then
+	echo "JOB: $*" >> "$PKDUMP_TEST_PRICES_LOG"
+	case " $* " in
+	*" pkdump-lake-build-prices "*)
+		printf '==> reading source=tcgcsv dataset=prices\n'
+		[ -n "${PKDUMP_TEST_INCOMPLETE_DAY:-}" ] &&
+			printf "    provenance {'pkdump.raw-complete': 'false'}\n"
+		exit "${PKDUMP_TEST_BUILD_RC:-0}" ;;
+	*" pkdump-lake-prices-age "*)
+		printf '==> catalog.prices at main: newest partition\n'
+		exit "${PKDUMP_TEST_AGE_RC:-0}" ;;
+	esac
+fi
+exit 0
+EOF
+chmod +x "${WORK}/pxbin/podman"
+
+run_prices() { # run_prices <build rc> <age rc> [extra args...]
+	local build_rc="$1" age_rc="$2"
+	shift 2
+	: > "${WORK}/prices-jobs.log"
+	set +e
+	# Blanked rather than merely unconfigured: two cases below provoke a real
+	# alarm on purpose, and a gate that pages an operator when it works as
+	# designed is pd-n0lf. alert.sh reads an empty token as unconfigured.
+	PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+		PKDUMP_LAKE_ENV="${PX_HOME}/.config/pkdump/lake.env" \
+		PKDUMP_ALERTS_ENV="${PX_HOME}/.config/pkdump/nonexistent.env" \
+		PUSHOVER_TOKEN= PUSHOVER_USER= \
+		PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+		PKDUMP_TEST_BUILD_RC="$build_rc" PKDUMP_TEST_AGE_RC="$age_rc" \
+		bash "${REPO_DIR}/deploy/prices.sh" pxtest "$@" 2>&1
+	printf 'RC=%s' "$?"
+	set -e
+}
+
+PX_OK="$(run_prices 0 0)"
+check "built and fresh exits 0" "1" "$(printf '%s' "$PX_OK" | grep -c 'RC=0$' || true)"
+check "and says both halves happened" "1" \
+	"$(printf '%s' "$PX_OK" | grep -c "prices: OK — today's partition built, catalog.prices is fresh" || true)"
+# THE property that decays: a freshness check wired only to the failure path
+# would run on almost no night, and nobody would notice it had broken. It runs
+# on the success path too, where it is also the only thing that asks the TABLE
+# rather than believing the job's report of itself.
+check "the freshness check runs even when the build succeeded" "1" \
+	"$(grep -c 'pkdump-lake-prices-age' "${WORK}/prices-jobs.log" || true)"
+# The date the jobs refuse to default from the clock is supplied by the
+# scheduler. UTC, because that is what a raw/ ingest_date partition is named in.
+check "the wrapper names today's UTC date to the build" "1" \
+	"$(grep -c -- "pkdump-lake-build-prices --ingest-date $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+check "…and measures age against the same day" "1" \
+	"$(grep -c -- "pkdump-lake-prices-age --as-of $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+# The decision this bead had to make, spelled into the command line: build the
+# day even when its landing run did not finish, and let the snapshot record it.
+check "the build is allowed an incomplete day" "1" \
+	"$(grep -c -- '--allow-incomplete' "${WORK}/prices-jobs.log" || true)"
+check "the freshness window is passed explicitly" "1" \
+	"$(grep -c -- '--max-age-days 2' "${WORK}/prices-jobs.log" || true)"
+
+# An incomplete-but-recent day is NOT an alarm. This is the exact false
+# positive pd-me6h already cost a day of; reintroducing it here in a new shape
+# would be worse than having no alarm.
+PX_INCOMPLETE="$(PKDUMP_TEST_INCOMPLETE_DAY=1 run_prices 0 0)"
+check "an incomplete day still exits 0" "1" \
+	"$(printf '%s' "$PX_INCOMPLETE" | grep -c 'RC=0$' || true)"
+check "…and raises nothing" "0" \
+	"$(printf '%s' "$PX_INCOMPLETE" | grep -c 'STALE\|MISSED' || true)"
+
+# A build that produced nothing today, over a table that still holds a recent
+# day. Not an outage: yesterday's prices value today's collection, and
+# tomorrow's build fills the day in.
+PX_MISSED="$(run_prices 1 0)"
+check "a missed day over a fresh table exits 2, not 1" "1" \
+	"$(printf '%s' "$PX_MISSED" | grep -c 'RC=2$' || true)"
+check "and says which day it missed" "1" \
+	"$(printf '%s' "$PX_MISSED" | grep -c "MISSED — no partition built for $(date -u +%F)" || true)"
+# Not silent either — and an undeliverable warning is reported rather than
+# promoted to a failure. No Pushover channel is configured here, which is every
+# test instance.
+check "an undeliverable warning is not a failure" "1" \
+	"$(printf '%s' "$PX_MISSED" | grep -c 'the MISSED warning reached nobody' || true)"
+
+# The alarm the bead exists for: correct arithmetic over prices that stopped
+# arriving. Detected by AGE, and it fires whatever the build did.
+PX_STALE="$(run_prices 1 3)"
+check "a stale table exits 1" "1" "$(printf '%s' "$PX_STALE" | grep -c 'RC=1$' || true)"
+check "and says the prices stopped advancing" "1" \
+	"$(printf '%s' "$PX_STALE" | grep -c 'prices: STALE' || true)"
+# Even on a night the build itself succeeded — a build that writes a day the
+# table does not end up holding is exactly the silence being ended.
+PX_STALE_BUILT="$(run_prices 0 3)"
+check "a stale table pages even after a clean build" "1" \
+	"$(printf '%s' "$PX_STALE_BUILT" | grep -c 'RC=1$' || true)"
+
+# Not being able to ask is not the same answer as "fine" — the rule
+# deploy/backup-check.sh is built on.
+PX_UNASKABLE="$(run_prices 0 1)"
+check "an unanswerable freshness check fails" "1" \
+	"$(printf '%s' "$PX_UNASKABLE" | grep -c 'RC=1$' || true)"
+check "and says the age could not be established" "1" \
+	"$(printf '%s' "$PX_UNASKABLE" | grep -c 'could not establish the age' || true)"
+
+# An explicit date wins — this is how rebuilding an older day runs through the
+# same path.
+: > "${WORK}/prices-jobs.log"
+PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+	PKDUMP_LAKE_ENV="${PX_HOME}/.config/pkdump/lake.env" \
+	PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+	bash "${REPO_DIR}/deploy/prices.sh" pxtest --ingest-date 2026-08-09 >/dev/null 2>&1
+check "an explicit --ingest-date is not overridden" "1" \
+	"$(grep -c -- '--ingest-date 2026-08-09' "${WORK}/prices-jobs.log" || true)"
+check "…and is not doubled" "0" \
+	"$(grep -c -- "--ingest-date $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+# …and a failure names the day that was actually asked for. A journal line that
+# says "today" about a rebuild of last Tuesday sends the reader to the wrong
+# partition.
+check "a missed rebuild names the day it was asked for" "1" \
+	"$(run_prices 1 0 --ingest-date 2026-08-09 | grep -c 'MISSED — no partition built for 2026-08-09' || true)"
+# The freshness question is always about NOW, though: rebuilding an old day
+# says nothing about whether the table has stopped advancing.
+check "…while age is still measured against today" "1" \
+	"$(grep -c -- "--as-of $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+
+# The window is host config, like every other threshold on this box.
+: > "${WORK}/prices-jobs.log"
+PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+	PKDUMP_LAKE_ENV="${PX_HOME}/.config/pkdump/lake.env" \
+	PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+	PKDUMP_LAKE_PRICES_MAX_AGE_DAYS=5 \
+	bash "${REPO_DIR}/deploy/prices.sh" pxtest >/dev/null 2>&1
+check "the freshness window is overridable per box" "1" \
+	"$(grep -c -- '--max-age-days 5' "${WORK}/prices-jobs.log" || true)"
+
+# No lake configured is a refusal that names the file, never a silent skip.
+set +e
+PX_NOLAKE="$(PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+	PKDUMP_LAKE_ENV="${WORK}/nosuch-prices.env" \
+	PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+	bash "${REPO_DIR}/deploy/prices.sh" pxtest 2>&1)"
+PX_NOLAKE_RC=$?
+set -e
+check "no lake.env -> refuses" "1" "$PX_NOLAKE_RC"
+check "and names the file" "1" \
+	"$(printf '%s' "$PX_NOLAKE" | grep -c 'nosuch-prices.env does not exist' || true)"
+
+# An instance whose lakehouse was never installed. A timer armed at nothing is a
+# price table that never advances, so this fails rather than skipping.
+set +e
+PX_NOLAKEHOUSE="$(PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+	PKDUMP_LAKE_ENV="${PX_HOME}/.config/pkdump/lake.env" \
+	PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+	PKDUMP_TEST_NO_LAKEHOUSE=1 \
+	bash "${REPO_DIR}/deploy/prices.sh" pxtest 2>&1)"
+PX_NOLAKEHOUSE_RC=$?
+set -e
+check "no job image -> fails" "1" "$PX_NOLAKEHOUSE_RC"
+check "and names the command that installs it" "1" \
+	"$(printf '%s' "$PX_NOLAKEHOUSE" | grep -c 'deploy/setup-lake.sh pxtest' || true)"
+check "never pulls the job image" "1" \
+	"$(grep -c '^[[:space:]]*podman run --rm --pull=never' "${REPO_DIR}/deploy/prices.sh" || true)"
+# Nothing keyed by a tenant is within this job's reach: it reads raw/ and writes
+# Iceberg, and mounts no data volume at all.
+check "no tenant data is mounted into the job" "0" \
+	"$(grep -c '^\s*-v "\${DATA}' "${REPO_DIR}/deploy/prices.sh" || true)"
 
 reset_store
 

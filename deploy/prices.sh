@@ -133,6 +133,18 @@ fi
 
 TODAY="$(date -u +%F)"
 ARGS=("$@")
+# Which day the build is being asked for, so the journal line can name it rather
+# than assume today: an explicit --ingest-date is how an older partition gets
+# rebuilt through this same path.
+BUILD_DATE="$TODAY"
+PREV=""
+for A in "$@"; do
+    [ "$PREV" = --ingest-date ] && BUILD_DATE="$A"
+    case "$A" in
+    --ingest-date=*) BUILD_DATE="${A#--ingest-date=}" ;;
+    esac
+    PREV="$A"
+done
 case " $* " in
 *" --ingest-date "* | *" --ingest-date="*) ;;
 *) ARGS=(--ingest-date "$TODAY" "${ARGS[@]}") ;;
@@ -223,10 +235,10 @@ case "$AGE_RC" in
     # undeliverable (no Pushover channel, which is every test instance) is
     # reported rather than promoted to a failure: unlike the stale branch
     # below, nothing here has decided something is wrong.
-    echo "prices: MISSED — no partition built for ${TODAY}, but catalog.prices is still" \
+    echo "prices: MISSED — no partition built for ${BUILD_DATE}, but catalog.prices is still" \
         "within ${MAX_AGE_DAYS} day(s) (${INSTANCE})" >&2
     "${SCRIPT_DIR}/alert.sh" "PokeDumpster price build MISSED a day (${INSTANCE})" \
-        "No catalog.prices partition for ${TODAY}; the table is still fresh, so tenants are valued from a recent day. It becomes an alarm if this repeats past ${MAX_AGE_DAYS} day(s). See journalctl --user -u pkdump-prices@${INSTANCE}.service" ||
+        "No catalog.prices partition for ${BUILD_DATE}; the table is still fresh, so tenants are valued from a recent day. It becomes an alarm if this repeats past ${MAX_AGE_DAYS} day(s). See journalctl --user -u pkdump-prices@${INSTANCE}.service" ||
         echo "prices: the MISSED warning reached nobody (no Pushover channel configured) — the run itself is unaffected" >&2
     exit 2
     ;;

@@ -190,10 +190,14 @@ cat <<EOF
                   -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-${INSTANCE}:19120/iceberg/ \\
                   ${JOB_IMAGE} pkdump-lake-roundtrip
 
-    Then arm the nightly transform (pd-8m5c) — nothing else records today's
-    value for any tenant, and a day it does not run is a hole in every chart:
+    Then arm the nightly chain. Both halves, in this order — the transform
+    values collections from the table the price build writes, so arming only
+    the transform is correct arithmetic over prices that never advance
+    (pd-up36), and arming neither is a hole in every tenant's chart (pd-8m5c):
+                systemctl --user enable --now pkdump-prices@${INSTANCE}.timer
                 systemctl --user enable --now pkdump-value-snapshots@${INSTANCE}.timer
-                bash deploy/value-snapshots.sh ${INSTANCE}   # or run one now
+                bash deploy/prices.sh ${INSTANCE}            # or run one now
+                bash deploy/value-snapshots.sh ${INSTANCE}
 
     The catalog has NO authentication (Nessie says so in its own startup log),
     which is why it publishes on 127.0.0.1 only and jobs reach it over the

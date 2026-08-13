@@ -50,7 +50,7 @@ import argparse
 import datetime as dt
 import sys
 
-from pyiceberg.exceptions import NoSuchTableError
+from pyiceberg.exceptions import NoSuchNamespaceError, NoSuchTableError
 
 from .catalog import DEFAULT_REF, catalog
 
@@ -94,7 +94,10 @@ def newest_partition(identifier: str, ref: str | None = None) -> dt.date | None:
     deleted, or nothing was ever committed. The caller treats that exactly as
     it treats a missing table: prices are not arriving.
 
-    :raises NoSuchTableError: the table has never been created.
+    :raises NoSuchTableError, NoSuchNamespaceError: nothing has built it. Both,
+        because on a lake where the build has never once run the *namespace* is
+        missing too, and which of the two a catalog answers with is the
+        catalog's business rather than a fact about the prices.
     """
     table = catalog(ref).load_table(identifier)
     partitions = table.inspect.partitions()
@@ -111,7 +114,18 @@ def newest_partition(identifier: str, ref: str | None = None) -> dt.date | None:
         # A partition whose live files hold no rows is not a day of prices. It
         # is not the normal outcome of a rebuild — the build replaces a day in
         # one commit — but counting it would make an empty table look fresh.
-        if not row.get("record_count"):
+        #
+        # An ABSENT column is a different thing from a zero, and it must not
+        # take the same branch: silently skipping every partition would report
+        # STALE, which is a page. A metadata shape this job does not understand
+        # is "I could not ask", and it says so.
+        if "record_count" not in row:
+            raise FreshnessError(
+                "inspect.partitions() returned no record_count column "
+                f"(got {sorted(row)}) — this job cannot tell a live partition from an "
+                "emptied one, and guessing would page or reassure at random."
+            )
+        if not row["record_count"]:
             continue
         days.append(partition[PARTITION_FIELD])
 
@@ -131,7 +145,7 @@ def judge(
 
     try:
         newest = newest_partition(identifier, ref)
-    except NoSuchTableError:
+    except (NoSuchTableError, NoSuchNamespaceError):
         print(
             f"prices-age: STALE — there is no {identifier} at {resolved}. Nothing has ever "
             "built it: bash deploy/prices.sh <instance> (deploy/LAKE.md §6)",

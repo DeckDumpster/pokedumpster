@@ -464,6 +464,20 @@ Landing is opt-in and off by default: with the flag absent, `lake.env` is
 never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
 runbook.
 
+**The nightly refresh runs in its own container** (`deploy/refresh.sh`), like
+the derive and transform jobs beside it — it does not `podman exec` into the
+running server. That call drops the caller's environment, so the documented
+drop-in that turns landing on set `PKDUMP_LAND_RAW=1` somewhere the refresh
+could never read it, and the timer went green having landed nothing (pd-kncd).
+`-e` alone would not have been enough: `podman exec` cannot add a mount to a
+running container either, and the alternative — putting the lake's credentials
+on the app container — would give the always-on web server ambient write access
+to the lake bucket, which is the exact coupling `pkdump-lake` is offline-only to
+prevent. **Nothing that serves a request may hold a lake credential.** The
+wrapper's last line is the guard that matters: landing asked for and no landing
+zone opened **fails the unit**, because that is the silent green no-op the
+whole landing zone is worthless without.
+
 ### The transform tier
 
 `lake/src/pkdump_lake/value_snapshots.py` is the first job that *reads* the

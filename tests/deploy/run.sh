@@ -1033,6 +1033,252 @@ check "never pulls the image" "1" \
 
 reset_store
 
+log "13. The landing half's environment actually reaches the process (pd-kncd)"
+# ---------------------------------------------------------------------------
+#
+# The unit was `podman exec systemd-pkdump-%i pkdump data refresh`, and
+# `podman exec` does NOT forward the calling process's environment — the exec'd
+# process gets the CONTAINER's env plus explicit -e flags and nothing else.
+# Measured (pd-vk22):
+#
+#   $ PKDUMP_LAND_RAW=1 podman exec systemd-pkdump-mutant \
+#         sh -c 'echo ${PKDUMP_LAND_RAW:-<unset>}'
+#   <unset>
+#
+# So the documented way to turn landing on — a drop-in setting
+# Environment=PKDUMP_LAND_RAW=1 on the refresh unit — produced a green nightly
+# timer that landed nothing, with no error anywhere. That is the exact state
+# deploy/LAKE.md §3 promises cannot exist, so this section is that promise
+# holding still: the variable is FORWARDED, the credentials are MOUNTED, and
+# every way of getting it wrong is loud.
+
+reset_store
+
+RF_SVC="${REPO_DIR}/deploy/pkdump-refresh.service"
+
+# The call that drops the environment must not come back. Stated as an
+# assertion rather than left to the wrapper's tests, because this is the whole
+# defect: an ExecStart that reaches into the running server's container cannot
+# carry an environment OR a mount, however the wrapper beside it is written.
+# Directives only — the unit's own comment block quotes the old ExecStart, which
+# is how the next person finds out why it is not there any more.
+check "the unit does not exec into the running server" "0" \
+	"$(grep -v '^#' "$RF_SVC" | grep -c 'podman exec' || true)"
+check "it runs the wrapper from this checkout" "1" \
+	"$(grep -c '^ExecStart=.*{{REPO_DIR}}/deploy/refresh.sh %i' "$RF_SVC" || true)"
+# …and §12's split still holds: the landing half lands, it does not derive.
+check "the landing unit still does not derive from raw" "0" \
+	"$(grep -c 'pkdump-lake-derive' "$RF_SVC" || true)"
+# A catalog has no partial success — the same asymmetry with the transform tier
+# deploy/derive.sh documents.
+check "no exit status is silently a success" "0" \
+	"$(grep -c '^SuccessExitStatus=' "$RF_SVC" || true)"
+check "a failure pages" "1" \
+	"$(grep -c '^OnFailure=pkdump-alert@%n.service$' "$RF_SVC" || true)"
+# The timer's bound is what §10 and §12 derive their calendar entries from, so
+# the unit that carries it must keep carrying it.
+check "the run is still bounded" "1" \
+	"$(grep -c '^TimeoutStartSec=1800$' "$RF_SVC" || true)"
+
+# --- What the wrapper actually does -----------------------------------------
+# Driven end to end with a fake podman that records its own argv, because "the
+# variable reaches the container" is a claim about a command line.
+
+RF_HOME="${WORK}/rfhome"
+mkdir -p "${RF_HOME}/.config/pkdump/rftest/aws" "${WORK}/rfbin"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_REGION=us-west-2\nAWS_PROFILE=pkdump-lake\n' \
+	> "${RF_HOME}/.config/pkdump/lake.env"
+# The instance's assume-role profile — the non-secret half of the credential
+# pair. The secret half is the fake podman's `secret inspect` above.
+printf '[profile pkdump-lake]\nrole_arn = arn:aws:iam::0:role/x\nsource_profile = bootstrap\n' \
+	> "${RF_HOME}/.config/pkdump/rftest/aws/config"
+
+# `secret inspect` answers for the instance's bootstrap secret, `run` replays a
+# canned refresh transcript — including the line landing::open prints before the
+# first fetch, which is the wrapper's evidence that the flag survived the trip.
+cat > "${WORK}/rfbin/podman" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+"secret inspect") exit "${PKDUMP_TEST_NO_SECRET:-0}" ;;
+"image exists") exit "${PKDUMP_TEST_NO_IMAGE:-0}" ;;
+esac
+if [ "$1" = run ]; then
+	printf 'PODMAN RUN: %s\n' "$*"
+	case " $* " in
+	*" -e PKDUMP_LAND_RAW=1 "*)
+		[ -n "${PKDUMP_TEST_LANDING_LOST:-}" ] ||
+			printf 'Landing raw upstream responses in s3://pdtest (ingest_date=2026-08-13)\n'
+		;;
+	esac
+	printf 'Refresh complete.\n'
+	exit "${PKDUMP_TEST_JOB_RC:-0}"
+fi
+exit 0
+EOF
+chmod +x "${WORK}/rfbin/podman"
+
+run_refresh() { # run_refresh [args...] — env overrides come from the caller
+	set +e
+	PATH="${WORK}/rfbin:${ORIG_PATH}" HOME="$RF_HOME" \
+		PKDUMP_LAKE_ENV="${RF_HOME}/.config/pkdump/lake.env" \
+		bash "${REPO_DIR}/deploy/refresh.sh" rftest "$@" 2>&1
+	printf 'RC=%s' "$?"
+	set -e
+}
+
+RF_OFF="$(run_refresh)"
+check "a plain refresh exits 0" "1" "$(printf '%s' "$RF_OFF" | grep -c 'RC=0$' || true)"
+check "and runs the app image's pkdump, not its entrypoint" "1" \
+	"$(printf '%s' "$RF_OFF" | grep -c -- '--entrypoint pkdump .* data refresh' || true)"
+# The app container's own unit sets this; a fresh container that did not would
+# rebuild a catalog under ~/.pkdump that nothing will ever read.
+check "and names the data dir" "1" \
+	"$(printf '%s' "$RF_OFF" | grep -c -- '-e PKDUMP_HOME=/data' || true)"
+# Landing is opt-in and off by default: nothing asked for it, so nothing is
+# turned on, whatever lake.env happens to say.
+check "landing stays off unless asked for" "0" \
+	"$(printf '%s' "$RF_OFF" | grep -c -- '-e PKDUMP_LAND_RAW=1' || true)"
+
+# THE BUG. The drop-in sets this in the unit's environment; before pd-kncd it
+# died there.
+RF_ENV="$(PKDUMP_LAND_RAW=1 run_refresh)"
+check "PKDUMP_LAND_RAW=1 in the environment reaches the container" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '-e PKDUMP_LAND_RAW=1' || true)"
+check "…and the run says it opened a landing zone" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c '^Landing raw upstream responses in ' || true)"
+check "…and exits 0" "1" "$(printf '%s' "$RF_ENV" | grep -c 'RC=0$' || true)"
+# The flag on the command line is the same switch by the other door.
+check "--land-raw on the command line does too" "1" \
+	"$(run_refresh --land-raw | grep -c -- '-e PKDUMP_LAND_RAW=1' || true)"
+
+# The bucket the flag is useless without (pd-8gjd): the app container had no
+# lake settings at all, so even a forwarded flag would have refused inside.
+check "the lake's settings are forwarded" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '-e PKDUMP_LAKE_S3_BUCKET=pdtest' || true)"
+check "…region included" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '-e PKDUMP_LAKE_S3_REGION=us-west-2' || true)"
+# The LAKE profile, not the backup one — separating the blast radius is the
+# whole reason there are two buckets.
+check "…and the profile lake.env names" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '-e AWS_PROFILE=pkdump-lake' || true)"
+# Credentials are the other half of pd-8gjd, and the assume-role path is the
+# project's standing decision: a role profile as a file, the bootstrap key as a
+# podman secret, never a long-lived static key on the command line.
+check "credentials are mounted when the instance has them" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '--secret pkdump-rftest-s3-bootstrap,type=mount,target=/aws/credentials' || true)"
+check "…with the role profile beside them" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- "-v ${RF_HOME}/.config/pkdump/rftest/aws/config:/aws/config:ro" || true)"
+
+# --- Every way to get it wrong, loudly --------------------------------------
+
+# Landing asked for on a box with no lake configured at all. A wrapper that
+# dropped the flag here — "no bucket, so never mind" — would have rebuilt the
+# original bug exactly.
+set +e
+RF_NOLAKE="$(PATH="${WORK}/rfbin:${ORIG_PATH}" HOME="$RF_HOME" \
+	PKDUMP_LAKE_ENV="${WORK}/nosuch-refresh.env" PKDUMP_LAND_RAW=1 \
+	bash "${REPO_DIR}/deploy/refresh.sh" rftest 2>&1)"
+RF_NOLAKE_RC=$?
+set -e
+check "landing + no lake.env -> refuses" "1" "$RF_NOLAKE_RC"
+check "and names the file to write" "1" \
+	"$(printf '%s' "$RF_NOLAKE" | grep -c 'nosuch-refresh.env does not exist' || true)"
+check "and lands nothing" "0" \
+	"$(printf '%s' "$RF_NOLAKE" | grep -c '^PODMAN RUN' || true)"
+
+# A lake.env that exists and configures nothing the code reads — pd-ub8n, the
+# one that actually happened: the file on the box spelled the keys
+# PKDUMP_LAKE_BUCKET / _REGION / _RAW_PREFIX, which nothing reads. The binary
+# refuses on this too, but from inside the container, where its message names
+# /root/.config/pkdump/lake.env — a path that exists on neither side. The host
+# is where the file is, so the host is where the refusal has to be able to name
+# it.
+printf 'PKDUMP_LAKE_BUCKET=pdtest\nPKDUMP_LAKE_REGION=us-west-2\n' \
+	> "${RF_HOME}/.config/pkdump/lake-oldnames.env"
+set +e
+RF_OLDNAMES="$(PATH="${WORK}/rfbin:${ORIG_PATH}" HOME="$RF_HOME" \
+	PKDUMP_LAKE_ENV="${RF_HOME}/.config/pkdump/lake-oldnames.env" PKDUMP_LAND_RAW=1 \
+	bash "${REPO_DIR}/deploy/refresh.sh" rftest 2>&1)"
+RF_OLDNAMES_RC=$?
+set -e
+check "landing + a lake.env the code cannot read -> refuses" "1" "$RF_OLDNAMES_RC"
+check "and names the host file, not the container's" "1" \
+	"$(printf '%s' "$RF_OLDNAMES" | grep -c "${RF_HOME}/.config/pkdump/lake-oldnames.env" || true)"
+check "and names the two variables it wanted" "1" \
+	"$(printf '%s' "$RF_OLDNAMES" | grep -c 'PKDUMP_LAKE_S3_BUCKET and PKDUMP_LAKE_S3_REGION' || true)"
+check "and lands nothing" "0" \
+	"$(printf '%s' "$RF_OLDNAMES" | grep -c '^PODMAN RUN' || true)"
+# …and it is a refusal, not an alias table: teaching the wrapper to accept the
+# old spellings is the fallback logic the No-Fallback convention forbids, and a
+# half-configured lake that half-works is worse than one that stops.
+# Named in the refusal's prose, expanded nowhere — a `$` in front of one of
+# them would be the alias arriving.
+check "the old spellings are never expanded" "0" \
+	"$(grep -cE '\$\{?PKDUMP_LAKE_(BUCKET|REGION|RAW_PREFIX|TABLE_PREFIX)' \
+		"${REPO_DIR}/deploy/refresh.sh" || true)"
+# A refresh nobody asked to land is not held to any of it — that same file
+# configures nothing, and nothing needed configuring.
+check "…and a non-landing run does not care" "0" \
+	"$(PATH="${WORK}/rfbin:${ORIG_PATH}" HOME="$RF_HOME" \
+		PKDUMP_LAKE_ENV="${RF_HOME}/.config/pkdump/lake-oldnames.env" \
+		bash "${REPO_DIR}/deploy/refresh.sh" rftest >/dev/null 2>&1; echo $?)"
+
+# …but a box with no lake configured and nobody asking for one still refreshes.
+# The landing zone is opt-in; this is the state every instance is in today.
+set +e
+RF_NOLAKE_OFF="$(PATH="${WORK}/rfbin:${ORIG_PATH}" HOME="$RF_HOME" \
+	PKDUMP_LAKE_ENV="${WORK}/nosuch-refresh.env" \
+	bash "${REPO_DIR}/deploy/refresh.sh" rftest 2>&1)"
+RF_NOLAKE_OFF_RC=$?
+set -e
+check "no lake.env and no landing -> refreshes anyway" "0" "$RF_NOLAKE_OFF_RC"
+
+# Landing into real S3 with no credentials mounted. Not a refusal — an
+# endpoint-backed stand-in can be reached with keys already in the environment,
+# and the run fails at its first PUT either way — but "AccessDenied on
+# part-0000" is a far worse first clue than a sentence naming the two files.
+RF_NOCRED="$(PKDUMP_TEST_NO_SECRET=1 PKDUMP_LAND_RAW=1 run_refresh)"
+check "landing with no credentials says so" "1" \
+	"$(printf '%s' "$RF_NOCRED" | grep -c 'no credentials mounted' || true)"
+check "…naming the secret it wanted" "1" \
+	"$(printf '%s' "$RF_NOCRED" | grep -c 'pkdump-rftest-s3-bootstrap' || true)"
+check "…and does not mount a half-set" "0" \
+	"$(printf '%s' "$RF_NOCRED" | grep -c -- '--secret' || true)"
+# A directory-backed lake is the hermetic test tier's substrate and needs no
+# credentials at all, so it gets no warning.
+check "a directory-backed lake needs no credentials" "0" \
+	"$(PKDUMP_TEST_NO_SECRET=1 PKDUMP_LAND_RAW=1 PKDUMP_LAKE_DIR="${WORK}/rawdir" run_refresh |
+		grep -c 'no credentials mounted' || true)"
+
+# The silent green no-op itself, simulated at its last remaining hiding place:
+# landing asked for, the process runs, exits 0, and never opens a landing zone.
+# The wrapper must read that as a wiring failure rather than a successful night.
+RF_LOST="$(PKDUMP_TEST_LANDING_LOST=1 PKDUMP_LAND_RAW=1 run_refresh)"
+check "asked to land and landed nothing -> fails" "1" \
+	"$(printf '%s' "$RF_LOST" | grep -c 'RC=1$' || true)"
+check "and says the flag never reached the process" "1" \
+	"$(printf '%s' "$RF_LOST" | grep -c 'never opened a landing zone' || true)"
+# …and that check is scoped to landing: a refresh nobody asked to land must not
+# be failed for not landing.
+check "a non-landing run is not held to it" "1" \
+	"$(printf '%s' "$(PKDUMP_TEST_LANDING_LOST=1 run_refresh)" | grep -c 'RC=0$' || true)"
+
+RF_FAILED="$(PKDUMP_TEST_JOB_RC=1 run_refresh)"
+check "a failed refresh exits 1" "1" "$(printf '%s' "$RF_FAILED" | grep -c 'RC=1$' || true)"
+check "and says the catalog was NOT refreshed" "1" \
+	"$(printf '%s' "$RF_FAILED" | grep -c 'refresh: FAILED' || true)"
+
+# An instance that was never built on this box.
+RF_NOIMAGE="$(PKDUMP_TEST_NO_IMAGE=1 run_refresh)"
+check "no image -> fails naming the command that builds it" "1" \
+	"$(printf '%s' "$RF_NOIMAGE" | grep -c 'RC=1$' || true)"
+check "and names setup.sh" "1" \
+	"$(printf '%s' "$RF_NOIMAGE" | grep -c 'deploy/setup.sh rftest' || true)"
+check "never pulls the image" "1" \
+	"$(grep -c '^podman run --rm --pull=never' "${REPO_DIR}/deploy/refresh.sh" || true)"
+
+reset_store
+
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

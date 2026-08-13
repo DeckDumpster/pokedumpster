@@ -1,5 +1,11 @@
 [Unit]
 Description=PokeDumpster catalog refresh (%i)
+# pd-1uem item 5: LANDING AND DERIVING ARE TWO UNITS. This is the landing half —
+# it fetches from the upstreams and, with landing on, puts every response in the
+# bucket. pkdump-derive@%i is the deriving one.
+#
+# {{REPO_DIR}} is sed-substituted by deploy/units-lib.sh (single-clone
+# deployment).
 # Layer 2 (pokedumpster-ivq.3): push the journal tail to Pushover if a refresh
 # run fails (this is a discrete oneshot, so OnFailure fires reliably here).
 OnFailure=pkdump-alert@%n.service
@@ -7,8 +13,27 @@ OnFailure=pkdump-alert@%n.service
 [Service]
 Type=oneshot
 # DeckDumpster split this into prices / sealed / edhrec timers; PokeDumpster
-# collapses them to a single `pkdump data refresh` run inside the instance's
-# already-running container. The command is being added in parallel — it need
-# not exist yet for this unit to install cleanly.
-ExecStart=/bin/sh -c 'exec podman exec systemd-pkdump-%i pkdump data refresh'
+# collapses them to a single `pkdump data refresh`.
+#
+# ── IT RUNS IN ITS OWN CONTAINER, NOT THE SERVER'S (pd-kncd) ────────────────
+# This was `podman exec systemd-pkdump-%i pkdump data refresh` until Aug 2026,
+# and that call drops the environment: an exec'd process gets the CONTAINER's
+# env plus explicit -e flags and nothing else. So a drop-in here setting
+# `Environment=PKDUMP_LAND_RAW=1` — the documented way to turn landing on —
+# reached this unit and never reached the refresh, producing a green nightly
+# timer that landed nothing.
+#
+# -e would have fixed only half of it. The app container mounts the data volume
+# and nothing else, `podman exec` cannot add a mount to a running container, and
+# mounting the lake's credentials on the app container would hand the always-on
+# web server ambient write access to the lake bucket. So the job runs in its own
+# container from the same image over the same volume — the pattern
+# deploy/derive.sh and deploy/value-snapshots.sh already use.
+#
+# Landing stays OFF unless something asks for it. To turn it on for an instance:
+#   ~/.config/systemd/user/pkdump-refresh@<instance>.service.d/lake.conf
+#   [Service]
+#   Environment=PKDUMP_LAND_RAW=1
+# The wrapper forwards it into the container. See deploy/LAKE.md §4.
+ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/refresh.sh %i'
 TimeoutStartSec=1800

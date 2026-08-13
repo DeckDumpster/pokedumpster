@@ -47,8 +47,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FIXTURES="${REPO_DIR}/tests/ui/fixtures"
 
+# shellcheck source=deploy/store-lib.sh
+. "${REPO_DIR}/deploy/store-lib.sh"
 # shellcheck source=deploy/image-lib.sh
 . "${REPO_DIR}/deploy/image-lib.sh"
+# The store this box puts non-prod containers in — activated HERE as well as in
+# deploy/ci.sh, so a standalone run builds its image into the same store
+# deploy/keys.sh will look for it in. Without it the two disagree and the
+# wrapper reports "not built" about an image that exists.
+pkdump_store_load_config
+pkdump_store_activate
 
 # PER-CHECKOUT, for the reason every other gate derives its names the same way:
 # concurrent polecats run whole suites from their own worktrees.
@@ -58,10 +66,13 @@ INSTANCE="keys-${SUFFIX}"
 
 WORK=${WORK:-$(mktemp -d /tmp/pd-keys.XXXXXX)}
 DATA="$WORK/data"
-# The wrapper reads ~/.config/pkdump/<instance>/, so HOME is redirected at it
-# rather than the real one being written to.
-FAKE_HOME="$WORK/home"
-CONF_DIR="${FAKE_HOME}/.config/pkdump/${INSTANCE}"
+# The wrapper's host-config directory, redirected at a throwaway so the real
+# ~/.config/pkdump is never written to. Through PKDUMP_KEYS_CONF_DIR rather
+# than by redirecting $HOME: $HOME is also where the rootless Podman store
+# lives, so moving it hides every image on the box — which is exactly what the
+# first run of this gate did, and it reported "image not built" about an image
+# it had built itself thirty lines earlier.
+CONF_DIR="$WORK/conf"
 KEY_FILE="${CONF_DIR}/tenant-master.key"
 
 pass=0
@@ -112,7 +123,7 @@ trap cleanup EXIT
 # image and the data directory redirected at this gate's throwaway copies. The
 # data "volume" is a host path, which `-v` takes just as happily as a name.
 keys() { # keys <subcommand> [args...]
-	HOME="$FAKE_HOME" \
+	PKDUMP_KEYS_CONF_DIR="$CONF_DIR" \
 		PKDUMP_KEYS_IMAGE="$IMAGE" PKDUMP_KEYS_DATA="$DATA" \
 		bash "${REPO_DIR}/deploy/keys.sh" "$INSTANCE" "$@"
 }
@@ -197,9 +208,13 @@ check "a different id derives a DIFFERENT key" "different" \
 	"$([[ "$A_FP" != "$B_FP" ]] && echo different || echo same)"
 
 # A real set rather than two: register a handful more and assert no collisions.
+# A `database_id` is 26 characters of uppercase Crockford base32 — "01J" plus
+# 22 zeros plus one digit. Composed with printf rather than typed out, because
+# a hand-counted one came out 25 characters long and the validator, correctly,
+# refused it.
 COLLIDE_IDS=()
 for n in 1 2 3 4 5 6; do
-	id="01J00000000000000000000${n}0"
+	id="$(printf '01J%022d%s' 0 "$n")"
 	keys register "$id" >/dev/null
 	COLLIDE_IDS+=("$id")
 done
@@ -271,11 +286,26 @@ log "7. the wrapper keeps the two paths apart"
 
 # The rule the Rust side is held to (crates/pkdump-keys/tests/separation.rs),
 # carried through the one layer that could quietly undo it.
-WRAPPER="$(sed 's|#.*||' "${REPO_DIR}/deploy/keys.sh")"
-check "backup is excluded from the data volume mount" "1" \
-	"$(printf '%s\n' "$WRAPPER" | grep -c '^backup) ;;')"
-check "tombstone is in the branch that mounts no key file" "1" \
-	"$(printf '%s\n' "$WRAPPER" | grep -c 'tombstone | register | list)')"
+#
+# Asserted against the ARGV the wrapper would actually run, with the master key
+# and the data volume both PRESENT — the only conditions under which the claim
+# means anything. An earlier version of this grepped keys.sh for its branch
+# labels instead, and stayed green when a `-v <key>` line was moved INTO the
+# destruction path's branch: it was checking that a comment still existed.
+argv() { # argv <subcommand> [args...]
+	PKDUMP_KEYS_DRY_RUN=1 keys "$@"
+}
+TOMBSTONE_ARGV="$(argv tombstone "${COLLIDE_IDS[2]}" --yes)"
+check "the destruction path is handed NO master key" "0" \
+	"$(printf '%s\n' "$TOMBSTONE_ARGV" | grep -c 'tenant-master.key:')"
+check "…and mounts the registry it does write" "1" \
+	"$(printf '%s\n' "$TOMBSTONE_ARGV" | grep -c "^${DATA}:/data")"
+
+BACKUP_ARGV="$(argv backup --yes)"
+check "the backup path is handed NO data volume" "0" \
+	"$(printf '%s\n' "$BACKUP_ARGV" | grep -c ':/data')"
+check "…and mounts the key it does read, READ-ONLY" "1" \
+	"$(printf '%s\n' "$BACKUP_ARGV" | grep -c "^${KEY_FILE}:/keys/tenant-master.key:ro$")"
 
 # …and behaviourally, which is what actually matters: run each with the OTHER
 # one's world removed and confirm it is unaffected.
@@ -302,7 +332,7 @@ check "printing refuses without --yes" "1" "$(keys_rc backup)"
 rm "$KEY_FILE"
 # The staged copy is on the host, not in the container, so it goes over stdin —
 # which is how deploy/KEYS.md documents a paste anyway.
-RESTORE="$(HOME="$FAKE_HOME" PKDUMP_KEYS_IMAGE="$IMAGE" PKDUMP_KEYS_DATA="$DATA" \
+RESTORE="$(PKDUMP_KEYS_CONF_DIR="$CONF_DIR" PKDUMP_KEYS_IMAGE="$IMAGE" PKDUMP_KEYS_DATA="$DATA" \
 	bash "${REPO_DIR}/deploy/keys.sh" "$INSTANCE" restore <"$WORK/out/backup.key" 2>&1)"
 check_contains "the restore reports a fingerprint" "fingerprint" "$RESTORE"
 check "the restored key is mode 600 on the host" "600" "$(stat -c '%a' "$KEY_FILE")"

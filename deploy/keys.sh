@@ -44,11 +44,16 @@ shift
 ARGS=("$@")
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONF_DIR="${HOME}/.config/pkdump/${INSTANCE}"
-KEY_FILE="${PKDUMP_KEYS_FILE:-${CONF_DIR}/tenant-master.key}"
 
-# Overridable so tests/deploy can drive this exact script against a stand-in.
-# Production sets neither.
+# The host-config directory for this instance — where litestream.env already
+# lives. PKDUMP_KEYS_CONF_DIR is a test seam (the PKDUMP_ALERTS_ENV /
+# PKDUMP_LAKE_ENV precedent), and it exists because the obvious alternative —
+# a harness redirecting $HOME — ALSO redirects the rootless Podman store, so
+# every image on the box disappears and this script reports "not built" about
+# an image that is right there. Production sets none of these three.
+CONF_DIR="${PKDUMP_KEYS_CONF_DIR:-${HOME}/.config/pkdump/${INSTANCE}}"
+KEY_FILE="${CONF_DIR}/tenant-master.key"
+
 IMAGE="${PKDUMP_KEYS_IMAGE:-localhost/pkdump:${INSTANCE}}"
 DATA="${PKDUMP_KEYS_DATA:-pkdump-${INSTANCE}-data}"
 
@@ -161,16 +166,33 @@ case "$SUBCOMMAND" in
 restore) STDIN_ARGS+=(-i) ;;
 esac
 
+RUN=(
+    podman run --rm --pull=never "${STDIN_ARGS[@]}"
+    "${MOUNTS[@]}"
+    -e PKDUMP_HOME=/data
+    -e PKDUMP_MASTER_KEY_FILE=/keys/tenant-master.key
+    --entrypoint pkdump
+    "$IMAGE" keys "$SUBCOMMAND" ${ARGS[@]+"${ARGS[@]}"}
+)
+
+# A test seam, and it is here for a specific reason. The claim this script makes
+# is about its MOUNTS — that the destruction path is never handed the master key
+# and the backup path is never handed the registry — and a gate can only check
+# that by seeing the argv. tests/keys/run.sh §7 originally grepped this file for
+# the branch LABELS instead, which stayed green when the mount was moved into
+# the branch: a guard that could not see the thing it was guarding. So the argv
+# is printable, one item per line, and the assertion is made against what would
+# actually run.
+if [ -n "${PKDUMP_KEYS_DRY_RUN:-}" ]; then
+    printf '%s\n' "${RUN[@]}"
+    exit 0
+fi
+
 # `|| RC=$?` rather than a bare call plus `RC=$?`: under `set -e` the bare form
 # takes the whole script with it on a non-zero status, so the mode check below
 # would never run — and this script's exit code has to be the job's either way.
 RC=0
-podman run --rm --pull=never "${STDIN_ARGS[@]}" \
-    "${MOUNTS[@]}" \
-    -e PKDUMP_HOME=/data \
-    -e PKDUMP_MASTER_KEY_FILE=/keys/tenant-master.key \
-    --entrypoint pkdump \
-    "$IMAGE" keys "$SUBCOMMAND" ${ARGS[@]+"${ARGS[@]}"} || RC=$?
+"${RUN[@]}" || RC=$?
 
 # `init` and `restore` write the key inside the container, where the process is
 # container-root and therefore (under rootless podman) this user. The mode is

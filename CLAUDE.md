@@ -366,7 +366,63 @@ so a docs-only PR still runs it). A tier renamed in one file and not the other
 fails it in a second, and a guard on a name that is not a tier is fatal rather
 than a silent skip.
 
-**Eleven of the gates run in parallel, three at a time** (pd-2nl9) —
+### CI triggers on the PR's BASE branch — master and `integration/**`
+
+`ci.yml` is `on: pull_request: branches: [master, 'integration/**']`, and that
+filter matches the **base**, not the head. A PR opened into anything else gets no
+CI at all — not queued, not cancelled, not awaiting approval. No run is created.
+
+`[master]` alone was the original, which meant **every child PR of every epic went
+untested**, because an epic's children target its integration branch. Six PRs
+(#31-#36) sat that way on 2026-08-13, and it is why polecats had been reaching for
+`workflow_dispatch`: it was the only thing that produced any signal.
+
+Two things made it invisible:
+
+- the ruleset's required `test` check guards `master` only, so nothing complained
+- an admin bypass reports `CLEAN` regardless, so the merge box looked fine
+
+**An epic's children are the reviewable unit** — a polecat branch is the PR source.
+Gating only the eventual `integration -> master` PR hides a broken child until the
+whole epic lands, which is the opposite of what the integration branch is for.
+
+If you add another long-lived base branch, add it here too, or its PRs are
+silently untested.
+
+### Never `workflow_dispatch` a branch that is going to become a PR
+
+**Open the PR first and let `pull_request` be the only trigger.** Running CI by
+hand on a branch before its PR exists permanently forfeits that commit's PR check.
+
+GitHub creates **one check suite per (commit, app)**. A `workflow_dispatch` run
+creates that suite; opening the PR on the same SHA afterwards then produces no new
+run, because the suite already exists. The dispatch run's check is *back-linked* to
+the PR — `commits/<sha>/check-suites` even reports `pull_requests=[N]` — but GitHub
+only surfaces a check on a PR when the suite was created by a PR-triggering event.
+So the merge box sees the required `test` context as **missing**, not as green.
+
+On 2026-08-13 five of six open PRs were in exactly that state. Every one showed no
+checks in the UI, `gh pr checks` reported "no checks", and `statusCheckRollup`
+returned zero entries — while two of them had in fact FAILED their dispatch run.
+
+Two traps that made it invisible for hours:
+
+- **`mergeStateStatus` is not a safety signal for an admin.** The ruleset's bypass
+  is `RepositoryRole 5 / bypass_mode: always`, so a repository admin is told
+  `CLEAN` regardless of whether a required check is missing or red. Untested and
+  failing PRs read exactly like passing ones.
+- **`gh pr checks` returning "no checks" means "no PR-triggered suite", not "not
+  tested".** It is silent about a dispatch run that failed.
+
+**Verify CI with `gh api repos/<owner>/<repo>/commits/<sha>/check-runs`** — it
+reports the conclusion whatever the trigger was. Never conclude a PR is green from
+`gh pr checks` or from `mergeStateStatus`.
+
+If a branch has already been dispatched and needs a real PR check, push another
+commit: a new SHA gets a new suite, and the `pull_request` event creates it.
+
+**Eleven of the gates run in parallel, two at a time** (pd-2nl9; lowered from
+three on 2026-08-13 — see `PKDUMP_CI_JOBS` in `deploy/ci-parallel.sh`) —
 litestream, drill, alarming, recreate, upgrade, tenant-header, schema-version,
 the three lake gates and refresh. They do not run where they are written: each
 **queues** itself under its own tier guard and `deploy/ci-parallel.sh` runs the

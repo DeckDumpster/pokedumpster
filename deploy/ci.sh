@@ -92,7 +92,7 @@
 #                      job. See tests/refresh/tenant_bytes.sh.
 #
 # Steps 5-9 and 11-15 do not run where they are written. Each one QUEUES itself
-# under its own tier guard and they are run together, three at a time, by step
+# under its own tier guard and they are run together, two at a time, by step
 # 16 — see the "PARALLEL GATES" note below and deploy/ci-parallel.sh.
 #
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
@@ -109,7 +109,7 @@
 # containers and share nothing — every name each of them uses is derived from
 # its own prefix plus a per-checkout hash, because concurrent polecats already
 # run whole suites of this script beside each other. So they are queued rather
-# than run in place, and step 16 runs them three at a time. The cap, the disk
+# than run in place, and step 16 runs them two at a time. The cap, the disk
 # floor checked before every dispatch, and why a failure in one is never masked
 # by the others in its wave, are all in deploy/ci-parallel.sh.
 #
@@ -378,6 +378,14 @@ if tier lint; then
     # who may page, and it has to be right in BOTH directions: the assertions that
     # matter most are the prod ones, because a gate that silences too much turns
     # into a backup that quietly stopped running and nobody hears about it.
+    # Same tier, and it guards a gate that can SKIP the whole suite. The key is
+    # (epoch, tree, tier set); if the tier set ever falls out of the key, a
+    # docs-only pass silently certifies eleven container gates that never ran.
+    # §1 asserts exactly that, in both directions, along with the TTL, the epoch
+    # and the refusal to key a dirty tree.
+    step "Tree-hash cache (deploy/ci-cache.sh --self-test)"
+    bash "$REPO_DIR/deploy/ci-cache.sh" --self-test
+
     step "Alert gate (deploy/alert-gate.sh --self-test)"
     bash "$REPO_DIR/deploy/alert-gate.sh" --self-test
 
@@ -698,7 +706,7 @@ if tier refresh; then
 fi
 
 # --- 16. Run the queued gates -----------------------------------------------
-# Everything queued above, three at a time, with the disk floor checked before
+# Everything queued above, two at a time, with the disk floor checked before
 # every dispatch and each gate's whole output printed under its own name as it
 # finishes. Nothing here decides WHICH gates run — that was settled by the tier
 # guards above, so a skipped tier queues nothing and this step simply has less

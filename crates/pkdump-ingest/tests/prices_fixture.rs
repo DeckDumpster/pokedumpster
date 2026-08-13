@@ -153,17 +153,11 @@ fn start_upstream(script: Arc<Script>) -> FakeUpstream {
             ["3", group, "prices"] => {
                 let group: i64 = group.parse().unwrap();
                 if script.fail_group.load(Ordering::SeqCst) == group {
-                    return Reply {
-                        status: 503,
-                        body: r#"{"error":"upstream is having a day"}"#.to_string(),
-                    };
+                    return Reply::status(503, r#"{"error":"upstream is having a day"}"#);
                 }
                 Reply::ok(prices_json(group, script.day.load(Ordering::SeqCst)))
             }
-            _ => Reply {
-                status: 404,
-                body: format!(r#"{{"error":"no route for {target}"}}"#),
-            },
+            _ => Reply::status(404, format!(r#"{{"error":"no route for {target}"}}"#)),
         }
     })
 }

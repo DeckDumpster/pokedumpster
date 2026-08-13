@@ -21,10 +21,12 @@
 //!   code either way, or "row-identical" would be proving something about a
 //!   second implementation.
 //!
-//! What deliberately does **not** live here is the policy for a replay MISS.
-//! A URL the landing zone has no record of means raw coverage has regressed,
-//! and how loudly to say so — and whether to reach upstream anyway — is the
-//! offline job's decision, not this crate's. See [`ReplaySource::missing`].
+//! A replay MISS is a **refusal**, and it is one structurally: with a replay
+//! source on the wire there is no path from here to the network at all. What
+//! this crate does not decide is what the refusal SAYS — a URL the landing zone
+//! has no record of means raw coverage has regressed, and diagnosing that is
+//! the offline job's business, not this one's. See [`ReplaySource::missing`],
+//! which returns the error rather than a licence to continue.
 
 use std::sync::Arc;
 
@@ -46,16 +48,20 @@ pub trait ReplaySource: Send + Sync {
     /// landing zone has no record of the URL at all.
     fn body(&self, url: &str) -> Result<Option<Vec<u8>>>;
 
-    /// Called when [`body`](ReplaySource::body) returned `None` and the fetch
-    /// is about to reach the real upstream instead.
+    /// The error for a URL [`body`](ReplaySource::body) had no record of.
     ///
-    /// This is the fallback's one seam. Returning `Ok(())` lets the live
-    /// fetch happen — the implementation is expected to have *said so
-    /// loudly*, because a URL missing from `raw/` means the landing zone no
-    /// longer covers the derivation's inputs. Returning `Err` refuses
-    /// instead, which is what the derive does when the fallback is switched
-    /// off (and what it will do unconditionally once item 4 removes it).
-    fn missing(&self, url: &str) -> Result<()>;
+    /// It returns the failure rather than a `Result`, because there is no
+    /// success to report: a miss means the landing zone no longer covers the
+    /// derivation's inputs, and the run stops. Item 2 of the epic had this
+    /// return `Result<()>` so an implementation could answer `Ok(())` and let
+    /// [`fetch_bytes`] reach the live upstream instead; item 4 removed that
+    /// fallback, and removed the seam with it (pd-6yql). A miss can no longer
+    /// reach the network by construction rather than by policy — reinstating a
+    /// fallback would take changing this signature, which is the point.
+    ///
+    /// All the implementation supplies is the diagnosis, since only it knows
+    /// which partition was being read.
+    fn missing(&self, url: &str) -> crate::error::IngestError;
 }
 
 /// What a client does with the bytes it fetches, and where they come from.
@@ -93,10 +99,10 @@ impl Wire {
 
 /// Execute `req` and return the response body, landing it on the way past.
 ///
-/// With a replay source on the `wire` the request is answered from `raw/`
-/// and never sent. A URL the landing zone does not hold goes through
-/// [`ReplaySource::missing`] first, which either refuses or lets the live
-/// fetch below proceed.
+/// With a replay source on the `wire` the request is answered from `raw/` and
+/// never sent — including when the answer is that there is no record of it,
+/// which is [`ReplaySource::missing`]'s error and the end of the run. Nothing
+/// below this point runs on a replaying wire.
 ///
 /// A failure — transport, non-2xx, or a truncated body — is recorded in the
 /// run's manifest before it propagates, so a run that dies partway leaves
@@ -119,12 +125,13 @@ pub fn fetch_bytes(
     let url = request.url().to_string();
 
     if let Some(replay) = &wire.replay {
-        match replay.body(&url)? {
-            Some(body) => return Ok(body),
-            // Not in raw. The implementation decides whether that is fatal;
-            // if it is not, fall through and fetch it for real.
-            None => replay.missing(&url)?,
-        }
+        return match replay.body(&url)? {
+            Some(body) => Ok(body),
+            // Not in raw, and there is nowhere else to look: a replaying wire
+            // never reaches the network. The implementation supplies the
+            // diagnosis; this is the end of the run either way.
+            None => Err(replay.missing(&url)),
+        };
     }
 
     let landing = wire.landing.as_ref();

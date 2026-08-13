@@ -2213,6 +2213,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "image",
  "pkdump-db",
  "pkdump-derive",
  "pkdump-ingest",

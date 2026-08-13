@@ -33,6 +33,13 @@
 //!   silently deriving today's catalog" is the failure this whole design is
 //!   arranged against;
 //! - a partition whose manifests carry no clock, or disagree about it;
+//! - a URL the partition has no record of. There is no fallback to the live
+//!   upstream: a derive that fetched what `raw/` did not hold would produce a
+//!   correct catalog whose lineage is not reproducible, which is the one
+//!   failure the landing zone exists to prevent. The temporary fallback item 2
+//!   shipped with, and its `--no-upstream-fallback` opt-out, are gone (item 4).
+//!   Set-symbol normalisation is not an exception to this — it never came
+//!   through the replay layer at all, images being deliberately outside `raw/`;
 //! - `--ingest-date` defaulted from the wall clock. There is no default.
 //!   Deriving an older date is the same operation as deriving today's, and a
 //!   job that reads the clock has two behaviours where it should have one.
@@ -83,16 +90,6 @@ struct SharedArgs {
     /// Where set-symbol PNGs are cached. Defaults to the catalog's directory.
     #[arg(long, value_name = "DIR")]
     data_dir: Option<PathBuf>,
-
-    /// Refuse a URL that is not in `raw/` instead of fetching it live.
-    ///
-    /// The fallback ships in item 2 of the epic and is removed in item 4, as
-    /// its own change, once row-identical is proven. This flag is how a gate
-    /// (or an operator who wants the guarantee today) gets item 4's behaviour
-    /// early. With the fallback ON a miss is still loud and still recorded —
-    /// what it is not is fatal.
-    #[arg(long)]
-    no_upstream_fallback: bool,
 }
 
 #[derive(clap::Args)]
@@ -152,11 +149,7 @@ fn shared(args: SharedArgs) -> anyhow::Result<()> {
         clock.observed_date()
     );
 
-    let replay = Arc::new(replay::RawReplay::new(
-        zone,
-        &chosen,
-        !args.no_upstream_fallback,
-    )?);
+    let replay = Arc::new(replay::RawReplay::new(zone, &chosen)?);
     println!("  {} URL(s) replayable from this partition", replay.urls());
 
     println!("Opening shared catalog at {}", db_path.display());
@@ -186,28 +179,13 @@ fn shared(args: SharedArgs) -> anyhow::Result<()> {
         args.ingest_date
     );
 
-    // The fallback's summary. Loud at the point of use (see `replay`) and loud
-    // again here, because the per-URL lines scroll past in a run that prints a
-    // progress line per thousand cards.
-    let misses = replay.misses();
-    if misses.is_empty() {
-        println!("  raw coverage: complete — every upstream request was answered from raw/");
-    } else {
-        eprintln!(
-            "!! raw coverage has REGRESSED: {} URL(s) were not in raw/ and were fetched live:",
-            misses.len()
-        );
-        for url in misses.iter().take(20) {
-            eprintln!("!!   {url}");
-        }
-        if misses.len() > 20 {
-            eprintln!("!!   … and {} more", misses.len() - 20);
-        }
-        eprintln!(
-            "!! This derive is NOT reproducible from the lake. Land the missing endpoints, \
-             re-land the date, and derive again."
-        );
-    }
+    // Reaching here already means it: a URL outside the partition is a refusal
+    // (see `replay`), so a run that finished was answered from `raw/` alone. Said
+    // out loud anyway, because it is what an operator reads to know the lineage
+    // is intact — and because the phase that still fetches, set-symbol
+    // normalisation, prints its own line just above and would otherwise read as
+    // a hole in this claim.
+    println!("  raw coverage: complete — every upstream request was answered from raw/");
 
     println!(
         "Derive complete: {} ({} printings, {} latest prices)",

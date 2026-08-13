@@ -421,7 +421,6 @@ podman run --rm -v pkdump-prod-data:/data:Z \
 # Or the way the timer runs it, which resolves all of that from the box:
 bash deploy/derive.sh prod                            # today (UTC)
 bash deploy/derive.sh prod --ingest-date 2026-08-09   # rebuild an older day
-bash deploy/derive.sh prod --no-upstream-fallback     # refuse a gap in raw/
 
 # Compare two catalogs row by row — the acceptance instrument, shipped:
 podman run --rm -v /some/dir:/c:Z --entrypoint pkdump-lake-derive \
@@ -495,19 +494,52 @@ and rows built from one run's bytes and another run's clock are neither run's
 output. It happens when one date was landed by two invocations (a `setup` and a
 `refresh` the same day); derive a date one run landed, or re-land it.
 
-### The upstream fallback is temporary, and loud
+### A URL the partition does not hold is a REFUSAL (item 4)
 
-A URL the partition has no record of means raw coverage has regressed. Item 2
-of the epic ships with a fallback for that; item 4 removes it as its own
-change, once row-identity is proven in production. While it exists:
+A URL the partition has no record of means raw coverage has regressed: the
+derivation grew an input the landing zone does not capture, or an upstream's
+origin moved. The run stops, exit 1, naming the URL and telling you to re-land
+the date:
 
-- every miss prints `!! raw coverage has REGRESSED` naming the URL,
-- the run ends with a summary and `deploy/derive.sh` pushes a Pushover warning,
-- and `--no-upstream-fallback` makes the first miss fatal.
+```
+raw/ has no record of https://tcgcsv.com/tcgplayer/3/9/prices.
+The landing zone no longer covers this derivation's inputs: either an endpoint
+was added without landing it, or the upstream's origin moved. Re-land the date
+(pkdump data refresh --land-raw) and derive again.
+```
 
-A run that needed the fallback is **correct but not reproducible from the
-lake**. That is a warning rather than a failure — the catalog is right, the
-lineage is not.
+**What to do about it.** Re-land the date — `systemctl --user start
+pkdump-refresh@<instance>.service`, the landing half of the pair, or check that
+it ran at all — then derive again.
+Deriving a *different*, complete date is the other option — the catalog is a
+day behind rather than wrong. `pkdump-derive@` has no `SuccessExitStatus=`, so
+this pages through `OnFailure=`, which is intended: a catalog that quietly
+skipped a price feed reads downstream as cards that do not exist.
+
+Item 2 of the epic shipped a temporary fallback here — reach the live upstream,
+print `!! raw coverage has REGRESSED`, finish anyway — with
+`--no-upstream-fallback` as the opt-out. **Both are gone** (pd-6yql), removed
+once pd-vves proved row-identity against the real bucket. The flag is rejected
+by name rather than ignored, so an old invocation carrying it fails loudly
+instead of appearing to work. `deploy/derive.sh` no longer reads the job's
+output and pushes no coverage warning of its own.
+
+The reason it could not stay: a run that needed the fallback was **correct but
+not reproducible from the lake**. Every gate passed, every row looked right, and
+the failure would have surfaced on the day an upstream was down — the day the
+lake was bought for. Loudness mitigated that; it depended on somebody reading
+the log.
+
+**Set symbols are not an exception to this.** `symbols::normalize_all_symbols`
+still fetches PNGs from `images.pokemontcg.io` on the offline path, and always
+did: images are deliberately outside `raw/` (§1), so the phase never entered the
+replay layer at all — it has no `Wire` in its signature and builds its own HTTP
+client. A symbol fetch is therefore not a replay miss, and a derive on a box
+with no egress logs `WARN: symbol normalize <set>: …`, counts it, keeps the
+set's upstream URL (which still renders) and **succeeds**. See `pd-5w4n`, and
+`row_identical.rs::a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it`
+— the gate that holds the two apart, on a catalog whose symbols have never been
+normalised.
 
 ### Enabling it
 

@@ -28,31 +28,24 @@ on:
       - 'integration/**'
   workflow_dispatch:
 
-# ONE pokedumpster CI run at a time, box-wide.
+# NO `concurrency:` BLOCK — deliberately. See below.
 #
-# Rootless Podman keeps a single per-user store, and deploy/ci.sh runs
-# `podman image prune` and builds into it. Two concurrent runs sharing that store
-# is a real, observed failure: the litestream gate died with a bare `exit 127` and
-# an empty log, twice, both times with another deploy/ci.sh running (pd-8gjs).
+# There was one (`group: pokedumpster-ci`, `cancel-in-progress: false`), and it was
+# actively harmful. `cancel-in-progress: false` keeps the RUNNING job alive, but GitHub
+# holds only ONE pending run per group: every newer arrival EVICTS the previous pending
+# one. So several PRs pushed together do not queue — one runs, one waits, and the rest are
+# silently CANCELLED.
 #
-# The group is a constant rather than ${{ github.ref }} — per-ref would still let
-# two different PRs collide, which is the case that actually bit. cancel-in-progress
-# is false because a queued run should WAIT for the store, not kill the run holding
-# it.
+# Measured 2026-08-13: six PRs pushed at 18:27-18:28 produced four cancelled runs
+# (pd-up36, pd-nons, pd-aer9, pd-kncd). Not failures — cancellations, which look identical
+# to "not started yet" in the UI. Someone had to push a "Retrigger CI" commit by hand.
 #
-# What this does NOT cover, so nobody reads it as a guarantee: Gas Town polecats
-# run ci.sh outside Actions entirely, and nothing here can see them.
+# The group was written when only PRs into master triggered CI and runs arrived one at a
+# time. Adding `integration/**` to the trigger turned a rare condition into the normal one.
 #
-# It also does not decide whether deploys wait. There is ONE self-hosted runner for
-# this repo, so every job serialises on it regardless of concurrency groups —
-# measured 2026-08-09: a Deploy sat `queued` for the ~24 minutes a CI run held the
-# runner. deploy.yml keeps its own `deploy-<instance>` group purely to stop two
-# deploys of one instance racing; it has no bearing on CI. Accepted deliberately
-# while CI and prod share a host (per Ryan, 2026-08-09) — revisit when they are
-# split, at which point a second runner is the fix, not a concurrency change.
-concurrency:
-  group: pokedumpster-ci
-  cancel-in-progress: false
+# It was also redundant: THERE IS EXACTLY ONE SELF-HOSTED RUNNER, and one runner already
+# serialises jobs FIFO — which is the property the group was there to provide. Removing it
+# means runs queue on the runner instead of evicting each other.
 
 jobs:
   test:
@@ -82,6 +75,12 @@ jobs:
       #    GROUP ABOVE SERIALISES EVERY JOB. Two runs writing one target directory
       #    corrupts builds in ways that present as flaky tests. BEFORE ADDING A
       #    SECOND RUNNER, move to sccache or per-runner target dirs.
+      #
+      # !! THAT WARNING NOW CARRIES A SECOND OBLIGATION. Serialisation comes from there
+      #    being one runner, not from a `concurrency:` block — the block was removed
+      #    because it cancelled queued runs rather than queueing them. A second runner
+      #    would therefore allow two CI runs to share this target dir AND the rootless
+      #    podman store at once. Adding one means solving both, not just the cache.
       #
       # On /workspaces deliberately: / is the 98 G volume production runs from.
       CARGO_TARGET_DIR: /workspaces/ci-cargo-target

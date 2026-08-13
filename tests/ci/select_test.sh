@@ -83,6 +83,10 @@ check "frontend-extra/ is not frontend/ -> everything" \
 	"$ALL" "$(select_for "frontend-extra/app.js")"
 check "a file named frontend is not the directory -> everything" \
 	"$ALL" "$(select_for "frontend")"
+check "lake-tools/ is not lake/ -> everything" \
+	"$ALL" "$(select_for "lake-tools/x.py")"
+check "a file named lake is not the directory -> everything" \
+	"$ALL" "$(select_for "lake")"
 check "notes.markdown is not a .md file -> everything" \
 	"$ALL" "$(select_for "notes.markdown")"
 check "a file named docs is not the directory -> everything" \
@@ -108,6 +112,24 @@ check "a non-md file under docs/ is still docs -> lint only" \
 	"lint" "$(select_for "docs/diagram.svg")"
 check "several docs at once -> lint only" \
 	"lint" "$(select_for "README.md" "CLAUDE.md" "deep-dives/x.md")"
+# The Python lakehouse tree builds its own job image and nothing outside it
+# consumes it, so it runs the lake gates and the always-on lint tier — and NOT the
+# browser or frontend tiers it used to drag in. The near-misses above keep the
+# prefix honest.
+LAKE="lint lake"
+check "lake/ python -> lint + lake only" "$LAKE" "$(select_for "lake/src/pkdump_lake/raw.py")"
+check "several lake files at once -> still lint + lake" "$LAKE" \
+	"$(select_for "lake/src/pkdump_lake/raw.py" "lake/pyproject.toml")"
+check "lake/ plus a rust change -> everything, the union is conservative" \
+	"$ALL" "$(select_for "lake/src/pkdump_lake/raw.py" "crates/pkdump-db/src/lib.rs")"
+check "a .md under lake/ is still docs -> lint only" \
+	"lint" "$(select_for "lake/README.md")"
+# The Rust crate is NOT the Python tree: the app Containerfile builds and ships
+# pkdump-lake-derive, and pkdump-cli depends on the pkdump-lake crate, so a change
+# there reaches the app image and must still run everything.
+check "crates/pkdump-lakehouse is not lake/ -> everything" \
+	"$ALL" "$(select_for "crates/pkdump-lakehouse/src/main.rs")"
+
 # A .md under frontend/ is read by people, not by vite.
 check "a .md inside frontend/ -> lint only" "lint" "$(select_for "frontend/README.md")"
 

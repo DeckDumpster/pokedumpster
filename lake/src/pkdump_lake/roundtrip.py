@@ -28,7 +28,9 @@ of them is the reason Nessie is here:
 
 Writes go to the ``proof`` namespace. No catalog table is touched, and — per
 the standing decision this design is built on — no tenant data is anywhere
-near it.
+near it. Held mechanically by ``tests/lake/tenant_isolation_test.sh``: this
+module imports no ``sqlite3``, and the ``pa.field`` names in ``SCHEMA`` below
+are checked against the same tenant pattern as the real catalog tables.
 """
 
 from __future__ import annotations

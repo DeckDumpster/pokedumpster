@@ -10,7 +10,22 @@ name: CI
 
 on:
   pull_request:
-    branches: [master]
+    # BASE branches, not head. `[master]` alone meant that every PR an epic opens
+    # into its own integration branch got NO CI AT ALL — the event simply never
+    # matched, so there was no run to be queued, cancelled or approved.
+    #
+    # Six PRs (#31-#36, the lakehouse epic) sat like that on 2026-08-13. They read
+    # as mergeable because the ruleset's required `test` check only guards master,
+    # and an admin bypass reports CLEAN regardless. Two of them had in fact FAILED
+    # their only evidence — a hand-run `workflow_dispatch`, which polecats had
+    # reached for precisely because nothing else was firing.
+    #
+    # An epic's children are the reviewable unit (a polecat branch is the PR
+    # source), so they have to be gated individually. Gating only the eventual
+    # integration -> master PR hides a broken child until the whole epic lands.
+    branches:
+      - master
+      - 'integration/**'
   workflow_dispatch:
 
 # ONE pokedumpster CI run at a time, box-wide.
@@ -42,6 +57,13 @@ concurrency:
 jobs:
   test:
     runs-on: [self-hosted, rgantt]
+    # statuses:write for the final step, which posts this run's result as a COMMIT
+    # STATUS. The repo default is read-only (default_workflow_permissions=read), so
+    # without this the POST 403s and the belt-and-braces below silently does
+    # nothing — the exact failure mode it exists to prevent.
+    permissions:
+      contents: read
+      statuses: write
     # The suite builds a container, drives Playwright over every route at two
     # viewports, and executes two DR drills against a throwaway MinIO. It is not
     # a two-minute job; the default 360m is just too loose to catch a hang.
@@ -175,5 +197,86 @@ jobs:
       # the step above set it. Unset means every tier; ci.sh prints the plan it
       # is running either way, so a PR log always states which tiers were
       # skipped and why.
+      # TREE-HASH CACHE (read). The runner is serialised box-wide and the suite is
+      # ~17 minutes, so re-proving a tree that already passed is the most expensive
+      # no-op here: a rebase that changes nothing, a docs commit on a tested branch,
+      # two PRs converging on the same content.
+      #
+      # The key is (epoch, tree, TIER SET). The tier set is not decoration — a
+      # docs-only PR runs `lint` alone, and keying on the tree alone would let that
+      # pass later certify a run that needed eleven container gates which never
+      # executed. deploy/ci-cache.sh --self-test asserts that in both directions.
+      #
+      # On pull_request, actions/checkout leaves HEAD at the MERGE commit, so the
+      # tree hashed is exactly the tree tested.
+      - name: Tree-hash cache — has this exact tree already passed these tiers?
+        id: treecache
+        run: |
+          if [ -n "${PKDUMP_CI_CHANGED_FILES:-}" ]; then
+            tiers="$(bash deploy/ci-select.sh < "$PKDUMP_CI_CHANGED_FILES")"
+          else
+            tiers="$(bash deploy/ci-select.sh --all-tiers)"
+          fi
+          echo "tier plan: $(echo $tiers | tr '\n' ' ')"
+          if ! key="$(bash deploy/ci-cache.sh key $tiers)"; then
+            echo "could not key this tree — running the suite"; exit 0
+          fi
+          echo "key=${key}" >> "$GITHUB_OUTPUT"
+          if bash deploy/ci-cache.sh lookup "$key"; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "CACHE HIT — this tree already passed these tiers; skipping the suite"
+          else
+            echo "cache miss — running the suite"
+          fi
+
       - name: deploy/ci.sh
+        if: steps.treecache.outputs.hit != 'true'
         run: bash deploy/ci.sh
+
+      # TREE-HASH CACHE (write). Successes only, and only because this step is
+      # reached only when nothing above failed — a cached RED would be a tree that
+      # can never go green again without a human clearing it, and flakiness is what
+      # motivated the cache in the first place. Skipped on a hit: rewriting the
+      # entry would refresh its mtime and let one result live past its TTL forever.
+      - name: Tree-hash cache — record the pass
+        if: success() && steps.treecache.outputs.hit != 'true' && steps.treecache.outputs.key != ''
+        run: |
+          bash deploy/ci-cache.sh store "${{ steps.treecache.outputs.key }}" \
+            "${{ github.event_name }} ${{ github.run_id }}"
+          bash deploy/ci-cache.sh prune
+
+      # BELT AND BRACES: report this run as a commit status, whatever triggered it.
+      #
+      # GitHub creates one check suite per (commit, app). A `workflow_dispatch` run
+      # creates that suite, so opening a PR on the same SHA afterwards produces no
+      # new run and the PR shows NO CHECKS — the required `test` context reads as
+      # missing rather than green, even though the commit WAS tested. On 2026-08-13
+      # five of six open PRs were in that state and two had actually FAILED.
+      #
+      # A commit status has no such coupling: it attaches to the SHA and shows in the
+      # merge box whatever triggered the run. Context is `test`, matching the check
+      # run's name and the ruleset's required context, and it is posted with
+      # GITHUB_TOKEN so it is attributed to the same github-actions app
+      # (integration_id 15368) the ruleset names.
+      #
+      # `if: always()` because a FAILING run must post `failure`. A step that ran
+      # only on success would leave a red run looking untested — worse than no
+      # status at all.
+      #
+      # The SHA must be the PR HEAD, not github.sha: on a pull_request event
+      # github.sha is the ephemeral merge commit, and a status there is invisible to
+      # the merge box.
+      - name: Report result as a commit status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/statuses/${SHA}" \
+            -f state="${STATE}" \
+            -f context=test \
+            -f target_url="${RUN_URL}" \
+            -f description="deploy/ci.sh (${{ github.event_name }})" >/dev/null
+          echo "posted commit status ${STATE} for ${SHA} (context: test)"

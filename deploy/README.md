@@ -112,7 +112,7 @@ makes running them at the same time a scheduling change and not a correctness
 one.
 
 So they do not run where they are written. Each **queues** itself under its own
-tier guard and the last step runs the queue, three at a time
+tier guard and the last step runs the queue, two at a time
 (`deploy/ci-parallel.sh`).
 
 ```bash
@@ -147,8 +147,8 @@ ceiling is clamped, out loud.
 
 **The disk floor is checked before every dispatch**, not once at startup.
 Startup was enough when one gate ran at a time and the previous one's teardown
-had already returned its space; three at a time can be three images, three
-volumes and three MinIO stores deep at once. It is the same
+had already returned its space; two at a time can be two images, two
+volumes and two MinIO stores deep at once. It is the same
 `deploy/diskcheck.sh --floor` guard as everywhere else, over the same two
 filesystems, so `PKDUMP_DISK_FLOOR_GB` moves all of them together. Below the
 floor with gates still running, the runner **holds** — the thing most likely to
@@ -495,6 +495,16 @@ reading `shared.sqlite` and tenant SQLite, and a catalog that is down costs a
 nightly batch job, not a request. **No tenant data ever enters the lake** — the
 lake holds catalog data (prices, products, sets, cards) and nothing keyed by a
 tenant, ever. Per-tenant point-in-time recovery is Litestream's job, above.
+
+That rule is mechanical rather than a convention people remember
+(`tests/lake/tenant_isolation_test.sh`, lint tier, pd-cgi9). It asserts the two
+halves separately: no Iceberg schema field name is tenant-identifying, and no
+lake write path can open a tenant database — `crates/pkdump-lake` links no
+SQLite crate at all, and the Python write-path modules import no `sqlite3`, so
+both are true by construction the way "images are never landed" is true of the
+closed `Source` enum. The transform tier (`value_snapshots.py`) is the one job
+that opens tenant databases on purpose, and its half of the rule is the other
+direction: it reads the lake and never writes to it.
 
 Two pieces, both instance-scoped:
 

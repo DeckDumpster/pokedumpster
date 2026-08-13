@@ -70,6 +70,22 @@ PKDUMP_CI_ALWAYS_TIERS="lint"
 # taking anything out of this list.
 PKDUMP_CI_FRONTEND_TIERS="frontend container browser"
 
+# What a change under lake/ can reach. The PYTHON tree only: it builds its own job
+# image from lake/Containerfile and lake/pyproject.toml, and nothing outside it
+# consumes it — the `pkdump_lake` references in crates/ are the RUST crate
+# `pkdump-lake`, which is a different thing and lives under crates/.
+#
+# All four lake gates sit behind `if tier lake` in deploy/ci.sh — run.sh, prices.sh,
+# value_snapshots.sh and derive.sh — so this bucket runs every test that exercises
+# the lakehouse, including the Rust offline derive it does not strictly need.
+# Conservative on purpose: the cheap direction to be wrong in.
+#
+# NOT extended to crates/pkdump-lakehouse/: the app Containerfile BUILDS and SHIPS
+# pkdump-lake-derive, and pkdump-cli and pkdump-derive both depend on the
+# pkdump-lake crate. A change there reaches the app image, so it still runs
+# everything until that coupling is actually broken.
+PKDUMP_CI_LAKE_TIERS="lake"
+
 # Print the canonical list, one tier per line.
 pkdump_ci_all_tiers() {
     # shellcheck disable=SC2086  # word splitting is the point
@@ -90,6 +106,8 @@ pkdump_ci_classify_path() {
         # .md file — it is read by people, not by vite.
         *.md | docs/* | wiki/*) printf 'docs\n' ;;
         frontend/*) printf 'frontend\n' ;;
+        # Checked after *.md, so lake/README.md is still docs.
+        lake/*) printf 'lake\n' ;;
         *) printf 'other\n' ;;
     esac
 }
@@ -110,6 +128,7 @@ pkdump_ci_select_tiers() {
         case "$(pkdump_ci_classify_path "$path")" in
             docs) ;;
             frontend) selected="${selected}${PKDUMP_CI_FRONTEND_TIERS} " ;;
+            lake) selected="${selected}${PKDUMP_CI_LAKE_TIERS} " ;;
             # Deliberately no early exit: stdin is drained so a producer on the
             # other end of a pipe never takes a SIGPIPE for telling us the
             # truth.

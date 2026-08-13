@@ -105,7 +105,7 @@ impl Options<'_> {
 /// What one derivation produced. Counts only — the phases print their own
 /// progress as they go, because a run takes minutes and a summary at the end
 /// is no use while it is still going.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct Report {
     /// Sets the pokemontcg.io tail added.
     pub sets_added: usize,
@@ -116,6 +116,16 @@ pub struct Report {
     /// Set symbols that could not be normalised — see the crate docs. Non-zero
     /// on any box without egress to `images.pokemontcg.io`.
     pub symbols_failed: usize,
+    /// Why the pokemontcg.io tail did not run to the end, when it did not.
+    ///
+    /// `Some` is a **partial derivation**: everything else acquired and every
+    /// local phase ran, but the catalog's set list is as old as the last run
+    /// that finished one. See [`acquire`] for why that is not an early
+    /// return, and note that it is a `Report` field rather than an `Err`
+    /// precisely so a caller has to look at it — the two callers answer it
+    /// differently (`pkdump data refresh` exits 2; the offline derive
+    /// refuses to record provenance).
+    pub tail_error: Option<String>,
 }
 
 /// Derive the shared catalog: everything `pkdump data refresh` used to do
@@ -162,6 +172,17 @@ pub fn derive(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<Re
 
     // 2. The acquisition phase — every step that reaches an upstream we
     //    keep bytes from, or replays one we kept. Bracketed, see the fn docs.
+    //
+    //    A failed pokemontcg.io tail is NOT in `acquired`: it is deferred
+    //    into `report.tail_error` so the rest of the run still happens. It is
+    //    deliberately not passed to `finalize_landing` either. That argument
+    //    marks EVERY dataset incomplete, which is right for a run cut short —
+    //    a `products` prefix with 200 of 450 groups in it must not read as
+    //    whole — and wrong here: TCGCSV ran to its end before the tail
+    //    started, so its prefixes are whole. The tail's own datasets still
+    //    carry the failure `fetch_bytes` recorded, and `complete` is computed
+    //    per dataset from that, so `sets` reads incomplete and `prices` reads
+    //    complete. Which is the truth.
     let acquired = acquire(conn, options, &mut report);
     if let Some(landing) = &options.landing {
         finalize_landing(landing, acquired.as_ref().err())?;
@@ -279,38 +300,39 @@ pub fn derive(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<Re
 /// `images.pokemontcg.io`, and is deliberately *not* here: card art and set
 /// symbols are excluded from the landing zone, because the retention
 /// arithmetic that justifies keeping `raw/` forever is for JSON only.
+///
+/// ## The order is a decision, and so is which step may fail (pd-nons)
+///
+/// **Perishable first.** A price is a fact about one day and there is no way
+/// to ask for it later: miss tonight's TCGCSV pull and that day is simply not
+/// in the price history, ever. pokemontcg.io's set list is the opposite — it
+/// is a description of what exists, and tomorrow's copy is a superset of
+/// tonight's. So the irreplaceable dataset is fetched first, while the run
+/// still has all of its time budget and before anything else can end it.
+///
+/// **And the tail may fail without ending the run.** It used to run first and
+/// abort everything: on 2026-08-11 pokemontcg.io was 5xx-ing ~45% of
+/// requests, one of them landed on `/v2/sets?page=1`, and `pkdump data
+/// refresh` was over in its first second having imported no prices at all.
+/// Now its error is *carried* — into [`Report::tail_error`], out to a caller
+/// that reports it — instead of thrown. Nothing is swallowed and nothing is
+/// defaulted: the sets that did not arrive are absent, not invented, and the
+/// run reports itself partial.
+///
+/// The cost is one night of set-to-group linking. `tcgcsv::import_groups`
+/// resolves `tcgplayer_groups.set_code` for every group on every run, so a
+/// group whose set pokemontcg.io publishes the same night links on the next
+/// run rather than this one. That is the "can wait for tomorrow" side of the
+/// trade, and it self-heals without anyone doing anything.
 fn acquire(
     conn: &mut Connection,
     options: &Options<'_>,
     report: &mut Report,
 ) -> anyhow::Result<()> {
-    // 2. pokemontcg.io tail — pick up sets released since the last refresh.
-    println!("Filling newest sets from pokemontcg.io...");
-    report.sets_added = import_tail(conn, options)?;
-    println!(
-        "  added {} set(s) not yet in the catalog",
-        report.sets_added
-    );
-
-    // 2b. Re-apply the upstream-correction registry to rows already in the
-    //     catalog. `upsert_card` above only corrects the sets import_tail
-    //     just added — a correction registered after a card landed would
-    //     otherwise never reach its row. Runs before variant expansion so
-    //     downstream phases see the corrected numbers.
-    println!("Re-applying upstream card corrections...");
-    let healed = pokemon_tcg_data::apply_corrections_to_db(conn)?;
-    for h in &healed {
-        println!(
-            "  {} number {} -> {}",
-            h.card_id, h.current_number, h.corrected_number
-        );
-    }
-    println!("  {} row(s) healed", healed.len());
-
     // 2. TCGCSV groups, sealed products, single-card products, prices —
-    //    raw ingest of everything TCGCSV publishes. Variant expansion in
-    //    step 3 reads this back out to determine which printings actually
-    //    exist for each card.
+    //    raw ingest of everything TCGCSV publishes, and the one dataset in
+    //    this function that cannot be fetched late. Variant expansion reads
+    //    it back out to determine which printings actually exist per card.
     println!("Importing TCGCSV groups, products, prices...");
     let r = import_tcgcsv(conn, options)?;
     println!(
@@ -333,6 +355,44 @@ fn acquire(
         "  {} groups, {} cards, {} card products, {} sealed products, {} price rows",
         j.groups, j.cards, j.card_products, j.sealed_products, j.price_rows
     );
+
+    // 2c. pokemontcg.io tail — pick up sets released since the last refresh.
+    //     The one step here allowed to fail without ending the run; see the
+    //     fn docs. Its own retries are already spent by the time this
+    //     returns an error (`pkdump_ingest::retry`).
+    println!("Filling newest sets from pokemontcg.io...");
+    match import_tail(conn, options) {
+        Ok(added) => {
+            report.sets_added = added;
+            println!("  added {added} set(s) not yet in the catalog");
+        }
+        Err(e) => {
+            let text = format!("{e:#}");
+            eprintln!("!! the pokemontcg.io tail FAILED after exhausting its retries: {text}");
+            eprintln!(
+                "!! The catalog's set list is as old as the last run that finished one. Prices \
+                 and products from TCGCSV were acquired BEFORE this step and are unaffected — \
+                 that is the whole reason this is not fatal (pd-nons). This run is PARTIAL."
+            );
+            report.tail_error = Some(text);
+        }
+    }
+
+    // 2d. Re-apply the upstream-correction registry to rows already in the
+    //     catalog. `upsert_card` above only corrects the sets import_tail
+    //     just added — a correction registered after a card landed would
+    //     otherwise never reach its row. Runs before variant expansion so
+    //     downstream phases see the corrected numbers, and after the tail so
+    //     it sees whatever the tail managed to add.
+    println!("Re-applying upstream card corrections...");
+    let healed = pokemon_tcg_data::apply_corrections_to_db(conn)?;
+    for h in &healed {
+        println!(
+            "  {} number {} -> {}",
+            h.card_id, h.current_number, h.corrected_number
+        );
+    }
+    println!("  {} row(s) healed", healed.len());
 
     Ok(())
 }

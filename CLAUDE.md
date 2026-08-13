@@ -364,6 +364,43 @@ so a docs-only PR still runs it). A tier renamed in one file and not the other
 fails it in a second, and a guard on a name that is not a tier is fatal rather
 than a silent skip.
 
+**Eleven of the gates run in parallel, three at a time** (pd-2nl9) —
+litestream, drill, alarming, recreate, upgrade, tenant-header, schema-version,
+the three lake gates and refresh. They do not run where they are written: each
+**queues** itself under its own tier guard and `deploy/ci-parallel.sh` runs the
+queue at the end. What makes that safe is not new — every one of those scripts
+already derives every name it uses (network, container, volume, image tag, unit
+prefix, temp dir) from its own prefix plus a hash of the checkout path, because
+concurrent polecats have run whole suites beside each other for months.
+
+Four things about it are decisions:
+
+- **The cap is a resource decision, not a tuning knob.** Three by default, four
+  at the ceiling, on a four-core 15G box that also runs prod and where each
+  gate stands up two or three containers. Above that, resource exhaustion
+  starts looking like flaky gates. `PKDUMP_CI_JOBS=1` is the serial run, and
+  the first thing to try when a parallel run misbehaves.
+- **The disk floor is checked before every dispatch**, not once at startup —
+  the same `diskcheck.sh --floor` over the same two filesystems. Below the
+  floor with gates running it **holds** (the gate about to tear itself down is
+  what gives the space back); below the floor with nothing running it fails,
+  naming the gates that never started.
+- **A failing gate no longer stops the ones beside it.** The wave finishes,
+  every gate's output is printed whole under its own name, and the run ends red
+  naming all of them. One red run now reports everything that is broken instead
+  of only the earliest failure.
+- **Output is buffered per gate and printed on completion.** Concurrent writers
+  shred each other, and a shredded CI log is a gate nobody can diagnose.
+
+`tests/ci/parallel_test.sh` is the gate — hermetic, lint tier, ~4s. It asserts
+the cap is reached and never exceeded, that a failure among passes is red and
+named, that output survives concurrency, that the *real* `diskcheck.sh` trips
+against an impossible floor, that the hold branch waits rather than aborts, that
+a background job of the *caller's* is never mistaken for a gate, and that every
+one of the eleven gate scripts is still queued exactly once under a real tier.
+That last one is the refactor's own failure mode: a gate queued nowhere runs
+never, and a green run cannot show you that.
+
 ## Conventions & Patterns
 
 ### The data model IS the product

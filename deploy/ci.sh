@@ -91,6 +91,10 @@
 #                      database byte-identical. The refresh is a SHARED-catalog
 #                      job. See tests/refresh/tenant_bytes.sh.
 #
+# Steps 5-9 and 11-15 do not run where they are written. Each one QUEUES itself
+# under its own tier guard and they are run together, three at a time, by step
+# 16 — see the "PARALLEL GATES" note below and deploy/ci-parallel.sh.
+#
 # The intents UI harness (tests/ui) is deliberately NOT part of this loop:
 # until the replay implementations are generated it needs an ANTHROPIC_API_KEY
 # for Vision mode, which makes it slow and non-deterministic. (The browser gate
@@ -98,7 +102,26 @@
 # the difference, not the browser.) Run the intents harness on its own:
 #   (cd tests/ui && npx playwright install chromium && npx playwright test)
 #
-# Exits non-zero on the first failure. Fast and re-runnable.
+# Exits non-zero on the first failure of the sequential steps. Fast and
+# re-runnable.
+#
+# PARALLEL GATES (pd-2nl9). Eleven of the steps above stand up their own
+# containers and share nothing — every name each of them uses is derived from
+# its own prefix plus a per-checkout hash, because concurrent polecats already
+# run whole suites of this script beside each other. So they are queued rather
+# than run in place, and step 16 runs them three at a time. The cap, the disk
+# floor checked before every dispatch, and why a failure in one is never masked
+# by the others in its wave, are all in deploy/ci-parallel.sh.
+#
+# Two consequences worth knowing before reading a log:
+#
+#   * a parallel gate's output is printed in ONE block when that gate finishes,
+#     not as it happens, and the blocks come out in completion order;
+#   * a failing parallel gate no longer stops the ones beside it. The wave
+#     finishes, every gate's output is printed, and the run ends red naming all
+#     of them. One red run now tells you everything that is broken.
+#
+#   PKDUMP_CI_JOBS=1 bash deploy/ci.sh   # run them one at a time instead
 #
 # TIER SELECTION (pd-s2mj). Every step above is a named tier, and a caller may
 # hand over the list of paths a change touched; the tiers those paths cannot
@@ -119,6 +142,8 @@
 #   PKDUMP_CI_CHANGED_FILES=list bash deploy/ci.sh  # select tiers from a list
 #                                                 # of changed paths
 #   PKDUMP_CI_SELECT_ONLY=1 bash deploy/ci.sh     # print the plan, run nothing
+#   PKDUMP_CI_JOBS=1 bash deploy/ci.sh            # how many container gates run
+#                                                 # at once (default 3, max 4)
 #   PKDUMP_PREBUILT_IMAGE=localhost/pkdump:x bash deploy/ci.sh
 #                                                 # skip even the one build and
 #                                                 # test that image instead
@@ -286,6 +311,16 @@ step "Disk floor check"
 # the toolchain caches and the default store even when the container store moves.
 bash "$SCRIPT_DIR/diskcheck.sh" --floor "$HOME" "${PKDUMP_STORE_ROOT:-$HOME}"
 
+# Once here is enough while one gate runs at a time and the previous one's
+# teardown has already returned its space. Three at a time is three images,
+# three volumes and three MinIO stores deep at once, so the same guard runs
+# again before EVERY parallel dispatch — over the same two filesystems, since
+# both still matter (see the note above).
+# shellcheck source=deploy/ci-parallel.sh
+. "$SCRIPT_DIR/ci-parallel.sh"
+PKDUMP_PAR_DISK_PATHS=("$HOME" "${PKDUMP_STORE_ROOT:-$HOME}")
+pkdump_par_reset
+
 DF_BEFORE="$(df -h "$HOME" | tail -n1)"
 
 # --- 1. Clean up any stale ci instance --------------------------------------
@@ -301,6 +336,10 @@ podman image prune -f --filter "until=24h" >/dev/null 2>&1 || true
 # Tear the ci instance down again on exit, whatever happens.
 cleanup() {
     local rc=$?
+    # Anything still running in the parallel wave goes first, and by SIGTERM, so
+    # each gate's own EXIT trap gets to remove the containers it created. A
+    # cancelled run would otherwise leave a MinIO and a Nessie behind per gate.
+    pkdump_par_kill_all
     bash "$SCRIPT_DIR/teardown.sh" "$INSTANCE" --purge 2>/dev/null || true
     # The one name this run added purely to hand the image to the gates. Every
     # tier tagged the same image under its own name, and untagging one name of a
@@ -358,6 +397,13 @@ if tier lint; then
     # behind the compile. See tests/ci/select_test.sh.
     step "CI tier selection fails closed (tests/ci/select_test.sh)"
     bash "$REPO_DIR/tests/ci/select_test.sh"
+
+    # And the other half of the same story: the gates that no longer run where
+    # they are written. Its failure mode is a gate that got queued nowhere and
+    # runs never, which a green run cannot show you. Hermetic — the concurrency
+    # is real but the gates are `true` and `sleep`. See tests/ci/parallel_test.sh.
+    step "Parallel gate runner: cap, disk floor, no masked failure (tests/ci/parallel_test.sh)"
+    bash "$REPO_DIR/tests/ci/parallel_test.sh"
 
     # Same tier again, and the same shape of bug: a layer that fires and says
     # nothing. §6 of the alarming gate proves Layer 2 PUSHES; this proves what
@@ -496,8 +542,8 @@ fi
 # temp dir) — it does not touch the instance started above, nor any real bucket.
 
 if tier litestream; then
-    step "Litestream multi-tenant replication + restore"
-    bash "$REPO_DIR/tests/litestream/run.sh"
+    step "Queueing: Litestream multi-tenant replication + restore"
+    pkdump_par_add litestream bash "$REPO_DIR/tests/litestream/run.sh"
 
     # --- 6. DR drill --------------------------------------------------------
     # The operator procedure in deploy/RESTORE.md, executed with the shipped
@@ -506,8 +552,8 @@ if tier litestream; then
     # byte-identical every time. Its own instance name / volume / MinIO /
     # secret — it touches nothing else.
 
-    step "Multi-tenant DR drill (deploy/RESTORE.md, executed)"
-    bash "$REPO_DIR/tests/litestream/drill.sh"
+    step "Queueing: Multi-tenant DR drill (deploy/RESTORE.md, executed)"
+    pkdump_par_add drill bash "$REPO_DIR/tests/litestream/drill.sh"
 
     # --- 6b. Alarming gate --------------------------------------------------
     # A backup that is not alarmed is a backup nobody knows is broken — which
@@ -517,8 +563,8 @@ if tier litestream; then
     # 127.0.0.1 — it touches no pkdump-*@prod unit and contacts no external
     # service.
 
-    step "Backup alarming: every layer fires (tests/alarming/run.sh)"
-    bash "$REPO_DIR/tests/alarming/run.sh"
+    step "Queueing: Backup alarming — every layer fires (tests/alarming/run.sh)"
+    pkdump_par_add alarming bash "$REPO_DIR/tests/alarming/run.sh"
 
     # --- 7. Recreated-handle proof ------------------------------------------
     # pd-pm7b as an executable statement rather than an argument: a handle is
@@ -527,8 +573,8 @@ if tier litestream; then
     # inside the retention window — can produce the first user's card. Its own
     # MinIO, its own $PKDUMP_HOME, its own prefix; it touches nothing else here.
 
-    step "Recreated handle cannot inherit a replica (pd-pm7b)"
-    bash "$REPO_DIR/tests/litestream/recreate.sh"
+    step "Queueing: Recreated handle cannot inherit a replica (pd-pm7b)"
+    pkdump_par_add recreate bash "$REPO_DIR/tests/litestream/recreate.sh"
 fi
 
 # --- 8. Upgrade-path gate ---------------------------------------------------
@@ -540,8 +586,8 @@ fi
 # temp dir — it does not touch the instance started above.
 
 if tier tenants; then
-    step "Upgrade path: old-layout volume -> migrate -> rollback (pd-hqee)"
-    bash "$REPO_DIR/tests/tenants/upgrade.sh"
+    step "Queueing: Upgrade path — old-layout volume -> migrate -> rollback (pd-hqee)"
+    pkdump_par_add upgrade bash "$REPO_DIR/tests/tenants/upgrade.sh"
 
     # --- 9. Tenant-header gate ----------------------------------------------
     # What the shipped image answers to a tenant header, over real HTTP:
@@ -552,8 +598,8 @@ if tier tenants; then
     # own image tag, container, port and temp dir — it does not touch the
     # instance started above.
 
-    step "Tenant header: malformed 400 vs unknown 404 (pd-4g7c)"
-    bash "$REPO_DIR/tests/tenants/handles.sh"
+    step "Queueing: Tenant header — malformed 400 vs unknown 404 (pd-4g7c)"
+    pkdump_par_add tenant-header bash "$REPO_DIR/tests/tenants/handles.sh"
 fi
 
 # --- 10. Browser gate --------------------------------------------------------
@@ -576,8 +622,8 @@ fi
 # name, volume and port — it does not touch the instance started above.
 
 if tier schema; then
-    step "Schema version: an unversioned volume is adopted, a future one is refused"
-    bash "$REPO_DIR/tests/schema-version/run.sh"
+    step "Queueing: Schema version — an unversioned volume is adopted, a future one is refused"
+    pkdump_par_add schema-version bash "$REPO_DIR/tests/schema-version/run.sh"
 fi
 
 # --- 12. Lakehouse gate -----------------------------------------------------
@@ -588,8 +634,8 @@ fi
 # pkdump-* unit, no real bucket, and no tenant database.
 
 if tier lake; then
-    step "Lakehouse: PyIceberg + Nessie write/read/time-travel round trip"
-    bash "$REPO_DIR/tests/lake/run.sh"
+    step "Queueing: Lakehouse — PyIceberg + Nessie write/read/time-travel round trip"
+    pkdump_par_add lake bash "$REPO_DIR/tests/lake/run.sh"
 
     # --- 13. catalog.prices from raw ----------------------------------------
     # The claim the landing zone exists to make good on, made mechanically: the
@@ -597,8 +643,8 @@ if tier lake; then
     # call even if it wanted one, and its output is compared row for row against
     # the shared.sqlite built from the same upstream bytes.
 
-    step "Lakehouse: catalog.prices built from raw/ alone, with no network"
-    bash "$REPO_DIR/tests/lake/prices.sh"
+    step "Queueing: Lakehouse — catalog.prices built from raw/ alone, with no network"
+    pkdump_par_add prices bash "$REPO_DIR/tests/lake/prices.sh"
 
     # --- 14. The transform tier ---------------------------------------------
     # Value snapshots for EVERY registered tenant, computed from the lake. Two
@@ -608,8 +654,8 @@ if tier lake; then
     # into a test. A tenant whose database is missing or locked is skipped and
     # the run exits 2.
 
-    step "Lakehouse: per-tenant value snapshots, for every tenant"
-    bash "$REPO_DIR/tests/lake/value_snapshots.sh"
+    step "Queueing: Lakehouse — per-tenant value snapshots, for every tenant"
+    pkdump_par_add value-snapshots bash "$REPO_DIR/tests/lake/value_snapshots.sh"
 
     # --- 14b. shared.sqlite from raw ----------------------------------------
     # The same claim as §13, one level up: the whole CATALOG, not one table.
@@ -622,8 +668,8 @@ if tier lake; then
     # claim: a frontend change cannot affect whether a catalog rebuilds from
     # raw/, and the container tier is what a frontend change selects.
 
-    step "Lakehouse: shared.sqlite derived from raw/ alone, with no network"
-    bash "$REPO_DIR/tests/lake/derive.sh"
+    step "Queueing: Lakehouse — shared.sqlite derived from raw/ alone, no network"
+    pkdump_par_add derive bash "$REPO_DIR/tests/lake/derive.sh"
 fi
 
 # --- 15. The refresh writes no tenant bytes ---------------------------------
@@ -637,8 +683,27 @@ fi
 # the derivation phases rather than exiting early.
 
 if tier refresh; then
-    step "Refresh: the catalog refresh writes zero tenant bytes"
-    bash "$REPO_DIR/tests/refresh/tenant_bytes.sh"
+    step "Queueing: Refresh — the catalog refresh writes zero tenant bytes"
+    pkdump_par_add refresh bash "$REPO_DIR/tests/refresh/tenant_bytes.sh"
+fi
+
+# --- 16. Run the queued gates -----------------------------------------------
+# Everything queued above, three at a time, with the disk floor checked before
+# every dispatch and each gate's whole output printed under its own name as it
+# finishes. Nothing here decides WHICH gates run — that was settled by the tier
+# guards above, so a skipped tier queues nothing and this step simply has less
+# to do. See deploy/ci-parallel.sh.
+#
+# CURRENT_STEP carries the failed gates' names into the EXIT trap's diagnostic
+# line, so a run that dies here still ends with "which gate, and with what
+# status" as its last line rather than teardown noise.
+
+step "Running the queued container gates in parallel"
+PAR_RC=0
+pkdump_par_run || PAR_RC=$?
+if [ "$PAR_RC" -ne 0 ]; then
+    CURRENT_STEP="parallel gates: ${PKDUMP_PAR_FAILED:-see above}"
+    exit "$PAR_RC"
 fi
 
 # The intents UI harness is intentionally not run here — see the header.

@@ -70,7 +70,9 @@ would, as a plain re-runnable script:
 bash deploy/ci.sh
 ```
 
-Steps, in order, exiting non-zero on the first failure:
+Steps, in order, exiting non-zero on the first failure of a sequential step
+(the container gates below run in parallel — see
+[The container gates run in parallel](#the-container-gates-run-in-parallel)):
 
 0. Pick the container store (see [Container storage](#container-storage)) and
    refuse to start if either disk is under the floor.
@@ -97,6 +99,81 @@ loop — it needs `ANTHROPIC_API_KEY` for Vision mode. Run it on its own:
 ```bash
 ( cd tests/ui && npx playwright install chromium && npx playwright test )
 ```
+
+### The container gates run in parallel
+
+Eleven of those steps — litestream, drill, alarming, recreate, upgrade,
+tenant-header, schema-version, the three lake gates and refresh — stand up
+their own containers and share nothing. Every name each of them uses (network,
+container, volume, image tag, unit prefix, temp dir) is already derived from
+its own prefix plus a hash of the checkout path, because concurrent polecats
+have run whole CI suites beside each other for months. That isolation is what
+makes running them at the same time a scheduling change and not a correctness
+one.
+
+So they do not run where they are written. Each **queues** itself under its own
+tier guard and the last step runs the queue, three at a time
+(`deploy/ci-parallel.sh`).
+
+```bash
+PKDUMP_CI_JOBS=1 bash deploy/ci.sh   # one at a time — first thing to try if a
+                                     # parallel run misbehaves
+```
+
+Measured, two full green runs back to back on the CI box, same checkout and the
+same warm caches, the cap the only difference:
+
+| | cap 1 | cap 3 | |
+|---|---|---|---|
+| the eleven gates | 1683s | 728s | 2.31x |
+| the whole suite | 1982s | 1175s | 1.69x |
+
+Individual gates get **slower** — `prices` 141s → 371s, `value-snapshots`
+93s → 257s — because three of them share four cores. The wave still finishes in
+43% of the time, which is the argument: these gates are latency, not
+throughput. They spend their time waiting on containers to come up, replicate
+and stop, and sequentially that waiting is most of a CI run's wall clock.
+
+Both runs sat on a shared box under a 1-min load between 2 and 16, and the cap-1
+baseline drew the quieter half of that, so those ratios are a floor.
+
+Three by default, **four at the very most**. This is a 15G box with four cores
+that also runs prod, and each of these gates stands up two or three containers
+— a MinIO, sometimes a JVM (Nessie), sometimes a whole pkdump instance with a
+Litestream sidecar. Above four the failures stop looking like resource
+exhaustion and start looking like flaky gates, which is the worst possible
+outcome for a suite whose job is to be believed. A `PKDUMP_CI_JOBS` above the
+ceiling is clamped, out loud.
+
+**The disk floor is checked before every dispatch**, not once at startup.
+Startup was enough when one gate ran at a time and the previous one's teardown
+had already returned its space; three at a time can be three images, three
+volumes and three MinIO stores deep at once. It is the same
+`deploy/diskcheck.sh --floor` guard as everywhere else, over the same two
+filesystems, so `PKDUMP_DISK_FLOOR_GB` moves all of them together. Below the
+floor with gates still running, the runner **holds** — the thing most likely to
+give the space back is the gate that is about to tear itself down. Below the
+floor with nothing running, the run fails naming the gates that never started,
+rather than filling the disk to find out.
+
+Two things read differently in the log afterwards:
+
+* a parallel gate's output is printed in **one block when that gate finishes**,
+  not as it happens, and the blocks come out in completion order. Concurrent
+  writers would otherwise shred each other, and a shredded CI log is a gate
+  nobody can diagnose;
+* a failing gate **no longer stops the ones beside it**. The wave finishes,
+  every gate's output is printed under its own name, and the run ends red
+  naming all of them. Sequentially you learned about the earliest failure; now
+  one red run tells you everything that is broken.
+
+`tests/ci/parallel_test.sh` gates all of it — hermetically, in the lint tier,
+in about four seconds: the cap holds and is actually reached, a failure among
+passing gates still goes red and is still named, output survives concurrency,
+the real `diskcheck.sh` trips against an impossible floor, the hold branch
+waits instead of aborting, a background job the *caller* started is never
+mistaken for a gate, and every one of the eleven gate scripts is still queued
+exactly once under a real tier.
 
 ### The image, once
 

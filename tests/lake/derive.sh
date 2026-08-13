@@ -52,6 +52,8 @@ diag_init
 
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
+# shellcheck source=deploy/image-lib.sh
+. "${REPO_DIR}/deploy/image-lib.sh"
 pkdump_store_load_config
 pkdump_store_activate
 
@@ -147,7 +149,10 @@ echo "  $(find "$FIXTURE/raw-zone" -name 'part-*.zst' | wc -l) part(s), $(find "
 echo "  the fixture upstream was ${ORIGIN} — and is gone now"
 
 log "1. build the shipped image"
-podman build -t "$IMAGE" -f "${REPO_DIR}/Containerfile" "$REPO_DIR" >"${WORK}/build.log" 2>&1 ||
+# Through the helper, never a bare `podman build`: deploy/ci.sh builds the shipped
+# image ONCE per run and exports PKDUMP_PREBUILT_IMAGE, and tests/deploy/run.sh
+# asserts that image-lib.sh is the only thing that builds it (pd-5l2e).
+pkdump_image_ensure "$IMAGE" "$REPO_DIR" >"${WORK}/build.log" 2>&1 ||
 	{
 		tail -40 "${WORK}/build.log"
 		die "the image build failed"

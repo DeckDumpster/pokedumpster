@@ -154,6 +154,14 @@ _pkdump_par_disk_ok() {
 # keeping them local there is what makes the runner re-entrant.
 _pkdump_par_finish() { # _pkdump_par_finish <pid> <exit status>
 	local pid="$1" frc="$2"
+	# _pkdump_par_reap only ever waits on gate pids, so a pid with no label is a
+	# bug in this file rather than something a caller can cause. Named as one:
+	# under `set -u` the bare lookup would abort the run from inside a harvest
+	# path, which is how it presented the first time (see §5b of the test).
+	[ -n "${_PAR_LABEL_OF[$pid]:-}" ] || {
+		echo "pkdump_par_run: harvested pid ${pid}, which is not a queued gate" >&2
+		return 1
+	}
 	local label="${_PAR_LABEL_OF[$pid]}"
 	local secs=$(($(date +%s) - ${_PAR_START_OF[$pid]}))
 	local status=ok
@@ -175,7 +183,15 @@ _pkdump_par_finish() { # _pkdump_par_finish <pid> <exit status>
 # Block until at least one gate finishes, then harvest it.
 _pkdump_par_reap() {
 	local pid="" frc=0
-	wait -n -p pid || frc=$?
+	# The pid list is not decoration. A bare `wait -n` waits on ANY child of the
+	# calling shell, so a caller that keeps a background job of its own beside
+	# the wave has that job harvested here as though it were a gate — which
+	# killed a whole wave mid-run, from a cleanup path, with an unbound-variable
+	# error. deploy/ci.sh happens to start no background job today; that is a
+	# fact about ci.sh, not a property of this runner, and the next `&` added to
+	# it would be nobody's idea of a change that could break CI. Listing the
+	# gates makes it one.
+	wait -n -p pid "${!PKDUMP_PAR_LIVE[@]}" || frc=$?
 	# `wait -n` without a pid to report means there was nothing to wait for,
 	# which the caller's `running` counter says cannot happen. Treat it as the
 	# bug it would be rather than looping forever on it.

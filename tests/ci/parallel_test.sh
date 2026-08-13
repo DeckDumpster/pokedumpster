@@ -278,6 +278,34 @@ check "and counted in the summary" "1" \
 	"$(printf '%s\n' "$out" | grep -c 'held by the disk floor')"
 
 # ---------------------------------------------------------------------------
+log "5b. A background job the CALLER started is not mistaken for a gate"
+
+# Found live, not by reading: a verification harness kept a background job of
+# its own alongside the wave, and the moment that job exited the whole run died
+# with `_PAR_LABEL_OF[$pid]: unbound variable`, mid-wave, leaving two gates
+# running with nothing left to reap them.
+#
+# The cause is that `wait -n` waits on ANY child of the shell, not on the
+# children this runner started. deploy/ci.sh has no background job today, so
+# nothing in CI hits it — but "this library owns every child of your shell" is
+# an unwritten precondition nobody would think to check before adding a `&`,
+# and the way it fails is a crash in a cleanup path rather than a clear error.
+# So the wait is restricted to the gate pids, and this is what says so.
+RAN5B="${WORK}/ran5b"
+mkdir -p "$RAN5B"
+# The stray exits while the gates are still going, so it is reapable during the
+# wave — which is exactly when the old code picked it up and died.
+body="( sleep 0.05 ) &"$'\n'
+for g in b1 b2 b3; do
+	body+="pkdump_par_add ${g} bash -c 'sleep 0.3; touch ${RAN5B}/${g}'"$'\n'
+done
+out="$(PKDUMP_CI_JOBS=3 drive "$body")"
+check "the caller's own background job does not disturb the wave" "0" "$(rc_of "$out")"
+check "every gate still ran" "3" "$(find "$RAN5B" -type f | wc -l)"
+check "and nothing was harvested that was not a gate" "0" \
+	"$(printf '%s\n' "$out" | grep -c 'unbound variable')"
+
+# ---------------------------------------------------------------------------
 log "6. Degenerate inputs and the cap's own bounds"
 
 out="$(drive "")"

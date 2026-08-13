@@ -373,10 +373,11 @@ Four things about it are decisions:
 `tests/ci/parallel_test.sh` is the gate — hermetic, lint tier, ~4s. It asserts
 the cap is reached and never exceeded, that a failure among passes is red and
 named, that output survives concurrency, that the *real* `diskcheck.sh` trips
-against an impossible floor, that the hold branch waits rather than aborts, and
-that every one of the eleven gate scripts is still queued exactly once under a
-real tier. That last one is the refactor's own failure mode: a gate queued
-nowhere runs never, and a green run cannot show you that.
+against an impossible floor, that the hold branch waits rather than aborts, that
+a background job of the *caller's* is never mistaken for a gate, and that every
+one of the eleven gate scripts is still queued exactly once under a real tier.
+That last one is the refactor's own failure mode: a gate queued nowhere runs
+never, and a green run cannot show you that.
 
 ## Conventions & Patterns
 

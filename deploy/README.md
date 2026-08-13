@@ -154,8 +154,9 @@ Two things read differently in the log afterwards:
 in about four seconds: the cap holds and is actually reached, a failure among
 passing gates still goes red and is still named, output survives concurrency,
 the real `diskcheck.sh` trips against an impossible floor, the hold branch
-waits instead of aborting, and every one of the eleven gate scripts is still
-queued exactly once under a real tier.
+waits instead of aborting, a background job the *caller* started is never
+mistaken for a gate, and every one of the eleven gate scripts is still queued
+exactly once under a real tier.
 
 ### The image, once
 

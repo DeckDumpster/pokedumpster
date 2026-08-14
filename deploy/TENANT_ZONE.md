@@ -26,11 +26,25 @@ the only reason it can exist at all.
 ## 1. The key layout
 
 ```text
-tenant/database_id=<id>/dataset=<holdings|valuations>/as_of=YYYY-MM-DD/part-NNNN.parquet
+tenant/database_id=<id>/dataset=holdings/as_of=YYYY-MM-DD/part-seq-<from>-<to>.parquet.enc
+tenant/database_id=<id>/dataset=valuations/as_of=YYYY-MM-DD/part-NNNN.parquet.enc
 ```
 
 Built by `pkdump_lake::tenant` — `tenant_prefix`, `partition_prefix`,
-`part_key` — which is the one place these strings are constructed.
+`part_key`, `range_part_key` — which is the one place these strings are
+constructed.
+
+**Every object here is sealed, so every key says `.enc`.** The bytes are
+AES-256-GCM under that tenant's derived key (see [`KEYS.md`](KEYS.md)); a key
+ending `.parquet` would describe something no reader could open. The envelope
+is `pkdump_ship::cipher`.
+
+**Holdings parts are named for the outbox range they carry**, valuations for
+their ordinal. The difference is not cosmetic: holdings are shipped
+incrementally and at-least-once, so a part has to be addressable by *what is
+in it* if a retry is to land on the object it is retrying rather than beside
+it. Valuations are recomputed whole for a date and have no such identity.
+See §7.
 
 **`database_id` is the first partition, above `dataset=`.** That is what
 makes deleting a tenant one prefix drop covering their holdings *and* their
@@ -188,7 +202,7 @@ than trustable.
 | §5 | **the boundary, both directions** — catalog cannot read/list/write `tenant/`; tenant cannot read/list/write `raw/` or `lake/` |
 | §6 | **the same assertion functions go red** when a credential is replaced by a whole-bucket grant — then green again |
 | §6b | a whole-bucket grant added *beside* either policy still cannot cross: the Deny statements work |
-| §7 | the zone is **empty** of tenant data, and the catalog is untouched |
+| §7 | that gate's own fixtures leave the zone **empty**, and the catalog is untouched |
 | §8 | the prefixes and the window have not drifted across their three homes |
 
 §6 is the point of the file. A boundary check that has only ever been seen
@@ -202,18 +216,122 @@ not the others does not fail loudly; it silently widens a policy.
 
 ---
 
-## 6. What is deliberately not here yet
+## 6. What fills it: the shipper (`pd-dxn3`)
 
-This item builds the **governance**, not the data flow. The zone is empty and
-meant to stay that way until the shipper exists — §7 asserts it.
+`pkdump-ship` moves every registered tenant's ownership outbox (`pd-5m54`)
+into this zone, encrypted under that tenant's derived key (`pd-ulds`). It is
+the only thing in the workspace that writes under `tenant/`.
 
-- the **outbox** and its writer — item 1 (`pd-5m54`)
-- **key custody**: master key, HKDF-derived per-tenant keys, tombstones, and
-  backup vs. destruction as deliberately different paths — item 3 (`pd-ulds`).
-  This item defines *where* data lives and *who* can reach it; item 3 defines
-  *how* it is encrypted
-- the **shipper**: outbox → zone, resumable, gap-detecting — item 4
+```bash
+# Every registered tenant. What pkdump-ship@<instance>.service runs.
+bash deploy/ship.sh <instance>
+
+# One tenant, after a repair.
+bash deploy/ship.sh <instance> --tenant alice
+
+# What is unshipped, and every gap ever recorded, per tenant.
+podman run --rm -v pkdump-<instance>-data:/data --entrypoint pkdump-ship \
+    localhost/pkdump:<instance> status --data-dir /data
+
+# Read one part back. The database_id= component of the key says whose key to
+# derive, so there is no flag for it — and a part only opens under the prefix
+# it was written to.
+podman run --rm -v pkdump-<instance>-data:/data \
+    -v ~/.config/pkdump/<instance>/tenant-master.key:/keys/tenant-master.key:ro \
+    -e PKDUMP_MASTER_KEY_FILE=/keys/tenant-master.key \
+    --entrypoint pkdump-ship localhost/pkdump:<instance> \
+    decrypt --data-dir /data --key 'tenant/database_id=…' --json
+```
+
+**It reads no clock.** `as_of` comes out of each event's own `occurred_at`, so
+re-shipping a range on a later day lands in the partition it landed in the
+first time. There is no `--date`.
+
+**Delivery is at-least-once and idempotent.** The cursor
+(`ownership_outbox_cursor`, in the tenant's own database) is written *after*
+the object lands, so a crash in between repeats a part rather than losing one
+— and because a part is addressed by its sequence range and sealed
+deterministically, the repeat is byte-identical and lands on the same key.
+
+### Four exit statuses, and 3 is the one to know
+
+| exit | means | the unit does |
+|---|---|---|
+| 0 | every registered tenant shipped | nothing |
+| 2 | the run finished; some tenants skipped | `SuccessExitStatus=2`, a Pushover warning naming who |
+| 3 | **SEQUENCE GAP** — events were LOST | fails the unit, plus its own alarm naming the tenant and range |
+| 1 | the run never started, or shipped nobody | fails the unit |
+
+A **gap** means the outbox's monotonic sequence has a hole. That sequence is
+gap-free by construction (`AUTOINCREMENT`, written by a trigger inside the
+mutation's transaction, never reissued), so a hole is not a curiosity — it is
+proof that an event existed and was lost, and this zone is therefore missing
+it. The shipper records the missing range in that collection's
+`ownership_outbox_gap` **before** the cursor moves past it, because once past
+nothing can detect it again.
+
+It does **not** stop shipping on a gap. The missing rows are already gone;
+withholding the rows that survive would be a second loss caused by detecting
+the first. To see what has been recorded:
+
+```sql
+-- in tenants/<database_id>.sqlite
+SELECT from_seq, to_seq, detected_at FROM ownership_outbox_gap ORDER BY from_seq;
+```
+
+Nothing clears that table but an operator who has reconciled it. The shipper
+never does — reconciling is not the shipper's job.
+
+A **tombstoned** tenant (see [`KEYS.md`](KEYS.md)) is skipped and is *not* an
+anomaly: their key refuses to derive, so nothing of theirs can be written, and
+the run is still clean. A tenant nobody has run `pkdump keys register` for is
+skipped as a **warning** — absence is not permission.
+
+### Scheduling
+
+`pkdump-ship@<instance>.timer`, installed for every instance and **enabled for
+none**. It is `After=pkdump-value-snapshots@%i.service` because both open every
+tenant's database, and fires at 07:30 — derived from that unit's own bounds,
+not guessed. The chain is land → derive → prices → transform → **ship**.
+
+```bash
+systemctl --user enable --now pkdump-ship@<instance>.timer
+```
+
+Two things must exist first: a master key (`bash deploy/keys.sh <instance>
+init`, **backed up**) and `PKDUMP_TENANT_AWS_PROFILE` in `lake.env`. The
+wrapper refuses by name without either.
+
+**Do not arm it on prod before the backfill (epic item 5) lands.** The shipper
+ships the OUTBOX, and an existing collection's outbox starts empty
+(`pd-whsw`): armed early it faithfully ships every change made from tonight
+and nothing anybody already owns — a zone that looks populated and is not.
+
+### Gates
+
+`cargo test -p pkdump-ship` is hermetic: part planning and gap detection, the
+sealed envelope, the Parquet encoding, and `tests/shipping.rs`, which proves
+the four claims end to end over a `DirStore` — a dropped sequence number is
+detected and recorded, the same rows shipped twice leave the zone
+byte-identical, a crash between the PUT and the cursor re-ships that part and
+nothing else, and each tenant's parts open only under that tenant's own key.
+
+`tests/lake/shipper.sh` is the container tier: the shipped image against a
+real MinIO under the **rendered** IAM documents, with the catalog role's
+inability to read shipped holdings asserted in the failing direction too, a
+real process killed mid-run and resumed, and `deploy/ship.sh`'s four exit
+statuses.
+
+---
+
+## 7. What is deliberately not here yet
+
 - **deletion end to end**: drop the partition, destroy the key, verify
-  unreadable — item 8
+  unreadable — item 8 (`pd-qbrf`)
+- **backfill / redrive**: one command over a scope, emitting synthetic events
+  *through the outbox* — item 5 (`pd-385w`). The shipper treats those exactly
+  like any other row, which is the point
+- **valuations**: computed offline against `catalog.prices` and written back
+  here as a second dataset — items 6 and 7
 
 See `pd-8lw7` for the epic.

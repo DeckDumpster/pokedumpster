@@ -10,6 +10,7 @@
 //! | encrypted, under the RIGHT key| `each_tenant_s_parts_open_only_under…`        |
 //! | a tombstone stops shipping    | `a_tombstoned_tenant_is_not_shipped…`         |
 //! | absence is not permission     | `an_unregistered_tenant_is_skipped…`          |
+//! | a backfill is an ordinary run | `a_backfilled_collection_ships_as_ordinary…`  |
 //!
 //! The object store is a [`DirStore`], which is the same `ObjectStore` the
 //! real thing is behind and holds exactly the keys and bytes S3 would — so
@@ -696,4 +697,86 @@ fn a_collection_with_an_empty_outbox_ships_nothing_and_is_clean() {
          numbers these rows should have followed."
     );
     assert!(world.objects().is_empty());
+}
+
+/// ...and the other half of that shape: once the backfill HAS run, those
+/// holdings ship, as ordinary events.
+///
+/// This is the seam between item 5 (`pd-385w`) and item 4 — the two halves of
+/// arming the shipper on a box that already holds cards. Both crates state
+/// the claim ("the shipper must NOT branch on provenance"; "every row is
+/// shipped identically") and until they lived on one branch neither could
+/// show it: `pkdump-db`'s own gate compares a backfill against a stand-in
+/// projection, never against the zone the shipper writes.
+///
+/// The fixture is a collection whose rows PREDATE the triggers, which is
+/// every existing box: the events are absent and so is the sequence they
+/// would have burned. Reset one without the other and the backfill's first
+/// event arrives above a cursor that never passed anything, which is a real
+/// gap and would be reported as one.
+#[test]
+fn a_backfilled_collection_ships_as_ordinary_events() {
+    let world = World::new();
+    let alice = world.tenant("alice", ALICE);
+    let mut conn = world.collection(ALICE);
+    add_holdings(&conn, 3, "2026-03-04");
+    conn.execute("DELETE FROM ownership_outbox", []).unwrap();
+    conn.execute(
+        "DELETE FROM sqlite_sequence WHERE name = 'ownership_outbox'",
+        [],
+    )
+    .unwrap();
+
+    let emitted = pkdump_db::outbox::emit(&mut conn, &pkdump_db::outbox::Scope::Collection, false)
+        .expect("the backfill runs");
+    assert_eq!(emitted.events, 3);
+
+    let report = ship(&world, &[alice], 100);
+    assert_eq!(report.outcome(), Outcome::Clean);
+    assert_eq!(report.events(), 3);
+    assert!(
+        report.gaps().is_empty(),
+        "the backfill numbered from 1 and nothing was lost"
+    );
+
+    let (key, bytes) = world.objects().into_iter().next().unwrap();
+    assert!(
+        key.contains("as_of=2026-03-04"),
+        "a backfilled event is dated from the row's own acquired_at, not from \
+         the day the backfill ran — otherwise re-running it would move the \
+         partition. Key was {key}"
+    );
+    let tenant_key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+    let events = encode::decode(cipher::open(&tenant_key, &key, &bytes).unwrap()).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| (e.source_table.as_str(), e.op.as_str()))
+            .collect::<Vec<_>>(),
+        [("collection", "insert"); 3],
+        "the zone holds the holdings, described exactly as a trigger would \
+         have described them"
+    );
+    let shipped: Vec<String> = events
+        .iter()
+        .map(|e| {
+            serde_json::from_str::<serde_json::Value>(&e.payload).unwrap()["printing_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        shipped,
+        (0..3)
+            .map(|i| format!("fixture-2026-03-04-{i}"))
+            .collect::<Vec<_>>()
+    );
+
+    // And it is over: a second run has nothing to add, exactly as it would
+    // have after an ordinary night's shipping.
+    let before = world.objects();
+    let again = ship(&world, &pkdump_db::tenants::list().unwrap(), 100);
+    assert_eq!(again.events(), 0);
+    assert_eq!(world.objects(), before);
 }

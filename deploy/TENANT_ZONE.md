@@ -302,10 +302,12 @@ Two things must exist first: a master key (`bash deploy/keys.sh <instance>
 init`, **backed up**) and `PKDUMP_TENANT_AWS_PROFILE` in `lake.env`. The
 wrapper refuses by name without either.
 
-**Do not arm it on prod before the backfill (epic item 5) lands.** The shipper
-ships the OUTBOX, and an existing collection's outbox starts empty
-(`pd-whsw`): armed early it faithfully ships every change made from tonight
-and nothing anybody already owns — a zone that looks populated and is not.
+**Do not arm it on prod before the backfill has run.** The shipper ships the
+OUTBOX, and an existing collection's outbox starts empty (`pd-whsw`): armed
+early it faithfully ships every change made from tonight and nothing anybody
+already owns — a zone that looks populated and is not. `pkdump outbox emit
+--all --all-tenants` (`pd-385w`) is what makes the outbox describe the
+collection that is already there; arm the timer after it, per instance.
 
 ### Gates
 
@@ -315,6 +317,10 @@ the four claims end to end over a `DirStore` — a dropped sequence number is
 detected and recorded, the same rows shipped twice leave the zone
 byte-identical, a crash between the PUT and the cursor re-ships that part and
 nothing else, and each tenant's parts open only under that tenant's own key.
+It also covers the seam with the backfill: a collection whose holdings predate
+the triggers, put through `pkdump outbox emit`, ships as ordinary events —
+into the partitions those rows' own timestamps name, not the day the backfill
+ran.
 
 `tests/lake/shipper.sh` is the container tier: the shipped image against a
 real MinIO under the **rendered** IAM documents, with the catalog role's
@@ -328,9 +334,6 @@ statuses.
 
 - **deletion end to end**: drop the partition, destroy the key, verify
   unreadable — item 8 (`pd-qbrf`)
-- **backfill / redrive**: one command over a scope, emitting synthetic events
-  *through the outbox* — item 5 (`pd-385w`). The shipper treats those exactly
-  like any other row, which is the point
 - **valuations**: computed offline against `catalog.prices` and written back
   here as a second dataset — items 6 and 7
 

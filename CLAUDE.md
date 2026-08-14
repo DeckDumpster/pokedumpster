@@ -725,13 +725,18 @@ key is `seq`, unique across the whole outbox.
 `pkdump-ship@<instance>.timer`, `After=pkdump-value-snapshots@%i.service`
 (both open every tenant's database), at 07:30, derived from that unit's own
 bounds. The chain is land → derive → prices → transform → **ship**. Do not arm
-it on prod before item 5 lands: the shipper ships the OUTBOX, an existing
-collection's outbox starts empty (pd-whsw), and armed early it faithfully
-ships every change made from tonight and nothing anybody already owns.
+it on prod before the backfill has run: the shipper ships the OUTBOX, an
+existing collection's outbox starts empty (pd-whsw), and armed early it
+faithfully ships every change made from tonight and nothing anybody already
+owns. `pkdump outbox emit --all --all-tenants` (pd-385w) is what makes the
+outbox describe the collection that is already there; arming is the step
+after it, per instance.
 
 Gates: `cargo test -p pkdump-ship` (hermetic — planning, the envelope, Parquet,
 and `tests/shipping.rs`, which proves gap detection, idempotence, resumability
-and encryption-under-the-right-key over a `DirStore`) and
+and encryption-under-the-right-key over a `DirStore`, plus the seam with item
+5: a backfilled collection ships as ordinary events, dated from the rows' own
+timestamps rather than the day the backfill ran) and
 `tests/lake/shipper.sh` (container tier — the shipped image against a real
 MinIO under the real tenant policy, a real process killed mid-run and resumed,
 the catalog role's denial seen both green and red, and `deploy/ship.sh`'s four

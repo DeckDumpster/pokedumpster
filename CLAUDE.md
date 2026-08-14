@@ -874,9 +874,13 @@ Two more decisions:
   walks `pkdump tenant list`. This is pd-s5yn's lesson applied before the
   bug: a backfill of the one collection `$PKDUMP_USER` resolves to would
   report success for everybody while every other tenant stayed invisible to
-  the zone. A skipped tenant is named, the run finishes, and it exits **2** —
-  0 whole / 2 partial / 1 never started, the same three answers the transform
-  tier gives.
+  the zone. Under that flag a failing tenant is named and skipped, the run
+  finishes, and it exits **2** — 0 whole / 2 partial / 1 failed or never
+  started, the same three answers the transform tier gives. Over ONE
+  collection there is no partial state to be in, so a failure exits 1; the
+  distinction follows the *flag*, never the number of tenants that happen to
+  be registered, or the exit code a runbook was written against would change
+  the day somebody signs up.
 - **A full backfill emits current rows; a redrive also re-emits removals.**
   A backfill's job is "these are the rows", against a zone being rebuilt from
   nothing. A redrive exists because a slice of the stream was lost, and if
@@ -910,7 +914,12 @@ Gates, all in `outbox.rs` and all seen red:
 (pd-dxn3) is being built in parallel and does not exist yet. `project` is the
 contract between them — the shipper writes that reduction — so re-stating the
 headline proof against real Parquet in the zone is a container-tier gate that
-belongs with the shipper. Filed, not forgotten.
+belongs with the shipper (pd-880q, filed rather than forgotten).
+
+**And when the sealed triggers land** (pd-4gop), `SOURCE_TABLES` grows
+`("sealed_collection", "<its own timestamp column>")` and nothing else
+changes. That is not a chore to remember — the gate above fails until it is
+done, and its assertion message says which line to write.
 
 ### Variant expansion
 

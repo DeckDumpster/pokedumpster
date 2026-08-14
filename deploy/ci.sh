@@ -101,6 +101,14 @@
 #                      checks go red; assert the 90-day retention is mechanical
 #                      and that no rule can reach raw/, whose retention is
 #                      indefinite by decision. See tests/lake/tenant_zone.sh.
+#  14e.Phase 3 gate:   a collection valued from the TENANT ZONE, proven
+#                      row-for-row identical to the online computation it ships
+#                      beside, for every registered tenant. §6 is the section
+#                      that matters: a collection changed WITHOUT shipping must
+#                      make the two valuations DISAGREE, by name and by
+#                      dimension, before shipping makes them agree again — a
+#                      Phase 3 that quietly read the live table passes every
+#                      other check in the file. See tests/lake/phase3.sh.
 #  15. Refresh gate:   the other half of that — a real `pkdump data refresh`,
 #                      through the shipped image, over a data directory with
 #                      two provisioned tenants in it, must leave every tenant
@@ -752,6 +760,27 @@ if tier lake; then
 
     step "Queueing: Lakehouse — the shipper, against a real bucket, killed and resumed"
     pkdump_par_add shipper bash "$REPO_DIR/tests/lake/shipper.sh"
+
+    # --- 14e. Phase 3: a collection valued from the tenant zone ---------------
+    # §14d proves the zone holds what the collection holds. This proves the
+    # thing that USES it: the valuation, computed from the zone rather than
+    # from `collection`, and identical to the online computation it ships
+    # beside — row for row, for every registered tenant, over the same fixture
+    # the transform tier's own gate uses.
+    #
+    # The section that matters is the RED one. A Phase 3 that quietly read the
+    # live table would pass every equivalence check ever written, so the gate
+    # changes a collection WITHOUT shipping it and requires the two valuations
+    # to DISAGREE, by name and by dimension, before shipping makes them agree
+    # again. The other half is staleness: the zone moving on while nobody
+    # re-reads it must be a refusal, not a beautiful number about last week.
+    #
+    # It needs both images — the app image for the shipper and the zone reader,
+    # the lake image for prices out of Iceberg — which is why it is the
+    # longest gate in this tier.
+
+    step "Queueing: Lakehouse — Phase 3 valuation from the tenant zone, proven equivalent"
+    pkdump_par_add phase3 bash "$REPO_DIR/tests/lake/phase3.sh"
 fi
 
 # --- 15. The refresh writes no tenant bytes ---------------------------------

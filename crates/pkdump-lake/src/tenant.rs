@@ -129,6 +129,21 @@ pub fn tenant_prefix(database_id: &str) -> Result<String> {
     Ok(format!("{TENANT_ROOT}database_id={database_id}/"))
 }
 
+/// One tenant's whole dataset, every date of it.
+///
+/// What a *reader* works from. A writer always knows which day it is writing
+/// — `as_of` comes out of the event — but a consumer asking "what does this
+/// tenant hold" cannot know which partitions exist, because the answer is
+/// however many days the shipper has run over. So the date is the one
+/// component this prefix leaves off.
+pub fn dataset_prefix(database_id: &str, dataset: Dataset) -> Result<String> {
+    Ok(format!(
+        "{}dataset={}/",
+        tenant_prefix(database_id)?,
+        dataset.as_str()
+    ))
+}
+
 /// One tenant's partition for one dataset on one date.
 pub fn partition_prefix(database_id: &str, dataset: Dataset, as_of: &str) -> Result<String> {
     validate_date(as_of)?;

@@ -873,3 +873,228 @@ fn a_shipped_part_projects_back_to_the_live_collection() {
         );
     }
 }
+
+// ── reading it back: Phase 3's holdings source (pd-szh2) ────────────────────
+//
+// The tests above prove the zone HOLDS the collection. These prove the
+// reader gets it back out — through the same `ObjectSource` a real job
+// holds, without being told which parts exist — and stages it where a
+// valuation can join it.
+
+/// The whole round trip, as Phase 3 runs it: ship, then read the zone with
+/// nothing but the tenant's id, and materialise. `zone_holdings` must be
+/// `collection`, row for row and column for column.
+///
+/// This is the claim the equivalence proof rests on. If the two tables differ
+/// here, the two valuations differ downstream for a reason that has nothing
+/// to do with arithmetic.
+#[test]
+fn the_zone_read_back_materialises_the_collection_row_for_row() {
+    let world = World::new();
+    let alice = world.tenant("alice", ALICE);
+    let conn = world.collection(ALICE);
+
+    // A collection with something in every awkward column: a NULL price, a
+    // real price, a note with a quote in it, and a row that was updated and
+    // one that was deleted after being shipped once.
+    add_holdings(&conn, 4, "2026-08-13");
+    conn.execute(
+        "UPDATE collection SET purchase_price = 12.5, notes = 'a \"quoted\" note', \
+         condition = 'Lightly Played' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM collection WHERE id = 3", [])
+        .unwrap();
+    add_holdings(&conn, 2, "2026-08-14");
+    redate(&conn, 4, "2026-08-14");
+
+    // Several parts, so the reader has to find them all rather than one.
+    let report = ship(&world, &[alice], 3);
+    assert_eq!(report.outcome(), Outcome::Clean);
+    assert!(world.objects().len() > 1, "the fixture spans parts");
+
+    let key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+    let holdings = pkdump_ship::zone::read(&world.zone(), &config(), &key, ALICE).unwrap();
+    assert_eq!(
+        holdings.partitions,
+        vec!["2026-08-13".to_string(), "2026-08-14".to_string()],
+        "both days were read — a reader that stopped at one partition would \
+         value a collection at whichever day it happened to find"
+    );
+    assert_eq!(holdings.other_tables, 0);
+
+    pkdump_ship::zone::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
+
+    assert_eq!(
+        dump(&conn, "zone_holdings"),
+        dump(&conn, "collection"),
+        "the staging table IS the collection"
+    );
+    let staged: i64 = conn
+        .query_row("SELECT count(*) FROM zone_holdings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(staged, 5, "four inserted, one deleted, two more");
+}
+
+/// The red direction, and the only thing that proves the valuation reads the
+/// ZONE rather than the collection beside it: change the collection without
+/// shipping, and the staged holdings must NOT follow.
+///
+/// A reader that quietly fell back to `collection` — or a transform that
+/// joined the wrong table — passes every test above and fails this one.
+#[test]
+fn a_change_that_has_not_shipped_is_not_in_the_staged_holdings() {
+    let world = World::new();
+    let alice = world.tenant("alice", ALICE);
+    let conn = world.collection(ALICE);
+    add_holdings(&conn, 3, "2026-08-13");
+    ship(&world, std::slice::from_ref(&alice), 100);
+
+    let key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+    let read = |conn: &Connection| {
+        let holdings = pkdump_ship::zone::read(&world.zone(), &config(), &key, ALICE).unwrap();
+        pkdump_ship::zone::materialize(conn, &holdings, "2026-08-14T09:00:00Z").unwrap()
+    };
+    assert_eq!(read(&conn), 3);
+    assert_eq!(dump(&conn, "zone_holdings"), dump(&conn, "collection"));
+
+    // Sold one and bought two, and told nobody.
+    conn.execute("DELETE FROM collection WHERE id = 1", [])
+        .unwrap();
+    add_holdings(&conn, 2, "2026-08-14");
+    redate(&conn, 3, "2026-08-14");
+
+    assert_eq!(
+        read(&conn),
+        3,
+        "the zone still holds three; it was not told"
+    );
+    assert_ne!(
+        dump(&conn, "zone_holdings"),
+        dump(&conn, "collection"),
+        "the staged holdings track the ZONE. If these agree, the reader is \
+         reading the collection and the whole Phase 3 claim is unfounded."
+    );
+
+    // …and shipping is what reconciles them, not re-reading.
+    assert_eq!(ship(&world, &[alice], 100).outcome(), Outcome::Clean);
+    assert_eq!(read(&conn), 4);
+    assert_eq!(dump(&conn, "zone_holdings"), dump(&conn, "collection"));
+}
+
+/// A tenant reads their own partition and nobody else's, which the prefix
+/// gives — and could not read another's anyway, which the key gives.
+#[test]
+fn a_tenant_reads_only_their_own_holdings() {
+    let world = World::new();
+    let alice = world.tenant("alice", ALICE);
+    let bob = world.tenant("bob", BOB);
+    add_holdings(&world.collection(ALICE), 4, "2026-08-14");
+    add_holdings(&world.collection(BOB), 2, "2026-08-14");
+    assert_eq!(ship(&world, &[alice, bob], 100).outcome(), Outcome::Clean);
+
+    let registry = world.registry();
+    let alice_key = pkdump_keys::tenant_key(&registry, ALICE).unwrap();
+    let bob_key = pkdump_keys::tenant_key(&registry, BOB).unwrap();
+
+    assert_eq!(
+        pkdump_ship::zone::read(&world.zone(), &config(), &alice_key, ALICE)
+            .unwrap()
+            .rows
+            .len(),
+        4
+    );
+    assert_eq!(
+        pkdump_ship::zone::read(&world.zone(), &config(), &bob_key, BOB)
+            .unwrap()
+            .rows
+            .len(),
+        2
+    );
+
+    // Alice's key against Bob's prefix: the objects are found and none of
+    // them opens. Not an empty read — a refusal.
+    let crossed = pkdump_ship::zone::read(&world.zone(), &config(), &alice_key, BOB);
+    assert!(
+        crossed.is_err(),
+        "alice's key opened bob's partition: {crossed:?}"
+    );
+}
+
+/// A tenant who has shipped nothing stages an EMPTY table, and says so in the
+/// provenance row. Not "no table": the transform's refusal to value a
+/// collection whose staging table is absent is what stops it valuing today
+/// from a materialisation someone took last week.
+#[test]
+fn a_tenant_with_nothing_in_the_zone_stages_an_empty_table() {
+    let world = World::new();
+    world.tenant("alice", ALICE);
+    let conn = world.collection(ALICE);
+    add_holdings(&conn, 2, "2026-08-14"); // in the outbox, never shipped
+
+    let key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+    let holdings = pkdump_ship::zone::read(&world.zone(), &config(), &key, ALICE).unwrap();
+    assert_eq!(holdings.parts, 0);
+    assert_eq!(
+        pkdump_ship::zone::materialize(&conn, &holdings, "x").unwrap(),
+        0
+    );
+
+    let (parts, rows, max_seq): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT parts, rows, max_seq FROM zone_holdings_run WHERE dataset = 'holdings'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((parts, rows, max_seq), (0, 0, 0));
+    let staged: i64 = conn
+        .query_row("SELECT count(*) FROM zone_holdings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(staged, 0, "the table exists and is empty");
+}
+
+/// The staged tables are transport state. An envelope carrying them would
+/// restore a database that believes it has been shipped.
+#[test]
+fn the_staged_holdings_are_not_carried_by_the_json_envelope() {
+    let world = World::new();
+    world.tenant("alice", ALICE);
+    let conn = world.collection(ALICE);
+    add_holdings(&conn, 2, "2026-08-14");
+
+    let mut holdings = pkdump_ship::ZoneHoldings::default();
+    holdings.rows.insert(
+        1,
+        serde_json::json!({"id": 1, "printing_id": "p", "acquired_at": "x", "source": "zone"}),
+    );
+    pkdump_ship::zone::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
+
+    let envelope = pkdump_db::json_backup::export(&conn).unwrap();
+    assert!(!envelope.contains("zone_holdings"), "{envelope}");
+}
+
+/// Every column of a table, as text, ordered — the unit "the staging table IS
+/// the collection" is measured in. Text rather than typed reads so a column
+/// added to `collection` is compared without this helper being touched.
+fn dump(conn: &Connection, table: &str) -> Vec<String> {
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info(?1)")
+        .unwrap()
+        .query_map([table], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let selected = columns
+        .iter()
+        .map(|c| format!("quote(\"{c}\")"))
+        .collect::<Vec<_>>()
+        .join(" || '|' || ");
+    conn.prepare(&format!("SELECT {selected} FROM \"{table}\" ORDER BY id"))
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}

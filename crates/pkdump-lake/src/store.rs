@@ -55,6 +55,22 @@ pub trait ObjectSource: Send + Sync {
     /// the caller turns into its own refusal, with the date in it.
     fn child_dirs(&self, key_prefix: &str) -> Result<Vec<String>>;
 
+    /// Every object key at or below `key_prefix`, **whole keys** rather than
+    /// names, sorted.
+    ///
+    /// [`Self::child_dirs`] answers "which runs does this date hold"; a
+    /// consumer of the tenant zone asks the other question — "which parts is
+    /// this tenant's holdings dataset made of" — and it cannot know the
+    /// answer in advance, because a part is named for the outbox range it
+    /// carries (`pkdump_lake::range_part_key`) and no reader knows which
+    /// ranges were shipped.
+    ///
+    /// Sorted because the zone's part names are zero-padded for exactly that
+    /// reason: sequence order out of a listing alone. An empty prefix is
+    /// empty, not an error — a tenant who has shipped nothing has no parts,
+    /// and that is a fact about them rather than a fault.
+    fn list_keys(&self, key_prefix: &str) -> Result<Vec<String>>;
+
     /// A short description of where this source reads, for progress output.
     fn describe(&self) -> String;
 }
@@ -116,9 +132,40 @@ impl ObjectSource for DirStore {
         Ok(out)
     }
 
+    fn list_keys(&self, key_prefix: &str) -> Result<Vec<String>> {
+        // A prefix, not a directory: `tenant/database_id=X/dataset=holdings/`
+        // is a directory here, but S3 would answer the same call for a
+        // prefix that stops mid-name. Walking from the deepest existing
+        // ancestor and filtering keeps the two stores answering alike.
+        let mut out = Vec::new();
+        walk(&self.root, &self.root, &mut out)?;
+        out.retain(|key| key.starts_with(key_prefix));
+        out.sort();
+        Ok(out)
+    }
+
     fn describe(&self) -> String {
         format!("dir {}", self.root.display())
     }
+}
+
+/// Every file under `dir`, as keys relative to `root`.
+fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            walk(root, &path, out)?;
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            out.push(rel.to_string_lossy().into_owned());
+        }
+    }
+    Ok(())
 }
 
 /// The real landing zone: an S3 bucket.
@@ -308,6 +355,42 @@ impl ObjectSource for S3Store {
         })
     }
 
+    fn list_keys(&self, key_prefix: &str) -> Result<Vec<String>> {
+        // No delimiter: every object at or below the prefix, however deep.
+        // The keys come back with `self.prefix` on them and go out without
+        // it, because a caller that built the prefix with
+        // `TenantZoneConfig::rooted` would otherwise get it twice.
+        let prefix = self.full_key(key_prefix);
+        let strip = self.prefix.clone();
+        self.runtime.block_on(async {
+            let mut out = Vec::new();
+            let mut pages = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix)
+                .into_paginator()
+                .send();
+            while let Some(page) = pages.next().await {
+                let page = page.map_err(|e| {
+                    LakeError::S3(format!(
+                        "list s3://{}/{}: {}",
+                        self.bucket,
+                        prefix,
+                        aws_error_text(&e)
+                    ))
+                })?;
+                for object in page.contents() {
+                    if let Some(key) = object.key() {
+                        out.push(key.strip_prefix(&strip).unwrap_or(key).to_string());
+                    }
+                }
+            }
+            out.sort();
+            Ok(out)
+        })
+    }
+
     fn describe(&self) -> String {
         format!("s3://{}/{}", self.bucket, self.prefix)
     }
@@ -357,6 +440,30 @@ mod tests {
             .unwrap(),
             b"hi"
         );
+    }
+
+    /// The listing a zone reader works from: whole keys, sorted, and scoped
+    /// to the prefix it asked about rather than to the store.
+    #[test]
+    fn dir_store_lists_whole_keys_under_a_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = DirStore::new(tmp.path());
+        for key in [
+            "tenant/database_id=B/dataset=holdings/as_of=2026-08-14/part-seq-000000000001-000000000002.parquet.enc",
+            "tenant/database_id=A/dataset=holdings/as_of=2026-08-14/part-seq-000000000003-000000000004.parquet.enc",
+            "tenant/database_id=A/dataset=holdings/as_of=2026-08-13/part-seq-000000000001-000000000002.parquet.enc",
+            "raw/source=tcgcsv/dataset=groups/x/part-0000.json.zst",
+        ] {
+            store.put(key, b"x".to_vec()).unwrap();
+        }
+
+        let a = store.list_keys("tenant/database_id=A/").unwrap();
+        assert_eq!(a.len(), 2, "A's two parts and nobody else's: {a:?}");
+        assert!(a[0].contains("as_of=2026-08-13"), "sorted: {a:?}");
+        assert!(a.iter().all(|k| k.contains("database_id=A/")));
+
+        assert_eq!(store.list_keys("tenant/").unwrap().len(), 3);
+        assert!(store.list_keys("tenant/database_id=C/").unwrap().is_empty());
     }
 
     #[test]

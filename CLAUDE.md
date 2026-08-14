@@ -100,6 +100,11 @@ bash tests/lake/shipper.sh       # the shipper against a real bucket under the
                                  #   real tenant policy: killed mid-run and
                                  #   resumed, and the catalog role unable to
                                  #   read a byte of what it wrote (seen red)
+bash tests/lake/phase3.sh        # Phase 3: a collection valued from the TENANT
+                                 #   ZONE, row-for-row identical to the online
+                                 #   computation it ships beside — and §6, the
+                                 #   change that never shipped, where the two
+                                 #   MUST disagree or the claim is unfounded
 bash tests/refresh/tenant_bytes.sh
                                  # the other half: a real `pkdump data refresh`
                                  #   over a data dir with two tenants in it
@@ -761,8 +766,10 @@ tenant's own database. Three rules hold it in shape:
   resolves to, and reported success for everybody (pd-s5yn). Any successor to
   it walks the registry, or it has reintroduced the bug.
 - **A failing tenant is logged and skipped; the run finishes and exits 2.**
-  Exit 0 means every tenant, 1 means the run never started. Silence over a
-  half-completed run is the failure mode being replaced.
+  Exit 0 means every tenant, 1 means the run never started **or snapshotted
+  nobody at all** — "some tenants" and "nobody" are different nights, and a
+  warning is the wrong volume for the second. Silence over a half-completed
+  run is the failure mode being replaced.
 - **Tenant data never enters the lake.** Prices come out of Iceberg; the
   collection is read from, and the snapshot written back to, SQLite. Neither
   ever travels the other way, and `tests/lake/value_snapshots.sh` §9 asserts
@@ -795,6 +802,59 @@ the scheduling are decisions:
   wrapper — the one component that is allowed to know what day it is — names it.
 
 `catalog.prices` itself is still built by hand between the two (pd-up36).
+
+### Phase 3: valuing a collection from the tenant zone
+
+`--holdings zone` (pd-szh2) is the same job reading its holdings out of the
+**tenant zone** instead of out of `collection`. That is Phase 3 of the cycle —
+land raw, build the catalog, ingest tenant state, *compute valuations*,
+publish back — and it closes the half of the loop the epic exists for: the
+write moved offline, the read stayed online.
+
+It **ships alongside** the online path. `--holdings collection` is still the
+default and still what the timer runs; removing the online read is its own
+change (`pd-i08u`), gated on the comparison below.
+
+Four things about it are decisions:
+
+- **The seam is a table, because neither language may implement the other's
+  half.** The envelope, the key derivation and the resolution rule have one
+  implementation each and it is Rust (`pkdump-ship`); `catalog.prices` is
+  Iceberg and `pyiceberg` is the only client here. So `pkdump-ship holdings`
+  reduces the zone with `pkdump_db::outbox::project` into `zone_holdings`, and
+  the transform's existing SQL reads that name instead of `collection`.
+  **One token differs**, which is what makes a difference between the two
+  valuations a difference in *holdings* and not one in arithmetic. A
+  from-scratch offline computation could differ for a dozen reasons and the
+  proof would have to rule out each.
+- **`zone_holdings` is derived, never declared.** Created from `collection`'s
+  own `pragma_table_info`, so a column added there reaches it with nothing to
+  remember — a hand-written mirror in `schema_user.sql` would be the *third*
+  place the collection's shape lives (`encode.rs` declined to be the second).
+  Being created also means it carries no triggers, so materialising cannot
+  emit outbox events and a Phase 3 run cannot feed itself back into the zone
+  it just read. Both it and `zone_holdings_run` are in `TRANSPORT_TABLES`.
+- **A stale materialisation is refused, not valued.** `zone_holdings_run.
+  max_seq` behind `ownership_outbox_cursor.shipped_thru` means the read
+  predates the last ship, and left alone it would value today's collection at
+  older holdings while every number looked reasonable. That is the quiet
+  failure this item could otherwise become. A tenant whose *outbox* is ahead
+  of the zone is not refused: that is a real difference between the paths, and
+  showing it is the point.
+- **The equivalence proof is executable.** `--compare` values every registered
+  tenant both ways over one pinned catalog commit, diffs the rows exactly (no
+  tolerance — same doubles, same expression, so equal inputs are bit-equal),
+  writes nothing, and exits **4** naming the tenant and dimension if any pair
+  disagrees. `tests/lake/phase3.sh` §5 is that comparison on the transform
+  tier's own fixture; **§6 is the section that matters** — a collection
+  changed without shipping must make the two DISAGREE before shipping makes
+  them agree again, because a Phase 3 that quietly read the live table would
+  pass every other check in the file.
+
+What the zone does not carry: only `collection` rows are shipped, so the
+condition multiplier and `manual_prices`/`user_printings` are read from the
+tenant's own database on **both** paths. Phase 3 narrows which table the
+copies come from and nothing else. Runbook: `deploy/TENANT_ZONE.md` §7.
 
 ### The offline catalog derive
 

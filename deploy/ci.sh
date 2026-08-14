@@ -386,6 +386,13 @@ if tier lint; then
     step "Tree-hash cache (deploy/ci-cache.sh --self-test)"
     bash "$REPO_DIR/deploy/ci-cache.sh" --self-test
 
+    # Same tier, same reason as the alert gate: this one decides whether Ryan's
+    # phone rings at night. Its assumption ("a collection changes daily") was wrong
+    # and paged him three times for a healthy backup on 2026-08-14. The cases that
+    # matter are the ones proving the fix did not disarm the real alarm.
+    step "Backup freshness (tests/alarming/backup_freshness_test.sh)"
+    bash "$REPO_DIR/tests/alarming/backup_freshness_test.sh"
+
     step "Alert gate (deploy/alert-gate.sh --self-test)"
     bash "$REPO_DIR/deploy/alert-gate.sh" --self-test
 

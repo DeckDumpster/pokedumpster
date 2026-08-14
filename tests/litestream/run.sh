@@ -262,14 +262,43 @@ early_replicated() {
 	[ "$(restore_rows early-probe.sqlite "$VICTIM")" -eq 1 ]
 }
 wait_until 120 1 early_replicated || true
+# Asserted, not `|| true` on its own. Everything below reads the marker as a
+# boundary with the early phase behind it; if the early phase never landed,
+# the point-in-time restore two sections down fails as `<no restored db>` and
+# reads like a derivation bug. The late side has had this check since it was
+# written — the early side simply never grew one.
+check "the early writes reached ${VICTIM}'s replica, so the marker has something behind it" "yes" \
+	"$(early_replicated && echo yes || echo no)"
 
 # A marker between two write phases, for the point-in-time restore in §4.
+#
+# TRUNCATION CUTS BOTH WAYS, and only one side of it was handled (pd-5m54 CI,
+# 2026-08-14). `date -u +…%SZ` truncates DOWN to the start of the second it was
+# taken in, so a marker taken at 00:49:54.9 IS 00:49:54.000 — up to a second
+# EARLIER than the instant it was meant to name. If the early phase only became
+# restorable at 00:49:54.3, that marker sits BEFORE the oldest instant the
+# replica covers, and Litestream refuses it outright:
+#
+#     Error: timestamp does not exist
+#
+# which surfaces as `expected 1, got <no restored db>` — the same symptom as the
+# late-side race below, from the opposite cause, and equally immune to retrying.
+# It is reachable exactly when replication is FAST, because that is when the
+# marker lands in the same second the early phase arrived. In the run that found
+# it, §4b's registry PITR passed in the same gate: its marker is taken much later,
+# against a long-established replica, so it was never near the edge.
+#
+# So: leave the second in which the early phase became restorable before naming
+# a marker. With E the instant early_replicated went true and M the moment the
+# marker is taken, waiting for M >= E + 1s gives floor(M) >= M - 1s >= E — the
+# marker provably sits at or after the oldest covered instant, whatever the
+# truncation does.
+sleep 1
 MARKER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-# The one sleep in this file that is NOT waiting for a condition, and it stays:
-# `date -u +…%SZ` truncates to the second, so the marker names the whole second
-# it was taken in. The late writes have to land in a LATER one or a restore at
-# the marker may legitimately include them. There is no condition to poll here —
-# the wait is on the clock's resolution itself.
+# The other side of the same truncation, and the reason this sleep stays: the
+# marker names the whole second it was taken in, so the late writes have to land
+# in a LATER one or a restore at the marker may legitimately include them. There
+# is no condition to poll here — the wait is on the clock's resolution itself.
 sleep 2
 for t in alpha bravo charlie; do
 	sq "$WORK/data/tenants/$t.sqlite" \

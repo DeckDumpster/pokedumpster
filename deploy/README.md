@@ -425,8 +425,16 @@ alerting the repo had carried since Jun 2026, so the sidecar that silently
 stopped replicating paged nobody (pd-2t6u). A deploy now names the units it
 changed.
 
-- `pkdump-refresh@<instance>` — nightly `pkdump data refresh` inside the
-  running container (via `podman exec`), 06:00 + jitter.
+- `pkdump-refresh@<instance>` — nightly `pkdump data refresh`, 06:00 + jitter.
+  Runs `deploy/refresh.sh`, which starts its own container from the instance's
+  image over the instance's data volume — the same shape as the derive and
+  transform wrappers. It used to `podman exec` into the running server, which
+  silently dropped the environment the drop-in that turns raw landing on sets
+  (pd-kncd); see [deploy/LAKE.md](LAKE.md) §4.
+    Exit 2 is a **partial** run: the pokemontcg.io tail failed every retry, so the
+    set list is stale, but the run continued and TCGCSV's prices — the half a night
+    cannot get back — landed (pd-nons). Unlike the transform tier's, it is
+    deliberately not declared a success, so a partial run still pages.
 - `pkdump-backup-check@<instance>` — backup-freshness dead-man's switch
   (Layer 1, every 6h). See [Backup-failure alarming](#backup-failure-alarming).
 - `pkdump-value-snapshots@<instance>` — the transform tier's nightly run
@@ -495,6 +503,16 @@ reading `shared.sqlite` and tenant SQLite, and a catalog that is down costs a
 nightly batch job, not a request. **No tenant data ever enters the lake** — the
 lake holds catalog data (prices, products, sets, cards) and nothing keyed by a
 tenant, ever. Per-tenant point-in-time recovery is Litestream's job, above.
+
+That rule is mechanical rather than a convention people remember
+(`tests/lake/tenant_isolation_test.sh`, lint tier, pd-cgi9). It asserts the two
+halves separately: no Iceberg schema field name is tenant-identifying, and no
+lake write path can open a tenant database — `crates/pkdump-lake` links no
+SQLite crate at all, and the Python write-path modules import no `sqlite3`, so
+both are true by construction the way "images are never landed" is true of the
+closed `Source` enum. The transform tier (`value_snapshots.py`) is the one job
+that opens tenant databases on purpose, and its half of the rule is the other
+direction: it reads the lake and never writes to it.
 
 Two pieces, both instance-scoped:
 
@@ -574,6 +592,15 @@ there to support, so `tests/lake/prices.sh` runs the job on a podman
 `--internal` network and proves the network is dead before trusting anything
 the job says. Full runbook, including what happens when a day landed no
 complete run: [LAKE.md](LAKE.md).
+
+**Nightly it is `pkdump-prices@<instance>.timer`**, running
+`deploy/prices.sh` — the middle of the chain land → derive → prices →
+transform. That job builds the day even when the landing run did not finish
+(and records `pkdump.raw-complete=false`), because completeness is
+conservative across datasets and failing on it would page most nights. The
+alarm is on the **age** of the newest partition instead: more than two days
+behind pages, which is the shape that actually matters — collections valued
+nightly from prices that stopped arriving.
 
 ### Time travel, and what Nessie costs to get it
 

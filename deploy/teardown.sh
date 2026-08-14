@@ -41,13 +41,15 @@ echo "==> Stopping ${SERVICE_NAME}..."
 systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
 
 # Stop and disable the per-instance refresh + backup-check timers (ivq), the
-# offline catalog derive (pd-1uem), the transform tier's nightly run (pd-8m5c)
-# and the ownership shipment (pd-dxn3) — an instance that is gone must not
-# leave a timer behind still firing at its volume, its bucket and its lake
+# offline catalog derive (pd-1uem), the nightly catalog.prices build (pd-up36),
+# the transform tier's nightly run (pd-8m5c) and the ownership shipment
+# (pd-dxn3) — an instance that is gone must not leave a timer behind still
+# firing at its volume, its bucket and its lake
 # network.
 systemctl --user disable --now "pkdump-refresh@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-backup-check@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-derive@${INSTANCE}.timer" 2>/dev/null || true
+systemctl --user disable --now "pkdump-prices@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-value-snapshots@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-ship@${INSTANCE}.timer" 2>/dev/null || true
 
@@ -68,6 +70,7 @@ for _u in "$SERVICE_NAME" \
           "pkdump-refresh@${INSTANCE}."{service,timer} \
           "pkdump-backup-check@${INSTANCE}."{service,timer} \
           "pkdump-derive@${INSTANCE}."{service,timer} \
+          "pkdump-prices@${INSTANCE}."{service,timer} \
           "pkdump-value-snapshots@${INSTANCE}."{service,timer} \
           "pkdump-ship@${INSTANCE}."{service,timer}; do
     systemctl --user reset-failed "$_u" 2>/dev/null || true

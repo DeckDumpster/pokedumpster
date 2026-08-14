@@ -539,6 +539,20 @@ Landing is opt-in and off by default: with the flag absent, `lake.env` is
 never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
 runbook.
 
+**The nightly refresh runs in its own container** (`deploy/refresh.sh`), like
+the derive and transform jobs beside it — it does not `podman exec` into the
+running server. That call drops the caller's environment, so the documented
+drop-in that turns landing on set `PKDUMP_LAND_RAW=1` somewhere the refresh
+could never read it, and the timer went green having landed nothing (pd-kncd).
+`-e` alone would not have been enough: `podman exec` cannot add a mount to a
+running container either, and the alternative — putting the lake's credentials
+on the app container — would give the always-on web server ambient write access
+to the lake bucket, which is the exact coupling `pkdump-lake` is offline-only to
+prevent. **Nothing that serves a request may hold a lake credential.** The
+wrapper's last line is the guard that matters: landing asked for and no landing
+zone opened **fails the unit**, because that is the silent green no-op the
+whole landing zone is worthless without.
+
 ### The tenant zone
 
 Everything above is the **catalog zone**. The same bucket also holds the
@@ -859,6 +873,62 @@ upstream is `tests/refresh/upstream.py`, a fixture that publishes nothing —
 reached through `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL`
 (`crates/pkdump-ingest/src/upstream.rs`, test-tier, and an override announces
 itself on stderr so a catalog can never be quietly built from the wrong place).
+
+
+### When an upstream is having a bad day
+
+On 2026-08-11 `api.pokemontcg.io` answered 5xx to ~45% of requests for most of
+a day. Neither client retried anything and the tail is fetched first, so a
+single 500 on `/v2/sets?page=1` ended the whole refresh in its first second —
+**before TCGCSV**, so no prices were imported at all. A day's prices cannot be
+re-fetched later; a day's set list can (pd-nons). Two changes, and three things
+about them are decisions:
+
+- **A bounded retry is not fallback logic.** `crates/pkdump-ingest/src/retry.rs`
+  retries transport failures, 429 and 5xx — four attempts, 500ms doubling to an
+  8s cap, no jitter — and every other non-2xx exactly once, because a 404 is a
+  fact about the URL. Nothing is defaulted or substituted; when the budget is
+  spent the original error propagates as it always did. It lives in
+  `landing::fetch_bytes`, the one place any client executes a request, so a
+  client added later cannot forget to retry. `PKDUMP_HTTP_RETRY_ATTEMPTS` /
+  `PKDUMP_HTTP_RETRY_BASE_MS` widen it without a rebuild — on the `podman
+  exec` or on the container, since the refresh unit execs into a running
+  instance.
+- **Only the FINAL failure reaches the manifest.** `complete` is computed from
+  `failures.is_empty()`, so logging the attempts a retry recovered from would
+  mark a whole night's raw partition incomplete for a hiccup it survived. A
+  failure record means "this URL was not fetched". The retries are still loud —
+  on stderr, in the unit's journal.
+- **The tail may fail without ending the run; TCGCSV may not.** `acquire`
+  carries a tail error into `Report.tail_error` instead of returning it, so the
+  perishable half is still acquired and every local phase still runs.
+  `pkdump data refresh` then exits **2** (0 whole / 2 partial / 1 failed) and
+  says so; `pkdump-lake-derive` bails and refuses to record provenance, because
+  its claim is that the catalog *is* the partition's derivation.
+
+**Do not "fix" this by fetching TCGCSV first.** That was tried and reverted.
+`tcgcsv::import_groups` links each group to the `sets` rows already in the
+database, so running it ahead of the tail on a catalog that lacks them leaves
+every `tcgplayer_groups.set_code` NULL until the *next* derivation — and an
+offline rebuild from `raw/` starts from an empty catalog every time, so a
+replayed catalog stops matching the online one it exists to reproduce.
+`crates/pkdump-lakehouse/tests/row_identical.rs` fails on it. The exposure that
+reordering would close is a tail that *hangs* rather than errors, and that is
+already bounded by the 30s request timeout times the retry budget against
+`TimeoutStartSec=1800`.
+
+Exit 2 is deliberately **not** wired to `SuccessExitStatus=` on
+`pkdump-refresh@`, unlike the transform tier — that job has a wrapper that
+pushes its own warning and this one does not, and a set list that silently
+stopped advancing is exactly what nothing else on the box would report. A
+partial run still pages. What changed is that the night is no longer lost.
+
+Gates: `crates/pkdump-ingest/tests/retry.rs`,
+`crates/pkdump-derive/tests/tail_failure.rs`, and
+`tests/refresh/tenant_bytes.sh` §9 (container tier — the shipped binary's exit
+status, its retry count against the `/v2-down` fixture prefix, and that the
+derivation continued past the failure).
+
 
 ### The ownership outbox
 

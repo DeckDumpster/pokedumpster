@@ -710,7 +710,14 @@ is not permission.
 It does not branch on where an outbox row came from. Item 5 (backfill/redrive)
 emits synthetic events *through the outbox* with a provenance column; a
 consumer that treated those differently would make the backfill a second code
-path instead of the same one.
+path instead of the same one. It does **carry** that column — a part is
+`pkdump_db::outbox::Event`'s seven fields, all of them, and there is exactly
+one struct for an outbox row (pd-mixm). Two spellings of one table is how a
+column added to it stops reaching the bucket; one means the schema fails to
+compile instead. Carrying is not branching, and it is what lets
+`encode::decode` compose with `pkdump_db::outbox::project` — so a reader
+reduces a shipped part with the SAME implementation of the resolution rule
+the collection's own gate uses, rather than a second one that agrees today.
 
 **A part carries `source_table` beside `row_id`, and that pair is the
 identity** — `row_id` alone is not (pd-4gop). `collection` and

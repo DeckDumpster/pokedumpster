@@ -317,7 +317,11 @@ the four claims end to end over a `DirStore` — a dropped sequence number is
 detected and recorded, the same rows shipped twice leave the zone
 byte-identical, a crash between the PUT and the cursor re-ships that part and
 nothing else, and each tenant's parts open only under that tenant's own key.
-It also covers the seam with the backfill: a collection whose holdings predate
+It also reduces a shipped part with `pkdump_db::outbox::project` — the one
+implementation of the resolution rule — and checks the result against the
+tenant's live collection, which is what "the zone is the collection" means and
+what a part decoding into the outbox's own `Event` type is for. And it covers
+the seam with the backfill: a collection whose holdings predate
 the triggers, put through `pkdump outbox emit`, ships as ordinary events —
 into the partitions those rows' own timestamps name, not the day the backfill
 ran.

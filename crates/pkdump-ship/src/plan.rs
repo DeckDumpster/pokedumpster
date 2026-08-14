@@ -41,51 +41,51 @@
 
 use crate::error::{Result, ShipError};
 
-/// One outbox row, exactly as it was written.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Event {
-    /// The monotonic sequence number. The whole basis of gap detection.
-    pub seq: i64,
-    /// When the mutation happened (`YYYY-MM-DDTHH:MM:SS.sssZ`).
-    pub occurred_at: String,
-    /// Which table the change was to — `collection` today.
-    pub source_table: String,
-    /// `insert`, `update` or `delete`.
-    pub op: String,
-    /// The mutated row's own id.
-    pub row_id: i64,
-    /// The whole row as a JSON object: the post-image for `insert`/`update`,
-    /// the pre-image for `delete`.
-    pub payload: String,
-}
+/// One outbox row, exactly as it was written — **`pkdump_db`'s struct, not a
+/// second spelling of it** (pd-mixm).
+///
+/// This crate carried its own six-field copy until `pd-385w` landed the
+/// `source` column, at which point there were two structs for one table and
+/// the newer column reached only one of them. Two spellings is precisely how
+/// that happens, so there is one: a column added to `ownership_outbox`
+/// travels to `encode`'s schema through a compile error rather than through
+/// somebody noticing.
+///
+/// Sharing the type is also what makes `encode::decode(…)` compose with
+/// [`pkdump_db::outbox::project`] — a reader can reduce a shipped part with
+/// the same function the collection's own gate uses, because what comes out
+/// of a part is the same `Event` that went into the outbox.
+pub use pkdump_db::outbox::Event;
 
-impl Event {
-    /// The UTC date this event belongs to — its `as_of` partition.
-    ///
-    /// Read off the front of `occurred_at` rather than parsed into a datetime
-    /// and formatted back out: the column is written by `strftime(...,'now')`
-    /// in SQLite, which is UTC by definition, so there is no zone to convert
-    /// and nothing a round trip could add but a way to be wrong.
-    pub fn as_of(&self) -> Result<&str> {
-        let date = self.occurred_at.get(..10).unwrap_or_default();
-        let shaped = date.len() == 10
-            && date.as_bytes()[4] == b'-'
-            && date.as_bytes()[7] == b'-'
-            && date
-                .bytes()
-                .enumerate()
-                .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
-        // A bare date with nothing after it is not an instant; the column is
-        // declared as one, and accepting less would let a hand-written row
-        // address a partition.
-        if !shaped || self.occurred_at.len() < 11 {
-            return Err(ShipError::Timestamp {
-                seq: self.seq,
-                value: self.occurred_at.clone(),
-            });
-        }
-        Ok(date)
+/// The UTC date `event` belongs to — its `as_of` partition.
+///
+/// Read off the front of `occurred_at` rather than parsed into a datetime and
+/// formatted back out: the column is written by `strftime(...,'now')` in
+/// SQLite, which is UTC by definition, so there is no zone to convert and
+/// nothing a round trip could add but a way to be wrong.
+///
+/// A free function rather than a method because [`Event`] belongs to
+/// `pkdump-db` now, and partitioning is this crate's business — `pkdump-db`
+/// has no notion of an `as_of`.
+pub fn as_of(event: &Event) -> Result<&str> {
+    let date = event.occurred_at.get(..10).unwrap_or_default();
+    let shaped = date.len() == 10
+        && date.as_bytes()[4] == b'-'
+        && date.as_bytes()[7] == b'-'
+        && date
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
+    // A bare date with nothing after it is not an instant; the column is
+    // declared as one, and accepting less would let a hand-written row
+    // address a partition.
+    if !shaped || event.occurred_at.len() < 11 {
+        return Err(ShipError::Timestamp {
+            seq: event.seq,
+            value: event.occurred_at.clone(),
+        });
     }
+    Ok(date)
 }
 
 /// A contiguous run of events destined for one object.
@@ -160,7 +160,7 @@ pub fn plan(events: Vec<Event>, cursor: i64, max_rows: usize) -> Result<Plan> {
     let mut expected = cursor + 1;
 
     for event in events {
-        let as_of = event.as_of()?.to_string();
+        let as_of = as_of(&event)?.to_string();
 
         // A hole between the last number accounted for and this one.
         if event.seq > expected {
@@ -207,6 +207,7 @@ mod tests {
             op: "insert".into(),
             row_id: seq * 10,
             payload: format!(r#"{{"id":{}}}"#, seq * 10),
+            source: "trigger".into(),
         }
     }
 

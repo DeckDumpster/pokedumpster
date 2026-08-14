@@ -307,6 +307,10 @@ fn do_decrypt(a: &DecryptArgs) -> anyhow::Result<i32> {
                     "row_id": e.row_id,
                     "payload": serde_json::from_str::<serde_json::Value>(&e.payload)
                         .unwrap_or(serde_json::Value::String(e.payload.clone())),
+                    // Every field the part carries, including provenance:
+                    // "did last night's redrive actually reach the zone" is
+                    // a question this view exists to answer.
+                    "source": e.source,
                 })
             )?;
         }

@@ -15,8 +15,25 @@
 //!   required binary op (UTF8);
 //!   required int64  row_id;
 //!   required binary payload (UTF8);   // the whole row, as the trigger wrote it
+//!   required binary source (UTF8);    // trigger | backfill | redrive
 //! }
 //! ```
+//!
+//! It is [`pkdump_db::outbox::Event`]'s seven fields, all of them, because it
+//! IS that struct (pd-mixm) — so a column added to `ownership_outbox` fails
+//! this module to compile rather than quietly stopping at the bucket.
+//!
+//! ## Carrying `source` is not branching on it
+//!
+//! Rule 2 of the outbox's design forbids a *consumer* that treats a
+//! backfilled event differently from a triggered one — the moment it does,
+//! backfill stops being the same path. It does not forbid recording which it
+//! was, and dropping the column would cost two things: an operator asking
+//! "did last night's redrive actually reach the zone" would have nothing in
+//! the zone to answer with, and `decode` could not rebuild an [`Event`] at
+//! all, so a reader could not hand a part to [`pkdump_db::outbox::project`]
+//! — the one implementation of the resolution rule — without inventing the
+//! field. This crate reads it nowhere.
 //!
 //! `payload` stays the JSON object the trigger built rather than being
 //! flattened into typed columns, and that is a decision. The outbox's payload
@@ -81,6 +98,7 @@ message holdings_event {
   required binary op (UTF8);
   required int64 row_id;
   required binary payload (UTF8);
+  required binary source (UTF8);
 }
 ";
 
@@ -131,7 +149,10 @@ pub fn encode(events: &[Event]) -> Result<Vec<u8>> {
             5 => writer
                 .typed::<ByteArrayType>()
                 .write_batch(&text(|e| &e.payload), None, None)?,
-            // Unreachable while SCHEMA has six columns, and a compile-time
+            6 => writer
+                .typed::<ByteArrayType>()
+                .write_batch(&text(|e| &e.source), None, None)?,
+            // Unreachable while SCHEMA has seven columns, and a compile-time
             // check is not available for a string the crate parses — so it is
             // an error rather than a panic, and it names the mismatch.
             n => {
@@ -163,6 +184,7 @@ pub fn decode(bytes: Vec<u8>) -> Result<Vec<Event>> {
             op: String::new(),
             row_id: 0,
             payload: String::new(),
+            source: String::new(),
         };
         for (name, field) in row.get_column_iter() {
             match (name.as_str(), field) {
@@ -172,6 +194,7 @@ pub fn decode(bytes: Vec<u8>) -> Result<Vec<Event>> {
                 ("source_table", Field::Str(v)) => event.source_table = v.clone(),
                 ("op", Field::Str(v)) => event.op = v.clone(),
                 ("payload", Field::Str(v)) => event.payload = v.clone(),
+                ("source", Field::Str(v)) => event.source = v.clone(),
                 (other, _) => {
                     return Err(ShipError::Zone(format!(
                         "a holdings part carries an unexpected column {other:?}"
@@ -200,6 +223,7 @@ mod tests {
                     r#"{{"id":{},"printing_id":"sv3pt5-{seq}-normal"}}"#,
                     seq * 7
                 ),
+                source: if seq % 5 == 0 { "backfill" } else { "trigger" }.into(),
             })
             .collect()
     }
@@ -253,6 +277,7 @@ mod tests {
             op: "insert".into(),
             row_id: 1,
             payload: r#"{"id":1}"#.into(),
+            source: "trigger".into(),
         };
         let events = vec![of(1, "collection"), of(2, "sealed_collection")];
         let back = decode(encode(&events).unwrap()).unwrap();
@@ -280,6 +305,7 @@ mod tests {
             op: "update".into(),
             row_id: 4,
             payload: awkward.to_string(),
+            source: "redrive".into(),
         };
         let back = decode(encode(std::slice::from_ref(&event)).unwrap()).unwrap();
         assert_eq!(back[0].payload, awkward);

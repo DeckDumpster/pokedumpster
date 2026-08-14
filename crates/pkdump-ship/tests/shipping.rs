@@ -11,6 +11,7 @@
 //! | a tombstone stops shipping    | `a_tombstoned_tenant_is_not_shipped…`         |
 //! | absence is not permission     | `an_unregistered_tenant_is_skipped…`          |
 //! | a backfill is an ordinary run | `a_backfilled_collection_ships_as_ordinary…`  |
+//! | the zone IS the collection    | `a_shipped_part_projects_back_to_the_live…`   |
 //!
 //! The object store is a [`DirStore`], which is the same `ObjectStore` the
 //! real thing is behind and holds exactly the keys and bytes S3 would — so
@@ -779,4 +780,96 @@ fn a_backfilled_collection_ships_as_ordinary_events() {
     let again = ship(&world, &pkdump_db::tenants::list().unwrap(), 100);
     assert_eq!(again.events(), 0);
     assert_eq!(world.objects(), before);
+}
+
+// ── the zone reduces to the collection ──────────────────────────────────────
+
+/// **What is in the zone, reduced by the resolution rule, IS the tenant's
+/// collection** — pd-mixm's third step, and the headline claim of the whole
+/// inbound leg.
+///
+/// It is only assertable now that a shipped part decodes into
+/// [`pkdump_db::outbox::Event`] rather than a second spelling of one: the
+/// reduction is [`pkdump_db::outbox::project`], the ONE implementation of
+/// rule 3, and a reader that had to rebuild an event to call it would be
+/// proving something about the rebuild instead.
+///
+/// The fixture is a collection with a history rather than a list of inserts:
+/// an update whose newer content must win, and a delete that must leave
+/// nothing behind. A transport that dropped an event would still produce a
+/// plausible projection — it is the *contents* that would be quietly stale,
+/// which is exactly the failure a row count cannot see.
+#[test]
+fn a_shipped_part_projects_back_to_the_live_collection() {
+    let world = World::new();
+    let alice = world.tenant("alice", ALICE);
+    let conn = world.collection(ALICE);
+    add_holdings(&conn, 4, "2026-08-13");
+    conn.execute(
+        "UPDATE collection SET notes = 'traded away' WHERE id = 2",
+        [],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM collection WHERE id = 3", [])
+        .unwrap();
+    // A second day, so the zone is more than one object and the projection
+    // has to be read across parts.
+    add_holdings(&conn, 2, "2026-08-14");
+    redate(&conn, 4, "2026-08-14");
+
+    let report = ship(&world, &[alice], 3);
+    assert_eq!(report.outcome(), Outcome::Clean);
+    assert!(world.objects().len() > 1, "the fixture spans parts");
+
+    // Decode every part in the zone and reduce it with the collection's own
+    // resolution rule. Nothing here reimplements that rule.
+    let tenant_key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+    let mut shipped: Vec<pkdump_db::outbox::Event> = world
+        .objects()
+        .into_iter()
+        .flat_map(|(key, bytes)| {
+            encode::decode(cipher::open(&tenant_key, &key, &bytes).unwrap()).unwrap()
+        })
+        .collect();
+    shipped.sort_by_key(|e| e.seq);
+    let zone = pkdump_db::outbox::project(&shipped);
+
+    // 1. The transport lost nothing: the zone reduces to what the collection's
+    //    own outbox reduces to.
+    assert_eq!(
+        zone,
+        pkdump_db::outbox::project(&pkdump_db::outbox::events(&conn).unwrap()),
+        "the zone's projection and the outbox's are the same projection"
+    );
+
+    // 2. …and that projection is the collection, row for row.
+    let mut live: Vec<(i64, Option<String>)> = Vec::new();
+    let mut stmt = conn
+        .prepare("SELECT id, notes FROM collection ORDER BY id")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+        })
+        .unwrap();
+    for row in rows {
+        live.push(row.unwrap());
+    }
+    assert_eq!(
+        zone.keys().cloned().collect::<Vec<_>>(),
+        live.iter()
+            .map(|(id, _)| ("collection".to_string(), *id))
+            .collect::<Vec<_>>(),
+        "every holding the tenant has, and nothing they deleted"
+    );
+    for (id, notes) in &live {
+        let held = &zone[&("collection".to_string(), *id)];
+        assert_eq!(held["id"].as_i64(), Some(*id));
+        assert_eq!(
+            held["notes"].as_str().map(str::to_string),
+            *notes,
+            "row {id}: the zone holds the row's CURRENT content — an update \
+             that did not reach it would leave this stale and the count right"
+        );
+    }
 }

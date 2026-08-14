@@ -116,7 +116,7 @@ pub fn gaps(conn: &Connection) -> Result<Vec<GapRow>> {
 /// uninterrupted run would have written.
 pub fn read_after(conn: &Connection, after: i64, limit: usize) -> Result<Vec<Event>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT seq, occurred_at, source_table, op, row_id, payload \
+        "SELECT seq, occurred_at, source_table, op, row_id, payload, source \
          FROM {TABLE} WHERE seq > ?1 ORDER BY seq LIMIT ?2"
     ))?;
     let rows = stmt.query_map(params![after, limit as i64], |r| {
@@ -127,6 +127,9 @@ pub fn read_after(conn: &Connection, after: i64, limit: usize) -> Result<Vec<Eve
             op: r.get(3)?,
             row_id: r.get(4)?,
             payload: r.get(5)?,
+            // Carried, never read here — see `encode`. The shipper does not
+            // branch on where a row came from.
+            source: r.get(6)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)

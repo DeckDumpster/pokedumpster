@@ -46,10 +46,20 @@ const DB_ENV: &str = "PKDUMP_OUTBOX_CRASH_DB";
 const ITERATIONS: usize = 16;
 
 /// Mutations per source per transaction in the child — so a transaction is
-/// `BATCH * SOURCES.len()` writes. Large enough that a batch takes long
+/// `BATCH * sources().len()` writes. Large enough that a batch takes long
 /// enough to be killed in the middle of, small enough that plenty of them
 /// commit.
 const BATCH: usize = 200;
+
+/// The holdings tables the outbox carries, read off the crate rather than
+/// listed here: a source added to `SOURCE_TABLES` and not to this gate would
+/// be a source whose atomicity nothing checks.
+fn sources() -> Vec<&'static str> {
+    pkdump_db::outbox::SOURCE_TABLES
+        .iter()
+        .map(|(t, _)| *t)
+        .collect()
+}
 
 /// A holding, addressed the only way it can be: the table it lives in and
 /// its id there. `collection` and `sealed_collection` number their rows
@@ -148,7 +158,7 @@ fn a_killed_writer_never_leaves_the_holdings_and_the_outbox_disagreeing() {
     // The claim is about the holdings, both halves of them. A run that only
     // ever wrote singles proves nothing about the sealed triggers, and would
     // stay green if they were deleted.
-    for source in pkdump_db::outbox::SOURCES {
+    for source in sources() {
         assert!(
             sources_seen.contains_key(source),
             "no surviving {source} rows in {ITERATIONS} iterations — the \
@@ -218,7 +228,7 @@ fn live_sold(live: &BTreeMap<Holding, Value>) -> usize {
 /// row as JSON`.
 fn live_holdings(conn: &Connection) -> BTreeMap<Holding, Value> {
     let mut out = BTreeMap::new();
-    for table in pkdump_db::outbox::SOURCES {
+    for table in sources() {
         let cols = columns(conn, table);
         let list = cols
             .iter()
@@ -286,7 +296,7 @@ fn replay_outbox(conn: &Connection) -> BTreeMap<Holding, Value> {
     let mut state: BTreeMap<Holding, Value> = BTreeMap::new();
     for (seq, source, op, row_id, payload) in events {
         assert!(
-            pkdump_db::outbox::SOURCES.contains(&source.as_str()),
+            sources().contains(&source.as_str()),
             "seq {seq}: unknown source_table '{source}'"
         );
         let payload: Value = serde_json::from_str(&payload).unwrap();
@@ -440,11 +450,11 @@ fn the_child_that_gets_killed() {
         };
         // The tables move in lockstep, so the totals the batch reaches are
         // one table's counts times the number of sources.
-        let sources = pkdump_db::outbox::SOURCES.len();
-        std::fs::write(&marker, format!("{}:{}", rows * sources, sold * sources)).unwrap();
+        let n = sources().len();
+        std::fs::write(&marker, format!("{}:{}", rows * n, sold * n)).unwrap();
 
         let tx = conn.transaction().unwrap();
-        for table in pkdump_db::outbox::SOURCES {
+        for table in sources() {
             match op {
                 Op::Delete => {
                     tx.execute(

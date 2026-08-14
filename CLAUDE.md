@@ -753,13 +753,14 @@ consistent *by construction*: a dual write to SQLite and a bucket has no
 atomicity, and the disagreement a crash leaves behind is undetectable.
 
 **Both halves of the holdings are in it** — `collection` (singles) and
-`sealed_collection` (sealed product), listed in `outbox::SOURCES`. Sealed was
-deferred by pd-5m54 and settled IN by pd-4gop: sealed product is a holding
-like any other — a catalog id, a value that moves with the market — and a
-collection that reports a tenant's worth while silently omitting it
+`sealed_collection` (sealed product), listed in `outbox::SOURCE_TABLES`.
+Sealed was deferred by pd-5m54 and settled IN by pd-4gop: sealed product is a
+holding like any other — a catalog id, a value that moves with the market —
+and a collection that reports a tenant's worth while silently omitting it
 **under-reports**, which is the wrong direction to be wrong in. Whatever the
-outbox emits for singles it emits for sealed. It cost three more triggers and
-no schema change, which is exactly what `source_table` was put there for.
+outbox emits for singles it emits for sealed. It cost three more triggers, one
+entry in that list and no schema change, which is exactly what `source_table`
+was put there for.
 
 **The writer is triggers, not the call sites, and that is the whole point.**
 A trigger fires inside the statement's own transaction, so there is no
@@ -795,13 +796,21 @@ Five things about it are decisions:
   carry it and an import neither restores nor clears it — the import's own
   deletes and inserts fire the triggers and describe the restore correctly.
   This is the one exception to pd-yj40's "no exclusion list in the exporter",
-  and it is in one place (`json_backup::envelope_tables`). Both holdings
-  tables *are* collection state and both stay in the envelope.
-- **`outbox::SOURCES` is a claim about the schema, not a copy of it.**
-  `every_outbox_source_is_declared_here` reads the triggers off
-  `sqlite_master` and compares both directions, so a third source wired up
-  and not declared — or declared with no triggers — fails in a second. Adding
-  one is: the table, three triggers, one entry, and the gates come for free.
+  and it is in one place (`json_backup::envelope_tables`, filtering on
+  `outbox::TRANSPORT_TABLES`). Both holdings tables *are* collection state
+  and both stay in the envelope.
+- **`outbox::SOURCE_TABLES` is a claim about the schema, not a copy of it.**
+  `every_triggered_table_is_emittable` reads the triggers off `sqlite_master`
+  and compares both directions, so a third source wired up and not declared —
+  or declared with no triggers — fails in a second. That gate is what made
+  this change land safely on top of the emitter: it went red the moment the
+  sealed triggers arrived and stayed red until the backfill covered them, so
+  singles could not be backfilled while sealed was silently missed. Adding a
+  source is: the table, three triggers, one entry, and the gates come free.
+  The entry's second element is the column that dates a row which has never
+  emitted an event — `acquired_at` for singles, and `added_at` rather than
+  `purchase_date` for sealed, because it is NOT NULL and machine-written, so
+  `strftime` always parses it.
 
 Changing a trigger body needs a deliberate `DROP TRIGGER` in the schema file
 — `IF NOT EXISTS` will not replace one an existing collection already
@@ -810,7 +819,7 @@ carries, and a stale trigger writes a stale payload forever.
 Gates: `outbox.rs`'s unit tests (every mutation path on both sources, the
 payload-coverage comparison, the shared interleaved sequence, the shared
 `row_id`, rollback, concurrent writers contending on both tables, the
-envelope rules, the SOURCES drift check) and
+envelope rules, the `SOURCE_TABLES` drift check) and
 `crates/pkdump-db/tests/outbox_atomicity.rs` — a child process writing
 batches, SIGKILLed mid-transaction, the outbox replayed from seq 1 and
 compared to the holdings tables row by row, sixteen times. It fails unless at
@@ -835,8 +844,147 @@ counts for the same reason — a kill inside an update batch moves no rows in
 or out, and against a single count would look like a batch that never
 started.
 
-Nothing reads the outbox yet. The shipper is its own change (pd-dxn3), and it
+Nothing ships the outbox yet. The shipper is its own change (pd-dxn3), and it
 is the thing that has to honour the `(source_table, row_id)` pair.
+
+### Backfill, redrive and DR reconcile are ONE command
+
+The triggers above only fire on FUTURE mutations. On a collection that
+already holds cards when they are created — which is every existing box —
+every current holding generated no event and never will. **Arm the shipper
+against that outbox and the tenant zone silently covers only post-deployment
+changes, and every valuation computed from it under-reports.** That is the
+gap `pkdump outbox emit` closes (pd-385w), and it is why this must ship
+before the shipper is armed on prod.
+
+```bash
+pkdump outbox emit --all                # backfill this collection
+pkdump outbox emit --all --all-tenants  # ...every registered one
+pkdump outbox emit --seq 1200..1310     # redrive a slice the shipper lost
+pkdump outbox emit --row collection:481        # redrive one holding
+pkdump outbox emit --row sealed_collection:12  # ...sealed is one too
+pkdump outbox status                    # what has been emitted, and when
+```
+
+**`--row` names a `TABLE:ID` pair and does not default the table** (pd-4gop).
+A bare row id names one row in *each* holdings table — `collection` and
+`sealed_collection` number their rows independently and both start at 1 — so
+`--row 481` would redrive a single and an unrelated sealed lot together.
+Defaulting to `collection` would be worse than ambiguous: it is the same
+"singles are the real holdings" assumption the sealed source exists to delete.
+The operator always has the pair to hand, because they read it off the event
+they are redriving, and the ledger records `row:collection:481` for the same
+reason — `row:481` would not say which holding was covered.
+
+**One command over a scope, not three tools**, and that is the point rather
+than tidiness: the rare uses run under pressure, at 3am, after something is
+already broken. A backfill that shares its code with the everyday path has
+been exercised every day; a separate `--repair` script has been exercised
+never. Backfill, redrive and DR reconcile differ only in the scope argument.
+
+What makes any of it tractable is the payload being **the whole row**, not a
+delta — replay is then an upsert to the same value, where `+1` applied twice
+is a corruption. If you find yourself shrinking the payload for size, stop:
+that trade destroys backfill, redrive and DR reconcile together.
+
+Four rules, and none of them is an implementation detail:
+
+1. **Through the outbox, never straight to the zone.** `emit` appends
+   ordinary outbox rows and writes no holding. Two writers with different
+   code paths means the rare one is untested, and the zone can then disagree
+   with the outbox with nothing able to detect it.
+2. **Provenance without different handling.** Every event carries `source` —
+   `trigger`, `backfill` or `redrive`. **The shipper must NOT branch on it.**
+   The moment it does, backfill stops being the same path. The column
+   defaults to `'trigger'` rather than being named in the three trigger
+   bodies, because `IF NOT EXISTS` will not replace a trigger an existing
+   collection already carries — every writer that is not `emit` is a trigger,
+   so the default IS the rule.
+3. **Last-write-wins by `occurred_at`, tie-broken by `seq`** — implemented
+   once, in `outbox::project`, which is the reduction the tenant zone holds.
+   A redrive appends a snapshot with a NEW, higher `seq`; resolving by `seq`
+   alone would let stale state overwrite a live mutation that landed in
+   between. Resolving by `occurred_at` cannot, **because an emitted event
+   carries the row's own last-known change time** — the newest `occurred_at`
+   the outbox already holds for it, else the row's own timestamp column
+   normalised through `strftime`, else a floor. Never the moment of
+   re-emission. Every read during an emit is bounded to the `max(seq)` seen
+   when the transaction opened, or the run's own events would feed back into
+   that lookup and date themselves from what they just wrote.
+4. **Re-running is safe but not silent.** Every run lands a row in
+   `ownership_emit_log`, in the same transaction as its events; a second full
+   backfill without `--force` is refused, naming when the first completed.
+   Idempotent does not mean invisible.
+
+Two more decisions:
+
+- **The unit of work is the registry, not the current user.** `--all-tenants`
+  walks `pkdump tenant list`. This is pd-s5yn's lesson applied before the
+  bug: a backfill of the one collection `$PKDUMP_USER` resolves to would
+  report success for everybody while every other tenant stayed invisible to
+  the zone. Under that flag a failing tenant is named and skipped, the run
+  finishes, and it exits **2** — 0 whole / 2 partial / 1 failed or never
+  started, the same three answers the transform tier gives. Over ONE
+  collection there is no partial state to be in, so a failure exits 1; the
+  distinction follows the *flag*, never the number of tenants that happen to
+  be registered, or the exit code a runbook was written against would change
+  the day somebody signs up.
+- **A full backfill emits current rows; a redrive also re-emits removals.**
+  A backfill's job is "these are the rows", against a zone being rebuilt from
+  nothing. A redrive exists because a slice of the stream was lost, and if
+  that slice removed a holding, replaying only the survivors leaves the zone
+  holding a card the tenant does not own.
+
+Gates, all in `outbox.rs` and all seen red:
+
+- **The headline proof** —
+  `a_zone_rebuilt_by_backfill_equals_the_zone_incremental_shipping_built`:
+  throw every event away (that is what "delete the zone" means — the zone
+  holds exactly this projection), rebuild by backfill, assert the projection
+  equals what the triggers produced one mutation at a time. The row-identical
+  discipline of the lake-as-source design applied to the inbound leg, and the
+  only test that shows the two paths *agree* rather than that both run. Seen
+  red by making the backfill skip rows that are not `status = 'owned'` — a
+  plausible optimisation that silently under-reports.
+- **Rule 3 in the failing direction** —
+  `a_stale_redrive_with_a_higher_seq_does_not_clobber_a_live_mutation`,
+  constructed directly. Seen red by ordering `project` by `seq` alone.
+- `an_emitted_event_carries_the_rows_own_time_not_the_moment_of_emission` —
+  the property rule 3 rests on. Seen red by stamping `now`.
+- `every_triggered_table_is_emittable` — reads the outbox triggers out of
+  `sqlite_master` and asserts they fire on exactly `SOURCE_TABLES`. It earned
+  its keep immediately: adding the sealed triggers turned it red, and it
+  stayed red until the emitter covered them.
+- `a_row_scope_redrives_only_its_own_table` — the pair rule on the emit side.
+  Seen red by dropping the table guard from `scope_predicate`: a redrive of
+  one single then emits an unrelated sealed lot sharing its number.
+- The rule-4 refusal, the DR reconcile, idempotence under `--force`, the
+  payload being byte-identical to the trigger's, and all three scope refusals
+  (a backwards range, a range starting below 1, a table the outbox does not
+  carry).
+
+The fixture every emit proof is stated over — `a_collection_with_history` —
+holds **both** sources, and the surviving sealed lot deliberately shares its
+`row_id` with a surviving single. A fixture of singles alone would let a
+backfill that skipped sealed pass the headline proof, which is the failure
+this bead exists to prevent arriving through the test suite instead of
+through the code.
+
+**Still owed before this is armed on prod**: the proof is stated against
+`outbox::project` rather than against a tenant zone, because the shipper
+(pd-dxn3) is being built in parallel and does not exist yet. `project` is the
+contract between them — the shipper writes that reduction — so re-stating the
+headline proof against real Parquet in the zone is a container-tier gate that
+belongs with the shipper (pd-880q, filed rather than forgotten).
+
+**The sealed triggers have landed** (pd-4gop), so `SOURCE_TABLES` carries
+`("sealed_collection", "added_at")` and every claim above is a claim about
+both halves of the holdings. It cost exactly what was predicted: one entry in
+that list, and nothing else in the emitter — `emit` already looped over
+`SOURCE_TABLES`, the payload already came from `pragma_table_info`, and
+`per_table` already reported per source. The one thing that was NOT free is
+`Scope::Row`, which had to grow its table, because a scope naming a bare row
+id stopped identifying a holding the moment there were two sources.
 
 ### Variant expansion
 

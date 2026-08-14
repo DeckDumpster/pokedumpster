@@ -238,14 +238,35 @@ CREATE INDEX IF NOT EXISTS idx_movement_log_collection ON movement_log(collectio
 -- already carries, and a stale trigger writes a stale payload forever.
 -- ---------------------------------------------------------------------
 
+-- `source` is PROVENANCE, and it is the one column consumers must not
+-- branch on (pd-385w, rule 2 of the design's backfill section). A trigger
+-- writes 'trigger'; `pkdump outbox emit` writes 'backfill' or 'redrive'.
+-- The audit trail stays honest and the handling stays identical — the
+-- moment the shipper reads this column, backfill stops being the same path
+-- as the everyday one and the rare path is untested again.
+--
+-- DEFAULT 'trigger' rather than a fourth `json_object` argument in each of
+-- the three trigger bodies, and that is deliberate: the note above about
+-- `IF NOT EXISTS` not replacing a trigger applies here too. Every writer
+-- that is not the emitter is a trigger, so the default IS the rule, and a
+-- collection carrying the pre-pd-385w triggers keeps labelling its events
+-- correctly without those triggers being replaced.
 CREATE TABLE IF NOT EXISTS ownership_outbox (
     seq           INTEGER PRIMARY KEY AUTOINCREMENT,
     occurred_at   TEXT NOT NULL,             -- UTC ISO-8601, millisecond
     source_table  TEXT NOT NULL,             -- 'collection' | 'sealed_collection'
     op            TEXT NOT NULL CHECK (op IN ('insert', 'update', 'delete')),
     row_id        INTEGER NOT NULL,          -- <source_table>.id
-    payload       TEXT NOT NULL              -- JSON object: the whole row
+    payload       TEXT NOT NULL,             -- JSON object: the whole row
+    source        TEXT NOT NULL DEFAULT 'trigger'
+        CHECK (source IN ('trigger', 'backfill', 'redrive'))
 );
+
+-- What `emit` reads to date each row it re-emits: the newest event this
+-- outbox already holds for a (source_table, row_id). Without it a backfill
+-- over a real collection is a full scan of the outbox per row.
+CREATE INDEX IF NOT EXISTS idx_ownership_outbox_row
+    ON ownership_outbox(source_table, row_id, occurred_at);
 
 CREATE TRIGGER IF NOT EXISTS collection_outbox_insert
 AFTER INSERT ON collection
@@ -339,6 +360,45 @@ BEGIN
         )
     );
 END;
+
+-- ---------------------------------------------------------------------
+-- The emit ledger (pd-385w)
+--
+-- One row per `pkdump outbox emit` run: what scope it covered, what
+-- provenance it wrote, how many events it appended and which `seq` range
+-- they landed on.
+--
+-- This is rule 4 of the design's backfill section — "re-running is safe but
+-- not silent". Replay IS idempotent (the payload is a whole row, so
+-- applying it twice is an upsert to the same value), so nothing here exists
+-- to make a second run correct. It exists so a second full backfill is a
+-- decision: without `--force` the emitter refuses and names the date the
+-- first one completed. Idempotent does not mean invisible, and an operator
+-- re-running a backfill at 3am because they have lost track of whether it
+-- already ran is exactly the moment to say "yes, on the 14th".
+--
+-- A run and the events it wrote land in ONE transaction, so this table
+-- cannot record a run whose events are not there, and there is no
+-- in-flight state to represent. That is the same property the outbox
+-- triggers have and it is here for the same reason: a ledger that can
+-- disagree with the log it describes is worse than no ledger.
+--
+-- Transport state, not collection state — like the outbox itself, and for
+-- the same reason: it is absent from the portable JSON envelope in both
+-- directions (`crate::outbox::TRANSPORT_TABLES`).
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ownership_emit_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope         TEXT NOT NULL,             -- 'collection' | 'seq:A..B' | 'row:N'
+    source        TEXT NOT NULL              -- the provenance written
+        CHECK (source IN ('backfill', 'redrive')),
+    completed_at  TEXT NOT NULL,             -- UTC ISO-8601
+    rows_emitted  INTEGER NOT NULL DEFAULT 0,
+    seq_first     INTEGER,                   -- the range this run appended,
+    seq_last      INTEGER,                   --   NULL when it emitted nothing
+    forced        INTEGER NOT NULL DEFAULT 0 -- --force was given
+);
 
 -- ---------------------------------------------------------------------
 -- Wishlist

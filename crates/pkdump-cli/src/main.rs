@@ -11,6 +11,7 @@ mod fixture;
 mod import;
 mod keys;
 mod landing;
+mod outbox;
 mod serve;
 mod setup;
 mod tenant;
@@ -48,6 +49,8 @@ enum Command {
     Export(export::ExportArgs),
     /// Load a portable export back into the collection.
     Import(import::ImportArgs),
+    /// Emit current holdings as outbox events — backfill, redrive, DR.
+    Outbox(outbox::OutboxArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -61,5 +64,6 @@ fn main() -> anyhow::Result<()> {
         Command::Db(args) => db::run(args),
         Command::Export(args) => export::run(args),
         Command::Import(args) => import::run(args),
+        Command::Outbox(args) => outbox::run(args),
     }
 }

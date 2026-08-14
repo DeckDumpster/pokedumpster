@@ -97,21 +97,24 @@ pub fn user_tables(conn: &Connection) -> Result<Vec<String>> {
 }
 
 /// The tables the envelope carries: every user table except the ownership
-/// outbox (pd-5m54).
+/// outbox and its emit ledger (`crate::outbox::TRANSPORT_TABLES`; pd-5m54,
+/// pd-385w).
 ///
-/// The one exception, and not a reopening of pd-yj40's exclusion list: the
-/// outbox is not collection state. It is the log of holdings changes
-/// *leaving* the collection for the lakehouse, and it is written by triggers
-/// on `collection` rather than by anything a user does. Carrying it would
-/// mean an envelope restored into a fresh database replayed events that were
-/// shipped months ago — while the restore's own deletes and inserts fired
-/// the triggers and wrote the correct ones alongside them. The exclusion is
-/// symmetric: not exported, not imported, and not cleared by an import,
-/// because clearing it would drop the very events that describe the restore.
+/// The one exception, and not a reopening of pd-yj40's exclusion list:
+/// neither is collection state. The outbox is the log of holdings changes
+/// *leaving* the collection for the lakehouse, written by triggers on
+/// `collection` rather than by anything a user does; the emit ledger is the
+/// record of who re-emitted them. Carrying either would mean an envelope
+/// restored into a fresh database replayed events that were shipped months
+/// ago — while the restore's own deletes and inserts fired the triggers and
+/// wrote the correct ones alongside them — and would tell that database it
+/// had already been backfilled when it has not. The exclusion is symmetric:
+/// not exported, not imported, and not cleared by an import, because
+/// clearing the outbox would drop the very events that describe the restore.
 fn envelope_tables(conn: &Connection) -> Result<Vec<String>> {
     Ok(user_tables(conn)?
         .into_iter()
-        .filter(|t| t != crate::outbox::TABLE)
+        .filter(|t| !crate::outbox::TRANSPORT_TABLES.contains(&t.as_str()))
         .collect())
 }
 
@@ -241,7 +244,7 @@ pub fn import(conn: &mut Connection, json: &str, on_existing: OnExisting) -> Res
         // rows are transport state that this database must not adopt, and a
         // restore is the worst possible moment to be loud about something
         // harmless.
-        if key == crate::outbox::TABLE {
+        if crate::outbox::TRANSPORT_TABLES.contains(&key.as_str()) {
             continue;
         }
         if !known.iter().any(|t| t == key) {

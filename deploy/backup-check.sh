@@ -306,10 +306,15 @@ judge_freshness() {
 
     # The database's newest DATA write: the main file or its WAL, whichever is
     # later. Not the -shm, which merely opening the database touches.
+    # `if` rather than `[ … ] && …`: this script runs under `set -e`, and a bare
+    # test that evaluates FALSE as the last command of a line takes the whole run
+    # down. A tenant with no -wal did exactly that — the check aborted before it
+    # queried S3 for any tenant, and the integration gates caught it as "asked S3
+    # about every tenant anyway (expected 2, got 0)".
     local db_epoch=0 wal_epoch=0
-    [ -e "$db_file" ]        && db_epoch=$(stat -c %Y "$db_file")
-    [ -e "${db_file}-wal" ]  && wal_epoch=$(stat -c %Y "${db_file}-wal")
-    [ "$wal_epoch" -gt "$db_epoch" ] && db_epoch=$wal_epoch
+    if [ -e "$db_file" ]; then db_epoch=$(stat -c %Y "$db_file"); fi
+    if [ -e "${db_file}-wal" ]; then wal_epoch=$(stat -c %Y "${db_file}-wal"); fi
+    if [ "$wal_epoch" -gt "$db_epoch" ]; then db_epoch=$wal_epoch; fi
 
     if [ "$db_epoch" -gt "$newest_epoch" ]; then
         local lag_h=$(( ( db_epoch - newest_epoch ) / 3600 ))

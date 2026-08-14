@@ -494,9 +494,22 @@ check "the registry is judged on correspondence with its replica" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'the user registry OK — replica in correspondence' || true)"
 check "and it says so at a threshold every age exceeds" "0" \
 	"$(printf '%s' "$OUT" | grep -c 'STALE — the user registry' || true)"
-# The other half of the constraint: tenant freshness is untouched. A tenant past
-# the threshold still fails, so this is not "the check got quieter".
-check "a tenant past that same threshold STILL fails" "1" "$RC"
+# The other half of the constraint: the check must still FIRE. But the trigger is
+# now LAG, not age — the same correction pd-me6h made for the registry, extended to
+# tenants on 2026-08-14 after the identical false positive happened to one.
+#
+# A tenant whose collection nobody edits produces no S3 objects either, and the
+# comment above ("a database nobody writes produces no new S3 objects however
+# diligently the sidecar syncs") is exactly as true of a static collection as of
+# the registry. It paged Ryan three times for a healthy backup.
+#
+# So: touch a tenant database so it is genuinely NEWER than its replica. That is a
+# real lag — writes not reaching S3 — and it must still fail. This is the assertion
+# that keeps the fix from being "the check got quieter".
+touch "${MP}/tenants/$(ls "${MP}/tenants" | head -1)"
+OUT="$(run_check)"; RC=$?
+printf '%s\n' "$OUT" | sed 's/^/    /'
+check "a tenant whose db is NEWER than its replica STILL fails" "1" "$RC"
 check "and the STALE line names the tenant, not the registry" "1" \
 	"$(printf '%s' "$OUT" | grep -c "STALE — tenant '" || true)"
 

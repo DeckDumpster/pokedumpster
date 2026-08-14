@@ -390,7 +390,7 @@ END;
 
 CREATE TABLE IF NOT EXISTS ownership_emit_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope         TEXT NOT NULL,             -- 'collection' | 'seq:A..B' | 'row:N'
+    scope         TEXT NOT NULL,             -- 'collection' | 'seq:A..B' | 'row:TABLE:N'
     source        TEXT NOT NULL              -- the provenance written
         CHECK (source IN ('backfill', 'redrive')),
     completed_at  TEXT NOT NULL,             -- UTC ISO-8601

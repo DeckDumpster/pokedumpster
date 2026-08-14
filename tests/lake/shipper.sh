@@ -363,7 +363,12 @@ print(sqlite3.connect(sys.argv[1]).execute('SELECT shipped_thru FROM ownership_o
 # PKDUMP_SHIP_CRASH_AFTER_PARTS aborts the process the instant the second part
 # has landed and before the cursor records it. SIGKILL would test the same
 # thing on whichever iteration it happened to hit.
-set +e
+# `|| KILLED_RC=$?` rather than `set +e`, because a death here is the POINT.
+# `set +e` stops errexit but not the ERR trap, so the bare form printed
+# diagnostics.sh's `!! FAILED` banner in the middle of a passing gate — a
+# false alarm exactly where a reader is most likely to believe it. A `||`
+# list is one of the contexts bash does not run the ERR trap for.
+KILLED_RC=0
 podman run --rm --network "$NET" --pull=never \
 	-v "${DATA}:/data:Z" \
 	-v "${KEYS}/tenant-master.key:/keys/tenant-master.key:ro,Z" \
@@ -374,9 +379,7 @@ podman run --rm --network "$NET" --pull=never \
 	-e AWS_ACCESS_KEY_ID="$TEN_AK" -e AWS_SECRET_ACCESS_KEY="$TEN_SK" \
 	-e PKDUMP_SHIP_CRASH_AFTER_PARTS=2 \
 	--entrypoint pkdump-ship "$IMAGE" run --data-dir /data --tenant alice --max-rows 4 \
-	>"${WORK}/killed.log" 2>&1
-KILLED_RC=$?
-set -e
+	>"${WORK}/killed.log" 2>&1 || KILLED_RC=$?
 [[ "$KILLED_RC" -ne 0 ]] || die "the crash seam did not fire — the run exited 0"
 check "the process died rather than finishing" "yes" \
 	"$(grep -q 'CRASH_AFTER_PARTS' "${WORK}/killed.log" && echo yes || echo no)"
@@ -409,7 +412,8 @@ while read -r key; do
 	*"database_id=${ALICE}/"*) ;;
 	*) continue ;;
 	esac
-	ship_job decrypt --data-dir /data --key "$key" --json 2>/dev/null |
+	# </dev/null so podman cannot eat the loop's own input.
+	ship_job decrypt --data-dir /data --key "$key" --json 2>/dev/null </dev/null |
 		sed -n 's/.*"seq":\([0-9]*\).*/\1/p' >>"${WORK}/all-seqs.txt"
 done < <(zone_ls)
 check "every event reached the zone exactly once" "$(seq 1 21 | tr '\n' ' ')" \

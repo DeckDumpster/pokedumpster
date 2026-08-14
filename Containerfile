@@ -35,27 +35,33 @@ COPY data/ data/
 # re-pinning the FROM line above looked applied and changed nothing, on every
 # box that had already built once. A base-image change must change this id.
 #
-# TWO binaries, built in one invocation so they share the compile:
+# THREE binaries, built in one invocation so they share the compile:
 #
 #   pkdump             the app. `serve` is the entrypoint; `data refresh` is
 #                      what the nightly LANDING unit runs. Reads no raw/.
 #   pkdump-lake-derive the offline catalog derive (pd-1uem). The only thing in
 #                      the image that reads raw/, and the only thing that can:
 #                      it is a bin-only crate, so `pkdump` cannot link it.
+#   pkdump-ship        the shipper (pd-dxn3): the ownership outbox into the
+#                      tenant zone. Offline, like the derive — nothing serving
+#                      a request runs it, and the entrypoint above cannot
+#                      become it by accident.
 #
 # They ship in ONE image deliberately, even though the whole point of the crate
-# split is that the two halves can eventually run on different machines. The
-# image is not the boundary — the process is. Shipping one image keeps the
-# derive on exactly the build that wrote the schema it derives into, which is
-# what stops an offline job and an online server disagreeing about the catalog's
-# shape; splitting the images is a deployment change to make when the machines
-# actually split, not before.
+# split is that the halves can eventually run on different machines. The image
+# is not the boundary — the process is, and so are the credentials each process
+# is handed. Shipping one image keeps every offline job on exactly the build
+# that wrote the schema it reads, which is what stops an offline job and an
+# online server disagreeing about the shape of a database; splitting the images
+# is a deployment change to make when the machines actually split, not before.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target,sharing=locked,id=pkdump-target-bookworm \
     cargo build --release --locked --bin pkdump --bin pkdump-lake-derive \
+        --bin pkdump-ship \
  && mkdir -p /out \
  && cp target/release/pkdump /out/pkdump \
- && cp target/release/pkdump-lake-derive /out/pkdump-lake-derive
+ && cp target/release/pkdump-lake-derive /out/pkdump-lake-derive \
+ && cp target/release/pkdump-ship /out/pkdump-ship
 
 # --- Stage 2: SvelteKit build -----------------------------------------------
 # adapter-static emits the SPA to frontend/build. The committed ts-rs types in
@@ -83,6 +89,7 @@ RUN apt-get update \
 
 COPY --from=builder /out/pkdump /usr/local/bin/pkdump
 COPY --from=builder /out/pkdump-lake-derive /usr/local/bin/pkdump-lake-derive
+COPY --from=builder /out/pkdump-ship /usr/local/bin/pkdump-ship
 COPY --from=frontend /app/frontend/build /srv/pkdump/static
 
 # Catalog + per-user databases live on a mounted volume.

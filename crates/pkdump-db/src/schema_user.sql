@@ -394,6 +394,48 @@ CREATE TABLE IF NOT EXISTS ownership_emit_log (
 );
 
 -- ---------------------------------------------------------------------
+-- The shipper's end of the outbox (pd-dxn3)
+-- ---------------------------------------------------------------------
+--
+-- Two tables the shipper owns, here rather than anywhere else for the
+-- reason the outbox is here: they point INTO it, so a restore of this
+-- file brings back the log and the position in it together, and the
+-- deletion that drops a tenant drops their shipping state with them. Both
+-- are transport state rather than collection state, so — like the outbox
+-- and its emit ledger — neither is carried by the portable JSON envelope
+-- (`crate::outbox::TRANSPORT_TABLES`, subtracted in json_backup.rs).
+--
+-- `ownership_outbox_cursor` is one row, ever: the highest seq known to be
+-- in the tenant zone. It is written AFTER the object lands, never before,
+-- which is what makes delivery at-least-once rather than at-most-once. A
+-- crash in between re-ships a part, and that is harmless because a part's
+-- object key is the sequence range it carries — the retry addresses the
+-- object it is retrying rather than writing a second copy beside it.
+--
+-- `ownership_outbox_gap` is the durable half of gap detection. A missing
+-- seq means an event was LOST, and it is recorded here BEFORE the cursor
+-- advances past it — because once the cursor is past, nothing can notice
+-- the hole again. A journal line would have answered "was anything lost"
+-- only until the journal rotated; this answers it for as long as the
+-- collection exists. Rows are never deleted by the shipper: an operator
+-- who has reconciled a gap is the one who clears it.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS ownership_outbox_cursor (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),  -- one row, ever
+    shipped_thru  INTEGER NOT NULL,          -- highest seq known to be shipped
+    shipped_at    TEXT NOT NULL              -- when that last became true
+);
+
+CREATE TABLE IF NOT EXISTS ownership_outbox_gap (
+    from_seq      INTEGER NOT NULL,          -- first missing seq, inclusive
+    to_seq        INTEGER NOT NULL,          -- last missing seq, inclusive
+    detected_at   TEXT NOT NULL,
+    PRIMARY KEY (from_seq, to_seq),
+    CHECK (to_seq >= from_seq)
+);
+
+-- ---------------------------------------------------------------------
 -- Wishlist
 -- ---------------------------------------------------------------------
 

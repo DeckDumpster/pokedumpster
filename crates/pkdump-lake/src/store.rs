@@ -148,6 +148,28 @@ impl S3Store {
         prefix: &str,
         endpoint: Option<&str>,
     ) -> Result<Self> {
+        Self::connect_as(bucket, region, prefix, endpoint, None)
+    }
+
+    /// [`Self::connect`], under a named AWS profile.
+    ///
+    /// The tenant zone shares a bucket with the catalog and is separated from
+    /// it by nothing but a pair of credential policies (`pd-uz8q`), so the
+    /// identity a handle uses cannot be ambient — it is named, per handle, at
+    /// the point the handle is built. Setting `AWS_PROFILE` in the process
+    /// instead would make it a property of the *process*, and a process that
+    /// touches both zones would then reach one of them with the other's role.
+    ///
+    /// Only the shared-config half of the chain is affected: an environment
+    /// carrying explicit keys still wins, which is what lets a MinIO stand in
+    /// for S3 in a gate that has no roles to assume.
+    pub fn connect_as(
+        bucket: &str,
+        region: &str,
+        prefix: &str,
+        endpoint: Option<&str>,
+        profile: Option<&str>,
+    ) -> Result<Self> {
         // A current-thread runtime owned by the store: every caller in this
         // workspace's ingest path is blocking, and the alternative — making
         // the whole fetch path async for the sake of a PUT — would be a much
@@ -162,6 +184,9 @@ impl S3Store {
                 aws_config::defaults(aws_config::BehaviorVersion::latest()).region(region);
             if let Some(endpoint) = endpoint {
                 loader = loader.endpoint_url(endpoint);
+            }
+            if let Some(profile) = profile {
+                loader = loader.profile_name(profile);
             }
             let conf = loader.load().await;
             // Path-style addressing keeps a MinIO endpoint working; against

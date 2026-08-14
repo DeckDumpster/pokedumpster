@@ -140,12 +140,58 @@ pub fn partition_prefix(database_id: &str, dataset: Dataset, as_of: &str) -> Res
     ))
 }
 
-/// The key of one Parquet part. `part` is the zero-based ordinal within the
+/// What every object in this zone is: Parquet, sealed.
+///
+/// The `.enc` is not decoration. Every byte under `tenant/` is AES-256-GCM
+/// under that tenant's derived key (`pd-ulds`), because crypto-shredding is
+/// the defence in depth beside the partition drop — so a key that said
+/// `.parquet` would be describing something no reader could open. The
+/// envelope and the reason it wraps the whole file rather than using
+/// Parquet's own modular encryption are in `pkdump_ship::cipher`.
+pub const PART_SUFFIX: &str = ".parquet.enc";
+
+/// The key of one part. `part` is the zero-based ordinal within the
 /// partition; parts are numbered rather than named so a writer needs no
 /// coordination beyond its own counter.
+///
+/// This is the form for a dataset whose parts have no identity of their own —
+/// valuations, recomputed whole for a date. **Holdings do not use it**: they
+/// are shipped incrementally and at-least-once, so a part has to be
+/// addressable by the rows it carries rather than by its position in a run.
+/// See [`range_part_key`].
 pub fn part_key(database_id: &str, dataset: Dataset, as_of: &str, part: u32) -> Result<String> {
     Ok(format!(
-        "{}part-{part:04}.parquet",
+        "{}part-{part:04}{PART_SUFFIX}",
+        partition_prefix(database_id, dataset, as_of)?
+    ))
+}
+
+/// The key of one part, named for the outbox range it carries.
+///
+/// The whole of the shipper's idempotence (`pd-dxn3`): delivery is
+/// at-least-once, so a part is sometimes written twice, and a part addressed
+/// by *what is in it* makes the second write land on the first one rather
+/// than beside it. An ordinal cannot do that — two runs disagree about where
+/// in the sequence they started, so they disagree about the number.
+///
+/// Zero-padded to twelve digits so a listing sorts in sequence order, which
+/// is what makes "what does this partition hold" answerable from a directory
+/// listing alone.
+pub fn range_part_key(
+    database_id: &str,
+    dataset: Dataset,
+    as_of: &str,
+    from_seq: i64,
+    to_seq: i64,
+) -> Result<String> {
+    if from_seq < 1 || to_seq < from_seq {
+        return Err(LakeError::Layout(format!(
+            "part range {from_seq}..{to_seq} is not a range of sequence numbers; the outbox \
+             numbers from 1 and a part is never empty"
+        )));
+    }
+    Ok(format!(
+        "{}part-seq-{from_seq:012}-{to_seq:012}{PART_SUFFIX}",
         partition_prefix(database_id, dataset, as_of)?
     ))
 }
@@ -314,6 +360,22 @@ impl TenantZoneConfig {
             prefix: get(KEY_TENANT_PREFIX).unwrap_or_else(|| TENANT_ROOT.to_string()),
         })
     }
+
+    /// A key from the free functions above, relocated under this zone's
+    /// configured root.
+    ///
+    /// A no-op in production, where [`Self::prefix`] *is* [`TENANT_ROOT`].
+    /// The free functions stay written against the constant deliberately:
+    /// they are what `tests/lake/tenant_zone.sh` §8 reads to hold Rust, the
+    /// IAM documents and the deploy script to one prefix, and a value that
+    /// arrived from the environment could not be compared with a literal in
+    /// a policy file.
+    pub fn rooted(&self, key: String) -> String {
+        match key.strip_prefix(TENANT_ROOT) {
+            Some(rest) if self.prefix != TENANT_ROOT => format!("{}{rest}", self.prefix),
+            _ => key,
+        }
+    }
 }
 
 /// Parse a `lake.env`-shaped file's text. Exposed for the deploy scripts'
@@ -344,7 +406,7 @@ mod tests {
             )
             .unwrap(),
             "tenant/database_id=01K2C7HQ8NZ0XW3V9R5M6D0ABC/dataset=holdings/\
-             as_of=2026-08-13/part-0000.parquet"
+             as_of=2026-08-13/part-0000.parquet.enc"
         );
         assert_eq!(
             part_key(
@@ -355,8 +417,115 @@ mod tests {
             )
             .unwrap(),
             "tenant/database_id=01K2C7HQ8NZ0XW3V9R5M6D0ABC/dataset=valuations/\
-             as_of=2026-08-13/part-0017.parquet"
+             as_of=2026-08-13/part-0017.parquet.enc"
         );
+    }
+
+    #[test]
+    fn a_shipped_part_is_named_for_its_sequence_range() {
+        assert_eq!(
+            range_part_key(
+                "01K2C7HQ8NZ0XW3V9R5M6D0ABC",
+                Dataset::Holdings,
+                "2026-08-13",
+                1,
+                4096
+            )
+            .unwrap(),
+            "tenant/database_id=01K2C7HQ8NZ0XW3V9R5M6D0ABC/dataset=holdings/\
+             as_of=2026-08-13/part-seq-000000000001-000000004096.parquet.enc"
+        );
+    }
+
+    /// The property that makes the naming worth its awkwardness: a listing is
+    /// in sequence order, so "what does this partition hold" needs no side
+    /// table.
+    #[test]
+    fn range_part_keys_sort_in_sequence_order() {
+        let key = |from, to| {
+            range_part_key(
+                "01K2C7HQ8NZ0XW3V9R5M6D0ABC",
+                Dataset::Holdings,
+                "2026-08-13",
+                from,
+                to,
+            )
+            .unwrap()
+        };
+        let mut keys = vec![key(1000, 1999), key(1, 9), key(10, 999)];
+        keys.sort();
+        assert_eq!(keys, [key(1, 9), key(10, 999), key(1000, 1999)]);
+    }
+
+    #[test]
+    fn a_part_range_that_is_not_a_range_is_refused() {
+        for (from, to) in [(0, 5), (-1, 5), (9, 3)] {
+            assert!(
+                range_part_key(
+                    "01K2C7HQ8NZ0XW3V9R5M6D0ABC",
+                    Dataset::Holdings,
+                    "2026-08-13",
+                    from,
+                    to
+                )
+                .is_err(),
+                "{from}..{to} should not name a part"
+            );
+        }
+    }
+
+    /// Every object in this zone is sealed, so every key says so — including
+    /// the ordinal form the valuations will use. A dataset that started
+    /// writing plaintext under a `.parquet.enc` key, or ciphertext under a
+    /// `.parquet` one, would be a lie a reader could only discover by
+    /// failing.
+    #[test]
+    fn every_key_form_carries_the_sealed_suffix() {
+        let id = "01K2C7HQ8NZ0XW3V9R5M6D0ABC";
+        for dataset in Dataset::ALL {
+            assert!(
+                part_key(id, *dataset, "2026-08-13", 0)
+                    .unwrap()
+                    .ends_with(PART_SUFFIX)
+            );
+            assert!(
+                range_part_key(id, *dataset, "2026-08-13", 1, 2)
+                    .unwrap()
+                    .ends_with(PART_SUFFIX)
+            );
+        }
+    }
+
+    #[test]
+    fn a_configured_root_relocates_a_key_and_nothing_else() {
+        let cfg = TenantZoneConfig::from_settings(
+            &settings(&[
+                (KEY_TENANT_PROFILE, "pkdump-tenant"),
+                (KEY_TENANT_PREFIX, "tenant-standin/"),
+            ]),
+            None,
+        )
+        .unwrap();
+        let key = range_part_key(
+            "01K2C7HQ8NZ0XW3V9R5M6D0ABC",
+            Dataset::Holdings,
+            "2026-08-13",
+            1,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.rooted(key.clone()),
+            key.replacen(TENANT_ROOT, "tenant-standin/", 1)
+        );
+
+        // …and the production case is the identity.
+        let prod = TenantZoneConfig::from_settings(
+            &settings(&[(KEY_TENANT_PROFILE, "pkdump-tenant")]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(prod.rooted(key.clone()), key);
     }
 
     #[test]

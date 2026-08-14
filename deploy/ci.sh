@@ -736,6 +736,22 @@ if tier lake; then
 
     step "Queueing: Lakehouse — the tenant zone's credential boundary and its 90-day retention"
     pkdump_par_add tenant-zone bash "$REPO_DIR/tests/lake/tenant_zone.sh"
+
+    # --- 14d. The shipper -----------------------------------------------------
+    # §14c proves the zone is governed while it is EMPTY. This proves the thing
+    # that fills it: the shipped image's `pkdump-ship` moving a real outbox into
+    # a real bucket under the real tenant policy, killed mid-run and resumed,
+    # with the catalog role unable to read a byte of what it wrote — asserted in
+    # the failing direction too. The Rust tier already covers gap detection,
+    # idempotence and the key; what only exists here is the deployment: the
+    # binary being in the image at all, an IAM policy that can refuse, a process
+    # that can actually die, and deploy/ship.sh's four exit statuses.
+    #
+    # Same tier as the derive and the zone, for the same reason: it is a
+    # lakehouse claim about a bucket.
+
+    step "Queueing: Lakehouse — the shipper, against a real bucket, killed and resumed"
+    pkdump_par_add shipper bash "$REPO_DIR/tests/lake/shipper.sh"
 fi
 
 # --- 15. The refresh writes no tenant bytes ---------------------------------

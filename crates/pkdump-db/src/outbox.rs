@@ -87,11 +87,25 @@ pub const TABLE: &str = "ownership_outbox";
 /// The emit ledger's name — rule 4's record that a backfill has run.
 pub const EMIT_LOG: &str = "ownership_emit_log";
 
-/// Neither of these is collection state: they are the log of changes
-/// *leaving* a collection and the record of who re-emitted them. Both are
-/// absent from the portable JSON envelope in both directions
-/// (`crate::json_backup`).
-pub const TRANSPORT_TABLES: &[&str] = &[TABLE, EMIT_LOG];
+/// The shipper's position in the outbox: the highest `seq` known to be in
+/// the tenant zone. Written by `pkdump-ship`, declared here because it is
+/// meaningless without [`TABLE`].
+pub const CURSOR_TABLE: &str = "ownership_outbox_cursor";
+
+/// Sequence ranges the shipper found MISSING — events that were lost. See
+/// `schema_user.sql`.
+pub const GAP_TABLE: &str = "ownership_outbox_gap";
+
+/// Every table that is transport state rather than collection state: the log
+/// of changes *leaving* a collection, the record of who re-emitted them, and
+/// where the shipper has got to in reading it. All are absent from the
+/// portable JSON envelope in both directions (`crate::json_backup`).
+///
+/// It is one constant rather than four call sites because the argument for
+/// excluding each of them is the same argument, and a fifth table added to
+/// this group with the envelope left alone would start restoring somebody
+/// else's shipping position into a fresh database.
+pub const TRANSPORT_TABLES: &[&str] = &[TABLE, EMIT_LOG, CURSOR_TABLE, GAP_TABLE];
 
 /// The holdings tables the outbox carries, each with the column that dates
 /// a row which has never emitted an event.

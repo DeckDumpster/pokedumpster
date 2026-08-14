@@ -97,20 +97,23 @@ pub fn user_tables(conn: &Connection) -> Result<Vec<String>> {
 }
 
 /// The tables the envelope carries: every user table except the ownership
-/// outbox and its emit ledger (`crate::outbox::TRANSPORT_TABLES`; pd-5m54,
-/// pd-385w).
+/// outbox, its emit ledger, and the shipper's own state beside them
+/// ([`crate::outbox::TRANSPORT_TABLES`]; pd-5m54, pd-385w, pd-dxn3).
 ///
-/// The one exception, and not a reopening of pd-yj40's exclusion list:
-/// neither is collection state. The outbox is the log of holdings changes
+/// The one exception, and not a reopening of pd-yj40's exclusion list: none
+/// of them is collection state. The outbox is the log of holdings changes
 /// *leaving* the collection for the lakehouse, written by triggers on
 /// `collection` rather than by anything a user does; the emit ledger is the
-/// record of who re-emitted them. Carrying either would mean an envelope
-/// restored into a fresh database replayed events that were shipped months
-/// ago — while the restore's own deletes and inserts fired the triggers and
-/// wrote the correct ones alongside them — and would tell that database it
-/// had already been backfilled when it has not. The exclusion is symmetric:
-/// not exported, not imported, and not cleared by an import, because
-/// clearing the outbox would drop the very events that describe the restore.
+/// record of who re-emitted them; the cursor and the gap ledger are where
+/// the shipper has got to in reading it. Carrying any of them would mean an
+/// envelope restored into a fresh database replayed events that were shipped
+/// months ago — while the restore's own deletes and inserts fired the
+/// triggers and wrote the correct ones alongside them — would tell that
+/// database it had already been backfilled when it has not, or worse, would
+/// arrive carrying somebody else's cursor and so skip its own. The exclusion
+/// is symmetric: not exported, not imported, and not cleared by an import,
+/// because clearing the outbox would drop the very events that describe the
+/// restore.
 fn envelope_tables(conn: &Connection) -> Result<Vec<String>> {
     Ok(user_tables(conn)?
         .into_iter()

@@ -195,6 +195,17 @@ cat <<EOF
                 systemctl --user enable --now pkdump-value-snapshots@${INSTANCE}.timer
                 bash deploy/value-snapshots.sh ${INSTANCE}   # or run one now
 
+    The ownership shipment (pd-dxn3) is installed too and is NOT armed here:
+                systemctl --user enable --now pkdump-ship@${INSTANCE}.timer
+
+    Arming it needs two things first — a master key (bash deploy/keys.sh
+    ${INSTANCE} init, BACKED UP) and PKDUMP_TENANT_AWS_PROFILE in lake.env —
+    and it should wait for the backfill (epic item 5). The shipper ships the
+    OUTBOX, and an existing collection's outbox starts empty (pd-whsw): armed
+    before the backfill exists, it faithfully ships every change made from
+    tonight and nothing anybody already owns, which is a zone that looks
+    populated and is not.
+
     The catalog has NO authentication (Nessie says so in its own startup log),
     which is why it publishes on 127.0.0.1 only and jobs reach it over the
     pkdump-lake-${INSTANCE} network. Do not publish it on 0.0.0.0.

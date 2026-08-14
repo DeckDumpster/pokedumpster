@@ -10,27 +10,37 @@
 //! about *provenance*. Comparing two implementations would only ever be a
 //! claim about the second one.
 //!
-//! ## The fallback, and why it is loud
+//! ## A miss is fatal
 //!
 //! A URL the partition has no record of means **raw coverage has regressed** —
 //! the derivation grew an input the landing zone does not capture, or an
-//! upstream's origin moved. Item 2 of the epic ships with a fallback for that
-//! case, deliberately temporary (item 4 removes it, as its own reviewable
-//! change, once row-identical is proven). While it exists the one thing it may
-//! not do is succeed quietly:
+//! upstream's origin moved. That is a refusal, full stop.
 //!
-//! - every miss prints a `!! raw coverage has regressed` line naming the URL,
-//! - the run ends with a summary line and a non-empty [`RawReplay::misses`],
-//!   so a caller can fail a gate on it rather than reading logs,
-//! - and `--no-upstream-fallback` turns the first miss into a refusal, which
-//!   is what item 4 will make unconditional.
+//! Item 2 of the epic shipped with a temporary fallback for that case: reach
+//! the live upstream, say so loudly, and let the run finish. It was there to
+//! keep the offline derive usable while row-identity was still unproven, and
+//! item 4 deleted it once pd-vves proved it against the real bucket. What is
+//! left is the behaviour `--no-upstream-fallback` used to select, now the only
+//! behaviour there is — and it is structural rather than a policy this module
+//! chooses: [`ReplaySource::missing`] returns the error itself, so a replaying
+//! wire has no path to the network for this module to decline to take.
 //!
-//! A quiet fallback would make the landing zone decorative: every gate would
-//! pass, every row would look right, and we would find out on the day an
-//! upstream is down — the day the lake was bought for.
+//! The reason it could not stay is that a fallback makes the landing zone
+//! decorative. A derive that reaches upstream produces a correct catalog with a
+//! LINEAGE that is not reproducible — every gate passes, every row looks right,
+//! and we would find out on the day an upstream is down, which is the day the
+//! lake was bought for. Loudness was a mitigation for that, not a fix: it
+//! depends on somebody reading the log.
+//!
+//! The one phase that still fetches on the offline path is set-symbol
+//! normalisation, and it does not come through here at all —
+//! `symbols::normalize_all_symbols` has no [`Wire`](pkdump_ingest::landing::Wire)
+//! in its signature and builds its own client, because images are deliberately
+//! outside `raw/`. See `pkdump-derive`'s crate docs, and
+//! `row_identical.rs::a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it`
+//! for the gate that holds that apart from this rule.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use pkdump_ingest::landing::ReplaySource;
 use pkdump_ingest::{IngestError, Result};
@@ -46,11 +56,6 @@ pub struct RawReplay {
     /// selected; the payload itself is read (and verified against the
     /// manifest's SHA-256) only when it is asked for.
     index: HashMap<String, PartRecord>,
-    /// Whether a miss may reach the real upstream. Item 4 deletes this field
-    /// and the branch it guards.
-    fallback: bool,
-    /// Every URL that missed, in request order.
-    misses: Mutex<Vec<String>>,
 }
 
 impl RawReplay {
@@ -60,7 +65,7 @@ impl RawReplay {
     /// preference to resolve: within a single run a URL is fetched once, and
     /// [`choose`](crate::partition::choose) picks exactly one run per dataset,
     /// so a duplicate means the manifest disagrees with itself.
-    pub fn new(zone: RawZone, chosen: &[Chosen], fallback: bool) -> anyhow::Result<Self> {
+    pub fn new(zone: RawZone, chosen: &[Chosen]) -> anyhow::Result<Self> {
         let mut index: HashMap<String, PartRecord> = HashMap::new();
         for c in chosen {
             for part in &c.run.manifest.parts {
@@ -79,26 +84,12 @@ impl RawReplay {
                 }
             }
         }
-        Ok(Self {
-            zone,
-            index,
-            fallback,
-            misses: Mutex::new(Vec::new()),
-        })
+        Ok(Self { zone, index })
     }
 
     /// How many distinct URLs this partition can answer.
     pub fn urls(&self) -> usize {
         self.index.len()
-    }
-
-    /// Every URL that was not in `raw/`, in request order.
-    ///
-    /// Empty is the only good answer. A caller that finds this non-empty has
-    /// evidence that the landing zone no longer covers the derivation's
-    /// inputs, whether or not the fallback then succeeded in fetching them.
-    pub fn misses(&self) -> Vec<String> {
-        self.misses.lock().expect("misses lock").clone()
     }
 }
 
@@ -114,28 +105,13 @@ impl ReplaySource for RawReplay {
         }
     }
 
-    fn missing(&self, url: &str) -> Result<()> {
-        self.misses
-            .lock()
-            .expect("misses lock")
-            .push(url.to_string());
-
-        if !self.fallback {
-            return Err(IngestError::BadResponse(format!(
-                "raw/ has no record of {url}, and the upstream fallback is off.\n\
-                 The landing zone no longer covers this derivation's inputs: either an \
-                 endpoint was added without landing it, or the upstream's origin moved. \
-                 Re-land the date (pkdump data refresh --land-raw) and derive again."
-            )));
-        }
-
-        eprintln!(
-            "!! raw coverage has REGRESSED: {url} is not in raw/ for this partition.\n\
-             !! Falling back to the live upstream for it — the temporary fallback (epic item 2, \
-             removed in item 4) is what is keeping this run alive, and a derive that needs it is \
-             NOT reproducible from the lake. Land the missing endpoint."
-        );
-        Ok(())
+    fn missing(&self, url: &str) -> IngestError {
+        IngestError::BadResponse(format!(
+            "raw/ has no record of {url}.\n\
+             The landing zone no longer covers this derivation's inputs: either an \
+             endpoint was added without landing it, or the upstream's origin moved. \
+             Re-land the date (pkdump data refresh --land-raw) and derive again."
+        ))
     }
 }
 
@@ -168,7 +144,7 @@ mod tests {
     /// deliberately not used here — it refuses a date missing three of the
     /// four required datasets, which is its own test's business, not this
     /// module's.
-    fn replay(root: &std::path::Path, fallback: bool) -> RawReplay {
+    fn replay(root: &std::path::Path) -> RawReplay {
         let zone = landed(root);
         let runs = zone.runs(Source::Tcgcsv, Dataset::Groups, DATE).unwrap();
         let chosen = vec![Chosen {
@@ -176,55 +152,38 @@ mod tests {
             dataset: Dataset::Groups,
             run: pkdump_lake::select_run(&runs, "tcgcsv/groups").unwrap(),
         }];
-        RawReplay::new(zone, &chosen, fallback).unwrap()
+        RawReplay::new(zone, &chosen).unwrap()
     }
 
     #[test]
     fn a_landed_url_replays_the_bytes_that_were_landed() {
         let tmp = tempfile::tempdir().unwrap();
-        let replay = replay(tmp.path(), true);
+        let replay = replay(tmp.path());
         assert_eq!(replay.urls(), 1);
         assert_eq!(replay.body(URL).unwrap().as_deref(), Some(BODY));
-        assert!(replay.misses().is_empty());
     }
 
-    /// A miss is recorded whether or not the fallback then rescues the run.
-    /// "It worked" is not the question — "did raw cover it" is.
+    /// A URL the partition has no record of stops the run, and the refusal
+    /// says what regressed and what to do about it. There is no second
+    /// behaviour to select any more: the fallback that used to make this a
+    /// warning is gone (item 4).
     #[test]
-    fn a_miss_is_recorded_even_when_the_fallback_is_allowed() {
+    fn a_miss_refuses_and_says_why() {
         let tmp = tempfile::tempdir().unwrap();
-        let replay = replay(tmp.path(), true);
+        let replay = replay(tmp.path());
         assert_eq!(
             replay
                 .body("https://tcgcsv.com/tcgplayer/3/9/prices")
                 .unwrap(),
-            None
+            None,
+            "a URL outside the partition has no body to hand back"
         );
-        replay
-            .missing("https://tcgcsv.com/tcgplayer/3/9/prices")
-            .expect("the fallback lets the fetch proceed");
-        assert_eq!(
-            replay.misses(),
-            vec!["https://tcgcsv.com/tcgplayer/3/9/prices"]
-        );
-    }
-
-    /// With the fallback off — what item 4 makes unconditional — the first
-    /// miss stops the run, and the refusal says what regressed.
-    #[test]
-    fn with_the_fallback_off_a_miss_refuses_and_says_why() {
-        let tmp = tempfile::tempdir().unwrap();
-        let replay = replay(tmp.path(), false);
-        let err = replay
-            .missing("https://up/3/9/prices")
-            .unwrap_err()
-            .to_string();
+        let err = replay.missing("https://up/3/9/prices").to_string();
         assert!(
             err.contains("raw/ has no record of https://up/3/9/prices"),
             "{err}"
         );
         assert!(err.contains("--land-raw"), "{err}");
-        assert_eq!(replay.misses().len(), 1);
     }
 
     /// The manifest's digest is not decoration. A part whose bytes changed
@@ -232,7 +191,7 @@ mod tests {
     #[test]
     fn a_tampered_payload_fails_the_replay() {
         let tmp = tempfile::tempdir().unwrap();
-        let replay = replay(tmp.path(), true);
+        let replay = replay(tmp.path());
         // The SAME LENGTH, different bytes — otherwise the length check fires
         // first and the digest is never consulted. A corruption that changes
         // a value without changing a size is the one only the hash can catch.
@@ -266,7 +225,6 @@ mod tests {
                 dataset: Dataset::Groups,
                 run,
             }],
-            true,
         ) {
             Ok(_) => panic!("a manifest with two bodies for one URL must be refused"),
             Err(e) => e.to_string(),

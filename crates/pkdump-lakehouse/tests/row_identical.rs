@@ -32,14 +32,21 @@
 //! offline rebuild could never reproduce. [`the_second_day_is_row_identical_too_deprecations_included`]
 //! is what would catch that coming back.
 //!
+//! ## The upstream stays UP, on purpose
+//!
+//! The fixture is a socket on loopback and it answers throughout every test
+//! here, including the ones that assert a refusal. That is deliberate: a gap in
+//! `raw/` is fatal by policy, and a gate run with nothing listening could not
+//! tell policy from a failed connection. It is also what lets
+//! [`a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it`] serve a
+//! real set symbol — the one thing the offline derive still fetches.
+//!
 //! ## What is deliberately NOT proven here
 //!
-//! Egress. Nothing in this file can assert the network is unreachable — the
-//! fixture upstream is a socket on loopback, and it must be, or the derive's
-//! *fallback* could never be exercised at all. `tests/lake/derive.sh` is where
-//! the derive runs on an `--internal` podman network with the
-//! socket-to-1.1.1.1 assertion, against raw landed before that network
-//! existed.
+//! Egress. Nothing in this file can assert the network is unreachable, for the
+//! reason just given. `tests/lake/derive.sh` is where the derive runs on an
+//! `--internal` podman network with the socket-to-1.1.1.1 assertion, against
+//! raw landed before that network existed.
 
 // The fake upstream is the one `pkdump-ingest`'s landing-zone gates already
 // drive the real clients with. A second HTTP server would be a second thing
@@ -80,18 +87,47 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Two pokemontcg.io sets, bridged to TCGCSV groups by their `ptcgoCode`.
 ///
-/// No `images` block: a set with no symbol URL is skipped by
-/// `symbols::normalize_all_symbols`, which is the one phase of the derivation
-/// that fetches something the landing zone deliberately does not hold. Leaving
-/// it with nothing to do keeps this gate about the phases a replay CAN
-/// reproduce; the gap itself is documented in `pkdump-derive`'s crate docs and
-/// filed as pd-5w4n.
-const SETS: &str = r#"{"data":[
-  {"id":"fk1","name":"Fakemon Base","series":"Fakemon","printedTotal":2,"total":2,
-   "ptcgoCode":"FK1","releaseDate":"2026/01/09"},
-  {"id":"fk2","name":"Fakemon Jungle","series":"Fakemon","printedTotal":1,"total":1,
-   "ptcgoCode":"FK2","releaseDate":"2026/06/16"}
-],"page":1,"pageSize":250,"count":2,"totalCount":2}"#;
+/// With `symbols` `None` there is no `images` block, so a set carries no symbol
+/// URL and `symbols::normalize_all_symbols` skips it — the one phase of the
+/// derivation that fetches something the landing zone deliberately does not
+/// hold, left with nothing to do. That keeps most of this file about the phases
+/// a replay CAN reproduce.
+///
+/// With `symbols` `Some(origin)` both sets carry a real upstream symbol URL,
+/// which is the **cold** shape: see
+/// [`a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it`].
+fn sets_json(symbols: Option<&str>) -> String {
+    let images = |set: &str| match symbols {
+        Some(origin) => format!(r#","images":{{"symbol":"{origin}/symbol/{set}.png"}}"#),
+        None => String::new(),
+    };
+    format!(
+        r#"{{"data":[
+  {{"id":"fk1","name":"Fakemon Base","series":"Fakemon","printedTotal":2,"total":2,
+   "ptcgoCode":"FK1","releaseDate":"2026/01/09"{}}},
+  {{"id":"fk2","name":"Fakemon Jungle","series":"Fakemon","printedTotal":1,"total":1,
+   "ptcgoCode":"FK2","releaseDate":"2026/06/16"{}}}
+],"page":1,"pageSize":250,"count":2,"totalCount":2}}"#,
+        images("fk1"),
+        images("fk2"),
+    )
+}
+
+/// A set symbol as `images.pokemontcg.io` serves one: a transparent canvas
+/// with an opaque glyph somewhere in it, which is the shape the normalizer's
+/// alpha-bbox trim exists for.
+fn symbol_png() -> Vec<u8> {
+    let mut img = image::RgbaImage::from_pixel(40, 40, image::Rgba([0, 0, 0, 0]));
+    for y in 8..20 {
+        for x in 5..25 {
+            img.put_pixel(x, y, image::Rgba([255, 255, 255, 255]));
+        }
+    }
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .expect("encode the fixture symbol");
+    out
+}
 
 fn cards_json(set: &str) -> String {
     match set {
@@ -213,10 +249,13 @@ fn prices_json(group: i64, day: usize) -> String {
 
 /// The upstream both halves of a comparison read from. `day` selects which
 /// day's payloads it serves; `fail_group` makes one `/prices` request return a
-/// 503, which is how a run that dies partway is produced.
+/// 503, which is how a run that dies partway is produced; `symbols` is the
+/// origin set symbols are advertised under, filled in after the listener binds
+/// because that is when the port is known.
 struct Script {
     day: AtomicUsize,
     fail_group: AtomicUsize,
+    symbols: Mutex<Option<String>>,
 }
 
 fn start_upstream(script: Arc<Script>) -> FakeUpstream {
@@ -225,7 +264,17 @@ fn start_upstream(script: Arc<Script>) -> FakeUpstream {
         let (path, _query) = target.split_once('?').unwrap_or((target, ""));
 
         if path == "/sets" {
-            return Reply::ok(SETS);
+            let symbols = script.symbols.lock().expect("symbols lock").clone();
+            return Reply::ok(sets_json(symbols.as_deref()));
+        }
+        // fk1's symbol is served; fk2's is a 404. One derive then exercises
+        // both halves of the normalizer's outcome — a symbol that normalizes
+        // and one whose fetch fails — without either being fatal.
+        if path == "/symbol/fk1.png" {
+            return Reply::png(symbol_png());
+        }
+        if path == "/symbol/fk2.png" {
+            return Reply::status(404, r#"{"error":"no symbol for fk2"}"#);
         }
         if path == "/cards" {
             // reqwest percent-encodes `set.id:fk1`, so match on the id alone.
@@ -241,17 +290,11 @@ fn start_upstream(script: Arc<Script>) -> FakeUpstream {
             [_, group, "prices"] => {
                 let group: usize = group.parse().unwrap();
                 if script.fail_group.load(Ordering::SeqCst) == group {
-                    return Reply {
-                        status: 503,
-                        body: r#"{"error":"upstream is having a day"}"#.to_string(),
-                    };
+                    return Reply::status(503, r#"{"error":"upstream is having a day"}"#);
                 }
                 Reply::ok(prices_json(group as i64, day))
             }
-            _ => Reply {
-                status: 404,
-                body: format!(r#"{{"error":"no route for {target}"}}"#),
-            },
+            _ => Reply::status(404, format!(r#"{{"error":"no route for {target}"}}"#)),
         }
     })
 }
@@ -284,6 +327,7 @@ impl Harness {
         let script = Arc::new(Script {
             day: AtomicUsize::new(1),
             fail_group: AtomicUsize::new(0),
+            symbols: Mutex::new(None),
         });
         let upstream = start_upstream(Arc::clone(&script));
         Self {
@@ -292,6 +336,14 @@ impl Harness {
             upstream,
             script,
         }
+    }
+
+    /// Advertise a set symbol URL on `/sets`, pointing back at this upstream.
+    ///
+    /// Only callable after the listener has bound, which is why it is a method
+    /// rather than a constructor argument: the origin is the ephemeral port.
+    fn serve_symbols(&self) {
+        *self.script.symbols.lock().expect("symbols lock") = Some(self.upstream.base_url());
     }
 
     fn raw(&self) -> PathBuf {
@@ -426,15 +478,15 @@ fn a_catalog_derived_from_raw_is_row_identical_to_the_online_one() {
 
     assert!(h.online(&online, DAY1, DAY1_CLOCK, false), "online refresh");
 
-    let out = h.derive(&offline, DAY1, &["--no-upstream-fallback"]);
+    let out = h.derive(&offline, DAY1, &[]);
     assert!(
         out.status.success(),
         "offline derive failed:\n{}",
         text(&out)
     );
-    // With the fallback OFF, "it succeeded" already means every request was
-    // answered from raw/ — a single miss would have been fatal. The line is
-    // asserted as well, because it is what an operator reads.
+    // "It succeeded" already means every request was answered from raw/ — a
+    // single miss is fatal (item 4). The line is asserted as well, because it
+    // is what an operator reads.
     assert!(
         text(&out).contains("raw coverage: complete"),
         "the derive must SAY the partition covered it:\n{}",
@@ -472,15 +524,13 @@ fn the_second_day_is_row_identical_too_deprecations_included() {
     h.day(1);
     assert!(h.online(&online, DAY1, DAY1_CLOCK, false), "day 1 online");
     assert!(
-        h.derive(&offline, DAY1, &["--no-upstream-fallback"])
-            .status
-            .success(),
+        h.derive(&offline, DAY1, &[]).status.success(),
         "day 1 offline"
     );
 
     h.day(2);
     assert!(h.online(&online, DAY2, DAY2_CLOCK, false), "day 2 online");
-    let out = h.derive(&offline, DAY2, &["--no-upstream-fallback"]);
+    let out = h.derive(&offline, DAY2, &[]);
     assert!(out.status.success(), "day 2 offline:\n{}", text(&out));
 
     // The row the second day exists for. Both catalogs must hold it, and both
@@ -541,11 +591,7 @@ fn deriving_the_same_date_twice_changes_nothing_but_says_it_happened() {
     let twice = h.db("twice");
 
     assert!(h.online(&h.db("online"), DAY1, DAY1_CLOCK, false));
-    assert!(
-        h.derive(&twice, DAY1, &["--no-upstream-fallback"])
-            .status
-            .success()
-    );
+    assert!(h.derive(&twice, DAY1, &[]).status.success());
 
     // A byte copy of the catalog after ONE derive, to compare the second
     // derive's output against.
@@ -554,11 +600,7 @@ fn deriving_the_same_date_twice_changes_nothing_but_says_it_happened() {
     let runs_before: i64 = scalar(&once, "SELECT COUNT(*) FROM raw_derivation");
     assert!(runs_before > 0, "the first derive recorded its provenance");
 
-    assert!(
-        h.derive(&twice, DAY1, &["--no-upstream-fallback"])
-            .status
-            .success()
-    );
+    assert!(h.derive(&twice, DAY1, &[]).status.success());
 
     let diff = h.diff_excluding(&once, &twice, &[PROVENANCE, "set_aliases"]);
     assert!(
@@ -587,11 +629,7 @@ fn deriving_the_same_date_twice_changes_nothing_but_says_it_happened() {
     // The fixed point: from the second derive on, nothing moves at all.
     let thrice = h.db("thrice");
     std::fs::copy(&twice, &thrice).expect("snapshot the catalog");
-    assert!(
-        h.derive(&thrice, DAY1, &["--no-upstream-fallback"])
-            .status
-            .success()
-    );
+    assert!(h.derive(&thrice, DAY1, &[]).status.success());
     let diff = h.diff(&twice, &thrice);
     assert!(
         diff.status.success(),
@@ -620,7 +658,7 @@ fn an_older_date_rebuilds_that_date_and_not_the_newest_one() {
 
     // Now rebuild the OLDER date, with the newer one sitting in raw/ beside it.
     let rebuilt = h.db("rebuilt");
-    let out = h.derive(&rebuilt, DAY1, &["--no-upstream-fallback"]);
+    let out = h.derive(&rebuilt, DAY1, &[]);
     assert!(out.status.success(), "{}", text(&out));
 
     let diff = h.diff(&h.db("day1-snapshot"), &rebuilt);
@@ -655,7 +693,7 @@ fn an_incomplete_partition_is_refused_rather_than_half_derived() {
     );
 
     let target = h.db("from-incomplete");
-    let out = h.derive(&target, DAY1, &["--no-upstream-fallback"]);
+    let out = h.derive(&target, DAY1, &[]);
     assert!(
         !out.status.success(),
         "an incomplete partition must not derive:\n{}",
@@ -672,16 +710,26 @@ fn an_incomplete_partition_is_refused_rather_than_half_derived() {
     );
 }
 
-/// The fallback is LOUD — asserted by exercising it, in both directions.
+/// A gap in `raw/` is FATAL, and it is fatal by default.
 ///
 /// A URL is removed from the landing zone, which is what raw coverage
-/// regressing looks like from the derive's side. With the fallback on the run
-/// survives and must say, in as many words, that coverage has regressed. With
-/// `--no-upstream-fallback` the same partition is a refusal. A gate that only
-/// checked "it worked" would be green for a job that had quietly stopped using
-/// the lake at all.
+/// regressing looks like from the derive's side: the derivation grew an input
+/// the landing zone does not capture, or an upstream's origin moved. The run
+/// must stop there and say what to do about it.
+///
+/// This test used to assert the temporary fallback in both directions — loud
+/// with it on, fatal with `--no-upstream-fallback`. Item 4 deleted the
+/// fallback, so there is one direction left, and the extra assertion below is
+/// what makes that stick: **the upstream is up and reachable throughout**. The
+/// fixture is a socket on loopback that would have answered. A future edit that
+/// reintroduced a fallback would make this run succeed rather than merely
+/// change its wording, so the test would fail rather than rot.
+///
+/// The flag itself is asserted gone too. Leaving it accepted-but-ignored would
+/// be worse than removing it: `deploy/derive.sh` invocations and runbooks
+/// carrying it would keep passing while meaning nothing.
 #[test]
-fn a_gap_in_raw_is_loud_with_the_fallback_and_fatal_without_it() {
+fn a_gap_in_raw_is_fatal_with_the_upstream_sitting_right_there() {
     let h = Harness::start();
     assert!(h.online(&h.db("online"), DAY1, DAY1_CLOCK, false));
 
@@ -702,30 +750,172 @@ fn a_gap_in_raw_is_loud_with_the_fallback_and_fatal_without_it() {
     let dropped_url = parsed.parts.remove(dropped).url;
     std::fs::write(&manifest, parsed.to_json().expect("re-serialize")).expect("write manifest");
 
-    // With the fallback ON: the run survives, by fetching. And says so.
-    let out = h.derive(&h.db("with-fallback"), DAY1, &[]);
+    let target = h.db("gap");
+    let out = h.derive(&target, DAY1, &[]);
     assert!(
-        out.status.success(),
-        "the fallback should have carried this run:\n{}",
+        !out.status.success(),
+        "a gap in raw/ must be fatal, with no flag asked for:\n{}",
         text(&out)
     );
     let said = text(&out);
-    assert!(
-        said.contains("raw coverage has REGRESSED"),
-        "the fallback must be LOUD, not merely successful:\n{said}"
-    );
+    assert!(said.contains("raw/ has no record of"), "{said}");
     assert!(said.contains(&dropped_url), "it must name the URL:\n{said}");
+    assert!(said.contains("--land-raw"), "{said}");
 
-    // With it OFF — what item 4 makes unconditional — the same partition is a
-    // refusal, and the message says what to do about it.
-    let out = h.derive(&h.db("without-fallback"), DAY1, &["--no-upstream-fallback"]);
+    // Not "the network happened to be down". The fixture upstream is on
+    // loopback and answering — the run before this one fetched every one of
+    // these URLs from it. The refusal is policy, not circumstance.
+    assert!(
+        h.upstream
+            .requests()
+            .iter()
+            .any(|r| r.contains("/2/prices")),
+        "the fixture upstream never served group 2's prices, so this test would \
+         pass against a fallback that simply could not reach anything"
+    );
+
+    // And the opt-out is gone rather than tolerated.
+    let out = h.derive(&h.db("flag"), DAY1, &["--no-upstream-fallback"]);
     assert!(
         !out.status.success(),
-        "with the fallback off a gap must be fatal:\n{}",
+        "--no-upstream-fallback must be rejected, not silently accepted:\n{}",
         text(&out)
     );
-    assert!(text(&out).contains("raw/ has no record of"));
-    assert!(text(&out).contains("--land-raw"));
+    assert!(
+        text(&out).contains("unexpected argument"),
+        "clap should refuse the retired flag by name:\n{}",
+        text(&out)
+    );
+}
+
+/// **The COLD derive** — sets carrying genuine upstream symbol URLs, with no
+/// local PNGs and no `symbol_source_url` yet. A miss in `raw/` is fatal, and a
+/// set symbol is not in `raw/` and never will be. This is the gate that says
+/// that is fine.
+///
+/// It is here because the proof that let the fallback be deleted (pd-vves)
+/// could not exercise it. Both halves of that comparison ran from a snapshot of
+/// prod's LIVE catalog, whose `sets.symbol_url` had already been normalised to
+/// `/sym/<set>.png` by earlier online refreshes — and
+/// `normalize_all_symbols` skips a row that does not start with `http`. The
+/// `sets` table matched because BOTH sides skipped the phase entirely, not
+/// because the phase ran and reproduced. pd-5w4n named that gap; nothing
+/// covered it until this test.
+///
+/// What it establishes, and why deleting the fallback cannot break it:
+/// `normalize_all_symbols` takes `(&mut Connection, &Path)`. There is no `Wire`
+/// in its signature, it imports nothing from `pkdump_ingest::landing`, and it
+/// builds its own `reqwest::blocking::Client`. `ReplaySource::missing` — the
+/// one thing that turns an absence from `raw/` into a refusal — is called from
+/// exactly one place, `landing::fetch_bytes`, which the symbol phase does not
+/// go through. So a symbol fetch is not a replay miss; it is a fetch, on a
+/// phase that was never replayable and never claimed to be.
+///
+/// Two outcomes in one run, because both matter and neither may be fatal:
+/// fk1's symbol is served and normalises, fk2's 404s and is counted. A box with
+/// no egress — `tests/lake/derive.sh`'s `--internal` network, or prod on a
+/// night `images.pokemontcg.io` is down — takes fk2's path for every set.
+#[test]
+fn a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it() {
+    let h = Harness::start();
+    h.serve_symbols();
+    let online = h.db("online");
+    let offline = h.db("offline");
+
+    assert!(h.online(&online, DAY1, DAY1_CLOCK, false), "online refresh");
+    // The online run normalised: fk1 now points at the local cache and records
+    // where it came from, fk2 kept the upstream URL its fetch failed on.
+    let symbol_url = format!("{}/symbol/fk1.png", h.upstream.base_url());
+    assert_eq!(
+        scalar::<String>(
+            &online,
+            "SELECT symbol_url FROM sets WHERE set_code = 'fk1'"
+        ),
+        "/sym/fk1.png"
+    );
+    assert_eq!(
+        scalar::<String>(
+            &online,
+            "SELECT symbol_source_url FROM sets WHERE set_code = 'fk1'"
+        ),
+        symbol_url
+    );
+    assert_eq!(
+        scalar::<String>(
+            &online,
+            "SELECT symbol_url FROM sets WHERE set_code = 'fk2'"
+        ),
+        format!("{}/symbol/fk2.png", h.upstream.base_url()),
+        "a symbol whose fetch failed keeps its upstream URL, which still renders"
+    );
+
+    // The offline catalog is EMPTY, so its sets arrive from the replayed
+    // `/sets` response carrying http symbol URLs and no `symbol_source_url` —
+    // the cold shape, which is the whole point. `symbols/fk1.png` already
+    // exists in the shared data dir from the online run and is deliberately
+    // NOT enough to skip the fetch: the cache check is keyed on
+    // `symbol_source_url`, which is NULL here.
+    let before = h.upstream.requests().len();
+    let out = h.derive(&offline, DAY1, &[]);
+    assert!(
+        out.status.success(),
+        "a cold derive must not be refused over a set symbol:\n{}",
+        text(&out)
+    );
+    let said = text(&out);
+
+    // THE assertion. A symbol fetch that had gone through the replay layer
+    // would have been a miss, and a miss is fatal — so this line and a live
+    // symbol fetch in the same run is the proof that the phase bypasses it.
+    assert!(
+        said.contains("raw coverage: complete"),
+        "a live symbol fetch must not count as a gap in raw/:\n{said}"
+    );
+    // fk1 normalised, fk2's fetch 404'd, and the one override is `mep` —
+    // `tcgcsv::import_groups` synthesizes that set row from the compiled-in
+    // bridge overlay with `symbol_url = /sets/mep-symbol.svg`, which does not
+    // start with `http` and so is skipped rather than fetched. Nothing was
+    // cached: the shared data dir already holds `symbols/fk1.png` from the
+    // online run, and it is deliberately not enough — the cache check is keyed
+    // on `symbol_source_url`, which is NULL on this cold catalog.
+    assert!(
+        said.contains("1 processed, 0 cached, 1 overrides, 1 failed"),
+        "the symbol phase must have RUN — one normalised, one failed:\n{said}"
+    );
+    assert!(
+        said.contains("images are deliberately not landed"),
+        "a failed symbol must still explain itself to an operator:\n{said}"
+    );
+
+    // Not inferred from a log line: the fixture upstream was actually asked.
+    let asked: Vec<String> = h.upstream.requests().split_off(before);
+    assert!(
+        asked.iter().any(|r| r == "/symbol/fk1.png"),
+        "the offline derive never fetched fk1's symbol: {asked:?}"
+    );
+
+    // And the cold derive reproduced the online catalog's `sets` rows, which
+    // is what pd-vves's proof could only assert about two skipped phases.
+    assert_eq!(
+        scalar::<String>(
+            &offline,
+            "SELECT symbol_url FROM sets WHERE set_code = 'fk1'"
+        ),
+        "/sym/fk1.png"
+    );
+    assert_eq!(
+        scalar::<String>(
+            &offline,
+            "SELECT symbol_source_url FROM sets WHERE set_code = 'fk1'"
+        ),
+        symbol_url
+    );
+    let diff = h.diff(&online, &offline);
+    assert!(
+        diff.status.success(),
+        "a cold derive is not row-identical:\n{}",
+        text(&diff)
+    );
 }
 
 /// A derivation that goes wrong must fail the job, not ship a smaller catalog.
@@ -750,7 +940,7 @@ fn a_corrupted_payload_stops_the_derive_instead_of_deriving_from_it() {
     std::fs::write(&part, zstd::encode_all(&tampered[..], 1).unwrap()).expect("write part");
 
     let target = h.db("from-corrupt");
-    let out = h.derive(&target, DAY1, &["--no-upstream-fallback"]);
+    let out = h.derive(&target, DAY1, &[]);
     assert!(
         !out.status.success(),
         "a payload that does not match its manifest must stop the derive:\n{}",
@@ -766,7 +956,7 @@ fn a_date_that_was_never_landed_refuses_by_name() {
     let h = Harness::start();
     assert!(h.online(&h.db("online"), DAY1, DAY1_CLOCK, false));
 
-    let out = h.derive(&h.db("never"), "2001-01-01", &["--no-upstream-fallback"]);
+    let out = h.derive(&h.db("never"), "2001-01-01", &[]);
     assert!(!out.status.success(), "{}", text(&out));
     let said = text(&out);
     assert!(said.contains("no runs landed"), "{said}");

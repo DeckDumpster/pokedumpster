@@ -544,6 +544,20 @@ Landing is opt-in and off by default: with the flag absent, `lake.env` is
 never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
 runbook.
 
+**The nightly refresh runs in its own container** (`deploy/refresh.sh`), like
+the derive and transform jobs beside it — it does not `podman exec` into the
+running server. That call drops the caller's environment, so the documented
+drop-in that turns landing on set `PKDUMP_LAND_RAW=1` somewhere the refresh
+could never read it, and the timer went green having landed nothing (pd-kncd).
+`-e` alone would not have been enough: `podman exec` cannot add a mount to a
+running container either, and the alternative — putting the lake's credentials
+on the app container — would give the always-on web server ambient write access
+to the lake bucket, which is the exact coupling `pkdump-lake` is offline-only to
+prevent. **Nothing that serves a request may hold a lake credential.** The
+wrapper's last line is the guard that matters: landing asked for and no landing
+zone opened **fails the unit**, because that is the silent green no-op the
+whole landing zone is worthless without.
+
 ### The tenant zone
 
 Everything above is the **catalog zone**. The same bucket also holds the
@@ -599,6 +613,46 @@ retention check refused three separate ways of getting the rule wrong. That gate
 own fixtures leave the zone **empty**, deliberately — it is about the
 governance, and `tests/lake/shipper.sh` is what puts real (invented) holdings
 through it. Runbook: `deploy/TENANT_ZONE.md`.
+
+### The catalog/tenant zone guard
+
+`tests/lake/tenant_isolation_test.sh` is the source-level boundary gate (lint
+tier, hermetic, ~2s). It shipped with the lakehouse epic asserting one rule —
+*the LAKE holds no tenant data* — over directory globs. The tenant zone makes
+that premise false **by design**, so pd-7x83 re-cut its axis rather than
+carving holes in it: it is now the **catalog zone** (`raw/`, `lake/` —
+cross-tenant, shared, forever) against the **tenant zone** (`tenant/` —
+tenant-keyed by construction, governed separately). Four things about it are
+decisions:
+
+- **The catalog zone keeps every assertion it had.** No Iceberg field is
+  tenant-identifying, `crates/pkdump-lake` links no SQLite at all, the Python
+  write path imports no `sqlite3`, the derive resolves no tenant.
+- **The tenant zone's rules are INVERTED, not relaxed.** It must be
+  tenant-keyed — every key builder in `tenant.rs` takes a `database_id`,
+  because that prefix is what a deletion drops — and it must resolve no
+  identity: being handed an id is the contract, looking one up is not. The
+  shipper reaches no catalog prefix, no catalog entry point and no catalog
+  credential; the online path (`pkdump-db`, `pkdump-server`, `pkdump-keys`)
+  links neither zone, which is what makes the outbox the only way holdings
+  leave a collection.
+- **The carve-out is by ZONE and it is TOTAL.** Every Rust file in
+  `crates/pkdump-lake` must be classified into exactly one zone, and §12 fails
+  if the three lists do not cover the directory. A per-file exemption list is
+  what erodes; a classification that has to cover the directory cannot be
+  added to silently.
+- **It has been seen red.** `tests/lake/tenant_isolation_selftest.sh` (lint
+  tier, ~45s) copies the source trees, injects ONE violation at a time and
+  requires the *specific* assertion to be the one that fails — 25 of them,
+  including a tenant column added to a catalog table and every fail-closed
+  case. Four cases assert the opposite: the tenant zone being legitimately
+  tenant-keyed must fire nothing, because a guard whose first contact with
+  real work is a false positive is a guard that gets an exemption list.
+
+The credential half of the same boundary is not here and cannot be — it is two
+IAM documents against a real bucket, and `tests/lake/tenant_zone.sh` §4-§6 is
+where it is asserted, in both directions, seen red.
+
 ### Key custody for the tenant zone
 
 `pkdump-keys` is crypto-shredding for the tenant zone, defence in depth beside
@@ -774,6 +828,18 @@ tenant's own database. Three rules hold it in shape:
   collection is read from, and the snapshot written back to, SQLite. Neither
   ever travels the other way, and `tests/lake/value_snapshots.sh` §9 asserts
   the catalog still holds nothing but `catalog.prices` after a run.
+  That is the runtime half. The static half is
+  `tests/lake/tenant_isolation_test.sh` (lint tier, hermetic, pd-cgi9): no
+  Iceberg schema field name is tenant-identifying, and no lake write path *can*
+  open a tenant database — `crates/pkdump-lake` links no SQLite crate and the
+  Python write-path modules import no `sqlite3`, so both hold by construction
+  rather than by review, the way the closed `Source` enum holds "images are
+  never landed". Adding a tenant column or a tenant DB open now fails in a
+  second instead of nothing at all. The transform tier is the deliberate
+  exception the guard encodes: it opens every tenant's database, and is
+  asserted to only ever READ the lake. Since the inbound leg that guard's axis
+  is the **catalog zone against the tenant zone** rather than the lake against
+  everything else — see "The catalog/tenant zone guard" below.
 
 The aggregate itself is a transliteration of `value_history.rs` — two
 implementations of one calculation, deliberately, because the rewrite has to
@@ -919,6 +985,62 @@ upstream is `tests/refresh/upstream.py`, a fixture that publishes nothing —
 reached through `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL`
 (`crates/pkdump-ingest/src/upstream.rs`, test-tier, and an override announces
 itself on stderr so a catalog can never be quietly built from the wrong place).
+
+
+### When an upstream is having a bad day
+
+On 2026-08-11 `api.pokemontcg.io` answered 5xx to ~45% of requests for most of
+a day. Neither client retried anything and the tail is fetched first, so a
+single 500 on `/v2/sets?page=1` ended the whole refresh in its first second —
+**before TCGCSV**, so no prices were imported at all. A day's prices cannot be
+re-fetched later; a day's set list can (pd-nons). Two changes, and three things
+about them are decisions:
+
+- **A bounded retry is not fallback logic.** `crates/pkdump-ingest/src/retry.rs`
+  retries transport failures, 429 and 5xx — four attempts, 500ms doubling to an
+  8s cap, no jitter — and every other non-2xx exactly once, because a 404 is a
+  fact about the URL. Nothing is defaulted or substituted; when the budget is
+  spent the original error propagates as it always did. It lives in
+  `landing::fetch_bytes`, the one place any client executes a request, so a
+  client added later cannot forget to retry. `PKDUMP_HTTP_RETRY_ATTEMPTS` /
+  `PKDUMP_HTTP_RETRY_BASE_MS` widen it without a rebuild — on the `podman
+  exec` or on the container, since the refresh unit execs into a running
+  instance.
+- **Only the FINAL failure reaches the manifest.** `complete` is computed from
+  `failures.is_empty()`, so logging the attempts a retry recovered from would
+  mark a whole night's raw partition incomplete for a hiccup it survived. A
+  failure record means "this URL was not fetched". The retries are still loud —
+  on stderr, in the unit's journal.
+- **The tail may fail without ending the run; TCGCSV may not.** `acquire`
+  carries a tail error into `Report.tail_error` instead of returning it, so the
+  perishable half is still acquired and every local phase still runs.
+  `pkdump data refresh` then exits **2** (0 whole / 2 partial / 1 failed) and
+  says so; `pkdump-lake-derive` bails and refuses to record provenance, because
+  its claim is that the catalog *is* the partition's derivation.
+
+**Do not "fix" this by fetching TCGCSV first.** That was tried and reverted.
+`tcgcsv::import_groups` links each group to the `sets` rows already in the
+database, so running it ahead of the tail on a catalog that lacks them leaves
+every `tcgplayer_groups.set_code` NULL until the *next* derivation — and an
+offline rebuild from `raw/` starts from an empty catalog every time, so a
+replayed catalog stops matching the online one it exists to reproduce.
+`crates/pkdump-lakehouse/tests/row_identical.rs` fails on it. The exposure that
+reordering would close is a tail that *hangs* rather than errors, and that is
+already bounded by the 30s request timeout times the retry budget against
+`TimeoutStartSec=1800`.
+
+Exit 2 is deliberately **not** wired to `SuccessExitStatus=` on
+`pkdump-refresh@`, unlike the transform tier — that job has a wrapper that
+pushes its own warning and this one does not, and a set list that silently
+stopped advancing is exactly what nothing else on the box would report. A
+partial run still pages. What changed is that the night is no longer lost.
+
+Gates: `crates/pkdump-ingest/tests/retry.rs`,
+`crates/pkdump-derive/tests/tail_failure.rs`, and
+`tests/refresh/tenant_bytes.sh` §9 (container tier — the shipped binary's exit
+status, its retry count against the `/v2-down` fixture prefix, and that the
+derivation continued past the failure).
+
 
 ### The ownership outbox
 

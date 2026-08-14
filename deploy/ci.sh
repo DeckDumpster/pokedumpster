@@ -455,6 +455,29 @@ if tier lint; then
     step "Alert page content (tests/alarming/journal_summary_test.sh)"
     bash "$REPO_DIR/tests/alarming/journal_summary_test.sh"
 
+    # The standing decision the whole lake design rests on — no tenant data ever
+    # enters it — existed only as comments in five files, so adding a tenant_id
+    # column to an Iceberg schema or opening a tenant SQLite in a lake job broke
+    # nothing (pd-cgi9). This is the missing mechanical half. It reads the tree
+    # and stands up no MinIO and no Nessie, so it runs HERE rather than in the
+    # two-minute lake tier it is named after — and a docs-only PR runs it too.
+    # See tests/lake/tenant_isolation_test.sh.
+    step "Tenant data stays out of the lake (tests/lake/tenant_isolation_test.sh)"
+    bash "$REPO_DIR/tests/lake/tenant_isolation_test.sh"
+
+    # And the half without which the one above is a guess. The inbound leg
+    # (pd-8lw7) gave that guard four new sections about a zone that did not
+    # exist when it was written, and a section whose corpus is empty passes
+    # forever — three gates went green that way in one day on this repo. This
+    # breaks the property on purpose, one violation at a time, and requires the
+    # SPECIFIC assertion to be the one that reddens; the last block is the
+    # opposite claim, that the tenant zone being legitimately tenant-keyed
+    # fires nothing. Hermetic — it copies the source trees to a temp dir — but
+    # it runs the guard once per case, so it is tens of seconds rather than
+    # sub-second. See tests/lake/tenant_isolation_selftest.sh.
+    step "That guard has been seen RED (tests/lake/tenant_isolation_selftest.sh)"
+    bash "$REPO_DIR/tests/lake/tenant_isolation_selftest.sh"
+
     # A formatter check, not a compile — `cargo fmt` parses and never builds,
     # so it costs a second and belongs with the lint tier rather than behind
     # `cargo test`.
@@ -700,6 +723,11 @@ if tier lake; then
     # build job runs on an --internal podman network, so there is no upstream to
     # call even if it wanted one, and its output is compared row for row against
     # the shared.sqlite built from the same upstream bytes.
+    #
+    # It also drives the SHIPPED nightly wrapper (deploy/prices.sh, pd-up36)
+    # against that lake: an incomplete day builds and raises nothing, a day whose
+    # raw never landed is a warning over a still-fresh table, and a table that
+    # has stopped advancing pages even on a night the build itself succeeded.
 
     step "Queueing: Lakehouse — catalog.prices built from raw/ alone, with no network"
     pkdump_par_add prices bash "$REPO_DIR/tests/lake/prices.sh"

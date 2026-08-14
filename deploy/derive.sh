@@ -14,7 +14,6 @@
 #
 #   bash deploy/derive.sh prod                            # today's partition
 #   bash deploy/derive.sh prod --ingest-date 2026-08-09   # rebuild an older day
-#   bash deploy/derive.sh prod --no-upstream-fallback     # refuse a gap in raw
 #
 # ── TWO UNITS, AND WHY ──────────────────────────────────────────────────────
 # Landing and deriving are separate scheduled units on purpose: a derive can
@@ -34,8 +33,8 @@
 #
 # ── EXIT STATUS IS THE JOB'S, UNCHANGED ─────────────────────────────────────
 #   0  the catalog was derived from that partition
-#   1  it was not — the partition is absent, incomplete, clockless, or the
-#      derivation itself failed
+#   1  it was not — the partition is absent, incomplete, clockless, missing a
+#      URL the derivation asked for, or the derivation itself failed
 #
 # There is no exit 2 here, unlike the value-snapshot wrapper, and that asymmetry
 # is the point. That job writes N tenant databases and "some of them" is a real
@@ -129,38 +128,28 @@ fi
 # Not :ro either way — shared.sqlite is a WAL database and SQLite cannot open
 # one through a read-only mount at all.
 #
-# Through `tee` rather than captured: variant expansion prints a line per
-# thousand cards over ~50k of them, so a run that hangs must be visible in the
-# journal WHILE it is hanging rather than only in its epitaph. `pipefail` is
-# what keeps the job's status the one that is read, not tee's.
+# Streamed straight to the journal rather than captured: variant expansion
+# prints a line per thousand cards over ~50k of them, so a run that hangs must
+# be visible WHILE it is hanging rather than only in its epitaph. Nothing reads
+# the output back any more — the coverage warning that used to grep it went
+# with the fallback (item 4), and what is left is the exit status.
 
 echo "==> derive ${INSTANCE}: ${ARGS[*]}"
 echo "    data ${DATA}, image ${IMAGE}"
-
-LOG="$(mktemp)"
-trap 'rm -f "$LOG"' EXIT
 
 RC=0
 podman run --rm --pull=never \
     -v "${DATA}:/data:Z" \
     "${ENV_ARGS[@]}" ${CRED_ARGS[@]+"${CRED_ARGS[@]}"} \
     --entrypoint pkdump-lake-derive \
-    "$IMAGE" shared --db /data/shared.sqlite --data-dir /data "${ARGS[@]}" 2>&1 |
-    tee "$LOG" || RC=$?
-OUT="$(cat "$LOG")"
+    "$IMAGE" shared --db /data/shared.sqlite --data-dir /data "${ARGS[@]}" 2>&1 || RC=$?
 
 if [ "$RC" -eq 0 ]; then
+    # Exit 0 now carries the lineage claim on its own. A URL the partition does
+    # not hold is a refusal inside the job (item 4 removed the fallback), so
+    # there is no longer a "correct catalog, unreproducible lineage" outcome to
+    # warn about — that shape exits 1 and pages like any other failure.
     echo "derive: OK — the catalog was rebuilt from raw/ (${INSTANCE})"
-    # The fallback is temporary (epic item 4 removes it) and while it exists a
-    # run that needed it is NOT reproducible from the lake. That is a warning
-    # rather than a failure — the catalog is correct, the LINEAGE is not — and
-    # it must not be swallowed just because the job exited 0.
-    if printf '%s\n' "$OUT" | grep -q 'raw coverage has REGRESSED'; then
-        echo "derive: WARNING — raw coverage has regressed; this derive reached upstream (${INSTANCE})" >&2
-        "${SCRIPT_DIR}/alert.sh" "PokeDumpster derive fell back to upstream (${INSTANCE})" \
-            "raw/ did not cover the derivation's inputs, so the run fetched live. It is not reproducible from the lake. See journalctl --user -u pkdump-derive@${INSTANCE}.service" ||
-            echo "derive: the coverage warning reached nobody (no Pushover channel configured) — the run itself is unaffected" >&2
-    fi
 else
     echo "derive: FAILED — the catalog was NOT rebuilt (${INSTANCE})" >&2
 fi

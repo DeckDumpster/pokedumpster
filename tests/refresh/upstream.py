@@ -18,6 +18,7 @@ parses:
 
     GET /tcgplayer/<category>/groups          -> {"results": []}
     GET /v2/sets                              -> {"data": []}
+    GET /v2-down/sets                         -> 502, every time
 
 Anything else is a 404 with the path in it, recorded in the log. A refresh that
 starts asking for something this file does not know about should read as a
@@ -47,6 +48,16 @@ TCGCSV_GROUPS = re.compile(r"^/tcgplayer/\d+/groups$")
 # cards either — every card fetch is nested inside a set the catalog lacks.
 PTCGIO_SETS = re.compile(r"^/v2/sets$")
 
+# The same set list, from an origin having the day api.pokemontcg.io had on
+# 2026-08-11: 502 to everything (pd-nons). Pointing PKDUMP_POKEMONTCG_BASE_URL
+# at `/v2-down` instead of `/v2` is how §9 of tenant_bytes.sh gets a tail that
+# fails every retry, out of the SHIPPED binary, without touching TCGCSV.
+#
+# A second prefix rather than a mode flag on the first: the gate runs both in
+# one process, minutes apart, and a server whose behaviour depends on when you
+# ask it is a server nobody can read a log from.
+PTCGIO_SETS_DOWN = re.compile(r"^/v2-down/sets$")
+
 
 class Upstream(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -59,6 +70,8 @@ class Upstream(http.server.BaseHTTPRequestHandler):
             self._reply(200, b'{"results":[],"success":true,"errors":[]}')
         elif PTCGIO_SETS.match(path):
             self._reply(200, b'{"data":[],"page":1,"pageSize":250,"count":0,"totalCount":0}')
+        elif PTCGIO_SETS_DOWN.match(path):
+            self._reply(502, b'{"error":"upstream is having 2026-08-11"}')
         else:
             self._reply(
                 404,

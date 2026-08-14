@@ -1914,6 +1914,86 @@ mod tests {
         assert!(refused.is_err(), "the CHECK came with the column");
     }
 
+    /// **The upgrade path every existing box takes** (pd-4gop). A collection
+    /// created before the sealed triggers existed holds sealed lots that
+    /// generated no event and never would have. Opening it must hang the
+    /// triggers — `schema_user.sql` is re-applied on every open, which is
+    /// what makes three `CREATE TRIGGER IF NOT EXISTS` statements a
+    /// migration — and the backfill must then cover those lots, or the
+    /// tenant's sealed holdings stay invisible to the zone forever while
+    /// their singles ship normally.
+    ///
+    /// That is the silent under-report this bead exists to prevent, reached
+    /// from the deployment end rather than the code end: nothing about a box
+    /// in that state looks broken.
+    #[test]
+    fn a_collection_from_before_the_sealed_triggers_gains_them_and_backfills() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collection.sqlite");
+
+        // The pre-pd-4gop shape: sealed lots, no sealed triggers. Dropping
+        // them is exactly what an older schema file leaves behind.
+        {
+            let conn = crate::open_user(&path).unwrap();
+            for name in [
+                "sealed_collection_outbox_insert",
+                "sealed_collection_outbox_update",
+                "sealed_collection_outbox_delete",
+            ] {
+                conn.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO sealed_collection (product_id, quantity, added_at) \
+                 VALUES (5001, 2, '2024-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO collection (printing_id, acquired_at, source) \
+                 VALUES ('sv3pt5-1-normal', '2024-01-01T00:00:00Z', 'manual_id')",
+                [],
+            )
+            .unwrap();
+            assert_eq!(
+                evs_from(&conn, "sealed_collection"),
+                [],
+                "the fixture really is the old shape — the lot emitted nothing"
+            );
+        }
+
+        // Opening it re-applies `schema_user.sql`, which is what makes three
+        // `CREATE TRIGGER IF NOT EXISTS` statements a migration.
+        let mut conn = crate::open_user(&path).unwrap();
+        let triggers: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' \
+                 AND tbl_name = 'sealed_collection'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(triggers, 3, "opening it hung the sealed triggers");
+
+        // The lot that predates them is still silent — triggers only fire on
+        // future mutations — which is precisely why the backfill exists.
+        assert_eq!(evs_from(&conn, "sealed_collection"), []);
+
+        let run = emit(&mut conn, &Scope::Collection, false).unwrap();
+        assert_eq!(
+            run.per_table,
+            vec![
+                ("collection".to_string(), 1),
+                ("sealed_collection".to_string(), 1)
+            ],
+            "the backfill covers the lot that predates the triggers"
+        );
+        assert_eq!(
+            projection(&conn)[&sealed_key(1)]["quantity"],
+            2,
+            "and the zone holds it, quantity and all"
+        );
+    }
+
     /// The list the emitter works from is checked against the triggers
     /// rather than trusted. `sealed_collection` is a holding like any other
     /// (pd-4gop) and its triggers are a separate change; the day they land,

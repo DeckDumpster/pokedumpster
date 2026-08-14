@@ -958,6 +958,14 @@ Gates, all in `outbox.rs` and all seen red:
 - `a_row_scope_redrives_only_its_own_table` — the pair rule on the emit side.
   Seen red by dropping the table guard from `scope_predicate`: a redrive of
   one single then emits an unrelated sealed lot sharing its number.
+- `a_collection_from_before_the_sealed_triggers_gains_them_and_backfills` —
+  **the upgrade path every existing box takes.** A collection older than the
+  sealed triggers holds lots that generated no event and never would have;
+  opening it must hang the triggers (re-applying `schema_user.sql` is what
+  makes three `CREATE TRIGGER IF NOT EXISTS` statements a migration) and the
+  backfill must then cover those lots. Nothing about a box in the failing
+  state looks broken — its singles ship normally while its sealed holdings
+  stay invisible — which is why this is a test and not a runbook step.
 - The rule-4 refusal, the DR reconcile, idempotence under `--force`, the
   payload being byte-identical to the trigger's, and all three scope refusals
   (a backwards range, a range starting below 1, a table the outbox does not

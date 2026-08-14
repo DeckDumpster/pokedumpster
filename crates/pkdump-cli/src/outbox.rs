@@ -26,12 +26,15 @@
 //! silently, exactly as before. **Arming the shipper on prod means running
 //! this over every tenant**, which is what `--all-tenants` is for.
 //!
-//! A tenant that fails is named and skipped; the run finishes and exits 2,
-//! the same three answers the transform tier gives:
+//! Under `--all-tenants`, a tenant that fails is named and skipped; the run
+//! finishes and exits 2, the same three answers the transform tier gives:
 //!
 //! | 0 | every tenant emitted |
 //! | 2 | some tenant was skipped — a partial run, not a failure |
-//! | 1 | the run never started |
+//! | 1 | the run failed, or never started |
+//!
+//! Over ONE collection there is no partial state to be in, so a failure is
+//! just a failure and exits 1.
 //!
 //! Paths come from `$PKDUMP_HOME` and `$PKDUMP_USER`, so
 //! `podman exec <ctr> pkdump outbox …` works against a running instance the
@@ -196,14 +199,19 @@ fn scope_of(args: &EmitArgs) -> anyhow::Result<Scope> {
 fn emit(args: EmitArgs) -> anyhow::Result<()> {
     let scope = scope_of(&args)?;
     let targets = targets(&args.which)?;
-    let many = targets.len() > 1;
+    // Whether a skip is a possible outcome follows what was ASKED FOR, not
+    // how many tenants happen to be registered — otherwise `--all-tenants`
+    // means one thing on a one-tenant box and another on a two-tenant one,
+    // and the exit code a runbook was written against changes when somebody
+    // signs up.
+    let fleet = args.which.all_tenants;
 
     println!(
         "emitting scope {} as {} over {} collection{}",
         scope.label(),
         scope.provenance(),
         targets.len(),
-        if many { "s" } else { "" }
+        if targets.len() == 1 { "" } else { "s" }
     );
 
     let mut skipped: Vec<String> = Vec::new();
@@ -228,6 +236,11 @@ fn emit(args: EmitArgs) -> anyhow::Result<()> {
                 total += run.events;
                 println!("  {handle}: {}", describe(&run));
             }
+            // One collection has no partial state to be in: whatever went
+            // wrong IS the outcome, so it propagates and exits 1. Exit 2
+            // means "some of the tenants were skipped", which is only a
+            // thing that can happen when there are some.
+            Err(e) if !fleet => return Err(e.context(format!("tenant {handle}"))),
             Err(e) => {
                 // A tenant mid-import, a restore in flight, a database this
                 // build refuses to open. Named and skipped: abandoning the

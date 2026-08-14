@@ -333,6 +333,16 @@ inability to read shipped holdings asserted in the failing direction too, a
 real process killed mid-run and resumed, and `deploy/ship.sh`'s four exit
 statuses.
 
+`tests/lake/tenant_isolation_test.sh` is the source-level boundary (lint tier,
+hermetic, pd-cgi9 re-cut by pd-7x83). It is where "the tenant zone is
+tenant-keyed and the catalog zone is not" stops being a convention: every key
+builder in `crates/pkdump-lake/src/tenant.rs` takes a `database_id`, the zone
+resolves no tenant identity of its own, the shipper names no catalog prefix,
+entry point or credential, and the online path links neither zone. Its own red
+proof is `tests/lake/tenant_isolation_selftest.sh`, which breaks each of those
+in a copy of the tree and requires the matching assertion to fail — and
+requires the tenant zone's *legitimate* tenant-keying to fire nothing.
+
 ---
 
 ## 7. Deleting a tenant out of it

@@ -457,6 +457,19 @@ if tier lint; then
     step "Tenant data stays out of the lake (tests/lake/tenant_isolation_test.sh)"
     bash "$REPO_DIR/tests/lake/tenant_isolation_test.sh"
 
+    # And the half without which the one above is a guess. The inbound leg
+    # (pd-8lw7) gave that guard four new sections about a zone that did not
+    # exist when it was written, and a section whose corpus is empty passes
+    # forever — three gates went green that way in one day on this repo. This
+    # breaks the property on purpose, one violation at a time, and requires the
+    # SPECIFIC assertion to be the one that reddens; the last block is the
+    # opposite claim, that the tenant zone being legitimately tenant-keyed
+    # fires nothing. Hermetic — it copies the source trees to a temp dir — but
+    # it runs the guard once per case, so it is tens of seconds rather than
+    # sub-second. See tests/lake/tenant_isolation_selftest.sh.
+    step "That guard has been seen RED (tests/lake/tenant_isolation_selftest.sh)"
+    bash "$REPO_DIR/tests/lake/tenant_isolation_selftest.sh"
+
     # A formatter check, not a compile — `cargo fmt` parses and never builds,
     # so it costs a second and belongs with the lint tier rather than behind
     # `cargo test`.

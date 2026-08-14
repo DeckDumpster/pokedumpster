@@ -712,6 +712,15 @@ emits synthetic events *through the outbox* with a provenance column; a
 consumer that treated those differently would make the backfill a second code
 path instead of the same one.
 
+**A part carries `source_table` beside `row_id`, and that pair is the
+identity** — `row_id` alone is not (pd-4gop). `collection` and
+`sealed_collection` number their rows independently, so the first single and
+the first sealed lot are both `row_id = 1`, which is the ordinary shape of a
+collection rather than a corner case. A reader that grouped a holdings part by
+`row_id` would merge two unrelated streams into one projection and produce a
+plausible wrong number. The shipper itself keys nothing on either: its only
+key is `seq`, unique across the whole outbox.
+
 **It is installed on a timer and armed by nobody yet** —
 `pkdump-ship@<instance>.timer`, `After=pkdump-value-snapshots@%i.service`
 (both open every tenant's database), at 07:30, derived from that unit's own

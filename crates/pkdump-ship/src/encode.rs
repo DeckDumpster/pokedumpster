@@ -32,6 +32,23 @@
 //! and [`crate::cipher`] binds each object to its own key, so a second copy
 //! inside the file could only ever disagree with those.
 //!
+//! ## `row_id` alone identifies nothing — the key is (`source_table`, `row_id`)
+//!
+//! `row_id` is unique only WITHIN a source table (pd-4gop). `collection` and
+//! `sealed_collection` number their rows independently, so the first single
+//! and the first sealed lot are BOTH `row_id = 1` — which is the ordinary
+//! shape of a collection, not a corner case. A reader that grouped this
+//! dataset by `row_id` would silently merge two unrelated streams of events
+//! into one projection and produce a number that looks entirely plausible.
+//!
+//! So `source_table` is carried in every part, beside `row_id`, and it is
+//! there for that reason rather than for provenance. **The shipper itself
+//! keys nothing on either**: its only key is `seq`, which is unique across the
+//! whole outbox. The pair is here for whatever reads these parts.
+//!
+//! (`payload` also carries the row's own `id`, but only the pair says which
+//! table that id is in — so it is no substitute either.)
+//!
 //! ## Determinism
 //!
 //! `created_by` is pinned rather than left to the writer, so two builds of
@@ -217,6 +234,38 @@ mod tests {
         // writer that panicked on the empty case would be a landmine for the
         // backfill, which will call this with whatever a scope produces.
         assert_eq!(decode(encode(&[]).unwrap()).unwrap(), Vec::<Event>::new());
+    }
+
+    /// Two events that differ ONLY by source table stay distinguishable in the
+    /// zone. `row_id` is unique within a table, not across the outbox
+    /// (pd-4gop), so a part that dropped `source_table` — or a reader that
+    /// grouped on `row_id` alone — would merge a single and a sealed lot into
+    /// one row and produce a plausible wrong answer.
+    ///
+    /// Seen red: writing a constant into the `source_table` column instead of
+    /// the event's own makes these two events identical here.
+    #[test]
+    fn the_same_row_id_in_two_tables_is_two_different_things() {
+        let of = |seq: i64, table: &str| Event {
+            seq,
+            occurred_at: "2026-08-14T00:00:00.000Z".into(),
+            source_table: table.to_string(),
+            op: "insert".into(),
+            row_id: 1,
+            payload: r#"{"id":1}"#.into(),
+        };
+        let events = vec![of(1, "collection"), of(2, "sealed_collection")];
+        let back = decode(encode(&events).unwrap()).unwrap();
+
+        assert_eq!(back, events);
+        assert_eq!(
+            back[0].row_id, back[1].row_id,
+            "the fixture is the hard case"
+        );
+        assert_ne!(
+            back[0].source_table, back[1].source_table,
+            "…and the only thing that tells them apart survived the round trip"
+        );
     }
 
     /// The payload reaches the zone as the trigger wrote it, character for

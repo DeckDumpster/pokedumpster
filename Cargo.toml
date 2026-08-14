@@ -10,6 +10,7 @@ members = [
     "crates/pkdump-lake",
     "crates/pkdump-lakehouse",
     "crates/pkdump-server",
+    "crates/pkdump-ship",
 ]
 
 [workspace.package]
@@ -28,6 +29,7 @@ pkdump-ingest = { path = "crates/pkdump-ingest" }
 pkdump-keys = { path = "crates/pkdump-keys" }
 pkdump-lake = { path = "crates/pkdump-lake" }
 pkdump-server = { path = "crates/pkdump-server" }
+pkdump-ship = { path = "crates/pkdump-ship" }
 
 # External — crates opt in via `dep.workspace = true` as tasks need them
 anyhow = "1"
@@ -68,6 +70,15 @@ hex = "0.4"
 zeroize = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1"
+# The shipper (pkdump-ship). Parquet without arrow: the tenant zone is plain
+# partitioned Parquet, and the low-level column writer is all a five-column
+# append-only batch needs — `default-features = false` keeps the whole arrow
+# stack out of a workspace that has no other use for it.
+parquet = { version = "59", default-features = false, features = ["zstd"] }
+# AES-256-GCM for the tenant zone's objects. RustCrypto again, for the reason
+# `hkdf` is: this is the second place where subtly wrong is unrecoverable.
+aes-gcm = "0.11"
+bytes = "1"
 
 [profile.release]
 strip = true

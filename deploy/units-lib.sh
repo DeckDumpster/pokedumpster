@@ -160,6 +160,17 @@ pkdump_units_install() {
             -e "s|{{REPO_DIR}}|${repo_dir}|g"
     done
 
+    # --- The ownership shipment (pd-dxn3) -----------------------------------
+    # The outbox into the tenant zone, ordered after the transform above
+    # because both open every tenant's database. Installed for every instance
+    # and enabled for none — see deploy/setup-lake.sh --arm-shipper, which is
+    # the one place arming it is a deliberate act rather than a side effect.
+    for ext in service timer; do
+        _pkdump_units_render "${systemd_user_dir}/pkdump-ship@.${ext}" nostamp \
+            "$repo_dir/deploy/pkdump-ship.${ext}" \
+            -e "s|{{REPO_DIR}}|${repo_dir}|g"
+    done
+
     # --- Backup-failure alarming units (pokedumpster-ivq) -------------------
     # Layer 1: backup-freshness dead-man's switch (per-instance @ template).
     # Layer 2: OnFailure -> Pushover journal-tail push (instance-by-failed-unit).

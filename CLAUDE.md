@@ -78,6 +78,10 @@ cargo test -p pkdump-ingest --test raw_landing
                                  # the real HTTP clients against a local
                                  #   upstream: landing is a tee, a retry never
                                  #   overwrites, a short run says so
+cargo test -p pkdump-ship        # the shipper: part planning and gap
+                                 #   detection, the sealed envelope, Parquet —
+                                 #   and tests/shipping.rs, the four claims
+                                 #   pd-dxn3 asks for, end to end
 cargo test -p pkdump-lakehouse   # partition choice, replay, the comparator —
                                  #   and tests/row_identical.rs, the acceptance
                                  #   matrix, against the shipped binary
@@ -92,6 +96,10 @@ bash tests/lake/value_snapshots.sh
 bash tests/lake/tenant_zone.sh   # the tenant zone's credential boundary, BOTH
                                  #   directions, seen green AND red — plus the
                                  #   90-day retention, mechanically
+bash tests/lake/shipper.sh       # the shipper against a real bucket under the
+                                 #   real tenant policy: killed mid-run and
+                                 #   resumed, and the catalog role unable to
+                                 #   read a byte of what it wrote (seen red)
 bash tests/refresh/tenant_bytes.sh
                                  # the other half: a real `pkdump data refresh`
                                  #   over a data dir with two tenants in it
@@ -107,6 +115,10 @@ cargo run --bin pkdump-lake-derive -- shared --ingest-date 2026-08-11 \
                                  # the same derivation, OFFLINE, replaying raw/
 cargo run --bin pkdump-lake-derive -- diff --left a.sqlite --right b.sqlite \
     --exclude raw_derivation     # row-by-row, never byte-by-byte
+cargo run --bin pkdump-ship -- run       # outbox -> tenant zone, every tenant
+cargo run --bin pkdump-ship -- status    # what is unshipped, and any gaps
+cargo run --bin pkdump-ship -- decrypt --key tenant/… --json
+                                 # read one shipped part back
 cargo run --bin pkdump -- seed-fixture   # build the deterministic UI-test fixture
 
 # Portable collection backup — every user table in one versioned JSON
@@ -148,7 +160,7 @@ cd tests/ui && npm test
 
 ## Architecture Overview
 
-Cargo workspace, eight crates (`crates/`):
+Cargo workspace, nine crates (`crates/`):
 
 - **pkdump-core** — domain types + pure logic (variant code parsing,
   override matching, import format adapters). No IO.
@@ -178,6 +190,10 @@ Cargo workspace, eight crates (`crates/`):
   run manifest, the object stores, and the `lake.env` config. Write-only
   and offline-only; nothing on the serving path touches it. See
   `deploy/LAKE.md`.
+- **pkdump-ship** — the shipper (`pkdump-ship`): the ownership outbox into
+  the tenant zone, encrypted per tenant. Offline and bin-plus-lib; it is a
+  separate crate because it must read SQLite, and `pkdump-lake` deliberately
+  links no SQLite at all. See "The shipper" below.
 - **pkdump-server** — Axum HTTP app; JSON API under `/api` + serves the
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).
@@ -422,10 +438,10 @@ reports the conclusion whatever the trigger was. Never conclude a PR is green fr
 If a branch has already been dispatched and needs a real PR check, push another
 commit: a new SHA gets a new suite, and the `pull_request` event creates it.
 
-**Twelve of the gates run in parallel, two at a time** (pd-2nl9; lowered from
+**Fifteen of the gates run in parallel, two at a time** (pd-2nl9; lowered from
 three on 2026-08-13 — see `PKDUMP_CI_JOBS` in `deploy/ci-parallel.sh`) —
 litestream, drill, alarming, recreate, upgrade, tenant-header, keys,
-schema-version, the three lake gates and refresh. They do not run where they are written: each
+schema-version, the six lake gates and refresh. They do not run where they are written: each
 **queues** itself under its own tier guard and `deploy/ci-parallel.sh` runs the
 queue at the end. What makes that safe is not new — every one of those scripts
 already derives every name it uses (network, container, volume, image tag, unit
@@ -456,7 +472,7 @@ the cap is reached and never exceeded, that a failure among passes is red and
 named, that output survives concurrency, that the *real* `diskcheck.sh` trips
 against an impossible floor, that the hold branch waits rather than aborts, that
 a background job of the *caller's* is never mistaken for a gate, and that every
-one of the fourteen gate scripts is still queued exactly once under a real tier.
+one of the fifteen gate scripts is still queued exactly once under a real tier.
 That last one is the refactor's own failure mode: a gate queued nowhere runs
 never, and a green run cannot show you that.
 
@@ -574,9 +590,10 @@ silently widens a policy.
 `tests/lake/tenant_zone.sh` is the gate, and every claim in it is seen **both
 green and red**: the boundary in both directions, then the *same assertion
 functions* re-run against a credential replaced by a whole-bucket grant; the
-retention check refused three separate ways of getting the rule wrong. The
-zone is deliberately **empty** — this builds the governance, not the data
-flow (the shipper is item 4). Runbook: `deploy/TENANT_ZONE.md`.
+retention check refused three separate ways of getting the rule wrong. That gate's
+own fixtures leave the zone **empty**, deliberately — it is about the
+governance, and `tests/lake/shipper.sh` is what puts real (invented) holdings
+through it. Runbook: `deploy/TENANT_ZONE.md`.
 ### Key custody for the tenant zone
 
 `pkdump-keys` is crypto-shredding for the tenant zone, defence in depth beside
@@ -631,6 +648,106 @@ Gates: the hermetic crate tests (45 of them, including RFC 5869 vectors and
 the separation gate) and `tests/keys/run.sh`, the container tier, which stats
 the **deployed** key file for mode 600 — "the code sets 600" and "the file is
 600" are different claims — and re-runs the crux on a real box.
+
+### The shipper
+
+`pkdump-ship` is what moves the ownership outbox into the tenant zone
+(pd-dxn3, item 4 of the inbound-leg epic). It is the seam between the outbox
+(pd-5m54), the zone (pd-uz8q) and key custody (pd-ulds), and it is the ONLY
+thing in the workspace that writes under `tenant/`.
+
+```text
+tenant/database_id=<id>/dataset=holdings/as_of=<date>/part-seq-<from>-<to>.parquet.enc
+```
+
+It is a **separate crate** for a structural reason, not a tidiness one: the
+shipper must open a tenant's SQLite, and `crates/pkdump-lake` links no SQLite
+crate at all — which is what makes pd-cgi9 §1 ("no lake write path can open a
+tenant database") true by construction rather than by review. `pkdump-lake`
+still owns where the bytes go and hands out the handle
+(`open_tenant_zone`); `pkdump-ship` decides what is in one.
+
+Five things are decisions:
+
+- **It reads no clock.** `as_of` is the UTC date of the event's own
+  `occurred_at`, and a part is a maximal run of consecutive rows sharing that
+  date. So re-shipping a range on a later day lands in the partition it landed
+  in the first time, and there is no `--date` for a scheduler to lend
+  (contrast the transform tier, where choosing the day is the whole point).
+- **A part is addressed by the sequence range it carries, never an ordinal.**
+  Delivery is at-least-once — the cursor is written *after* the PUT, so a
+  crash in between re-ships a part, which is the direction that repeats events
+  instead of losing them. An ordinal would make the retry a second object
+  beside the first; a range makes it land on the object it is retrying. That
+  is the whole of idempotence.
+- **The encryption is deterministic**, so the retry is byte-identical rather
+  than merely equivalent. AES-256-GCM under the derived key, with a synthetic
+  nonce hashed from the object key and the plaintext, and **the object key as
+  associated data** — so a part authenticates only under the prefix it was
+  written to, and one moved into another tenant's partition fails to open
+  rather than decrypting into the wrong holdings. `.parquet.enc` on every key
+  in the zone, because every object in it is sealed.
+- **The cursor and the gap ledger live in the tenant's own database**
+  (`ownership_outbox_cursor`, `ownership_outbox_gap`), beside the outbox they
+  point into, and are excluded from the portable JSON envelope for the reason
+  the outbox is: transport state, not collection state. An envelope carrying a
+  cursor would make a restore skip events it had never shipped.
+- **A gap is recorded, alarmed, and shipped past.** `seq` is gap-free by
+  construction, so a hole means an event was **lost**. The missing range is
+  written to the ledger *before* the cursor moves past it — once past, nothing
+  can detect it again — and the run ends at exit 3. It does not stop: the
+  missing rows are already gone, and withholding the rows that survive would
+  be a second loss caused by detecting the first.
+
+**Four exit statuses, because there are four things to say** — 0 clean, 2 some
+tenants skipped (warned, `SuccessExitStatus=2`), 3 SEQUENCE GAP (paged, with
+its own message naming the tenant and the range), 1 the run never started or
+shipped nobody at all. A tombstoned tenant is **not** an anomaly: the key
+refuses to derive, the tenant is skipped, and the run is still clean. An
+*unregistered* one is a warning naming `pkdump keys register`, because absence
+is not permission.
+
+It does not branch on where an outbox row came from. Item 5 (backfill/redrive)
+emits synthetic events *through the outbox* with a provenance column; a
+consumer that treated those differently would make the backfill a second code
+path instead of the same one. It does **carry** that column — a part is
+`pkdump_db::outbox::Event`'s seven fields, all of them, and there is exactly
+one struct for an outbox row (pd-mixm). Two spellings of one table is how a
+column added to it stops reaching the bucket; one means the schema fails to
+compile instead. Carrying is not branching, and it is what lets
+`encode::decode` compose with `pkdump_db::outbox::project` — so a reader
+reduces a shipped part with the SAME implementation of the resolution rule
+the collection's own gate uses, rather than a second one that agrees today.
+
+**A part carries `source_table` beside `row_id`, and that pair is the
+identity** — `row_id` alone is not (pd-4gop). `collection` and
+`sealed_collection` number their rows independently, so the first single and
+the first sealed lot are both `row_id = 1`, which is the ordinary shape of a
+collection rather than a corner case. A reader that grouped a holdings part by
+`row_id` would merge two unrelated streams into one projection and produce a
+plausible wrong number. The shipper itself keys nothing on either: its only
+key is `seq`, unique across the whole outbox.
+
+**It is installed on a timer and armed by nobody yet** —
+`pkdump-ship@<instance>.timer`, `After=pkdump-value-snapshots@%i.service`
+(both open every tenant's database), at 07:30, derived from that unit's own
+bounds. The chain is land → derive → prices → transform → **ship**. Do not arm
+it on prod before the backfill has run: the shipper ships the OUTBOX, an
+existing collection's outbox starts empty (pd-whsw), and armed early it
+faithfully ships every change made from tonight and nothing anybody already
+owns. `pkdump outbox emit --all --all-tenants` (pd-385w) is what makes the
+outbox describe the collection that is already there; arming is the step
+after it, per instance.
+
+Gates: `cargo test -p pkdump-ship` (hermetic — planning, the envelope, Parquet,
+and `tests/shipping.rs`, which proves gap detection, idempotence, resumability
+and encryption-under-the-right-key over a `DirStore`, plus the seam with item
+5: a backfilled collection ships as ordinary events, dated from the rows' own
+timestamps rather than the day the backfill ran) and
+`tests/lake/shipper.sh` (container tier — the shipped image against a real
+MinIO under the real tenant policy, a real process killed mid-run and resumed,
+the catalog role's denial seen both green and red, and `deploy/ship.sh`'s four
+exit statuses).
 
 ### The transform tier
 

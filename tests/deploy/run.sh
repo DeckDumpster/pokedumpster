@@ -1033,6 +1033,190 @@ check "never pulls the image" "1" \
 
 reset_store
 
+log "13. The ownership shipment is SCHEDULED, and 3 is its own answer (pd-dxn3)"
+# ---------------------------------------------------------------------------
+#
+# The shipper is the last link in the nightly chain, and the same failure shape
+# as §10 and §12 applies to it: a mechanism that works, wired to no schedule,
+# is an outbox that grows forever while the offline side learns nothing.
+#
+# What is different here is the FOURTH status. Every other job on this box has
+# three answers; this one has to distinguish "some tenants were skipped" from
+# "events were LOST", because the first is a normal night and the second is a
+# fact nothing else in the system would ever surface.
+
+reset_store
+
+SH_SVC="${REPO_DIR}/deploy/pkdump-ship.service"
+SH_TMR="${REPO_DIR}/deploy/pkdump-ship.timer"
+
+# The ordering, which is the guarantee: this unit and the transform both open
+# EVERY tenant's database, so they may never run beside each other.
+check "ordered after the transform" "1" \
+	"$(grep -c '^After=pkdump-value-snapshots@%i.service$' "$SH_SVC" || true)"
+# And NOT Wants=: every job in the chain is a oneshot without RemainAfterExit,
+# so pulling one in would re-run it.
+check "does not pull the transform in" "0" \
+	"$(grep -c '^\(Wants\|Requires\)=pkdump-value-snapshots@%i.service$' "$SH_SVC" || true)"
+
+# 2 is a partial night. 3 is NOT in SuccessExitStatus, deliberately: a gap is
+# an incomplete offline copy that no later run can repair.
+check "exit 2 is a success for the unit" "1" \
+	"$(grep -c '^SuccessExitStatus=2$' "$SH_SVC" || true)"
+check "a sequence gap is NOT a success" "0" \
+	"$(grep -c '^SuccessExitStatus=.*3' "$SH_SVC" || true)"
+check "a real failure pages" "1" \
+	"$(grep -c '^OnFailure=pkdump-alert@%n.service$' "$SH_SVC" || true)"
+check "skips a box with no lake config at all" "1" \
+	"$(grep -c '^ConditionPathExists=%h/.config/pkdump/lake.env$' "$SH_SVC" || true)"
+
+# The calendar entry is DERIVED from the transform unit's own declared bounds,
+# the same computation §10 and §12 make. Move either number there and this
+# fails rather than silently leaving the two jobs overlapping.
+VS_LATEST=$((
+	$(hhmm_secs "$VS_TMR") +
+		$(key_secs "$VS_TMR" RandomizedDelaySec) +
+		$(key_secs "$VS_SVC" TimeoutStartSec)
+))
+SH_START=$(($(hhmm_secs "$SH_TMR") + $(key_secs "$SH_TMR" RandomizedDelaySec)))
+check "fires no earlier than the transform can finish" "ok" \
+	"$([ "$SH_START" -ge "$VS_LATEST" ] && echo ok || echo "starts ${SH_START}s < transform ${VS_LATEST}s")"
+check "catches up a missed run" "1" "$(grep -c '^Persistent=true$' "$SH_TMR" || true)"
+check "timer is enablable" "1" "$(grep -c '^WantedBy=timers.target$' "$SH_TMR" || true)"
+check "units-lib installs it for every instance" "1" \
+	"$(grep -c 'pkdump-ship\.\${ext}' "${REPO_DIR}/deploy/units-lib.sh" || true)"
+check "teardown disables the timer" "1" \
+	"$(grep -c 'pkdump-ship@\${INSTANCE}.timer' "${REPO_DIR}/deploy/teardown.sh" || true)"
+
+# --- What the wrapper does with each exit status ----------------------------
+# Driven end to end with a fake podman standing in for the job, because the
+# four-way mapping is behaviour rather than a grep — and because 3 has to be
+# shown arriving as its own message rather than as a partial or a crash.
+
+SH_HOME="${WORK}/shhome"
+mkdir -p "${SH_HOME}/.config/pkdump/shtest" "${WORK}/shbin"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_REGION=us-west-2\nPKDUMP_TENANT_AWS_PROFILE=pkdump-tenant\n' \
+	> "${SH_HOME}/.config/pkdump/lake.env"
+: > "${SH_HOME}/.config/pkdump/shtest/tenant-master.key"
+
+cat > "${WORK}/shbin/podman" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+"secret inspect") exit 1 ;;
+"image exists") exit "${PKDUMP_TEST_NO_IMAGE:-0}" ;;
+esac
+if [ "$1" = run ]; then
+	printf '==> shipping 2 tenant(s)\n'
+	case "${PKDUMP_TEST_JOB_RC:-0}" in
+	2) printf '    skipped 01J0000000000000000000000B: no key state is registered\n' ;;
+	3) printf '    !! SEQUENCE GAP alice (01J0000000000000000000000A): seq 3..4 — 2 event(s) LOST\n' ;;
+	esac
+	exit "${PKDUMP_TEST_JOB_RC:-0}"
+fi
+exit 0
+EOF
+chmod +x "${WORK}/shbin/podman"
+
+run_ship() { # run_ship [extra args...]
+	set +e
+	PATH="${WORK}/shbin:${ORIG_PATH}" HOME="$SH_HOME" \
+		PKDUMP_LAKE_ENV="${SH_HOME}/.config/pkdump/lake.env" \
+		PKDUMP_ALERTS_ENV="${SH_HOME}/.config/pkdump/nonexistent.env" \
+		bash "${REPO_DIR}/deploy/ship.sh" shtest "$@" 2>&1
+	printf 'RC=%s' "$?"
+	set -e
+}
+
+SH_OK="$(run_ship)"
+check "a clean run exits 0" "1" "$(printf '%s' "$SH_OK" | grep -c 'RC=0$' || true)"
+check "and says so" "1" "$(printf '%s' "$SH_OK" | grep -c 'ship: OK' || true)"
+# No date anywhere: every partition value comes out of the data.
+check "the wrapper lends the job no clock" "0" \
+	"$(printf '%s' "$SH_OK" | grep -c -- "--date" || true)"
+
+SH_PARTIAL="$(PKDUMP_TEST_JOB_RC=2 run_ship)"
+check "a partial run exits 2, unflattened" "1" \
+	"$(printf '%s' "$SH_PARTIAL" | grep -c 'RC=2$' || true)"
+check "…and the warning names WHO was skipped" "1" \
+	"$(printf '%s' "$SH_PARTIAL" | grep -c 'PARTIAL — tenants skipped: 01J0000000000000000000000B' || true)"
+check "an undeliverable warning is not a failure" "1" \
+	"$(printf '%s' "$SH_PARTIAL" | grep -c 'the PARTIAL warning reached nobody' || true)"
+
+# The status this whole item exists to make possible.
+SH_GAP="$(PKDUMP_TEST_JOB_RC=3 run_ship)"
+check "a sequence gap exits 3, not 1 and not 2" "1" \
+	"$(printf '%s' "$SH_GAP" | grep -c 'RC=3$' || true)"
+check "…and is alarmed as a GAP, naming the range" "1" \
+	"$(printf '%s' "$SH_GAP" | grep -c 'ship: SEQUENCE GAP.*seq 3\.\.4' || true)"
+check "…and not as a partial run" "0" \
+	"$(printf '%s' "$SH_GAP" | grep -c 'PARTIAL' || true)"
+
+SH_FAILED="$(PKDUMP_TEST_JOB_RC=1 run_ship)"
+check "a failed run exits 1" "1" "$(printf '%s' "$SH_FAILED" | grep -c 'RC=1$' || true)"
+check "and says nothing shipped" "1" \
+	"$(printf '%s' "$SH_FAILED" | grep -c 'ship: FAILED' || true)"
+# OnFailure= on the unit pushes the journal tail for a real failure; a second
+# push from the wrapper would say less and arrive twice.
+check "…without a second alert beside OnFailure=" "0" \
+	"$(printf '%s' "$SH_FAILED" | grep -c 'reached nobody' || true)"
+
+# The credential boundary, refused before podman starts — one profile for both
+# zones is not a narrow policy, it is no boundary.
+set +e
+SH_NOPROFILE="$(PATH="${WORK}/shbin:${ORIG_PATH}" HOME="$SH_HOME" \
+	PKDUMP_LAKE_ENV="${WORK}/noprofile.env" \
+	bash -c "printf 'PKDUMP_LAKE_S3_BUCKET=b\n' > '${WORK}/noprofile.env'; \
+	         PKDUMP_LAKE_ENV='${WORK}/noprofile.env' bash '${REPO_DIR}/deploy/ship.sh' shtest" 2>&1)"
+SH_NOPROFILE_RC=$?
+set -e
+check "no tenant profile -> refuses" "1" "$SH_NOPROFILE_RC"
+check "and says why the boundary matters" "1" \
+	"$(printf '%s' "$SH_NOPROFILE" | grep -c 'PKDUMP_TENANT_AWS_PROFILE' || true)"
+
+# No master key: nothing it ships could be encrypted, so it refuses by name
+# rather than shipping plaintext or reporting a container failure.
+set +e
+SH_NOKEY="$(PATH="${WORK}/shbin:${ORIG_PATH}" HOME="$SH_HOME" \
+	PKDUMP_LAKE_ENV="${SH_HOME}/.config/pkdump/lake.env" \
+	PKDUMP_KEYS_CONF_DIR="${WORK}/nokeys" \
+	bash "${REPO_DIR}/deploy/ship.sh" shtest 2>&1)"
+SH_NOKEY_RC=$?
+set -e
+check "no master key -> refuses" "1" "$SH_NOKEY_RC"
+check "and names the command that mints one" "1" \
+	"$(printf '%s' "$SH_NOKEY" | grep -c 'deploy/keys.sh shtest init' || true)"
+
+# No lake configured is a refusal that names the file, never a silent skip.
+set +e
+SH_NOLAKE="$(PATH="${WORK}/shbin:${ORIG_PATH}" HOME="$SH_HOME" \
+	PKDUMP_LAKE_ENV="${WORK}/nosuch-ship.env" \
+	bash "${REPO_DIR}/deploy/ship.sh" shtest 2>&1)"
+SH_NOLAKE_RC=$?
+set -e
+check "no lake.env -> refuses" "1" "$SH_NOLAKE_RC"
+check "and names the file" "1" \
+	"$(printf '%s' "$SH_NOLAKE" | grep -c 'nosuch-ship.env does not exist' || true)"
+
+set +e
+SH_NOIMAGE="$(PATH="${WORK}/shbin:${ORIG_PATH}" HOME="$SH_HOME" \
+	PKDUMP_LAKE_ENV="${SH_HOME}/.config/pkdump/lake.env" \
+	PKDUMP_TEST_NO_IMAGE=1 \
+	bash "${REPO_DIR}/deploy/ship.sh" shtest 2>&1)"
+SH_NOIMAGE_RC=$?
+set -e
+check "no image -> fails naming the command that builds it" "1" "$SH_NOIMAGE_RC"
+check "and names setup.sh" "1" \
+	"$(printf '%s' "$SH_NOIMAGE" | grep -c 'deploy/setup.sh shtest' || true)"
+check "never pulls the image" "1" \
+	"$(grep -c 'podman run --rm --pull=never' "${REPO_DIR}/deploy/ship.sh" || true)"
+
+# The master key is mounted read-ONLY and as a single file: this job DERIVES
+# keys, and must never be the thing that can replace one.
+check "the master key is mounted read-only" "1" \
+	"$(grep -c 'tenant-master.key:ro' "${REPO_DIR}/deploy/ship.sh" || true)"
+
+reset_store
+
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

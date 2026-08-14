@@ -277,6 +277,13 @@ if [[ "$BACKFILL_RC" -ne 0 ]]; then
 	sed 's/^/  /' "${WORK}/backfill.log"
 fi
 
+# Step 8 legitimately writes tenant value-history rows — that is its entire
+# job. §9 below asks a narrower question ("did the PARTIAL REFRESH itself
+# touch a tenant"), so its baseline has to be taken here, after backfill, not
+# reused from BEFORE_TENANTS at step 4 — reusing that stale snapshot would
+# blame the refresh for bytes backfill already legitimately changed.
+AFTER_BACKFILL_TENANTS=$(tenant_fingerprint)
+
 log "9. a dead pokemontcg.io no longer ends the run (pd-nons)"
 # On 2026-08-11 api.pokemontcg.io answered 5xx to ~45% of requests. The tail's
 # error propagated, so one bad response ended the refresh in its first second —
@@ -326,8 +333,10 @@ check "TCGCSV was acquired after the tail gave up" "yes" \
 	"$([[ -n "${TCGCSV_LINE:-}" && -n "${TAIL_LINE:-}" && "$TAIL_LINE" -lt "$TCGCSV_LINE" ]] &&
 		echo yes || echo no)"
 
-# A partial run is still a run that writes no tenant database.
-if diff <(echo "$BEFORE_TENANTS") <(tenant_fingerprint) >"${WORK}/tenants3.diff" 2>&1; then
+# A partial run is still a run that writes no tenant database. Compared
+# against AFTER_BACKFILL_TENANTS (step 8's own write already accounted for),
+# not the original step-4 baseline.
+if diff <(echo "$AFTER_BACKFILL_TENANTS") <(tenant_fingerprint) >"${WORK}/tenants3.diff" 2>&1; then
 	check "tenants byte-identical after a partial refresh" "identical" "identical"
 else
 	check "tenants byte-identical after a partial refresh" "identical" "CHANGED"

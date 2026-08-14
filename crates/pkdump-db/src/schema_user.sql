@@ -185,20 +185,21 @@ CREATE TABLE IF NOT EXISTS movement_log (
 CREATE INDEX IF NOT EXISTS idx_movement_log_collection ON movement_log(collection_id);
 
 -- ---------------------------------------------------------------------
--- The ownership outbox (pd-5m54)
+-- The ownership outbox (pd-5m54, extended to sealed by pd-4gop)
 --
--- Every change to `collection` — the tenant's holdings — appended as an
--- event, IN THE SAME TRANSACTION as the change itself. The offline side
+-- Every change to a tenant's HOLDINGS — `collection` (singles) and
+-- `sealed_collection` (sealed product) — appended as an event, IN THE
+-- SAME TRANSACTION as the change itself. The offline side
 -- (the lakehouse tenant zone) is fed from this table, so that it is
 -- eventually consistent BY CONSTRUCTION rather than by a second write
 -- that a crash can lose: dual-writing SQLite and a bucket has no
 -- atomicity, and the disagreement it leaves behind is undetectable.
 --
--- The writer is the three triggers below, NOT the Rust call sites, and
+-- The writer is the triggers below, NOT the Rust call sites, and
 -- that is the whole point. A trigger fires inside the statement's own
 -- transaction, so there is no instant at which a holding has changed and
 -- the event has not — no window to crash in, nothing to remember to
--- call. It also means the paths that write `collection` in raw SQL
+-- call. It also means the paths that write these tables in raw SQL
 -- (orders.rs, import.rs, json_backup.rs, the fixture seeder) are covered
 -- without knowing this table exists, and a path added tomorrow is
 -- covered before it is written.
@@ -213,13 +214,19 @@ CREATE INDEX IF NOT EXISTS idx_movement_log_collection ON movement_log(collectio
 -- the pre-image for delete. Whole, so that a consumer needing a column
 -- nobody anticipated does not need a schema change here, and so that no
 -- column can be silently omitted — `outbox.rs` asserts the payload keys
--- against `PRAGMA table_info(collection)`.
+-- against `PRAGMA table_info(<source_table>)`, for every source.
 --
--- `source_table` is constant today (every row says 'collection'; sealed
--- holdings are deliberately out of scope, see pd-4gop) and carries no
--- CHECK. It exists because this file has no migration mechanism: a column
--- added later needs an ALTER nothing here can express, whereas another
--- source only needs three more triggers.
+-- `source_table` says which holdings table the event came from, and it is
+-- what made pd-4gop cost three triggers and no migration. It carries no
+-- CHECK for the same reason it exists: this file has no migration
+-- mechanism, so a constraint added later needs an ALTER nothing here can
+-- express, whereas another source only needs three more triggers.
+--
+-- `row_id` is that table's `id`, and it is only unique WITHIN a source —
+-- `collection` and `sealed_collection` number their rows independently, so
+-- a consumer keys its projection on the PAIR. Replaying on `row_id` alone
+-- silently merges a single and a sealed holding that happen to share a
+-- number, which is the normal case rather than a rare one.
 --
 -- No tenant column. One collection is one database file, so the file IS
 -- the tenant; a `database_id` here would be a second, staler copy of what
@@ -234,9 +241,9 @@ CREATE INDEX IF NOT EXISTS idx_movement_log_collection ON movement_log(collectio
 CREATE TABLE IF NOT EXISTS ownership_outbox (
     seq           INTEGER PRIMARY KEY AUTOINCREMENT,
     occurred_at   TEXT NOT NULL,             -- UTC ISO-8601, millisecond
-    source_table  TEXT NOT NULL,             -- 'collection'
+    source_table  TEXT NOT NULL,             -- 'collection' | 'sealed_collection'
     op            TEXT NOT NULL CHECK (op IN ('insert', 'update', 'delete')),
-    row_id        INTEGER NOT NULL,          -- collection.id
+    row_id        INTEGER NOT NULL,          -- <source_table>.id
     payload       TEXT NOT NULL              -- JSON object: the whole row
 );
 
@@ -371,6 +378,95 @@ CREATE TABLE IF NOT EXISTS sealed_collection (
 );
 CREATE INDEX IF NOT EXISTS idx_sealed_collection_product ON sealed_collection(product_id);
 CREATE INDEX IF NOT EXISTS idx_sealed_collection_status  ON sealed_collection(status);
+
+-- The ownership outbox's second source (pd-4gop). Sealed product is a
+-- holding like any other: it has a catalog id, it has a value that moves
+-- with the market, and a collection that reports a tenant's worth while
+-- silently omitting sealed under-reports it. Whatever the outbox emits for
+-- singles it emits for sealed — same table, same three ops, same
+-- whole-row-as-JSON payload, same transaction as the mutation.
+--
+-- These live here rather than beside the `collection` triggers because
+-- `CREATE TRIGGER` needs its table to exist, and `sealed_collection` is
+-- declared below the outbox. The contract they implement is documented in
+-- full at the outbox table above; read that first.
+--
+-- `quantity` is the one shape difference from `collection`, and it is
+-- carried rather than expanded: one sealed row is N identical boxes, and
+-- the event describes the row as it is. A consumer that wants copies
+-- multiplies; the outbox does not invent rows the table does not have.
+
+CREATE TRIGGER IF NOT EXISTS sealed_collection_outbox_insert
+AFTER INSERT ON sealed_collection
+BEGIN
+    INSERT INTO ownership_outbox
+        (occurred_at, source_table, op, row_id, payload)
+    VALUES (
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'sealed_collection', 'insert', NEW.id,
+        json_object(
+            'id',             NEW.id,
+            'product_id',     NEW.product_id,
+            'quantity',       NEW.quantity,
+            'condition',      NEW.condition,
+            'purchase_price', NEW.purchase_price,
+            'sale_price',     NEW.sale_price,
+            'purchase_date',  NEW.purchase_date,
+            'source',         NEW.source,
+            'seller_name',    NEW.seller_name,
+            'notes',          NEW.notes,
+            'status',         NEW.status,
+            'added_at',       NEW.added_at
+        )
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS sealed_collection_outbox_update
+AFTER UPDATE ON sealed_collection
+BEGIN
+    INSERT INTO ownership_outbox
+        (occurred_at, source_table, op, row_id, payload)
+    VALUES (
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'sealed_collection', 'update', NEW.id,
+        json_object(
+            'id',             NEW.id,
+            'product_id',     NEW.product_id,
+            'quantity',       NEW.quantity,
+            'condition',      NEW.condition,
+            'purchase_price', NEW.purchase_price,
+            'sale_price',     NEW.sale_price,
+            'purchase_date',  NEW.purchase_date,
+            'source',         NEW.source,
+            'seller_name',    NEW.seller_name,
+            'notes',          NEW.notes,
+            'status',         NEW.status,
+            'added_at',       NEW.added_at
+        )
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS sealed_collection_outbox_delete
+AFTER DELETE ON sealed_collection
+BEGIN
+    INSERT INTO ownership_outbox
+        (occurred_at, source_table, op, row_id, payload)
+    VALUES (
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'sealed_collection', 'delete', OLD.id,
+        json_object(
+            'id',             OLD.id,
+            'product_id',     OLD.product_id,
+            'quantity',       OLD.quantity,
+            'condition',      OLD.condition,
+            'purchase_price', OLD.purchase_price,
+            'sale_price',     OLD.sale_price,
+            'purchase_date',  OLD.purchase_date,
+            'source',         OLD.source,
+            'seller_name',    OLD.seller_name,
+            'notes',          OLD.notes,
+            'status',         OLD.status,
+            'added_at',       OLD.added_at
+        )
+    );
+END;
 
 -- ---------------------------------------------------------------------
 -- Manual prices (hand-entered fallback for printings TCGplayer doesn't price)

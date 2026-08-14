@@ -1,6 +1,6 @@
-//! The atomicity claim behind the ownership outbox (pd-5m54), proven the
-//! only way it can be: by killing a writer mid-flight and looking at what
-//! survived.
+//! The atomicity claim behind the ownership outbox (pd-5m54, extended to
+//! sealed product by pd-4gop), proven the only way it can be: by killing a
+//! writer mid-flight and looking at what survived.
 //!
 //! The claim is that a holding and the event describing it are never
 //! observed to disagree. A test that mutates a collection and then finds the
@@ -12,12 +12,20 @@
 //!
 //! So: a child process writes batches of mutations in a loop, the parent
 //! SIGKILLs it at a delay that lands inside one of them, and the parent then
-//! replays the outbox from seq 1 and compares the result to the collection
-//! table row for row. Every row. Every iteration.
+//! replays the outbox from seq 1 and compares the result to the holdings
+//! tables row for row. Every row. Every iteration.
 //!
 //! SIGKILL rather than a signal handler or a panic on purpose — it cannot be
 //! caught, deferred or cleaned up after, so nothing in this process gets a
 //! chance to tidy the two into agreement.
+//!
+//! **The child alternates between `collection` and `sealed_collection`**
+//! (pd-4gop). Sealed holdings are a second source on the same outbox and the
+//! same sequence, so the crash claim is about the pair of tables, not each
+//! of them separately — and the projection is keyed on
+//! `(source_table, row_id)`, because the two tables number their rows
+//! independently and both start at 1. Keyed on `row_id` alone this gate
+//! fails on the first iteration, which is the point of keying it that way.
 //!
 //! The child is this same test binary, re-executed with
 //! `PKDUMP_OUTBOX_CRASH_DB` set; `the_child_that_gets_killed` is its entry
@@ -37,20 +45,31 @@ const DB_ENV: &str = "PKDUMP_OUTBOX_CRASH_DB";
 /// How many kills to run. Each is an independent database.
 const ITERATIONS: usize = 16;
 
-/// Mutations per transaction in the child. Large enough that a batch takes
-/// long enough to be killed in the middle of.
-const BATCH: usize = 400;
+/// Mutations per source per transaction in the child — so a transaction is
+/// `BATCH * SOURCES.len()` writes. Large enough that a batch takes long
+/// enough to be killed in the middle of, small enough that plenty of them
+/// commit.
+const BATCH: usize = 200;
+
+/// A holding, addressed the only way it can be: the table it lives in and
+/// its id there. `collection` and `sealed_collection` number their rows
+/// independently, so `row_id` alone names two different holdings.
+type Holding = (String, i64);
 
 // ---------------------------------------------------------------------
 // The parent
 // ---------------------------------------------------------------------
 
 #[test]
-fn a_killed_writer_never_leaves_the_collection_and_the_outbox_disagreeing() {
+fn a_killed_writer_never_leaves_the_holdings_and_the_outbox_disagreeing() {
     let exe = std::env::current_exe().expect("the test binary re-executes itself as the child");
 
     let mut torn = 0usize;
     let mut with_rows = 0usize;
+    // Which sources actually got mutated somewhere across the whole run. A
+    // gate that only ever exercised `collection` would pass with the sealed
+    // triggers deleted outright.
+    let mut sources_seen: BTreeMap<String, usize> = BTreeMap::new();
 
     for iteration in 0..ITERATIONS {
         let dir = tempfile::tempdir().unwrap();
@@ -83,13 +102,13 @@ fn a_killed_writer_never_leaves_the_collection_and_the_outbox_disagreeing() {
 
         // --- the assertion -------------------------------------------
         let conn = pkdump_db::open_user(&db).unwrap();
-        let live = live_collection(&conn);
+        let live = live_holdings(&conn);
         let projected = replay_outbox(&conn);
 
         if let Some(disagreement) = first_disagreement(&projected, &live) {
             panic!(
-                "iteration {iteration}: the outbox replayed to a different \
-                 collection than the one on disk\n{disagreement}"
+                "iteration {iteration}: the outbox replayed to different \
+                 holdings than the ones on disk\n{disagreement}"
             );
         }
 
@@ -110,6 +129,9 @@ fn a_killed_writer_never_leaves_the_collection_and_the_outbox_disagreeing() {
         if !live.is_empty() {
             with_rows += 1;
         }
+        for (source, _) in live.keys() {
+            *sources_seen.entry(source.clone()).or_default() += 1;
+        }
     }
 
     assert!(
@@ -123,7 +145,20 @@ fn a_killed_writer_never_leaves_the_collection_and_the_outbox_disagreeing() {
          invariant held, but only over completed batches, which proves \
          nothing about atomicity. Widen `kill_delay_ms` or raise BATCH."
     );
-    eprintln!("{torn}/{ITERATIONS} kills landed inside a transaction");
+    // The claim is about the holdings, both halves of them. A run that only
+    // ever wrote singles proves nothing about the sealed triggers, and would
+    // stay green if they were deleted.
+    for source in pkdump_db::outbox::SOURCES {
+        assert!(
+            sources_seen.contains_key(source),
+            "no surviving {source} rows in {ITERATIONS} iterations — the \
+             child never wrote that source, so its triggers were not tested"
+        );
+    }
+    eprintln!(
+        "{torn}/{ITERATIONS} kills landed inside a transaction; \
+         surviving rows per source: {sources_seen:?}"
+    );
 }
 
 /// A spread of kill delays, deterministic so a failure reproduces. Short
@@ -138,18 +173,18 @@ fn kill_delay_ms(iteration: usize) -> u64 {
     25 + (x >> 33) % 200
 }
 
-/// The lowest `collection.id` the two disagree about, described — or `None`
-/// if they agree everywhere.
+/// The lowest holding the two disagree about, described — or `None` if they
+/// agree everywhere.
 ///
 /// Not `assert_eq!` on the two maps: these hold thousands of rows apiece, and
 /// the dump of both is long enough to bury the one row that differs. A gate
 /// whose failure cannot be read is a gate that gets rerun rather than
 /// diagnosed.
 fn first_disagreement(
-    projected: &BTreeMap<i64, Value>,
-    live: &BTreeMap<i64, Value>,
+    projected: &BTreeMap<Holding, Value>,
+    live: &BTreeMap<Holding, Value>,
 ) -> Option<String> {
-    let mut ids: Vec<i64> = projected.keys().chain(live.keys()).copied().collect();
+    let mut ids: Vec<Holding> = projected.keys().chain(live.keys()).cloned().collect();
     ids.sort_unstable();
     ids.dedup();
 
@@ -162,10 +197,12 @@ fn first_disagreement(
         Some(v) => serde_json::to_string(v).unwrap(),
     };
     Some(format!(
-        "{} rows replayed, {} on disk; first disagreement is id {id}\n  \
+        "{} rows replayed, {} on disk; first disagreement is {}.id {}\n  \
          outbox says: {}\n  on disk:     {}",
         projected.len(),
         live.len(),
+        id.0,
+        id.1,
         describe(projected.get(&id)),
         describe(live.get(&id)),
     ))
@@ -173,43 +210,51 @@ fn first_disagreement(
 
 /// How many of those rows the child has moved to `sold`. The half of the
 /// state an insert/delete count cannot see.
-fn live_sold(live: &BTreeMap<i64, Value>) -> usize {
+fn live_sold(live: &BTreeMap<Holding, Value>) -> usize {
     live.values().filter(|r| r["status"] == "sold").count()
 }
 
-/// The collection as it is on disk: `id -> the whole row as JSON`.
-fn live_collection(conn: &Connection) -> BTreeMap<i64, Value> {
-    let cols = columns(conn);
-    let list = cols
-        .iter()
-        .map(|c| format!("\"{c}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut stmt = conn
-        .prepare(&format!("SELECT {list} FROM collection ORDER BY id"))
-        .unwrap();
-    let mut rows = stmt.query([]).unwrap();
-
+/// The holdings as they are on disk, both sources: `(table, id) -> the whole
+/// row as JSON`.
+fn live_holdings(conn: &Connection) -> BTreeMap<Holding, Value> {
     let mut out = BTreeMap::new();
-    while let Some(row) = rows.next().unwrap() {
-        let mut obj = Map::new();
-        for (i, col) in cols.iter().enumerate() {
-            obj.insert(col.clone(), to_json(row.get_ref(i).unwrap()));
+    for table in pkdump_db::outbox::SOURCES {
+        let cols = columns(conn, table);
+        let list = cols
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = conn
+            .prepare(&format!("SELECT {list} FROM \"{table}\" ORDER BY id"))
+            .unwrap();
+        let mut rows = stmt.query([]).unwrap();
+
+        while let Some(row) = rows.next().unwrap() {
+            let mut obj = Map::new();
+            for (i, col) in cols.iter().enumerate() {
+                obj.insert(col.clone(), to_json(row.get_ref(i).unwrap()));
+            }
+            let id = obj["id"].as_i64().unwrap();
+            out.insert((table.to_string(), id), Value::Object(obj));
         }
-        let id = obj["id"].as_i64().unwrap();
-        out.insert(id, Value::Object(obj));
     }
     out
 }
 
-/// The collection as the outbox says it is: every event from seq 1, applied
+/// The holdings as the outbox says they are: every event from seq 1, applied
 /// in order. This is exactly what the shipper will hand the tenant zone, so
-/// comparing it to the table is comparing what the lakehouse would believe
+/// comparing it to the tables is comparing what the lakehouse would believe
 /// against what is true.
-fn replay_outbox(conn: &Connection) -> BTreeMap<i64, Value> {
+///
+/// Keyed on `(source_table, row_id)`. Both tables start their ids at 1, so a
+/// projection keyed on `row_id` alone lets a sealed lot overwrite the single
+/// that shares its number and a sealed delete remove it — which this gate
+/// reports as a disagreement on the first iteration (pd-4gop).
+fn replay_outbox(conn: &Connection) -> BTreeMap<Holding, Value> {
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT seq, op, row_id, payload FROM {} ORDER BY seq",
+            "SELECT seq, source_table, op, row_id, payload FROM {} ORDER BY seq",
             pkdump_db::outbox::TABLE
         ))
         .unwrap();
@@ -218,8 +263,9 @@ fn replay_outbox(conn: &Connection) -> BTreeMap<i64, Value> {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
             ))
         })
         .unwrap()
@@ -227,7 +273,8 @@ fn replay_outbox(conn: &Connection) -> BTreeMap<i64, Value> {
         .unwrap();
 
     // A gap here would mean an event was lost rather than never written —
-    // the failure mode the sequence number exists to make visible.
+    // the failure mode the sequence number exists to make visible. One
+    // sequence over both sources, so this is a claim about the pair.
     for (i, (seq, ..)) in events.iter().enumerate() {
         assert_eq!(
             *seq,
@@ -236,16 +283,21 @@ fn replay_outbox(conn: &Connection) -> BTreeMap<i64, Value> {
         );
     }
 
-    let mut state: BTreeMap<i64, Value> = BTreeMap::new();
-    for (seq, op, row_id, payload) in events {
+    let mut state: BTreeMap<Holding, Value> = BTreeMap::new();
+    for (seq, source, op, row_id, payload) in events {
+        assert!(
+            pkdump_db::outbox::SOURCES.contains(&source.as_str()),
+            "seq {seq}: unknown source_table '{source}'"
+        );
         let payload: Value = serde_json::from_str(&payload).unwrap();
+        let key = (source, row_id);
         match op.as_str() {
             "insert" | "update" => {
-                state.insert(row_id, payload);
+                state.insert(key, payload);
             }
             "delete" => {
                 assert!(
-                    state.remove(&row_id).is_some(),
+                    state.remove(&key).is_some(),
                     "seq {seq}: delete of a row the outbox never inserted"
                 );
             }
@@ -255,8 +307,10 @@ fn replay_outbox(conn: &Connection) -> BTreeMap<i64, Value> {
     state
 }
 
-fn columns(conn: &Connection) -> Vec<String> {
-    let mut stmt = conn.prepare("PRAGMA table_info(collection)").unwrap();
+fn columns(conn: &Connection, table: &str) -> Vec<String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+        .unwrap();
     let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
     rows.collect::<rusqlite::Result<_>>().unwrap()
 }
@@ -282,9 +336,9 @@ fn to_json(v: rusqlite::types::ValueRef<'_>) -> Value {
 
 /// What the child's next batch does. One per outbox `op`.
 enum Op {
-    /// Acquire cards — `INSERT`.
+    /// Acquire holdings — `INSERT`.
     Acquire,
-    /// Sell cards already held — `UPDATE`.
+    /// Sell holdings already held — `UPDATE`.
     Sell,
     /// Drop sold rows — `DELETE`.
     Delete,
@@ -294,7 +348,50 @@ fn count(conn: &Connection, sql: &str) -> usize {
     conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap() as usize
 }
 
-/// Writes batches of collection mutations until something kills it.
+/// `(rows, sold)` for one holdings table.
+fn tally(conn: &Connection, table: &str) -> (usize, usize) {
+    (
+        count(conn, &format!("SELECT count(*) FROM \"{table}\"")),
+        count(
+            conn,
+            &format!("SELECT count(*) FROM \"{table}\" WHERE status = 'sold'"),
+        ),
+    )
+}
+
+/// The `INSERT` a batch acquires with, for one source. The two tables take
+/// different columns; everything else about a batch is the same.
+fn acquire_sql(table: &str) -> &'static str {
+    match table {
+        "collection" => {
+            "INSERT INTO collection \
+               (printing_id, acquired_at, source, condition, status, notes) \
+             VALUES (?1, '2026-08-13T00:00:00Z', 'crash-test', \
+                     'Near Mint', 'owned', ?2)"
+        }
+        "sealed_collection" => {
+            "INSERT INTO sealed_collection \
+               (product_id, quantity, added_at, source, condition, status, notes) \
+             VALUES (?1, 1, '2026-08-14T00:00:00Z', 'crash-test', \
+                     'Near Mint', 'owned', ?2)"
+        }
+        other => panic!("no acquire statement for source '{other}'"),
+    }
+}
+
+/// The catalog key a row of `table` is acquired against — text for singles
+/// (`printing_id`), an integer for sealed (`product_id`). SQLite stores what
+/// it is given, and the parent reads both back through the same mapping the
+/// triggers' `json_object` used.
+fn acquire_key(table: &str, n: usize) -> rusqlite::types::Value {
+    if table == "collection" {
+        format!("p-{n}").into()
+    } else {
+        (n as i64).into()
+    }
+}
+
+/// Writes batches of holdings mutations until something kills it.
 ///
 /// Ignored, so it only runs when the parent asks for it by name — and it
 /// returns immediately if [`DB_ENV`] is unset, so `cargo test -- --ignored`
@@ -309,11 +406,13 @@ fn the_child_that_gets_killed() {
     let mut conn = pkdump_db::open_user(Path::new(&db)).unwrap();
 
     loop {
-        let live = count(&conn, "SELECT count(*) FROM collection");
-        let sold = count(
-            &conn,
-            "SELECT count(*) FROM collection WHERE status = 'sold'",
-        );
+        // Every batch mutates BOTH sources inside ONE transaction (pd-4gop).
+        // Not alternate batches: a kill has to be able to land between the
+        // two tables' writes, which is precisely where a per-table outbox
+        // would tear. It also keeps the two tables' ids in lockstep, so
+        // every single has a sealed lot sharing its `row_id` and a
+        // projection keyed on `row_id` alone cannot accidentally pass.
+        let (live, sold) = tally(&conn, "collection");
         let owned = live - sold;
 
         // Three kinds of ownership change, and the replay has to survive
@@ -339,58 +438,61 @@ fn the_child_that_gets_killed() {
             Op::Sell => (live, sold + BATCH),
             Op::Acquire => (live + BATCH, sold),
         };
-        std::fs::write(&marker, format!("{rows}:{sold}")).unwrap();
+        // The tables move in lockstep, so the totals the batch reaches are
+        // one table's counts times the number of sources.
+        let sources = pkdump_db::outbox::SOURCES.len();
+        std::fs::write(&marker, format!("{}:{}", rows * sources, sold * sources)).unwrap();
 
         let tx = conn.transaction().unwrap();
-        match op {
-            Op::Delete => {
-                tx.execute(
-                    "DELETE FROM collection WHERE id IN \
-                     (SELECT id FROM collection WHERE status = 'sold' \
-                      ORDER BY id LIMIT ?1)",
-                    [BATCH],
-                )
-                .unwrap();
-            }
-            // Row at a time, like the insert leg, so a kill can land in the
-            // middle of the batch rather than only between statements.
-            Op::Sell => {
-                let ids: Vec<i64> = tx
-                    .prepare(
-                        "SELECT id FROM collection WHERE status = 'owned' \
-                         ORDER BY id LIMIT ?1",
+        for table in pkdump_db::outbox::SOURCES {
+            match op {
+                Op::Delete => {
+                    tx.execute(
+                        &format!(
+                            "DELETE FROM \"{table}\" WHERE id IN \
+                             (SELECT id FROM \"{table}\" WHERE status = 'sold' \
+                              ORDER BY id LIMIT ?1)"
+                        ),
+                        [BATCH],
                     )
-                    .unwrap()
-                    .query_map([BATCH], |r| r.get(0))
-                    .unwrap()
-                    .collect::<rusqlite::Result<_>>()
-                    .unwrap();
-                let mut stmt = tx
-                    .prepare("UPDATE collection SET status = 'sold', notes = ?2 WHERE id = ?1")
-                    .unwrap();
-                for id in ids {
-                    stmt.execute(rusqlite::params![
-                        id,
-                        format!("sold in the batch reaching {sold}")
-                    ])
                     .unwrap();
                 }
-            }
-            Op::Acquire => {
-                let mut stmt = tx
-                    .prepare(
-                        "INSERT INTO collection \
-                           (printing_id, acquired_at, source, condition, status, notes) \
-                         VALUES (?1, '2026-08-13T00:00:00Z', 'crash-test', \
-                                 'Near Mint', 'owned', ?2)",
-                    )
-                    .unwrap();
-                for i in 0..BATCH {
-                    stmt.execute(rusqlite::params![
-                        format!("p-{}-{i}", live),
-                        format!("row {i} of the batch that reaches {rows}")
-                    ])
-                    .unwrap();
+                // Row at a time, like the insert leg, so a kill can land in
+                // the middle of the batch rather than only between
+                // statements.
+                Op::Sell => {
+                    let ids: Vec<i64> = tx
+                        .prepare(&format!(
+                            "SELECT id FROM \"{table}\" WHERE status = 'owned' \
+                             ORDER BY id LIMIT ?1"
+                        ))
+                        .unwrap()
+                        .query_map([BATCH], |r| r.get(0))
+                        .unwrap()
+                        .collect::<rusqlite::Result<_>>()
+                        .unwrap();
+                    let mut stmt = tx
+                        .prepare(&format!(
+                            "UPDATE \"{table}\" SET status = 'sold', notes = ?2 WHERE id = ?1"
+                        ))
+                        .unwrap();
+                    for id in ids {
+                        stmt.execute(rusqlite::params![
+                            id,
+                            format!("sold in the batch reaching {sold}")
+                        ])
+                        .unwrap();
+                    }
+                }
+                Op::Acquire => {
+                    let mut stmt = tx.prepare(acquire_sql(table)).unwrap();
+                    for i in 0..BATCH {
+                        stmt.execute(rusqlite::params![
+                            acquire_key(table, live + i),
+                            format!("row {i} of the batch that reaches {rows}")
+                        ])
+                        .unwrap();
+                    }
                 }
             }
         }

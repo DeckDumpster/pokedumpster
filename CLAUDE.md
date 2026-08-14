@@ -746,21 +746,30 @@ itself on stderr so a catalog can never be quietly built from the wrong place).
 ### The ownership outbox
 
 The inbound leg — online tenant state into the lakehouse — starts at
-`ownership_outbox` in `schema_user.sql` (pd-5m54). Every change to
-`collection` is appended there as an event, in the SAME TRANSACTION as the
+`ownership_outbox` in `schema_user.sql` (pd-5m54). Every change to a tenant's
+**holdings** is appended there as an event, in the SAME TRANSACTION as the
 change. The offline side is fed from those events, so it is eventually
 consistent *by construction*: a dual write to SQLite and a bucket has no
 atomicity, and the disagreement a crash leaves behind is undetectable.
 
-**The writer is three triggers, not the call sites, and that is the whole
-point.** A trigger fires inside the statement's own transaction, so there is
-no instant at which a holding has changed and the event has not — no window
-to crash in, and nothing to remember to call. It also covers the paths that
-write `collection` in raw SQL (`orders.rs`, `import.rs`, `json_backup.rs`,
+**Both halves of the holdings are in it** — `collection` (singles) and
+`sealed_collection` (sealed product), listed in `outbox::SOURCES`. Sealed was
+deferred by pd-5m54 and settled IN by pd-4gop: sealed product is a holding
+like any other — a catalog id, a value that moves with the market — and a
+collection that reports a tenant's worth while silently omitting it
+**under-reports**, which is the wrong direction to be wrong in. Whatever the
+outbox emits for singles it emits for sealed. It cost three more triggers and
+no schema change, which is exactly what `source_table` was put there for.
+
+**The writer is triggers, not the call sites, and that is the whole point.**
+A trigger fires inside the statement's own transaction, so there is no
+instant at which a holding has changed and the event has not — no window to
+crash in, and nothing to remember to call. It also covers the paths that
+write those tables in raw SQL (`orders.rs`, `import.rs`, `json_backup.rs`,
 the fixture seeder) and the ones no Rust performs at all (`ON DELETE SET
 NULL` from `binders`/`decks`), without any of them knowing the table exists.
 
-Four things about it are decisions:
+Five things about it are decisions:
 
 - **`seq` is AUTOINCREMENT**, so a number is never reused after the shipper
   trims a shipped prefix and a missing one means an event was LOST rather
@@ -768,33 +777,53 @@ Four things about it are decisions:
   back with it) — asserted, because phantom gaps would make gap detection
   useless. `occurred_at` is metadata; `datetime('now')` ties inside one
   transaction and cannot order anything.
+- **One sequence over both sources, and `row_id` is unique only WITHIN
+  one.** The two tables number their rows independently and both start at 1,
+  so **a consumer projects on the `(source_table, row_id)` pair.** Replaying
+  on `row_id` alone silently merges a single and a sealed lot that share a
+  number, which is the normal case rather than a rare one — the atomicity
+  gate fails on iteration 0 if you try it.
 - **`payload` is the whole row as JSON** — post-image for insert/update,
   pre-image for delete. Whole, so a later consumer needing a column nobody
   anticipated costs no schema change here, and so nothing can be silently
   omitted: `outbox.rs` asserts the payload keys against `PRAGMA
-  table_info(collection)`, which is what catches a column added to the table
-  and forgotten in the three hand-written `json_object` lists.
+  table_info(<source>)` for every source, which is what catches a column
+  added to a table and forgotten in the hand-written `json_object` lists.
+  A sealed lot's `quantity` is carried, never expanded — one lot is one
+  event, and a consumer that wants copies multiplies.
 - **The outbox is not collection state**, so `pkdump export --json` does not
   carry it and an import neither restores nor clears it — the import's own
   deletes and inserts fire the triggers and describe the restore correctly.
   This is the one exception to pd-yj40's "no exclusion list in the exporter",
-  and it is in one place (`json_backup::envelope_tables`).
-- **Sealed holdings are deliberately not in it** (pd-4gop): valuation reads
-  `collection` alone, and tenant data with no offline consumer is exactly
-  what the tenant zone's governance exists to avoid. `source_table` is
-  already there, so adding them later is three triggers and no migration.
+  and it is in one place (`json_backup::envelope_tables`). Both holdings
+  tables *are* collection state and both stay in the envelope.
+- **`outbox::SOURCES` is a claim about the schema, not a copy of it.**
+  `every_outbox_source_is_declared_here` reads the triggers off
+  `sqlite_master` and compares both directions, so a third source wired up
+  and not declared — or declared with no triggers — fails in a second. Adding
+  one is: the table, three triggers, one entry, and the gates come for free.
 
 Changing a trigger body needs a deliberate `DROP TRIGGER` in the schema file
 — `IF NOT EXISTS` will not replace one an existing collection already
 carries, and a stale trigger writes a stale payload forever.
 
-Gates: `outbox.rs`'s unit tests (every mutation path, the payload-coverage
-comparison, rollback, the sequence under concurrent writers, the envelope
-rules) and `crates/pkdump-db/tests/outbox_atomicity.rs` — a child process
-writing batches, SIGKILLed mid-transaction, the outbox replayed from seq 1
-and compared to the collection table row by row, sixteen times. It fails
-unless at least one kill actually landed inside a transaction, because a
-crash test that never crashed anything proves nothing.
+Gates: `outbox.rs`'s unit tests (every mutation path on both sources, the
+payload-coverage comparison, the shared interleaved sequence, the shared
+`row_id`, rollback, concurrent writers contending on both tables, the
+envelope rules, the SOURCES drift check) and
+`crates/pkdump-db/tests/outbox_atomicity.rs` — a child process writing
+batches, SIGKILLed mid-transaction, the outbox replayed from seq 1 and
+compared to the holdings tables row by row, sixteen times. It fails unless at
+least one kill actually landed inside a transaction, because a crash test
+that never crashed anything proves nothing, and unless BOTH sources left rows
+behind, because a run that only wrote singles would stay green with the
+sealed triggers deleted.
+
+**Every batch mutates both sources inside ONE transaction**, rather than
+alternating batches. A kill has to be able to land *between* the two tables'
+writes — precisely where a per-table outbox would tear — and it keeps the two
+tables' ids in lockstep, so every single has a sealed lot sharing its
+`row_id` and a projection keyed on `row_id` alone cannot accidentally pass.
 
 **The child acquires, SELLS and deletes** — all three ops, and the middle one
 is the one to keep. An insert or a delete lost in a crash shows up as a wrong
@@ -806,7 +835,8 @@ counts for the same reason — a kill inside an update batch moves no rows in
 or out, and against a single count would look like a batch that never
 started.
 
-Nothing reads the outbox yet. The shipper is its own change (pd-dxn3).
+Nothing reads the outbox yet. The shipper is its own change (pd-dxn3), and it
+is the thing that has to honour the `(source_table, row_id)` pair.
 
 ### Variant expansion
 

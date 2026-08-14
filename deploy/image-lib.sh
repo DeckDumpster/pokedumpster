@@ -45,7 +45,13 @@ pkdump_image_ensure() {
 	local prebuilt="${PKDUMP_PREBUILT_IMAGE:-}"
 
 	if [ -z "$prebuilt" ]; then
-		podman build -t "$tag" -f "${repo_dir}/Containerfile" "$repo_dir"
+		# CI builds WITHOUT ThinLTO. This function is the CI/test build path only —
+		# deploy/deploy.sh runs its own `podman build` and never calls here, so
+		# production keeps the optimised binary. Override with PKDUMP_IMAGE_LTO=thin
+		# if you ever need CI to build what prod builds.
+		podman build -t "$tag" \
+			--build-arg "CARGO_PROFILE_RELEASE_LTO=${PKDUMP_IMAGE_LTO:-false}" \
+			-f "${repo_dir}/Containerfile" "$repo_dir"
 		return
 	fi
 

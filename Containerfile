@@ -50,6 +50,24 @@ COPY data/ data/
 # what stops an offline job and an online server disagreeing about the catalog's
 # shape; splitting the images is a deployment change to make when the machines
 # actually split, not before.
+# LTO is a BUILD ARG so CI can turn it off and production cannot accidentally.
+#
+# `[profile.release] lto = "thin"` runs a whole-program pass at link time over both
+# binaries on EVERY build. It is not incremental, so no cache mount helps it, and it
+# is a large part of why the image build costs 850-1119s on this box — a 4-core 6 W
+# N150 — against 373 packages in Cargo.lock.
+#
+# Defaulting to `thin` is deliberate: an unset arg builds exactly what shipped
+# before, so nothing changes for anyone who does not pass it.
+#
+# SAFE FOR CI SPECIFICALLY because CI's image is not the artifact. deploy/deploy.sh
+# runs its OWN `podman build` on the prod box (line ~45), so what reaches production
+# is unaffected by anything set here. The trade CI accepts is testing a
+# differently-optimised binary: same code, same behaviour, slower hot paths — which
+# does not change what any gate asserts.
+ARG CARGO_PROFILE_RELEASE_LTO=thin
+ENV CARGO_PROFILE_RELEASE_LTO=${CARGO_PROFILE_RELEASE_LTO}
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target,sharing=locked,id=pkdump-target-bookworm \
     cargo build --release --locked --bin pkdump --bin pkdump-lake-derive \

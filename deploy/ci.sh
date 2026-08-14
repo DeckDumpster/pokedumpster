@@ -767,6 +767,29 @@ if tier lake; then
 
     step "Queueing: Lakehouse — the shipper, against a real bucket, killed and resumed"
     pkdump_par_add shipper bash "$REPO_DIR/tests/lake/shipper.sh"
+
+    # --- 14e. The deletion path -----------------------------------------------
+    # §14d fills the zone; this empties it for one tenant and then has to PROVE
+    # it. The bar the design sets is "proven, not asserted", so the gate runs
+    # the same verification a step BEFORE the deletion and requires it to report
+    # every path open — a check only ever seen passing is not known to check
+    # anything.
+    #
+    # Its bucket is VERSIONED, which is the configuration the Rust tier cannot
+    # have: the drop leaves a noncurrent version of a really-shipped part
+    # behind, and that surviving copy is fetched back out and proven unopenable.
+    # That is the whole crypto-shredding claim, against real bytes. What else is
+    # only true here: the binary being in the image, an IAM policy that actually
+    # permits the delete and the listing, the objects being gone as seen by the
+    # BUCKET ROOT rather than merely hidden from the role that deleted them, and
+    # deploy/erase.sh's three exit statuses — including 4, which nothing else in
+    # the system reports.
+    #
+    # Same tier as the zone and the shipper, for the same reason: it is a
+    # lakehouse claim about a bucket.
+
+    step "Queueing: Lakehouse — the deletion path, proven against a versioned bucket"
+    pkdump_par_add deletion bash "$REPO_DIR/tests/lake/deletion.sh"
 fi
 
 # --- 15. The refresh writes no tenant bytes ---------------------------------

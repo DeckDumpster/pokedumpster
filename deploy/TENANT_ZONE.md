@@ -51,7 +51,8 @@ makes deleting a tenant one prefix drop covering their holdings *and* their
 valuations. Derived artifacts inherit the deletion obligation, so they must
 not need a second sweep to find; a layout that put `dataset=` on top would
 mean every future dataset is another thing a deletion has to remember.
-`tenant_prefix(id)` is that prefix and it is the unit item 8 drops.
+`tenant_prefix(id)` is that prefix and it is the unit `pkdump-erase`
+drops — see §7 and [`DELETION.md`](DELETION.md).
 
 **Plain Parquet, not Iceberg.** Iceberg records absolute paths in its
 metadata, so moving this zone into its own bucket later would mean rewriting
@@ -334,10 +335,26 @@ statuses.
 
 ---
 
-## 7. What is deliberately not here yet
+## 7. Deleting a tenant out of it
 
-- **deletion end to end**: drop the partition, destroy the key, verify
-  unreadable — item 8 (`pd-qbrf`)
+```bash
+bash deploy/erase.sh prod delete --tenant alice --yes --reason "account closed"
+```
+
+The prefix in §1 is the deletion unit, and `pkdump-erase` (`pd-qbrf`) is what
+drops it — after recording a tombstone against the tenant's key, and before
+attempting every path by which their holdings or valuations could still be
+read and requiring every one to fail. **The bar is proven, not asserted**, and
+the same command run one moment earlier reports every one of those paths open.
+
+The runbook, including what survives a drop on a versioned bucket and what to
+do about each way the proof can come back incomplete, is
+[`DELETION.md`](DELETION.md).
+
+---
+
+## 8. What is deliberately not here yet
+
 - **valuations**: computed offline against `catalog.prices` and written back
   here as a second dataset — items 6 and 7
 

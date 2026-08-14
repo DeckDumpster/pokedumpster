@@ -35,7 +35,7 @@ COPY data/ data/
 # re-pinning the FROM line above looked applied and changed nothing, on every
 # box that had already built once. A base-image change must change this id.
 #
-# THREE binaries, built in one invocation so they share the compile:
+# FOUR binaries, built in one invocation so they share the compile:
 #
 #   pkdump             the app. `serve` is the entrypoint; `data refresh` is
 #                      what the nightly LANDING unit runs. Reads no raw/.
@@ -46,6 +46,11 @@ COPY data/ data/
 #                      tenant zone. Offline, like the derive — nothing serving
 #                      a request runs it, and the entrypoint above cannot
 #                      become it by accident.
+#   pkdump-erase       the deletion path (pd-qbrf): tombstone the key, drop the
+#                      tenant's partition, and prove it unreadable. Offline for
+#                      the same two reasons the shipper is — it needs the tenant
+#                      credentials and the master key, and neither belongs on a
+#                      process that answers requests.
 #
 # They ship in ONE image deliberately, even though the whole point of the crate
 # split is that the halves can eventually run on different machines. The image
@@ -57,11 +62,12 @@ COPY data/ data/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target,sharing=locked,id=pkdump-target-bookworm \
     cargo build --release --locked --bin pkdump --bin pkdump-lake-derive \
-        --bin pkdump-ship \
+        --bin pkdump-ship --bin pkdump-erase \
  && mkdir -p /out \
  && cp target/release/pkdump /out/pkdump \
  && cp target/release/pkdump-lake-derive /out/pkdump-lake-derive \
- && cp target/release/pkdump-ship /out/pkdump-ship
+ && cp target/release/pkdump-ship /out/pkdump-ship \
+ && cp target/release/pkdump-erase /out/pkdump-erase
 
 # --- Stage 2: SvelteKit build -----------------------------------------------
 # adapter-static emits the SPA to frontend/build. The committed ts-rs types in
@@ -90,6 +96,7 @@ RUN apt-get update \
 COPY --from=builder /out/pkdump /usr/local/bin/pkdump
 COPY --from=builder /out/pkdump-lake-derive /usr/local/bin/pkdump-lake-derive
 COPY --from=builder /out/pkdump-ship /usr/local/bin/pkdump-ship
+COPY --from=builder /out/pkdump-erase /usr/local/bin/pkdump-erase
 COPY --from=frontend /app/frontend/build /srv/pkdump/static
 
 # Catalog + per-user databases live on a mounted volume.

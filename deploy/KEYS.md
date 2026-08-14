@@ -173,7 +173,15 @@ key's ability to re-derive it — anybody holding the master key and willing to
 bypass this registry could. That is exactly why the registry, and not the
 master key, is what deletion touches: the alternative, "destroy the key",
 revokes *everybody* and is an outage, not a deletion. The actual erasure is
-the partition drop (`pd-qbrf`, item 8); this is the second lock.
+the partition drop; this is the second lock.
+
+**Both locks at once** — which is what an account deletion actually is — are
+`bash deploy/erase.sh <instance> delete --tenant <handle|id> --yes`. It calls
+this path first and then drops the partition, and it will not report success
+until it has attempted every read path and been refused by all of them. See
+[`DELETION.md`](DELETION.md). Running the `tombstone` above on its own is
+correct and sometimes what you want, but on its own it is not a deletion:
+the objects are still there.
 
 ---
 
@@ -221,8 +229,9 @@ matters.
 
 ## 8. What this is not, and what comes next
 
-**Not built here, deliberately:** the deletion path itself. Item 8 (`pd-qbrf`)
-drops the partition and *calls* §5; it does not reimplement it.
+**Not built here, deliberately:** the deletion path itself. `pkdump-erase`
+(`pd-qbrf`) drops the partition and *calls* §5 rather than reimplementing it —
+[`DELETION.md`](DELETION.md).
 
 **A documented future option:** stored per-tenant random keys, rather than
 derived ones. They are stronger against a master-key-leak threat model — one

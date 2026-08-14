@@ -608,6 +608,46 @@ retention check refused three separate ways of getting the rule wrong. That gate
 own fixtures leave the zone **empty**, deliberately — it is about the
 governance, and `tests/lake/shipper.sh` is what puts real (invented) holdings
 through it. Runbook: `deploy/TENANT_ZONE.md`.
+
+### The catalog/tenant zone guard
+
+`tests/lake/tenant_isolation_test.sh` is the source-level boundary gate (lint
+tier, hermetic, ~2s). It shipped with the lakehouse epic asserting one rule —
+*the LAKE holds no tenant data* — over directory globs. The tenant zone makes
+that premise false **by design**, so pd-7x83 re-cut its axis rather than
+carving holes in it: it is now the **catalog zone** (`raw/`, `lake/` —
+cross-tenant, shared, forever) against the **tenant zone** (`tenant/` —
+tenant-keyed by construction, governed separately). Four things about it are
+decisions:
+
+- **The catalog zone keeps every assertion it had.** No Iceberg field is
+  tenant-identifying, `crates/pkdump-lake` links no SQLite at all, the Python
+  write path imports no `sqlite3`, the derive resolves no tenant.
+- **The tenant zone's rules are INVERTED, not relaxed.** It must be
+  tenant-keyed — every key builder in `tenant.rs` takes a `database_id`,
+  because that prefix is what a deletion drops — and it must resolve no
+  identity: being handed an id is the contract, looking one up is not. The
+  shipper reaches no catalog prefix, no catalog entry point and no catalog
+  credential; the online path (`pkdump-db`, `pkdump-server`, `pkdump-keys`)
+  links neither zone, which is what makes the outbox the only way holdings
+  leave a collection.
+- **The carve-out is by ZONE and it is TOTAL.** Every Rust file in
+  `crates/pkdump-lake` must be classified into exactly one zone, and §12 fails
+  if the three lists do not cover the directory. A per-file exemption list is
+  what erodes; a classification that has to cover the directory cannot be
+  added to silently.
+- **It has been seen red.** `tests/lake/tenant_isolation_selftest.sh` (lint
+  tier, ~45s) copies the source trees, injects ONE violation at a time and
+  requires the *specific* assertion to be the one that fails — 25 of them,
+  including a tenant column added to a catalog table and every fail-closed
+  case. Four cases assert the opposite: the tenant zone being legitimately
+  tenant-keyed must fire nothing, because a guard whose first contact with
+  real work is a false positive is a guard that gets an exemption list.
+
+The credential half of the same boundary is not here and cannot be — it is two
+IAM documents against a real bucket, and `tests/lake/tenant_zone.sh` §4-§6 is
+where it is asserted, in both directions, seen red.
+
 ### Key custody for the tenant zone
 
 `pkdump-keys` is crypto-shredding for the tenant zone, defence in depth beside
@@ -781,6 +821,18 @@ tenant's own database. Three rules hold it in shape:
   collection is read from, and the snapshot written back to, SQLite. Neither
   ever travels the other way, and `tests/lake/value_snapshots.sh` §9 asserts
   the catalog still holds nothing but `catalog.prices` after a run.
+  That is the runtime half. The static half is
+  `tests/lake/tenant_isolation_test.sh` (lint tier, hermetic, pd-cgi9): no
+  Iceberg schema field name is tenant-identifying, and no lake write path *can*
+  open a tenant database — `crates/pkdump-lake` links no SQLite crate and the
+  Python write-path modules import no `sqlite3`, so both hold by construction
+  rather than by review, the way the closed `Source` enum holds "images are
+  never landed". Adding a tenant column or a tenant DB open now fails in a
+  second instead of nothing at all. The transform tier is the deliberate
+  exception the guard encodes: it opens every tenant's database, and is
+  asserted to only ever READ the lake. Since the inbound leg that guard's axis
+  is the **catalog zone against the tenant zone** rather than the lake against
+  everything else — see "The catalog/tenant zone guard" below.
 
 The aggregate itself is a transliteration of `value_history.rs` — two
 implementations of one calculation, deliberately, because the rewrite has to

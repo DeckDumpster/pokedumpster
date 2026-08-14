@@ -779,10 +779,12 @@ Four things about it are decisions:
   deletes and inserts fire the triggers and describe the restore correctly.
   This is the one exception to pd-yj40's "no exclusion list in the exporter",
   and it is in one place (`json_backup::envelope_tables`).
-- **Sealed holdings are deliberately not in it** (pd-4gop): valuation reads
-  `collection` alone, and tenant data with no offline consumer is exactly
-  what the tenant zone's governance exists to avoid. `source_table` is
-  already there, so adding them later is three triggers and no migration.
+- **Sealed holdings are not in it yet** (pd-4gop settled that they belong in
+  the ownership model; the triggers are a separate change). `source_table` is
+  already there, so adding them is three triggers and no migration — and
+  `outbox.rs::every_triggered_table_is_emittable` fails the moment they land
+  until the backfill covers them too, so singles cannot be backfilled while
+  sealed is silently missed.
 
 Changing a trigger body needs a deliberate `DROP TRIGGER` in the schema file
 — `IF NOT EXISTS` will not replace one an existing collection already
@@ -806,7 +808,109 @@ counts for the same reason — a kill inside an update batch moves no rows in
 or out, and against a single count would look like a batch that never
 started.
 
-Nothing reads the outbox yet. The shipper is its own change (pd-dxn3).
+Nothing ships the outbox yet. The shipper is its own change (pd-dxn3).
+
+### Backfill, redrive and DR reconcile are ONE command
+
+The triggers above only fire on FUTURE mutations. On a collection that
+already holds cards when they are created — which is every existing box —
+every current holding generated no event and never will. **Arm the shipper
+against that outbox and the tenant zone silently covers only post-deployment
+changes, and every valuation computed from it under-reports.** That is the
+gap `pkdump outbox emit` closes (pd-385w), and it is why this must ship
+before the shipper is armed on prod.
+
+```bash
+pkdump outbox emit --all                # backfill this collection
+pkdump outbox emit --all --all-tenants  # ...every registered one
+pkdump outbox emit --seq 1200..1310     # redrive a slice the shipper lost
+pkdump outbox emit --row 481            # redrive one holding
+pkdump outbox status                    # what has been emitted, and when
+```
+
+**One command over a scope, not three tools**, and that is the point rather
+than tidiness: the rare uses run under pressure, at 3am, after something is
+already broken. A backfill that shares its code with the everyday path has
+been exercised every day; a separate `--repair` script has been exercised
+never. Backfill, redrive and DR reconcile differ only in the scope argument.
+
+What makes any of it tractable is the payload being **the whole row**, not a
+delta — replay is then an upsert to the same value, where `+1` applied twice
+is a corruption. If you find yourself shrinking the payload for size, stop:
+that trade destroys backfill, redrive and DR reconcile together.
+
+Four rules, and none of them is an implementation detail:
+
+1. **Through the outbox, never straight to the zone.** `emit` appends
+   ordinary outbox rows and writes no holding. Two writers with different
+   code paths means the rare one is untested, and the zone can then disagree
+   with the outbox with nothing able to detect it.
+2. **Provenance without different handling.** Every event carries `source` —
+   `trigger`, `backfill` or `redrive`. **The shipper must NOT branch on it.**
+   The moment it does, backfill stops being the same path. The column
+   defaults to `'trigger'` rather than being named in the three trigger
+   bodies, because `IF NOT EXISTS` will not replace a trigger an existing
+   collection already carries — every writer that is not `emit` is a trigger,
+   so the default IS the rule.
+3. **Last-write-wins by `occurred_at`, tie-broken by `seq`** — implemented
+   once, in `outbox::project`, which is the reduction the tenant zone holds.
+   A redrive appends a snapshot with a NEW, higher `seq`; resolving by `seq`
+   alone would let stale state overwrite a live mutation that landed in
+   between. Resolving by `occurred_at` cannot, **because an emitted event
+   carries the row's own last-known change time** — the newest `occurred_at`
+   the outbox already holds for it, else the row's own timestamp column
+   normalised through `strftime`, else a floor. Never the moment of
+   re-emission. Every read during an emit is bounded to the `max(seq)` seen
+   when the transaction opened, or the run's own events would feed back into
+   that lookup and date themselves from what they just wrote.
+4. **Re-running is safe but not silent.** Every run lands a row in
+   `ownership_emit_log`, in the same transaction as its events; a second full
+   backfill without `--force` is refused, naming when the first completed.
+   Idempotent does not mean invisible.
+
+Two more decisions:
+
+- **The unit of work is the registry, not the current user.** `--all-tenants`
+  walks `pkdump tenant list`. This is pd-s5yn's lesson applied before the
+  bug: a backfill of the one collection `$PKDUMP_USER` resolves to would
+  report success for everybody while every other tenant stayed invisible to
+  the zone. A skipped tenant is named, the run finishes, and it exits **2** —
+  0 whole / 2 partial / 1 never started, the same three answers the transform
+  tier gives.
+- **A full backfill emits current rows; a redrive also re-emits removals.**
+  A backfill's job is "these are the rows", against a zone being rebuilt from
+  nothing. A redrive exists because a slice of the stream was lost, and if
+  that slice removed a holding, replaying only the survivors leaves the zone
+  holding a card the tenant does not own.
+
+Gates, all in `outbox.rs` and all seen red:
+
+- **The headline proof** —
+  `a_zone_rebuilt_by_backfill_equals_the_zone_incremental_shipping_built`:
+  throw every event away (that is what "delete the zone" means — the zone
+  holds exactly this projection), rebuild by backfill, assert the projection
+  equals what the triggers produced one mutation at a time. The row-identical
+  discipline of the lake-as-source design applied to the inbound leg, and the
+  only test that shows the two paths *agree* rather than that both run. Seen
+  red by making the backfill skip rows that are not `status = 'owned'` — a
+  plausible optimisation that silently under-reports.
+- **Rule 3 in the failing direction** —
+  `a_stale_redrive_with_a_higher_seq_does_not_clobber_a_live_mutation`,
+  constructed directly. Seen red by ordering `project` by `seq` alone.
+- `an_emitted_event_carries_the_rows_own_time_not_the_moment_of_emission` —
+  the property rule 3 rests on. Seen red by stamping `now`.
+- `every_triggered_table_is_emittable` — reads the outbox triggers out of
+  `sqlite_master` and asserts they fire on exactly `SOURCE_TABLES`. Seen red
+  by adding sealed triggers, which is precisely how it earns its keep.
+- The rule-4 refusal, the DR reconcile, idempotence under `--force`, the
+  payload being byte-identical to the trigger's, and both scope refusals.
+
+**Still owed before this is armed on prod**: the proof is stated against
+`outbox::project` rather than against a tenant zone, because the shipper
+(pd-dxn3) is being built in parallel and does not exist yet. `project` is the
+contract between them — the shipper writes that reduction — so re-stating the
+headline proof against real Parquet in the zone is a container-tier gate that
+belongs with the shipper. Filed, not forgotten.
 
 ### Variant expansion
 

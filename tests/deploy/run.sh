@@ -436,7 +436,8 @@ check "the published port survives the refresh" "1" \
 for U in pkdump-alert@.service pkdump-backup-check@.service pkdump-backup-check@.timer \
 	pkdump-refresh@.service pkdump-refresh@.timer pkdump-diskcheck.service pkdump-diskcheck.timer \
 	pkdump-value-snapshots@.service pkdump-value-snapshots@.timer \
-	pkdump-derive@.service pkdump-derive@.timer; do
+	pkdump-derive@.service pkdump-derive@.timer \
+	pkdump-prices@.service pkdump-prices@.timer; do
 	check "installs ${U}" "yes" "$([ -f "${UNITS}/${U}" ] && echo yes || echo no)"
 done
 check "no {{REPO_DIR}} left unsubstituted" "0" \
@@ -943,8 +944,8 @@ check "teardown disables the timer" "1" \
 
 # --- What the wrapper actually does -----------------------------------------
 # Driven end to end with a fake podman standing in for the job, because "the
-# scheduler names the date", "a fallback is warned about but not a failure" and
-# "no lake.env refuses by name" are behaviour, not greps.
+# scheduler names the date" and "no lake.env refuses by name" are behaviour,
+# not greps.
 
 DV_HOME="${WORK}/dvhome"
 mkdir -p "${DV_HOME}/.config/pkdump" "${WORK}/dvbin"
@@ -959,8 +960,6 @@ case "$1 $2" in
 esac
 if [ "$1" = run ]; then
 	printf 'Deriving ingest_date=... from dir /raw\n'
-	[ -n "${PKDUMP_TEST_FELL_BACK:-}" ] &&
-		printf '!! raw coverage has REGRESSED: https://tcgcsv.com/tcgplayer/3/9/prices is not in raw/\n'
 	printf 'Derive complete: /data/shared.sqlite\n'
 	exit "${PKDUMP_TEST_JOB_RC:-0}"
 fi
@@ -990,15 +989,20 @@ check "the wrapper names today's UTC date" "1" \
 check "an explicit --ingest-date is not overridden" "1" \
 	"$(run_derive --ingest-date 2026-08-09 | grep -c -- '--ingest-date 2026-08-09' || true)"
 
-# A run that needed the temporary upstream fallback is CORRECT but not
-# reproducible from the lake. That is a warning, not a failure, and it must not
-# be swallowed just because the job exited 0.
-DV_FELLBACK="$(PKDUMP_TEST_FELL_BACK=1 run_derive)"
-check "a fallback still exits 0" "1" "$(printf '%s' "$DV_FELLBACK" | grep -c 'RC=0$' || true)"
-check "…and is warned about, loudly" "1" \
-	"$(printf '%s' "$DV_FELLBACK" | grep -c 'WARNING — raw coverage has regressed' || true)"
-check "an undeliverable warning is not a failure" "1" \
-	"$(printf '%s' "$DV_FELLBACK" | grep -c 'the coverage warning reached nobody' || true)"
+# The wrapper no longer reads the job's output at all. Item 4 made a gap in
+# raw/ a refusal inside the job, so the "correct catalog, unreproducible
+# lineage" outcome the old coverage warning existed for cannot occur — that
+# shape now exits 1 and pages through OnFailure= like any other failure. A
+# wrapper that still grepped for it would be dead code pretending to be a
+# safety net.
+check "the wrapper greps the job's output for nothing" "0" \
+	"$(grep -c 'raw coverage' "${REPO_DIR}/deploy/derive.sh" || true)"
+check "and pushes no alert of its own" "0" \
+	"$(grep -c 'alert.sh' "${REPO_DIR}/deploy/derive.sh" || true)"
+# The retired flag is gone from the runbook line too — an invocation carrying
+# it would now be rejected by clap rather than quietly accepted.
+check "the retired flag is not documented as usable" "0" \
+	"$(grep -c -- '--no-upstream-fallback' "${REPO_DIR}/deploy/derive.sh" || true)"
 
 DV_FAILED="$(PKDUMP_TEST_JOB_RC=1 run_derive)"
 check "a failed derive exits 1" "1" "$(printf '%s' "$DV_FAILED" | grep -c 'RC=1$' || true)"
@@ -1033,7 +1037,500 @@ check "never pulls the image" "1" \
 
 reset_store
 
-log "13. The ownership shipment is SCHEDULED, and 3 is its own answer (pd-dxn3)"
+log "13. The landing half's environment actually reaches the process (pd-kncd)"
+# ---------------------------------------------------------------------------
+#
+# The unit was `podman exec systemd-pkdump-%i pkdump data refresh`, and
+# `podman exec` does NOT forward the calling process's environment — the exec'd
+# process gets the CONTAINER's env plus explicit -e flags and nothing else.
+# Measured (pd-vk22):
+#
+#   $ PKDUMP_LAND_RAW=1 podman exec systemd-pkdump-mutant \
+#         sh -c 'echo ${PKDUMP_LAND_RAW:-<unset>}'
+#   <unset>
+#
+# So the documented way to turn landing on — a drop-in setting
+# Environment=PKDUMP_LAND_RAW=1 on the refresh unit — produced a green nightly
+# timer that landed nothing, with no error anywhere. That is the exact state
+# deploy/LAKE.md §3 promises cannot exist, so this section is that promise
+# holding still: the variable is FORWARDED, the credentials are MOUNTED, and
+# every way of getting it wrong is loud.
+
+reset_store
+
+RF_SVC="${REPO_DIR}/deploy/pkdump-refresh.service"
+
+# The call that drops the environment must not come back. Stated as an
+# assertion rather than left to the wrapper's tests, because this is the whole
+# defect: an ExecStart that reaches into the running server's container cannot
+# carry an environment OR a mount, however the wrapper beside it is written.
+# Directives only — the unit's own comment block quotes the old ExecStart, which
+# is how the next person finds out why it is not there any more.
+check "the unit does not exec into the running server" "0" \
+	"$(grep -v '^#' "$RF_SVC" | grep -c 'podman exec' || true)"
+check "it runs the wrapper from this checkout" "1" \
+	"$(grep -c '^ExecStart=.*{{REPO_DIR}}/deploy/refresh.sh %i' "$RF_SVC" || true)"
+# …and §12's split still holds: the landing half lands, it does not derive.
+check "the landing unit still does not derive from raw" "0" \
+	"$(grep -c 'pkdump-lake-derive' "$RF_SVC" || true)"
+# A catalog has no partial success — the same asymmetry with the transform tier
+# deploy/derive.sh documents.
+check "no exit status is silently a success" "0" \
+	"$(grep -c '^SuccessExitStatus=' "$RF_SVC" || true)"
+check "a failure pages" "1" \
+	"$(grep -c '^OnFailure=pkdump-alert@%n.service$' "$RF_SVC" || true)"
+# The timer's bound is what §10 and §12 derive their calendar entries from, so
+# the unit that carries it must keep carrying it.
+check "the run is still bounded" "1" \
+	"$(grep -c '^TimeoutStartSec=1800$' "$RF_SVC" || true)"
+
+# --- What the wrapper actually does -----------------------------------------
+# Driven end to end with a fake podman that records its own argv, because "the
+# variable reaches the container" is a claim about a command line.
+
+RF_HOME="${WORK}/rfhome"
+mkdir -p "${RF_HOME}/.config/pkdump/rftest/aws" "${WORK}/rfbin"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_REGION=us-west-2\nAWS_PROFILE=pkdump-lake\n' \
+	> "${RF_HOME}/.config/pkdump/lake.env"
+# The instance's assume-role profile — the non-secret half of the credential
+# pair. The secret half is the fake podman's `secret inspect` above.
+printf '[profile pkdump-lake]\nrole_arn = arn:aws:iam::0:role/x\nsource_profile = bootstrap\n' \
+	> "${RF_HOME}/.config/pkdump/rftest/aws/config"
+
+# `secret inspect` answers for the instance's bootstrap secret, `run` replays a
+# canned refresh transcript — including the line landing::open prints before the
+# first fetch, which is the wrapper's evidence that the flag survived the trip.
+cat > "${WORK}/rfbin/podman" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+"secret inspect") exit "${PKDUMP_TEST_NO_SECRET:-0}" ;;
+"image exists") exit "${PKDUMP_TEST_NO_IMAGE:-0}" ;;
+esac
+if [ "$1" = run ]; then
+	printf 'PODMAN RUN: %s\n' "$*"
+	case " $* " in
+	*" -e PKDUMP_LAND_RAW=1 "*)
+		[ -n "${PKDUMP_TEST_LANDING_LOST:-}" ] ||
+			printf 'Landing raw upstream responses in s3://pdtest (ingest_date=2026-08-13)\n'
+		;;
+	esac
+	printf 'Refresh complete.\n'
+	exit "${PKDUMP_TEST_JOB_RC:-0}"
+fi
+exit 0
+EOF
+chmod +x "${WORK}/rfbin/podman"
+
+run_refresh() { # run_refresh [args...] — env overrides come from the caller
+	set +e
+	PATH="${WORK}/rfbin:${ORIG_PATH}" HOME="$RF_HOME" \
+		PKDUMP_LAKE_ENV="${RF_HOME}/.config/pkdump/lake.env" \
+		bash "${REPO_DIR}/deploy/refresh.sh" rftest "$@" 2>&1
+	printf 'RC=%s' "$?"
+	set -e
+}
+
+RF_OFF="$(run_refresh)"
+check "a plain refresh exits 0" "1" "$(printf '%s' "$RF_OFF" | grep -c 'RC=0$' || true)"
+check "and runs the app image's pkdump, not its entrypoint" "1" \
+	"$(printf '%s' "$RF_OFF" | grep -c -- '--entrypoint pkdump .* data refresh' || true)"
+# The app container's own unit sets this; a fresh container that did not would
+# rebuild a catalog under ~/.pkdump that nothing will ever read.
+check "and names the data dir" "1" \
+	"$(printf '%s' "$RF_OFF" | grep -c -- '-e PKDUMP_HOME=/data' || true)"
+# Landing is opt-in and off by default: nothing asked for it, so nothing is
+# turned on, whatever lake.env happens to say.
+check "landing stays off unless asked for" "0" \
+	"$(printf '%s' "$RF_OFF" | grep -c -- '-e PKDUMP_LAND_RAW=1' || true)"
+
+# THE BUG. The drop-in sets this in the unit's environment; before pd-kncd it
+# died there.
+RF_ENV="$(PKDUMP_LAND_RAW=1 run_refresh)"
+check "PKDUMP_LAND_RAW=1 in the environment reaches the container" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '-e PKDUMP_LAND_RAW=1' || true)"
+check "…and the run says it opened a landing zone" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c '^Landing raw upstream responses in ' || true)"
+check "…and exits 0" "1" "$(printf '%s' "$RF_ENV" | grep -c 'RC=0$' || true)"
+# The flag on the command line is the same switch by the other door.
+check "--land-raw on the command line does too" "1" \
+	"$(run_refresh --land-raw | grep -c -- '-e PKDUMP_LAND_RAW=1' || true)"
+
+# The bucket the flag is useless without (pd-8gjd): the app container had no
+# lake settings at all, so even a forwarded flag would have refused inside.
+check "the lake's settings are forwarded" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '-e PKDUMP_LAKE_S3_BUCKET=pdtest' || true)"
+check "…region included" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '-e PKDUMP_LAKE_S3_REGION=us-west-2' || true)"
+# The LAKE profile, not the backup one — separating the blast radius is the
+# whole reason there are two buckets.
+check "…and the profile lake.env names" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '-e AWS_PROFILE=pkdump-lake' || true)"
+# Credentials are the other half of pd-8gjd, and the assume-role path is the
+# project's standing decision: a role profile as a file, the bootstrap key as a
+# podman secret, never a long-lived static key on the command line.
+check "credentials are mounted when the instance has them" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '--secret pkdump-rftest-s3-bootstrap,type=mount,target=/aws/credentials' || true)"
+check "…with the role profile beside them" "1" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- "-v ${RF_HOME}/.config/pkdump/rftest/aws/config:/aws/config:ro" || true)"
+
+# --- Every way to get it wrong, loudly --------------------------------------
+
+# Landing asked for on a box with no lake configured at all. A wrapper that
+# dropped the flag here — "no bucket, so never mind" — would have rebuilt the
+# original bug exactly.
+set +e
+RF_NOLAKE="$(PATH="${WORK}/rfbin:${ORIG_PATH}" HOME="$RF_HOME" \
+	PKDUMP_LAKE_ENV="${WORK}/nosuch-refresh.env" PKDUMP_LAND_RAW=1 \
+	bash "${REPO_DIR}/deploy/refresh.sh" rftest 2>&1)"
+RF_NOLAKE_RC=$?
+set -e
+check "landing + no lake.env -> refuses" "1" "$RF_NOLAKE_RC"
+check "and names the file to write" "1" \
+	"$(printf '%s' "$RF_NOLAKE" | grep -c 'nosuch-refresh.env does not exist' || true)"
+check "and lands nothing" "0" \
+	"$(printf '%s' "$RF_NOLAKE" | grep -c '^PODMAN RUN' || true)"
+
+# A lake.env that exists and configures nothing the code reads — pd-ub8n, the
+# one that actually happened: the file on the box spelled the keys
+# PKDUMP_LAKE_BUCKET / _REGION / _RAW_PREFIX, which nothing reads. The binary
+# refuses on this too, but from inside the container, where its message names
+# /root/.config/pkdump/lake.env — a path that exists on neither side. The host
+# is where the file is, so the host is where the refusal has to be able to name
+# it.
+printf 'PKDUMP_LAKE_BUCKET=pdtest\nPKDUMP_LAKE_REGION=us-west-2\n' \
+	> "${RF_HOME}/.config/pkdump/lake-oldnames.env"
+set +e
+RF_OLDNAMES="$(PATH="${WORK}/rfbin:${ORIG_PATH}" HOME="$RF_HOME" \
+	PKDUMP_LAKE_ENV="${RF_HOME}/.config/pkdump/lake-oldnames.env" PKDUMP_LAND_RAW=1 \
+	bash "${REPO_DIR}/deploy/refresh.sh" rftest 2>&1)"
+RF_OLDNAMES_RC=$?
+set -e
+check "landing + a lake.env the code cannot read -> refuses" "1" "$RF_OLDNAMES_RC"
+check "and names the host file, not the container's" "1" \
+	"$(printf '%s' "$RF_OLDNAMES" | grep -c "${RF_HOME}/.config/pkdump/lake-oldnames.env" || true)"
+check "and names the two variables it wanted" "1" \
+	"$(printf '%s' "$RF_OLDNAMES" | grep -c 'PKDUMP_LAKE_S3_BUCKET and PKDUMP_LAKE_S3_REGION' || true)"
+check "and lands nothing" "0" \
+	"$(printf '%s' "$RF_OLDNAMES" | grep -c '^PODMAN RUN' || true)"
+# …and it is a refusal, not an alias table: teaching the wrapper to accept the
+# old spellings is the fallback logic the No-Fallback convention forbids, and a
+# half-configured lake that half-works is worse than one that stops.
+# Named in the refusal's prose, expanded nowhere — a `$` in front of one of
+# them would be the alias arriving.
+check "the old spellings are never expanded" "0" \
+	"$(grep -cE '\$\{?PKDUMP_LAKE_(BUCKET|REGION|RAW_PREFIX|TABLE_PREFIX)' \
+		"${REPO_DIR}/deploy/refresh.sh" || true)"
+# A refresh nobody asked to land is not held to any of it — that same file
+# configures nothing, and nothing needed configuring.
+check "…and a non-landing run does not care" "0" \
+	"$(PATH="${WORK}/rfbin:${ORIG_PATH}" HOME="$RF_HOME" \
+		PKDUMP_LAKE_ENV="${RF_HOME}/.config/pkdump/lake-oldnames.env" \
+		bash "${REPO_DIR}/deploy/refresh.sh" rftest >/dev/null 2>&1; echo $?)"
+
+# …but a box with no lake configured and nobody asking for one still refreshes.
+# The landing zone is opt-in; this is the state every instance is in today.
+set +e
+RF_NOLAKE_OFF="$(PATH="${WORK}/rfbin:${ORIG_PATH}" HOME="$RF_HOME" \
+	PKDUMP_LAKE_ENV="${WORK}/nosuch-refresh.env" \
+	bash "${REPO_DIR}/deploy/refresh.sh" rftest 2>&1)"
+RF_NOLAKE_OFF_RC=$?
+set -e
+check "no lake.env and no landing -> refreshes anyway" "0" "$RF_NOLAKE_OFF_RC"
+
+# Landing into real S3 with no credentials mounted. Not a refusal — an
+# endpoint-backed stand-in can be reached with keys already in the environment,
+# and the run fails at its first PUT either way — but "AccessDenied on
+# part-0000" is a far worse first clue than a sentence naming the two files.
+RF_NOCRED="$(PKDUMP_TEST_NO_SECRET=1 PKDUMP_LAND_RAW=1 run_refresh)"
+check "landing with no credentials says so" "1" \
+	"$(printf '%s' "$RF_NOCRED" | grep -c 'no credentials mounted' || true)"
+check "…naming the secret it wanted" "1" \
+	"$(printf '%s' "$RF_NOCRED" | grep -c 'pkdump-rftest-s3-bootstrap' || true)"
+check "…and does not mount a half-set" "0" \
+	"$(printf '%s' "$RF_NOCRED" | grep -c -- '--secret' || true)"
+# A directory-backed lake is the hermetic test tier's substrate and needs no
+# credentials at all, so it gets no warning.
+check "a directory-backed lake needs no credentials" "0" \
+	"$(PKDUMP_TEST_NO_SECRET=1 PKDUMP_LAND_RAW=1 PKDUMP_LAKE_DIR="${WORK}/rawdir" run_refresh |
+		grep -c 'no credentials mounted' || true)"
+
+# The silent green no-op itself, simulated at its last remaining hiding place:
+# landing asked for, the process runs, exits 0, and never opens a landing zone.
+# The wrapper must read that as a wiring failure rather than a successful night.
+RF_LOST="$(PKDUMP_TEST_LANDING_LOST=1 PKDUMP_LAND_RAW=1 run_refresh)"
+check "asked to land and landed nothing -> fails" "1" \
+	"$(printf '%s' "$RF_LOST" | grep -c 'RC=1$' || true)"
+check "and says the flag never reached the process" "1" \
+	"$(printf '%s' "$RF_LOST" | grep -c 'never opened a landing zone' || true)"
+# …and that check is scoped to landing: a refresh nobody asked to land must not
+# be failed for not landing.
+check "a non-landing run is not held to it" "1" \
+	"$(printf '%s' "$(PKDUMP_TEST_LANDING_LOST=1 run_refresh)" | grep -c 'RC=0$' || true)"
+
+RF_FAILED="$(PKDUMP_TEST_JOB_RC=1 run_refresh)"
+check "a failed refresh exits 1" "1" "$(printf '%s' "$RF_FAILED" | grep -c 'RC=1$' || true)"
+check "and says the catalog was NOT refreshed" "1" \
+	"$(printf '%s' "$RF_FAILED" | grep -c 'refresh: FAILED' || true)"
+
+# An instance that was never built on this box.
+RF_NOIMAGE="$(PKDUMP_TEST_NO_IMAGE=1 run_refresh)"
+check "no image -> fails naming the command that builds it" "1" \
+	"$(printf '%s' "$RF_NOIMAGE" | grep -c 'RC=1$' || true)"
+check "and names setup.sh" "1" \
+	"$(printf '%s' "$RF_NOIMAGE" | grep -c 'deploy/setup.sh rftest' || true)"
+check "never pulls the image" "1" \
+	"$(grep -c '^podman run --rm --pull=never' "${REPO_DIR}/deploy/refresh.sh" || true)"
+
+reset_store
+
+# ---------------------------------------------------------------------------
+log "13. The price build is SCHEDULED, and the alarm is on AGE (pd-up36)"
+# ---------------------------------------------------------------------------
+#
+# pd-8m5c scheduled the transform, which values every tenant from
+# catalog.prices. Nothing scheduled the job that FILLS catalog.prices — it was
+# a hand-run podman invocation. So the nightly snapshot was correct arithmetic
+# over whatever day someone last built by hand: advancing every night, with
+# nothing anywhere saying the prices had stopped moving.
+#
+# Two properties, and the second is the one that decays quietly:
+#
+#   THE CHAIN IS TOTAL — land -> derive -> prices -> transform, each ordered
+#   after the last. A unit missing from the middle is the bug above.
+#
+#   THE ALARM IS ON AGE, NOT ON COMPLETENESS — `complete` is conservative
+#   across datasets, so a pokemontcg.io tail that died marks the prices
+#   manifest incomplete on a night when every price fetch succeeded. Failing
+#   there would page most nights, and a pager that cries wolf gets ignored
+#   (pd-me6h). So the build passes --allow-incomplete and the alarm moves onto
+#   how old the newest partition is.
+
+reset_store
+
+PX_SVC="${REPO_DIR}/deploy/pkdump-prices.service"
+PX_TMR="${REPO_DIR}/deploy/pkdump-prices.timer"
+
+# The chain, declared rather than assumed from three timers sharing a calendar
+# entry. Each link is an ordering dependency on the unit before it.
+check "ordered after the landing" "1" \
+	"$(grep -c '^After=pkdump-refresh@%i.service$' "$PX_SVC" || true)"
+check "ordered after the derive" "1" \
+	"$(grep -c '^After=pkdump-derive@%i.service$' "$PX_SVC" || true)"
+check "the transform is ordered after the price build" "1" \
+	"$(grep -c '^After=pkdump-prices@%i.service$' "${REPO_DIR}/deploy/pkdump-value-snapshots.service" || true)"
+# And NOT Wants=: the landing is a oneshot without RemainAfterExit, so pulling
+# it in would re-run the whole catalog fetch a second time every night.
+check "does not pull the landing in" "0" \
+	"$(grep -c '^\(Wants\|Requires\)=pkdump-\(refresh\|derive\)@%i.service$' "$PX_SVC" || true)"
+
+# 0 / 2 / 1 are three answers. 2 means "no partition for today, and the table is
+# still fresh" — one missed night, which tomorrow's build fills in. A unit that
+# called that a failure would page on a normal flaky night.
+check "exit 2 is a success for the unit" "1" \
+	"$(grep -c '^SuccessExitStatus=2$' "$PX_SVC" || true)"
+check "a stale table still pages" "1" \
+	"$(grep -c '^OnFailure=pkdump-alert@%n.service$' "$PX_SVC" || true)"
+check "skips a box with no lake config at all" "1" \
+	"$(grep -c '^ConditionPathExists=%h/.config/pkdump/lake.env$' "$PX_SVC" || true)"
+
+# The calendar entry is DERIVED from the landing unit's own declared bounds —
+# the same computation §10 and §12 make. REFRESH_LATEST is theirs.
+PX_START=$(($(hhmm_secs "$PX_TMR") + $(key_secs "$PX_TMR" RandomizedDelaySec)))
+check "fires no earlier than the landing can finish" "ok" \
+	"$([ "$PX_START" -ge "$REFRESH_LATEST" ] && echo ok || echo "starts ${PX_START}s < landing ${REFRESH_LATEST}s")"
+check "catches up a missed run" "1" "$(grep -c '^Persistent=true$' "$PX_TMR" || true)"
+check "timer is enablable" "1" "$(grep -c '^WantedBy=timers.target$' "$PX_TMR" || true)"
+check "the deploy installs it" "1" \
+	"$(grep -c 'pkdump-prices@\.\${ext}' "${REPO_DIR}/deploy/units-lib.sh" || true)"
+check "teardown disables the timer" "1" \
+	"$(grep -c 'pkdump-prices@\${INSTANCE}.timer' "${REPO_DIR}/deploy/teardown.sh" || true)"
+
+# --- What the wrapper does with each combination ----------------------------
+# Driven end to end with a fake podman standing in for both jobs, because "the
+# freshness check runs on EVERY path", "a missed day over a fresh table is a
+# warning" and "a stale table is an alarm" are behaviour, not greps.
+
+PX_HOME="${WORK}/pxhome"
+mkdir -p "${PX_HOME}/.config/pkdump" "${WORK}/pxbin"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_REGION=us-west-2\n' \
+	> "${PX_HOME}/.config/pkdump/lake.env"
+
+# Each job's status is dialled independently, and every invocation is logged so
+# a test can assert which jobs actually ran and with what arguments.
+cat > "${WORK}/pxbin/podman" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+"secret inspect") exit 1 ;;
+"image exists" | "network exists") exit "${PKDUMP_TEST_NO_LAKEHOUSE:-0}" ;;
+esac
+if [ "$1" = run ]; then
+	echo "JOB: $*" >> "$PKDUMP_TEST_PRICES_LOG"
+	case " $* " in
+	*" pkdump-lake-build-prices "*)
+		printf '==> reading source=tcgcsv dataset=prices\n'
+		[ -n "${PKDUMP_TEST_INCOMPLETE_DAY:-}" ] &&
+			printf "    provenance {'pkdump.raw-complete': 'false'}\n"
+		exit "${PKDUMP_TEST_BUILD_RC:-0}" ;;
+	*" pkdump-lake-prices-age "*)
+		printf '==> catalog.prices at main: newest partition\n'
+		exit "${PKDUMP_TEST_AGE_RC:-0}" ;;
+	esac
+fi
+exit 0
+EOF
+chmod +x "${WORK}/pxbin/podman"
+
+run_prices() { # run_prices <build rc> <age rc> [extra args...]
+	local build_rc="$1" age_rc="$2"
+	shift 2
+	: > "${WORK}/prices-jobs.log"
+	set +e
+	# Blanked rather than merely unconfigured: two cases below provoke a real
+	# alarm on purpose, and a gate that pages an operator when it works as
+	# designed is pd-n0lf. alert.sh reads an empty token as unconfigured.
+	PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+		PKDUMP_LAKE_ENV="${PX_HOME}/.config/pkdump/lake.env" \
+		PKDUMP_ALERTS_ENV="${PX_HOME}/.config/pkdump/nonexistent.env" \
+		PUSHOVER_TOKEN= PUSHOVER_USER= \
+		PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+		PKDUMP_TEST_BUILD_RC="$build_rc" PKDUMP_TEST_AGE_RC="$age_rc" \
+		bash "${REPO_DIR}/deploy/prices.sh" pxtest "$@" 2>&1
+	printf 'RC=%s' "$?"
+	set -e
+}
+
+PX_OK="$(run_prices 0 0)"
+check "built and fresh exits 0" "1" "$(printf '%s' "$PX_OK" | grep -c 'RC=0$' || true)"
+check "and says both halves happened" "1" \
+	"$(printf '%s' "$PX_OK" | grep -c "prices: OK — today's partition built, catalog.prices is fresh" || true)"
+# THE property that decays: a freshness check wired only to the failure path
+# would run on almost no night, and nobody would notice it had broken. It runs
+# on the success path too, where it is also the only thing that asks the TABLE
+# rather than believing the job's report of itself.
+check "the freshness check runs even when the build succeeded" "1" \
+	"$(grep -c 'pkdump-lake-prices-age' "${WORK}/prices-jobs.log" || true)"
+# The date the jobs refuse to default from the clock is supplied by the
+# scheduler. UTC, because that is what a raw/ ingest_date partition is named in.
+check "the wrapper names today's UTC date to the build" "1" \
+	"$(grep -c -- "pkdump-lake-build-prices --ingest-date $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+check "…and measures age against the same day" "1" \
+	"$(grep -c -- "pkdump-lake-prices-age --as-of $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+# The decision this bead had to make, spelled into the command line: build the
+# day even when its landing run did not finish, and let the snapshot record it.
+check "the build is allowed an incomplete day" "1" \
+	"$(grep -c -- '--allow-incomplete' "${WORK}/prices-jobs.log" || true)"
+check "the freshness window is passed explicitly" "1" \
+	"$(grep -c -- '--max-age-days 2' "${WORK}/prices-jobs.log" || true)"
+
+# An incomplete-but-recent day is NOT an alarm. This is the exact false
+# positive pd-me6h already cost a day of; reintroducing it here in a new shape
+# would be worse than having no alarm.
+PX_INCOMPLETE="$(PKDUMP_TEST_INCOMPLETE_DAY=1 run_prices 0 0)"
+check "an incomplete day still exits 0" "1" \
+	"$(printf '%s' "$PX_INCOMPLETE" | grep -c 'RC=0$' || true)"
+check "…and raises nothing" "0" \
+	"$(printf '%s' "$PX_INCOMPLETE" | grep -c 'STALE\|MISSED' || true)"
+
+# A build that produced nothing today, over a table that still holds a recent
+# day. Not an outage: yesterday's prices value today's collection, and
+# tomorrow's build fills the day in.
+PX_MISSED="$(run_prices 1 0)"
+check "a missed day over a fresh table exits 2, not 1" "1" \
+	"$(printf '%s' "$PX_MISSED" | grep -c 'RC=2$' || true)"
+check "and says which day it missed" "1" \
+	"$(printf '%s' "$PX_MISSED" | grep -c "MISSED — no partition built for $(date -u +%F)" || true)"
+# Not silent either — and an undeliverable warning is reported rather than
+# promoted to a failure. No Pushover channel is configured here, which is every
+# test instance.
+check "an undeliverable warning is not a failure" "1" \
+	"$(printf '%s' "$PX_MISSED" | grep -c 'the MISSED warning reached nobody' || true)"
+
+# The alarm the bead exists for: correct arithmetic over prices that stopped
+# arriving. Detected by AGE, and it fires whatever the build did.
+PX_STALE="$(run_prices 1 3)"
+check "a stale table exits 1" "1" "$(printf '%s' "$PX_STALE" | grep -c 'RC=1$' || true)"
+check "and says the prices stopped advancing" "1" \
+	"$(printf '%s' "$PX_STALE" | grep -c 'prices: STALE' || true)"
+# Even on a night the build itself succeeded — a build that writes a day the
+# table does not end up holding is exactly the silence being ended.
+PX_STALE_BUILT="$(run_prices 0 3)"
+check "a stale table pages even after a clean build" "1" \
+	"$(printf '%s' "$PX_STALE_BUILT" | grep -c 'RC=1$' || true)"
+
+# Not being able to ask is not the same answer as "fine" — the rule
+# deploy/backup-check.sh is built on.
+PX_UNASKABLE="$(run_prices 0 1)"
+check "an unanswerable freshness check fails" "1" \
+	"$(printf '%s' "$PX_UNASKABLE" | grep -c 'RC=1$' || true)"
+check "and says the age could not be established" "1" \
+	"$(printf '%s' "$PX_UNASKABLE" | grep -c 'could not establish the age' || true)"
+
+# An explicit date wins — this is how rebuilding an older day runs through the
+# same path.
+: > "${WORK}/prices-jobs.log"
+PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+	PKDUMP_LAKE_ENV="${PX_HOME}/.config/pkdump/lake.env" \
+	PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+	bash "${REPO_DIR}/deploy/prices.sh" pxtest --ingest-date 2026-08-09 >/dev/null 2>&1
+check "an explicit --ingest-date is not overridden" "1" \
+	"$(grep -c -- '--ingest-date 2026-08-09' "${WORK}/prices-jobs.log" || true)"
+check "…and is not doubled" "0" \
+	"$(grep -c -- "--ingest-date $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+# …and a failure names the day that was actually asked for. A journal line that
+# says "today" about a rebuild of last Tuesday sends the reader to the wrong
+# partition.
+check "a missed rebuild names the day it was asked for" "1" \
+	"$(run_prices 1 0 --ingest-date 2026-08-09 | grep -c 'MISSED — no partition built for 2026-08-09' || true)"
+# The freshness question is always about NOW, though: rebuilding an old day
+# says nothing about whether the table has stopped advancing.
+check "…while age is still measured against today" "1" \
+	"$(grep -c -- "--as-of $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+
+# The window is host config, like every other threshold on this box.
+: > "${WORK}/prices-jobs.log"
+PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+	PKDUMP_LAKE_ENV="${PX_HOME}/.config/pkdump/lake.env" \
+	PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+	PKDUMP_LAKE_PRICES_MAX_AGE_DAYS=5 \
+	bash "${REPO_DIR}/deploy/prices.sh" pxtest >/dev/null 2>&1
+check "the freshness window is overridable per box" "1" \
+	"$(grep -c -- '--max-age-days 5' "${WORK}/prices-jobs.log" || true)"
+
+# No lake configured is a refusal that names the file, never a silent skip.
+set +e
+PX_NOLAKE="$(PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+	PKDUMP_LAKE_ENV="${WORK}/nosuch-prices.env" \
+	PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+	bash "${REPO_DIR}/deploy/prices.sh" pxtest 2>&1)"
+PX_NOLAKE_RC=$?
+set -e
+check "no lake.env -> refuses" "1" "$PX_NOLAKE_RC"
+check "and names the file" "1" \
+	"$(printf '%s' "$PX_NOLAKE" | grep -c 'nosuch-prices.env does not exist' || true)"
+
+# An instance whose lakehouse was never installed. A timer armed at nothing is a
+# price table that never advances, so this fails rather than skipping.
+set +e
+PX_NOLAKEHOUSE="$(PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+	PKDUMP_LAKE_ENV="${PX_HOME}/.config/pkdump/lake.env" \
+	PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+	PKDUMP_TEST_NO_LAKEHOUSE=1 \
+	bash "${REPO_DIR}/deploy/prices.sh" pxtest 2>&1)"
+PX_NOLAKEHOUSE_RC=$?
+set -e
+check "no job image -> fails" "1" "$PX_NOLAKEHOUSE_RC"
+check "and names the command that installs it" "1" \
+	"$(printf '%s' "$PX_NOLAKEHOUSE" | grep -c 'deploy/setup-lake.sh pxtest' || true)"
+check "never pulls the job image" "1" \
+	"$(grep -c '^[[:space:]]*podman run --rm --pull=never' "${REPO_DIR}/deploy/prices.sh" || true)"
+# Nothing keyed by a tenant is within this job's reach: it reads raw/ and writes
+# Iceberg, and mounts no data volume at all.
+check "no tenant data is mounted into the job" "0" \
+	"$(grep -c '^\s*-v "\${DATA}' "${REPO_DIR}/deploy/prices.sh" || true)"
+
+reset_store
+
+log "14. The ownership shipment is SCHEDULED, and 3 is its own answer (pd-dxn3)"
 # ---------------------------------------------------------------------------
 #
 # The shipper is the last link in the nightly chain, and the same failure shape

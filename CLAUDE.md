@@ -88,6 +88,10 @@ cargo test -p pkdump-lakehouse   # partition choice, replay, the comparator —
 bash tests/lake/derive.sh        # the whole CATALOG from raw/, in the shipped
                                  #   image, on an --internal network with the
                                  #   socket-to-1.1.1.1 egress assertion
+PKDUMP_REAL_DERIVE=1 bash tests/lake/real_upstream_derive.sh
+                                 # NOT in CI: the same claim against the REAL
+                                 #   upstreams at real catalog scale, ~5min and
+                                 #   ~1,350 live fetches. Run per milestone.
 bash tests/lake/value_snapshots.sh
                                  # the transform tier: value snapshots for EVERY
                                  #   registered tenant, byte-identical to the
@@ -113,6 +117,8 @@ cargo run --bin pkdump -- serve  # start the HTTP server
 cargo run --bin pkdump -- data refresh   # incremental catalog refresh (ONLINE)
 cargo run --bin pkdump-lake-derive -- shared --ingest-date 2026-08-11 \
                                  # the same derivation, OFFLINE, replaying raw/
+                                 #   a URL not in raw/ refuses; there is no
+                                 #   fallback to the live upstream
 cargo run --bin pkdump-lake-derive -- diff --left a.sqlite --right b.sqlite \
     --exclude raw_derivation     # row-by-row, never byte-by-byte
 cargo run --bin pkdump-ship -- run       # outbox -> tenant zone, every tenant
@@ -539,6 +545,20 @@ Landing is opt-in and off by default: with the flag absent, `lake.env` is
 never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
 runbook.
 
+**The nightly refresh runs in its own container** (`deploy/refresh.sh`), like
+the derive and transform jobs beside it — it does not `podman exec` into the
+running server. That call drops the caller's environment, so the documented
+drop-in that turns landing on set `PKDUMP_LAND_RAW=1` somewhere the refresh
+could never read it, and the timer went green having landed nothing (pd-kncd).
+`-e` alone would not have been enough: `podman exec` cannot add a mount to a
+running container either, and the alternative — putting the lake's credentials
+on the app container — would give the always-on web server ambient write access
+to the lake bucket, which is the exact coupling `pkdump-lake` is offline-only to
+prevent. **Nothing that serves a request may hold a lake credential.** The
+wrapper's last line is the guard that matters: landing asked for and no landing
+zone opened **fails the unit**, because that is the silent green no-op the
+whole landing zone is worthless without.
+
 ### The tenant zone
 
 Everything above is the **catalog zone**. The same bucket also holds the
@@ -767,6 +787,16 @@ tenant's own database. Three rules hold it in shape:
   collection is read from, and the snapshot written back to, SQLite. Neither
   ever travels the other way, and `tests/lake/value_snapshots.sh` §9 asserts
   the catalog still holds nothing but `catalog.prices` after a run.
+  That is the runtime half. The static half is
+  `tests/lake/tenant_isolation_test.sh` (lint tier, hermetic, pd-cgi9): no
+  Iceberg schema field name is tenant-identifying, and no lake write path *can*
+  open a tenant database — `crates/pkdump-lake` links no SQLite crate and the
+  Python write-path modules import no `sqlite3`, so both hold by construction
+  rather than by review, the way the closed `Source` enum holds "images are
+  never landed". Adding a tenant column or a tenant DB open now fails in a
+  second instead of nothing at all. The transform tier is the deliberate
+  exception the guard encodes: it opens every tenant's database, and is
+  asserted to only ever READ the lake.
 
 The aggregate itself is a transliteration of `value_history.rs` — two
 implementations of one calculation, deliberately, because the rewrite has to
@@ -794,7 +824,41 @@ the scheduling are decisions:
   from the clock (backfilling an older day is the same operation), so the
   wrapper — the one component that is allowed to know what day it is — names it.
 
-`catalog.prices` itself is still built by hand between the two (pd-up36).
+### The nightly price build
+
+`catalog.prices` is what the transform tier reads, and until pd-up36 nothing
+built it on a schedule — `pkdump-lake-build-prices` was a hand-run podman
+invocation. The transform therefore valued every tenant's collection from
+whatever day someone last built: **correct arithmetic over stale prices,
+advancing every night, with nothing anywhere saying the numbers had stopped
+moving.** Same failure class as pd-s5yn — a job that looks like it ran.
+
+`pkdump-prices@<instance>.timer` closes it, running `deploy/prices.sh`. Two
+things about it are decisions:
+
+- **The nightly build passes `--allow-incomplete`; the alarm is on AGE.** A
+  hand run should refuse a day holding no complete run, but `complete` is
+  conservative across datasets — a pokemontcg.io tail that died marks the
+  *prices* manifest incomplete on a night when every price fetch succeeded,
+  which is the normal shape of a flaky night. A unit that failed there would
+  page most nights, and a pager that cries wolf gets ignored (pd-me6h). So the
+  day is built, the snapshot records `pkdump.raw-complete=false`, and
+  `pkdump-lake-prices-age` (`lake/src/pkdump_lake/freshness.py`) pages when the
+  newest partition falls more than two days behind. That check runs on **every**
+  run, not only after a failed build: a check wired to the failure path fires on
+  almost no night and nobody would notice it had broken — and on the success
+  path it is the only thing that asks the table rather than believing the
+  build's report of itself.
+- **0 / 2 / 1 are three answers**, as for the transform: built-and-fresh, a
+  missed day over a still-fresh table (`SuccessExitStatus=2`, warned not paged),
+  and a stale table or an age that could not be established at all — both page.
+
+The chain is now total and every link is declared, never inferred from three
+timers sharing 07:00: **land → derive → prices → transform**. Arming one of the
+lake timers without the others is what reintroduces the bug, which is why
+`deploy/setup-lake.sh` names them together. Gates: `tests/deploy/run.sh` §13
+(units + the wrapper's whole exit mapping, hermetic) and `tests/lake/prices.sh`
+§10–§12 (the real freshness job and the shipped wrapper against a real lake).
 
 ### The offline catalog derive
 
@@ -819,11 +883,25 @@ not implementation:
   rerun is *identifiable* rather than merely tolerated. `observed_at` stays
   distinct from `ingest_date` — they differ for exactly the run that crossed
   UTC midnight.
-- **The upstream fallback is temporary and LOUD.** A URL missing from `raw/`
-  means coverage has regressed; the run says so per-URL and in a summary,
-  `deploy/derive.sh` pushes a warning, and `--no-upstream-fallback` makes it
-  fatal. Item 4 of the epic removes it, as its own change, once row-identity is
-  proven in production. **Do not remove it as a side effect of anything else.**
+- **A URL missing from `raw/` is FATAL, unconditionally.** Coverage has
+  regressed; the run refuses, naming the URL and saying to re-land the date.
+  Item 2's temporary fallback — fetch live, print `!! raw coverage has
+  REGRESSED`, finish anyway — and its `--no-upstream-fallback` opt-out are
+  **gone** (item 4, pd-6yql), removed once pd-vves proved row-identity against
+  the real bucket. The flag is rejected by name rather than ignored, so an old
+  invocation fails loudly instead of appearing to work. A fallback is not a
+  safety net to restore: it makes the landing zone decorative, producing a
+  correct catalog whose lineage cannot be reproduced, which surfaces on the day
+  an upstream is down — the day the lake was bought for.
+- **Set symbols are not an exception to that rule, and never went through it.**
+  `symbols::normalize_all_symbols` takes `(&mut Connection, &Path)` — no `Wire`
+  — and builds its own HTTP client, because images are deliberately outside
+  `raw/`. So an offline derive still fetches them live, and a fetch that fails
+  is counted, logged, and **not** fatal: the set keeps its upstream URL, which
+  still renders. `row_identical.rs::a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it`
+  is the gate, on a catalog whose symbols have never been normalised — the shape
+  pd-vves's proof could not exercise, because prod's catalog was already
+  normalised and both sides skipped the phase (pd-5w4n).
 
 Anything that lands in a ROW is passed in rather than read: `DeriveClock`
 carries the one instant a run read, `Manifest.started_at` is where the landing
@@ -847,6 +925,18 @@ corrupted payload, the fallback loud one way and fatal the other) and
 `tests/lake/derive.sh` (the container tier, shipped image, `--internal`
 network, socket-to-1.1.1.1). Runbook: `deploy/LAKE.md` §8.
 
+Both of those upstreams are fixtures, so a third gate exists and is deliberately
+**not** in CI: `tests/lake/real_upstream_derive.sh` makes the same claim against
+the REAL tcgcsv.com and api.pokemontcg.io, at real catalog scale (pd-aer9). On
+2026-08-13 it landed 1,345 real responses and rebuilt them into a catalog
+row-identical across all 21 tables — 47,640 cards, 75,627 printings, 289,255
+prices. What it cannot yet be run against is **prod's own `raw/`**: the lake's
+only partition (2026-08-11) predates `Manifest.started_at` and is refused for
+having no clock, and nothing has landed since because `pd-kncd` is unmerged. The
+sequence is pd-kncd → one night's raw → derive that date from the bucket. Do not
+arm `pkdump-derive@prod` before then: it has no `SuccessExitStatus=`, so a
+refusal every night is a page every night.
+
 One phase cannot be replayed: set-symbol normalisation fetches images, and
 images are deliberately not landed (pd-5w4n).
 
@@ -859,6 +949,60 @@ upstream is `tests/refresh/upstream.py`, a fixture that publishes nothing —
 reached through `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL`
 (`crates/pkdump-ingest/src/upstream.rs`, test-tier, and an override announces
 itself on stderr so a catalog can never be quietly built from the wrong place).
+
+### When an upstream is having a bad day
+
+On 2026-08-11 `api.pokemontcg.io` answered 5xx to ~45% of requests for most of
+a day. Neither client retried anything and the tail is fetched first, so a
+single 500 on `/v2/sets?page=1` ended the whole refresh in its first second —
+**before TCGCSV**, so no prices were imported at all. A day's prices cannot be
+re-fetched later; a day's set list can (pd-nons). Two changes, and three things
+about them are decisions:
+
+- **A bounded retry is not fallback logic.** `crates/pkdump-ingest/src/retry.rs`
+  retries transport failures, 429 and 5xx — four attempts, 500ms doubling to an
+  8s cap, no jitter — and every other non-2xx exactly once, because a 404 is a
+  fact about the URL. Nothing is defaulted or substituted; when the budget is
+  spent the original error propagates as it always did. It lives in
+  `landing::fetch_bytes`, the one place any client executes a request, so a
+  client added later cannot forget to retry. `PKDUMP_HTTP_RETRY_ATTEMPTS` /
+  `PKDUMP_HTTP_RETRY_BASE_MS` widen it without a rebuild — on the `podman
+  exec` or on the container, since the refresh unit execs into a running
+  instance.
+- **Only the FINAL failure reaches the manifest.** `complete` is computed from
+  `failures.is_empty()`, so logging the attempts a retry recovered from would
+  mark a whole night's raw partition incomplete for a hiccup it survived. A
+  failure record means "this URL was not fetched". The retries are still loud —
+  on stderr, in the unit's journal.
+- **The tail may fail without ending the run; TCGCSV may not.** `acquire`
+  carries a tail error into `Report.tail_error` instead of returning it, so the
+  perishable half is still acquired and every local phase still runs.
+  `pkdump data refresh` then exits **2** (0 whole / 2 partial / 1 failed) and
+  says so; `pkdump-lake-derive` bails and refuses to record provenance, because
+  its claim is that the catalog *is* the partition's derivation.
+
+**Do not "fix" this by fetching TCGCSV first.** That was tried and reverted.
+`tcgcsv::import_groups` links each group to the `sets` rows already in the
+database, so running it ahead of the tail on a catalog that lacks them leaves
+every `tcgplayer_groups.set_code` NULL until the *next* derivation — and an
+offline rebuild from `raw/` starts from an empty catalog every time, so a
+replayed catalog stops matching the online one it exists to reproduce.
+`crates/pkdump-lakehouse/tests/row_identical.rs` fails on it. The exposure that
+reordering would close is a tail that *hangs* rather than errors, and that is
+already bounded by the 30s request timeout times the retry budget against
+`TimeoutStartSec=1800`.
+
+Exit 2 is deliberately **not** wired to `SuccessExitStatus=` on
+`pkdump-refresh@`, unlike the transform tier — that job has a wrapper that
+pushes its own warning and this one does not, and a set list that silently
+stopped advancing is exactly what nothing else on the box would report. A
+partial run still pages. What changed is that the night is no longer lost.
+
+Gates: `crates/pkdump-ingest/tests/retry.rs`,
+`crates/pkdump-derive/tests/tail_failure.rs`, and
+`tests/refresh/tenant_bytes.sh` §9 (container tier — the shipped binary's exit
+status, its retry count against the `/v2-down` fixture prefix, and that the
+derivation continued past the failure).
 
 ### The ownership outbox
 
@@ -1119,7 +1263,10 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
 
 - **No fallback logic.** Errors propagate. No silent defaults, no
   swallowed exceptions, as few error paths as possible — let it crash
-  visibly.
+  visibly. A bounded transport retry is not an exception to this — nothing
+  is defaulted or substituted, the request is simply made again, and the
+  original error still propagates when the budget is spent. See "When an
+  upstream is having a bad day".
 - **Strict one row per physical card** in `collection`; no quantity
   aggregation. Each copy carries its own condition / status / batch /
   binder/deck assignment.

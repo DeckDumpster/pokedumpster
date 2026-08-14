@@ -92,8 +92,40 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[(
     "ALTER TABLE sets ADD COLUMN discovered_from_group_id INTEGER",
 )];
 
+/// The same convergence for `schema_user.sql`. A collection created between
+/// pd-5m54 and pd-385w already carries `ownership_outbox`, so the amended
+/// `CREATE TABLE IF NOT EXISTS` above does nothing to it and the provenance
+/// column arrives only here.
+///
+/// This one is not defaultless, and that is the point rather than an
+/// exception to the rule above: every event such a collection already holds
+/// was written by a trigger, so `DEFAULT 'trigger'` states what is true of
+/// all of them. There is no backfill to do — which is what makes it
+/// expressible as an `ALTER` at all.
+///
+/// **No `user_version` bump.** The gate exists to stop an older binary that
+/// would get a collection *wrong*; one that has never heard of `source`
+/// reads the outbox exactly as it did before and writes events a newer
+/// build labels correctly by default. Refusing to open would be a rollback
+/// broken for a column that costs nothing to ignore — the same reasoning
+/// `schema_user.sql` records for dropping `refinery_schema_history`.
+const USER_ADDED_COLUMNS: &[(&str, &str, &str)] = &[(
+    "ownership_outbox",
+    "source",
+    "ALTER TABLE ownership_outbox ADD COLUMN source TEXT NOT NULL \
+     DEFAULT 'trigger' CHECK (source IN ('trigger', 'backfill', 'redrive'))",
+)];
+
 fn add_missing_columns(conn: &Connection) -> Result<()> {
-    for (table, column, ddl) in ADDED_COLUMNS {
+    add_columns(conn, ADDED_COLUMNS)
+}
+
+fn add_missing_user_columns(conn: &Connection) -> Result<()> {
+    add_columns(conn, USER_ADDED_COLUMNS)
+}
+
+fn add_columns(conn: &Connection, columns: &[(&str, &str, &str)]) -> Result<()> {
+    for (table, column, ddl) in columns {
         let present: bool = conn
             .prepare(&format!(
                 "SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"
@@ -173,6 +205,7 @@ pub fn open_user(user_path: &Path) -> Result<Connection> {
     conn.busy_timeout(Duration::from_secs(5))?;
     schema_version::gate(&conn, Database::User)?;
     conn.execute_batch(SCHEMA_USER)?;
+    add_missing_user_columns(&conn)?;
     crate::conditions::seed_defaults(&conn)?;
     schema_version::stamp(&conn, Database::User)?;
     Ok(conn)
@@ -222,6 +255,7 @@ pub fn connect_user(user_path: &Path, shared_path: &Path) -> Result<Connection> 
 pub fn init_user_schema(conn: &Connection) -> Result<()> {
     schema_version::gate(conn, Database::User)?;
     conn.execute_batch(SCHEMA_USER)?;
+    add_missing_user_columns(conn)?;
     crate::conditions::seed_defaults(conn)?;
     schema_version::stamp(conn, Database::User)?;
     Ok(())

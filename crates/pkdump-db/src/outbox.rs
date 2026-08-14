@@ -1477,9 +1477,18 @@ mod tests {
 
         assert_eq!(
             triggered, emittable,
-            "every table with outbox triggers must be backfillable — a table \
-             the triggers cover and the emitter does not is a holding class \
-             that silently never reaches the tenant zone"
+            "\n\nEvery table with outbox triggers must be backfillable. A table \
+             the triggers cover and the emitter does not is a holding class that \
+             silently never reaches the tenant zone — backfilled singles, missing \
+             sealed, and nothing anywhere saying so.\n\n\
+             If you have just ADDED triggers (pd-4gop, sealed_collection), the fix \
+             is one line in outbox::SOURCE_TABLES:\n\n    \
+             (\"<table>\", \"<its own timestamp column>\")\n\n\
+             The second element dates a row that has never emitted an event — it \
+             must be something SQLite's strftime can parse. Nothing else needs \
+             touching: the payload is built from pragma_table_info, so it matches \
+             whatever your triggers declare.\n\n\
+             If you have just REMOVED triggers, drop the entry.\n"
         );
     }
 

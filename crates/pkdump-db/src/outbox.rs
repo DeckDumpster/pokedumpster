@@ -1369,6 +1369,80 @@ mod tests {
         assert_eq!(after, before);
     }
 
+    /// **The `ALTER` path, which no fresh database exercises.** A collection
+    /// created between pd-5m54 and pd-385w already carries
+    /// `ownership_outbox`, so `CREATE TABLE IF NOT EXISTS` does nothing to it
+    /// and the provenance column arrives only through
+    /// `connection::USER_ADDED_COLUMNS`. Every other test here builds a
+    /// database that never needed it — which is exactly how a convergence
+    /// step ships broken and is only found on the one box that had the old
+    /// shape.
+    ///
+    /// It also pins the thing the `DEFAULT` is doing: events written by the
+    /// triggers a pre-pd-385w collection still carries are labelled
+    /// `trigger`, because that is what they are, without those triggers
+    /// having to be replaced.
+    #[test]
+    fn a_collection_from_before_the_provenance_column_grows_one_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collection.sqlite");
+
+        // The pre-pd-385w shape: the outbox as pd-5m54 declared it, with an
+        // event already in it, and the triggers that wrote it.
+        {
+            let conn = crate::open_user(&path).unwrap();
+            conn.execute_batch(&format!(
+                "DROP TABLE {TABLE}; \
+                 CREATE TABLE {TABLE} ( \
+                     seq INTEGER PRIMARY KEY AUTOINCREMENT, \
+                     occurred_at TEXT NOT NULL, source_table TEXT NOT NULL, \
+                     op TEXT NOT NULL CHECK (op IN ('insert','update','delete')), \
+                     row_id INTEGER NOT NULL, payload TEXT NOT NULL);"
+            ))
+            .unwrap();
+            conn.execute(
+                "INSERT INTO collection (printing_id, acquired_at, source) \
+                 VALUES ('sv3pt5-1-normal', '2024-01-01T00:00:00Z', 'manual_id')",
+                [],
+            )
+            .unwrap();
+        }
+        let has_source = |c: &Connection| {
+            c.prepare(&format!(
+                "SELECT 1 FROM pragma_table_info('{TABLE}') WHERE name = 'source'"
+            ))
+            .unwrap()
+            .exists([])
+            .unwrap()
+        };
+        assert!(
+            !has_source(&rusqlite::Connection::open(&path).unwrap()),
+            "the fixture really is the old shape"
+        );
+
+        let mut conn = crate::open_user(&path).unwrap();
+        assert!(has_source(&conn), "...and opening it converged the shape");
+
+        let old = &evs(&conn)[0];
+        assert_eq!(
+            old.source, "trigger",
+            "the event the old triggers wrote is labelled for what it is"
+        );
+
+        // ...and the column is a working one, not just present.
+        emit(&mut conn, &Scope::Collection, false).unwrap();
+        assert_eq!(evs(&conn)[1].source, "backfill");
+        let refused = conn.execute(
+            &format!(
+                "INSERT INTO {TABLE} \
+                     (occurred_at, source_table, op, row_id, payload, source) \
+                 VALUES ('2024-01-01T00:00:00.000Z', 'collection', 'insert', 1, '{{}}', 'nonsense')"
+            ),
+            [],
+        );
+        assert!(refused.is_err(), "the CHECK came with the column");
+    }
+
     /// The list the emitter works from is checked against the triggers
     /// rather than trusted. `sealed_collection` is a holding like any other
     /// (pd-4gop) and its triggers are a separate change; the day they land,

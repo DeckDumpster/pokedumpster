@@ -12,6 +12,7 @@ pub mod landing;
 pub mod overrides;
 pub mod pokemon_tcg_data;
 pub mod pokemontcg;
+pub mod retry;
 pub mod set_discovery;
 pub mod standalone_promos;
 pub mod symbols;

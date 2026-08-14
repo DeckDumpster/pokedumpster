@@ -975,6 +975,13 @@ impl TcgcsvClient {
         self
     }
 
+    /// Retry on this budget instead of the environment's. Test-tier — see
+    /// [`crate::retry`]; a real run reads `PKDUMP_HTTP_RETRY_*`.
+    pub fn retry(mut self, retry: crate::retry::RetryPolicy) -> Self {
+        self.wire = self.wire.retrying(retry);
+        self
+    }
+
     /// Point the client at a different origin. Test-tier only — it is how
     /// the landing path is driven against a local server instead of
     /// tcgcsv.com.

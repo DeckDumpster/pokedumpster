@@ -238,6 +238,21 @@ fn normalize_symbols(args: RefreshArgs) -> anyhow::Result<()> {
 /// Nothing in this file reads `raw/`, and nothing in `pkdump-cli` can — that
 /// is the boundary the whole epic turns on. `--from-raw` belongs on the
 /// offline job, which is a different binary in a different crate.
+///
+/// ## Exit status (pd-nons)
+///
+/// | | |
+/// | --- | --- |
+/// | 0 | every upstream was acquired and every phase ran |
+/// | 2 | **partial**: the pokemontcg.io tail failed after exhausting its retries; the run continued, TCGCSV was acquired and the catalog derived |
+/// | 1 | the run failed |
+///
+/// 2 is a distinct status because the two outcomes want different answers: a
+/// tail that fails one night costs a day's set list, a TCGCSV pull that fails
+/// costs a day's prices permanently. It is deliberately **not** wired to
+/// `SuccessExitStatus=` in `deploy/pkdump-refresh.service` — a set list that
+/// silently stopped advancing is exactly the failure nothing else on the box
+/// would report, so a partial run still pages. See the unit for the argument.
 fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
     let db_path = match args.common.db {
         Some(p) => p,
@@ -262,7 +277,7 @@ fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    pkdump_derive::derive(
+    let report = pkdump_derive::derive(
         &mut conn,
         &pkdump_derive::Options {
             clock,
@@ -274,6 +289,21 @@ fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
             replay: None,
         },
     )?;
+
+    if let Some(e) = report.tail_error {
+        eprintln!("!! Refresh PARTIAL: {}", db_path.display());
+        eprintln!("!!   the pokemontcg.io tail failed after its retries: {e}");
+        eprintln!(
+            "!!   The run CONTINUED past it: TCGCSV groups, products and prices were acquired \
+             and the catalog was derived from them. The set list is as old as the last run that \
+             finished one. Exit status 2."
+        );
+        // Not an `Err`: anyhow's main would print the error and exit 1, which
+        // is the status a run that acquired nothing carries. This one
+        // acquired the perishable half.
+        drop(conn);
+        std::process::exit(2);
+    }
 
     println!("Refresh complete: {}", db_path.display());
     Ok(())

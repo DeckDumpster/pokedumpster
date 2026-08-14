@@ -721,6 +721,60 @@ reached through `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL`
 (`crates/pkdump-ingest/src/upstream.rs`, test-tier, and an override announces
 itself on stderr so a catalog can never be quietly built from the wrong place).
 
+### When an upstream is having a bad day
+
+On 2026-08-11 `api.pokemontcg.io` answered 5xx to ~45% of requests for most of
+a day. Neither client retried anything and the tail is fetched first, so a
+single 500 on `/v2/sets?page=1` ended the whole refresh in its first second —
+**before TCGCSV**, so no prices were imported at all. A day's prices cannot be
+re-fetched later; a day's set list can (pd-nons). Two changes, and three things
+about them are decisions:
+
+- **A bounded retry is not fallback logic.** `crates/pkdump-ingest/src/retry.rs`
+  retries transport failures, 429 and 5xx — four attempts, 500ms doubling to an
+  8s cap, no jitter — and every other non-2xx exactly once, because a 404 is a
+  fact about the URL. Nothing is defaulted or substituted; when the budget is
+  spent the original error propagates as it always did. It lives in
+  `landing::fetch_bytes`, the one place any client executes a request, so a
+  client added later cannot forget to retry. `PKDUMP_HTTP_RETRY_ATTEMPTS` /
+  `PKDUMP_HTTP_RETRY_BASE_MS` widen it without a rebuild — on the `podman
+  exec` or on the container, since the refresh unit execs into a running
+  instance.
+- **Only the FINAL failure reaches the manifest.** `complete` is computed from
+  `failures.is_empty()`, so logging the attempts a retry recovered from would
+  mark a whole night's raw partition incomplete for a hiccup it survived. A
+  failure record means "this URL was not fetched". The retries are still loud —
+  on stderr, in the unit's journal.
+- **The tail may fail without ending the run; TCGCSV may not.** `acquire`
+  carries a tail error into `Report.tail_error` instead of returning it, so the
+  perishable half is still acquired and every local phase still runs.
+  `pkdump data refresh` then exits **2** (0 whole / 2 partial / 1 failed) and
+  says so; `pkdump-lake-derive` bails and refuses to record provenance, because
+  its claim is that the catalog *is* the partition's derivation.
+
+**Do not "fix" this by fetching TCGCSV first.** That was tried and reverted.
+`tcgcsv::import_groups` links each group to the `sets` rows already in the
+database, so running it ahead of the tail on a catalog that lacks them leaves
+every `tcgplayer_groups.set_code` NULL until the *next* derivation — and an
+offline rebuild from `raw/` starts from an empty catalog every time, so a
+replayed catalog stops matching the online one it exists to reproduce.
+`crates/pkdump-lakehouse/tests/row_identical.rs` fails on it. The exposure that
+reordering would close is a tail that *hangs* rather than errors, and that is
+already bounded by the 30s request timeout times the retry budget against
+`TimeoutStartSec=1800`.
+
+Exit 2 is deliberately **not** wired to `SuccessExitStatus=` on
+`pkdump-refresh@`, unlike the transform tier — that job has a wrapper that
+pushes its own warning and this one does not, and a set list that silently
+stopped advancing is exactly what nothing else on the box would report. A
+partial run still pages. What changed is that the night is no longer lost.
+
+Gates: `crates/pkdump-ingest/tests/retry.rs`,
+`crates/pkdump-derive/tests/tail_failure.rs`, and
+`tests/refresh/tenant_bytes.sh` §9 (container tier — the shipped binary's exit
+status, its retry count against the `/v2-down` fixture prefix, and that the
+derivation continued past the failure).
+
 ### Variant expansion
 
 `pkdump-ingest/src/overrides.rs::expand_all_printings` is the per-card
@@ -802,7 +856,10 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
 
 - **No fallback logic.** Errors propagate. No silent defaults, no
   swallowed exceptions, as few error paths as possible — let it crash
-  visibly.
+  visibly. A bounded transport retry is not an exception to this — nothing
+  is defaulted or substituted, the request is simply made again, and the
+  original error still propagates when the budget is spent. See "When an
+  upstream is having a bad day".
 - **Strict one row per physical card** in `collection`; no quantity
   aggregation. Each copy carries its own condition / status / batch /
   binder/deck assignment.

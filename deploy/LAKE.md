@@ -68,6 +68,17 @@ would let exactly that prefix read as whole. So `complete: true` means "this
 dataset is all of that date's data"; `complete: false` means "do not assume
 so, read `error` and `failures`".
 
+**One carve-out, and it is not a softening of that rule** (pd-nons): a
+pokemontcg.io tail that fails no longer ends the acquisition — the run carries
+the error and goes on to fetch TCGCSV, which is the half a night cannot get
+back. Every dataset after the tail therefore *did* run to its end, so
+`finalize` is called with no run-level error and each manifest is judged on its
+own failures. `sets` (and `cards`, if it got that far) read incomplete because
+`fetch_bytes` recorded their failure; `groups`, `products` and `prices` read
+complete because they are. The conservatism above still applies to everything
+that genuinely cuts a run short — a TCGCSV failure still stops the acquisition
+and still marks the whole invocation incomplete.
+
 **Nothing in `raw/` is parsed.** The bytes stored are the bytes received,
 zstd-compressed and otherwise untouched. `_manifest.json` itself is
 uncompressed — it is the file you open when a refresh looks wrong, and
@@ -325,12 +336,17 @@ count it used.
 
 Expect that refusal to fire on a night when something *else* failed. `complete`
 is conservative across datasets (§1): one invocation carries one `run=`, so a
-pokemontcg.io tail that died marks the `prices` manifest incomplete even though
-every price fetch succeeded. That is the flag working as designed — it says "do
-not assume this is the whole day", not "these bytes are bad". Read the
+fetch that cuts the acquisition short marks every dataset it touched incomplete
+even where every fetch succeeded. That is the flag working as designed — it
+says "do not assume this is the whole day", not "these bytes are bad". Read the
 manifest's `failures[]`, and if the failures are all in other datasets,
 `--allow-incomplete` is the right answer and the snapshot will say that is what
 you did.
+
+A **failed pokemontcg.io tail** is the one case that no longer does this
+(pd-nons, §1): it does not cut the acquisition short, so `prices` reads
+complete and only `sets`/`cards` read incomplete. Building the price table from
+such a day needs no flag at all.
 
 **Every product's prices are in the table, sealed and single alike.** A TCGCSV
 price payload does not say which kind of product it describes; that is a fact

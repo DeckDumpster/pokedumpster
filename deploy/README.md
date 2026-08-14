@@ -431,6 +431,10 @@ changed.
   transform wrappers. It used to `podman exec` into the running server, which
   silently dropped the environment the drop-in that turns raw landing on sets
   (pd-kncd); see [deploy/LAKE.md](LAKE.md) §4.
+    Exit 2 is a **partial** run: the pokemontcg.io tail failed every retry, so the
+    set list is stale, but the run continued and TCGCSV's prices — the half a night
+    cannot get back — landed (pd-nons). Unlike the transform tier's, it is
+    deliberately not declared a success, so a partial run still pages.
 - `pkdump-backup-check@<instance>` — backup-freshness dead-man's switch
   (Layer 1, every 6h). See [Backup-failure alarming](#backup-failure-alarming).
 - `pkdump-value-snapshots@<instance>` — the transform tier's nightly run

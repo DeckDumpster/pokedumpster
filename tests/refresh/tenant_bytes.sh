@@ -2,6 +2,11 @@
 # Container-tier gate (pd-hkbc): `pkdump data refresh` writes the SHARED
 # catalog and NOT ONE BYTE of any tenant database.
 #
+# §9 (pd-nons) is the second thing it gates, and it is here rather than in its
+# own script because it needs exactly this scaffolding — the shipped image, a
+# fixture upstream, and a data directory with real tenants in it — and because
+# its own claim ends with "and it still wrote no tenant database".
+#
 # Run by deploy/ci.sh. Standalone:
 #   bash tests/refresh/tenant_bytes.sh          # ~1min after the image is warm
 #   KEEP=1 bash tests/refresh/tenant_bytes.sh   # leave WORK in place
@@ -270,6 +275,77 @@ pkdump data backfill-value-history >"${WORK}/backfill.log" 2>&1 || BACKFILL_RC=$
 check "pkdump data backfill-value-history still runs" "0" "$BACKFILL_RC"
 if [[ "$BACKFILL_RC" -ne 0 ]]; then
 	sed 's/^/  /' "${WORK}/backfill.log"
+fi
+
+# Step 8 legitimately writes tenant value-history rows — that is its entire
+# job. §9 below asks a narrower question ("did the PARTIAL REFRESH itself
+# touch a tenant"), so its baseline has to be taken here, after backfill, not
+# reused from BEFORE_TENANTS at step 4 — reusing that stale snapshot would
+# blame the refresh for bytes backfill already legitimately changed.
+AFTER_BACKFILL_TENANTS=$(tenant_fingerprint)
+
+log "9. a dead pokemontcg.io no longer ends the run (pd-nons)"
+# On 2026-08-11 api.pokemontcg.io answered 5xx to ~45% of requests. The tail's
+# error propagated, so one bad response ended the refresh in its first second —
+# TCGCSV was never reached and no prices were imported at all. A day's prices
+# cannot be re-fetched later; a day's set list can.
+#
+# The Rust tier proves the deferral and the retry
+# (crates/pkdump-derive/tests/tail_failure.rs,
+# crates/pkdump-ingest/tests/retry.rs). What only the container tier can prove
+# is the part systemd actually sees: the SHIPPED binary retries on the budget
+# its unit hands it, keeps going, and exits 2 rather than 0 or 1.
+DOWN_BEFORE=$(grep -c '"path": "/v2-down/sets' "$UPSTREAM_LOG" || true)
+DOWN_RC=0
+podman run --rm -v "${DATA}:/data:Z" \
+	-e PKDUMP_TCGCSV_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/tcgplayer" \
+	-e PKDUMP_POKEMONTCG_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/v2-down" \
+	-e PKDUMP_HTTP_RETRY_ATTEMPTS=3 \
+	-e PKDUMP_HTTP_RETRY_BASE_MS=25 \
+	--entrypoint pkdump "$IMAGE" data refresh \
+	>"${WORK}/refresh-down.log" 2>&1 || DOWN_RC=$?
+
+# 2, not 1 and not 0. 1 is "the run failed"; 0 would say a stale set list is
+# nothing to mention. See crates/pkdump-cli/src/data.rs::refresh.
+check "a failed tail exits 2 (partial), not 1" "2" "$DOWN_RC"
+check "and says so on stderr" "1" \
+	"$(grep -c 'Refresh PARTIAL' "${WORK}/refresh-down.log" || true)"
+
+# It really did retry, in the shipped image, on the budget the environment
+# named — 3 attempts at one URL, not 1.
+DOWN_HITS=$(($(grep -c '"path": "/v2-down/sets' "$UPSTREAM_LOG" || true) - DOWN_BEFORE))
+check "the tail spent its whole retry budget" "3" "$DOWN_HITS"
+
+# And the run carried on past it: the local derivation phases after the
+# acquisition all ran. This is the difference between a lost night and a
+# partial one.
+check "the derivation continued past the failed tail" "yes" \
+	"$(grep -qF "latest-price rows materialized" "${WORK}/refresh-down.log" && echo yes || echo no)"
+# Order, not merely presence: TCGCSV is fetched AFTER the tail has given up.
+# That is the difference between a partial night and a lost one, and it is the
+# assertion that would have failed on the old binary — which returned from the
+# tail's error without issuing a single TCGCSV request.
+TAIL_LINE=$(grep -nF "Filling newest sets from pokemontcg.io" \
+	"${WORK}/refresh-down.log" | head -1 | cut -d: -f1)
+TCGCSV_LINE=$(grep -nF "Importing TCGCSV groups, products, prices" \
+	"${WORK}/refresh-down.log" | head -1 | cut -d: -f1)
+check "TCGCSV was acquired after the tail gave up" "yes" \
+	"$([[ -n "${TCGCSV_LINE:-}" && -n "${TAIL_LINE:-}" && "$TAIL_LINE" -lt "$TCGCSV_LINE" ]] &&
+		echo yes || echo no)"
+
+# A partial run is still a run that writes no tenant database. Compared
+# against AFTER_BACKFILL_TENANTS (step 8's own write already accounted for),
+# not the original step-4 baseline.
+if diff <(echo "$AFTER_BACKFILL_TENANTS") <(tenant_fingerprint) >"${WORK}/tenants3.diff" 2>&1; then
+	check "tenants byte-identical after a partial refresh" "identical" "identical"
+else
+	check "tenants byte-identical after a partial refresh" "identical" "CHANGED"
+	sed 's/^/  /' "${WORK}/tenants3.diff"
+fi
+
+if [[ "$DOWN_RC" -ne 2 ]]; then
+	echo "  --- the partial refresh's log ---"
+	sed 's/^/  /' "${WORK}/refresh-down.log"
 fi
 
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"

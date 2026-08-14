@@ -20,16 +20,36 @@ use std::sync::{Arc, Mutex};
 pub struct Reply {
     /// HTTP status.
     pub status: u16,
-    /// Response body.
-    pub body: String,
+    /// Response body. Bytes rather than text because not every upstream this
+    /// stands in for serves JSON — `images.pokemontcg.io` serves PNG, and a
+    /// set symbol that arrived as lossy UTF-8 would not decode.
+    pub body: Vec<u8>,
+    /// The `Content-Type` to send it under.
+    pub content_type: &'static str,
 }
 
 impl Reply {
-    /// A 200 carrying `body`.
+    /// A 200 carrying `body` as JSON.
     pub fn ok(body: impl Into<String>) -> Self {
+        Self::status(200, body)
+    }
+
+    /// A non-2xx (or any) status carrying `body` as JSON.
+    pub fn status(status: u16, body: impl Into<String>) -> Self {
+        Self {
+            status,
+            body: body.into().into_bytes(),
+            content_type: "application/json",
+        }
+    }
+
+    /// A 200 carrying PNG bytes — a set symbol, as `images.pokemontcg.io`
+    /// would answer one.
+    pub fn png(body: Vec<u8>) -> Self {
         Self {
             status: 200,
-            body: body.into(),
+            body,
+            content_type: "image/png",
         }
     }
 }
@@ -113,13 +133,14 @@ fn write_reply(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
     write!(
         stream,
         "HTTP/1.1 {} {reason}\r\n\
-         Content-Type: application/json\r\n\
+         Content-Type: {}\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\
          \r\n",
         reply.status,
+        reply.content_type,
         reply.body.len(),
     )?;
-    stream.write_all(reply.body.as_bytes())?;
+    stream.write_all(&reply.body)?;
     stream.flush()
 }

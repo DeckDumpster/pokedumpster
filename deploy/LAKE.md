@@ -68,6 +68,17 @@ would let exactly that prefix read as whole. So `complete: true` means "this
 dataset is all of that date's data"; `complete: false` means "do not assume
 so, read `error` and `failures`".
 
+**One carve-out, and it is not a softening of that rule** (pd-nons): a
+pokemontcg.io tail that fails no longer ends the acquisition — the run carries
+the error and goes on to fetch TCGCSV, which is the half a night cannot get
+back. Every dataset after the tail therefore *did* run to its end, so
+`finalize` is called with no run-level error and each manifest is judged on its
+own failures. `sets` (and `cards`, if it got that far) read incomplete because
+`fetch_bytes` recorded their failure; `groups`, `products` and `prices` read
+complete because they are. The conservatism above still applies to everything
+that genuinely cuts a run short — a TCGCSV failure still stops the acquisition
+and still marks the whole invocation incomplete.
+
 **Nothing in `raw/` is parsed.** The bytes stored are the bytes received,
 zstd-compressed and otherwise untouched. `_manifest.json` itself is
 uncompressed — it is the file you open when a refresh looks wrong, and
@@ -189,9 +200,77 @@ EOF
 systemctl --user daemon-reload
 ```
 
-The refresh runs inside the container, so the container also needs the AWS
-config and the lake settings — the same mount pattern the Litestream sidecar
-already uses for `~/.config/pkdump/<instance>/aws/`.
+That drop-in sets the variable in the *unit's* environment, and the unit runs
+`deploy/refresh.sh`, which forwards it into the container along with the
+bucket, region and profile from `lake.env` and mounts the instance's
+`~/.config/pkdump/<instance>/aws/config` beside the
+`pkdump-<instance>-s3-bootstrap` secret. Nothing else is needed: everything
+landing requires comes from that one file plus the credentials the Litestream
+sidecar already uses.
+
+Verify it reached the process — the run says where it is landing, before the
+first fetch:
+
+```bash
+systemctl --user start pkdump-refresh@<instance>.service
+journalctl --user -u pkdump-refresh@<instance>.service | grep 'Landing raw'
+#   Landing raw upstream responses in s3://<bucket> (ingest_date=YYYY-MM-DD)
+```
+
+#### Why the refresh runs in its own container
+
+Until Aug 2026 the unit was `podman exec systemd-pkdump-<instance> pkdump data
+refresh`, reaching into the already-running server. **`podman exec` does not
+forward the calling process's environment** — the exec'd process gets the
+container's env plus explicit `-e` flags and nothing else — so the drop-in
+above reached the unit and never reached the refresh (`pd-vk22`):
+
+```console
+$ PKDUMP_LAND_RAW=1 podman exec systemd-pkdump-mutant sh -c 'echo ${PKDUMP_LAND_RAW:-<unset>}'
+<unset>
+```
+
+The result was a green nightly timer that landed nothing, with no error
+anywhere — the one state §3 says must not exist.
+
+`-e` would have fixed half of it. The app container mounts the data volume and
+nothing else (`pd-8gjd`): no AWS config, no bootstrap secret, no lake settings.
+`podman exec` cannot add a mount to a running container, and mounting the
+lake's credentials on the app container would hand the always-on web server
+ambient write access to the lake bucket — the coupling `pkdump-lake` is
+offline-only to prevent. It would also make the bootstrap secret a hard start
+dependency of the *server*, so every instance without one would stop serving.
+
+So the refresh runs in its own container from the same image over the same
+volume, which is what `deploy/derive.sh` and `deploy/value-snapshots.sh`
+already do. The landing half was the last job still borrowing the server's
+container to get its work done.
+
+Four refusals keep the silent no-op from coming back, and
+`tests/deploy/run.sh` §13 drives all of them:
+
+| you did | it does |
+| --- | --- |
+| asked to land with no `lake.env` on the box | refuses before the first fetch, naming the file to write |
+| asked to land with a `lake.env` that does not set `PKDUMP_LAKE_S3_BUCKET` / `_REGION` | refuses before a container starts, naming the **host** file and both variables |
+| asked to land into S3 with no credentials mounted | says so by name, then fails at the first PUT |
+| asked to land, and the run never opened a landing zone | **fails the unit** — the catalog is fine, the wiring is not |
+
+The second one is checked on the host rather than left to the binary
+deliberately. The binary refuses too, but from inside the container, where
+`$HOME` is `/root` — so its message names `/root/.config/pkdump/lake.env`, a
+path that exists on neither side and says nothing about the file the operator
+has to fix. The wrapper is the process that read the real file, so it is the
+one that can name it. This is `pd-ub8n`'s exact failure: the file on the box was
+written from the design note as `PKDUMP_LAKE_BUCKET` / `_REGION` /
+`_RAW_PREFIX`, which nothing reads.
+
+It stays a refusal rather than an alias table. Teaching the code to accept both
+spellings is the fallback logic this project's No-Fallback convention forbids,
+and a half-configured lake that half-works is worse than one that stops.
+
+A refresh nobody asked to land is untouched by any of it, on a box with no
+lake configuration at all.
 
 ---
 
@@ -257,12 +336,17 @@ count it used.
 
 Expect that refusal to fire on a night when something *else* failed. `complete`
 is conservative across datasets (§1): one invocation carries one `run=`, so a
-pokemontcg.io tail that died marks the `prices` manifest incomplete even though
-every price fetch succeeded. That is the flag working as designed — it says "do
-not assume this is the whole day", not "these bytes are bad". Read the
+fetch that cuts the acquisition short marks every dataset it touched incomplete
+even where every fetch succeeded. That is the flag working as designed — it
+says "do not assume this is the whole day", not "these bytes are bad". Read the
 manifest's `failures[]`, and if the failures are all in other datasets,
 `--allow-incomplete` is the right answer and the snapshot will say that is what
 you did.
+
+A **failed pokemontcg.io tail** is the one case that no longer does this
+(pd-nons, §1): it does not cut the acquisition short, so `prices` reads
+complete and only `sets`/`cards` read incomplete. Building the price table from
+such a day needs no flag at all.
 
 **Every product's prices are in the table, sealed and single alike.** A TCGCSV
 price payload does not say which kind of product it describes; that is a fact
@@ -275,6 +359,54 @@ other dataset was. `shared.sqlite` splits the same bytes at import time into
 `shared.sqlite` stores `REAL`; a double is the value that round-trips both. A
 decimal would round, and "the sampled prices match" would stop meaning what it
 says.
+
+### It is on a timer (`pd-up36`)
+
+`pkdump-prices@<instance>.timer`, whose service runs `deploy/prices.sh` — the
+invocation above with the instance's network, image and lake credentials
+resolved from where they actually live.
+
+```bash
+systemctl --user enable --now pkdump-prices@prod.timer
+bash deploy/prices.sh prod                            # or run one now
+bash deploy/prices.sh prod --ingest-date 2026-08-09   # rebuild an older day
+```
+
+It sits in the middle of the nightly chain — **land → derive → prices →
+transform** — and each link is a declared ordering dependency, never an
+inference from three timers sharing 07:00. Without it, the transform tier (§7)
+valued every tenant's collection from whatever day someone last built by hand:
+correct arithmetic over stale prices, advancing every night, with nothing
+anywhere saying the numbers had stopped moving.
+
+Three things about the scheduling are decisions:
+
+**The nightly build passes `--allow-incomplete`.** The refusal above is right
+for a hand run and wrong for a timer: `complete` is conservative across
+datasets, so a pokemontcg.io tail that died marks the *prices* manifest
+incomplete on a night when every price fetch succeeded — the normal shape of a
+flaky night. A unit that failed there would page most nights, and a pager that
+cries wolf gets ignored (this project has already paid a day for that shape,
+`pd-me6h`). So the day is built and the snapshot records
+`pkdump.raw-complete=false`, which is the difference between not knowing and
+knowing-and-having-written-it-down.
+
+**The alarm is on AGE instead**, and that is what `pkdump-lake-prices-age`
+answers: how far behind today the newest `catalog.prices` partition is. More
+than two days behind (`PKDUMP_LAKE_PRICES_MAX_AGE_DAYS`) pages; a table nothing
+has ever built is the same verdict. It reads partition *metadata*, not data
+files, so the cost does not grow with the lake. It runs on **every** run, not
+only after a failed build: a check wired to the failure path fires on almost no
+night and nobody would notice it had broken — and on the success path it is
+also the only thing that asks the table rather than believing the build's
+report of itself.
+
+**0, 2 and 1 are three different answers.** 0 is today's partition built over a
+fresh table. 2 is a build that produced nothing today over a table still inside
+the window — one missed night, which tomorrow's build fills in; the unit's
+`SuccessExitStatus=2` keeps it out of `failed` while the wrapper prints
+`MISSED` and pushes a warning. 1 is a stale table, or an age that could not be
+established at all: not being able to ask is not the same answer as "fine".
 
 Checking the table against the catalog we already have:
 
@@ -364,11 +496,14 @@ while the wrapper prints a `PARTIAL` line naming the skipped tenants and pushes 
 Pushover *warning* — so a half-completed run is neither silent nor an alarm. Exit
 1 is a real failure and `OnFailure=pkdump-alert@%n.service` pages for it.
 
-**`catalog.prices` is still built by hand** (§6). Nothing schedules
-`pkdump-lake-build-prices` yet, so a box whose price build is not re-run values
-each night's collection from the newest partition the lake happens to hold —
-correct arithmetic over stale prices. Tracked as `pd-up36`, which also has to
-decide what a nightly build does with §6's refusal on an incomplete day.
+**`catalog.prices` is built by the unit before this one** (§6, `pd-up36`).
+`pkdump-prices@%i` is ordered `After=` the derive and this unit is ordered
+`After=` it, so the night runs land → derive → prices → transform in sequence
+however long each takes. Until that unit existed this job valued each night's
+collection from the newest partition the lake happened to hold — correct
+arithmetic over stale prices, advancing nightly. Arming this timer without
+arming that one reintroduces exactly that, which is why `deploy/setup-lake.sh`
+now names both.
 
 **Tenant data never enters the lake.** Prices come out of Iceberg; the
 collection is read from, and the snapshot written to, the tenant's SQLite
@@ -421,7 +556,6 @@ podman run --rm -v pkdump-prod-data:/data:Z \
 # Or the way the timer runs it, which resolves all of that from the box:
 bash deploy/derive.sh prod                            # today (UTC)
 bash deploy/derive.sh prod --ingest-date 2026-08-09   # rebuild an older day
-bash deploy/derive.sh prod --no-upstream-fallback     # refuse a gap in raw/
 
 # Compare two catalogs row by row — the acceptance instrument, shipped:
 podman run --rm -v /some/dir:/c:Z --entrypoint pkdump-lake-derive \
@@ -495,32 +629,158 @@ and rows built from one run's bytes and another run's clock are neither run's
 output. It happens when one date was landed by two invocations (a `setup` and a
 `refresh` the same day); derive a date one run landed, or re-land it.
 
-### The upstream fallback is temporary, and loud
+### A URL the partition does not hold is a REFUSAL (item 4)
 
-A URL the partition has no record of means raw coverage has regressed. Item 2
-of the epic ships with a fallback for that; item 4 removes it as its own
-change, once row-identity is proven in production. While it exists:
+A URL the partition has no record of means raw coverage has regressed: the
+derivation grew an input the landing zone does not capture, or an upstream's
+origin moved. The run stops, exit 1, naming the URL and telling you to re-land
+the date:
 
-- every miss prints `!! raw coverage has REGRESSED` naming the URL,
-- the run ends with a summary and `deploy/derive.sh` pushes a Pushover warning,
-- and `--no-upstream-fallback` makes the first miss fatal.
+```
+raw/ has no record of https://tcgcsv.com/tcgplayer/3/9/prices.
+The landing zone no longer covers this derivation's inputs: either an endpoint
+was added without landing it, or the upstream's origin moved. Re-land the date
+(pkdump data refresh --land-raw) and derive again.
+```
 
-A run that needed the fallback is **correct but not reproducible from the
-lake**. That is a warning rather than a failure — the catalog is right, the
-lineage is not.
+**What to do about it.** Re-land the date — `systemctl --user start
+pkdump-refresh@<instance>.service`, the landing half of the pair, or check that
+it ran at all — then derive again.
+Deriving a *different*, complete date is the other option — the catalog is a
+day behind rather than wrong. `pkdump-derive@` has no `SuccessExitStatus=`, so
+this pages through `OnFailure=`, which is intended: a catalog that quietly
+skipped a price feed reads downstream as cards that do not exist.
+
+Item 2 of the epic shipped a temporary fallback here — reach the live upstream,
+print `!! raw coverage has REGRESSED`, finish anyway — with
+`--no-upstream-fallback` as the opt-out. **Both are gone** (pd-6yql), removed
+once pd-vves proved row-identity against the real bucket. The flag is rejected
+by name rather than ignored, so an old invocation carrying it fails loudly
+instead of appearing to work. `deploy/derive.sh` no longer reads the job's
+output and pushes no coverage warning of its own.
+
+The reason it could not stay: a run that needed the fallback was **correct but
+not reproducible from the lake**. Every gate passed, every row looked right, and
+the failure would have surfaced on the day an upstream was down — the day the
+lake was bought for. Loudness mitigated that; it depended on somebody reading
+the log.
+
+**Set symbols are not an exception to this.** `symbols::normalize_all_symbols`
+still fetches PNGs from `images.pokemontcg.io` on the offline path, and always
+did: images are deliberately outside `raw/` (§1), so the phase never entered the
+replay layer at all — it has no `Wire` in its signature and builds its own HTTP
+client. A symbol fetch is therefore not a replay miss, and a derive on a box
+with no egress logs `WARN: symbol normalize <set>: …`, counts it, keeps the
+set's upstream URL (which still renders) and **succeeds**. See `pd-5w4n`, and
+`row_identical.rs::a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it`
+— the gate that holds the two apart, on a catalog whose symbols have never been
+normalised.
+
+### Proving it, on real data (pd-aer9)
+
+Three gates, and each proves something the other two cannot:
+
+| gate | upstream | what only it proves |
+| --- | --- | --- |
+| `crates/pkdump-lakehouse/tests/row_identical.rs` | a fixture on loopback | row-identity, idempotence, every refusal, the loud fallback — hermetic, in CI |
+| `tests/lake/derive.sh` | none: an `--internal` network | the shipped image needs **no network** |
+| `tests/lake/real_upstream_derive.sh` | **the real tcgcsv.com and api.pokemontcg.io** | row-identity on **real payloads at real scale** |
+
+The third is not a CI gate and must not become one: it fetches ~1,350 real
+responses and takes a few minutes of somebody's evening. It exists because the
+first two have never seen a real byte, and a replay that got the 450-group
+Japanese catalog, set discovery or a real pagination edge subtly wrong would
+pass both.
+
+```bash
+cargo build --release -p pkdump-cli -p pkdump-lakehouse
+PKDUMP_REAL_DERIVE=1 bash tests/lake/real_upstream_derive.sh
+```
+
+It builds a baseline catalog, copies it to both sides, runs `pkdump data
+refresh --land-raw` into a landing zone **on local disk**, rebuilds the same
+date from that partition with `--no-upstream-fallback`, and diffs the two row
+by row. It writes nothing to any bucket and touches no instance.
+
+**The run of 2026-08-13** (`ingest_date=2026-08-13`, `run=01KZWST5KCAXBK5JTGKNJ811AS`):
+1,345 parts landed, 85.3 MB uncompressed / 11 MB stored; the online refresh took
+**132s**, the offline rebuild from raw **35s**, and every one of the 1,345 URLs
+was answered from `raw/` (`raw coverage: complete`). All 21 tables compared
+equal, `raw_derivation` excluded and named:
+
+| table | rows | table | rows |
+| --- | --- | --- | --- |
+| `cards` | 47,640 | `printings` | 75,627 |
+| `sets` | 630 | `prices` | 289,255 |
+| `tcgcsv_products` | 57,716 | `latest_prices` | 289,255 |
+| `sealed_products` | 5,191 | `sealed_prices` | 4,136 |
+| `tcgplayer_groups` | 671 | `variants` | 290 |
+
+The clock was recovered from the manifests
+(`2026-08-13T05:34:09.516217300+00:00`) rather than read, which is what makes
+those `observed_at` and `fetched_at` columns compare equal at all.
+
+Two honest caveats, both visible in the run's own output:
+
+- **The symbol phase distinguished nothing here** — `0 processed, 0 cached, 175
+  overrides, 0 failed` on both sides. A warm catalog's `sets.symbol_url` values
+  already name `/sym/<set>.png`, so the http-prefix gate skips them. The gap in
+  the section below is real; this run does not exercise it.
+- **`pokemontcgio/cards` landed nothing**, because no set was new that night.
+  That is the ordinary case (the dataset is `Optional` for exactly this
+  reason), and it means the replay of *that* dataset is still only proven
+  against the fixture.
+
+### What is still NOT proven: prod's own `raw/`
+
+The lake holds exactly one partition today, `ingest_date=2026-08-11`, landed by
+hand by pd-fet2. **The derive refuses it**, correctly:
+
+```
+$ pkdump-lake-derive shared --ingest-date 2026-08-11 --no-upstream-fallback
+Deriving ingest_date=2026-08-11 from s3://pkdump-lake-…/
+  tcgcsv/products 2026-08-11: 01KZRWPR39WMHMARZ9WK5S0ND7 (671 part(s))
+  …
+Error: …: the run's manifest records no started_at, so the clock its rows were
+stamped with cannot be recovered.
+```
+
+It predates `Manifest.started_at`. And the nights since have landed nothing at
+all — `--ingest-date 2026-08-12` against the real bucket answers `no runs
+landed … never falls back`, which is `pd-kncd` (the nightly's env never reaches
+the process) seen from the reading end.
+
+So the sequence, and it cannot be short-circuited: **pd-kncd lands** → one
+night's raw lands with a clock in its manifests → derive *that* date from the
+bucket and diff it against the catalog the same refresh built. Until then the
+strongest available statement is the one above: row-identical on real upstream
+payloads at real catalog scale, over a partition landed by the same writer prod
+uses.
 
 ### Enabling it
 
 Installed for every instance and enabled for none:
 
 ```bash
+# On the deployment box, as the pkdump user:
 systemctl --user enable --now pkdump-derive@prod.timer
+
+# What it will run, and what to watch the first morning after:
+systemctl --user list-timers 'pkdump-*'
+journalctl --user -u pkdump-derive@prod.service -n 100
+sqlite3 ~/.local/share/containers/storage/volumes/pkdump-prod-data/_data/shared.sqlite \
+  'SELECT ingest_date, source, dataset, run_id, parts, derived_at FROM raw_derivation'
 ```
 
-Think before you do. Today `pkdump data refresh` still derives the catalog
-inline, so an enabled derive timer rebuilds it a second time from raw — correct
-and idempotent, but redundant. It becomes the only builder in item 6 of the
-epic. What is worth having now is the mechanism, the provenance, and the proof.
+Do not arm it before `pkdump-refresh@prod` is provably landing raw (pd-kncd):
+a derive with nothing to read is a refusal every night, and the unit has **no**
+`SuccessExitStatus=`, so it will page.
+
+Think before you do, even then. Today `pkdump data refresh` still derives the
+catalog inline, so an enabled derive timer rebuilds it a second time from raw —
+correct and idempotent, but redundant. It becomes the only builder in item 6 of
+the epic. What is worth having now is the mechanism, the provenance, and the
+proof.
 
 ### The one phase a replay cannot supply
 

@@ -88,10 +88,6 @@ cargo test -p pkdump-lakehouse   # partition choice, replay, the comparator —
 bash tests/lake/derive.sh        # the whole CATALOG from raw/, in the shipped
                                  #   image, on an --internal network with the
                                  #   socket-to-1.1.1.1 egress assertion
-PKDUMP_REAL_DERIVE=1 bash tests/lake/real_upstream_derive.sh
-                                 # NOT in CI: the same claim against the REAL
-                                 #   upstreams at real catalog scale, ~5min and
-                                 #   ~1,350 live fetches. Run per milestone.
 bash tests/lake/value_snapshots.sh
                                  # the transform tier: value snapshots for EVERY
                                  #   registered tenant, byte-identical to the
@@ -117,8 +113,6 @@ cargo run --bin pkdump -- serve  # start the HTTP server
 cargo run --bin pkdump -- data refresh   # incremental catalog refresh (ONLINE)
 cargo run --bin pkdump-lake-derive -- shared --ingest-date 2026-08-11 \
                                  # the same derivation, OFFLINE, replaying raw/
-                                 #   a URL not in raw/ refuses; there is no
-                                 #   fallback to the live upstream
 cargo run --bin pkdump-lake-derive -- diff --left a.sqlite --right b.sqlite \
     --exclude raw_derivation     # row-by-row, never byte-by-byte
 cargo run --bin pkdump-ship -- run       # outbox -> tenant zone, every tenant
@@ -866,41 +860,7 @@ the scheduling are decisions:
   from the clock (backfilling an older day is the same operation), so the
   wrapper — the one component that is allowed to know what day it is — names it.
 
-### The nightly price build
-
-`catalog.prices` is what the transform tier reads, and until pd-up36 nothing
-built it on a schedule — `pkdump-lake-build-prices` was a hand-run podman
-invocation. The transform therefore valued every tenant's collection from
-whatever day someone last built: **correct arithmetic over stale prices,
-advancing every night, with nothing anywhere saying the numbers had stopped
-moving.** Same failure class as pd-s5yn — a job that looks like it ran.
-
-`pkdump-prices@<instance>.timer` closes it, running `deploy/prices.sh`. Two
-things about it are decisions:
-
-- **The nightly build passes `--allow-incomplete`; the alarm is on AGE.** A
-  hand run should refuse a day holding no complete run, but `complete` is
-  conservative across datasets — a pokemontcg.io tail that died marks the
-  *prices* manifest incomplete on a night when every price fetch succeeded,
-  which is the normal shape of a flaky night. A unit that failed there would
-  page most nights, and a pager that cries wolf gets ignored (pd-me6h). So the
-  day is built, the snapshot records `pkdump.raw-complete=false`, and
-  `pkdump-lake-prices-age` (`lake/src/pkdump_lake/freshness.py`) pages when the
-  newest partition falls more than two days behind. That check runs on **every**
-  run, not only after a failed build: a check wired to the failure path fires on
-  almost no night and nobody would notice it had broken — and on the success
-  path it is the only thing that asks the table rather than believing the
-  build's report of itself.
-- **0 / 2 / 1 are three answers**, as for the transform: built-and-fresh, a
-  missed day over a still-fresh table (`SuccessExitStatus=2`, warned not paged),
-  and a stale table or an age that could not be established at all — both page.
-
-The chain is now total and every link is declared, never inferred from three
-timers sharing 07:00: **land → derive → prices → transform**. Arming one of the
-lake timers without the others is what reintroduces the bug, which is why
-`deploy/setup-lake.sh` names them together. Gates: `tests/deploy/run.sh` §13
-(units + the wrapper's whole exit mapping, hermetic) and `tests/lake/prices.sh`
-§10–§12 (the real freshness job and the shipped wrapper against a real lake).
+`catalog.prices` itself is still built by hand between the two (pd-up36).
 
 ### The offline catalog derive
 
@@ -925,25 +885,11 @@ not implementation:
   rerun is *identifiable* rather than merely tolerated. `observed_at` stays
   distinct from `ingest_date` — they differ for exactly the run that crossed
   UTC midnight.
-- **A URL missing from `raw/` is FATAL, unconditionally.** Coverage has
-  regressed; the run refuses, naming the URL and saying to re-land the date.
-  Item 2's temporary fallback — fetch live, print `!! raw coverage has
-  REGRESSED`, finish anyway — and its `--no-upstream-fallback` opt-out are
-  **gone** (item 4, pd-6yql), removed once pd-vves proved row-identity against
-  the real bucket. The flag is rejected by name rather than ignored, so an old
-  invocation fails loudly instead of appearing to work. A fallback is not a
-  safety net to restore: it makes the landing zone decorative, producing a
-  correct catalog whose lineage cannot be reproduced, which surfaces on the day
-  an upstream is down — the day the lake was bought for.
-- **Set symbols are not an exception to that rule, and never went through it.**
-  `symbols::normalize_all_symbols` takes `(&mut Connection, &Path)` — no `Wire`
-  — and builds its own HTTP client, because images are deliberately outside
-  `raw/`. So an offline derive still fetches them live, and a fetch that fails
-  is counted, logged, and **not** fatal: the set keeps its upstream URL, which
-  still renders. `row_identical.rs::a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it`
-  is the gate, on a catalog whose symbols have never been normalised — the shape
-  pd-vves's proof could not exercise, because prod's catalog was already
-  normalised and both sides skipped the phase (pd-5w4n).
+- **The upstream fallback is temporary and LOUD.** A URL missing from `raw/`
+  means coverage has regressed; the run says so per-URL and in a summary,
+  `deploy/derive.sh` pushes a warning, and `--no-upstream-fallback` makes it
+  fatal. Item 4 of the epic removes it, as its own change, once row-identity is
+  proven in production. **Do not remove it as a side effect of anything else.**
 
 Anything that lands in a ROW is passed in rather than read: `DeriveClock`
 carries the one instant a run read, `Manifest.started_at` is where the landing
@@ -967,18 +913,6 @@ corrupted payload, the fallback loud one way and fatal the other) and
 `tests/lake/derive.sh` (the container tier, shipped image, `--internal`
 network, socket-to-1.1.1.1). Runbook: `deploy/LAKE.md` §8.
 
-Both of those upstreams are fixtures, so a third gate exists and is deliberately
-**not** in CI: `tests/lake/real_upstream_derive.sh` makes the same claim against
-the REAL tcgcsv.com and api.pokemontcg.io, at real catalog scale (pd-aer9). On
-2026-08-13 it landed 1,345 real responses and rebuilt them into a catalog
-row-identical across all 21 tables — 47,640 cards, 75,627 printings, 289,255
-prices. What it cannot yet be run against is **prod's own `raw/`**: the lake's
-only partition (2026-08-11) predates `Manifest.started_at` and is refused for
-having no clock, and nothing has landed since because `pd-kncd` is unmerged. The
-sequence is pd-kncd → one night's raw → derive that date from the bucket. Do not
-arm `pkdump-derive@prod` before then: it has no `SuccessExitStatus=`, so a
-refusal every night is a page every night.
-
 One phase cannot be replayed: set-symbol normalisation fetches images, and
 images are deliberately not landed (pd-5w4n).
 
@@ -991,6 +925,7 @@ upstream is `tests/refresh/upstream.py`, a fixture that publishes nothing —
 reached through `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL`
 (`crates/pkdump-ingest/src/upstream.rs`, test-tier, and an override announces
 itself on stderr so a catalog can never be quietly built from the wrong place).
+
 
 ### When an upstream is having a bad day
 
@@ -1045,6 +980,7 @@ Gates: `crates/pkdump-ingest/tests/retry.rs`,
 `tests/refresh/tenant_bytes.sh` §9 (container tier — the shipped binary's exit
 status, its retry count against the `/v2-down` fixture prefix, and that the
 derivation continued past the failure).
+
 
 ### The ownership outbox
 
@@ -1305,10 +1241,7 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
 
 - **No fallback logic.** Errors propagate. No silent defaults, no
   swallowed exceptions, as few error paths as possible — let it crash
-  visibly. A bounded transport retry is not an exception to this — nothing
-  is defaulted or substituted, the request is simply made again, and the
-  original error still propagates when the budget is spent. See "When an
-  upstream is having a bad day".
+  visibly.
 - **Strict one row per physical card** in `collection`; no quantity
   aggregation. Each copy carries its own condition / status / batch /
   binder/deck assignment.

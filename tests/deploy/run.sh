@@ -1713,7 +1713,6 @@ check "the master key is mounted read-only" "1" \
 	"$(grep -c 'tenant-master.key:ro' "${REPO_DIR}/deploy/ship.sh" || true)"
 
 reset_store
-
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

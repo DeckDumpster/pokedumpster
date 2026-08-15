@@ -496,6 +496,13 @@ check "the registry is judged on correspondence with its replica" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'the user registry OK — replica in correspondence' || true)"
 check "and it says so at a threshold every age exceeds" "0" \
 	"$(printf '%s' "$OUT" | grep -c 'STALE — the user registry' || true)"
+# This run passed (every tenant still fresh, registry in correspondence), so it
+# legitimately reached mark_fresh and refreshed the on-disk marker. Re-baseline
+# before the failing runs below (the touched tenant, then 4d/4e), or their "was
+# NOT refreshed" checks compare against a marker value from BEFORE this run
+# instead of after it — and fail by however many seconds this run took, not
+# because anything failing wrote the marker.
+GREEN_MARKER="$(marker_epoch)"
 # The other half of the constraint: the check must still FIRE. But the trigger is
 # now LAG, not age — the same correction pd-me6h made for the registry, extended to
 # tenants on 2026-08-14 after the identical false positive happened to one.

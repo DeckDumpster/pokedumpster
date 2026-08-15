@@ -209,7 +209,7 @@ pub fn verify(
     // partitioned somewhere the tenant prefix does not reach is named here
     // instead of vanishing into a count that was already zero.
     for dataset in TenantDataset::ALL {
-        let prefix = config.rooted(pkdump_lake::partition_prefix_root(database_id, *dataset)?);
+        let prefix = config.rooted(pkdump_lake::dataset_prefix(database_id, *dataset)?);
         let held = zone.list(&prefix)?;
         proofs.push(Proof {
             check: Check::Dataset(dataset.as_str()),

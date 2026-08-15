@@ -101,6 +101,22 @@
 #                      checks go red; assert the 90-day retention is mechanical
 #                      and that no rule can reach raw/, whose retention is
 #                      indefinite by decision. See tests/lake/tenant_zone.sh.
+#  14e.Phase 3 gate:   a collection valued from the TENANT ZONE, proven
+#                      row-for-row identical to the online computation it ships
+#                      beside, for every registered tenant. §6 is the section
+#                      that matters: a collection changed WITHOUT shipping must
+#                      make the two valuations DISAGREE, by name and by
+#                      dimension, before shipping makes them agree again — a
+#                      Phase 3 that quietly read the live table passes every
+#                      other check in the file. See tests/lake/phase3.sh.
+#  14f.Deletion gate:  a tenant erased from the zone, and PROVEN erased —
+#                      against a VERSIONED bucket, so the drop leaves a
+#                      noncurrent version of a really-shipped part behind and
+#                      that surviving copy is fetched back and proven
+#                      unopenable. Every check is run one step EARLIER too and
+#                      required to report the path OPEN: a proof only ever seen
+#                      passing is not known to prove anything. See
+#                      tests/lake/deletion.sh.
 #  15. Refresh gate:   the other half of that — a real `pkdump data refresh`,
 #                      through the shipped image, over a data directory with
 #                      two provisioned tenants in it, must leave every tenant
@@ -781,7 +797,28 @@ if tier lake; then
     step "Queueing: Lakehouse — the shipper, against a real bucket, killed and resumed"
     pkdump_par_add shipper bash "$REPO_DIR/tests/lake/shipper.sh"
 
-    # --- 14e. The deletion path -----------------------------------------------
+    # --- 14e. Phase 3: a collection valued from the tenant zone ---------------
+    # §14d proves the zone holds what the collection holds. This proves the
+    # thing that USES it: the valuation, computed from the zone rather than
+    # from `collection`, and identical to the online computation it ships
+    # beside — row for row, for every registered tenant, over the same fixture
+    # the transform tier's own gate uses.
+    #
+    # The section that matters is the RED one. A Phase 3 that quietly read the
+    # live table would pass every equivalence check ever written, so the gate
+    # changes a collection WITHOUT shipping it and requires the two valuations
+    # to DISAGREE, by name and by dimension, before shipping makes them agree
+    # again. The other half is staleness: the zone moving on while nobody
+    # re-reads it must be a refusal, not a beautiful number about last week.
+    #
+    # It needs both images — the app image for the shipper and the zone reader,
+    # the lake image for prices out of Iceberg — which is why it is the
+    # longest gate in this tier.
+
+    step "Queueing: Lakehouse — Phase 3 valuation from the tenant zone, proven equivalent"
+    pkdump_par_add phase3 bash "$REPO_DIR/tests/lake/phase3.sh"
+
+    # --- 14f. The deletion path -----------------------------------------------
     # §14d fills the zone; this empties it for one tenant and then has to PROVE
     # it. The bar the design sets is "proven, not asserted", so the gate runs
     # the same verification a step BEFORE the deletion and requires it to report

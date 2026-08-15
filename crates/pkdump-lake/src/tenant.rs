@@ -129,16 +129,22 @@ pub fn tenant_prefix(database_id: &str) -> Result<String> {
     Ok(format!("{TENANT_ROOT}database_id={database_id}/"))
 }
 
-/// One tenant's whole dataset, across every date.
+/// One tenant's whole dataset, every date of it.
 ///
-/// Not a deletion unit — [`tenant_prefix`] is, and one prefix covering both
-/// datasets is why `database_id` sits above `dataset=`. This exists for the
-/// verification beside it (`pd-qbrf`), which checks each dataset **by name**
-/// as well as in bulk: [`Dataset::ALL`] is the enumeration a sweep would have
-/// to cover, so a dataset added later and partitioned somewhere the tenant
-/// prefix does not reach is named rather than averaged into a count that was
-/// already zero.
-pub fn partition_prefix_root(database_id: &str, dataset: Dataset) -> Result<String> {
+/// What a *reader* works from. A writer always knows which day it is writing
+/// — `as_of` comes out of the event — but a consumer asking "what does this
+/// tenant hold" cannot know which partitions exist, because the answer is
+/// however many days the shipper has run over. So the date is the one
+/// component this prefix leaves off.
+///
+/// It is not a deletion unit either — [`tenant_prefix`] is, and one prefix
+/// covering both datasets is why `database_id` sits above `dataset=`. The
+/// verification (`pd-qbrf`) reads at this level because it checks each
+/// dataset **by name** as well as in bulk: [`Dataset::ALL`] is the
+/// enumeration a sweep would have to cover, so a dataset added later and
+/// partitioned somewhere the tenant prefix does not reach is named rather
+/// than averaged into a count that was already zero.
+pub fn dataset_prefix(database_id: &str, dataset: Dataset) -> Result<String> {
     Ok(format!(
         "{}dataset={}/",
         tenant_prefix(database_id)?,
@@ -151,7 +157,7 @@ pub fn partition_prefix(database_id: &str, dataset: Dataset, as_of: &str) -> Res
     validate_date(as_of)?;
     Ok(format!(
         "{}as_of={}/",
-        partition_prefix_root(database_id, dataset)?,
+        dataset_prefix(database_id, dataset)?,
         as_of
     ))
 }

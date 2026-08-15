@@ -104,6 +104,11 @@ bash tests/lake/shipper.sh       # the shipper against a real bucket under the
                                  #   real tenant policy: killed mid-run and
                                  #   resumed, and the catalog role unable to
                                  #   read a byte of what it wrote (seen red)
+bash tests/lake/phase3.sh        # Phase 3: a collection valued from the TENANT
+                                 #   ZONE, row-for-row identical to the online
+                                 #   computation it ships beside — and §6, the
+                                 #   change that never shipped, where the two
+                                 #   MUST disagree or the claim is unfounded
 bash tests/lake/deletion.sh      # the deletion path against a real bucket with
                                  #   VERSIONING ON: the drop leaves a noncurrent
                                  #   version of a really-shipped part, which is
@@ -458,10 +463,10 @@ reports the conclusion whatever the trigger was. Never conclude a PR is green fr
 If a branch has already been dispatched and needs a real PR check, push another
 commit: a new SHA gets a new suite, and the `pull_request` event creates it.
 
-**Fifteen of the gates run in parallel, two at a time** (pd-2nl9; lowered from
+**Seventeen of the gates run in parallel, two at a time** (pd-2nl9; lowered from
 three on 2026-08-13 — see `PKDUMP_CI_JOBS` in `deploy/ci-parallel.sh`) —
 litestream, drill, alarming, recreate, upgrade, tenant-header, keys,
-schema-version, the six lake gates and refresh. They do not run where they are written: each
+schema-version, the eight lake gates and refresh. They do not run where they are written: each
 **queues** itself under its own tier guard and `deploy/ci-parallel.sh` runs the
 queue at the end. What makes that safe is not new — every one of those scripts
 already derives every name it uses (network, container, volume, image tag, unit
@@ -492,7 +497,7 @@ the cap is reached and never exceeded, that a failure among passes is red and
 named, that output survives concurrency, that the *real* `diskcheck.sh` trips
 against an impossible floor, that the hold branch waits rather than aborts, that
 a background job of the *caller's* is never mistaken for a gate, and that every
-one of the fifteen gate scripts is still queued exactly once under a real tier.
+one of the seventeen gate scripts is still queued exactly once under a real tier.
 That last one is the refactor's own failure mode: a gate queued nowhere runs
 never, and a green run cannot show you that.
 
@@ -908,8 +913,10 @@ tenant's own database. Three rules hold it in shape:
   resolves to, and reported success for everybody (pd-s5yn). Any successor to
   it walks the registry, or it has reintroduced the bug.
 - **A failing tenant is logged and skipped; the run finishes and exits 2.**
-  Exit 0 means every tenant, 1 means the run never started. Silence over a
-  half-completed run is the failure mode being replaced.
+  Exit 0 means every tenant, 1 means the run never started **or snapshotted
+  nobody at all** — "some tenants" and "nobody" are different nights, and a
+  warning is the wrong volume for the second. Silence over a half-completed
+  run is the failure mode being replaced.
 - **Tenant data never enters the lake.** Prices come out of Iceberg; the
   collection is read from, and the snapshot written back to, SQLite. Neither
   ever travels the other way, and `tests/lake/value_snapshots.sh` §9 asserts
@@ -954,6 +961,59 @@ the scheduling are decisions:
   wrapper — the one component that is allowed to know what day it is — names it.
 
 `catalog.prices` itself is still built by hand between the two (pd-up36).
+
+### Phase 3: valuing a collection from the tenant zone
+
+`--holdings zone` (pd-szh2) is the same job reading its holdings out of the
+**tenant zone** instead of out of `collection`. That is Phase 3 of the cycle —
+land raw, build the catalog, ingest tenant state, *compute valuations*,
+publish back — and it closes the half of the loop the epic exists for: the
+write moved offline, the read stayed online.
+
+It **ships alongside** the online path. `--holdings collection` is still the
+default and still what the timer runs; removing the online read is its own
+change (`pd-i08u`), gated on the comparison below.
+
+Four things about it are decisions:
+
+- **The seam is a table, because neither language may implement the other's
+  half.** The envelope, the key derivation and the resolution rule have one
+  implementation each and it is Rust (`pkdump-ship`); `catalog.prices` is
+  Iceberg and `pyiceberg` is the only client here. So `pkdump-ship holdings`
+  reduces the zone with `pkdump_db::outbox::project` into `zone_holdings`, and
+  the transform's existing SQL reads that name instead of `collection`.
+  **One token differs**, which is what makes a difference between the two
+  valuations a difference in *holdings* and not one in arithmetic. A
+  from-scratch offline computation could differ for a dozen reasons and the
+  proof would have to rule out each.
+- **`zone_holdings` is derived, never declared.** Created from `collection`'s
+  own `pragma_table_info`, so a column added there reaches it with nothing to
+  remember — a hand-written mirror in `schema_user.sql` would be the *third*
+  place the collection's shape lives (`encode.rs` declined to be the second).
+  Being created also means it carries no triggers, so materialising cannot
+  emit outbox events and a Phase 3 run cannot feed itself back into the zone
+  it just read. Both it and `zone_holdings_run` are in `TRANSPORT_TABLES`.
+- **A stale materialisation is refused, not valued.** `zone_holdings_run.
+  max_seq` behind `ownership_outbox_cursor.shipped_thru` means the read
+  predates the last ship, and left alone it would value today's collection at
+  older holdings while every number looked reasonable. That is the quiet
+  failure this item could otherwise become. A tenant whose *outbox* is ahead
+  of the zone is not refused: that is a real difference between the paths, and
+  showing it is the point.
+- **The equivalence proof is executable.** `--compare` values every registered
+  tenant both ways over one pinned catalog commit, diffs the rows exactly (no
+  tolerance — same doubles, same expression, so equal inputs are bit-equal),
+  writes nothing, and exits **4** naming the tenant and dimension if any pair
+  disagrees. `tests/lake/phase3.sh` §5 is that comparison on the transform
+  tier's own fixture; **§6 is the section that matters** — a collection
+  changed without shipping must make the two DISAGREE before shipping makes
+  them agree again, because a Phase 3 that quietly read the live table would
+  pass every other check in the file.
+
+What the zone does not carry: only `collection` rows are shipped, so the
+condition multiplier and `manual_prices`/`user_printings` are read from the
+tenant's own database on **both** paths. Phase 3 narrows which table the
+copies come from and nothing else. Runbook: `deploy/TENANT_ZONE.md` §7.
 
 ### The offline catalog derive
 
@@ -1078,21 +1138,31 @@ derivation continued past the failure).
 ### The ownership outbox
 
 The inbound leg — online tenant state into the lakehouse — starts at
-`ownership_outbox` in `schema_user.sql` (pd-5m54). Every change to
-`collection` is appended there as an event, in the SAME TRANSACTION as the
+`ownership_outbox` in `schema_user.sql` (pd-5m54). Every change to a tenant's
+**holdings** is appended there as an event, in the SAME TRANSACTION as the
 change. The offline side is fed from those events, so it is eventually
 consistent *by construction*: a dual write to SQLite and a bucket has no
 atomicity, and the disagreement a crash leaves behind is undetectable.
 
-**The writer is three triggers, not the call sites, and that is the whole
-point.** A trigger fires inside the statement's own transaction, so there is
-no instant at which a holding has changed and the event has not — no window
-to crash in, and nothing to remember to call. It also covers the paths that
-write `collection` in raw SQL (`orders.rs`, `import.rs`, `json_backup.rs`,
+**Both halves of the holdings are in it** — `collection` (singles) and
+`sealed_collection` (sealed product), listed in `outbox::SOURCE_TABLES`.
+Sealed was deferred by pd-5m54 and settled IN by pd-4gop: sealed product is a
+holding like any other — a catalog id, a value that moves with the market —
+and a collection that reports a tenant's worth while silently omitting it
+**under-reports**, which is the wrong direction to be wrong in. Whatever the
+outbox emits for singles it emits for sealed. It cost three more triggers, one
+entry in that list and no schema change, which is exactly what `source_table`
+was put there for.
+
+**The writer is triggers, not the call sites, and that is the whole point.**
+A trigger fires inside the statement's own transaction, so there is no
+instant at which a holding has changed and the event has not — no window to
+crash in, and nothing to remember to call. It also covers the paths that
+write those tables in raw SQL (`orders.rs`, `import.rs`, `json_backup.rs`,
 the fixture seeder) and the ones no Rust performs at all (`ON DELETE SET
 NULL` from `binders`/`decks`), without any of them knowing the table exists.
 
-Four things about it are decisions:
+Five things about it are decisions:
 
 - **`seq` is AUTOINCREMENT**, so a number is never reused after the shipper
   trims a shipped prefix and a missing one means an event was LOST rather
@@ -1100,35 +1170,61 @@ Four things about it are decisions:
   back with it) — asserted, because phantom gaps would make gap detection
   useless. `occurred_at` is metadata; `datetime('now')` ties inside one
   transaction and cannot order anything.
+- **One sequence over both sources, and `row_id` is unique only WITHIN
+  one.** The two tables number their rows independently and both start at 1,
+  so **a consumer projects on the `(source_table, row_id)` pair.** Replaying
+  on `row_id` alone silently merges a single and a sealed lot that share a
+  number, which is the normal case rather than a rare one — the atomicity
+  gate fails on iteration 0 if you try it.
 - **`payload` is the whole row as JSON** — post-image for insert/update,
   pre-image for delete. Whole, so a later consumer needing a column nobody
   anticipated costs no schema change here, and so nothing can be silently
   omitted: `outbox.rs` asserts the payload keys against `PRAGMA
-  table_info(collection)`, which is what catches a column added to the table
-  and forgotten in the three hand-written `json_object` lists.
+  table_info(<source>)` for every source, which is what catches a column
+  added to a table and forgotten in the hand-written `json_object` lists.
+  A sealed lot's `quantity` is carried, never expanded — one lot is one
+  event, and a consumer that wants copies multiplies.
 - **The outbox is not collection state**, so `pkdump export --json` does not
   carry it and an import neither restores nor clears it — the import's own
   deletes and inserts fire the triggers and describe the restore correctly.
   This is the one exception to pd-yj40's "no exclusion list in the exporter",
-  and it is in one place (`json_backup::envelope_tables`).
-- **Sealed holdings are not in it yet** (pd-4gop settled that they belong in
-  the ownership model; the triggers are a separate change). `source_table` is
-  already there, so adding them is three triggers and no migration — and
-  `outbox.rs::every_triggered_table_is_emittable` fails the moment they land
-  until the backfill covers them too, so singles cannot be backfilled while
-  sealed is silently missed.
+  and it is in one place (`json_backup::envelope_tables`, filtering on
+  `outbox::TRANSPORT_TABLES`). Both holdings tables *are* collection state
+  and both stay in the envelope.
+- **`outbox::SOURCE_TABLES` is a claim about the schema, not a copy of it.**
+  `every_triggered_table_is_emittable` reads the triggers off `sqlite_master`
+  and compares both directions, so a third source wired up and not declared —
+  or declared with no triggers — fails in a second. That gate is what made
+  this change land safely on top of the emitter: it went red the moment the
+  sealed triggers arrived and stayed red until the backfill covered them, so
+  singles could not be backfilled while sealed was silently missed. Adding a
+  source is: the table, three triggers, one entry, and the gates come free.
+  The entry's second element is the column that dates a row which has never
+  emitted an event — `acquired_at` for singles, and `added_at` rather than
+  `purchase_date` for sealed, because it is NOT NULL and machine-written, so
+  `strftime` always parses it.
 
 Changing a trigger body needs a deliberate `DROP TRIGGER` in the schema file
 — `IF NOT EXISTS` will not replace one an existing collection already
 carries, and a stale trigger writes a stale payload forever.
 
-Gates: `outbox.rs`'s unit tests (every mutation path, the payload-coverage
-comparison, rollback, the sequence under concurrent writers, the envelope
-rules) and `crates/pkdump-db/tests/outbox_atomicity.rs` — a child process
-writing batches, SIGKILLed mid-transaction, the outbox replayed from seq 1
-and compared to the collection table row by row, sixteen times. It fails
-unless at least one kill actually landed inside a transaction, because a
-crash test that never crashed anything proves nothing.
+Gates: `outbox.rs`'s unit tests (every mutation path on both sources, the
+payload-coverage comparison, the shared interleaved sequence, the shared
+`row_id`, rollback, concurrent writers contending on both tables, the
+envelope rules, the `SOURCE_TABLES` drift check) and
+`crates/pkdump-db/tests/outbox_atomicity.rs` — a child process writing
+batches, SIGKILLed mid-transaction, the outbox replayed from seq 1 and
+compared to the holdings tables row by row, sixteen times. It fails unless at
+least one kill actually landed inside a transaction, because a crash test
+that never crashed anything proves nothing, and unless BOTH sources left rows
+behind, because a run that only wrote singles would stay green with the
+sealed triggers deleted.
+
+**Every batch mutates both sources inside ONE transaction**, rather than
+alternating batches. A kill has to be able to land *between* the two tables'
+writes — precisely where a per-table outbox would tear — and it keeps the two
+tables' ids in lockstep, so every single has a sealed lot sharing its
+`row_id` and a projection keyed on `row_id` alone cannot accidentally pass.
 
 **The child acquires, SELLS and deletes** — all three ops, and the middle one
 is the one to keep. An insert or a delete lost in a crash shows up as a wrong
@@ -1140,7 +1236,8 @@ counts for the same reason — a kill inside an update batch moves no rows in
 or out, and against a single count would look like a batch that never
 started.
 
-Nothing ships the outbox yet. The shipper is its own change (pd-dxn3).
+Nothing ships the outbox yet. The shipper is its own change (pd-dxn3), and it
+is the thing that has to honour the `(source_table, row_id)` pair.
 
 ### Backfill, redrive and DR reconcile are ONE command
 
@@ -1156,9 +1253,20 @@ before the shipper is armed on prod.
 pkdump outbox emit --all                # backfill this collection
 pkdump outbox emit --all --all-tenants  # ...every registered one
 pkdump outbox emit --seq 1200..1310     # redrive a slice the shipper lost
-pkdump outbox emit --row 481            # redrive one holding
+pkdump outbox emit --row collection:481        # redrive one holding
+pkdump outbox emit --row sealed_collection:12  # ...sealed is one too
 pkdump outbox status                    # what has been emitted, and when
 ```
+
+**`--row` names a `TABLE:ID` pair and does not default the table** (pd-4gop).
+A bare row id names one row in *each* holdings table — `collection` and
+`sealed_collection` number their rows independently and both start at 1 — so
+`--row 481` would redrive a single and an unrelated sealed lot together.
+Defaulting to `collection` would be worse than ambiguous: it is the same
+"singles are the real holdings" assumption the sealed source exists to delete.
+The operator always has the pair to hand, because they read it off the event
+they are redriving, and the ledger records `row:collection:481` for the same
+reason — `row:481` would not say which holding was covered.
 
 **One command over a scope, not three tools**, and that is the point rather
 than tidiness: the rare uses run under pressure, at 3am, after something is
@@ -1236,10 +1344,31 @@ Gates, all in `outbox.rs` and all seen red:
 - `an_emitted_event_carries_the_rows_own_time_not_the_moment_of_emission` —
   the property rule 3 rests on. Seen red by stamping `now`.
 - `every_triggered_table_is_emittable` — reads the outbox triggers out of
-  `sqlite_master` and asserts they fire on exactly `SOURCE_TABLES`. Seen red
-  by adding sealed triggers, which is precisely how it earns its keep.
+  `sqlite_master` and asserts they fire on exactly `SOURCE_TABLES`. It earned
+  its keep immediately: adding the sealed triggers turned it red, and it
+  stayed red until the emitter covered them.
+- `a_row_scope_redrives_only_its_own_table` — the pair rule on the emit side.
+  Seen red by dropping the table guard from `scope_predicate`: a redrive of
+  one single then emits an unrelated sealed lot sharing its number.
+- `a_collection_from_before_the_sealed_triggers_gains_them_and_backfills` —
+  **the upgrade path every existing box takes.** A collection older than the
+  sealed triggers holds lots that generated no event and never would have;
+  opening it must hang the triggers (re-applying `schema_user.sql` is what
+  makes three `CREATE TRIGGER IF NOT EXISTS` statements a migration) and the
+  backfill must then cover those lots. Nothing about a box in the failing
+  state looks broken — its singles ship normally while its sealed holdings
+  stay invisible — which is why this is a test and not a runbook step.
 - The rule-4 refusal, the DR reconcile, idempotence under `--force`, the
-  payload being byte-identical to the trigger's, and both scope refusals.
+  payload being byte-identical to the trigger's, and all three scope refusals
+  (a backwards range, a range starting below 1, a table the outbox does not
+  carry).
+
+The fixture every emit proof is stated over — `a_collection_with_history` —
+holds **both** sources, and the surviving sealed lot deliberately shares its
+`row_id` with a surviving single. A fixture of singles alone would let a
+backfill that skipped sealed pass the headline proof, which is the failure
+this bead exists to prevent arriving through the test suite instead of
+through the code.
 
 **Still owed before this is armed on prod**: the proof is stated against
 `outbox::project` rather than against a tenant zone, because the shipper
@@ -1248,10 +1377,14 @@ contract between them — the shipper writes that reduction — so re-stating th
 headline proof against real Parquet in the zone is a container-tier gate that
 belongs with the shipper (pd-880q, filed rather than forgotten).
 
-**And when the sealed triggers land** (pd-4gop), `SOURCE_TABLES` grows
-`("sealed_collection", "<its own timestamp column>")` and nothing else
-changes. That is not a chore to remember — the gate above fails until it is
-done, and its assertion message says which line to write.
+**The sealed triggers have landed** (pd-4gop), so `SOURCE_TABLES` carries
+`("sealed_collection", "added_at")` and every claim above is a claim about
+both halves of the holdings. It cost exactly what was predicted: one entry in
+that list, and nothing else in the emitter — `emit` already looped over
+`SOURCE_TABLES`, the payload already came from `pragma_table_info`, and
+`per_table` already reported per source. The one thing that was NOT free is
+`Scope::Row`, which had to grow its table, because a scope naming a bare row
+id stopped identifying a holding the moment there were two sources.
 
 ### Variant expansion
 

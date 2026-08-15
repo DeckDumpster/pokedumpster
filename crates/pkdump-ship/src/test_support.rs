@@ -39,6 +39,15 @@ impl Drop for EnvGuard {
     }
 }
 
+/// A real user database on disk, schema applied by the real `open_user` —
+/// triggers, outbox and all. The directory is returned because dropping it
+/// deletes the file.
+pub fn collection_db() -> (tempfile::TempDir, rusqlite::Connection) {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = pkdump_db::open_user(&dir.path().join("collection.sqlite")).unwrap();
+    (dir, conn)
+}
+
 /// A registry holding the real schema, with `ids` registered as live tenants.
 pub fn registry(ids: &[&str]) -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();

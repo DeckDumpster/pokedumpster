@@ -344,11 +344,123 @@ requires the tenant zone's *legitimate* tenant-keying to fire nothing.
 
 ---
 
-## 7. What is deliberately not here yet
+## 7. What reads it: Phase 3, the valuation (`pd-szh2`)
+
+A collection's value is `catalog.prices` × what that collection holds. Until
+now the second half came from the tenant's live `collection` table — the write
+moved offline, the read stayed online, and closing that is what this epic is
+for. Phase 3 values a collection from **the zone**.
+
+It is two commands, and the split is the point:
+
+```bash
+# 1. The zone -> a staging table, in each tenant's own database.
+#    App image: it needs the master key and the tenant profile.
+bash deploy/ship.sh <instance>            # …after the outbox has shipped
+podman run --rm -v pkdump-<instance>-data:/data \
+    -v ~/.config/pkdump/<instance>/tenant-master.key:/keys/tenant-master.key:ro \
+    -e PKDUMP_MASTER_KEY_FILE=/keys/tenant-master.key \
+    --entrypoint pkdump-ship localhost/pkdump:<instance> \
+    holdings --data-dir /data
+
+# 2. The valuation, from that table instead of `collection`.
+pkdump-lake-value-snapshots --date <date> --data-dir /data --holdings zone
+```
+
+**Why two processes.** The zone side is Rust — the envelope, the key
+derivation and the resolution rule each have exactly one implementation and it
+is `pkdump-ship`. The price side is Python, because `catalog.prices` is
+Iceberg and `pyiceberg` is the only client here. Writing either one again in
+the other language would produce a *second* implementation of the thing this
+item has to prove identical, which is the one mistake that would make the
+proof worthless.
+
+So the seam is a table. `pkdump-ship holdings` reduces the zone with
+`pkdump_db::outbox::project` and writes `zone_holdings`; the transform's
+existing SQL reads that name instead of `collection` and **nothing else
+changes**. One token. A difference between the two valuations is therefore a
+difference in holdings and cannot be a difference in arithmetic.
+
+`zone_holdings` is created from `collection`'s own `pragma_table_info`, never
+declared, so a column added to `collection` reaches it with no change here —
+and it carries no triggers, so materialising cannot emit outbox events and a
+Phase 3 run cannot feed itself. `zone_holdings_run` beside it records which
+parts produced it. Both are transport state: neither travels in the portable
+JSON envelope, and the deletion that drops a tenant drops them.
+
+### It ships ALONGSIDE the online path, and here is the proof
+
+`--holdings collection` is still the default and still what the timer runs.
+Removing the online path is its own change (`pd-i08u`), gated on this:
+
+```bash
+pkdump-lake-value-snapshots --date <date> --data-dir /data --compare
+```
+
+Both computations, every registered tenant, rows diffed, **nothing written**.
+Exit 4 if any tenant's two valuations disagree, and it names the tenant and
+the dimension. On the gate's fixture: 2 tenants, every snapshot row, 0
+differences.
+
+### Two refusals, and the second is the one that matters
+
+- **No staging table** → that tenant is skipped, naming `pkdump-ship
+  holdings`. Obvious.
+- **A staging table behind the zone** → skipped too. `zone_holdings_run.
+  max_seq` against `ownership_outbox_cursor.shipped_thru` is what detects it:
+  the reader stopped short of what the shipper has put in the zone, so the
+  materialisation predates the last ship. Left to run, it would value today's
+  collection at last week's holdings and every number would look reasonable.
+  That is the quiet failure this whole item could otherwise become.
+
+A tenant whose OUTBOX is ahead of the zone is *not* refused. That is the zone
+lagging the collection — a real difference between the two paths, and exactly
+what `--compare` exists to show rather than hide.
+
+### What the zone does not carry
+
+Only `collection` rows are shipped (`pkdump_db::outbox::SOURCE_TABLES`). The
+condition multiplier (`conditions`) and the third arm of the price rule
+(`manual_prices` over `user_printings`) are read from the tenant's own
+database on **both** paths. They are not holdings and the outbox does not emit
+them. Phase 3 narrows which table the copies come from and nothing else —
+`pd-i08u` must not read this as "the tenant database is no longer needed".
+
+### Gates
+
+`cargo test -p pkdump-ship` covers the round trip hermetically: the zone read
+back materialises the collection row for row across several parts and two
+partitions, a change that has NOT shipped is absent from the staged holdings
+(and shipping is what reconciles them), a tenant's key opens only their own
+partition, a tenant with nothing in the zone stages an empty table rather than
+none, and the staged tables stay out of the JSON envelope.
+
+`tests/lake/phase3.sh` is the container tier and the acceptance bar: both
+images, a real MinIO, a real Nessie, `catalog.prices` built from landed bytes,
+the real backfill, the real shipper, and `--compare` over every tenant. Its
+§6 is the section that matters — a collection changed without shipping must
+make the two valuations **disagree**, by name and by dimension, before
+shipping makes them agree again. A Phase 3 that quietly read the live table
+would pass every other section in the file.
+
+**Not on a timer.** Nothing schedules the read-back, because nothing values
+from the zone by default yet. Arming it belongs with the switchover
+(`pd-i08u`), where the chain becomes land → derive → prices → **ship → read
+back → transform** and the ordering has to be declared rather than timed.
+
+---
+
+## 8. What is deliberately not here yet
 
 - **deletion end to end**: drop the partition, destroy the key, verify
-  unreadable — item 8 (`pd-qbrf`)
-- **valuations**: computed offline against `catalog.prices` and written back
-  here as a second dataset — items 6 and 7
+  unreadable — item 9 (`pd-qbrf`)
+- **valuations as a zone dataset**: `Dataset::Valuations` exists and nothing
+  writes it. Phase 3 computes the numbers and writes them where the app reads
+  them (`collection_value_snapshot`); putting them back in the zone under the
+  tenant's key would mean sealing from Python, which is the second cipher
+  implementation `pd-szh2` refused to create. It wants a Rust publisher, and
+  it belongs with Phase 4 (publish back).
+- **removing the online holdings read**: `pd-i08u`, gated on the comparison
+  above being clean.
 
 See `pd-8lw7` for the epic.

@@ -104,16 +104,33 @@ pub const CURSOR_TABLE: &str = "ownership_outbox_cursor";
 /// `schema_user.sql`.
 pub const GAP_TABLE: &str = "ownership_outbox_gap";
 
+/// The zone read back the other way (`pd-szh2`): the staging table Phase 3
+/// values a collection from, and the record of which parts produced it.
+/// Written by `pkdump-ship holdings`, named here because they belong to the
+/// same round trip as [`TABLE`] — and because [`TRANSPORT_TABLES`] below is
+/// the list that must not miss one.
+pub const ZONE_HOLDINGS_TABLE: &str = "zone_holdings";
+/// See [`ZONE_HOLDINGS_TABLE`].
+pub const ZONE_HOLDINGS_RUN_TABLE: &str = "zone_holdings_run";
+
 /// Every table that is transport state rather than collection state: the log
-/// of changes *leaving* a collection, the record of who re-emitted them, and
-/// where the shipper has got to in reading it. All are absent from the
-/// portable JSON envelope in both directions (`crate::json_backup`).
+/// of changes *leaving* a collection, the record of who re-emitted them,
+/// where the shipper has got to in reading it, and the copy of the zone that
+/// comes back. All are absent from the portable JSON envelope in both
+/// directions (`crate::json_backup`).
 ///
-/// It is one constant rather than four call sites because the argument for
-/// excluding each of them is the same argument, and a fifth table added to
+/// It is one constant rather than six call sites because the argument for
+/// excluding each of them is the same argument, and a seventh table added to
 /// this group with the envelope left alone would start restoring somebody
 /// else's shipping position into a fresh database.
-pub const TRANSPORT_TABLES: &[&str] = &[TABLE, EMIT_LOG, CURSOR_TABLE, GAP_TABLE];
+pub const TRANSPORT_TABLES: &[&str] = &[
+    TABLE,
+    EMIT_LOG,
+    CURSOR_TABLE,
+    GAP_TABLE,
+    ZONE_HOLDINGS_TABLE,
+    ZONE_HOLDINGS_RUN_TABLE,
+];
 
 /// The holdings tables the outbox carries, each with the column that dates
 /// a row which has never emitted an event.

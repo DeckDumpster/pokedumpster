@@ -12,6 +12,7 @@
 //! pkdump-ship run --tenant alice       # one, by handle or by database id
 //! pkdump-ship status                   # what is pending, and any gaps
 //! pkdump-ship decrypt --key tenant/…   # read one part back
+//! pkdump-ship holdings                 # the zone back into `zone_holdings`
 //! ```
 //!
 //! Exit status is the run's, and there are four of them — see
@@ -44,6 +45,13 @@ enum Command {
     Status(ScopeArgs),
     /// Read one shipped part back, decrypting it under its tenant's key.
     Decrypt(DecryptArgs),
+    /// Materialise the zone's holdings into each tenant's `zone_holdings`.
+    ///
+    /// Phase 3's first half (`pd-szh2`): what the lake transform values a
+    /// collection FROM when it is told to read the zone rather than
+    /// `collection`. Reads the zone, writes one staging table per tenant, and
+    /// touches nothing else.
+    Holdings(ScopeArgs),
 }
 
 #[derive(Args)]
@@ -121,6 +129,10 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
         Command::Decrypt(a) => {
             adopt_data_dir(a.data_dir.as_deref());
             do_decrypt(&a)
+        }
+        Command::Holdings(a) => {
+            adopt_data_dir(a.data_dir.as_deref());
+            do_holdings(&a)
         }
     }
 }
@@ -270,6 +282,132 @@ fn do_status(a: &ScopeArgs) -> anyhow::Result<i32> {
         );
     }
     Ok(0)
+}
+
+/// The zone, back into every tenant's `zone_holdings`.
+///
+/// Exit status is [`Outcome`]'s, minus the gap — a reader cannot detect one,
+/// and pretending otherwise would give the wrapper a status the run cannot
+/// substantiate. Gaps are the shipper's to find, and it has already recorded
+/// them in the collection this run is writing into.
+///
+/// A tenant that has shipped nothing materialises **an empty table**, not
+/// nothing at all. The difference matters: an absent table makes the
+/// transform refuse and say so, where a stale one from last week would value
+/// today's collection at last week's holdings and look entirely correct.
+fn do_holdings(a: &ScopeArgs) -> anyhow::Result<i32> {
+    let tenants = tenants_in_scope(a)?;
+    if tenants.is_empty() {
+        println!("No registered tenants. Nothing to read.");
+        return Ok(0);
+    }
+
+    let (source, config) = pkdump_lake::open_tenant_zone_reader()?;
+    let registry = pkdump_keys::state::open()?;
+    let read_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    println!(
+        "==> reading {} tenant(s) from {} as {}",
+        tenants.len(),
+        source.describe(),
+        config.profile
+    );
+    let _ = std::io::stdout().flush();
+
+    let mut skipped = Vec::new();
+    for tenant in &tenants {
+        let id = &tenant.user.database_id;
+        match materialize_one(source.as_ref(), &config, &registry, tenant, &read_at) {
+            Ok(Some(holdings)) => println!(
+                "    {} ({}): {} holding(s) from {} part(s) over {} partition(s), through seq {}",
+                tenant.user.handle,
+                id,
+                holdings.rows.len(),
+                holdings.parts,
+                holdings.partitions.len(),
+                holdings.max_seq
+            ),
+            // Revoked. The key refuses to derive and that refusal is the
+            // authority; there is nothing of theirs to read, by design.
+            Ok(None) => println!(
+                "    {} ({}): revoked — not read, by design",
+                tenant.user.handle, id
+            ),
+            Err(e) => {
+                let why = e.to_string();
+                println!(
+                    "    skipped {id}: {}",
+                    why.lines().next().unwrap_or(why.as_str())
+                );
+                skipped.push((id.clone(), why));
+            }
+        }
+        let _ = std::io::stdout().flush();
+    }
+
+    println!();
+    if skipped.is_empty() {
+        println!(
+            "OK — {} tenant(s) materialised from the zone",
+            tenants.len()
+        );
+        return Ok(Outcome::Clean.code());
+    }
+    let outcome = if skipped.len() == tenants.len() {
+        eprintln!(
+            "FAILED — nothing materialised. Every one of the {} registered tenant(s) was \
+             skipped, which is a fault of the run rather than of any tenant:",
+            tenants.len()
+        );
+        Outcome::Failed
+    } else {
+        eprintln!(
+            "PARTIAL — {} of {} tenant(s) skipped:",
+            skipped.len(),
+            tenants.len()
+        );
+        Outcome::Partial
+    };
+    for (id, why) in &skipped {
+        eprintln!("  {id}: {why}");
+    }
+    Ok(outcome.code())
+}
+
+/// One tenant. `Ok(None)` is a deliberate revocation, which is not a failure.
+fn materialize_one(
+    source: &dyn pkdump_lake::ObjectSource,
+    config: &pkdump_lake::TenantZoneConfig,
+    registry: &rusqlite::Connection,
+    tenant: &pkdump_db::tenants::Tenant,
+    read_at: &str,
+) -> anyhow::Result<Option<pkdump_ship::ZoneHoldings>> {
+    let id = &tenant.user.database_id;
+    // The key first, before the database is opened — the same order the
+    // shipper uses, and for the same reason: a tenant whose holdings we have
+    // undertaken not to hold is not one to go looking for.
+    let key = match pkdump_keys::tenant_key(registry, id) {
+        Ok(key) => key,
+        Err(e) if e.is_deliberate_revocation() => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    anyhow::ensure!(
+        tenant.path.exists(),
+        "no database at {} for {id}",
+        tenant.path.display()
+    );
+
+    let holdings = pkdump_ship::zone::read(source, config, &key, id)?;
+    if holdings.other_tables > 0 {
+        eprintln!(
+            "    {id}: {} event(s) in the zone are not `collection` rows and were not \
+             materialised — valuing them is a decision, not a table name",
+            holdings.other_tables
+        );
+    }
+    let conn = pkdump_db::open_user(&tenant.path)?;
+    pkdump_ship::zone::materialize(&conn, &holdings, read_at)?;
+    Ok(Some(holdings))
 }
 
 fn do_decrypt(a: &DecryptArgs) -> anyhow::Result<i32> {

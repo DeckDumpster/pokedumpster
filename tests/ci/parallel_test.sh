@@ -338,11 +338,12 @@ GATES="tests/litestream/run.sh tests/litestream/drill.sh tests/alarming/run.sh
 tests/litestream/recreate.sh tests/tenants/upgrade.sh tests/tenants/handles.sh
 tests/schema-version/run.sh tests/lake/run.sh tests/lake/prices.sh
 tests/lake/value_snapshots.sh tests/lake/derive.sh tests/lake/tenant_zone.sh
-tests/lake/shipper.sh tests/refresh/tenant_bytes.sh tests/keys/run.sh"
+tests/lake/shipper.sh tests/lake/phase3.sh tests/refresh/tenant_bytes.sh
+tests/keys/run.sh"
 
 for g in $GATES; do
 	check "${g} is queued exactly once" "1" \
-		"$(grep -c "pkdump_par_add [a-z-]* bash \"\$REPO_DIR/${g}\"" "$CI_SH")"
+		"$(grep -c "pkdump_par_add [a-z0-9-]* bash \"\$REPO_DIR/${g}\"" "$CI_SH")"
 	# And not ALSO run in place — queued and run would be the gate twice, which
 	# on these gates means two instances fighting over one set of names.
 	check "${g} is not also invoked directly" "0" \

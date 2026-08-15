@@ -443,6 +443,42 @@ CREATE TABLE IF NOT EXISTS ownership_outbox_gap (
 );
 
 -- ---------------------------------------------------------------------
+-- The other end of the round trip: the zone, read back (pd-szh2)
+-- ---------------------------------------------------------------------
+--
+-- Phase 3 values a collection from the TENANT ZONE rather than from
+-- `collection`. `pkdump-ship holdings` reads that tenant's holdings parts,
+-- decrypts them, and reduces them with the one implementation of the
+-- resolution rule (`outbox::project`) into a staging table `zone_holdings`
+-- — which the lake transform then joins exactly as it joins `collection`.
+--
+-- `zone_holdings` is deliberately NOT declared here. It is created from
+-- `collection`'s own `pragma_table_info` by `pkdump_ship::zone`, because a
+-- hand-written mirror would be a third place the collection's shape is
+-- written down and would silently stop carrying a column the day one is
+-- added. Being created rather than declared also means it carries no
+-- triggers: materialising the zone cannot emit outbox events, so a Phase 3
+-- run cannot feed itself back into the zone it just read.
+--
+-- This table is the provenance of that one, and it IS declared, because it
+-- has a shape of its own. Both are transport state — a materialised copy of
+-- what is already in the zone — so both are in
+-- `crate::outbox::TRANSPORT_TABLES` and neither travels in the portable
+-- JSON envelope. Restoring somebody's staged zone read into a fresh
+-- database would tell it that it had been shipped when it has not.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS zone_holdings_run (
+    dataset       TEXT PRIMARY KEY,          -- 'holdings' — one row per dataset read
+    parts         INTEGER NOT NULL,          -- objects read out of the zone
+    events        INTEGER NOT NULL,          -- outbox events in them
+    max_seq       INTEGER NOT NULL,          -- how far through the outbox the zone has got
+    partitions    TEXT NOT NULL,             -- the as_of= dates read, comma-separated
+    rows          INTEGER NOT NULL,          -- holdings the reduction produced
+    read_at       TEXT NOT NULL              -- UTC ISO-8601
+);
+
+-- ---------------------------------------------------------------------
 -- Wishlist
 -- ---------------------------------------------------------------------
 

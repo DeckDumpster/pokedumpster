@@ -83,8 +83,8 @@ pub use reader::{RawZone, Run, select_run};
 pub use sink::RawLanding;
 pub use store::{DirStore, ObjectSource, ObjectStore, S3Store};
 pub use tenant::{
-    Dataset as TenantDataset, PART_SUFFIX, RETENTION_DAYS, TENANT_ROOT, TenantZoneConfig, part_key,
-    partition_prefix, range_part_key, tenant_prefix,
+    Dataset as TenantDataset, PART_SUFFIX, RETENTION_DAYS, TENANT_ROOT, TenantZoneConfig,
+    dataset_prefix, part_key, partition_prefix, range_part_key, tenant_prefix,
 };
 
 /// Build the landing zone this host is configured for, for **writing**.

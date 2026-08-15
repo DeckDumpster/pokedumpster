@@ -417,6 +417,7 @@ log "4a. Layer 1 fires RED — a tenant that never reached S3 (the pd-fof4 silen
 write_litestream_env "alarm/${INSTANCE}/never-replicated"
 write_alerts_env "$PING_URL" 0
 BEFORE=$(sink_total)
+GREEN_MARKER=$(marker_epoch)   # re-baseline: assert THIS run did not refresh it
 OUT="$(run_check)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
 check "backup-check exits non-zero" "1" "$RC"
@@ -433,6 +434,7 @@ log "4b. Layer 1 fires RED — broken creds/network (the 2026-08-08 silent mode)
 write_litestream_env
 write_alerts_env "$PING_URL"
 podman stop -t 2 "$MINIO_CTR" >/dev/null 2>&1
+GREEN_MARKER=$(marker_epoch)   # re-baseline: assert THIS run did not refresh it
 BEFORE=$(sink_total)
 OUT="$(run_check)"; RC=$?
 printf '%s\n' "$OUT" | tail -n 3 | sed 's/^/    /'
@@ -618,7 +620,7 @@ check "it does not use the word 'skipping'" "0" "$(printf '%s' "$OUT" | grep -ci
 # added it to catch — so the registry is counted SEPARATELY, by its own verdict,
 # which since pd-me6h is a different sentence because it is a different test.
 check "it asked S3 about every tenant anyway" "${#TENANTS[@]}" \
-	"$(printf '%s' "$OUT" | grep -c 'newest S3 replica write' || true)"
+	"$(printf '%s' "$OUT" | grep -cE "^backup-check: tenant .* OK — replica" || true)"
 check "and about the registry" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'the user registry OK — replica in correspondence' || true)"
 check "and it says the dead-man's switch is NOT armed" "1" \

@@ -769,7 +769,7 @@ bc() { # bc <ping url> [tenant...] -> sets BC_OUT / BC_RC
 bc http://127.0.0.1:1/drill
 check "backup-check reports every tenant fresh after the restore" "0" "$BC_RC"
 check "and it checked all four" "4" \
-	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: tenant .* OK — newest S3 replica" || true)"
+	"$(printf '%s\n' "$BC_OUT" | grep -cE "^backup-check: tenant .* OK — replica" || true)"
 # The registry is checked too, separately — its silent loss is the one failure
 # the per-tenant loop above cannot see — and by a DIFFERENT TEST (pd-me6h):
 # correspondence with its replica, not the age of it. A restored registry that
@@ -784,7 +784,7 @@ check "and it checked the registry as well" "1" \
 bc ""
 check "with the monitor unarmed, backup-check still verifies against S3" "0" "$BC_RC"
 check "and it still checked all four tenants" "4" \
-	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: tenant .* OK — newest S3 replica" || true)"
+	"$(printf '%s\n' "$BC_OUT" | grep -cE "^backup-check: tenant .* OK — replica" || true)"
 check "and the registry" "1" \
 	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: the user registry OK — replica in correspondence" || true)"
 check "and it says the dead-man's switch is not armed" "1" \

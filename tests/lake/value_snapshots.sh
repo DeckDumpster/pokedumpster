@@ -23,6 +23,24 @@
 # missing tenant and §8's locked one are skipped, the run finishes the other
 # tenants, and the process exits 2 rather than 0.
 #
+# ── WHY THIS GATE NOW STANDS UP A TENANT ZONE (pd-i08u) ─────────────────────
+# The transform used to read each tenant's live `collection`. pd-i08u deleted
+# that read: it values `zone_holdings`, and the only thing that writes
+# `zone_holdings` is `pkdump-ship holdings` reading the tenant zone. So this
+# gate cannot run the transform at all without keys, an outbox, a shipment and
+# a read-back, and §4b is that chain.
+#
+# It is not scope creep and it is not a copy of tests/lake/phase3.sh, which
+# asks a different question (is the valuation READING the zone — §6 there
+# changes a collection without shipping it and requires the number not to
+# move). What §5 here asks is the arithmetic question pd-ruwh has always
+# asked: are the Python transform's numbers the Rust implementation's numbers?
+# Losing that comparison because its input moved would be the quiet cost of
+# pd-i08u, and it is the one thing in this file worth keeping whatever else
+# changes. The round trip is now inside the claim rather than beside it —
+# alice's holdings reach the SQL through Parquet, AES-GCM and
+# `outbox::project`, and still have to produce byte-identical rows.
+#
 # The network is `--internal`, as in tests/lake/prices.sh: the transform tier
 # is offline infrastructure, and nothing here may quietly depend on reaching
 # an upstream.
@@ -55,6 +73,8 @@ die() {
 
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
+# shellcheck source=deploy/image-lib.sh
+. "${REPO_DIR}/deploy/image-lib.sh"
 pkdump_store_load_config
 pkdump_store_activate
 
@@ -66,6 +86,7 @@ MINIO_CTR=pdvalue-minio-${SUFFIX}
 NESSIE_CTR=pdvalue-nessie-${SUFFIX}
 LOCK_CTR=pdvalue-lock-${SUFFIX}
 JOB_IMAGE=pkdump-lake:value-${SUFFIX}
+APP_IMAGE=localhost/pkdump:value-${SUFFIX}
 BUCKET=pdvalue-${SUFFIX}
 AKID=pdvaluetestroot
 SECRET=pdvaluetestsecret123
@@ -76,7 +97,8 @@ WAREHOUSE="s3://${BUCKET}/lake"
 # ON the network, which is the only way to reach an --internal one anyway.
 WORK=${WORK:-$(mktemp -d /tmp/pdvalue.XXXXXX)}
 FIXTURE="$WORK/fixture"
-mkdir -p "$WORK/nessie" "$WORK/minio" "$FIXTURE"
+KEYS="$WORK/keys"
+mkdir -p "$WORK/nessie" "$WORK/minio" "$FIXTURE" "$KEYS"
 chmod 777 "$WORK/nessie" "$WORK/minio"
 
 # Kept in step with crates/pkdump-ingest/tests/value_snapshot_fixture.rs.
@@ -95,7 +117,7 @@ cleanup() {
 	fi
 	podman rm -f "$MINIO_CTR" "$NESSIE_CTR" >/dev/null 2>&1 || true
 	podman network rm "$NET" >/dev/null 2>&1 || true
-	podman rmi -f "$JOB_IMAGE" >/dev/null 2>&1 || true
+	podman rmi -f "$JOB_IMAGE" "$APP_IMAGE" >/dev/null 2>&1 || true
 	# Nessie writes its version store as a SUBUID the invoking user cannot
 	# unlink; a plain rm -rf leaves the whole work dir behind, every run.
 	podman unshare rm -rf "$WORK" 2>/dev/null || rm -rf "$WORK" 2>/dev/null || true
@@ -124,6 +146,51 @@ run_job() {
 # The transform, over the fixture's data directory.
 snapshot() {
 	run_job pkdump-lake-value-snapshots --data-dir /fixture/home "$@"
+}
+
+# The shipper and the zone reader, out of the SHIPPED image — the master key
+# and the tenant profile, which the lake image above holds neither of and must
+# not. Same split as tests/lake/phase3.sh and deploy/ship.sh: the zone side is
+# Rust because the envelope, the key derivation and `outbox::project` have one
+# implementation each, and it is not this one.
+ship_job() {
+	podman run --rm --network "$NET" --pull=never \
+		-v "${FIXTURE}/home:/data:Z" \
+		-v "${KEYS}/tenant-master.key:/keys/tenant-master.key:ro,Z" \
+		-e PKDUMP_MASTER_KEY_FILE=/keys/tenant-master.key \
+		-e PKDUMP_LAKE_S3_BUCKET="$BUCKET" \
+		-e PKDUMP_LAKE_S3_REGION=us-west-2 \
+		-e PKDUMP_LAKE_S3_ENDPOINT="http://${MINIO_CTR}:9000" \
+		-e PKDUMP_TENANT_AWS_PROFILE=pkdump-tenant-test \
+		-e AWS_ACCESS_KEY_ID="$AKID" -e AWS_SECRET_ACCESS_KEY="$SECRET" \
+		--entrypoint pkdump-ship "$APP_IMAGE" "$@" --data-dir /data
+}
+
+# `pkdump` itself, for key custody and the backfill. No bucket: this is the
+# ONLINE binary, and it never reaches one.
+pkdump_cli() {
+	podman run --rm --pull=never \
+		-v "${FIXTURE}/home:/data:Z" \
+		-v "${KEYS}:/keys:rw,Z" \
+		-e PKDUMP_HOME=/data \
+		-e PKDUMP_MASTER_KEY_FILE=/keys/tenant-master.key \
+		--entrypoint pkdump "$APP_IMAGE" "$@"
+}
+
+# Run a job and require one of the exit statuses given, printing its output on
+# any other. `ghost` is registered with no database, so every job that walks
+# the registry here legitimately exits 2 — and a helper that accepted any
+# non-zero would hide exactly what several sections are asserting.
+expect_rc() { # expect_rc <ok-codes,…> <logfile> <cmd…>
+	local ok="$1" logfile="$2"
+	shift 2
+	local rc=0
+	"$@" >"$logfile" 2>&1 || rc=$?
+	case ",${ok}," in
+	*",${rc},"*) return 0 ;;
+	esac
+	cat "$logfile"
+	die "$1 exited ${rc}; expected one of ${ok}"
 }
 
 # One tenant's snapshot rows for one date, in the SAME text form
@@ -169,9 +236,17 @@ GHOST=$(awk -F'\t' '$1 == "ghost" {print $2}' "$FIXTURE/tenants.tsv")
 [ -n "$ALICE" ] && [ -n "$BOB" ] && [ -n "$GHOST" ] || die "the fixture wrote no tenant map"
 echo "    alice=${ALICE} bob=${BOB} ghost=${GHOST} (missing, on purpose)"
 
-echo "==> §1  Build the lake job image"
+echo "==> §1  Build both images"
 podman build -t "$JOB_IMAGE" -f "${REPO_DIR}/lake/Containerfile" "${REPO_DIR}/lake" >/dev/null
 echo "    ${JOB_IMAGE}"
+# The app image carries the shipper and the zone reader. Through
+# pkdump_image_ensure so a CI run that already built it (pd-5l2e) re-tags
+# rather than rebuilding.
+pkdump_image_ensure "$APP_IMAGE" "$REPO_DIR" >"${WORK}/build.log" 2>&1 || {
+	tail -40 "${WORK}/build.log"
+	die "the app image build failed"
+}
+echo "    ${APP_IMAGE}"
 
 echo "==> §2  An INTERNAL network: the transform tier is offline infrastructure"
 podman network create --internal "$NET" >/dev/null
@@ -236,6 +311,36 @@ run_job pkdump-lake-build-prices --ingest-date "$DATE_OLD" >/dev/null || die "th
 run_job pkdump-lake-build-prices --ingest-date "$DATE_NEW" >/dev/null || die "the ${DATE_NEW} build failed"
 echo "    ok   ${DATE_OLD} and ${DATE_NEW} in the lake"
 
+echo "==> §4b The holdings the transform values: outbox -> zone -> zone_holdings"
+# pd-i08u. The transform has no online read left, so this is the chain that
+# gives it anything to value at all. It is the real one — the shipped binary,
+# a real bucket, real encryption — because a fixture that hand-wrote
+# `zone_holdings` would prove the SQL runs and nothing about whether a
+# collection survives the journey.
+pkdump_cli keys init >/dev/null || die "keys init failed"
+pkdump_cli keys register "$ALICE" >/dev/null || die "keys register alice failed"
+pkdump_cli keys register "$BOB" >/dev/null || die "keys register bob failed"
+
+# These collections were built before anything shipped, which is the shape of
+# every existing box (pd-whsw): the triggers only record what changes AFTER
+# them, so without the backfill the zone would be empty and correct. 2, not 0:
+# ghost is registered with no database, and every job here says so.
+expect_rc 2 "${WORK}/emit.log" pkdump_cli outbox emit --all --all-tenants
+expect_rc 2 "${WORK}/ship.log" ship_job run
+expect_rc 2 "${WORK}/holdings.log" ship_job holdings
+
+# The premise every section below rests on, checked rather than assumed: what
+# came back out of the zone IS the collection. If this is short, §5's diff
+# would fail for a reason that has nothing to do with the arithmetic it exists
+# to check, and the message would send the reader to the wrong file.
+for T in "$ALICE" "$BOB"; do
+	LIVE=$(tenant_query "$T" "SELECT COUNT(*) FROM collection")
+	STAGED=$(tenant_query "$T" "SELECT COUNT(*) FROM zone_holdings")
+	[ "$LIVE" = "$STAGED" ] ||
+		die "tenant ${T}: ${STAGED} row(s) came back from the zone against ${LIVE} in the collection — the round trip lost or duplicated holdings"
+	echo "    ok   ${T}: ${STAGED} holding(s) round-tripped through the zone"
+done
+
 echo "==> §5  Every tenant, and the numbers are the old ones exactly"
 RC=0
 OUT=$(snapshot --date "$DATE_NEW" 2>&1) || RC=$?
@@ -250,8 +355,8 @@ case "$OUT" in
 esac
 
 diff <(dump "$ALICE" "$DATE_NEW") "$FIXTURE/expected-alice-${DATE_NEW}.tsv" ||
-	die "the transform's rows differ from value_history::snapshot_today — the rewrite is not a no-op"
-echo "    ok   alice byte-identical to snapshot_today"
+	die "the transform's rows differ from value_history::snapshot_today — the rewrite is not a no-op, or the zone round trip is not lossless"
+echo "    ok   alice byte-identical to snapshot_today, valued through the zone"
 
 # It really ran: the fixture leaves no provenance row, and every write here
 # leaves one carrying the PINNED ref it read.
@@ -332,6 +437,13 @@ echo "==> §9  The lake still holds no tenant data"
 # The standing decision, checked mechanically rather than by review: Iceberg
 # holds catalog data only. A transform that ever wrote a collection back into
 # the lake would show up here as a new namespace or table.
+#
+# There ARE tenant-keyed objects in this bucket now (§4b shipped some), and
+# that does not weaken the claim — it is the pd-7x83 axis: the CATALOG zone is
+# cross-tenant and holds nothing keyed by tenant, the TENANT zone is
+# tenant-keyed by construction and lives under `tenant/`. So the Iceberg check
+# below is joined by the prefix check beside it, which is the half that would
+# notice the two zones bleeding into each other.
 TABLES=$(run_job python -c "
 from pkdump_lake.catalog import catalog
 cat = catalog()
@@ -343,6 +455,12 @@ print(' '.join(sorted(
 [ "$TABLES" = "catalog.prices" ] ||
 	die "the lake holds '${TABLES}' — tenant data NEVER enters the lake, and neither does anything else this bead adds"
 echo "    ok   ${TABLES}"
+
+STRAY=$(mc ls --recursive "m/${BUCKET}" 2>/dev/null | awk '{print $NF}' |
+	grep -v '^tenant/' | grep -c 'database_id=' || true)
+[ "$STRAY" = "0" ] ||
+	die "${STRAY} tenant-keyed object(s) outside tenant/ — the catalog zone must hold nothing keyed by tenant"
+echo "    ok   every tenant-keyed object is under tenant/"
 
 echo "==> §10 The SHIPPED wrapper the timer runs, over the same fixture"
 # pd-8m5c. Everything above drives the job directly, which is exactly how the

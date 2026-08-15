@@ -105,10 +105,10 @@ bash tests/lake/shipper.sh       # the shipper against a real bucket under the
                                  #   resumed, and the catalog role unable to
                                  #   read a byte of what it wrote (seen red)
 bash tests/lake/phase3.sh        # Phase 3: a collection valued from the TENANT
-                                 #   ZONE, row-for-row identical to the online
-                                 #   computation it ships beside — and §6, the
-                                 #   change that never shipped, where the two
-                                 #   MUST disagree or the claim is unfounded
+                                 #   ZONE, which is now the ONLY way to value
+                                 #   one — and §6, the change that never
+                                 #   shipped, where the valuation MUST NOT move
+                                 #   (and §6b, where shipping moves it)
 bash tests/lake/deletion.sh      # the deletion path against a real bucket with
                                  #   VERSIONING ON: the drop leaves a noncurrent
                                  #   version of a really-shipped part, which is
@@ -808,15 +808,19 @@ plausible wrong number. The shipper itself keys nothing on either: its only
 key is `seq`, unique across the whole outbox.
 
 **It is installed on a timer and armed by nobody yet** —
-`pkdump-ship@<instance>.timer`, `After=pkdump-value-snapshots@%i.service`
-(both open every tenant's database), at 07:30, derived from that unit's own
-bounds. The chain is land → derive → prices → transform → **ship**. Do not arm
-it on prod before the backfill has run: the shipper ships the OUTBOX, an
-existing collection's outbox starts empty (pd-whsw), and armed early it
-faithfully ships every change made from tonight and nothing anybody already
-owns. `pkdump outbox emit --all --all-tenants` (pd-385w) is what makes the
-outbox describe the collection that is already there; arming is the step
-after it, per instance.
+`pkdump-ship@<instance>.timer`, at 07:00 with the rest of that wave, `After=`
+the landing, the derive and the price build. Since pd-i08u its wrapper runs
+BOTH halves of the round trip (`pkdump-ship run`, then `pkdump-ship holdings`)
+and the transform is the unit that waits on it, so the chain is land → derive
+→ prices → **ship (+ read back)** → transform. Do not arm it on prod before
+the backfill has run: the shipper ships the OUTBOX, an existing collection's
+outbox starts empty (pd-whsw), and armed early it faithfully ships every
+change made from tonight and nothing anybody already owns. `pkdump outbox emit
+--all --all-tenants` (pd-385w) is what makes the outbox describe the
+collection that is already there; arming is the step after it, per instance.
+**And it is no longer optional beside the transform**: with the online
+holdings read deleted, a box running `pkdump-value-snapshots@` without this
+unit records no value history for anybody.
 
 Gates: `cargo test -p pkdump-ship` (hermetic — planning, the envelope, Parquet,
 and `tests/shipping.rs`, which proves gap detection, idempotence, resumability
@@ -964,17 +968,22 @@ the scheduling are decisions:
 
 ### Phase 3: valuing a collection from the tenant zone
 
-`--holdings zone` (pd-szh2) is the same job reading its holdings out of the
-**tenant zone** instead of out of `collection`. That is Phase 3 of the cycle —
-land raw, build the catalog, ingest tenant state, *compute valuations*,
-publish back — and it closes the half of the loop the epic exists for: the
-write moved offline, the read stayed online.
+The transform reads its holdings out of the **tenant zone** (pd-szh2) rather
+than out of `collection`. That is Phase 3 of the cycle — land raw, build the
+catalog, ingest tenant state, *compute valuations*, publish back — and it
+closes the half of the loop the epic exists for: the write moved offline, the
+read stayed online.
 
-It **ships alongside** the online path. `--holdings collection` is still the
-default and still what the timer runs; removing the online read is its own
-change (`pd-i08u`), gated on the comparison below.
+It shipped **alongside** the online path behind `--holdings`, with a
+`--compare` that valued every tenant both ways and diffed the rows; that came
+back clean (2 tenants, 7 rows, 0 differing) and pd-i08u deleted the online
+read. **There is now one valuation path and no flag selects it** — no
+`--holdings`, no `--compare`, and no fallback when the zone has not been read.
+A deleted path that leaves its flag behind is a path a runbook can still reach
+for, and the argument for the deletion was that one number should have one
+provenance.
 
-Four things about it are decisions:
+Five things about it are decisions:
 
 - **The seam is a table, because neither language may implement the other's
   half.** The envelope, the key derivation and the resolution rule have one
@@ -982,10 +991,11 @@ Four things about it are decisions:
   Iceberg and `pyiceberg` is the only client here. So `pkdump-ship holdings`
   reduces the zone with `pkdump_db::outbox::project` into `zone_holdings`, and
   the transform's existing SQL reads that name instead of `collection`.
-  **One token differs**, which is what makes a difference between the two
+  **One token differed**, which is what made a difference between the two
   valuations a difference in *holdings* and not one in arithmetic. A
   from-scratch offline computation could differ for a dozen reasons and the
-  proof would have to rule out each.
+  proof would have to rule out each. That is why the switchover was a table
+  name and nothing else, and why it stayed reviewable as its own change.
 - **`zone_holdings` is derived, never declared.** Created from `collection`'s
   own `pragma_table_info`, so a column added there reaches it with nothing to
   remember — a hand-written mirror in `schema_user.sql` would be the *third*
@@ -998,22 +1008,36 @@ Four things about it are decisions:
   predates the last ship, and left alone it would value today's collection at
   older holdings while every number looked reasonable. That is the quiet
   failure this item could otherwise become. A tenant whose *outbox* is ahead
-  of the zone is not refused: that is a real difference between the paths, and
-  showing it is the point.
-- **The equivalence proof is executable.** `--compare` values every registered
-  tenant both ways over one pinned catalog commit, diffs the rows exactly (no
-  tolerance — same doubles, same expression, so equal inputs are bit-equal),
-  writes nothing, and exits **4** naming the tenant and dimension if any pair
-  disagrees. `tests/lake/phase3.sh` §5 is that comparison on the transform
-  tier's own fixture; **§6 is the section that matters** — a collection
-  changed without shipping must make the two DISAGREE before shipping makes
-  them agree again, because a Phase 3 that quietly read the live table would
-  pass every other check in the file.
+  of the zone is not refused: that means the shipper skipped them, and the
+  shipper says so in the same nightly run. Refusing here would report one
+  shipping failure twice and withhold a valuation of holdings that are
+  genuinely what the offline side was told.
+- **The read-back is scheduled with the shipment, not on its own.**
+  `deploy/ship.sh` runs `pkdump-ship run` and then `pkdump-ship holdings`:
+  `zone_holdings` is only correct when it was read immediately after a ship,
+  and both halves need the master key and the tenant profile that nothing else
+  on the box holds. Two units would be two chances to arm one of them. The
+  wrapper's four statuses compose 3 > 1 > 2 > 0 — a GAP outranks even a failed
+  read-back, being the only one no later run can repair — and a shipment that
+  shipped *nothing* does not attempt the read-back at all.
+- **What replaced the equivalence proof is stronger than it was.** With one
+  path there is no second computation to diff against, so `tests/lake/
+  phase3.sh` §5 and `tests/lake/value_snapshots.sh` §5 both diff the zone
+  valuation against the rows Rust `value_history::snapshot_today` computed
+  over the same collection — a holding lost, duplicated or wrongly resolved
+  anywhere between the outbox and `zone_holdings` is a changed number. And
+  **phase3.sh §6 is the section that matters**: a collection changed without
+  shipping must leave the valuation UNMOVED, and §6b requires shipping and
+  reading back to move it. A Phase 3 that quietly read the live table fails
+  the first half; one that is frozen or cached fails the second.
 
 What the zone does not carry: only `collection` rows are shipped, so the
 condition multiplier and `manual_prices`/`user_printings` are read from the
-tenant's own database on **both** paths. Phase 3 narrows which table the
-copies come from and nothing else. Runbook: `deploy/TENANT_ZONE.md` §7.
+tenant's own database. **Deleting the online holdings read did not remove the
+tenant-database dependency** — the valuation still opens each tenant's SQLite
+to read those, to read `zone_holdings`, and to write the snapshot back. Phase
+3 narrowed which table the *copies* come from and nothing else. Runbook:
+`deploy/TENANT_ZONE.md` §7.
 
 ### The offline catalog derive
 
@@ -1055,7 +1079,8 @@ Two units, and the split is the point (item 5): `pkdump-refresh@` LANDS,
 `pkdump-derive@` DERIVES, so a derive can run against yesterday's raw on a
 night the fetch failed. Ordering is declared (`After=`, never `Wants=` — the
 refresh is a oneshot without `RemainAfterExit`), the calendar entry is derived
-from the refresh unit's own bounds, and the chain is land → derive → transform.
+from the refresh unit's own bounds, and the chain is land → derive → ship →
+transform.
 The derive unit has **no `SuccessExitStatus=`**, unlike the transform: that job
 writes N tenant databases and "some of them" is normal, this one writes ONE
 catalog and a smaller catalog reads as cards that do not exist.

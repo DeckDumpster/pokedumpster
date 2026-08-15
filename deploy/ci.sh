@@ -86,12 +86,16 @@
 #                      tests/lake/derive.sh.
 #  14. Transform gate: value snapshots for EVERY registered tenant, computed
 #                      from that table. Byte-identical to what Rust's
-#                      snapshot_today produces for the same tenant and date, a
-#                      second tenant who never had a snapshot row gets one
-#                      (pd-s5yn inverted), and a tenant nobody can write to is
-#                      skipped with the run exiting 2 rather than 0. §10 then
-#                      drives the SHIPPED deploy/value-snapshots.sh — the file
-#                      the nightly timer executes — over the same lake. See
+#                      snapshot_today produces for the same tenant and date —
+#                      and since pd-i08u that is asserted THROUGH the tenant
+#                      zone, because the online holdings read is gone and §4b
+#                      has to ship and read back before the transform has
+#                      anything to value. A second tenant who never had a
+#                      snapshot row gets one (pd-s5yn inverted), and a tenant
+#                      nobody can write to is skipped with the run exiting 2
+#                      rather than 0. §10 then drives the SHIPPED
+#                      deploy/value-snapshots.sh — the file the nightly timer
+#                      executes — over the same lake. See
 #                      tests/lake/value_snapshots.sh.
 #  14b.Tenant-zone gate: the tenant zone shares the lake's bucket and is
 #                      separated from it by a prefix — which is to say by two
@@ -101,14 +105,15 @@
 #                      checks go red; assert the 90-day retention is mechanical
 #                      and that no rule can reach raw/, whose retention is
 #                      indefinite by decision. See tests/lake/tenant_zone.sh.
-#  14e.Phase 3 gate:   a collection valued from the TENANT ZONE, proven
-#                      row-for-row identical to the online computation it ships
-#                      beside, for every registered tenant. §6 is the section
-#                      that matters: a collection changed WITHOUT shipping must
-#                      make the two valuations DISAGREE, by name and by
-#                      dimension, before shipping makes them agree again — a
-#                      Phase 3 that quietly read the live table passes every
-#                      other check in the file. See tests/lake/phase3.sh.
+#  14e.Phase 3 gate:   a collection valued from the TENANT ZONE, which since
+#                      pd-i08u is the only way to value one — §5 also asserts
+#                      that neither --holdings nor --compare is still
+#                      reachable. §6 is the section that matters: a collection
+#                      changed WITHOUT shipping must leave the valuation
+#                      UNMOVED, and §6b requires shipping and reading back to
+#                      move it. A Phase 3 that quietly read the live table
+#                      fails the first half; one that is frozen or cached fails
+#                      the second. See tests/lake/phase3.sh.
 #  14f.Deletion gate:  a tenant erased from the zone, and PROVEN erased —
 #                      against a VERSIONED bucket, so the drop leaves a
 #                      noncurrent version of a really-shipped part behind and
@@ -747,6 +752,14 @@ if tier lake; then
     # who has never had a snapshot row gets one — which is pd-s5yn inverted
     # into a test. A tenant whose database is missing or locked is skipped and
     # the run exits 2.
+    #
+    # Since pd-i08u it also stands up a tenant zone (§4b): the transform has no
+    # online holdings read left, so keys, a backfill, a shipment and a
+    # read-back are what give it anything to value. That puts the round trip
+    # INSIDE the arithmetic claim — alice's holdings reach the SQL through
+    # Parquet, AES-GCM and outbox::project and still have to produce
+    # byte-identical rows — rather than losing the claim because its input
+    # moved.
 
     step "Queueing: Lakehouse — per-tenant value snapshots, for every tenant"
     pkdump_par_add value-snapshots bash "$REPO_DIR/tests/lake/value_snapshots.sh"
@@ -800,22 +813,23 @@ if tier lake; then
     # --- 14e. Phase 3: a collection valued from the tenant zone ---------------
     # §14d proves the zone holds what the collection holds. This proves the
     # thing that USES it: the valuation, computed from the zone rather than
-    # from `collection`, and identical to the online computation it ships
-    # beside — row for row, for every registered tenant, over the same fixture
-    # the transform tier's own gate uses.
+    # from `collection` — and since pd-i08u, computed from the zone or not at
+    # all. §5 diffs it against Rust's own rows for the same collection and
+    # asserts that neither --holdings nor --compare survives.
     #
     # The section that matters is the RED one. A Phase 3 that quietly read the
     # live table would pass every equivalence check ever written, so the gate
-    # changes a collection WITHOUT shipping it and requires the two valuations
-    # to DISAGREE, by name and by dimension, before shipping makes them agree
-    # again. The other half is staleness: the zone moving on while nobody
-    # re-reads it must be a refusal, not a beautiful number about last week.
+    # changes a collection WITHOUT shipping it and requires the valuation NOT
+    # TO MOVE — then ships, reads back, and requires it to move. Frozen fails
+    # the second half; live-reading fails the first. The other half is
+    # staleness: the zone moving on while nobody re-reads it must be a refusal,
+    # not a beautiful number about last week.
     #
     # It needs both images — the app image for the shipper and the zone reader,
     # the lake image for prices out of Iceberg — which is why it is the
     # longest gate in this tier.
 
-    step "Queueing: Lakehouse — Phase 3 valuation from the tenant zone, proven equivalent"
+    step "Queueing: Lakehouse — Phase 3 valuation from the tenant zone, the only path"
     pkdump_par_add phase3 bash "$REPO_DIR/tests/lake/phase3.sh"
 
     # --- 14f. The deletion path -----------------------------------------------

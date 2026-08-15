@@ -1,19 +1,37 @@
 #!/usr/bin/env bash
 #
-# The nightly ownership shipment (pd-dxn3). What
-# pkdump-ship@<instance>.service actually runs.
+# The nightly ownership shipment (pd-dxn3), and the read-back that Phase 3
+# values a collection from (pd-i08u). What pkdump-ship@<instance>.service
+# actually runs.
 #
 # `pkdump-ship run` moves every registered tenant's ownership outbox into the
-# tenant zone, encrypted under that tenant's derived key. This file is that
-# invocation, with the instance's data volume, image, master key and TENANT
-# credentials resolved from where they actually live, so a timer can run it
-# unattended.
+# tenant zone, encrypted under that tenant's derived key. `pkdump-ship
+# holdings` brings the zone back into each tenant's `zone_holdings`. This file
+# is both invocations, with the instance's data volume, image, master key and
+# TENANT credentials resolved from where they actually live, so a timer can run
+# them unattended.
 #
 # Usage:
-#   bash deploy/ship.sh <instance> [job args...]
+#   bash deploy/ship.sh <instance> [--tenant HANDLE]
 #
 #   bash deploy/ship.sh prod                  # every registered tenant
 #   bash deploy/ship.sh prod --tenant alice   # one, after a repair
+#
+# ── WHY BOTH HALVES ARE ONE UNIT ────────────────────────────────────────────
+# pd-i08u deleted the online holdings read, so `zone_holdings` is the ONLY
+# thing the transform values a collection from. A zone shipped and never read
+# back is a transform that skips every tenant; a zone read back without being
+# shipped to first is the stale materialisation the transform refuses. The two
+# halves are only ever correct together, so they are one unit rather than two
+# with an ordering dependency between them — and they need the same mounts
+# anyway: the master key and the tenant profile, which nothing else on the box
+# holds and the lake image must never hold.
+#
+# The wrapper's arguments go to BOTH halves, which is why `--tenant` is the
+# only one documented: it is the one both subcommands take. `--max-rows` is a
+# `pkdump-ship run` argument and part of how a part is ADDRESSED — run that
+# command directly (deploy/TENANT_ZONE.md) rather than through the nightly
+# wrapper.
 #
 # ── ITS OWN CONTAINER, NOT `podman exec` INTO THE SERVER ────────────────────
 # Like the derive and the transform beside it, and for the reason pd-kncd cost
@@ -32,7 +50,7 @@
 # clock for it to lend. See crates/pkdump-ship/src/lib.rs, decision 1.
 #
 # ── EXIT STATUS IS THE JOB'S, UNCHANGED — AND THERE ARE FOUR ────────────────
-#   0  every registered tenant shipped
+#   0  every registered tenant shipped, and every one read back
 #   2  the run COMPLETED, some tenants were skipped (absent or locked database,
 #      or one whose key nobody has registered). A normal partial night: warned
 #      here, and SuccessExitStatus=2 in the unit so it does not page.
@@ -40,15 +58,22 @@
 #      The offline copy is incomplete and nothing else in the system would ever
 #      notice. This pages, with its own message, because the journal tail
 #      OnFailure= sends does not say which tenant or which range.
-#   1  the run never started, or shipped nobody at all.
+#   1  the run never started, or shipped nobody at all, or read nobody back.
 #
 # 3 is a separate status rather than folded into 1 because the two need
 # different first sentences at 3am: "nothing shipped" is an outage, "something
 # was lost" is a data-integrity fact that survives the outage being fixed.
+#
+# TWO halves now report into those four numbers, and the precedence is
+# 3 > 1 > 2 > 0 — worst thing that happened wins, and a GAP outranks even a
+# failed read-back because it is the only one of the four that no later run can
+# repair. A read-back that skipped some tenants and a shipment that skipped
+# some tenants are the same 2. The journal always names both halves, so a
+# single number never has to carry both stories.
 set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-INSTANCE="${1:?usage: ship.sh <instance> [job args...]}"
+INSTANCE="${1:?usage: ship.sh <instance> [--tenant HANDLE]}"
 shift
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -161,27 +186,31 @@ fi
 
 # --- Run it -----------------------------------------------------------------
 # The data directory is mounted read-WRITE: the shipper's own output is the
-# cursor and the gap ledger in each tenant's database. The master key is
-# mounted read-ONLY and as a single file — this job derives keys and must never
-# be the thing that can replace one.
+# cursor and the gap ledger in each tenant's database, and the read-back's is
+# `zone_holdings`. The master key is mounted read-ONLY and as a single file —
+# this job derives keys and must never be the thing that can replace one.
 
 echo "==> ship ${INSTANCE}${*:+: $*}"
 echo "    data ${DATA}, image ${IMAGE}, tenant profile ${PKDUMP_TENANT_AWS_PROFILE}"
 
 LOG="$(mktemp)"
-trap 'rm -f "$LOG"' EXIT
+READBACK_LOG="$(mktemp)"
+trap 'rm -f "$LOG" "$READBACK_LOG"' EXIT
 
 NET_ARGS=()
 [ -n "$NETWORK" ] && NET_ARGS=(--network "$NETWORK")
 
+pkdump_ship() { # pkdump_ship <subcommand> [args…]
+    podman run --rm --pull=never ${NET_ARGS[@]+"${NET_ARGS[@]}"} \
+        -v "${DATA}:/data:Z" \
+        -v "${KEY_FILE}:/keys/tenant-master.key:ro" \
+        "${ENV_ARGS[@]}" ${CRED_ARGS[@]+"${CRED_ARGS[@]}"} \
+        --entrypoint pkdump-ship \
+        "$IMAGE" "$@" --data-dir /data
+}
+
 RC=0
-podman run --rm --pull=never ${NET_ARGS[@]+"${NET_ARGS[@]}"} \
-    -v "${DATA}:/data:Z" \
-    -v "${KEY_FILE}:/keys/tenant-master.key:ro" \
-    "${ENV_ARGS[@]}" ${CRED_ARGS[@]+"${CRED_ARGS[@]}"} \
-    --entrypoint pkdump-ship \
-    "$IMAGE" run --data-dir /data "$@" 2>&1 |
-    tee "$LOG" || RC=$?
+pkdump_ship run "$@" 2>&1 | tee "$LOG" || RC=$?
 OUT="$(cat "$LOG")"
 
 case "$RC" in
@@ -210,7 +239,83 @@ case "$RC" in
     # OnFailure= on the unit pushes the journal tail for this one; a second
     # push from here would say less and arrive twice.
     echo "ship: FAILED — nothing shipped (${INSTANCE})" >&2
+    # Anything that is not one of the job's own four numbers is podman's, not
+    # the job's — 125 for a container that never started, 127 for a missing
+    # entrypoint. It is a failed run, and normalising it here is what keeps the
+    # precedence below arithmetic over exactly {0,2,3,1}.
+    RC=1
     ;;
 esac
 
-exit "$RC"
+# --- The read-back ----------------------------------------------------------
+# pd-i08u. `zone_holdings` is what the transform values a collection from, and
+# the only thing that writes it is this. Skipped when the shipment shipped
+# NOTHING (exit 1): that is an unreachable bucket or a missing master key, and
+# the read-back would meet the same wall — one clear failure beats two
+# confusing ones. Every other status still reads back, a GAP included: the
+# events that survived are in the zone, and withholding them from the
+# valuation would add a second loss to the first (the same argument
+# `pkdump-ship run` makes for shipping past a gap in the first place).
+if [ "$RC" = 1 ]; then
+    echo "ship: the zone was not read back — nothing shipped, so nothing new to read (${INSTANCE})" >&2
+    exit "$RC"
+fi
+
+# Only `--tenant` is carried over: it is the one argument both halves take, and
+# a shipment scoped to one tenant that then read back everybody would be a
+# surprise. Anything else the caller passed is a `run` argument.
+READBACK_ARGS=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    # `[ $# -ge 2 ]` rather than a bare `shift 2`: a trailing `--tenant` with
+    # no value would make the shift fail and `set -e` abort the script AFTER
+    # the shipment had already run. The job itself refuses that argument, so
+    # this only has to not make the refusal worse.
+    --tenant)
+        [ "$#" -ge 2 ] || break
+        READBACK_ARGS+=(--tenant "$2")
+        shift 2
+        ;;
+    --tenant=*)
+        READBACK_ARGS+=("$1")
+        shift
+        ;;
+    *) shift ;;
+    esac
+done
+
+RB_RC=0
+pkdump_ship holdings ${READBACK_ARGS[@]+"${READBACK_ARGS[@]}"} 2>&1 |
+    tee "$READBACK_LOG" || RB_RC=$?
+RB_OUT="$(cat "$READBACK_LOG")"
+
+case "$RB_RC" in
+0)
+    echo "ship: READ BACK — every registered tenant's zone_holdings is current (${INSTANCE})"
+    ;;
+2)
+    RB_SKIPPED="$(printf '%s\n' "$RB_OUT" | sed -n 's/^ *skipped \([^:]*\):.*/\1/p' | paste -sd' ' -)"
+    echo "ship: READ BACK PARTIAL — tenants skipped: ${RB_SKIPPED:-unknown} (${INSTANCE})" >&2
+    "${SCRIPT_DIR}/alert.sh" "PokeDumpster zone read-back PARTIAL (${INSTANCE})" \
+        "Skipped: ${RB_SKIPPED:-unknown}. Those tenants get no value snapshot tonight; see journalctl --user -u pkdump-ship@${INSTANCE}.service" ||
+        echo "ship: the READ BACK PARTIAL warning reached nobody (no Pushover channel configured) — the run itself is unaffected" >&2
+    ;;
+*)
+    # Not silent even though OnFailure= pages: this one says WHICH half, and
+    # "the shipment worked and the read-back did not" is the whole diagnosis.
+    echo "ship: READ BACK FAILED — the zone reached nobody's zone_holdings, so tonight's valuation will skip everyone (${INSTANCE})" >&2
+    # As above: the read-back has three numbers, and podman's are not among
+    # them.
+    RB_RC=1
+    ;;
+esac
+
+# 3 > 1 > 2 > 0. A gap is the only one no later run can repair, so it is the
+# one the unit is told about even when the read-back also went wrong; the
+# journal above has already named both halves either way.
+for CANDIDATE in 3 1 2; do
+    case "${RC}:${RB_RC}" in
+    "${CANDIDATE}:"* | *":${CANDIDATE}") exit "$CANDIDATE" ;;
+    esac
+done
+exit 0

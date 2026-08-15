@@ -291,9 +291,15 @@ skipped as a **warning** — absence is not permission.
 ### Scheduling
 
 `pkdump-ship@<instance>.timer`, installed for every instance and **enabled for
-none**. It is `After=pkdump-value-snapshots@%i.service` because both open every
-tenant's database, and fires at 07:30 — derived from that unit's own bounds,
-not guessed. The chain is land → derive → prices → transform → **ship**.
+none**. It fires at 07:00 with the rest of that wave, `After=` the landing, the
+derive and the price build; the transform is the unit that now waits, at 07:30,
+derived from this unit's own bounds. The chain is
+
+    land → derive → prices → **ship (+ read back)** → transform
+
+and this unit runs BOTH halves (`deploy/ship.sh`): `pkdump-ship run` out to the
+zone, then `pkdump-ship holdings` back into each tenant's `zone_holdings`. Since
+`pd-i08u` that second half is the only input the transform has.
 
 ```bash
 systemctl --user enable --now pkdump-ship@<instance>.timer
@@ -309,6 +315,13 @@ early it faithfully ships every change made from tonight and nothing anybody
 already owns — a zone that looks populated and is not. `pkdump outbox emit
 --all --all-tenants` (`pd-385w`) is what makes the outbox describe the
 collection that is already there; arm the timer after it, per instance.
+
+**And on a box where the transform timer is already armed, arming this one is
+no longer optional.** Until `pd-i08u` the transform valued the live collection
+and this unit was purely additive; now the transform has no other source, so a
+box running `pkdump-value-snapshots@` without `pkdump-ship@` records no value
+history for anybody and says so nightly (exit 1, "nobody was snapshotted at
+all"). Enable them together, backfill first.
 
 ### Gates
 
@@ -345,27 +358,33 @@ requires the tenant zone's *legitimate* tenant-keying to fire nothing.
 
 ---
 
-## 7. What reads it: Phase 3, the valuation (`pd-szh2`)
+## 7. What reads it: Phase 3, the valuation (`pd-szh2`, `pd-i08u`)
 
 A collection's value is `catalog.prices` × what that collection holds. Until
-now the second half came from the tenant's live `collection` table — the write
-moved offline, the read stayed online, and closing that is what this epic is
-for. Phase 3 values a collection from **the zone**.
+`pd-szh2` the second half came from the tenant's live `collection` table — the
+write moved offline, the read stayed online, and closing that is what this epic
+is for. Phase 3 values a collection from **the zone**, and since `pd-i08u`
+there is no other way to value one: the online read is deleted, there is no
+`--holdings` flag, and a tenant whose zone has not been read back is skipped
+rather than valued from somewhere else.
 
-It is two commands, and the split is the point:
+It is two processes, and the split is the point:
 
 ```bash
-# 1. The zone -> a staging table, in each tenant's own database.
-#    App image: it needs the master key and the tenant profile.
-bash deploy/ship.sh <instance>            # …after the outbox has shipped
+# 1. The outbox -> the zone -> a staging table in each tenant's own database.
+#    Both halves are deploy/ship.sh, which is what the nightly timer runs.
+bash deploy/ship.sh <instance>
+
+# …or by hand, which is the same two commands. App image: they need the master
+#    key and the tenant profile, which nothing else on the box holds.
 podman run --rm -v pkdump-<instance>-data:/data \
     -v ~/.config/pkdump/<instance>/tenant-master.key:/keys/tenant-master.key:ro \
     -e PKDUMP_MASTER_KEY_FILE=/keys/tenant-master.key \
     --entrypoint pkdump-ship localhost/pkdump:<instance> \
     holdings --data-dir /data
 
-# 2. The valuation, from that table instead of `collection`.
-pkdump-lake-value-snapshots --date <date> --data-dir /data --holdings zone
+# 2. The valuation, out of that table. No flag chooses it — it is the source.
+pkdump-lake-value-snapshots --date <date> --data-dir /data
 ```
 
 **Why two processes.** The zone side is Rust — the envelope, the key
@@ -389,19 +408,31 @@ Phase 3 run cannot feed itself. `zone_holdings_run` beside it records which
 parts produced it. Both are transport state: neither travels in the portable
 JSON envelope, and the deletion that drops a tenant drops them.
 
-### It ships ALONGSIDE the online path, and here is the proof
+### It shipped alongside the online path, and then replaced it
 
-`--holdings collection` is still the default and still what the timer runs.
-Removing the online path is its own change (`pd-i08u`), gated on this:
+`pd-szh2` shipped this beside the online read, with an executable proof:
 
 ```bash
 pkdump-lake-value-snapshots --date <date> --data-dir /data --compare
 ```
 
-Both computations, every registered tenant, rows diffed, **nothing written**.
-Exit 4 if any tenant's two valuations disagree, and it names the tenant and
-the dimension. On the gate's fixture: 2 tenants, every snapshot row, 0
-differences.
+Both computations, every registered tenant, rows diffed, nothing written; exit
+4 naming the tenant and the dimension if any pair disagreed. On the gate's
+fixture it came back **2 tenants compared, 7 rows, 0 differing** — and the same
+gate showed it going red, exit 4, when a collection changed without being
+shipped.
+
+`pd-i08u` is the change that acted on that result. **The online read, the
+`--holdings` flag and `--compare` itself are all gone**: with one path there is
+no second computation to compare against, and a flag left behind is a flag a
+runbook or a timer can still reach for. One valuation, one provenance.
+
+What replaced the comparison as the arithmetic check is stronger for being
+about the round trip rather than about two runs of the same SQL:
+`tests/lake/phase3.sh` §5 and `tests/lake/value_snapshots.sh` §5 both diff the
+zone valuation against the rows Rust `value_history::snapshot_today` computed
+over the same collection — so a holding lost, duplicated or wrongly resolved
+anywhere between the outbox and `zone_holdings` shows up as a changed number.
 
 ### Two refusals, and the second is the one that matters
 
@@ -414,18 +445,28 @@ differences.
   collection at last week's holdings and every number would look reasonable.
   That is the quiet failure this whole item could otherwise become.
 
-A tenant whose OUTBOX is ahead of the zone is *not* refused. That is the zone
-lagging the collection — a real difference between the two paths, and exactly
-what `--compare` exists to show rather than hide.
+A tenant whose OUTBOX is ahead of the zone is *not* refused, and that stayed
+true when the online path went away. It means the shipper skipped that tenant,
+and **the shipper is what says so** — the same nightly run names them and
+pushes its own PARTIAL warning. Refusing here would report one shipping
+failure twice, and would withhold a valuation of holdings that are genuinely
+what the offline side was told. What the transform refuses is the case nothing
+else can see: a read-back that never happened, or one that happened too early.
 
 ### What the zone does not carry
 
 Only `collection` rows are shipped (`pkdump_db::outbox::SOURCE_TABLES`). The
 condition multiplier (`conditions`) and the third arm of the price rule
 (`manual_prices` over `user_printings`) are read from the tenant's own
-database on **both** paths. They are not holdings and the outbox does not emit
-them. Phase 3 narrows which table the copies come from and nothing else —
-`pd-i08u` must not read this as "the tenant database is no longer needed".
+database. They are not holdings and the outbox does not emit them. Phase 3
+narrowed which table the copies come from and nothing else.
+
+**Deleting the online holdings read did not remove the tenant-database
+dependency**, and nothing should be written as though it had. The valuation
+still opens each tenant's SQLite — to read `conditions`, to read
+`manual_prices`, to read `zone_holdings` itself, and to write
+`collection_value_snapshot` back. What moved offline is where the *copies*
+come from.
 
 ### Gates
 
@@ -438,16 +479,30 @@ none, and the staged tables stay out of the JSON envelope.
 
 `tests/lake/phase3.sh` is the container tier and the acceptance bar: both
 images, a real MinIO, a real Nessie, `catalog.prices` built from landed bytes,
-the real backfill, the real shipper, and `--compare` over every tenant. Its
-§6 is the section that matters — a collection changed without shipping must
-make the two valuations **disagree**, by name and by dimension, before
-shipping makes them agree again. A Phase 3 that quietly read the live table
-would pass every other section in the file.
+the real backfill, the real shipper, the real read-back. §5 diffs the result
+against Rust's own rows for the same collection, and asserts that neither
+`--holdings` nor `--compare` is still reachable. Its **§6 is the section that
+matters** — a collection changed without shipping must leave the valuation
+UNMOVED, and §6b requires shipping and reading back to move it. A Phase 3 that
+quietly read the live table fails the first half; one that is frozen or cached
+fails the second; only a real zone read passes both.
 
-**Not on a timer.** Nothing schedules the read-back, because nothing values
-from the zone by default yet. Arming it belongs with the switchover
-(`pd-i08u`), where the chain becomes land → derive → prices → **ship → read
-back → transform** and the ordering has to be declared rather than timed.
+`tests/lake/value_snapshots.sh` is the transform tier's own gate and now
+stands the same chain up (§4b), because the transform cannot run without a
+materialised zone at all. Its §5 is the arithmetic claim pd-ruwh has always
+made — the Python transform's numbers are the Rust implementation's numbers —
+and the zone round trip is now inside it rather than beside it.
+
+**It is on the timer** (`pd-i08u`). `deploy/ship.sh` runs both halves, so
+`pkdump-ship@<instance>` ships *and* reads back, and the chain is
+
+    land → derive → prices → **ship (+ read back)** → transform
+
+with `pkdump-value-snapshots@` ordered `After=pkdump-ship@` and its calendar
+entry derived from that unit's own bounds. The two units swapped places: the
+shipment used to run last, after the transform, on the narrower ground that
+the two must not write one SQLite file at once. That is still true and still
+guaranteed — but it is now a data dependency, and it points the other way.
 
 ---
 
@@ -477,7 +532,5 @@ do about each way the proof can come back incomplete, is
   tenant's key would mean sealing from Python, which is the second cipher
   implementation `pd-szh2` refused to create. It wants a Rust publisher, and
   it belongs with Phase 4 (publish back).
-- **removing the online holdings read**: `pd-i08u`, gated on the comparison
-  above being clean.
 
 See `pd-8lw7` for the epic.

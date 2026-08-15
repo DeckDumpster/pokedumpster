@@ -267,7 +267,12 @@ fi
 READBACK_ARGS=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
+    # `[ $# -ge 2 ]` rather than a bare `shift 2`: a trailing `--tenant` with
+    # no value would make the shift fail and `set -e` abort the script AFTER
+    # the shipment had already run. The job itself refuses that argument, so
+    # this only has to not make the refusal worse.
     --tenant)
+        [ "$#" -ge 2 ] || break
         READBACK_ARGS+=(--tenant "$2")
         shift 2
         ;;

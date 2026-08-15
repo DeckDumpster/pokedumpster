@@ -1,30 +1,47 @@
 #!/usr/bin/env bash
-# Container-tier gate (pd-szh2): PHASE 3 — a collection valued from the TENANT
-# ZONE, proven row-for-row identical to the online computation it ships beside.
+# Container-tier gate (pd-szh2, re-cut by pd-i08u): PHASE 3 — a collection
+# valued from the TENANT ZONE, which since pd-i08u is the ONLY way it can be
+# valued at all.
 #
 # Run by deploy/ci.sh. Standalone:
 #   bash tests/lake/phase3.sh          # ~5min, full run + teardown
 #   KEEP=1 bash tests/lake/phase3.sh   # leave MinIO + Nessie + WORK up
 #
+# ── WHAT CHANGED, AND WHY THE CLAIM IS NOW A DIFFERENT SHAPE ────────────────
+# pd-szh2 shipped the zone read ALONGSIDE the online one and proved them equal
+# with `--compare` — 2 tenants, 7 rows, 0 differing. pd-i08u deleted the online
+# read on the strength of that, so there is no second computation here to diff
+# against and `--compare` does not exist. The claim this file makes instead is
+# the one that survives having only one path:
+#
+#   §5  the zone valuation reproduces, byte for byte, the rows Rust
+#       `value_history::snapshot_today` computed over the same collection —
+#       the SAME expected TSV tests/lake/value_snapshots.sh diffs against. A
+#       lossy round trip through Parquet, encryption and `outbox::project`
+#       shows up here as a changed number.
+#   §5b the online path is GONE rather than merely defaulted away: no
+#       `--holdings`, no `--compare`. A flag left behind is a flag a runbook
+#       or a timer can still reach for.
+#
 # ── WHAT THIS EXISTS TO CATCH ───────────────────────────────────────────────
-# The bead's acceptance bar is one sentence: "Phase 3's offline output must
-# match the CURRENT online computation exactly, for every tenant compared."
-# Three ways to satisfy that sentence and prove nothing:
+# The failure this item could quietly become is a "Phase 3" that reads the live
+# table and calls it the zone. Under `--compare` that showed up as two
+# computations agreeing when they should not have; with one computation the
+# equivalent is §6, and it is stronger for being self-contained:
 #
-#   * value both paths from `collection` and diff them. They agree because
-#     they are the same computation. §5 forbids it: §6 changes a collection
-#     WITHOUT shipping, and the two must then DISAGREE in a named way. A
-#     valuation that still agrees is reading the live table.
-#   * compare on a fixture with nothing awkward in it. The fixture here is
-#     value_snapshot_fixture.rs — the one the transform's own gate uses —
-#     which carries a sold copy, a NULL purchase price, a manual price, a
-#     condition multiplier and two binders. Every arm of the price rule.
-#   * compare one tenant. §5 compares every registered tenant, and the run
-#     says how many, over how many rows.
+#   change a collection WITHOUT shipping it, and the valuation must NOT MOVE.
+#   Then ship and read back, and it MUST.
 #
-# And the failure this whole item could quietly become — a Phase 3 that runs
-# on a stale materialisation and reports beautiful numbers about last week's
-# holdings — is §7: ship without re-reading, and the transform must REFUSE.
+# A valuation that tracks the live table fails the first half; one that is
+# frozen or cached fails the second. Only a real zone read passes both.
+#
+# The fixture is value_snapshot_fixture.rs — the one the transform's own gate
+# uses — which carries a sold copy, a NULL purchase price, a manual price, a
+# condition multiplier and two binders. Every arm of the price rule.
+#
+# And the other quiet failure — a Phase 3 that runs on a stale materialisation
+# and reports beautiful numbers about last week's holdings — is §7: ship
+# without re-reading, and the transform must REFUSE.
 #
 # The network is `--internal`, as in tests/lake/value_snapshots.sh: every job
 # here is offline infrastructure and none of them may reach an upstream.
@@ -101,6 +118,12 @@ chmod 777 "$WORK/nessie" "$WORK/minio"
 # Kept in step with crates/pkdump-ingest/tests/value_snapshot_fixture.rs.
 DATE_NEW=2026-08-10
 
+# The staging table the zone is read into. Named in Rust
+# (`pkdump_db::outbox::ZONE_HOLDINGS_TABLE`, `pkdump_ship::zone`) and in Python
+# (`pkdump_lake.value_snapshots.ZONE_HOLDINGS`); this gate is the fourth place
+# and the one that holds them together.
+ZONE_TABLE=zone_holdings
+
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
 	if [ -n "${KEEP:-}" ]; then
@@ -126,7 +149,7 @@ mc() {
 		-v "$FIXTURE:/fixture:ro,Z" "$MC_IMAGE" "$@"
 }
 
-# A lake (Python) job: prices out of Iceberg, the transform, the comparison.
+# A lake (Python) job: prices out of Iceberg, and the transform itself.
 # The data directory is read-WRITE — the transform's output is a write into
 # each tenant's database, and these are WAL files besides.
 run_job() {
@@ -196,6 +219,23 @@ cur = conn.execute(sys.argv[2])
 row = cur.fetchone()
 print(row[0] if row else '')
 " "/fixture/home/tenants/${1}.sqlite" "$2" | tail -1
+}
+
+# One tenant's snapshot rows for one date, in the SAME text form
+# `value_snapshot_fixture.rs::dump_snapshot` writes — same columns, same NULL
+# placeholder, same ordering, same ten decimal places. Identical to the helper
+# in tests/lake/value_snapshots.sh, and deliberately so: §5 diffs against the
+# very file that gate diffs against, so "the zone valuation" and "the online
+# valuation Rust computed" are held to one expected output rather than two.
+dump() { # dump <database_id> <date>
+	run_job python -c "
+import sqlite3
+conn = sqlite3.connect('/fixture/home/tenants/${1}.sqlite')
+for dim, bucket, mv, cb, cc in conn.execute('''
+    SELECT dimension, bucket, market_value, cost_basis, card_count
+      FROM collection_value_snapshot WHERE date = ? ORDER BY dimension, bucket''', ('${2}',)):
+    print(dim, bucket if bucket is not None else '-', f'{mv:.10f}', f'{cb:.10f}', cc, sep='\t')
+"
 }
 
 # ---------------------------------------------------------------------------
@@ -284,20 +324,50 @@ run_job pkdump-lake-build-prices --ingest-date "$DATE_NEW" >"${WORK}/prices.log"
 echo "  catalog.prices for ${DATE_NEW} is in the lake"
 
 # ---------------------------------------------------------------------------
-log "3. Phase 3 refuses before the zone has been read"
+log "3. the valuation refuses before the zone has been read"
 # The failure this refusal replaces is the one nothing else would catch: a
 # valuation computed from a table that is not there, or worse, from one left
-# over from last week.
-OUT=$(snapshot --date "$DATE_NEW" --holdings zone 2>&1) && RC=0 || RC=$?
+# over from last week. Since pd-i08u there is no other source to fall back to,
+# which makes this refusal the whole of the job's behaviour on a box where the
+# read-back has never run — so it has to name the command rather than merely
+# fail.
+OUT=$(snapshot --date "$DATE_NEW" 2>&1) && RC=0 || RC=$?
 echo "$OUT" | sed 's/^/  | /'
-# `--holdings zone` must be a source this job HAS. argparse rejects an unknown
-# choice with exit 2, which is also EXIT_PARTIAL — so the exit code alone
-# cannot tell a refusal from a typo, and this gate learned that the hard way.
+# The exit code alone cannot tell a refusal from an argparse error — argparse
+# exits 2, which is also EXIT_PARTIAL — so the run is checked to have reached
+# the lake first. This gate learned that the hard way.
 check "the run got as far as opening the lake" "yes" \
 	"$(grep -q 'active tenant(s)' <<<"$OUT" && echo yes || echo no)"
-check "a zone run with no materialisation exits 1 (nobody valued)" "1" "$RC"
+check "a run with no materialisation exits 1 (nobody valued)" "1" "$RC"
 check "…and names the command that fixes it" "yes" \
 	"$(grep -q 'pkdump-ship holdings' <<<"$OUT" && echo yes || echo no)"
+
+# …and there is no way to ask for the old behaviour instead. A deleted path
+# that leaves its flag behind is a path a runbook can still reach for, and the
+# argument for deleting it was that one valuation should have one provenance.
+#
+# Checked on argparse's own "unrecognized arguments", not on the exit status:
+# an unknown flag exits 2 and a legitimate run without a materialisation exits
+# 1, so a status-only check here would read "the flag was rejected" off a run
+# that failed for the ordinary reason.
+#
+# The output is captured before it is grepped rather than piped into grep:
+# `set -o pipefail` is on, argparse exits 2, and a pipeline's status under
+# pipefail is the job's rather than grep's — so the piped form reported
+# "present" for a flag that had in fact been rejected.
+rejects_flag() { # rejects_flag <flag…>
+	local out
+	out=$(snapshot --date "$DATE_NEW" "$@" 2>&1) || true
+	case "$out" in
+	*"unrecognized arguments"*) echo gone ;;
+	*) echo present ;;
+	esac
+}
+check "the online holdings read is gone, not defaulted away" "gone" \
+	"$(rejects_flag --holdings collection)"
+check "…nor reachable under its own name" "gone" "$(rejects_flag --holdings zone)"
+check "…and so is the comparison that justified deleting it" "gone" \
+	"$(rejects_flag --compare)"
 
 # ---------------------------------------------------------------------------
 log "4. keys, an outbox that describes the collections, and a shipped zone"
@@ -321,53 +391,77 @@ expect_rc 2 "${WORK}/holdings.log" ship_job holdings --data-dir /data
 sed 's/^/  | /' "${WORK}/holdings.log"
 check "alice's staged holdings are her collection, row for row" \
 	"$(tenant_exec "$ALICE" 'SELECT count(*) FROM collection')" \
-	"$(tenant_exec "$ALICE" 'SELECT count(*) FROM zone_holdings')"
+	"$(tenant_exec "$ALICE" "SELECT count(*) FROM ${ZONE_TABLE}")"
 
 # ---------------------------------------------------------------------------
-log "5. THE ACCEPTANCE BAR: every tenant, both ways, row for row"
-OUT=$(snapshot --date "$DATE_NEW" --compare 2>&1) && RC=0 || RC=$?
+log "5. THE ACCEPTANCE BAR: the zone valuation IS the valuation, row for row"
+# pd-szh2 proved this by running both paths and diffing them. With the online
+# path deleted there is nothing to diff against at runtime, so the comparison
+# moves to the artefact the fixture generator leaves behind: the rows Rust
+# `value_history::snapshot_today` computed over alice's collection, in
+# expected-alice-<date>.tsv — the same file tests/lake/value_snapshots.sh
+# diffs against.
+#
+# That makes this a stronger claim than "two runs agree", not a weaker one:
+# alice's holdings have been through `outbox emit`, an encrypted Parquet part
+# in a real bucket, `pkdump-ship holdings` and `outbox::project` since Rust
+# computed those numbers, and every one of those steps is somewhere a copy
+# could be lost, duplicated or resolved to the wrong version.
+OUT=$(snapshot --date "$DATE_NEW" 2>&1) && RC=0 || RC=$?
 echo "$OUT" | sed 's/^/  | /'
-# ghost is registered with no database: compared-nobody, so the run is partial
-# (2) rather than clean. The claim being made is about the tenants that WERE
-# compared, and the run must not let a skip read as agreement.
-check "the comparison ran and found no difference" "no-diff" \
-	"$(grep -q '0 tenant(s) DIFFERING' <<<"$OUT" && echo no-diff || echo differing)"
-check "…for both tenants that have a database" "yes" \
-	"$(grep -q '2 tenant(s) compared' <<<"$OUT" && echo yes || echo no)"
-check "…and it exits 2 for the tenant it could not compare, not 0" "2" "$RC"
-ROWS=$(sed -n 's/.*compared, \([0-9]*\) row(s).*/\1/p' <<<"$OUT" | tail -1)
-[ "${ROWS:-0}" -gt 0 ] || die "the comparison compared zero rows and called it agreement"
-echo "  ${ROWS} snapshot row(s) compared across 2 tenants, 0 differing"
+# ghost is registered with no database: skipped, so the run is partial (2)
+# rather than clean, and a skip must never read as success.
+check "a real run exits 2 for the tenant it could not value, not 0" "2" "$RC"
+check "…and both tenants that have a database were valued" "yes" \
+	"$(grep -q '2 tenant(s) snapshotted' <<<"$OUT" && echo yes || echo no)"
+check "…out of ${ZONE_TABLE}, which is the only place it can read" "yes" \
+	"$(grep -q "in ${ZONE_TABLE}" <<<"$OUT" && echo yes || echo no)"
 
-# Measured on the PROVENANCE table, not on the snapshot rows: the fixture
-# deliberately leaves alice's four DATE_NEW rows behind (they are what
-# tests/lake/value_snapshots.sh diffs against), and leaves the provenance table
-# empty. So a row here means a run committed, and there is nothing to subtract.
-check "a comparison writes NOTHING" "0" \
-	"$(tenant_exec "$ALICE" 'SELECT count(*) FROM collection_value_snapshot_run')"
+diff <(dump "$ALICE" "$DATE_NEW") "$FIXTURE/expected-alice-${DATE_NEW}.tsv" ||
+	die "the zone valuation differs from value_history::snapshot_today over the same collection — the round trip through the zone is not lossless"
+ROWS=$(wc -l <"$FIXTURE/expected-alice-${DATE_NEW}.tsv")
+[ "${ROWS:-0}" -gt 0 ] || die "the expected fixture is empty — §5 would compare nothing and call it agreement"
+echo "  alice: ${ROWS} snapshot row(s) byte-identical to snapshot_today, through the zone"
+
+# The bead, inverted (pd-s5yn): bob is a second tenant with his own holdings,
+# and his total must be his own rather than a second copy of alice's.
+BOB_VALUE=$(tenant_exec "$BOB" "SELECT market_value FROM collection_value_snapshot WHERE dimension = 'all' AND date = '${DATE_NEW}'")
+ALICE_VALUE=$(tenant_exec "$ALICE" "SELECT market_value FROM collection_value_snapshot WHERE dimension = 'all' AND date = '${DATE_NEW}'")
+[ -n "$BOB_VALUE" ] && [ "$BOB_VALUE" != "$ALICE_VALUE" ] ||
+	die "bob's total is '${BOB_VALUE}' against alice's '${ALICE_VALUE}' — one zone partition was valued twice"
+echo "  bob ${BOB_VALUE}, alice ${ALICE_VALUE} — two partitions, two answers"
 
 # ---------------------------------------------------------------------------
-log "6. SEEN RED: a collection change that never shipped must make them differ"
-# The one thing that distinguishes "valued from the zone" from "valued from
-# the collection while claiming otherwise". If this section passes green, the
-# whole item is unfounded.
+log "6. SEEN RED: a collection change that never shipped must NOT move the value"
+# The one thing that distinguishes "valued from the zone" from "valued from the
+# collection while claiming otherwise". Under pd-szh2 this was two computations
+# being required to DISAGREE; with one computation it is the same claim made
+# directly, and it cannot be satisfied by accident — a valuation that tracks
+# the live table fails this half, and one that is merely frozen or cached fails
+# §6b. If both halves pass green, the whole item is unfounded.
 tenant_exec "$ALICE" "DELETE FROM collection WHERE status = 'owned' AND id = (
     SELECT min(id) FROM collection WHERE status = 'owned')" >/dev/null
-OUT=$(snapshot --date "$DATE_NEW" --compare 2>&1) && RC=0 || RC=$?
-echo "$OUT" | sed 's/^/  | /'
-check "the two valuations now DISAGREE" "4" "$RC"
-check "…and the run names the tenant" "yes" \
-	"$(grep -q "$ALICE" <<<"$OUT" && echo yes || echo no)"
-check "…and the dimension that moved" "yes" \
-	"$(grep -qE 'all: online .* != zone' <<<"$OUT" && echo yes || echo no)"
+LIVE_COPIES=$(tenant_exec "$ALICE" "SELECT count(*) FROM collection WHERE status = 'owned'")
+ZONE_COPIES=$(tenant_exec "$ALICE" "SELECT count(*) FROM ${ZONE_TABLE} WHERE status = 'owned'")
+check "the live collection really did change" "yes" \
+	"$([ "$LIVE_COPIES" -lt "$ZONE_COPIES" ] && echo yes || echo no)"
 
-log "6b. …and shipping the change is what makes them agree again"
+expect_rc 2 "${WORK}/unshipped.log" snapshot --date "$DATE_NEW"
+diff <(dump "$ALICE" "$DATE_NEW") "$FIXTURE/expected-alice-${DATE_NEW}.tsv" ||
+	die "a collection change that was never shipped moved the valuation — this is a Phase 3 reading the live table"
+echo "  ok   the card left the collection and the valuation did not notice"
+
+log "6b. …and shipping the change is what DOES move it"
 expect_rc 2 "${WORK}/ship2.log" ship_job run --data-dir /data
 expect_rc 2 "${WORK}/holdings2.log" ship_job holdings --data-dir /data
-OUT=$(snapshot --date "$DATE_NEW" --compare 2>&1) && RC=0 || RC=$?
-check "identical again once the zone has been told" "no-diff" \
-	"$(grep -q '0 tenant(s) DIFFERING' <<<"$OUT" && echo no-diff || echo differing)"
-check "…still exiting 2 for ghost alone" "2" "$RC"
+expect_rc 2 "${WORK}/shipped.log" snapshot --date "$DATE_NEW"
+if diff <(dump "$ALICE" "$DATE_NEW") "$FIXTURE/expected-alice-${DATE_NEW}.tsv" >/dev/null 2>&1; then
+	die "the valuation is UNCHANGED after shipping the removal — it is frozen or cached, not read from the zone"
+fi
+AFTER=$(tenant_exec "$ALICE" "SELECT market_value FROM collection_value_snapshot WHERE dimension = 'all' AND date = '${DATE_NEW}'")
+check "…and it moved DOWN, a card having been removed" "yes" \
+	"$(awk -v a="$AFTER" -v b="$ALICE_VALUE" 'BEGIN { print (a < b) ? "yes" : "no" }')"
+echo "  ${ALICE_VALUE} -> ${AFTER} once the zone was told"
 
 # ---------------------------------------------------------------------------
 log "7. a STALE materialisation is refused, not valued"
@@ -377,11 +471,11 @@ tenant_exec "$BOB" "DELETE FROM collection WHERE status = 'owned' AND id = (
     SELECT min(id) FROM collection WHERE status = 'owned')" >/dev/null
 expect_rc 2 "${WORK}/ship3.log" ship_job run --data-dir /data
 # …and deliberately NO `holdings` run here.
-OUT=$(snapshot --date "$DATE_NEW" --holdings zone 2>&1) && RC=0 || RC=$?
+OUT=$(snapshot --date "$DATE_NEW" 2>&1) && RC=0 || RC=$?
 echo "$OUT" | sed 's/^/  | /'
 check "the run got as far as opening the lake" "yes" \
 	"$(grep -q 'active tenant(s)' <<<"$OUT" && echo yes || echo no)"
-check "a zone run over a stale staging table is partial, not clean" "2" "$RC"
+check "a run over a stale staging table is partial, not clean" "2" "$RC"
 check "…and says the materialisation predates the last ship" "yes" \
 	"$(grep -q 'predates the last ship' <<<"$OUT" && echo yes || echo no)"
 check "…naming the tenant it refused" "yes" \
@@ -389,10 +483,10 @@ check "…naming the tenant it refused" "yes" \
 
 log "8. the zone path writes the same table the app reads"
 expect_rc 2 "${WORK}/holdings4.log" ship_job holdings --data-dir /data
-snapshot --date "$DATE_NEW" --holdings zone >"${WORK}/zone-run.log" 2>&1 && RC=0 || RC=$?
+snapshot --date "$DATE_NEW" >"${WORK}/zone-run.log" 2>&1 && RC=0 || RC=$?
 sed 's/^/  | /' "${WORK}/zone-run.log"
-check "the run valued somebody out of zone_holdings" "yes" \
-	"$(grep -q 'in zone_holdings' "${WORK}/zone-run.log" && echo yes || echo no)"
+check "the run valued somebody out of ${ZONE_TABLE}" "yes" \
+	"$(grep -q "in ${ZONE_TABLE}" "${WORK}/zone-run.log" && echo yes || echo no)"
 check "a real Phase 3 run exits 2 (ghost) having written the rest" "2" "$RC"
 ZONE_ROWS=$(tenant_exec "$ALICE" "SELECT count(*) FROM collection_value_snapshot WHERE date = '${DATE_NEW}'")
 [ "${ZONE_ROWS:-0}" -gt 0 ] || die "the zone path wrote no snapshot rows"
@@ -411,6 +505,7 @@ check "no tenant-keyed object outside tenant/" "0" \
 echo ""
 echo "==> ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ] || exit 1
-echo "==> Phase 3 values a collection from the tenant zone, and it is the same"
-echo "    valuation the online path produces — proven for every tenant, and"
-echo "    proven to STOP being the same when the zone stops being told."
+echo "==> Phase 3 values a collection from the tenant zone, and there is no"
+echo "    longer any other way to value one. The numbers are the ones the"
+echo "    online path produced, byte for byte — and they STOP moving the"
+echo "    moment the zone stops being told."

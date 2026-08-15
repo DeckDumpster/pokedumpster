@@ -2,22 +2,30 @@
 Description=Nightly PokeDumpster per-tenant value snapshots (%i)
 
 [Timer]
-# 07:00 is DERIVED from pkdump-refresh@.timer, not guessed at:
+# 07:30 is DERIVED from pkdump-ship@.timer, not guessed at:
 #
-#   refresh starts   06:00 + RandomizedDelaySec=1800  -> 06:30 at the latest
-#   refresh finishes + TimeoutStartSec=1800           -> 07:00 at the latest
+#   ship starts   07:00 (no RandomizedDelaySec)
+#   ship finishes + TimeoutStartSec=1800            -> 07:30 at the latest
 #
-# So 07:00 is the first minute at which the refresh is over by its own unit's
-# declared bounds. Change either number there and this one follows.
+# So 07:30 is the first minute at which the shipment and its read-back are over
+# by their own unit's declared bounds. Change either number there and this one
+# follows.
+#
+# It was 07:00, derived from the refresh, because the refresh was the last
+# thing this job had to wait for. pd-i08u deleted the online holdings read, so
+# this job now values a collection out of `zone_holdings` — which pkdump-ship@
+# writes — and the two units swapped places in the chain:
+#
+#   land -> derive -> prices -> ship (+ read back) -> TRANSFORM
 #
 # It is not the guarantee, though — the ordering dependency in the .service is.
-# A refresh that somehow still holds a job at 07:00 makes this unit's start job
+# A shipment that somehow still holds a job at 07:30 makes this unit's start job
 # wait rather than run beside it. The calendar entry only decides when the day's
 # work is asked for; systemd decides in what order it happens.
-OnCalendar=*-*-* 07:00:00
+OnCalendar=*-*-* 07:30:00
 # No RandomizedDelaySec: unlike the refresh there is no upstream to be polite to
 # — everything this job reads is the lake and the box's own SQLite — and jitter
-# would only blur the relationship to the refresh window above.
+# would only blur the relationship to the shipment window above.
 #
 # Persistent, because a missed day is a permanent hole in every tenant's chart
 # rather than something the next run fills in: each run writes exactly the date

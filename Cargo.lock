@@ -2337,6 +2337,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pkdump-erase"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "pkdump-db",
+ "pkdump-keys",
+ "pkdump-lake",
+ "pkdump-ship",
+ "rusqlite",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "pkdump-ingest"
 version = "0.1.0"
 dependencies = [

@@ -5,6 +5,7 @@ members = [
     "crates/pkdump-core",
     "crates/pkdump-db",
     "crates/pkdump-derive",
+    "crates/pkdump-erase",
     "crates/pkdump-ingest",
     "crates/pkdump-keys",
     "crates/pkdump-lake",
@@ -25,6 +26,7 @@ repository = "https://github.com/DeckDumpster/pokedumpster"
 pkdump-core = { path = "crates/pkdump-core" }
 pkdump-db = { path = "crates/pkdump-db" }
 pkdump-derive = { path = "crates/pkdump-derive" }
+pkdump-erase = { path = "crates/pkdump-erase" }
 pkdump-ingest = { path = "crates/pkdump-ingest" }
 pkdump-keys = { path = "crates/pkdump-keys" }
 pkdump-lake = { path = "crates/pkdump-lake" }

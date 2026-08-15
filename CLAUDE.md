@@ -82,6 +82,10 @@ cargo test -p pkdump-ship        # the shipper: part planning and gap
                                  #   detection, the sealed envelope, Parquet —
                                  #   and tests/shipping.rs, the four claims
                                  #   pd-dxn3 asks for, end to end
+cargo test -p pkdump-erase       # the deletion path: the prefix-confined sweep,
+                                 #   the proof and both its vacuity guards —
+                                 #   and tests/deletion.rs, the whole path over
+                                 #   really-shipped holdings, seen green AND red
 cargo test -p pkdump-lakehouse   # partition choice, replay, the comparator —
                                  #   and tests/row_identical.rs, the acceptance
                                  #   matrix, against the shipped binary
@@ -105,6 +109,11 @@ bash tests/lake/phase3.sh        # Phase 3: a collection valued from the TENANT
                                  #   one — and §6, the change that never
                                  #   shipped, where the valuation MUST NOT move
                                  #   (and §6b, where shipping moves it)
+bash tests/lake/deletion.sh      # the deletion path against a real bucket with
+                                 #   VERSIONING ON: the drop leaves a noncurrent
+                                 #   version of a really-shipped part, which is
+                                 #   fetched back and proven unopenable. Seen red
+                                 #   too — the same verify one step earlier
 bash tests/refresh/tenant_bytes.sh
                                  # the other half: a real `pkdump data refresh`
                                  #   over a data dir with two tenants in it
@@ -124,6 +133,11 @@ cargo run --bin pkdump-ship -- run       # outbox -> tenant zone, every tenant
 cargo run --bin pkdump-ship -- status    # what is unshipped, and any gaps
 cargo run --bin pkdump-ship -- decrypt --key tenant/… --json
                                  # read one shipped part back
+cargo run --bin pkdump-erase -- verify --tenant alice
+                                 # attempt every read path; change nothing
+cargo run --bin pkdump-erase -- delete --tenant alice --yes --reason "closed"
+                                 # tombstone the key, drop the partition, PROVE
+                                 #   it. Exit 4 = it ran and is NOT proven
 cargo run --bin pkdump -- seed-fixture   # build the deterministic UI-test fixture
 
 # Portable collection backup — every user table in one versioned JSON
@@ -165,7 +179,7 @@ cd tests/ui && npm test
 
 ## Architecture Overview
 
-Cargo workspace, nine crates (`crates/`):
+Cargo workspace, ten crates (`crates/`):
 
 - **pkdump-core** — domain types + pure logic (variant code parsing,
   override matching, import format adapters). No IO.
@@ -199,6 +213,12 @@ Cargo workspace, nine crates (`crates/`):
   the tenant zone, encrypted per tenant. Offline and bin-plus-lib; it is a
   separate crate because it must read SQLite, and `pkdump-lake` deliberately
   links no SQLite at all. See "The shipper" below.
+- **pkdump-erase** — the deletion path (`pkdump-erase`): tombstone the
+  tenant's key, drop their partition, and then prove the result by attempting
+  every read path and requiring each to fail. Offline and its own crate for
+  the same reason the shipper is — it needs the tenant credentials and the
+  master key, and `pkdump-cli` must not link either. See "The deletion path"
+  below.
 - **pkdump-server** — Axum HTTP app; JSON API under `/api` + serves the
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).
@@ -443,10 +463,10 @@ reports the conclusion whatever the trigger was. Never conclude a PR is green fr
 If a branch has already been dispatched and needs a real PR check, push another
 commit: a new SHA gets a new suite, and the `pull_request` event creates it.
 
-**Fifteen of the gates run in parallel, two at a time** (pd-2nl9; lowered from
+**Seventeen of the gates run in parallel, two at a time** (pd-2nl9; lowered from
 three on 2026-08-13 — see `PKDUMP_CI_JOBS` in `deploy/ci-parallel.sh`) —
 litestream, drill, alarming, recreate, upgrade, tenant-header, keys,
-schema-version, the six lake gates and refresh. They do not run where they are written: each
+schema-version, the eight lake gates and refresh. They do not run where they are written: each
 **queues** itself under its own tier guard and `deploy/ci-parallel.sh` runs the
 queue at the end. What makes that safe is not new — every one of those scripts
 already derives every name it uses (network, container, volume, image tag, unit
@@ -477,7 +497,7 @@ the cap is reached and never exceeded, that a failure among passes is red and
 named, that output survives concurrency, that the *real* `diskcheck.sh` trips
 against an impossible floor, that the hold branch waits rather than aborts, that
 a background job of the *caller's* is never mistaken for a gate, and that every
-one of the fifteen gate scripts is still queued exactly once under a real tier.
+one of the seventeen gate scripts is still queued exactly once under a real tier.
 That last one is the refactor's own failure mode: a gate queued nowhere runs
 never, and a green run cannot show you that.
 
@@ -811,6 +831,79 @@ timestamps rather than the day the backfill ran) and
 MinIO under the real tenant policy, a real process killed mid-run and resumed,
 the catalog role's denial seen both green and red, and `deploy/ship.sh`'s four
 exit statuses).
+
+### The deletion path
+
+Deleting an account from the tenant zone is `pkdump-erase` (pd-qbrf), and it
+is **two acts plus a proof**, in that order:
+
+```
+1. tombstone   registry.sqlite : tenant_key(<id>) -> tombstoned
+2. drop        tenant/database_id=<id>/  emptied, object by object
+3. verify      every read path attempted, every one required to fail
+```
+
+Five things about it are decisions, not implementation:
+
+- **Neither act is sufficient, and the verification says so separately.** A
+  drop without a tombstone leaves a live key, so any copy that survived
+  anywhere is readable; a tombstone without a drop leaves the objects there,
+  and the design says the drop is the erasure. The proof names `derivation`
+  and `partition` as different checks for exactly that reason.
+- **The tombstone goes FIRST**, and the order is the difference between an
+  interrupted deletion that is safe to resume and one that reverses itself.
+  There is no transaction across SQLite and an object store. Tombstone-first,
+  a crash leaves a tenant nothing can derive a key for and whose remaining
+  objects are ciphertext — *more* deleted than intended, and a re-run
+  finishes it. Drop-first, a crash leaves an ACTIVE tenant whose partition
+  vanished: their key still derives, the shipper still ships, and tonight puts
+  fresh holdings back under a prefix that was supposed to be gone.
+- **"Proven" means the proof cannot be vacuous**, and there are two ways it
+  could be. A box with no master key derives nothing for *anybody*, so
+  `machinery` runs first and the stray-copy check refuses to conclude anything
+  without it. And the `derivation` check insists on `is_deliberate_revocation`
+  rather than on any error — an unregistered id refuses too, and accepting
+  that would let "we never heard of them" be filed as "we destroyed their
+  data". That is pd-ulds's distinction enforced from the reader's side.
+- **The claim is checked against a copy that SURVIVED**, not only against an
+  empty prefix. The drop has to find every copy; the tombstone does not, and
+  that asymmetry is the whole reason crypto-shredding is in the design. So
+  `--stray <file> --stray-key <key>` opens real bytes taken before the
+  deletion, and `tests/lake/deletion.sh` runs on a **versioned** bucket where
+  the drop genuinely leaves a noncurrent version behind. A "copy" that is not
+  a sealed object makes the check FAIL rather than pass — a text file does not
+  open either.
+- **Exit 4 is not exit 1.** A deletion that ran and cannot be proven is a
+  different event from one that never started: the data may well be gone and
+  what is missing is the evidence, so the two need different first questions.
+  `deploy/erase.sh` alarms on 4 itself, because there is no unit here and
+  therefore no `OnFailure=`.
+
+**There is no timer, deliberately.** Every other container job under `deploy/`
+is fired by a calendar; a deletion is an act somebody decides to perform on
+one named account, and a scheduled deleter is a thing that can delete the
+wrong account at 3am with nobody watching.
+
+The **online** half — releasing the handle, removing the collection database
+and its replica — stays `pkdump tenant detach` / `pkdump tenant purge`. Doing
+it here would put a tenant-zone credential and the master key inside the
+binary that serves requests.
+
+`ObjectPurge` (`pkdump-lake`) is the third and narrowest zone handle: list a
+prefix, delete a key, and nothing else — no `get`, so the job that deletes a
+tenant's holdings never reads them. Confinement to ONE tenant's prefix is a
+level up, in `pkdump_erase::sweep`, which refuses a key outside it fatally
+rather than skipping it.
+
+Gates: `cargo test -p pkdump-erase` (hermetic — the sweep, both vacuity
+guards, and `tests/deletion.rs`, which runs the whole path over holdings the
+real shipper really wrote, then runs every check one step EARLIER and requires
+all of them to report the path open) and `tests/lake/deletion.sh` (container
+tier — the shipped image against a versioned MinIO under the real tenant
+policy, the objects gone as seen by the bucket root rather than merely hidden
+from the role that deleted them, the surviving version fetched back and proven
+unopenable, and `deploy/erase.sh`'s three exit statuses). Runbook:
+`deploy/DELETION.md`.
 
 ### The transform tier
 

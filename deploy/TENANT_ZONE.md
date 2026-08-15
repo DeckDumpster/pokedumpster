@@ -51,7 +51,8 @@ makes deleting a tenant one prefix drop covering their holdings *and* their
 valuations. Derived artifacts inherit the deletion obligation, so they must
 not need a second sweep to find; a layout that put `dataset=` on top would
 mean every future dataset is another thing a deletion has to remember.
-`tenant_prefix(id)` is that prefix and it is the unit item 8 drops.
+`tenant_prefix(id)` is that prefix and it is the unit `pkdump-erase`
+drops — see §7 and [`DELETION.md`](DELETION.md).
 
 **Plain Parquet, not Iceberg.** Iceberg records absolute paths in its
 metadata, so moving this zone into its own bucket later would mean rewriting
@@ -505,10 +506,26 @@ guaranteed — but it is now a data dependency, and it points the other way.
 
 ---
 
-## 8. What is deliberately not here yet
+## 8. Deleting a tenant out of it
 
-- **deletion end to end**: drop the partition, destroy the key, verify
-  unreadable — item 9 (`pd-qbrf`)
+```bash
+bash deploy/erase.sh prod delete --tenant alice --yes --reason "account closed"
+```
+
+The prefix in §1 is the deletion unit, and `pkdump-erase` (`pd-qbrf`) is what
+drops it — after recording a tombstone against the tenant's key, and before
+attempting every path by which their holdings or valuations could still be
+read and requiring every one to fail. **The bar is proven, not asserted**, and
+the same command run one moment earlier reports every one of those paths open.
+
+The runbook, including what survives a drop on a versioned bucket and what to
+do about each way the proof can come back incomplete, is
+[`DELETION.md`](DELETION.md).
+
+---
+
+## 9. What is deliberately not here yet
+
 - **valuations as a zone dataset**: `Dataset::Valuations` exists and nothing
   writes it. Phase 3 computes the numbers and writes them where the app reads
   them (`collection_value_snapshot`); putting them back in the zone under the

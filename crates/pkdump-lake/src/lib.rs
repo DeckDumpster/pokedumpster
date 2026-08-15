@@ -81,7 +81,7 @@ pub use keys::{Dataset, PartFormat, Source};
 pub use manifest::{Manifest, PartRecord};
 pub use reader::{RawZone, Run, select_run};
 pub use sink::RawLanding;
-pub use store::{DirStore, ObjectSource, ObjectStore, S3Store};
+pub use store::{DirStore, ObjectPurge, ObjectSource, ObjectStore, S3Store};
 pub use tenant::{
     Dataset as TenantDataset, PART_SUFFIX, RETENTION_DAYS, TENANT_ROOT, TenantZoneConfig,
     dataset_prefix, part_key, partition_prefix, range_part_key, tenant_prefix,
@@ -192,6 +192,41 @@ pub fn open_tenant_zone_reader() -> Result<(Box<dyn ObjectSource>, TenantZoneCon
         )?),
     };
     Ok((source, zone))
+}
+
+/// A handle on the **tenant zone**, for the deletion sweep.
+///
+/// The third of three, and the narrowest: it can enumerate a prefix and
+/// remove a key, and it can do nothing else. No `get`, so the job that
+/// deletes a tenant's holdings never reads them; no `put`, so it cannot
+/// write. That is not tidiness — a deletion is the one operation that runs
+/// against data the operator has undertaken to stop holding, and the handle
+/// it runs through should not be able to do anything with that data except
+/// stop it existing.
+///
+/// The credentials are the tenant profile's, like the other two: `tenant/` is
+/// the only prefix it reaches, and `s3:DeleteObject` there is already in
+/// `deploy/policies/tenant-zone/tenant-credentials.json` — the sweep needs no
+/// grant the shipper does not already have. Confinement to ONE tenant's
+/// prefix is a level up, in `pkdump_erase::sweep`.
+pub fn open_tenant_zone_purge() -> Result<(Box<dyn ObjectPurge>, TenantZoneConfig)> {
+    let zone = TenantZoneConfig::load()?;
+    let purge: Box<dyn ObjectPurge> = match config()? {
+        Backend::Dir(path) => Box::new(DirStore::new(path)),
+        Backend::S3 {
+            bucket,
+            region,
+            prefix,
+            endpoint,
+        } => Box::new(S3Store::connect_as(
+            &bucket,
+            &region,
+            &prefix,
+            endpoint.as_deref(),
+            Some(&zone.profile),
+        )?),
+    };
+    Ok((purge, zone))
 }
 
 fn config() -> Result<Backend> {

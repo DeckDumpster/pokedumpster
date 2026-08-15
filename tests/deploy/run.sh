@@ -868,9 +868,19 @@ img_run() { # img_run <tag> -> podman calls, one per line
 }
 
 unset PKDUMP_PREBUILT_IMAGE
+# The scope is a sha1 of the checkout path (pd-sjn7), so the expectation is
+# computed the same way rather than hard-coded — a literal here would pass on
+# one machine and fail on every other checkout, which is the opposite of the
+# property being asserted.
+IMG_SCOPE="$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)"
 check "unset -> builds from this checkout's Containerfile" \
-	"PODMAN: build -t pkdump:x -f ${REPO_DIR}/Containerfile ${REPO_DIR}" \
+	"PODMAN: build -t pkdump:x --build-arg CARGO_TARGET_CACHE_SCOPE=${IMG_SCOPE} -f ${REPO_DIR}/Containerfile ${REPO_DIR}" \
 	"$(img_run pkdump:x)"
+# …and the scope is this checkout's, not a constant. A build arg that never
+# varied would satisfy the line above and share one cargo target cache with
+# every other tree on the box, which is the bug it exists to close.
+check "…scoping the cargo target cache to THIS checkout" "yes" \
+	"$([[ "$IMG_SCOPE" == "$(printf '%s' "${REPO_DIR}-other" | sha1sum | cut -c1-8)" ]] && echo no || echo yes)"
 
 export FAKE_EXISTING_IMAGE="localhost/pkdump:build-ci"
 export PKDUMP_PREBUILT_IMAGE="$FAKE_EXISTING_IMAGE"

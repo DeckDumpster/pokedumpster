@@ -4,7 +4,8 @@
 //! pkdump outbox emit --all                     # backfill this collection
 //! pkdump outbox emit --all --all-tenants       # ...every registered one
 //! pkdump outbox emit --seq 1200..1310          # redrive a lost slice
-//! pkdump outbox emit --row 481                 # redrive one holding
+//! pkdump outbox emit --row collection:481      # redrive one holding
+//! pkdump outbox emit --row sealed_collection:12    # ...sealed is one too
 //! pkdump outbox status                         # what has been emitted, and when
 //! ```
 //!
@@ -87,9 +88,10 @@ pub struct EmitArgs {
     #[arg(long, group = "scope", value_name = "FROM..TO")]
     seq: Option<String>,
 
-    /// One holding, by `collection.id`.
-    #[arg(long, group = "scope", value_name = "ID")]
-    row: Option<i64>,
+    /// One holding, as `TABLE:ID` — the `(source_table, row_id)` pair its
+    /// events carry, e.g. `collection:481` or `sealed_collection:12`.
+    #[arg(long, group = "scope", value_name = "TABLE:ID")]
+    row: Option<String>,
 
     /// Run a full backfill that has already been run once. Without it the
     /// second one is refused, naming when the first completed.
@@ -178,8 +180,25 @@ fn scope_of(args: &EmitArgs) -> anyhow::Result<Scope> {
     if args.all {
         return Ok(Scope::Collection);
     }
-    if let Some(id) = args.row {
-        return Ok(Scope::Row(id));
+    if let Some(row) = &args.row {
+        // `TABLE:ID`, and the table is required. A bare row id names two
+        // holdings — `collection` and `sealed_collection` number their rows
+        // independently and both start at 1 — so `--row 481` would redrive a
+        // single and an unrelated sealed lot together. Guessing `collection`
+        // for a bare number is the assumption pd-4gop deleted; refusing it
+        // costs the operator nothing, because they read the pair off the
+        // event they are redriving.
+        let (table, id) = row.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!(
+                "--row takes a holding as TABLE:ID, not {row:?}. A row id alone \
+                 names one row in each holdings table, so it does not identify \
+                 a holding — write `collection:{row}` or `sealed_collection:{row}`."
+            )
+        })?;
+        return Ok(Scope::Row {
+            table: table.trim().to_string(),
+            id: id.trim().parse()?,
+        });
     }
     if let Some(range) = &args.seq {
         let (from, to) = range.split_once("..").ok_or_else(|| {
@@ -193,7 +212,7 @@ fn scope_of(args: &EmitArgs) -> anyhow::Result<Scope> {
     // clap's group makes the flags mutually exclusive; it does not make one
     // of them required, and defaulting to `--all` would turn a typo into a
     // full backfill.
-    anyhow::bail!("name a scope: --all, --seq FROM..TO, or --row ID")
+    anyhow::bail!("name a scope: --all, --seq FROM..TO, or --row TABLE:ID")
 }
 
 fn emit(args: EmitArgs) -> anyhow::Result<()> {

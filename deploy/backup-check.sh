@@ -260,10 +260,30 @@ local_position() {
 # judge_freshness <what> <newest> <db-file> <replica-url> — the TENANT test.
 # Either it returns quietly or it trips the switch.
 #
-# Freshness is the right question for a tenant database and only for a tenant
-# database: a collection changes daily, so a replica that stopped advancing is
-# a replica that stopped. The registry is judged on correspondence instead
-# (pd-me6h) — see its section below for why.
+# LAG, NOT AGE. The question is whether the replica is BEHIND THE DATABASE, not
+# whether it was written recently.
+#
+# This used to alarm when the newest S3 write was older than MAX_AGE_HOURS, on the
+# stated assumption that "a collection changes daily, so a replica that stopped
+# advancing is a replica that stopped". That assumption is false: a collection
+# nobody edits produces no writes, Litestream correctly uploads nothing, and the
+# check pages anyway.
+#
+# It did exactly that on 2026-08-14 — three Pushover pages for a tenant whose
+# database had not been touched in 24h, while Litestream was syncing every two
+# seconds with ZERO errors in 48 hours. The backup was perfect; the heuristic was
+# measuring the wrong thing, and it woke Ryan to say so.
+#
+# A replica at or past the database's newest data write is CAUGHT UP, and its
+# absolute age is irrelevant — restoring it reproduces the current database. The
+# registry has been judged on correspondence rather than recency since pd-me6h;
+# this brings tenants into line with it.
+#
+# The DB's own timestamp is max(mtime of the .sqlite, mtime of its -wal), because
+# in WAL mode a write lands in the -wal first and the main file's mtime can lag a
+# checkpoint. The -shm is deliberately NOT considered: it is touched whenever the
+# database is merely OPENED, so including it would make every restart look like a
+# write and mask a genuinely lagging replica.
 judge_freshness() {
     local what="$1" newest="$2" db_file="$3" url="$4" age_h db_age=0 newest_epoch
 
@@ -284,10 +304,31 @@ judge_freshness() {
         || stale "${what}: could not parse replica timestamp: ${newest}"
     age_h=$(( ( NOW - newest_epoch ) / 3600 ))
 
-    if [ "$age_h" -gt "$MAX_AGE_HOURS" ]; then
-        stale "${what}: newest S3 replica write is ${age_h}h old (> ${MAX_AGE_HOURS}h threshold)"
+    # The database's newest DATA write: the main file or its WAL, whichever is
+    # later. Not the -shm, which merely opening the database touches.
+    # `if` rather than `[ … ] && …`: this script runs under `set -e`, and a bare
+    # test that evaluates FALSE as the last command of a line takes the whole run
+    # down. A tenant with no -wal did exactly that — the check aborted before it
+    # queried S3 for any tenant, and the integration gates caught it as "asked S3
+    # about every tenant anyway (expected 2, got 0)".
+    local db_epoch=0 wal_epoch=0
+    if [ -e "$db_file" ]; then db_epoch=$(stat -c %Y "$db_file"); fi
+    if [ -e "${db_file}-wal" ]; then wal_epoch=$(stat -c %Y "${db_file}-wal"); fi
+    if [ "$wal_epoch" -gt "$db_epoch" ]; then db_epoch=$wal_epoch; fi
+
+    if [ "$db_epoch" -gt "$newest_epoch" ]; then
+        local lag_h=$(( ( db_epoch - newest_epoch ) / 3600 ))
+        if [ "$lag_h" -gt "$MAX_AGE_HOURS" ]; then
+            stale "${what}: the replica is ${lag_h}h BEHIND the database — writes are not reaching S3"
+        fi
+        echo "backup-check: ${what} OK — replica ${lag_h}h behind the database (<= ${MAX_AGE_HOURS}h)"
+        return 0
     fi
-    echo "backup-check: ${what} OK — newest S3 replica write ${age_h}h old (<= ${MAX_AGE_HOURS}h)"
+
+    # Replica at or past the database: caught up. Age is not a fault — a collection
+    # nobody edited has nothing to replicate, and restoring this replica reproduces
+    # the current database exactly.
+    echo "backup-check: ${what} OK — replica is caught up with the database (newest write ${age_h}h old, no changes since)"
 }
 
 # --- The user registry (pd-nd6w) -------------------------------------------

@@ -417,6 +417,7 @@ log "4a. Layer 1 fires RED — a tenant that never reached S3 (the pd-fof4 silen
 write_litestream_env "alarm/${INSTANCE}/never-replicated"
 write_alerts_env "$PING_URL" 0
 BEFORE=$(sink_total)
+GREEN_MARKER=$(marker_epoch)   # re-baseline: assert THIS run did not refresh it
 OUT="$(run_check)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
 check "backup-check exits non-zero" "1" "$RC"
@@ -433,6 +434,7 @@ log "4b. Layer 1 fires RED — broken creds/network (the 2026-08-08 silent mode)
 write_litestream_env
 write_alerts_env "$PING_URL"
 podman stop -t 2 "$MINIO_CTR" >/dev/null 2>&1
+GREEN_MARKER=$(marker_epoch)   # re-baseline: assert THIS run did not refresh it
 BEFORE=$(sink_total)
 OUT="$(run_check)"; RC=$?
 printf '%s\n' "$OUT" | tail -n 3 | sed 's/^/    /'
@@ -494,9 +496,29 @@ check "the registry is judged on correspondence with its replica" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'the user registry OK — replica in correspondence' || true)"
 check "and it says so at a threshold every age exceeds" "0" \
 	"$(printf '%s' "$OUT" | grep -c 'STALE — the user registry' || true)"
-# The other half of the constraint: tenant freshness is untouched. A tenant past
-# the threshold still fails, so this is not "the check got quieter".
-check "a tenant past that same threshold STILL fails" "1" "$RC"
+# This run passed (every tenant still fresh, registry in correspondence), so it
+# legitimately reached mark_fresh and refreshed the on-disk marker. Re-baseline
+# before the failing runs below (the touched tenant, then 4d/4e), or their "was
+# NOT refreshed" checks compare against a marker value from BEFORE this run
+# instead of after it — and fail by however many seconds this run took, not
+# because anything failing wrote the marker.
+GREEN_MARKER="$(marker_epoch)"
+# The other half of the constraint: the check must still FIRE. But the trigger is
+# now LAG, not age — the same correction pd-me6h made for the registry, extended to
+# tenants on 2026-08-14 after the identical false positive happened to one.
+#
+# A tenant whose collection nobody edits produces no S3 objects either, and the
+# comment above ("a database nobody writes produces no new S3 objects however
+# diligently the sidecar syncs") is exactly as true of a static collection as of
+# the registry. It paged Ryan three times for a healthy backup.
+#
+# So: touch a tenant database so it is genuinely NEWER than its replica. That is a
+# real lag — writes not reaching S3 — and it must still fail. This is the assertion
+# that keeps the fix from being "the check got quieter".
+touch "${MP}/tenants/$(ls "${MP}/tenants" | head -1)"
+OUT="$(run_check)"; RC=$?
+printf '%s\n' "$OUT" | sed 's/^/    /'
+check "a tenant whose db is NEWER than its replica STILL fails" "1" "$RC"
 check "and the STALE line names the tenant, not the registry" "1" \
 	"$(printf '%s' "$OUT" | grep -c "STALE — tenant '" || true)"
 
@@ -605,7 +627,7 @@ check "it does not use the word 'skipping'" "0" "$(printf '%s' "$OUT" | grep -ci
 # added it to catch — so the registry is counted SEPARATELY, by its own verdict,
 # which since pd-me6h is a different sentence because it is a different test.
 check "it asked S3 about every tenant anyway" "${#TENANTS[@]}" \
-	"$(printf '%s' "$OUT" | grep -c 'newest S3 replica write' || true)"
+	"$(printf '%s' "$OUT" | grep -cE "^backup-check: tenant .* OK — replica" || true)"
 check "and about the registry" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'the user registry OK — replica in correspondence' || true)"
 check "and it says the dead-man's switch is NOT armed" "1" \

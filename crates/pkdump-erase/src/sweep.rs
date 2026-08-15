@@ -183,6 +183,58 @@ mod tests {
         assert_eq!(b.list().unwrap().len(), 4, "B must be untouched");
     }
 
+    /// The neighbour whose id STARTS WITH this one's.
+    ///
+    /// `ObjectPurge::list` is a raw key-prefix match — it is
+    /// `ObjectSource::list_keys`, deliberately, because a sweep enumerating a
+    /// prefix differently from the reader that later checks it is how a
+    /// deletion leaves an object a reader can still see. That is the right
+    /// definition and it cuts both ways: under it the ONLY thing standing
+    /// between `database_id=<A>` and `database_id=<A>B` is the trailing slash
+    /// on [`pkdump_lake::tenant_prefix`], and `check` cannot catch the
+    /// difference either — `tenant/database_id=<A>B/…` genuinely starts with
+    /// `tenant/database_id=<A>`.
+    ///
+    /// So the confinement is asserted here as a *behaviour over a store*
+    /// rather than only as a property of a string. Ids are ULIDs in practice
+    /// and this pairing will not occur; `validate_id` accepts any alphanumeric
+    /// run, so it is not impossible, and the cost of it is another tenant's
+    /// data deleted by a run that reported success.
+    #[test]
+    fn a_drop_does_not_reach_a_tenant_whose_id_extends_this_one() {
+        let (_tmp, store, config) = dir_zone();
+        let longer = format!("{A}B");
+        seed(&store, A, &["holdings", "valuations"]);
+        seed(&store, &longer, &["holdings", "valuations"]);
+
+        let dropped = Sweep::new(&store, &config, A).unwrap().drop_partition();
+        let dropped = dropped.expect("dropping A must not fail");
+
+        assert_eq!(
+            dropped.count(),
+            4,
+            "only A's four objects belong to this drop: {:?}",
+            dropped.keys
+        );
+        assert!(
+            !dropped
+                .keys
+                .iter()
+                .any(|k| k.contains(&format!("database_id={longer}/"))),
+            "the neighbour's objects were swept: {:?}",
+            dropped.keys
+        );
+        assert_eq!(
+            Sweep::new(&store, &config, &longer)
+                .unwrap()
+                .list()
+                .unwrap()
+                .len(),
+            4,
+            "{longer} is a different tenant and must still hold everything"
+        );
+    }
+
     /// The catalog zone shares the bucket. A sweep must not be able to reach
     /// it — here the prefix is what stops it, and in the bucket the tenant
     /// role's explicit `Deny` on `raw/` and `lake/` stops it again.

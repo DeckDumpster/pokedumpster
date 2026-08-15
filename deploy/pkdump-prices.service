@@ -13,7 +13,7 @@ Description=PokeDumpster nightly catalog.prices build (%i)
 # {{REPO_DIR}} is sed-substituted by deploy/units-lib.sh (single-clone
 # deployment). Installed for every instance, enabled for none — see the timer.
 #
-# ── ORDERING: the chain is land -> derive -> prices -> transform ────────────
+# ── ORDERING: land -> derive -> prices -> ship -> transform ─────────────────
 # This job reads the bytes the landing unit put in the bucket, and the transform
 # reads the table this job writes. Both are declared as ordering dependencies
 # rather than assumed from the calendar:

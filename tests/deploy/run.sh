@@ -667,10 +667,28 @@ check "a real failure still pages" "1" \
 check "skips a box with no lake config at all" "1" \
 	"$(grep -c '^ConditionPathExists=%h/.config/pkdump/lake.env$' "$VS_SVC" || true)"
 
-# The calendar entry is DERIVED from the refresh unit's own declared bounds
-# rather than guessed at: last possible start + the time it is allowed to take.
-# Move either number in pkdump-refresh.* and this fails rather than silently
-# leaving the two jobs overlapping.
+# …and after the shipment AND its read-back (pd-i08u). This is the line that
+# makes the job runnable at all: the online holdings read is deleted, so the
+# transform values a collection out of `zone_holdings`, and the second half of
+# deploy/ship.sh is the only thing that writes it. Ordered the other way, every
+# tenant is refused for want of a staging table — or, worse, valued at whatever
+# the last read-back happened to leave behind.
+check "ordered after the shipment that fills zone_holdings" "1" \
+	"$(grep -c '^After=pkdump-ship@%i.service$' "$VS_SVC" || true)"
+check "does not pull the shipment in" "0" \
+	"$(grep -c '^\(Wants\|Requires\)=pkdump-ship@%i.service$' "$VS_SVC" || true)"
+# The direction REVERSED in pd-i08u, and the old line has to be gone from the
+# other file or systemd has a cycle: two units each ordered after the other is
+# a dependency loop, and systemd resolves one by dropping a job rather than by
+# failing loudly.
+check "the shipment is no longer ordered after this unit" "0" \
+	"$(grep -c '^After=pkdump-value-snapshots@%i.service$' "${REPO_DIR}/deploy/pkdump-ship.service" || true)"
+
+# The calendar entry is DERIVED from the unit before it in the chain rather
+# than guessed at: last possible start + the time that unit is allowed to take.
+# Since pd-i08u that predecessor is the shipment, not the refresh — the two
+# swapped places. Move either number in pkdump-ship.* and this fails rather
+# than silently leaving the two jobs overlapping.
 hhmm_secs() { # hhmm_secs <file> — OnCalendar's time of day, in seconds
 	sed -n 's/^OnCalendar=\*-\*-\* \([0-9]\{2\}\):\([0-9]\{2\}\):.*/\1 \2/p' "$1" |
 		awk '{print $1 * 3600 + $2 * 60; exit}'
@@ -683,9 +701,16 @@ REFRESH_LATEST=$((
 		$(key_secs "${REPO_DIR}/deploy/pkdump-refresh.timer" RandomizedDelaySec) +
 		$(key_secs "${REPO_DIR}/deploy/pkdump-refresh.service" TimeoutStartSec)
 ))
+SHIP_LATEST=$((
+	$(hhmm_secs "${REPO_DIR}/deploy/pkdump-ship.timer") +
+		$(key_secs "${REPO_DIR}/deploy/pkdump-ship.timer" RandomizedDelaySec) +
+		$(key_secs "${REPO_DIR}/deploy/pkdump-ship.service" TimeoutStartSec)
+))
 VS_START=$(($(hhmm_secs "$VS_TMR") + $(key_secs "$VS_TMR" RandomizedDelaySec)))
 check "fires no earlier than the refresh can finish" "ok" \
 	"$([ "$VS_START" -ge "$REFRESH_LATEST" ] && echo ok || echo "starts ${VS_START}s < refresh ${REFRESH_LATEST}s")"
+check "…nor earlier than the shipment can finish" "ok" \
+	"$([ "$VS_START" -ge "$SHIP_LATEST" ] && echo ok || echo "starts ${VS_START}s < ship ${SHIP_LATEST}s")"
 
 # A missed day is a permanent hole: each run writes exactly the date it is asked
 # for, so nothing later fills it in.
@@ -1295,7 +1320,7 @@ log "13. The price build is SCHEDULED, and the alarm is on AGE (pd-up36)"
 #
 # Two properties, and the second is the one that decays quietly:
 #
-#   THE CHAIN IS TOTAL — land -> derive -> prices -> transform, each ordered
+#   THE CHAIN IS TOTAL — land -> derive -> prices -> ship -> transform, each ordered
 #   after the last. A unit missing from the middle is the bug above.
 #
 #   THE ALARM IS ON AGE, NOT ON COMPLETENESS — `complete` is conservative
@@ -1318,6 +1343,14 @@ check "ordered after the derive" "1" \
 	"$(grep -c '^After=pkdump-derive@%i.service$' "$PX_SVC" || true)"
 check "the transform is ordered after the price build" "1" \
 	"$(grep -c '^After=pkdump-prices@%i.service$' "${REPO_DIR}/deploy/pkdump-value-snapshots.service" || true)"
+# The link pd-i08u added, asserted here too so the chain is checked as a whole
+# in one place rather than only from each end: the shipment sits between the
+# price build and the transform, because the transform values what its
+# read-back writes.
+check "the shipment is ordered after the price build" "1" \
+	"$(grep -c '^After=pkdump-prices@%i.service$' "${REPO_DIR}/deploy/pkdump-ship.service" || true)"
+check "…and the transform after the shipment" "1" \
+	"$(grep -c '^After=pkdump-ship@%i.service$' "${REPO_DIR}/deploy/pkdump-value-snapshots.service" || true)"
 # And NOT Wants=: the landing is a oneshot without RemainAfterExit, so pulling
 # it in would re-run the whole catalog fetch a second time every night.
 check "does not pull the landing in" "0" \
@@ -1548,13 +1581,26 @@ SH_SVC="${REPO_DIR}/deploy/pkdump-ship.service"
 SH_TMR="${REPO_DIR}/deploy/pkdump-ship.timer"
 
 # The ordering, which is the guarantee: this unit and the transform both open
-# EVERY tenant's database, so they may never run beside each other.
-check "ordered after the transform" "1" \
-	"$(grep -c '^After=pkdump-value-snapshots@%i.service$' "$SH_SVC" || true)"
+# EVERY tenant's database, so they may never run beside each other. Since
+# pd-i08u it is also a DATA dependency, and it points the other way — the
+# transform reads what this unit's second half writes — so the After= line
+# lives over there (§10 asserts it) and this unit follows the price build.
+check "ordered after the price build" "1" \
+	"$(grep -c '^After=pkdump-prices@%i.service$' "$SH_SVC" || true)"
+check "…and after the landing it ultimately depends on" "1" \
+	"$(grep -c '^After=pkdump-refresh@%i.service$' "$SH_SVC" || true)"
 # And NOT Wants=: every job in the chain is a oneshot without RemainAfterExit,
 # so pulling one in would re-run it.
-check "does not pull the transform in" "0" \
-	"$(grep -c '^\(Wants\|Requires\)=pkdump-value-snapshots@%i.service$' "$SH_SVC" || true)"
+check "does not pull the price build in" "0" \
+	"$(grep -c '^\(Wants\|Requires\)=pkdump-prices@%i.service$' "$SH_SVC" || true)"
+
+# The read-back is the half pd-i08u armed, and it is armed HERE rather than in
+# its own unit: `zone_holdings` is only correct when it was read immediately
+# after a ship, and both halves need the master key and the tenant profile that
+# nothing else on this box holds. A `run` with no `holdings` beside it is a
+# transform that skips every tenant, silently, on every box.
+check "the wrapper ships AND reads back" "1" \
+	"$(grep -c 'pkdump_ship holdings' "${REPO_DIR}/deploy/ship.sh" || true)"
 
 # 2 is a partial night. 3 is NOT in SuccessExitStatus, deliberately: a gap is
 # an incomplete offline copy that no later run can repair.
@@ -1567,17 +1613,20 @@ check "a real failure pages" "1" \
 check "skips a box with no lake config at all" "1" \
 	"$(grep -c '^ConditionPathExists=%h/.config/pkdump/lake.env$' "$SH_SVC" || true)"
 
-# The calendar entry is DERIVED from the transform unit's own declared bounds,
-# the same computation §10 and §12 make. Move either number there and this
-# fails rather than silently leaving the two jobs overlapping.
-VS_LATEST=$((
-	$(hhmm_secs "$VS_TMR") +
-		$(key_secs "$VS_TMR" RandomizedDelaySec) +
-		$(key_secs "$VS_SVC" TimeoutStartSec)
-))
+# The calendar entry is DERIVED from the landing unit's own declared bounds,
+# the same computation §10 and §12 make. This unit used to be derived from the
+# transform because it ran last; pd-i08u put it BEFORE the transform, so it now
+# joins the 07:00 wave and the transform is the one derived from it (§10).
 SH_START=$(($(hhmm_secs "$SH_TMR") + $(key_secs "$SH_TMR" RandomizedDelaySec)))
-check "fires no earlier than the transform can finish" "ok" \
-	"$([ "$SH_START" -ge "$VS_LATEST" ] && echo ok || echo "starts ${SH_START}s < transform ${VS_LATEST}s")"
+check "fires no earlier than the refresh can finish" "ok" \
+	"$([ "$SH_START" -ge "$REFRESH_LATEST" ] && echo ok || echo "starts ${SH_START}s < refresh ${REFRESH_LATEST}s")"
+# …and strictly before the transform is even asked for, so the two halves of
+# the round trip are over before anything values them. §10 asserts the same
+# relationship from the other side; this is the one that fails if somebody
+# moves THIS timer.
+VS_START_AGAIN=$(($(hhmm_secs "$VS_TMR") + $(key_secs "$VS_TMR" RandomizedDelaySec)))
+check "is asked for before the transform is" "ok" \
+	"$([ "$SH_START" -lt "$VS_START_AGAIN" ] && echo ok || echo "ship ${SH_START}s >= transform ${VS_START_AGAIN}s")"
 check "catches up a missed run" "1" "$(grep -c '^Persistent=true$' "$SH_TMR" || true)"
 check "timer is enablable" "1" "$(grep -c '^WantedBy=timers.target$' "$SH_TMR" || true)"
 check "units-lib installs it for every instance" "1" \
@@ -1596,6 +1645,10 @@ printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_REGION=us-west-2\nPKDUMP_TE
 	> "${SH_HOME}/.config/pkdump/lake.env"
 : > "${SH_HOME}/.config/pkdump/shtest/tenant-master.key"
 
+# Two subcommands now (pd-i08u), so the fake has to tell them apart: the
+# wrapper runs `pkdump-ship run` and then `pkdump-ship holdings` through the
+# same `podman run`, and the whole point of the section below is which of them
+# produced which status.
 cat > "${WORK}/shbin/podman" <<'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
@@ -1603,6 +1656,19 @@ case "$1 $2" in
 "image exists") exit "${PKDUMP_TEST_NO_IMAGE:-0}" ;;
 esac
 if [ "$1" = run ]; then
+	SUB=ship
+	for ARG in "$@"; do
+		[ "$ARG" = holdings ] && SUB=holdings
+	done
+	# The argv the wrapper actually built, so the checks below can assert which
+	# arguments reached which half rather than only which half ran.
+	printf 'FAKE %s ARGV %s\n' "$SUB" "$*"
+	if [ "$SUB" = holdings ]; then
+		case "${PKDUMP_TEST_READBACK_RC:-0}" in
+		2) printf '    skipped 01J0000000000000000000000B: no database at /data/tenants\n' ;;
+		esac
+		exit "${PKDUMP_TEST_READBACK_RC:-0}"
+	fi
 	printf '==> shipping 2 tenant(s)\n'
 	case "${PKDUMP_TEST_JOB_RC:-0}" in
 	2) printf '    skipped 01J0000000000000000000000B: no key state is registered\n' ;;
@@ -1656,6 +1722,75 @@ check "and says nothing shipped" "1" \
 # push from the wrapper would say less and arrive twice.
 check "…without a second alert beside OnFailure=" "0" \
 	"$(printf '%s' "$SH_FAILED" | grep -c 'reached nobody' || true)"
+
+# --- The read-back half, and how the two statuses compose (pd-i08u) ---------
+# `zone_holdings` is the only thing the transform can value a collection from,
+# so "the shipment worked" is no longer the whole story. Four numbers, two
+# halves, and the precedence 3 > 1 > 2 > 0 — asserted as behaviour because a
+# wrapper that reported only the first half would leave the transform skipping
+# everybody while the unit sat green.
+
+check "a clean run reads the zone back too" "1" \
+	"$(printf '%s' "$SH_OK" | grep -c 'FAKE holdings ARGV' || true)"
+check "…and says so" "1" \
+	"$(printf '%s' "$SH_OK" | grep -c 'ship: READ BACK' || true)"
+
+# A shipment that shipped NOTHING does not go on to read back: same unreachable
+# bucket, same missing key, and one clear failure beats two confusing ones.
+check "a failed shipment does not attempt the read-back" "0" \
+	"$(printf '%s' "$SH_FAILED" | grep -c 'FAKE holdings ARGV' || true)"
+check "…and says why it did not" "1" \
+	"$(printf '%s' "$SH_FAILED" | grep -c 'the zone was not read back' || true)"
+
+# A GAP still reads back: the events that survived ARE in the zone, and
+# withholding them from tonight's valuation would add a second loss to the
+# first. Same argument `pkdump-ship run` makes for shipping past a gap at all.
+check "a sequence gap still reads the zone back" "1" \
+	"$(printf '%s' "$SH_GAP" | grep -c 'FAKE holdings ARGV' || true)"
+check "…and 3 still wins over the read-back's own status" "1" \
+	"$(printf '%s' "$SH_GAP" | grep -c 'RC=3$' || true)"
+
+# The read-back's own three statuses, with a clean shipment underneath so the
+# number can only have come from the second half.
+SH_RB_PARTIAL="$(PKDUMP_TEST_READBACK_RC=2 run_ship)"
+check "a partial read-back exits 2" "1" \
+	"$(printf '%s' "$SH_RB_PARTIAL" | grep -c 'RC=2$' || true)"
+check "…named as the READ BACK half, not as a shipping problem" "1" \
+	"$(printf '%s' "$SH_RB_PARTIAL" | grep -c 'READ BACK PARTIAL — tenants skipped: 01J0000000000000000000000B' || true)"
+
+SH_RB_FAILED="$(PKDUMP_TEST_READBACK_RC=1 run_ship)"
+check "a read-back that reached nobody exits 1, not 0" "1" \
+	"$(printf '%s' "$SH_RB_FAILED" | grep -c 'RC=1$' || true)"
+# The whole diagnosis in one line: the half that worked and the half that did
+# not. Without it the journal says "ship: OK" and the unit fails, which reads
+# as a crash rather than as tonight's valuation having no input.
+check "…saying the shipment worked and the read-back did not" "1" \
+	"$(printf '%s' "$SH_RB_FAILED" | grep -c 'READ BACK FAILED' || true)"
+check "…while the shipment half still reported its own OK" "1" \
+	"$(printf '%s' "$SH_RB_FAILED" | grep -c 'ship: OK' || true)"
+
+# 1 beats 2: a partial shipment whose read-back reached nobody is a failure,
+# because nobody gets valued either way.
+SH_MIXED="$(PKDUMP_TEST_JOB_RC=2 PKDUMP_TEST_READBACK_RC=1 run_ship)"
+check "the worse of the two halves is what the unit is told" "1" \
+	"$(printf '%s' "$SH_MIXED" | grep -c 'RC=1$' || true)"
+
+# --- Which arguments reach which half ---------------------------------------
+# `--tenant` is the one argument both subcommands take, and a shipment scoped
+# to one tenant that then read EVERYBODY back would be a surprise. Everything
+# else is a `run` argument and must not be handed to the read-back, which
+# would reject it and turn a good night into a clap error.
+SH_SCOPED="$(run_ship --tenant alice)"
+check "--tenant reaches the shipment" "1" \
+	"$(printf '%s' "$SH_SCOPED" | grep -c 'FAKE ship ARGV.*run --tenant alice' || true)"
+check "…and the read-back is scoped to the same tenant" "1" \
+	"$(printf '%s' "$SH_SCOPED" | grep -c 'FAKE holdings ARGV.*holdings --tenant alice' || true)"
+
+SH_MAXROWS="$(run_ship --max-rows 500)"
+check "--max-rows reaches the shipment" "1" \
+	"$(printf '%s' "$SH_MAXROWS" | grep -c 'FAKE ship ARGV.*--max-rows 500' || true)"
+check "…and is NOT handed to the read-back, which has no such flag" "0" \
+	"$(printf '%s' "$SH_MAXROWS" | grep -c 'FAKE holdings ARGV.*--max-rows' || true)"
 
 # The credential boundary, refused before podman starts — one profile for both
 # zones is not a narrow policy, it is no boundary.

@@ -98,6 +98,44 @@ unit_prop() { systemctl --user show "$1" -p "$2" --value 2>/dev/null; }
 echo "PokeDumpster backup alarming — instance '${INSTANCE}'"
 echo "  config: ${CONF_DIR}/alerts.env, ${ALERTS_ENV}"
 
+# ── Layer 0 — is the site actually serving? ────────────────────────────────
+# Numbered below Layer 1 because it is the question Layer 1 assumes the answer
+# to. Added 2026-08-16, after the site was hard down and NOTHING paged: backup
+# freshness was the only liveness signal on the box, it is an indirect proxy, it
+# runs every 6h behind a 3h grace, and it had been failing for four days over an
+# unrelated bug — so the monitor was already "down" and a real outage produced no
+# transition to alert on.
+layer "Layer 0 — off-box uptime heartbeat (${P}-heartbeat@${INSTANCE})"
+
+[ -f "${SYSTEMD_USER_DIR}/${P}-heartbeat@.service" ] && [ -f "${SYSTEMD_USER_DIR}/${P}-heartbeat@.timer" ]
+gate $? "heartbeat units installed" "bash deploy/setup.sh ${INSTANCE}   # reinstall the units"
+
+HB_TIMER="${P}-heartbeat@${INSTANCE}.timer"
+[ "$(systemctl --user is-active "$HB_TIMER" 2>/dev/null)" = active ]
+gate $? "heartbeat timer running" "systemctl --user enable --now ${HB_TIMER}"
+
+if configured "${PKDUMP_HEARTBEAT_URL:-}"; then
+    ok "probing ${PKDUMP_HEARTBEAT_URL}"
+else
+    bad "no URL to probe — the heartbeat cannot tell whether the site serves" \
+        "\$EDITOR ${CONF_DIR}/alerts.env   # set PKDUMP_HEARTBEAT_URL"
+fi
+
+if configured "${PKDUMP_UPTIME_PING_URL:-}"; then
+    if [ "${PKDUMP_UPTIME_PING_URL}" = "${PKDUMP_BACKUP_PING_URL:-}" ]; then
+        # Sharing one check is how the 2026-08-16 silence happened, exactly:
+        # two unrelated failure modes collapsed onto one signal, and the noisy
+        # one held it down while the vital one had nothing left to say.
+        bad "uptime and backup share ONE monitor — a noisy backup failure will mask a real outage" \
+            "\$EDITOR ${CONF_DIR}/alerts.env   # give PKDUMP_UPTIME_PING_URL its own healthchecks.io check"
+    else
+        ok "off-box uptime monitor configured (${PKDUMP_UPTIME_PING_URL%%\?*})"
+    fi
+else
+    bad "no off-box uptime monitor — if this box dies, nothing will notice" \
+        "\$EDITOR ${CONF_DIR}/alerts.env   # set PKDUMP_UPTIME_PING_URL (period 5m, grace 15m)"
+fi
+
 # ── Layer 1 — off-box freshness dead-man's switch (primary) ─────────────────
 # The only layer that survives the box going away, and the only one that catches
 # "replication silently stopped". Everything else is a nicety next to this.

@@ -1,0 +1,18 @@
+[Unit]
+Description=PokeDumpster uptime heartbeat timer (%i)
+
+[Timer]
+# Every 5 minutes. The backup dead-man runs every 6h with a 3h grace, so it can be
+# NINE HOURS late — and it is a proxy for box liveness rather than a measure of it.
+# Five minutes with a ~15m grace at the monitor means a real outage is known in
+# minutes, which is the difference between noticing and being told by a friend.
+#
+# No RandomizedDelaySec: jitter is for load, and one curl every five minutes to your
+# own listener is not load. A predictable cadence makes the monitor's grace window
+# something you can reason about.
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

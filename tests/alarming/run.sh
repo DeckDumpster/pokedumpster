@@ -792,14 +792,20 @@ DIVERGED_LINE="time=$(date -u +%Y-%m-%dT%H:%M:%S.000Z) level=INFO msg=\"replica 
 #    without the override the shell command arrives as mc arguments and the
 #    container logs a usage error instead of the line — which looks exactly like
 #    a sidecar that said nothing, and sends this gate down the wrong branch.
+#    It prints the line and EXITS. `podman logs` reads a stopped container's
+#    output just as well as a running one's, so there is nothing to keep alive —
+#    and keeping it alive would have meant a `sleep` long enough to trip the
+#    harness's own no-long-sleeps gate (pd-86er), which is right to object even
+#    though this one would have been inside the container rather than in the
+#    harness. `--rm` is deliberately absent: it would take the logs with it.
 podman rm -f --ignore "$DIVERGED_CTR" >/dev/null 2>&1
 podman run -d --name "$DIVERGED_CTR" --entrypoint sh "$MC_IMAGE" \
-	-c "echo '${DIVERGED_LINE}'; sleep 300" >/dev/null 2>&1
+	-c "echo '${DIVERGED_LINE}'" >/dev/null 2>&1
 # The line has to be on stdout before the checker reads it; a container that has
 # not been scheduled yet reads as a silent sidecar.
 for _ in $(seq 20); do
 	podman logs "$DIVERGED_CTR" 2>&1 | grep -qF 'replica sync' && break
-	sleep 0.5
+	sleep 1
 done
 DIV_CONF="${WORK}/conf-diverged"
 mkdir -p "$DIV_CONF"

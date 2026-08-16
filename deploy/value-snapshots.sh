@@ -100,6 +100,18 @@ if ! podman network exists "$NETWORK" 2>/dev/null; then
     exit 1
 fi
 
+# The network EXISTING is not the same as being able to start a container on it.
+# A second rootless store's cleanup can leave this one holding a network
+# namespace whose scaffolding is gone, and every start on a user-defined network
+# then dies with "failed to mount runtime directory for rootless netns" — which
+# is what failed this unit every night from 2026-08-12 (pd-3zjt). Checked here,
+# where it can be named and usually repaired, rather than inside podman where it
+# reads as an unexplained mount error.
+if ! pkdump_store_netns_ensure "$NETWORK"; then
+    echo "value-snapshots: FAILED — rootless networking is wedged (${INSTANCE})" >&2
+    exit 1
+fi
+
 # --- The job's command line -------------------------------------------------
 
 ARGS=("$@")

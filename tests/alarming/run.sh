@@ -108,6 +108,19 @@ PUSH_PATH="/pushover/messages.json"
 TEST_ALERTS_ENV="${WORK}/alerts-host.env"
 export PKDUMP_ALERTS_ENV="$TEST_ALERTS_ENV"
 
+# This gate's whole claim is "every layer FIRES", and it proves it by provoking
+# the same failure repeatedly — which is precisely what pd-hqdt's repeat
+# suppression exists to send once. Two runs of this gate on one box within 24h
+# would otherwise assert a push that alert.sh correctly withheld. So the window
+# is switched off here, both for what this shell invokes and — via the alerts
+# file below, which is the only environment a systemd unit here inherits — for
+# §6's shipped OnFailure= path. Suppression has its own gate, and it asserts
+# the shipped default separately: tests/alarming/alert_suppress_test.sh.
+export PKDUMP_ALERT_SUPPRESS_SECONDS=0
+# Belt and braces: nothing may write to ~/.local/state either, whatever the
+# window says.
+export PKDUMP_ALERT_STATE_DIR="${WORK}/alert-state"
+
 TENANTS=(alpha bravo)
 
 pass=0
@@ -285,6 +298,7 @@ PUSHOVER_USER=alarmgate-user
 PUSHOVER_API_URL=http://127.0.0.1:${SINK_PORT}${PUSH_PATH}
 PKDUMP_DISK_THRESHOLD=90
 PKDUMP_DISK_PATH=${HOME}
+PKDUMP_ALERT_SUPPRESS_SECONDS=0
 EOF
 
 podman volume rm -f "$VOLUME" >/dev/null 2>&1

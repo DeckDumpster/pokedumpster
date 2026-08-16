@@ -410,7 +410,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `setup-lake.sh <inst> [--port N] [--remove]` | Install the offline lakehouse — the Nessie catalog's Quadlet units and the PyIceberg job image. Refuses to run without `~/.config/pkdump/lake.env`. See [Offline lakehouse](#offline-lakehouse--nessie--iceberg) |
 | `store-lib.sh` | Sourced — resolves which Podman store an instance's image and volume live in (`PKDUMP_STORE_ROOT`) |
 | `units-lib.sh` | Sourced — renders every unit template this checkout ships into `~/.config`, preserving the instance's published port. Shared by `setup.sh` and `deploy.sh` so a deploy cannot ship a binary and leave the units behind (pd-2t6u) |
-| `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin); trims to the first 900 bytes |
+| `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin); trims to the first 900 bytes, and sends an unchanged alert once per 24h ([the same page, twice](#the-same-page-twice)) |
 | `journal-summary.sh <unit>` | Layer 2 — turn a failed unit's journal tail (on stdin, or fetched when run by hand) into one readable page: cause first, no OCI metadata, no systemd boilerplate |
 | `mac-setup.sh` / `mac-deploy.sh` / `mac-teardown.sh` | macOS equivalents (no systemd) |
 
@@ -707,6 +707,62 @@ bash deploy/journal-summary.sh pkdump-backup-check@prod.service
 `tests/alarming/journal_summary_test.sh` (hermetic, sub-second, run by `ci.sh`)
 asserts the content against journal tails captured from the real units,
 including the 2026-08-12 failure verbatim.
+
+### The same page, twice
+
+`pkdump-value-snapshots@prod` failed the same way four nights running and pushed
+four byte-identical pages. Every one was correct and not one was actionable, and
+what they bought was a channel that gets swiped away without reading — which is
+how the outage that came next, the sidecar's rootless-netns failure, reached
+nobody (pd-hqdt). **A pager that repeats itself is a pager being switched off by
+hand.**
+
+So `alert.sh` sends the same alert **once per 24h**. The first page says so, in
+its own words:
+
+```
+value-snapshots PARTIAL — Skipped: collection. The run completed for everyone
+else; see journalctl --user -u pkdump-value-snapshots@prod.service
+
+(Repeats of this same alert are suppressed for 24h — you will NOT be paged
+again for it unless it changes.)
+```
+
+Four rules keep it from becoming silence:
+
+- **The first occurrence always pages**, and always carries that notice. A
+  reader who is not told reads the quiet afterwards as "it stopped".
+- **A changed alert pages immediately**, however recently its neighbour did.
+  The key is `(exact title, message with digit runs collapsed)`: the title is
+  where every caller puts identity and severity, so two units never share a key
+  and `LOW DISK (85%)` → `LOW DISK (99%)` rings. The message is normalised
+  because the *same* failure carries numbers that move every night — ages, byte
+  counts, pids — and a key any digit defeats would suppress nothing on the days
+  it matters. The cost is deliberate: two failures of one caller whose text
+  differs only in a number read as one alert.
+- **Anything undecidable pages.** No `sha256sum`, no writable state directory, a
+  clock that moved backwards, an unreadable stamp — every one sends. Same rule
+  as `alert-gate.sh`: a silently disarmed alert is indistinguishable from a
+  backup that quietly stopped running.
+- **The window opens on delivery, not on the attempt.** A push `curl` could not
+  deliver still fails the unit and records nothing, so the retry is not mistaken
+  for a repeat.
+
+Suppression is a decision, not a delivery failure: a withheld page exits 0 and
+says why on stderr, so it lands in the unit's journal —
+
+```
+alert.sh: SUPPRESSED — identical to the page sent 7h ago; this alert can page again in 17h.
+```
+
+State is one small file per signature under
+`${XDG_STATE_HOME:-~/.local/state}/pkdump/alerts/`, pruned as it expires.
+`PKDUMP_ALERT_SUPPRESS_SECONDS` changes the window (`0` turns it off, which is
+what `tests/alarming/run.sh` does — that gate provokes one failure repeatedly by
+design); `PKDUMP_ALERT_NO_SUPPRESS=1` exempts a single call, which is how
+`alarm-status.sh --verify` stays honest about whether a page would reach you
+right now. `tests/alarming/alert_suppress_test.sh` (hermetic, sub-second, run by
+`ci.sh`) is the gate, and most of it asserts what still gets **sent**.
 
 ### Is it armed?
 

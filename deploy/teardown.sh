@@ -50,6 +50,7 @@ systemctl --user disable --now "pkdump-backup-check@${INSTANCE}.timer" 2>/dev/nu
 systemctl --user disable --now "pkdump-derive@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-prices@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-value-snapshots@${INSTANCE}.timer" 2>/dev/null || true
+systemctl --user disable --now "pkdump-heartbeat@${INSTANCE}.timer" 2>/dev/null || true
 
 # Stop the Litestream backup sidecar (pokedumpster-8ch.3).
 systemctl --user stop "pkdump-litestream-${INSTANCE}.service" 2>/dev/null || true
@@ -69,7 +70,8 @@ for _u in "$SERVICE_NAME" \
           "pkdump-backup-check@${INSTANCE}."{service,timer} \
           "pkdump-derive@${INSTANCE}."{service,timer} \
           "pkdump-prices@${INSTANCE}."{service,timer} \
-          "pkdump-value-snapshots@${INSTANCE}."{service,timer}; do
+          "pkdump-value-snapshots@${INSTANCE}."{service,timer} \
+          "pkdump-heartbeat@${INSTANCE}."{service,timer}; do
     systemctl --user reset-failed "$_u" 2>/dev/null || true
 done
 

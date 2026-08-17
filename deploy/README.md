@@ -687,9 +687,21 @@ S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
   `PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS` (1800s, against a one-second cadence) —
   is not being replicated, which is the loudest thing this checker can find.
 
-  S3 is still asked directly, and asked FIRST: "the replica holds nothing" does
-  not depend on the sidecar being reachable, and a check that only asks the
-  backing-up process how it is getting on is a check that agrees with a liar.
+  S3 is still asked directly: the sidecar reporting a tenant fully replicated
+  while its prefix holds no LTX files at all is a fault, because a check that only
+  asks the backing-up process how it is getting on is a check that agrees with a
+  liar.
+
+  **The grace is the sidecar's uptime, never a file timestamp** (pd-30yy). "Has
+  this tenant had a fair chance to replicate yet" is a question about the process
+  doing the replicating, and both file-timestamp answers to it failed toward
+  silence: `mtime` moves on every write, so an old database reads new, and birth
+  time does not move but says nothing about whether anything is watching the file
+  — a database created an hour ago on a sidecar up for a week took a newborn's
+  grace and passed unreplicated. So `podman inspect -f '{{.State.StartedAt}}'` is
+  what the grace is measured against, and the three answers are three facts about
+  the sidecar: not running is a fault, up less than the grace is not judged, and
+  up longer than the grace having never named the database is an orphan.
 
   A lag is re-asked for up to `PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS`
   (90s) before it counts. Litestream can hold an un-uploaded checkpoint across a

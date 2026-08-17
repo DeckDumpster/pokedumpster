@@ -57,6 +57,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=tests/lib/ports.sh
 . "${REPO_DIR}/tests/lib/ports.sh"
 
+# Ask before sleeping (pd-86er). §5.4 waits for a container to age past a grace,
+# which is a condition and not a duration.
+# shellcheck source=tests/lib/wait.sh
+. "${REPO_DIR}/tests/lib/wait.sh"
+
 # Unique per checkout, like deploy/ci.sh's: several polecats run this gate from
 # their own worktrees at the same time, and a shared name means run B's teardown
 # destroys run A's volume mid-suite.
@@ -151,7 +156,8 @@ cleanup() {
 		"$INSTANCE_UNIT"
 	systemctl --user daemon-reload >/dev/null 2>&1
 	systemctl --user reset-failed "${P}-"'*' >/dev/null 2>&1
-	podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" "pkdump-${INSTANCE}-diverged" >/dev/null 2>&1
+	podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" "pkdump-${INSTANCE}-diverged" \
+		"pkdump-${INSTANCE}-silent" >/dev/null 2>&1
 	podman volume rm -f "$VOLUME" >/dev/null 2>&1
 	podman secret rm "$SECRET_NAME" >/dev/null 2>&1
 	rm -rf "$CONF_DIR" "$WORK"
@@ -823,6 +829,70 @@ check "and the STALE line names the tenant, not the registry" "1" \
 	"$(printf '%s' "$OUT" | grep -c "STALE — tenant '" || true)"
 check "and it names both txids so the gap is legible" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'S3 holds up to txid 0000000000000001, Litestream has ingested 00000000000000ff' || true)"
+
+# 4. The sidecar is UP, has been up for longer than the grace, and has simply
+#    never named this database. That is an orphan — its tenants glob is not
+#    matching the file, so every write to it reaches nothing — and it was SILENT
+#    (pd-30yy): the grace was computed from the tenant FILE's timestamp, so a
+#    database created recently was excused however long the sidecar had been
+#    watching. tests/litestream/drill.sh §6 covers the other half of the pair (a
+#    sidecar that is not running at all); this is the half nothing tested.
+#
+#    The stand-in is a container that RUNS and says nothing, rather than the real
+#    sidecar and a new tenant file: the real one globs the tenants directory and
+#    would name a new file within a second, which is a race this assertion cannot
+#    afford. What is under test is the ABSENCE of a position for a database that
+#    is otherwise perfectly healthy — ${LAG_TENANT} is replicating, its replica
+#    holds LTX files, and its file is minutes old, so nothing else here is wrong.
+#    `--entrypoint sleep … infinity` is how a container is kept alive; it is not a
+#    delay (tests/lib/wait_test.sh §6 excludes it by name).
+SILENT_CTR="pkdump-${INSTANCE}-silent"
+podman rm -f --ignore "$SILENT_CTR" >/dev/null 2>&1
+podman run -d --name "$SILENT_CTR" --entrypoint sleep "$MC_IMAGE" infinity >/dev/null 2>&1
+SILENT_CONF="${WORK}/conf-silent"
+mkdir -p "$SILENT_CONF"
+cp "${CONF_DIR}/litestream.env" "$SILENT_CONF/"
+cp -a "${CONF_DIR}/aws" "$SILENT_CONF/" 2>/dev/null || true
+sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=${SILENT_CTR}|" \
+	"${CONF_DIR}/alerts.env" >"${SILENT_CONF}/alerts.env"
+# The grace is the sidecar's UPTIME, so the gate waits for the stand-in to pass
+# it rather than assuming it has. Four seconds against a three-second grace, asked
+# of podman rather than counted here, because the container's clock is the one the
+# checker reads.
+silent_ctr_uptime() {
+	local started
+	started="$(podman inspect -f '{{.State.StartedAt.Unix}}' "$SILENT_CTR" 2>/dev/null)" || return 1
+	case "$started" in ''|*[!0-9]*) return 1 ;; esac
+	echo $(( $(date +%s) - started ))
+}
+silent_ctr_past_grace() { [ "$(silent_ctr_uptime || echo 0)" -ge 4 ]; }
+wait_until 30 1 silent_ctr_past_grace || true
+check "the silent stand-in sidecar is up and past the grace" "yes" \
+	"$(silent_ctr_past_grace && echo yes || echo no)"
+OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_CONF_DIR="$SILENT_CONF" \
+	PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS=3 \
+	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" 2>&1)"; RC=$?
+printf '%s\n' "$OUT" | sed 's/^/    /'
+check "a running sidecar that never named a tenant fails the tenant leg" "1" "$RC"
+check "and it says no replication position was reported" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'has not reported a replication position' || true)"
+check "and it names how long the sidecar has been up, not how old the file is" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'it has been up' || true)"
+
+# The mutation, and the reason this is a test of the SIDECAR's uptime rather than
+# of nothing: same tenant, same untouched file, same silent container — only the
+# grace moves, and the verdict moves with it. A grace the stand-in cannot have
+# outlived is a sidecar that has genuinely not had a chance yet, which is the one
+# state that may pass.
+OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_CONF_DIR="$SILENT_CONF" \
+	PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS=86400 \
+	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" 2>&1)"; RC=$?
+check "a sidecar still inside its grace is not judged, on the same file" "0" "$RC"
+check "and it says the grace is the sidecar's uptime" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'the sidecar has only been up' || true)"
+podman rm -f --ignore "$SILENT_CTR" >/dev/null 2>&1
 
 # Mutation in the other direction, because only the pair is evidence: with the
 # monitor still unarmed, a replica that is genuinely stale must FAIL. An unarmed

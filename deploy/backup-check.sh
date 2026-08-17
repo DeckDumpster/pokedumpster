@@ -363,17 +363,51 @@ sidecar_position() {
     [ -n "$SIDE_REPLICA" ] && [ -n "$SIDE_DB" ]
 }
 
+# sidecar_uptime — how many seconds the Litestream sidecar CONTAINER has been up,
+# on stdout. Non-zero, printing nothing, when it is not running or podman cannot
+# say: "we could not ask" is never the same answer as "everything is fine", and
+# every caller treats it as the fault it is.
+#
+# This is the honest source for the one question a tenant's file timestamps were
+# standing in for — has this database had a FAIR CHANCE to be replicated yet.
+# Replication is not a property of the file; it is a property of the process
+# watching it. A container that came up ten seconds ago has not scanned its
+# tenants glob yet, whatever the files' ages; one that has been up for hours and
+# has never named a database is not replicating that database, however new it is.
+# `.StartedAt.Unix`, not `.StartedAt`: podman renders the bare field as a Go
+# time.Time — `2026-08-16 15:13:38.171340689 +0000 UTC` — which `date -d` refuses
+# for the trailing zone NAME. Asking the template for the epoch removes the
+# parsing step rather than working around it, and a non-numeric answer is
+# treated as "could not ask" below.
+sidecar_uptime() {
+    local out state epoch up
+    out="$(podman inspect -f '{{.State.Running}} {{.State.StartedAt.Unix}}' "$SIDECAR_CTR" 2>/dev/null)" \
+        || return 1
+    state="${out%% *}"
+    epoch="${out##* }"
+    [ "$state" = "true" ] || return 1
+    case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
+    up=$(( NOW - epoch ))
+    # Clamped for the same reason SIDE_AGE is: NOW is stamped at startup and the
+    # clocks differ by a hair, so a container started moments ago can read as
+    # negative — which looks like a bug in the checker rather than a young sidecar.
+    if [ "$up" -lt 0 ]; then up=0; fi
+    printf '%s\n' "$up"
+}
+
 # judge_correspondence <what> <db-basename> <newest> <db-file> <url> — the TENANT
 # test, and the one Ryan asked for on 2026-08-16: page only when something is
 # actually wrong.
 #
-# Three questions, each of which can only be answered NO by a real fault:
+# A handful of questions, each of which can only be answered NO by a real fault:
 #
-#   1. Is the sidecar still watching this database?  (a position, recently)
-#   2. Has everything it ingested reached S3?        (txid.replica >= txid.db)
-#   3. Did bytes actually land off-box?              (the replica lists LTX files)
+#   1. Is the sidecar watching this database at all?  (a position, non-zero)
+#   2. Did bytes actually land off-box?               (the replica lists LTX files)
+#   3. Is it still speaking?                          (that position, recently)
+#   4. Has everything it ingested reached S3?         (txid.replica >= txid.db)
+#   5. Is the process still alive right now?          (the container is running)
 #
-# Question 3 is asked separately and of S3 itself because 1 and 2 are the
+# Question 2 is asked separately and of S3 itself because every other one is the
 # sidecar's own account of its work. A backup check that only asks the backing-up
 # process how it is getting on is a check that agrees with a liar.
 #
@@ -382,77 +416,118 @@ sidecar_position() {
 # collection nobody edited. A quiescent tenant in correspondence is a PERFECT
 # backup: restore it and you get today's database, byte for byte. Age is a fact
 # about Ryan's card-buying habits, not about whether his data is safe.
+#
+# AND NEITHER IS THE TENANT FILE'S OWN AGE (pd-30yy). The one thing a file
+# timestamp was still deciding was the GRACE — "is this database too newly
+# created to judge yet" — and there is no honest timestamp for that question.
+# mtime moves forward on every write, so an old database touched an hour ago
+# reads as an hour old and inherits a newborn's grace. Birth time (`stat -c %W`)
+# does not move, and reading it looked like the fix — but it is zero on
+# filesystems that do not record one, it cannot be aged in a test without
+# creating a file for real, and it is still answering the wrong question: WHEN A
+# FILE WAS CREATED SAYS NOTHING ABOUT WHETHER ANYTHING IS REPLICATING IT.
+#
+# The grace question is "has this tenant had a fair chance to replicate yet",
+# and the honest source for it is the SIDECAR — the process whose job that is
+# (`sidecar_uptime`). It has been up longer than the grace and has never named
+# this database: orphaned, whatever the file's age. It came up moments ago:
+# nothing has had a chance yet, whatever the file's age. It is not running at
+# all: that is itself the fault, and no grace applies to it.
 judge_correspondence() {
-    local what="$1" base="$2" newest="$3" db_file="$4" url="$5" db_age=0
+    local what="$1" base="$2" newest="$3" db_file="$4" url="$5"
 
     # A tenant with no database on the volume is never a pass. The enumeration
     # path derives names FROM the files, so this only happens when a tenant was
     # named explicitly — and then the right answer is to say the name is wrong,
     # not to fall through the "brand new, not judged" door. It fell through
-    # exactly that door on the first run of this function: an absent file leaves
-    # db_age at 0, which read as "created 0m ago" and returned OK.
+    # exactly that door on the first run of this function: an absent file left
+    # the age at 0, which read as "created 0m ago" and returned OK.
     if [ ! -e "$db_file" ]; then
         stale "${what}: no database at ${db_file} — nothing to check. Either the name is wrong or the tenant's database is gone."
     fi
 
-    # HOW OLD IS THIS TENANT — birth time, not mtime. The only thing db_age is
-    # used for is "is this too newly created to judge yet", and mtime answers a
-    # different question: it moves forward on every write, so an old database
-    # that was touched an hour ago looks an hour old. That error runs toward
-    # SILENCE — it makes a long-established tenant eligible for a newborn's
-    # grace, which is precisely the fault a missing sidecar position needs to
-    # escape. Measured on the live volume: mtime 22h, birth 76h.
+    # 1. IS THE SIDECAR WATCHING THIS DATABASE AT ALL?
     #
-    # `stat -c %W` is 0 where the filesystem has no birth time; mtime is the
-    # fallback, and only then does the weaker reading apply.
-    db_age=$(stat -c %W "$db_file" 2>/dev/null || echo 0)
-    case "$db_age" in ''|*[!0-9]*) db_age=0 ;; esac
-    if [ "$db_age" -eq 0 ]; then db_age="$(stat -c %Y "$db_file")"; fi
-    db_age=$(( NOW - db_age ))
-
-    # ORDER MATTERS, and this order is the pd-fof4 silent mode. "S3 holds nothing
-    # for this tenant" is the loudest fault there is and the one that does not
-    # depend on the sidecar being reachable, healthy, or even present — so it is
-    # asked FIRST, of S3 itself. Asking the sidecar first and short-circuiting on
-    # its answer put a hole straight through that gate: two tenants with no
-    # replica at all came back "not judged" because the sidecar had never
-    # mentioned them, which is the exact shape of the failure the gate exists for.
-    if [ -z "$newest" ]; then
-        if [ "$db_age" -gt "$MAX_AGE_SECONDS" ]; then
-            stale "${what}: no replica data at ${url%%\?*} — it is NOT backed up"
-        fi
-        echo "backup-check: ${what} has no replica yet but was created $(( db_age / 60 ))m ago — not judged"
+    # A position of all zeros is not a position. Litestream prints one for a file
+    # it has picked up but ingested and shipped nothing from, and treating that
+    # as an answer would let "the sidecar has seen it" stand in for "the sidecar
+    # has replicated it". It goes down the same road as no position at all.
+    if ! sidecar_position "$base" "$what" \
+        || { txid_zero "$SIDE_DB" && txid_zero "$SIDE_REPLICA"; }; then
+        judge_no_position "$what" "$base"
         return 0
     fi
 
-    if ! sidecar_position "$base" "$what"; then
-        # Bytes are in S3 but the sidecar is not reporting on this file.
-        #
-        # The grace here is SIDECAR_GRACE_SECONDS (30 min), NOT the 36h
-        # MAX_AGE the no-replica branch uses. They sound like one question and
-        # are two. Reaching S3 for the first time waits on a snapshot interval,
-        # so a new tenant legitimately has nothing there for hours. Being
-        # MENTIONED by the sidecar waits on one second. Lending this branch the
-        # 36h threshold — briefly, and in the name of having one knob — meant a
-        # tenant whose sidecar had been silent for six hours came back "created
-        # 1322m ago, not judged", green, with the container name deliberately
-        # bogus.
-        if [ "$db_age" -lt "$SIDECAR_GRACE_SECONDS" ]; then
-            echo "backup-check: ${what} created $(( db_age / 60 ))m ago and the sidecar has not reported on it yet — not judged"
-            return 0
-        fi
-        stale "${what}: the Litestream sidecar has not reported a replication position for ${base} within the last ${SIDECAR_LOOKBACK} (container '${SIDECAR_CTR}'). Either the sidecar is down or its tenants glob is not matching this file — in which case new writes are reaching NOTHING."
+    # 2. DID ANYTHING ACTUALLY LAND OFF-BOX?  Asked of S3 itself, because
+    # everything else here is the sidecar's own account of its work and a backup
+    # check that only asks the backing-up process how it is getting on is a check
+    # that agrees with a liar. This is the pd-fof4 silent mode: nothing errors
+    # when a tenant is simply absent from the bucket.
+    #
+    # There is no grace left on this branch and it needs none: step 1 has already
+    # established that the sidecar is up, watching this database, and claims to
+    # have shipped a real transaction from it. An empty replica under those
+    # conditions is a contradiction, not a slow start.
+    if [ -z "$newest" ]; then
+        stale "${what}: no replica data at ${url%%\?*} — it is NOT backed up. The sidecar reports it replicated up to txid ${SIDE_REPLICA}, but that prefix holds no LTX files at all."
     fi
 
+    # 3. IS THE SIDECAR STILL SPEAKING?  It reports about once a second per
+    # database, so a long silence is not a quiet period, it is a stopped process.
     if [ -n "$SIDE_AGE" ] && [ "$SIDE_AGE" -gt "$SIDECAR_GRACE_SECONDS" ]; then
         stale "${what}: the sidecar last reported on ${base} $(( SIDE_AGE / 60 ))m ago (it reports about once a second). Replication has stopped."
     fi
 
+    # 4. HAS EVERYTHING IT INGESTED REACHED S3?
     if txid_lt "$SIDE_REPLICA" "$SIDE_DB"; then
         stale "${what}: its replica is BEHIND the local database — S3 holds up to txid ${SIDE_REPLICA}, Litestream has ingested ${SIDE_DB}. The newest changes are not backed up."
     fi
 
+    # 5. AND IS IT STILL RUNNING NOW?  Everything above is read from what the
+    # sidecar SAID, which outlives the process that said it — `podman logs` reads
+    # a dead container's output just as well as a live one's. A sidecar that died
+    # inside the grace window would otherwise pass on its own last words.
+    if ! sidecar_uptime >/dev/null; then
+        stale "${what}: the Litestream sidecar container '${SIDECAR_CTR}' is NOT RUNNING — it last reported on ${base} ${SIDE_AGE:-?}s ago, but nothing is replicating this database now."
+    fi
+
     echo "backup-check: ${what} OK — replica in correspondence at txid ${SIDE_DB} (sidecar reported ${SIDE_AGE:-?}s ago)"
+}
+
+# judge_no_position <what> <base> — the verdict when the sidecar has said nothing
+# about a database. Returns (not judged) only while the sidecar has genuinely not
+# had time to; otherwise it trips the switch and never returns.
+#
+# The three answers are three different facts about the SIDECAR, and none of them
+# is a fact about the file:
+#
+#   * not running        -> fault. Nothing is replicating anything, and the
+#                           newest thing it ever said about this database is not
+#                           evidence that it still is.
+#   * up < grace         -> not judged. It has not finished scanning its tenants
+#                           glob yet; a brand-new instance and a just-restarted
+#                           sidecar both land here, briefly, and the next run
+#                           judges them for real.
+#   * up >= grace        -> fault. It has been watching for longer than it takes
+#                           to notice a database and has never named this one:
+#                           the glob is not matching the file, and every write to
+#                           it is reaching NOTHING. This is the case that was
+#                           SILENT while the grace came from the file's age — a
+#                           newly created database on a long-running sidecar read
+#                           as "too new to judge" and passed.
+judge_no_position() {
+    local what="$1" base="$2" up=""
+
+    if ! up="$(sidecar_uptime)"; then
+        stale "${what}: the Litestream sidecar has not reported a replication position for ${base}, and its container '${SIDECAR_CTR}' is not running — nothing is replicating this database, so every write to it is reaching NOTHING."
+    fi
+
+    if [ "$up" -lt "$SIDECAR_GRACE_SECONDS" ]; then
+        echo "backup-check: ${what}: the sidecar has only been up ${up}s (grace ${SIDECAR_GRACE_SECONDS}s) and has not reported on ${base} yet — not judged"
+        return 0
+    fi
+
+    stale "${what}: the Litestream sidecar has not reported a replication position for ${base} within the last ${SIDECAR_LOOKBACK}, and it has been up $(( up / 60 ))m (container '${SIDECAR_CTR}'). Its tenants glob is not matching this file — new writes are reaching NOTHING."
 }
 
 # Retained for the alarming gates, which drive it directly with synthetic
@@ -582,6 +657,16 @@ CORRESPONDENCE_POLL_SECONDS=15
 txid_lt() {
     [ "$1" != "$2" ] \
         && [ "$(printf '%s\n%s\n' "$1" "$2" | LC_ALL=C sort | head -n1)" = "$1" ]
+}
+
+# txid_zero <a> — TXID a is the zero TXID: Litestream stands nowhere on this
+# database. An empty string counts, because "it said nothing" and "it said
+# nothing has happened" are the same amount of evidence that a backup exists.
+txid_zero() {
+    case "$1" in
+        *[!0]*) return 1 ;;
+        *) return 0 ;;
+    esac
 }
 registry_behind() { # registry_behind — true while the replica has less than local
     [ -z "$REGISTRY_REPLICA_TXID" ] && return 0

@@ -60,7 +60,15 @@ log() { printf '\n=== %s ===\n' "$*"; }
 
 ORIG_PATH="$PATH"
 ORIG_TMPDIR="${TMPDIR:-}"
-ORIG_CONTAINERS_CONF_OVERRIDE="${CONTAINERS_CONF_OVERRIDE:-}"
+# Unset first, not captured as-is like PATH/TMPDIR above: this suite asserts
+# "no override at all" as a baseline in several places, and a loaded CI box can
+# carry one in ambient from an un-torn-down store elsewhere on the runner
+# (pd-3zjt/pd-1sy1 — /workspaces/pkdump-nonprod-store predates the tmp_dir
+# split). Trusting that ambient value as "the original" would make this suite's
+# own baseline depend on host state it does not control, exactly what a
+# hermetic test exists to avoid.
+unset CONTAINERS_CONF_OVERRIDE
+ORIG_CONTAINERS_CONF_OVERRIDE=""
 reset_store() {
 	unset PKDUMP_STORE_ROOT PKDUMP_STORE_GLOBAL_ARGS
 	unset PKDUMP_STORE_PREV_CONTAINERS_CONF_OVERRIDE

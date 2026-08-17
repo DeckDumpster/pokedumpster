@@ -303,6 +303,11 @@ fi
 # Answered nowhere means Podman's default store, which is also prod's.
 pkdump_store_load_config
 pkdump_store_activate
+# A store created before pd-3zjt keeps sharing prod's rootless-netns scaffolding
+# whatever the generated config says — podman pins that at store creation. Asked
+# once per run, because otherwise nothing on the box ever says the one-time
+# teardown is still outstanding. Warns; never fails the run. See store-lib.sh.
+pkdump_store_split_check
 
 step "Disk floor check"
 # Before the build, not after it dies: at 697M free a cargo link failed with
@@ -477,6 +482,16 @@ fi
 if tier deploy; then
     step "Deploy scripts: unit install + store resolution + low-disk guard + scheduling"
     bash "$REPO_DIR/tests/deploy/run.sh"
+
+    # The one store gate that is not hermetic, and it has to be: that a non-prod
+    # store's rootless-netns scaffolding is its OWN is a fact about podman 4.9.3
+    # honouring `[engine] tmp_dir`, not about this repo, and the shell test can
+    # only assert that the file asking for it was written. Sharing that directory
+    # is what wedged prod's network namespace nightly (pd-3zjt). No image, no
+    # container, no network — one `podman unshare --rootless-netns true` in a
+    # throwaway store, about a second, and it removes nothing outside it.
+    step "Container store: the rootless-netns split, against real podman"
+    bash "$REPO_DIR/tests/store/netns_split.sh"
 fi
 
 # --- 3. Frontend gate -------------------------------------------------------

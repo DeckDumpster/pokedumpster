@@ -821,6 +821,7 @@ sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=${DIVERGED_CTR}|"
 	"${CONF_DIR}/alerts.env" >"${DIV_CONF}/alerts.env"
 OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
 	PKDUMP_CONF_DIR="$DIV_CONF" \
+	PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS=1 \
 	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" 2>&1)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
 podman rm -f --ignore "$DIVERGED_CTR" >/dev/null 2>&1
@@ -893,6 +894,75 @@ check "a sidecar still inside its grace is not judged, on the same file" "0" "$R
 check "and it says the grace is the sidecar's uptime" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'the sidecar has only been up' || true)"
 podman rm -f --ignore "$SILENT_CTR" >/dev/null 2>&1
+
+# 5. ...and the SAME pair, when it is a lag that resolves itself, must NOT page
+#    (pd-yglw). The registry has re-asked a behind-reading replica over a bounded
+#    window since pd-me6h — Litestream holds an un-uploaded checkpoint across a
+#    transient S3 error and clears it at the next compaction tick — and the
+#    tenant leg did not, so one outage produced two different verdicts about one
+#    sidecar. §4b is where that surfaced: it takes the object store away, gives
+#    it back and re-runs the checker, and on a loaded box (CI, 2026-08-16) the
+#    registry waited its lag out on the same run that paged over the tenant's.
+#
+#    Driven with the same stand-in, publishing the two readings in order: behind,
+#    then caught up. Nothing here is a mock of the thing under test — the tenant
+#    is a real file, the replica is real S3, judge_correspondence and its txid
+#    comparison run for real. Only the sidecar's ACCOUNT of where it stands is
+#    substituted, which is the one thing a gate cannot provoke on demand.
+#
+#    The catch-up must not land until the checker has actually READ the diverged
+#    pair, or the first reading is already the caught-up one and this arm proves
+#    nothing. So the second line is released by CONDITION rather than after a
+#    delay: the stand-in blocks until it is signalled, the harness signals it on
+#    seeing the checker announce its re-ask, and neither side waits on the clock
+#    (pd-86er — and a timed gap long enough to be safe on a loaded runner is
+#    exactly the fixed sleep tests/lib/wait_test.sh exists to keep out).
+CATCHUP_CTR="pkdump-${INSTANCE}-catchup"
+CATCHUP_STAMP="time=$(date -u +%Y-%m-%dT%H:%M:%S.000Z) level=INFO msg=\"replica sync\" system=store db=${LAG_TENANT}.sqlite replica=s3"
+CATCHUP_OUT="${WORK}/catchup.out"
+podman rm -f --ignore "$CATCHUP_CTR" >/dev/null 2>&1
+podman run -d --name "$CATCHUP_CTR" --user 0 --entrypoint sh "$MC_IMAGE" -c \
+	"echo '${CATCHUP_STAMP} txid.replica=0000000000000001 txid.db=00000000000000ff'; \
+	 until [ -e /tmp/caught-up ]; do sleep 1; done; \
+	 echo '${CATCHUP_STAMP} txid.replica=00000000000000ff txid.db=00000000000000ff'; \
+	 sleep infinity" >/dev/null 2>&1
+for _ in $(seq 20); do
+	podman logs "$CATCHUP_CTR" 2>&1 | grep -qF 'replica sync' && break
+	sleep 1
+done
+CATCHUP_CONF="${WORK}/conf-catchup"
+mkdir -p "$CATCHUP_CONF"
+cp "${CONF_DIR}/litestream.env" "$CATCHUP_CONF/"
+cp -a "${CONF_DIR}/aws" "$CATCHUP_CONF/" 2>/dev/null || true
+sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=${CATCHUP_CTR}|" \
+	"${CONF_DIR}/alerts.env" >"${CATCHUP_CONF}/alerts.env"
+BEFORE=$(sink_total)
+: >"$CATCHUP_OUT"
+PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_CONF_DIR="$CATCHUP_CONF" \
+	PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS=30 \
+	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" >"$CATCHUP_OUT" 2>&1 &
+CATCHUP_PID=$!
+#    Also stop waiting the moment the checker has EXITED: without the re-ask it
+#    fails in the first second, and this loop would otherwise sit out its whole
+#    deadline before reporting a failure it already knows about.
+CATCHUP_DEADLINE=$(( SECONDS + 60 ))
+while [ "$SECONDS" -lt "$CATCHUP_DEADLINE" ]; do
+	grep -qF 're-asking the sidecar for up to' "$CATCHUP_OUT" && break
+	kill -0 "$CATCHUP_PID" 2>/dev/null || break
+	sleep 1
+done
+podman exec "$CATCHUP_CTR" sh -c ': >/tmp/caught-up' >/dev/null 2>&1 || true
+wait "$CATCHUP_PID" && RC=0 || RC=$?
+OUT="$(cat "$CATCHUP_OUT")"
+printf '%s\n' "$OUT" | sed 's/^/    /'
+podman rm -f --ignore "$CATCHUP_CTR" >/dev/null 2>&1
+check "a lag that clears itself does NOT fail the tenant leg" "0" "$RC"
+check "the checker said it was re-asking rather than judging the first reading" "1" \
+	"$(printf '%s' "$OUT" | grep -c "re-asking the sidecar for up to" || true)"
+check "and that the replica caught up" "1" \
+	"$(printf '%s' "$OUT" | grep -c "its replica caught up after" || true)"
+check "and nobody was paged over it" "0" "$(since_grep "$BEFORE" "$PUSH")"
 
 # Mutation in the other direction, because only the pair is evidence: with the
 # monitor still unarmed, a replica that is genuinely stale must FAIL. An unarmed

@@ -275,6 +275,18 @@ pkdump_store_libpod_tmp_dir() {
 # scaffolding no matter what this writes. That is not silently tolerated: it is
 # what deploy/store-teardown.sh is for, and the README says to run it once.
 #
+# THE SAME PIN IS WHAT MAKES THE SPLIT HOLD FOR CALLERS THAT NEVER SEE THIS
+# VARIABLE, which is most of them. CONTAINERS_CONF_OVERRIDE is environment, and a
+# Quadlet unit inherits none of this shell's: systemd starts `podman run` with
+# the unit's own environment and the `GlobalArgs=` line pkdump_store_stamp_unit
+# wrote, nothing else. deploy/pkdump-nessie.container is on a user-defined
+# network, so a non-prod instance in an alternate store runs a long-lived bridge
+# container this variable can never reach — and if that container's cleanup used
+# the shared directory, the split would be decorative for the case it was bought
+# for. It does not: podman reads the pinned tmp dir back out of the store's
+# database, so the split is a property of the STORE, not of the caller.
+# Measured, and asserted by tests/store/netns_split.sh §4.
+#
 # Prod never opts into a store, so prod is never given a containers.conf and its
 # tmp dir stays exactly where podman puts it. The isolation is entirely on the
 # non-prod side, which is the side that was doing the damage.
@@ -297,6 +309,54 @@ EOF
     # as TMPDIR above.
     export PKDUMP_STORE_PREV_CONTAINERS_CONF_OVERRIDE="${CONTAINERS_CONF_OVERRIDE-}"
     export CONTAINERS_CONF_OVERRIDE="$conf"
+}
+
+# pkdump_store_split_check — did the store ACTUALLY take the split, or is this a
+# store created before it whose libpod database still pins the shared tmp dir?
+#
+# The caveat above is a one-time operator action, and an operator action that
+# nothing checks is one nobody knows is outstanding: a box pulls this change, the
+# generated containers.conf says exactly the right thing, every gate passes, and
+# the store goes on sharing prod's scaffolding exactly as before. There is no
+# symptom until the night a cleanup lands between prod and its network namespace.
+#
+# So it is asked rather than assumed, and podman is the only one who can answer —
+# the pin lives in the store's database, not in anything on disk this could stat.
+# `--log-level=debug` is the only place podman says which tmp dir it settled on.
+# One `podman info` per CI run, which is nothing beside what follows it.
+#
+# It WARNS, and does not fail the run. The store works; the gates pass; what is
+# at risk is another store's namespace, and since pd-3zjt that risk is bounded at
+# the other end too — pkdump_store_netns_ensure detects and repairs a wedged
+# namespace at the start of the two jobs that need one. Failing here would block
+# a box's whole suite on a cleanup, and the suite is how the fix gets exercised.
+# What the warning must do instead is be actionable, so it names the command and
+# what running it costs.
+pkdump_store_split_check() {
+    [ -n "${PKDUMP_STORE_ROOT:-}" ] || return 0
+
+    local want actual
+    want="$(pkdump_store_libpod_tmp_dir "${PKDUMP_STORE_GLOBAL_ARGS##*--runroot=}")"
+    actual="$(podman --log-level=debug info 2>&1 |
+        sed -n 's/.*Using tmp dir \([^"]*\)".*/\1/p' | tail -1)"
+
+    # Podman could not be asked — no debug line, a version that words it
+    # differently. Silence is right: a warning about a store that may be
+    # perfectly fine is how a real one gets ignored.
+    [ -n "$actual" ] || return 0
+    [ "$actual" = "$want" ] && return 0
+
+    echo "" >&2
+    echo "!! This container store PREDATES the rootless-netns split (pd-3zjt)." >&2
+    echo "   Podman pins tmp_dir in a store's database when the store is created," >&2
+    echo "   so this one still shares prod's scaffolding:" >&2
+    echo "     using:  ${actual}" >&2
+    echo "     wanted: ${want}" >&2
+    echo "   Its cleanup can still leave prod unable to start a container on a" >&2
+    echo "   user-defined network. Tear the store down ONCE to take the split:" >&2
+    echo "     bash deploy/store-teardown.sh" >&2
+    echo "   Costs one cold image rebuild on the next run. Nothing else." >&2
+    echo "" >&2
 }
 
 # pkdump_store_netns_name — the name Podman gives THIS store's rootless network
@@ -576,6 +636,21 @@ pkdump_store_teardown() {
     # is keyed by the graph path) and is worthless without the store.
     rm -rf "${rundir}/pkdump-store-$(printf '%s' "$graph" | sha1sum | cut -c1-8)"
     rm -f "$netns_file"
+
+    # The containers.conf went with the store root, and podman REFUSES TO RUN AT
+    # ALL while CONTAINERS_CONF_OVERRIDE names a file that is not there —
+    #
+    #   level=error msg="CONTAINERS_CONF_OVERRIDE file: stat …: no such file or directory"
+    #
+    # exit 1, measured on 4.9.3, for `podman info` against the DEFAULT store. So
+    # this shell would come out of a teardown unable to use podman for anything,
+    # and the message names a path inside a store that no longer exists. The shim
+    # and TMPDIR are deliberately left as they are (the README says to start a new
+    # shell, and a missing shim only means the default store); this one is
+    # restored because it breaks every store, including the one that is still
+    # there (pd-3zjt).
+    CONTAINERS_CONF_OVERRIDE="${PKDUMP_STORE_PREV_CONTAINERS_CONF_OVERRIDE-}"
+    [ -n "$CONTAINERS_CONF_OVERRIDE" ] || unset CONTAINERS_CONF_OVERRIDE
 
     # Say what is actually true. A teardown that reports success over a store it
     # could not remove is worse than one that fails: the disk it was supposed to

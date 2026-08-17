@@ -308,10 +308,28 @@ the store itself.
 A second store is not free. Podman 4.9 gives each store its own rootless-netns
 file but one shared scaffolding directory, and whichever store cleans up last
 deletes it — leaving the other unable to start any container on a user-defined
-network, which is what every Litestream gate uses. `pkdump_store_activate`
-detects the stale netns file and drops it (never `podman system migrate`: that
-kills the per-user pause process prod's store shares). See `deploy/store-lib.sh`
-and the README's "Container storage".
+network, which is what every Litestream gate uses. **The store that gets wedged
+is prod's**: a CI gate's cleanup removes the directory, and
+`pkdump_store_netns_repair` only ever runs for a store the shell opted into,
+which prod never does. That is what failed `pkdump-value-snapshots@prod` nightly
+from 2026-08-12 (pd-3zjt), silently — only user-defined networks are affected, so
+`pkdump-refresh@` stayed green.
+
+So the sharing is **removed**, not repaired around: activation writes each
+non-prod store a `containers.conf` naming its own `[engine] tmp_dir`
+(`CONTAINERS_CONF_OVERRIDE`, the merge-on-top spelling), which is the only knob
+that moves the scaffolding — `--root`/`--runroot`/`--tmpdir` do not. Prod is
+given no config at all. Podman **pins `tmp_dir` in the libpod DB at store
+creation**, so a store that predates this keeps sharing until
+`deploy/store-teardown.sh` is run once against it; the stale-netns repair remains
+for that case (never `podman system migrate`: that kills the per-user pause
+process prod's store shares), and `pkdump_store_netns_ensure` is what the two
+jobs on a user-defined network call before they start — it probes with `podman
+unshare --rootless-netns true`, repairs when only its own containers are on the
+namespace, and refuses when anything else is. See `deploy/store-lib.sh`, the
+README's "Container storage", and `tests/store/netns_split.sh` — the one store
+gate that is not hermetic, because `[engine] tmp_dir` moving the scaffolding is a
+fact about podman, not about this repo.
 
 The image runs `pkdump serve`; the data volume holds both `shared.sqlite`
 and the per-user collection DB. Off-box backup is the

@@ -395,6 +395,45 @@ sidecar_uptime() {
     printf '%s\n' "$up"
 }
 
+# await_sidecar_correspondence <db-basename> <what> — the TENANT half of the
+# bounded re-ask the registry has had since pd-me6h, and the reasoning is
+# identical (it is written out in full at CORRESPONDENCE_GRACE_SECONDS below):
+# a replica reading behind is not news YET, because Litestream holds an
+# un-uploaded checkpoint across a transient S3 error and clears it at its next
+# compaction tick. A replica that has genuinely stopped never catches up, so the
+# window costs nothing on the path that matters.
+#
+# It re-asks the SIDECAR rather than S3, because the sidecar's own `replica sync`
+# pair is where a tenant's positions come from at all — the registry's leg reads
+# `litestream status` and can therefore re-query S3 directly, and this one cannot
+# (see the note on sidecar_position above). Same question, same window, asked of
+# whichever component can answer it for that database.
+#
+# Without this the two legs judged the same fault by different rules, and the
+# difference was invisible on an unloaded box: tests/alarming/run.sh §4b takes
+# the object store away, gives it back, and re-runs the checker, and the registry
+# waited the resulting lag out while the tenant beside it — behind for exactly
+# the same reason, by exactly the same one transaction — paged on the first
+# reading (pd-yglw, seen on CI where the catch-up did not beat the run).
+await_sidecar_correspondence() {
+    local base="$1" what="$2" waited=0
+    echo "backup-check: ${what}: its replica reads behind the database" \
+         "(ingested ${SIDE_DB}, replica ${SIDE_REPLICA}) — re-asking the sidecar for up to" \
+         "${CORRESPONDENCE_GRACE_SECONDS}s in case a sync is still in flight"
+    while [ "$waited" -lt "$CORRESPONDENCE_GRACE_SECONDS" ]; do
+        sleep "$CORRESPONDENCE_POLL_SECONDS"
+        waited=$(( waited + CORRESPONDENCE_POLL_SECONDS ))
+        # A sidecar that goes silent mid-window is a worse fault than the lag, and
+        # it is not this function's to report: keep the diverged pair we already
+        # have and let the verdict below name it.
+        sidecar_position "$base" "$what" || return 0
+        if ! txid_lt "$SIDE_REPLICA" "$SIDE_DB"; then
+            echo "backup-check: ${what}: its replica caught up after ${waited}s"
+            return 0
+        fi
+    done
+}
+
 # judge_correspondence <what> <db-basename> <newest> <db-file> <url> — the TENANT
 # test, and the one Ryan asked for on 2026-08-16: page only when something is
 # actually wrong.
@@ -404,7 +443,8 @@ sidecar_uptime() {
 #   1. Is the sidecar watching this database at all?  (a position, non-zero)
 #   2. Did bytes actually land off-box?               (the replica lists LTX files)
 #   3. Is it still speaking?                          (that position, recently)
-#   4. Has everything it ingested reached S3?         (txid.replica >= txid.db)
+#   4. Has everything it ingested reached S3?         (txid.replica >= txid.db,
+#      re-asked over the correspondence window before it counts)
 #   5. Is the process still alive right now?          (the container is running)
 #
 # Question 2 is asked separately and of S3 itself because every other one is the
@@ -479,6 +519,15 @@ judge_correspondence() {
     fi
 
     # 4. HAS EVERYTHING IT INGESTED REACHED S3?
+    #
+    # Behind is a VERDICT only after the re-ask, exactly as it is for the
+    # registry. A lag of one transaction across a transient S3 error is the normal
+    # shape of a blip, not of a lost backup, and paging over it is how an operator
+    # learns to ignore the channel.
+    if txid_lt "$SIDE_REPLICA" "$SIDE_DB"; then
+        await_sidecar_correspondence "$base" "$what"
+    fi
+
     if txid_lt "$SIDE_REPLICA" "$SIDE_DB"; then
         stale "${what}: its replica is BEHIND the local database — S3 holds up to txid ${SIDE_REPLICA}, Litestream has ingested ${SIDE_DB}. The newest changes are not backed up."
     fi
@@ -640,6 +689,14 @@ local_position "$(registry_db_path)" "the user registry" \
 # reading. A replica that has genuinely stopped never catches up, so the window
 # costs nothing on the path that matters — only on the path that would otherwise
 # have paged an operator over a blip.
+#
+# ONE WINDOW, BOTH LEGS. The same outage lags the tenants beside the registry —
+# it is the same sidecar and the same un-uploaded checkpoint — so the tenant leg
+# re-asks over this window too (await_sidecar_correspondence). It asks the
+# sidecar rather than S3 because that is where a tenant's pair comes from; the
+# window, and the reason for it, are these. Only the registry had one until
+# pd-yglw, and the asymmetry showed up as a §4b that passed on a fast box and
+# paged on a loaded one.
 #
 # Overridable so a gate provoking a permanent divergence on purpose need not sit
 # through it. The poll interval follows the window down, so a short window is

@@ -157,7 +157,7 @@ cleanup() {
 	systemctl --user daemon-reload >/dev/null 2>&1
 	systemctl --user reset-failed "${P}-"'*' >/dev/null 2>&1
 	podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" "pkdump-${INSTANCE}-diverged" \
-		"pkdump-${INSTANCE}-silent" >/dev/null 2>&1
+		"pkdump-${INSTANCE}-silent" "pkdump-${INSTANCE}-catchup" >/dev/null 2>&1
 	podman volume rm -f "$VOLUME" >/dev/null 2>&1
 	podman secret rm "$SECRET_NAME" >/dev/null 2>&1
 	rm -rf "$CONF_DIR" "$WORK"

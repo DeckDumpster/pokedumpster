@@ -710,6 +710,14 @@ S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
   never catches up, so the window only costs the run that would have paged over
   a blip.
 
+  **One window, both legs.** One outage lags the tenants and the registry alike
+  — same sidecar, same un-uploaded checkpoint — so both re-ask over it, each
+  asking whichever component can answer for that database: the registry re-asks
+  S3, tenants re-ask the sidecar's `replica sync` pair. Only the registry had a
+  window until pd-yglw, and the asymmetry read as a flaky gate rather than as a
+  bug: §4b passed on an idle box and paged over the tenant beside the registry
+  it had just waited out on a loaded one.
+
   The checker is READ-ONLY on both sides: S3 is only ever listed, and the data
   volume is mounted `:ro` for the one command that reads local state.
 - **Layer 2 — `OnFailure` push.** The Litestream sidecar, the refresh run, and

@@ -12,11 +12,13 @@
 #                     that no harness picks a host port instead of asking the
 #                     kernel, that they wait for conditions rather than for the
 #                     clock, that the Containerfile's base images are pinned to
-#                     a Debian release, and that a Layer 2 page leads with the
-#                     line that says what went wrong. Hermetic and sub-second.
+#                     a Debian release, that a Layer 2 page leads with the
+#                     line that says what went wrong, and that an unchanged one
+#                     is not sent a second time. Hermetic and sub-second.
 #                     See tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh,
-#                     tests/lib/wait_test.sh, tests/container/base_images_test.sh
-#                     and tests/alarming/journal_summary_test.sh.
+#                     tests/lib/wait_test.sh, tests/container/base_images_test.sh,
+#                     tests/alarming/journal_summary_test.sh and
+#                     tests/alarming/alert_suppress_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #  3b. The image:      built ONCE, here. Five gates below need the shipped image
@@ -437,6 +439,15 @@ if tier lint; then
     # (pd-pwk8).
     step "Alert page content (tests/alarming/journal_summary_test.sh)"
     bash "$REPO_DIR/tests/alarming/journal_summary_test.sh"
+
+    # And the third question about the same page, after "does it fire" and "can
+    # it be read": should it be sent AT ALL. Four byte-identical value-snapshots
+    # pages in four nights is how a channel gets swiped away unread, and the
+    # outage that came next reached nobody (pd-hqdt). The assertions that matter
+    # are the ones proving suppression did not disarm anything — a changed
+    # signature, a second unit, an escalation, a stamp that cannot be trusted.
+    step "Repeat pages are suppressed, changed ones are not (tests/alarming/alert_suppress_test.sh)"
+    bash "$REPO_DIR/tests/alarming/alert_suppress_test.sh"
 
     # The standing decision the whole lake design rests on — no tenant data ever
     # enters it — existed only as comments in five files, so adding a tenant_id

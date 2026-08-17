@@ -249,7 +249,12 @@ if [ "$VERIFY" = true ]; then
 
     echo ""
     echo "  sending a test Pushover push..."
-    if bash "${SCRIPT_DIR}/alert.sh" "PokeDumpster alarm test (${INSTANCE})" \
+    # PKDUMP_ALERT_NO_SUPPRESS: --verify exists to answer "would a page reach
+    # Ryan RIGHT NOW", and the whole point of pd-hqdt's suppression is that an
+    # identical alert does not. Two verifies in a day differ only in a clock, so
+    # the second would be suppressed and read as a delivery failure — arming
+    # would report NOT ARMED on a perfectly healthy channel.
+    if PKDUMP_ALERT_NO_SUPPRESS=1 bash "${SCRIPT_DIR}/alert.sh" "PokeDumpster alarm test (${INSTANCE})" \
             "Test push from alarm-status.sh --verify on $(hostname) at $(date -u +%Y-%m-%dT%H:%M:%SZ). If you are reading this, Layer 2/4 delivery works."; then
         echo "    push accepted by Pushover — check your phone."
     else

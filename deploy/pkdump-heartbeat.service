@@ -1,0 +1,17 @@
+[Unit]
+Description=PokeDumpster uptime heartbeat (%i)
+# NO OnFailure= here, deliberately.
+#
+# A failed probe must NOT page from this box. If the site is down because the BOX is
+# down, nothing here can send anything — which is the case this whole unit exists for.
+# Signalling an outage by withholding an off-box ping works in every failure mode,
+# including the ones where the machine is gone. Adding a Pushover push here would only
+# fire in the subset where the box is healthy and the app is not, while adding one more
+# source to a channel Ryan already ignores.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/pkdump/%i/alerts.env
+ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/heartbeat.sh %i'

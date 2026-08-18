@@ -57,6 +57,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=tests/lib/ports.sh
 . "${REPO_DIR}/tests/lib/ports.sh"
 
+# Ask before sleeping (pd-86er). §5.4 waits for a container to age past a grace,
+# which is a condition and not a duration.
+# shellcheck source=tests/lib/wait.sh
+. "${REPO_DIR}/tests/lib/wait.sh"
+
 # Unique per checkout, like deploy/ci.sh's: several polecats run this gate from
 # their own worktrees at the same time, and a shared name means run B's teardown
 # destroys run A's volume mid-suite.
@@ -101,6 +106,11 @@ SINK_PID=""
 # request from anything else that happens to be talking to this port.
 HC_TOKEN="hc-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 PING_URL="http://127.0.0.1:${SINK_PORT}/${HC_TOKEN}"
+# Layer 0's monitor. A DISTINCT token, not a variant of the one above: the two
+# checks watch unrelated things, and alarm-status.sh treats a shared URL as a
+# fault because that sharing is what masked a real outage on 2026-08-16.
+UPTIME_TOKEN="up-$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+UPTIME_PING_URL="http://127.0.0.1:${SINK_PORT}/${UPTIME_TOKEN}"
 PUSH_PATH="/pushover/messages.json"
 
 # The host-wide alerts file, redirected. Ryan's real one is never read or
@@ -159,7 +169,8 @@ cleanup() {
 		"$INSTANCE_UNIT"
 	systemctl --user daemon-reload >/dev/null 2>&1
 	systemctl --user reset-failed "${P}-"'*' >/dev/null 2>&1
-	podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" >/dev/null 2>&1
+	podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" "pkdump-${INSTANCE}-diverged" \
+		"pkdump-${INSTANCE}-silent" "pkdump-${INSTANCE}-catchup" >/dev/null 2>&1
 	podman volume rm -f "$VOLUME" >/dev/null 2>&1
 	podman secret rm "$SECRET_NAME" >/dev/null 2>&1
 	rm -rf "$CONF_DIR" "$WORK"
@@ -192,10 +203,18 @@ marker_epoch() { cat "${MP}/.backup-last-ok" 2>/dev/null || echo none; }
 # provoke divergences that are PERMANENT, and sitting through the production
 # window twice over would buy nothing. Where the window is the point — a lag
 # that resolves itself — the gate uses run_check_default_grace instead.
+# PKDUMP_BACKUP_SIDECAR_CTR: the tenant leg reads replication positions out of the
+# sidecar's own `replica sync` log lines, and this gate's replicator is the bare
+# detached container started in §2 rather than the deployed Quadlet. Without this
+# the tenant leg finds no position, treats every tenant as "too new to judge", and
+# the gate goes green having verified nothing about tenants — which is exactly how
+# it caught the first draft of that change.
 run_check() { PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
 	PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS=1 \
+	PKDUMP_BACKUP_SIDECAR_CTR="$LS_CTR" \
 	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" 2>&1; }
 run_check_default_grace() { PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_BACKUP_SIDECAR_CTR="$LS_CTR" \
 	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" 2>&1; }
 
 # ── 1. the recorder ─────────────────────────────────────────────────────────
@@ -284,6 +303,17 @@ write_alerts_env() { # write_alerts_env <ping-url> [max-age-hours]
 	cat >"${CONF_DIR}/alerts.env" <<EOF
 PKDUMP_BACKUP_PING_URL=${1}
 PKDUMP_BACKUP_MAX_AGE_HOURS=${2:-36}
+# Layer 0 points at the same sink but a DIFFERENT path, which is the point:
+# alarm-status.sh fails an instance whose uptime and backup checks are the same
+# URL, because sharing one is what let a four-day-stuck backup alarm swallow a
+# real outage on 2026-08-16. The probe target is the sink's own /ready, so a
+# heartbeat run in this gate gets a genuine 200 without needing an app.
+PKDUMP_UPTIME_PING_URL=${UPTIME_PING_URL}
+PKDUMP_HEARTBEAT_URL=http://127.0.0.1:${SINK_PORT}/ready
+# Also here, not just in run_check(), so the run §8 drives through the SHIPPED
+# systemd unit judges tenants too. A unit run that quietly skipped them would
+# still ping green, and "the unit works" would mean less than it looks like.
+PKDUMP_BACKUP_SIDECAR_CTR=${LS_CTR}
 EOF
 	chmod 600 "${CONF_DIR}/alerts.env"
 }
@@ -400,9 +430,33 @@ registry_local_txid() {
 		| grep -oE '\b[0-9a-fA-F]{16}\b' | tr 'A-F' 'a-f' | head -n1
 }
 
+# awaiting_correspondence <db-basename> — poll until the sidecar reports this
+# database's replica CAUGHT UP with it, not merely written to once.
+#
+# "An object exists in the bucket" was a sufficient readiness condition while
+# tenants were judged on freshness. Under correspondence it is not: the objects
+# from the FIRST write appear while a later commit is still in flight, so §3 ran
+# against a genuinely-behind tenant and its healthy-path assertions failed —
+# correctly, and for a reason that was this gate's timing rather than the
+# checker's behaviour. Waiting for the condition §3 actually depends on removes
+# the race instead of sleeping at it.
+awaiting_correspondence() { # awaiting_correspondence <db-basename>
+	local base="$1" deadline=$(( SECONDS + 90 )) r d
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		read -r r d <<<"$(podman logs --since 120s "$LS_CTR" 2>&1 |
+			grep -F "db=${base}" | tail -n1 |
+			sed -n 's/.*txid\.replica=\([0-9a-f]\{16\}\).*txid\.db=\([0-9a-f]\{16\}\).*/\1 \2/p')"
+		if [ -n "${d:-}" ] && [ "${r:-}" = "${d:-}" ]; then return 0; fi
+		sleep 1
+	done
+	return 1
+}
+
 replicating=0
 for t in "${TENANTS[@]}"; do
-	awaiting_replica "$(tenant_replica_url "$t")" && replicating=$((replicating + 1))
+	awaiting_replica "$(tenant_replica_url "$t")" \
+		&& awaiting_correspondence "${t}.sqlite" \
+		&& replicating=$((replicating + 1))
 done
 check "both tenants are replicating to S3" "2" "$replicating"
 # Separately, because losing it is the failure the tenant loop cannot see: every
@@ -517,24 +571,67 @@ check "and it says so at a threshold every age exceeds" "0" \
 # instead of after it — and fail by however many seconds this run took, not
 # because anything failing wrote the marker.
 GREEN_MARKER="$(marker_epoch)"
-# The other half of the constraint: the check must still FIRE. But the trigger is
-# now LAG, not age — the same correction pd-me6h made for the registry, extended to
-# tenants on 2026-08-14 after the identical false positive happened to one.
+# The other half of the constraint: the check must still FIRE. This is the
+# assertion that keeps the fix from being "the check got quieter".
 #
-# A tenant whose collection nobody edits produces no S3 objects either, and the
-# comment above ("a database nobody writes produces no new S3 objects however
-# diligently the sidecar syncs") is exactly as true of a static collection as of
-# the registry. It paged Ryan three times for a healthy backup.
+# The trigger is CORRESPONDENCE — the same question pd-me6h settled for the
+# registry, extended to tenants on 2026-08-16 after two proxies in a row false-
+# paged. A tenant nobody edits produces no S3 objects, exactly as the registry
+# does not; judged on replica AGE that paged Ryan three times for a healthy
+# backup, and judged on file MTIME it paged again, because `.sqlite` mtime moves
+# on checkpoint and on open.
 #
-# So: touch a tenant database so it is genuinely NEWER than its replica. That is a
-# real lag — writes not reaching S3 — and it must still fail. This is the assertion
-# that keeps the fix from being "the check got quieter".
-touch "${MP}/tenants/$(ls "${MP}/tenants" | head -1)"
+# This gate used to `touch` a tenant database and require a failure. That is the
+# mtime proxy written down as a test, and it now deliberately passes: **a touch
+# is not a lost write.** Nothing was committed, so nothing is missing from S3,
+# and restoring the replica still reproduces the database byte for byte.
+#
+# What must fail is a real transaction that cannot reach S3. Stop the object
+# store, commit to a tenant, and let the sidecar tick: it keeps ingesting locally
+# so txid.db advances while txid.replica cannot, which is "writes are not
+# reaching S3" stated in the only terms that actually mean it.
+LAG_TENANT="$(ls "${MP}/tenants" | head -1)"; LAG_TENANT="${LAG_TENANT%.sqlite}"
+podman stop -t 2 "$MINIO_CTR" >/dev/null 2>&1
+sqlite3 -cmd '.timeout 5000' "${MP}/tenants/${LAG_TENANT}.sqlite" \
+	"INSERT INTO collection (tenant) VALUES ('${LAG_TENANT}-unreplicated');" >/dev/null
+# Wait for the sidecar to publish a DIVERGED pair rather than sleeping a guess:
+# the two txids compared in the shell, because grep -E has no back-reference
+# negation and a regex that looked like it did would quietly always match.
+tenant_pair() { # -> "<replica> <db>" from the sidecar's newest line for this tenant
+	podman logs --since 120s "$LS_CTR" 2>&1 | grep -F "db=${LAG_TENANT}.sqlite" | tail -n1 |
+		sed -n 's/.*txid\.replica=\([0-9a-f]\{16\}\).*txid\.db=\([0-9a-f]\{16\}\).*/\1 \2/p'
+}
+for _ in $(seq 40); do
+	read -r _r _d <<<"$(tenant_pair)"
+	[ -n "${_d:-}" ] && [ "${_r:-}" != "${_d:-}" ] && break
+	sleep 1
+done
+check "the sidecar reports the tenant's replica behind its database" "behind" \
+	"$(read -r _r _d <<<"$(tenant_pair)"; [ -n "${_d:-}" ] && [ "${_r:-}" != "${_d:-}" ] && echo behind || echo "caught-up(${_r:-?}/${_d:-?})")"
 OUT="$(run_check)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
-check "a tenant whose db is NEWER than its replica STILL fails" "1" "$RC"
-check "and the STALE line names the tenant, not the registry" "1" \
-	"$(printf '%s' "$OUT" | grep -c "STALE — tenant '" || true)"
+# Not asserted here: that the STALE line names the TENANT. With the object store
+# down the registry is judged first and fails first, so the run never reaches the
+# tenant loop. The tenant's own divergence branch is isolated below instead, with
+# S3 healthy — the two halves of the evidence are "litestream really does report
+# a diverged pair when writes cannot land" (above) and "a diverged pair really
+# does fail the tenant leg" (below).
+check "the run fails while a committed tenant write cannot reach S3" "1" "$RC"
+
+# Put the object store back and let replication catch up: 4d and 4e both need a
+# live S3, and a tenant left diverged would fail every later run for a reason
+# that has nothing to do with what those sections are testing.
+podman start "$MINIO_CTR" >/dev/null 2>&1
+for _ in $(seq 60); do
+	read -r _r _d <<<"$(tenant_pair)"
+	[ -n "${_d:-}" ] && [ "${_r:-}" = "${_d:-}" ] && break
+	sleep 1
+done
+check "and it recovers once S3 is back" "0" "$(run_check >/dev/null 2>&1; echo $?)"
+# That recovery run passed, so it legitimately reached mark_fresh. Re-baseline,
+# or 4d's "was NOT refreshed" compares against a value from before it and fails
+# by however long this section took rather than because a failing run wrote it.
+GREEN_MARKER="$(marker_epoch)"
 
 log "4d. the registry fires RED — its replica is not there at all"
 # Correspondence has to be a test, not an exemption. Point the registry at a
@@ -614,8 +711,12 @@ write_litestream_env
 BEFORE=$(sink_total)
 OUT="$(run_check)"; RC=$?
 check "pointed back at the live replica it is green again" "0" "$RC"
+# Anchored on "the user registry", because tenants are judged on correspondence
+# too now and their OK line carries the same phrase — an unanchored count read 2
+# the moment a tenant happened to sit at the same txid, which is a test that was
+# only ever passing by accident.
 check "in correspondence at the NEW txid" "1" \
-	"$(printf '%s' "$OUT" | grep -c "replica in correspondence at txid ${LOCAL_AFTER}" || true)"
+	"$(printf '%s' "$OUT" | grep -c "the user registry OK — replica in correspondence at txid ${LOCAL_AFTER}" || true)"
 check "and the heartbeat resumes" "1" "$(since_grep "$BEFORE" "$GREEN_PING")"
 GREEN_MARKER="$(marker_epoch)"
 
@@ -647,6 +748,235 @@ check "and about the registry" "1" \
 check "and it says the dead-man's switch is NOT armed" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'NOT armed' || true)"
 check "and nothing at all was sent" "0" "$(( $(sink_total) - BEFORE ))"
+
+# ── the tenant leg's own two faults, proved rather than assumed ─────────────
+# Tenants are judged on CORRESPONDENCE against the sidecar's `replica sync`
+# positions, so the two ways that can fail need to be seen failing. Both are
+# driven deterministically, because the alternative — waiting for a real stall —
+# is a gate that takes hours and still proves nothing on a good day.
+#
+# 1. The sidecar is not reporting on this database at all. Pointed at a
+#    container that does not exist, which is what a dead sidecar and a tenants
+#    glob that stopped matching both look like from here. This is the fault
+#    worth the most: it means writes are reaching nothing.
+#    The grace is closed as well: a database that was genuinely created moments
+#    ago is allowed to have no position yet, and every tenant in this gate is
+#    seconds old, so without this the newborn allowance answers first and the
+#    fault never gets asked about.
+#    Through a fixture CONF_DIR, not an env override: alerts.env is sourced with
+#    `set -a` and names PKDUMP_BACKUP_SIDECAR_CTR, so it CLOBBERS the environment
+#    rather than deferring to it. An env-only version of this gate passed while
+#    silently testing the real sidecar — the exit code was 1 for an unrelated
+#    reason and only the message assertion noticed.
+NOCTR_CONF="${WORK}/conf-no-sidecar"
+mkdir -p "$NOCTR_CONF"
+cp "${CONF_DIR}/litestream.env" "$NOCTR_CONF/"
+cp -a "${CONF_DIR}/aws" "$NOCTR_CONF/" 2>/dev/null || true
+sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=no-such-sidecar-${SUFFIX}|" \
+	"${CONF_DIR}/alerts.env" >"${NOCTR_CONF}/alerts.env"
+OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_CONF_DIR="$NOCTR_CONF" \
+	PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS=-1 \
+	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" 2>&1)"; RC=$?
+printf '%s\n' "$OUT" | sed 's/^/    /'
+check "a sidecar reporting nothing fails the tenant leg" "1" "$RC"
+check "and it says no replication position was reported" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'has not reported a replication position' || true)"
+
+# 2. The sidecar is reporting, but its newest position is older than the grace —
+#    replication stopped while the process stayed up, the exact silent mode
+#    Layer 1 exists for. A negative grace makes every position too old, so the
+#    branch is exercised without needing a sidecar that has genuinely stalled.
+OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_BACKUP_SIDECAR_CTR="$LS_CTR" PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS=-1 \
+	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" 2>&1)"; RC=$?
+check "a stalled sidecar position fails the tenant leg" "1" "$RC"
+check "and it says replication has stopped" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'Replication has stopped' || true)"
+
+# 3. The sidecar is reporting, recently, and its two txids DISAGREE — the replica
+#    is behind the database. This is the fault the whole correspondence design is
+#    built around, and the §4c block above cannot isolate it: killing the object
+#    store fails the registry first, so the run ends before any tenant is judged.
+#
+#    So the position comes from a stand-in container that publishes exactly one
+#    line in the sidecar's format. That is not a mock of the thing under test —
+#    `judge_correspondence` and its txid comparison run for real, on real tenant
+#    files, against a live S3. Only the sidecar's ACCOUNT of where it stands is
+#    substituted, and §4c above is what proves litestream really does say this
+#    when writes cannot land.
+DIVERGED_CTR="pkdump-${INSTANCE}-diverged"
+DIVERGED_LINE="time=$(date -u +%Y-%m-%dT%H:%M:%S.000Z) level=INFO msg=\"replica sync\" system=store db=${LAG_TENANT}.sqlite replica=s3 txid.replica=0000000000000001 txid.db=00000000000000ff"
+#    `--entrypoint sh` on an image this gate already pulls, rather than adding
+#    alpine as a dependency for one echo. The mc image runs `mc` by default, so
+#    without the override the shell command arrives as mc arguments and the
+#    container logs a usage error instead of the line — which looks exactly like
+#    a sidecar that said nothing, and sends this gate down the wrong branch.
+#    It prints the line and EXITS. `podman logs` reads a stopped container's
+#    output just as well as a running one's, so there is nothing to keep alive —
+#    and keeping it alive would have meant a `sleep` long enough to trip the
+#    harness's own no-long-sleeps gate (pd-86er), which is right to object even
+#    though this one would have been inside the container rather than in the
+#    harness. `--rm` is deliberately absent: it would take the logs with it.
+podman rm -f --ignore "$DIVERGED_CTR" >/dev/null 2>&1
+podman run -d --name "$DIVERGED_CTR" --entrypoint sh "$MC_IMAGE" \
+	-c "echo '${DIVERGED_LINE}'" >/dev/null 2>&1
+# The line has to be on stdout before the checker reads it; a container that has
+# not been scheduled yet reads as a silent sidecar.
+for _ in $(seq 20); do
+	podman logs "$DIVERGED_CTR" 2>&1 | grep -qF 'replica sync' && break
+	sleep 1
+done
+DIV_CONF="${WORK}/conf-diverged"
+mkdir -p "$DIV_CONF"
+cp "${CONF_DIR}/litestream.env" "$DIV_CONF/"
+cp -a "${CONF_DIR}/aws" "$DIV_CONF/" 2>/dev/null || true
+sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=${DIVERGED_CTR}|" \
+	"${CONF_DIR}/alerts.env" >"${DIV_CONF}/alerts.env"
+OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_CONF_DIR="$DIV_CONF" \
+	PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS=1 \
+	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" 2>&1)"; RC=$?
+printf '%s\n' "$OUT" | sed 's/^/    /'
+podman rm -f --ignore "$DIVERGED_CTR" >/dev/null 2>&1
+check "a replica BEHIND the local database fails the tenant leg" "1" "$RC"
+check "and the STALE line names the tenant, not the registry" "1" \
+	"$(printf '%s' "$OUT" | grep -c "STALE — tenant '" || true)"
+check "and it names both txids so the gap is legible" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'S3 holds up to txid 0000000000000001, Litestream has ingested 00000000000000ff' || true)"
+
+# 4. The sidecar is UP, has been up for longer than the grace, and has simply
+#    never named this database. That is an orphan — its tenants glob is not
+#    matching the file, so every write to it reaches nothing — and it was SILENT
+#    (pd-30yy): the grace was computed from the tenant FILE's timestamp, so a
+#    database created recently was excused however long the sidecar had been
+#    watching. tests/litestream/drill.sh §6 covers the other half of the pair (a
+#    sidecar that is not running at all); this is the half nothing tested.
+#
+#    The stand-in is a container that RUNS and says nothing, rather than the real
+#    sidecar and a new tenant file: the real one globs the tenants directory and
+#    would name a new file within a second, which is a race this assertion cannot
+#    afford. What is under test is the ABSENCE of a position for a database that
+#    is otherwise perfectly healthy — ${LAG_TENANT} is replicating, its replica
+#    holds LTX files, and its file is minutes old, so nothing else here is wrong.
+#    `--entrypoint sleep … infinity` is how a container is kept alive; it is not a
+#    delay (tests/lib/wait_test.sh §6 excludes it by name).
+SILENT_CTR="pkdump-${INSTANCE}-silent"
+podman rm -f --ignore "$SILENT_CTR" >/dev/null 2>&1
+podman run -d --name "$SILENT_CTR" --entrypoint sleep "$MC_IMAGE" infinity >/dev/null 2>&1
+SILENT_CONF="${WORK}/conf-silent"
+mkdir -p "$SILENT_CONF"
+cp "${CONF_DIR}/litestream.env" "$SILENT_CONF/"
+cp -a "${CONF_DIR}/aws" "$SILENT_CONF/" 2>/dev/null || true
+sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=${SILENT_CTR}|" \
+	"${CONF_DIR}/alerts.env" >"${SILENT_CONF}/alerts.env"
+# The grace is the sidecar's UPTIME, so the gate waits for the stand-in to pass
+# it rather than assuming it has. Four seconds against a three-second grace, asked
+# of podman rather than counted here, because the container's clock is the one the
+# checker reads.
+silent_ctr_uptime() {
+	local started
+	started="$(podman inspect -f '{{.State.StartedAt.Unix}}' "$SILENT_CTR" 2>/dev/null)" || return 1
+	case "$started" in ''|*[!0-9]*) return 1 ;; esac
+	echo $(( $(date +%s) - started ))
+}
+silent_ctr_past_grace() { [ "$(silent_ctr_uptime || echo 0)" -ge 4 ]; }
+wait_until 30 1 silent_ctr_past_grace || true
+check "the silent stand-in sidecar is up and past the grace" "yes" \
+	"$(silent_ctr_past_grace && echo yes || echo no)"
+OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_CONF_DIR="$SILENT_CONF" \
+	PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS=3 \
+	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" 2>&1)"; RC=$?
+printf '%s\n' "$OUT" | sed 's/^/    /'
+check "a running sidecar that never named a tenant fails the tenant leg" "1" "$RC"
+check "and it says no replication position was reported" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'has not reported a replication position' || true)"
+check "and it names how long the sidecar has been up, not how old the file is" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'it has been up' || true)"
+
+# The mutation, and the reason this is a test of the SIDECAR's uptime rather than
+# of nothing: same tenant, same untouched file, same silent container — only the
+# grace moves, and the verdict moves with it. A grace the stand-in cannot have
+# outlived is a sidecar that has genuinely not had a chance yet, which is the one
+# state that may pass.
+OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_CONF_DIR="$SILENT_CONF" \
+	PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS=86400 \
+	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" 2>&1)"; RC=$?
+check "a sidecar still inside its grace is not judged, on the same file" "0" "$RC"
+check "and it says the grace is the sidecar's uptime" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'the sidecar has only been up' || true)"
+podman rm -f --ignore "$SILENT_CTR" >/dev/null 2>&1
+
+# 5. ...and the SAME pair, when it is a lag that resolves itself, must NOT page
+#    (pd-yglw). The registry has re-asked a behind-reading replica over a bounded
+#    window since pd-me6h — Litestream holds an un-uploaded checkpoint across a
+#    transient S3 error and clears it at the next compaction tick — and the
+#    tenant leg did not, so one outage produced two different verdicts about one
+#    sidecar. §4b is where that surfaced: it takes the object store away, gives
+#    it back and re-runs the checker, and on a loaded box (CI, 2026-08-16) the
+#    registry waited its lag out on the same run that paged over the tenant's.
+#
+#    Driven with the same stand-in, publishing the two readings in order: behind,
+#    then caught up. Nothing here is a mock of the thing under test — the tenant
+#    is a real file, the replica is real S3, judge_correspondence and its txid
+#    comparison run for real. Only the sidecar's ACCOUNT of where it stands is
+#    substituted, which is the one thing a gate cannot provoke on demand.
+#
+#    The catch-up must not land until the checker has actually READ the diverged
+#    pair, or the first reading is already the caught-up one and this arm proves
+#    nothing. So the second line is released by CONDITION rather than after a
+#    delay: the stand-in blocks until it is signalled, the harness signals it on
+#    seeing the checker announce its re-ask, and neither side waits on the clock
+#    (pd-86er — and a timed gap long enough to be safe on a loaded runner is
+#    exactly the fixed sleep tests/lib/wait_test.sh exists to keep out).
+CATCHUP_CTR="pkdump-${INSTANCE}-catchup"
+CATCHUP_STAMP="time=$(date -u +%Y-%m-%dT%H:%M:%S.000Z) level=INFO msg=\"replica sync\" system=store db=${LAG_TENANT}.sqlite replica=s3"
+CATCHUP_OUT="${WORK}/catchup.out"
+podman rm -f --ignore "$CATCHUP_CTR" >/dev/null 2>&1
+podman run -d --name "$CATCHUP_CTR" --user 0 --entrypoint sh "$MC_IMAGE" -c \
+	"echo '${CATCHUP_STAMP} txid.replica=0000000000000001 txid.db=00000000000000ff'; \
+	 until [ -e /tmp/caught-up ]; do sleep 1; done; \
+	 echo '${CATCHUP_STAMP} txid.replica=00000000000000ff txid.db=00000000000000ff'; \
+	 sleep infinity" >/dev/null 2>&1
+for _ in $(seq 20); do
+	podman logs "$CATCHUP_CTR" 2>&1 | grep -qF 'replica sync' && break
+	sleep 1
+done
+CATCHUP_CONF="${WORK}/conf-catchup"
+mkdir -p "$CATCHUP_CONF"
+cp "${CONF_DIR}/litestream.env" "$CATCHUP_CONF/"
+cp -a "${CONF_DIR}/aws" "$CATCHUP_CONF/" 2>/dev/null || true
+sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=${CATCHUP_CTR}|" \
+	"${CONF_DIR}/alerts.env" >"${CATCHUP_CONF}/alerts.env"
+BEFORE=$(sink_total)
+: >"$CATCHUP_OUT"
+PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
+	PKDUMP_CONF_DIR="$CATCHUP_CONF" \
+	PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS=30 \
+	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" >"$CATCHUP_OUT" 2>&1 &
+CATCHUP_PID=$!
+#    Also stop waiting the moment the checker has EXITED: without the re-ask it
+#    fails in the first second, and this loop would otherwise sit out its whole
+#    deadline before reporting a failure it already knows about.
+CATCHUP_DEADLINE=$(( SECONDS + 60 ))
+while [ "$SECONDS" -lt "$CATCHUP_DEADLINE" ]; do
+	grep -qF 're-asking the sidecar for up to' "$CATCHUP_OUT" && break
+	kill -0 "$CATCHUP_PID" 2>/dev/null || break
+	sleep 1
+done
+podman exec "$CATCHUP_CTR" sh -c ': >/tmp/caught-up' >/dev/null 2>&1 || true
+wait "$CATCHUP_PID" && RC=0 || RC=$?
+OUT="$(cat "$CATCHUP_OUT")"
+printf '%s\n' "$OUT" | sed 's/^/    /'
+podman rm -f --ignore "$CATCHUP_CTR" >/dev/null 2>&1
+check "a lag that clears itself does NOT fail the tenant leg" "0" "$RC"
+check "the checker said it was re-asking rather than judging the first reading" "1" \
+	"$(printf '%s' "$OUT" | grep -c "re-asking the sidecar for up to" || true)"
+check "and that the replica caught up" "1" \
+	"$(printf '%s' "$OUT" | grep -c "its replica caught up after" || true)"
+check "and nobody was paged over it" "0" "$(since_grep "$BEFORE" "$PUSH")"
 
 # Mutation in the other direction, because only the pair is evidence: with the
 # monitor still unarmed, a replica that is genuinely stale must FAIL. An unarmed
@@ -801,6 +1131,11 @@ for EXT in service timer; do
 		"${REPO_DIR}/deploy/pkdump-backup-check.${EXT}" >"${SYSTEMD_USER_DIR}/${P}-backup-check@.${EXT}"
 	sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" -e "s|pkdump-alert@|${P}-alert@|g" \
 		"${REPO_DIR}/deploy/pkdump-diskcheck.${EXT}" >"${SYSTEMD_USER_DIR}/${P}-diskcheck.${EXT}"
+	# Layer 0, the uptime heartbeat. "Fully armed" has to include the layer that
+	# watches whether the site serves at all, or this gate goes on certifying the
+	# exact configuration that let a hard-down box page nobody on 2026-08-16.
+	sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" -e "s|pkdump-alert@|${P}-alert@|g" \
+		"${REPO_DIR}/deploy/pkdump-heartbeat.${EXT}" >"${SYSTEMD_USER_DIR}/${P}-heartbeat@.${EXT}"
 done
 sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" -e "s|pkdump-alert@|${P}-alert@|g" \
 	"${REPO_DIR}/deploy/pkdump-refresh.service" >"${SYSTEMD_USER_DIR}/${P}-refresh@.service"
@@ -817,6 +1152,7 @@ systemctl --user daemon-reload
 systemctl --user stop "${P}-litestream-${INSTANCE}.service" >/dev/null 2>&1
 systemctl --user enable --now "${P}-backup-check@${INSTANCE}.timer" >/dev/null 2>&1
 systemctl --user enable --now "${P}-diskcheck.timer" >/dev/null 2>&1
+systemctl --user enable --now "${P}-heartbeat@${INSTANCE}.timer" >/dev/null 2>&1
 
 check "the Quadlet sidecar's OnFailure survives generation" "${P}-alert@${P}-litestream-${INSTANCE}.service.service" \
 	"$(systemctl --user show "${P}-litestream-${INSTANCE}.service" -p OnFailure --value 2>/dev/null)"
@@ -826,6 +1162,36 @@ check "the Quadlet sidecar's OnFailure survives generation" "${P}-alert@${P}-lit
 BEFORE=$(sink_total)
 systemctl --user start "${P}-backup-check@${INSTANCE}.service" >/dev/null 2>&1
 check "the systemd unit's own run pings the monitor" "1" "$(since_grep "$BEFORE" "$GREEN_PING")"
+
+# Layer 0 the same way: the timer existing proves nothing, running it does. A
+# serving target must ping its OWN monitor and must not touch Layer 1's.
+UPTIME_PING="\"path\": \"/${UPTIME_TOKEN}\""
+BEFORE=$(sink_total)
+systemctl --user start "${P}-heartbeat@${INSTANCE}.service" >/dev/null 2>&1
+check "the heartbeat unit pings the uptime monitor when the site serves" "1" \
+	"$(since_grep "$BEFORE" "$UPTIME_PING")"
+check "and does NOT touch the backup monitor" "0" "$(since_grep "$BEFORE" "$GREEN_PING")"
+
+# The load-bearing half: an unreachable site must send NOTHING. A dead box
+# cannot transmit an alarm, so silence is the signal and the monitor's grace
+# window is what converts it into a page. A heartbeat that pinged /fail here
+# would work only in the cases that were never the problem.
+# Through a fixture CONF_DIR rather than an env override, because alerts.env
+# deliberately wins over the environment — the same precedence backup-check.sh
+# has, and a gate that quietly relied on the opposite would be testing a script
+# nobody runs.
+DOWN_CONF="${WORK}/conf-down"
+mkdir -p "$DOWN_CONF"
+cat >"${DOWN_CONF}/alerts.env" <<EOF
+PKDUMP_UPTIME_PING_URL=${UPTIME_PING_URL}
+PKDUMP_HEARTBEAT_URL=http://127.0.0.1:1/
+PKDUMP_HEARTBEAT_TIMEOUT=2
+EOF
+BEFORE=$(sink_total)
+PKDUMP_CONF_DIR="$DOWN_CONF" bash "${REPO_DIR}/deploy/heartbeat.sh" "$INSTANCE" >/dev/null 2>&1
+HB_DOWN_RC=$?
+check "a down site makes the heartbeat exit non-zero" "1" "$HB_DOWN_RC"
+check "and it sends the monitor nothing at all" "0" "$(sink_since "$BEFORE" | wc -l | tr -d ' ')"
 
 OUT="$(status_run)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'

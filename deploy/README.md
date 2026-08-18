@@ -630,6 +630,25 @@ Litestream sidecar showing systemd `active` while silently *not* replicating.
 **Liveness is not freshness** — the monitor verifies that data actually lands in
 S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
 
+- **Layer 0 — uptime heartbeat.** `heartbeat.sh` curls the live listener every
+  5 minutes (`pkdump-heartbeat@<inst>.timer`) and pings a **separate**
+  healthchecks.io check (`PKDUMP_UPTIME_PING_URL`) only on HTTP 200. Numbered
+  below Layer 1 because it is the question the other layers assume the answer
+  to.
+
+  Added 2026-08-16, after the site was hard down and nothing paged. Layer 1 was
+  the only signal that could survive the box going away, and it infers liveness
+  from backup freshness on a 6h period behind a 3h grace — up to nine hours late
+  when it works. It was not working: the checker had false-alarmed on every run
+  for four days, tripping `/fail` each time, so the monitor was already down and
+  a real outage produced no state transition to alert on.
+
+  Two rules, both load-bearing. **Its own check, never shared with Layer 1** —
+  sharing is precisely how one noisy failure mode masked a vital one, and
+  `alarm-status.sh` fails if the two URLs match. **A failed probe sends nothing
+  and pages nothing from this box** — an outage is signalled by SILENCE, because
+  a machine that lost power cannot transmit an alarm, and the monitor's grace
+  window is what converts silence into a page.
 - **Layer 1 — replication dead-man's switch (primary).** `backup-check.sh` runs
   every 6h (`pkdump-backup-check@<inst>.timer`), asks S3 about every replica,
   and pings an **off-box** monitor (healthchecks.io) only when they all pass. A
@@ -637,17 +656,52 @@ S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
   monitor alerts. This is the layer that catches the silent modes. It also writes
   a `.backup-last-ok` marker for Layer 3.
 
-  **Two databases, two different questions** (pd-me6h). A *tenant* collection
-  changes daily, so it is judged on FRESHNESS: a replica whose newest write is
-  older than `PKDUMP_BACKUP_MAX_AGE_HOURS` (36h) has stopped. The *user
-  registry* is static by design — handle → database_id changes only when a
-  tenant is added, removed or renamed, legitimately months apart — so a replica
-  with no new objects means nothing is wrong, and freshness is simply the wrong
-  question. It is judged on CORRESPONDENCE instead: Litestream's local txid for
-  the registry against the furthest txid its replica holds. That passes while
-  the two agree however old the last write is, and fails the moment the replica
-  falls behind or is missing. Do not "fix" a registry alarm by raising the
-  threshold — that was the false positive, and a bigger number only moves it.
+  **Both databases, one question: CORRESPONDENCE** (pd-me6h, extended
+  2026-08-16). Is the replica BEHIND the database — not, was either touched
+  recently. A quiescent database in correspondence is a perfect backup: restore
+  it and you get the current file byte for byte. Do not "fix" an alarm here by
+  raising a threshold; that has now been the false positive three times, and a
+  bigger number only moves it.
+
+  The registry was judged this way first, because it is static by design —
+  handle → database_id changes only when a tenant is added, removed or renamed,
+  legitimately months apart — so freshness was obviously the wrong question.
+  Tenants took two more tries to get there. Judged on replica AGE, a collection
+  nobody edited paged. Judged on `mtime` LAG (PR #51), the `.sqlite` mtime moves
+  on checkpoint and on open, so it paged too. Both were proxies.
+
+  **Why tenants are read from the sidecar's journal.** The registry gets its
+  local txid from `litestream status`, but that command cannot answer for a
+  tenant: tenants are one `dir:` + `pattern: "*.sqlite"` entry (so a new tenant
+  needs no config rewrite), and v0.5.16 does not expand it — `status -json
+  /data/tenants/<id>.sqlite` returns `[]`, and `status` with no path lists the
+  directory as `"database": "/"`, `"status": "not initialized"`. The *running*
+  sidecar publishes exactly the pair we need, once per second per database:
+
+  ```
+  msg="replica sync" db=<id>.sqlite replica=s3 txid.replica=…9 txid.db=…9
+  ```
+
+  `status` reads config; this reads behaviour. A tenant with no such line inside
+  `PKDUMP_BACKUP_SIDECAR_LOOKBACK` (6h) — or one whose newest line is older than
+  `PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS` (1800s, against a one-second cadence) —
+  is not being replicated, which is the loudest thing this checker can find.
+
+  S3 is still asked directly: the sidecar reporting a tenant fully replicated
+  while its prefix holds no LTX files at all is a fault, because a check that only
+  asks the backing-up process how it is getting on is a check that agrees with a
+  liar.
+
+  **The grace is the sidecar's uptime, never a file timestamp** (pd-30yy). "Has
+  this tenant had a fair chance to replicate yet" is a question about the process
+  doing the replicating, and both file-timestamp answers to it failed toward
+  silence: `mtime` moves on every write, so an old database reads new, and birth
+  time does not move but says nothing about whether anything is watching the file
+  — a database created an hour ago on a sidecar up for a week took a newborn's
+  grace and passed unreplicated. So `podman inspect -f '{{.State.StartedAt}}'` is
+  what the grace is measured against, and the three answers are three facts about
+  the sidecar: not running is a fault, up less than the grace is not judged, and
+  up longer than the grace having never named the database is an orphan.
 
   A lag is re-asked for up to `PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS`
   (90s) before it counts. Litestream can hold an un-uploaded checkpoint across a
@@ -655,6 +709,14 @@ S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
   (measured, `tests/alarming/run.sh` §4b); a replica that has genuinely stopped
   never catches up, so the window only costs the run that would have paged over
   a blip.
+
+  **One window, both legs.** One outage lags the tenants and the registry alike
+  — same sidecar, same un-uploaded checkpoint — so both re-ask over it, each
+  asking whichever component can answer for that database: the registry re-asks
+  S3, tenants re-ask the sidecar's `replica sync` pair. Only the registry had a
+  window until pd-yglw, and the asymmetry read as a flaky gate rather than as a
+  bug: §4b passed on an idle box and paged over the tenant beside the registry
+  it had just waited out on a loaded one.
 
   The checker is READ-ONLY on both sides: S3 is only ever listed, and the data
   volume is mounted `:ro` for the one command that reads local state.
@@ -792,10 +854,17 @@ Secrets never live in the repo — `setup.sh` scaffolds two env files:
 # Host-wide: Pushover creds + disk threshold (Layers 2 + 4, and L1's detail push)
 $EDITOR ~/.config/pkdump/alerts.env          # PUSHOVER_TOKEN, PUSHOVER_USER
 
-# Per-instance: the healthchecks.io ping URL (Layer 1)
-$EDITOR ~/.config/pkdump/<inst>/alerts.env   # PKDUMP_BACKUP_PING_URL
+# Per-instance: TWO healthchecks.io checks, never one. They watch unrelated
+# things, and sharing one lets the noisier failure hold the check down while the
+# other has nothing left to say — which is how a real outage went unreported on
+# 2026-08-16. alarm-status.sh fails if these two URLs match.
+#   Layer 0: period 5m,  grace 15m   — is the site serving?
+#   Layer 1: period 6h,  grace 3h    — is the data reaching S3?
+$EDITOR ~/.config/pkdump/<inst>/alerts.env   # PKDUMP_UPTIME_PING_URL + PKDUMP_HEARTBEAT_URL
+                                             # PKDUMP_BACKUP_PING_URL
 
 # Then enable the timers:
+systemctl --user enable --now pkdump-heartbeat@<inst>.timer
 systemctl --user enable --now pkdump-backup-check@<inst>.timer
 systemctl --user enable --now pkdump-diskcheck.timer
 

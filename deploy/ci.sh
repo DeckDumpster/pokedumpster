@@ -395,6 +395,15 @@ if tier lint; then
     step "Backup freshness (tests/alarming/backup_freshness_test.sh)"
     bash "$REPO_DIR/tests/alarming/backup_freshness_test.sh"
 
+    # And the test that replaced it on the live tenant path. Same tier, same
+    # reason, and one case in particular: a tenant the sidecar has never named
+    # PASSED while the grace came from the tenant file's own timestamp (pd-30yy).
+    # Every proxy tried for that grace failed toward SILENCE, so the matrix drives
+    # the real function against a stubbed sidecar and varies the file's age
+    # underneath it to prove the file decides nothing.
+    step "Backup correspondence (tests/alarming/backup_correspondence_test.sh)"
+    bash "$REPO_DIR/tests/alarming/backup_correspondence_test.sh"
+
     step "Alert gate (deploy/alert-gate.sh --self-test)"
     bash "$REPO_DIR/deploy/alert-gate.sh" --self-test
 

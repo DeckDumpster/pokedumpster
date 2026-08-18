@@ -225,9 +225,67 @@ podman run --rm --pull=never \
     tee "$LOG" || RC=$?
 OUT="$(cat "$LOG")"
 
+# Exit 2 is PARTIAL, not failed (pd-nons, crates/pkdump-cli/src/data.rs): the
+# pokemontcg.io tail ran out of retries, the run carried on, and TCGCSV — the
+# perishable half — was acquired and derived. The set list is as old as the last
+# run that finished one.
+#
+# That status deliberately pages, and the reasoning in pkdump-refresh.service is
+# right about the danger: a set list that silently stops advancing is a failure
+# nothing else on this box would report. It is wrong about the threshold. ONE
+# night of upstream 502s is not a silent stall, it is Tuesday — pokemontcg.io
+# returned 502 on 2026-08-15 and the page arrived at 06:05 with nothing for Ryan
+# to do about someone else's API. Pages like that are why he told me on
+# 2026-08-16 he had started ignoring the channel, which is what let a genuine
+# outage pass unnoticed.
+#
+# So the signal is kept and the threshold moved to where the original argument
+# actually pointed: PERSISTENCE. A partial run is tolerated while a recent one
+# succeeded, and pages once the set list has really stopped advancing. The marker
+# lives on the data volume beside .backup-last-ok, so it survives redeploys and
+# needs no new state anywhere.
+# `DATA` is a volume NAME; the marker needs the host path it resolves to. Empty
+# if the volume is gone, and every use below is guarded — a missing marker
+# location must not decide whether a real stall pages.
+DATA_MOUNTPOINT="$(podman volume inspect -f '{{.Mountpoint}}' "$DATA" 2>/dev/null || true)"
+TAIL_MARKER=""
+if [ -n "$DATA_MOUNTPOINT" ]; then TAIL_MARKER="${DATA_MOUNTPOINT}/.refresh-last-tail-ok"; fi
+PARTIAL_TOLERANCE_HOURS="${PKDUMP_REFRESH_PARTIAL_TOLERANCE_HOURS:-48}"
+
+if [ "$RC" -eq 2 ]; then
+    LAST_OK=0
+    if [ -n "$TAIL_MARKER" ] && [ -r "$TAIL_MARKER" ]; then
+        LAST_OK="$(cat "$TAIL_MARKER" 2>/dev/null || echo 0)"
+    fi
+    case "$LAST_OK" in ''|*[!0-9]*) LAST_OK=0 ;; esac
+    STALL_H=$(( ( $(date +%s) - LAST_OK ) / 3600 ))
+
+    if [ "$LAST_OK" -gt 0 ] && [ "$STALL_H" -lt "$PARTIAL_TOLERANCE_HOURS" ]; then
+        echo "refresh: PARTIAL — the pokemontcg.io tail failed, prices and products were acquired (${INSTANCE})."
+        echo "  The set list last advanced ${STALL_H}h ago, inside the ${PARTIAL_TOLERANCE_HOURS}h tolerance — not paging."
+        echo "  If this keeps up it WILL page: that is the stall the status exists to catch."
+        exit 0
+    fi
+
+    if [ "$LAST_OK" -eq 0 ]; then
+        echo "refresh: FAILED — the pokemontcg.io tail failed and no previous run is on record as having finished one (${INSTANCE})." >&2
+        echo "  Nothing establishes that the set list was ever current, so this is not treated as a transient." >&2
+    else
+        echo "refresh: FAILED — the set list has not advanced in ${STALL_H}h (tolerance ${PARTIAL_TOLERANCE_HOURS}h) (${INSTANCE})." >&2
+        echo "  Prices are still being acquired; it is the pokemontcg.io tail that has stopped. This is the persistent stall, not one bad night." >&2
+    fi
+    exit 2
+fi
+
 if [ "$RC" -ne 0 ]; then
     echo "refresh: FAILED — the catalog was NOT refreshed (${INSTANCE})" >&2
     exit "$RC"
+fi
+
+# A full run: record that the tail finished, so the next partial one can tell a
+# bad night from a stall.
+if [ -n "$TAIL_MARKER" ]; then
+    date +%s > "$TAIL_MARKER" 2>/dev/null || true
 fi
 
 # Landing on and a run that never said where it was landing is the silent

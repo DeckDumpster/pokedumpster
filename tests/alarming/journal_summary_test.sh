@@ -28,6 +28,18 @@ FIX="${SCRIPT_DIR}/fixtures"
 . "${REPO_DIR}/tests/lib/ports.sh"
 
 WORK="$(mktemp -d /tmp/pkdump-jsum.XXXXXX)"
+# §5 pushes through the real alert.sh, which now remembers what it sent
+# (pd-hqdt). Keep that memory inside the temp dir: the real one under
+# ~/.local/state belongs to the box's own alerting, and a test that wrote there
+# could silence a genuine prod page for 24h.
+export PKDUMP_ALERT_STATE_DIR="${WORK}/alert-state"
+# And switch the window off, because §5 is arithmetic about the 900-byte budget
+# and the suppression notice is paid for out of that same budget. With it armed,
+# the 895-byte pad below no longer lands on the em-dash and the mid-character
+# assertion would pass while testing nothing. The same cut WITH the notice is
+# asserted in tests/alarming/alert_suppress_test.sh §7, which computes the
+# budget rather than assuming it.
+export PKDUMP_ALERT_SUPPRESS_SECONDS=0
 SINK_PID=""
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
@@ -162,10 +174,12 @@ PUSHOVER_TOKEN=t PUSHOVER_USER=u \
 	PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}/pushover" \
 	bash "${REPO_DIR}/deploy/alert.sh" "gate" "${PAD}—tail" >/dev/null 2>&1
 # The sink decodes with errors="replace" and records with json.dumps, so a byte
-# that is not valid UTF-8 lands in the log as the six characters \\ufffd —
-# which is exactly the payload Pushover would have rejected.
+# that is not valid UTF-8 lands in the log as the escape text 'ufffd' — which is
+# exactly the payload Pushover would have rejected. Match on 'ufffd' alone:
+# json.dumps writes ONE backslash, and the pattern here used to spell two, so
+# this assertion passed against a page it never looked at.
 check "a cut that lands mid-character drops the character, not half of it" "0" \
-	"$(grep -cF '\\ufffd' "$SINK_LOG" || true)"
+	"$(grep -cF 'ufffd' "$SINK_LOG" || true)"
 check "and that message still arrived" "1" "$(grep -c 'yyy' "$SINK_LOG" || true)"
 
 # ── 6. THE RATCHET: the shipped unit must go through the summariser ─────────

@@ -12,11 +12,13 @@
 #                     that no harness picks a host port instead of asking the
 #                     kernel, that they wait for conditions rather than for the
 #                     clock, that the Containerfile's base images are pinned to
-#                     a Debian release, and that a Layer 2 page leads with the
-#                     line that says what went wrong. Hermetic and sub-second.
+#                     a Debian release, that a Layer 2 page leads with the
+#                     line that says what went wrong, and that an unchanged one
+#                     is not sent a second time. Hermetic and sub-second.
 #                     See tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh,
-#                     tests/lib/wait_test.sh, tests/container/base_images_test.sh
-#                     and tests/alarming/journal_summary_test.sh.
+#                     tests/lib/wait_test.sh, tests/container/base_images_test.sh,
+#                     tests/alarming/journal_summary_test.sh and
+#                     tests/alarming/alert_suppress_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #  3b. The image:      built ONCE, here. Five gates below need the shipped image
@@ -423,6 +425,22 @@ if tier lint; then
     step "Tree-hash cache (deploy/ci-cache.sh --self-test)"
     bash "$REPO_DIR/deploy/ci-cache.sh" --self-test
 
+    # Same tier, same reason as the alert gate: this one decides whether Ryan's
+    # phone rings at night. Its assumption ("a collection changes daily") was wrong
+    # and paged him three times for a healthy backup on 2026-08-14. The cases that
+    # matter are the ones proving the fix did not disarm the real alarm.
+    step "Backup freshness (tests/alarming/backup_freshness_test.sh)"
+    bash "$REPO_DIR/tests/alarming/backup_freshness_test.sh"
+
+    # And the test that replaced it on the live tenant path. Same tier, same
+    # reason, and one case in particular: a tenant the sidecar has never named
+    # PASSED while the grace came from the tenant file's own timestamp (pd-30yy).
+    # Every proxy tried for that grace failed toward SILENCE, so the matrix drives
+    # the real function against a stubbed sidecar and varies the file's age
+    # underneath it to prove the file decides nothing.
+    step "Backup correspondence (tests/alarming/backup_correspondence_test.sh)"
+    bash "$REPO_DIR/tests/alarming/backup_correspondence_test.sh"
+
     step "Alert gate (deploy/alert-gate.sh --self-test)"
     bash "$REPO_DIR/deploy/alert-gate.sh" --self-test
 
@@ -467,6 +485,15 @@ if tier lint; then
     # (pd-pwk8).
     step "Alert page content (tests/alarming/journal_summary_test.sh)"
     bash "$REPO_DIR/tests/alarming/journal_summary_test.sh"
+
+    # And the third question about the same page, after "does it fire" and "can
+    # it be read": should it be sent AT ALL. Four byte-identical value-snapshots
+    # pages in four nights is how a channel gets swiped away unread, and the
+    # outage that came next reached nobody (pd-hqdt). The assertions that matter
+    # are the ones proving suppression did not disarm anything — a changed
+    # signature, a second unit, an escalation, a stamp that cannot be trusted.
+    step "Repeat pages are suppressed, changed ones are not (tests/alarming/alert_suppress_test.sh)"
+    bash "$REPO_DIR/tests/alarming/alert_suppress_test.sh"
 
     # The standing decision the whole lake design rests on — no tenant data ever
     # enters it — existed only as comments in five files, so adding a tenant_id

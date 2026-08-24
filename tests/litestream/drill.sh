@@ -769,7 +769,7 @@ bc() { # bc <ping url> [tenant...] -> sets BC_OUT / BC_RC
 bc http://127.0.0.1:1/drill
 check "backup-check reports every tenant fresh after the restore" "0" "$BC_RC"
 check "and it checked all four" "4" \
-	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: tenant .* OK — newest S3 replica" || true)"
+	"$(printf '%s\n' "$BC_OUT" | grep -cE "^backup-check: tenant .* OK — replica" || true)"
 # The registry is checked too, separately — its silent loss is the one failure
 # the per-tenant loop above cannot see — and by a DIFFERENT TEST (pd-me6h):
 # correspondence with its replica, not the age of it. A restored registry that
@@ -784,7 +784,7 @@ check "and it checked the registry as well" "1" \
 bc ""
 check "with the monitor unarmed, backup-check still verifies against S3" "0" "$BC_RC"
 check "and it still checked all four tenants" "4" \
-	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: tenant .* OK — newest S3 replica" || true)"
+	"$(printf '%s\n' "$BC_OUT" | grep -cE "^backup-check: tenant .* OK — replica" || true)"
 check "and the registry" "1" \
 	"$(printf '%s\n' "$BC_OUT" | grep -c "^backup-check: the user registry OK — replica in correspondence" || true)"
 check "and it says the dead-man's switch is not armed" "1" \
@@ -793,13 +793,19 @@ check "and it did NOT report skipping" "0" \
 	"$(printf '%s\n' "$BC_OUT" | grep -ci "skipping" || true)"
 
 # ...and the zero above is an answer rather than an absence of one: a database
-# older than the freshness threshold with nothing under its prefix FAILS, with
-# the monitor still unarmed. `touch -d` is the only way to age a file a drill
-# created ninety seconds ago, and the age is what the judgement turns on.
+# with nothing under its prefix FAILS, with the monitor still unarmed.
+#
+# The file is left BRAND NEW on purpose (pd-30yy). Its age is not what the
+# judgement turns on and must not be — this drill used to age it with `touch -d
+# '3 days ago'`, which sets mtime and not birth time, so once the checker read
+# birth time the orphan came back "created 0m ago, not judged" and an
+# unreplicated tenant PASSED. Neither timestamp was ever the right question:
+# the sidecar is stopped, so nothing is replicating this database, and that is
+# the fact the verdict rests on. The matching pair — a sidecar that is UP and has
+# never named the file — is tests/alarming/run.sh §5.4.
 ORPHAN_ID=01K2C7HQ8N0000000000000EEE
 sidecar_stop
 sqlite3 "${MP}/tenants/${ORPHAN_ID}.sqlite" 'CREATE TABLE collection (id INTEGER PRIMARY KEY);'
-touch -d '3 days ago' "${MP}/tenants/${ORPHAN_ID}.sqlite"
 bc "" "$ORPHAN_ID"
 check "an unreplicated tenant FAILS the check even with no monitor to alert" "1" "$BC_RC"
 check "and it says which one, and why" "1" \

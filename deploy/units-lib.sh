@@ -202,6 +202,18 @@ pkdump_units_install() {
             -e "s|{{REPO_DIR}}|${repo_dir}|g"
     done
 
+    # Layer 0: is the site serving at all? Numbered below layer 1 because it is
+    # the question the other layers assume the answer to. Backup freshness only
+    # tells you about the box INDIRECTLY, on a 6h period with a 3h grace; on
+    # 2026-08-16 the site was hard down and nothing paged, because the only
+    # liveness signal was that proxy and it had already been failing for four
+    # days over an unrelated bug.
+    for ext in service timer; do
+        _pkdump_units_render "${systemd_user_dir}/pkdump-heartbeat@.${ext}" nostamp \
+            "$repo_dir/deploy/pkdump-heartbeat.${ext}" \
+            -e "s|{{REPO_DIR}}|${repo_dir}|g"
+    done
+
     # --- The Litestream backup sidecar (pokedumpster-8ch.3) -----------------
     _pkdump_units_render "${quadlet_dir}/pkdump-litestream-${instance}.container" stamp \
         "$repo_dir/deploy/pkdump-litestream.container" \

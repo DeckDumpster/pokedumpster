@@ -46,11 +46,22 @@ Type=oneshot
 # There is deliberately NO SuccessExitStatus=2 here, unlike
 # pkdump-value-snapshots@.service. That job writes N tenant databases and "some
 # of them" is a normal night; its wrapper names the skipped tenants and pushes
-# its own warning, so a status systemd calls success is still reported. This
-# unit has no wrapper. A tail that fails every night is a catalog whose set
-# list has silently stopped advancing, and OnFailure= above is the only thing
-# on this box that would ever say so — so a partial run pages, and the journal
-# tail the alert carries says which half of it worked.
+# its own warning, so a status systemd calls success is still reported. A tail
+# that fails every night is a catalog whose set list has silently stopped
+# advancing, and OnFailure= above is the only thing on this box that would ever
+# say so.
+#
+# That argument held, and its THRESHOLD did not. Until 2026-08-16 exit 2 reached
+# systemd verbatim, so a single upstream 502 paged: pokemontcg.io returned one on
+# 2026-08-15 and the push arrived at 06:05 about someone else's API, with nothing
+# to do but read it. Ryan had stopped reading the channel by then, which is how a
+# real outage went unnoticed the same week.
+#
+# The signal is unchanged; deploy/refresh.sh now decides WHEN it fires. It keeps
+# a .refresh-last-tail-ok marker on the data volume, swallows a partial run while
+# a recent one succeeded, and exits 2 — paging exactly as before — once the set
+# list has genuinely stopped advancing. Still no SuccessExitStatus=2: when the
+# wrapper exits 2 now, it means the stall this unit was written to catch.
 #
 # What changed with pd-nons is not how loud a bad night is. It is that the
 # night is no longer LOST: the tail used to run first and abort everything, so

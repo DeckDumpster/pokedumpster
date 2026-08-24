@@ -6,25 +6,23 @@
 	import { breadcrumbs, type Crumb } from '$lib/breadcrumbs.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
 	import { api } from '$lib/api';
-	import type { BackupStatus } from '$lib/types/BackupStatus';
 
 	let { children } = $props();
 
-	// Layer 3 backup-staleness banner (pokedumpster-ivq.5). Passive visibility:
-	// the host-side checker writes a freshness marker the server surfaces here.
-	// Fire-and-forget — never block render, never error-page on a check failure.
-	let backup = $state<BackupStatus | null>(null);
-	$effect(() => {
-		api.backupStatus()
-			.then((s) => (backup = s))
-			.catch(() => {});
-	});
-	const backupAgeLabel = $derived.by(() => {
-		const secs = backup?.age_seconds;
-		if (secs == null) return '';
-		const hours = Number(secs) / 3600;
-		return hours >= 48 ? `${Math.floor(hours / 24)} days` : `${Math.floor(hours)} hours`;
-	});
+	// NO BACKUP BANNER HERE. Backup staleness is OPERATOR information and this is a
+	// tenant-facing, multi-tenant page (per Ryan, 2026-08-16: "having this on a banner
+	// on a multi-tenant site makes absolutely no sense … there's no reason i would want
+	// one of my friends — who can't do anything about it — to see such a warning").
+	//
+	// It is not merely noise to them: it is either meaningless or alarming, and neither
+	// is actionable by someone who does not own the box. Worse, it was wrong for two
+	// days straight while the backups were provably healthy, which is exactly how a
+	// warning teaches its audience to ignore warnings.
+	//
+	// The operator channels remain and are the right ones: Pushover via
+	// pkdump-alert@ (Layer 2) and the healthchecks.io dead-man (Layer 1). GET
+	// /api/backup-status is untouched, so a control plane or dashboard can surface
+	// this to someone who can act on it.
 
 	// /collection and /sealed paint their own DD-style chrome (brand +
 	// sticky search + burger) and run edge-to-edge; suppress the breadcrumb
@@ -78,13 +76,6 @@
 	</header>
 {/if}
 
-{#if backup?.stale}
-	<div class="backup-banner" role="alert">
-		⚠️ Off-box backup is stale — last confirmed {backupAgeLabel} ago. Check the
-		Litestream sidecar and <code>pkdump-backup-check</code>.
-	</div>
-{/if}
-
 <main class:flush>
 	{@render children()}
 </main>
@@ -104,19 +95,6 @@
 		background: var(--color-surface-panel);
 		border-bottom: 2px solid var(--color-border);
 		font-size: 0.95rem;
-	}
-	.backup-banner {
-		padding: 0.6rem 1.25rem;
-		background: var(--color-danger-surface);
-		color: var(--color-danger-text);
-		border-bottom: 2px solid var(--color-border-accent);
-		font-size: 0.9rem;
-		text-align: center;
-	}
-	.backup-banner code {
-		background: var(--color-surface-shade);
-		padding: 0.05rem 0.35rem;
-		border-radius: 3px;
 	}
 	.logo {
 		display: inline-flex;

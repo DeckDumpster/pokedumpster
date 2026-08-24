@@ -60,10 +60,28 @@ log() { printf '\n=== %s ===\n' "$*"; }
 
 ORIG_PATH="$PATH"
 ORIG_TMPDIR="${TMPDIR:-}"
+# Unset first, not captured as-is like PATH/TMPDIR above: this suite asserts
+# "no override at all" as a baseline in several places, and a loaded CI box can
+# carry one in ambient from an un-torn-down store elsewhere on the runner
+# (pd-3zjt/pd-1sy1 — /workspaces/pkdump-nonprod-store predates the tmp_dir
+# split). Trusting that ambient value as "the original" would make this suite's
+# own baseline depend on host state it does not control, exactly what a
+# hermetic test exists to avoid.
+unset CONTAINERS_CONF_OVERRIDE
+ORIG_CONTAINERS_CONF_OVERRIDE=""
 reset_store() {
 	unset PKDUMP_STORE_ROOT PKDUMP_STORE_GLOBAL_ARGS
+	unset PKDUMP_STORE_PREV_CONTAINERS_CONF_OVERRIDE
 	PATH="$ORIG_PATH"
 	if [ -n "$ORIG_TMPDIR" ]; then TMPDIR="$ORIG_TMPDIR"; else unset TMPDIR; fi
+	# Activation exports this at a store's own containers.conf; leaving one
+	# behind would point every later case — and podman itself — at a file under
+	# a store that case has finished with.
+	if [ -n "$ORIG_CONTAINERS_CONF_OVERRIDE" ]; then
+		CONTAINERS_CONF_OVERRIDE="$ORIG_CONTAINERS_CONF_OVERRIDE"
+	else
+		unset CONTAINERS_CONF_OVERRIDE
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -543,6 +561,370 @@ rm -f "$PROD_NS"
 check "the repair does not migrate the user's podman" "0" \
 	"$(grep -v '^ *#' "${REPO_DIR}/deploy/store-lib.sh" | grep -c 'system migrate' || true)"
 
+reset_store
+
+# ---------------------------------------------------------------------------
+log "8b. …because the scaffolding is SPLIT, not shared (pd-3zjt)"
+# ---------------------------------------------------------------------------
+#
+# §8 is the repair, and it only ever ran on the side that opts into a store —
+# PROD NEVER DOES. So the damage in the direction that mattered was never
+# addressed at all: a CI gate's last bridge-network container exits, podman
+# RemoveAll's the shared directory, and the store left holding a netns file that
+# mounts into nothing is prod's. Every prod container on a user-defined network
+# then died at start, which is what failed pkdump-value-snapshots@prod every
+# night from 2026-08-12.
+#
+# The fix is not a better repair, it is removing the sharing: a containers.conf
+# written per store moves that store's `[engine] tmp_dir`, and the scaffolding
+# goes with it. Measured against podman 4.9.3 for this bead — an activated store
+# put its rootless-netns under its own runroot and the shared directory was never
+# created. tests/store/netns_split.sh makes that same claim against real podman;
+# what is asserted here is everything around it that is shell.
+
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+
+store_runroot() { # store_runroot <store root> — where activation puts it
+	printf '%s/pkdump-store-%s' "$XDG_RUNTIME_DIR" \
+		"$(printf '%s' "${1}/storage" | sha1sum | cut -c1-8)"
+}
+
+export PKDUMP_STORE_ROOT="${WORK}/split"
+pkdump_store_activate >/dev/null 2>&1
+SPLIT_RUNROOT="$(store_runroot "$PKDUMP_STORE_ROOT")"
+
+check "activation points podman at a containers.conf" "${PKDUMP_STORE_ROOT}/containers.conf" \
+	"${CONTAINERS_CONF_OVERRIDE:-unset}"
+check "which exists" "present" \
+	"$([ -f "${CONTAINERS_CONF_OVERRIDE:-/nonexistent}" ] && echo present || echo gone)"
+# The whole of the fix, in one line of generated config.
+check "and names this store's own tmp dir" "1" \
+	"$(grep -c "^tmp_dir = \"${SPLIT_RUNROOT}/libpod-tmp\"\$" "$CONTAINERS_CONF_OVERRIDE" || true)"
+# The one it must never name. Anything under $XDG_RUNTIME_DIR/libpod is the
+# directory every other store — prod's included — is already using.
+check "never the shared one" "0" \
+	"$(grep -c "${XDG_RUNTIME_DIR}/libpod/" "$CONTAINERS_CONF_OVERRIDE" || true)"
+# CONTAINERS_CONF_OVERRIDE, not CONTAINERS_CONF: the override MERGES on top of
+# whatever containers.conf the box already has, where the plain form would
+# replace it and quietly drop every other setting on the machine.
+check "merges rather than replaces the box's config" "0" \
+	"$(grep -c 'CONTAINERS_CONF=' "${REPO_DIR}/deploy/store-lib.sh" || true)"
+
+# Two stores, two directories — the runroot is keyed by the graph path, so this
+# holds for any number of them without a registry of who has which.
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+export PKDUMP_STORE_ROOT="${WORK}/split2"
+pkdump_store_activate >/dev/null 2>&1
+check "another store gets another tmp dir" "1" \
+	"$(grep -c "^tmp_dir = \"$(store_runroot "$PKDUMP_STORE_ROOT")/libpod-tmp\"\$" "$CONTAINERS_CONF_OVERRIDE" || true)"
+
+# Prod's exposure, again by construction: prod opts into no store, so nothing
+# writes it a containers.conf and podman's own tmp dir is left exactly where
+# podman puts it. The isolation is entirely on the side that was doing the damage.
+reset_store
+pkdump_store_activate >/dev/null 2>&1
+check "no store opted in -> no override at all" "unset" "${CONTAINERS_CONF_OVERRIDE:-unset}"
+
+# A box that already sets one for its own reasons gets it back. The store's conf
+# is scoped to the process tree that activated the store, like PATH and TMPDIR.
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+export CONTAINERS_CONF_OVERRIDE="${WORK}/host-owned.conf"
+: > "$CONTAINERS_CONF_OVERRIDE"
+export PKDUMP_STORE_ROOT="${WORK}/split3"
+pkdump_store_activate >/dev/null 2>&1
+check "a host's own override is displaced" "${PKDUMP_STORE_ROOT}/containers.conf" \
+	"$CONTAINERS_CONF_OVERRIDE"
+pkdump_store_deactivate
+check "…and handed back on deactivate" "${WORK}/host-owned.conf" \
+	"${CONTAINERS_CONF_OVERRIDE:-unset}"
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+export PKDUMP_STORE_ROOT="${WORK}/split4"
+pkdump_store_activate >/dev/null 2>&1
+pkdump_store_deactivate
+check "with nothing to hand back, it is unset" "unset" "${CONTAINERS_CONF_OVERRIDE:-unset}"
+
+# Teardown deletes the store root, and the conf goes with it. Podman REFUSES TO
+# RUN AT ALL while the variable names a file that is not there — including
+# against the default store, which is prod's — so a shell that tore a store down
+# would come out of it unable to use podman for anything, complaining about a
+# path inside a store that no longer exists.
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+export PKDUMP_STORE_ROOT="${WORK}/split-doomed"
+pkdump_store_activate >/dev/null 2>&1
+pkdump_store_teardown >/dev/null 2>&1
+check "teardown leaves no override naming a deleted file" "unset" \
+	"${CONTAINERS_CONF_OVERRIDE:-unset}"
+
+# The repair reads whichever scaffolding is AUTHORITATIVE for the store. A store
+# created since the split has its own, and `alive` is podman's own marker that it
+# has used it — the directory alone proves nothing, since activation creates it.
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+export PKDUMP_STORE_ROOT="${WORK}/own-gone"
+mkdir -p "${PKDUMP_STORE_ROOT}/storage"
+OWN_GONE_NS="${NETNS_DIR}/$(pkdump_store_netns_name "${PKDUMP_STORE_ROOT}/storage")"
+: > "$OWN_GONE_NS"
+mkdir -p "$(store_runroot "$PKDUMP_STORE_ROOT")/libpod-tmp"
+: > "$(store_runroot "$PKDUMP_STORE_ROOT")/libpod-tmp/alive"
+# The SHARED one is present and busy — which under the pre-split reading meant
+# "leave it alone", and would have left this store wedged forever.
+mkdir -p "$SCAFFOLD"
+pkdump_store_activate >/dev/null 2>&1
+check "its own scaffolding gone -> stale, dropped" "gone" \
+	"$([ -e "$OWN_GONE_NS" ] && echo present || echo gone)"
+
+reset_store
+PATH="${WORK}/fakebin:${PATH}"
+export PKDUMP_STORE_ROOT="${WORK}/own-live"
+mkdir -p "${PKDUMP_STORE_ROOT}/storage"
+OWN_LIVE_NS="${NETNS_DIR}/$(pkdump_store_netns_name "${PKDUMP_STORE_ROOT}/storage")"
+: > "$OWN_LIVE_NS"
+OWN_LIVE_TMP="$(store_runroot "$PKDUMP_STORE_ROOT")/libpod-tmp"
+mkdir -p "${OWN_LIVE_TMP}/rootless-netns/run/user/${UID_N}"
+: > "${OWN_LIVE_TMP}/alive"
+# And the shared one is gone, which under the pre-split reading meant "stale,
+# drop it" — on a namespace this store may be running containers on right now.
+rm -rf "${XDG_RUNTIME_DIR}/libpod"
+pkdump_store_activate >/dev/null 2>&1
+check "its own scaffolding intact -> left alone" "present" \
+	"$([ -e "$OWN_LIVE_NS" ] && echo present || echo gone)"
+rm -f "$OWN_LIVE_NS"
+
+# A store CREATED before the split keeps sharing prod's scaffolding whatever the
+# generated config says — podman pins tmp_dir in the store's database at creation
+# — so the fix needs a one-time `deploy/store-teardown.sh` per box. An operator
+# action nothing checks is one nobody knows is outstanding: the config would say
+# exactly the right thing, every gate would pass, and the store would go on
+# sharing prod's scaffolding with no symptom until the night a cleanup lands
+# between prod and its namespace. Podman is the only one who can answer, since
+# the pin is in its database and not in anything on disk to stat.
+reset_store
+mkdir -p "${WORK}/splitbin"
+cat > "${WORK}/splitbin/podman" <<'EOF'
+#!/usr/bin/env bash
+cat "${SPLIT_SAYS}" 2>/dev/null
+exit 0
+EOF
+chmod +x "${WORK}/splitbin/podman"
+PATH="${WORK}/splitbin:${PATH}"
+export SPLIT_SAYS="${WORK}/split-says"
+export PKDUMP_STORE_ROOT="${WORK}/pinned"
+pkdump_store_activate >/dev/null 2>&1
+PINNED_TMP="$(store_runroot "$PKDUMP_STORE_ROOT")/libpod-tmp"
+
+# A store that took it: podman settled on the directory the config asked for.
+printf '%s\n' "time=\"…\" level=debug msg=\"Using tmp dir ${PINNED_TMP}\"" > "$SPLIT_SAYS"
+check "a split store says nothing" "" "$(pkdump_store_split_check 2>&1)"
+
+# A store that did not, which is every store that existed before this landed.
+{
+	printf '%s\n' "time=\"…\" level=debug msg=\"Overriding tmp dir \\\"${XDG_RUNTIME_DIR}/libpod/tmp\\\" with \\\"${PINNED_TMP}\\\" from database\""
+	printf '%s\n' "time=\"…\" level=debug msg=\"Using tmp dir ${XDG_RUNTIME_DIR}/libpod/tmp\""
+} > "$SPLIT_SAYS"
+SPLIT_OUT="$(pkdump_store_split_check 2>&1)"
+check "a pre-split store is called out" "1" \
+	"$(printf '%s' "$SPLIT_OUT" | grep -c 'PREDATES the rootless-netns split' || true)"
+check "and it names both directories" "1" \
+	"$(printf '%s' "$SPLIT_OUT" | grep -c "using:  ${XDG_RUNTIME_DIR}/libpod/tmp\$" || true)"
+# Actionable or it is noise: the command, and what running it costs.
+check "and the one command that fixes it" "1" \
+	"$(printf '%s' "$SPLIT_OUT" | grep -c 'deploy/store-teardown.sh' || true)"
+check "and it is a warning, not a failure" "0" \
+	"$(pkdump_store_split_check >/dev/null 2>&1; echo $?)"
+
+# Podman not answering in a shape this understands — a version that words the
+# line differently — must be silent. A warning about a store that may be
+# perfectly fine is how a real one gets ignored.
+printf '%s\n' "time=\"…\" level=debug msg=\"something else entirely\"" > "$SPLIT_SAYS"
+check "an unrecognisable answer warns about nothing" "" "$(pkdump_store_split_check 2>&1)"
+
+# And prod, which has no store, is not asked at all.
+reset_store
+PATH="${WORK}/splitbin:${PATH}"
+check "no store opted in -> nothing to check" "" "$(pkdump_store_split_check 2>&1)"
+unset SPLIT_SAYS
+
+reset_store
+
+# ---------------------------------------------------------------------------
+log "8c. And when it is wedged anyway, the job says so and repairs it"
+# ---------------------------------------------------------------------------
+#
+# pkdump_store_netns_repair is a file-stat that runs at activation and answers
+# only for a store this shell opted into. pkdump_store_netns_ensure is the other
+# half: it asks PODMAN, about whatever store is active — prod's default store
+# included — at the moment a job is about to need a user-defined network.
+#
+#   podman unshare --rootless-netns true
+#
+# is the whole probe: same setup a container start runs, same error, no image and
+# no container. What it may then repair is bounded by who is on the namespace,
+# because dropping the netns file cuts every container already on it off from
+# everything started afterwards (measured: a fresh container cannot resolve the
+# running one at all).
+
+reset_store
+mkdir -p "${WORK}/nsbin"
+export NS_STATE="${WORK}/ns-state"
+
+# A podman whose rootless-netns probe fails exactly when podman's does: a netns
+# file present with no scaffolding behind it. Dropping the file is what puts it
+# back on the branch that rebuilds, so the same fake reports the repair.
+cat > "${WORK}/nsbin/podman" <<'EOF'
+#!/usr/bin/env bash
+args=("$@")
+while [[ ${#args[@]} -gt 0 && ${args[0]} == --* ]]; do args=("${args[@]:1}"); done
+case "${args[0]:-}" in
+unshare)
+	if [ -e "${NS_STATE}/probe-unrelated" ]; then
+		echo "Error: cannot re-exec process to join the existing user namespace"
+		exit 125
+	fi
+	if [ -e "${NS_STATE}/wedged-forever" ] || [ -e "${NS_NETNS_FILE}" ]; then
+		echo "Error: failed to mount runtime directory for rootless netns: no such file or directory"
+		exit 125
+	fi
+	exit 0
+	;;
+ps) cat "${NS_STATE}/ps" 2>/dev/null; exit 0 ;;
+info) cat "${NS_STATE}/graph" 2>/dev/null; exit 0 ;;
+restart) echo "${args[1]}" >> "${NS_STATE}/podman-restarts"; exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "${WORK}/nsbin/podman"
+# systemd is real on the box this runs on, and the repair restarts units by name.
+# A test that reached the real one would restart whatever it named.
+cat > "${WORK}/nsbin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do case "$a" in *.service) echo "$a" >> "${NS_STATE}/systemctl-restarts" ;; esac; done
+exit 0
+EOF
+chmod +x "${WORK}/nsbin/systemctl"
+PATH="${WORK}/nsbin:${PATH}"
+
+ns_case() { # ns_case <name> — a fresh state dir and a fresh netns file
+	rm -rf "$NS_STATE"
+	mkdir -p "$NS_STATE"
+	printf '%s\n' "${WORK}/${1}/storage" > "${NS_STATE}/graph"
+	export NS_NETNS_FILE="${NETNS_DIR}/$(pkdump_store_netns_name "${WORK}/${1}/storage")"
+	: > "$NS_NETNS_FILE"
+}
+
+# Nothing wrong: the probe passes and the function is a tenth of a second and no
+# output. This is every night the box is healthy.
+ns_case healthy
+rm -f "$NS_NETNS_FILE"
+set +e
+ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-prod 2>&1)"
+ENS_RC=$?
+set -e
+check "a working store passes silently" "0" "$ENS_RC"
+check "and says nothing" "" "$ENS_OUT"
+
+# A failure that is not this one — no rootless podman at all, a dead pause
+# process — is not ours to interpret. The run itself reports it in its own words.
+ns_case unrelated
+: > "${NS_STATE}/probe-unrelated"
+set +e
+pkdump_store_netns_ensure pkdump-lake-prod >/dev/null 2>&1
+ENS_RC=$?
+set -e
+check "an unrelated podman failure is not claimed" "0" "$ENS_RC"
+check "and the netns is left alone" "present" \
+	"$([ -e "$NS_NETNS_FILE" ] && echo present || echo gone)"
+
+# The refusal, and it is the important one. The default store is prod's, and on a
+# box where prod shares it with unrelated projects their containers are on that
+# namespace too. A nightly job may not restart another project's service to get
+# its own work done.
+ns_case foreign
+printf '%s\n' "household mtgc-net" "pkdump-nessie-prod pkdump-lake-prod" > "${NS_STATE}/ps"
+set +e
+ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-prod 2>&1)"
+ENS_RC=$?
+set -e
+check "someone else's container -> refuses" "1" "$ENS_RC"
+check "and names it" "1" "$(printf '%s' "$ENS_OUT" | grep -c 'household' || true)"
+check "leaving the namespace up" "present" \
+	"$([ -e "$NS_NETNS_FILE" ] && echo present || echo gone)"
+check "and telling the operator how to do it by hand" "1" \
+	"$(printf '%s' "$ENS_OUT" | grep -c 'systemctl --user restart' || true)"
+
+# Only ours on it: the repair is in scope, and finishing it means restarting them
+# — they are on the old namespace and would be unreachable otherwise.
+ns_case ours
+printf '%s\n' "pkdump-nessie-prod pkdump-lake-prod" > "${NS_STATE}/ps"
+set +e
+ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-prod 2>&1)"
+ENS_RC=$?
+set -e
+check "only our containers -> repairs" "0" "$ENS_RC"
+check "the stale netns is dropped" "gone" \
+	"$([ -e "$NS_NETNS_FILE" ] && echo present || echo gone)"
+# By unit, not by container: a Quadlet container is named by its unit, and
+# restarting it behind systemd's back leaves the unit's idea of it wrong.
+check "and what was on it is restarted, by unit" "pkdump-nessie-prod.service" \
+	"$(cat "${NS_STATE}/systemctl-restarts" 2>/dev/null || echo none)"
+
+# Nothing running at all — the usual case for a nightly job on a quiet box.
+ns_case empty
+: > "${NS_STATE}/ps"
+set +e
+pkdump_store_netns_ensure pkdump-lake-prod >/dev/null 2>&1
+ENS_RC=$?
+set -e
+check "nothing on it -> just rebuilt" "0" "$ENS_RC"
+check "netns dropped" "gone" \
+	"$([ -e "$NS_NETNS_FILE" ] && echo present || echo gone)"
+check "and nothing restarted" "none" \
+	"$(cat "${NS_STATE}/systemctl-restarts" 2>/dev/null || echo none)"
+
+# The repair not working is a failure, not a shrug: the job that called this
+# cannot run, and saying so here is the difference between a named cause and an
+# unexplained mount error 40 lines into a podman run.
+ns_case stuck
+: > "${NS_STATE}/ps"
+: > "${NS_STATE}/wedged-forever"
+set +e
+ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-prod 2>&1)"
+ENS_RC=$?
+set -e
+check "a namespace that does not come back fails" "1" "$ENS_RC"
+check "and says so" "1" \
+	"$(printf '%s' "$ENS_OUT" | grep -c 'did not come back' || true)"
+
+# Podman is the authority on where the active store's graph root is — the one
+# thing this cannot derive, since it runs against stores it did not activate.
+# With no answer it stops rather than guessing at a path it would then rm.
+ns_case unanswerable
+: > "${NS_STATE}/ps"
+: > "${NS_STATE}/graph"
+set +e
+ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-prod 2>&1)"
+ENS_RC=$?
+set -e
+check "no graph root -> fails without guessing" "1" "$ENS_RC"
+check "and says it is not guessing" "1" \
+	"$(printf '%s' "$ENS_OUT" | grep -c 'not guessing' || true)"
+check "and removed nothing" "present" \
+	"$([ -e "$NS_NETNS_FILE" ] && echo present || echo gone)"
+
+# The two jobs that run on a user-defined network are the two that call it. A
+# wrapper that starts a container on the lake network without this guard reads a
+# bare mount error from podman and reports nothing anyone can act on.
+check "the transform tier checks before it runs" "1" \
+	"$(grep -c 'pkdump_store_netns_ensure' "${REPO_DIR}/deploy/value-snapshots.sh" || true)"
+check "the price build too" "1" \
+	"$(grep -c 'pkdump_store_netns_ensure' "${REPO_DIR}/deploy/prices.sh" || true)"
+
+unset NS_NETNS_FILE NS_STATE
+rm -f "${NETNS_DIR}"/rootless-netns-*
 reset_store
 
 # ---------------------------------------------------------------------------

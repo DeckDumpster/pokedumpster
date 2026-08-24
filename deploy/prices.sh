@@ -129,6 +129,14 @@ if ! podman network exists "$NETWORK" 2>/dev/null; then
     exit 1
 fi
 
+# The network EXISTING is not the same as being able to start a container on it —
+# see deploy/value-snapshots.sh for the same guard and pd-3zjt for the bug. This
+# job runs on the same lake network and fails the same way.
+if ! pkdump_store_netns_ensure "$NETWORK"; then
+    echo "prices: FAILED — rootless networking is wedged (${INSTANCE})" >&2
+    exit 1
+fi
+
 # --- The job's command line -------------------------------------------------
 
 TODAY="$(date -u +%F)"

@@ -326,10 +326,86 @@ wedged store means `deploy/ci.sh` cannot pass — and it wedges mid-session, fro
 another store's cleanup, with nothing in the message to suggest the store.
 
 `pkdump_store_activate` repairs it: if this store's netns file is present while
-the shared scaffolding is gone, the file is stale and is dropped, which puts
-podman back on the branch that rebuilds it. Deliberately *not* `podman system
-migrate` (the repair found by hand first) — that kills the pause process, which
-is per-user and shared with the store prod runs in.
+the scaffolding that is authoritative for it is gone, the file is stale and is
+dropped, which puts podman back on the branch that rebuilds it. Deliberately
+*not* `podman system migrate` (the repair found by hand first) — that kills the
+pause process, which is per-user and shared with the store prod runs in.
+
+#### …and the store it wedges is prod's (pd-3zjt)
+
+The repair above only ever runs for a store this shell **opted into** —
+`pkdump_store_netns_repair` returns immediately when `PKDUMP_STORE_ROOT` is
+empty, and **prod's is always empty**. So the damage in the direction that
+matters was never addressed at all. A CI gate's last bridge-network container
+exits, podman `RemoveAll`s the shared directory, and the store left holding a
+netns file that mounts into nothing is the one prod runs in.
+
+That is not hypothetical: it failed `pkdump-value-snapshots@prod` every night
+from 2026-08-12. Only jobs on a *user-defined* network are affected, so
+`pkdump-refresh@` stayed green throughout and nothing else on the box said
+anything.
+
+**The scaffolding is now split, so there is nothing to take.** Activation writes
+the store a `containers.conf` naming its own `[engine] tmp_dir` under its own
+runroot, and passes it with `CONTAINERS_CONF_OVERRIDE` (the merge-on-top
+spelling — plain `CONTAINERS_CONF` would replace whatever the box already has).
+`--root`, `--runroot` and `--tmpdir` all leave `Engine.TmpDir` alone; this is the
+only knob that moves it. Prod is given no `containers.conf` at all, so prod's tmp
+dir stays exactly where podman puts it: the isolation is entirely on the non-prod
+side, which is the side that was doing the damage.
+
+**One caveat, and it needs a one-time action.** Podman records `tmp_dir` in the
+store's libpod database when the store is **created** and pins it from then on:
+
+```
+level=debug msg="Overriding tmp dir \"…\" with \"/run/user/1000/libpod/tmp\" from database"
+```
+
+A store that already existed before this landed therefore keeps sharing prod's
+scaffolding no matter what the generated config says. **Tear it down once** —
+
+```bash
+bash deploy/store-teardown.sh
+```
+
+— and the next `deploy/ci.sh` rebuilds it split. This applies to non-prod stores
+only; prod has no store to tear down.
+
+`ci.sh` asks podman once per run which tmp dir the store actually settled on
+(`pkdump_store_split_check`) and prints the command above when the answer is
+still the shared one — an operator action nothing checks is one nobody knows is
+outstanding, and this one has no symptom until the night a cleanup lands between
+prod and its network namespace. It warns rather than failing the run: the store
+works, the gates pass, and since pd-3zjt the other end is bounded too
+(`pkdump_store_netns_ensure` repairs a wedged namespace at the start of the jobs
+that need one).
+
+The same pin is what makes the split hold for callers that never see the
+variable, and most of them do not. A Quadlet unit inherits none of this shell's
+environment — systemd starts `podman run` with the unit's own environment and the
+`GlobalArgs=` line, nothing else — and `pkdump-nessie.container` is on a
+user-defined network, so a non-prod instance in an alternate store runs a
+long-lived bridge container no exported variable can reach. Podman reads the
+pinned tmp dir back out of the store's database, so those callers get the split
+too. **Do not "finish" this by stamping `Environment=CONTAINERS_CONF_OVERRIDE=`
+into the unit templates** — it is already covered, and a unit that names a path
+inside a store is one more thing to get wrong when the store moves.
+
+Two jobs run on a user-defined network (`deploy/value-snapshots.sh` and
+`deploy/prices.sh`) and both ask before they start, via
+`pkdump_store_netns_ensure`: `podman unshare --rootless-netns true` is the whole
+probe, it runs the same setup a container start runs, and it needs no image,
+network or container. With nothing else on the namespace it drops the stale file
+and rebuilds; with only its own instance's containers on it, it restarts those
+too (they are on the old namespace and would otherwise be unreachable). With
+**anything else** on it — another project sharing prod's store — it refuses and
+prints the two commands, because a nightly job may not restart someone else's
+service to get its own work done.
+
+Gates: `tests/deploy/run.sh` §8b–§8c for everything that is shell, and
+`tests/store/netns_split.sh` — the one non-hermetic store gate — for the part
+only podman can answer: that an activated store really does build its namespace
+under its own runroot and leaves the shared directory alone.
 
 ### Low-disk guard
 

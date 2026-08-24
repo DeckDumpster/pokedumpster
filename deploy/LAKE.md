@@ -16,6 +16,15 @@ This is step 1 of the offline-lakehouse design
 lands raw only. Building Iceberg tables from it is `pd-1ojt`; the per-tenant
 transform tier is `pd-hkbc`.
 
+> **This file is about the CATALOG zone** — `raw/` and the `lake/` warehouse
+> beside it: cross-tenant, shared, retained indefinitely, reached with the
+> broad catalog credentials. The same bucket also holds the **tenant zone**
+> under `tenant/`, which is a different object under different governance:
+> always tenant-keyed, 90-day retention, its own credentials, plain Parquet.
+> Its runbook is [`TENANT_ZONE.md`](TENANT_ZONE.md). Nothing in this file
+> applies to it, and that separation is the reason "tenant data never enters
+> the lake" still holds.
+
 ---
 
 ## 1. The key layout
@@ -372,9 +381,9 @@ bash deploy/prices.sh prod                            # or run one now
 bash deploy/prices.sh prod --ingest-date 2026-08-09   # rebuild an older day
 ```
 
-It sits in the middle of the nightly chain — **land → derive → prices →
-transform** — and each link is a declared ordering dependency, never an
-inference from three timers sharing 07:00. Without it, the transform tier (§7)
+It sits in the middle of the nightly chain — **land → derive → prices → ship
+→ transform** — and each link is a declared ordering dependency, never an
+inference from several timers sharing 07:00. Without it, the transform tier (§7)
 valued every tenant's collection from whatever day someone last built by hand:
 correct arithmetic over stale prices, advancing every night, with nothing
 anywhere saying the numbers had stopped moving.
@@ -439,6 +448,16 @@ podman run --rm --network pkdump-lake-<inst> \
   pkdump-lake-value-snapshots --date 2026-08-11 --data-dir /data
 ```
 
+**Where the holdings come from: the tenant zone, and nowhere else.** The
+copies it values are read from `zone_holdings`, which `pkdump-ship holdings`
+materialises out of the tenant zone (`pd-szh2`). The online read of each
+tenant's live `collection` table shipped beside it for exactly one item and
+was then deleted (`pd-i08u`), so there is no `--holdings` flag to choose with
+and no fallback when the zone has not been read back — a tenant whose
+`zone_holdings` is missing, or is behind what the shipper has put in the zone,
+is **skipped naming the command that fixes it**. `bash deploy/ship.sh
+<instance>` is what runs both halves. See `TENANT_ZONE.md` §7.
+
 **What it replaces, and why.** `pkdump data refresh` used to end with a step 7
 calling `value_history::snapshot_today` on the one collection `$PKDUMP_USER`
 resolves to. There was no loop. Every *other* registered tenant got no value
@@ -481,11 +500,22 @@ must never run beside each other. `After=pkdump-refresh@%i.service` is what
 guarantees that: if the refresh still holds a job when this timer fires, this
 unit's start job waits for it. (Not `Wants=` — the refresh is a oneshot without
 `RemainAfterExit`, so pulling it in would re-run the whole catalog fetch a second
-time every night.) The timer's `OnCalendar=07:00` is then *derived* from the
-refresh unit's own declared bounds — `06:00` + `RandomizedDelaySec=1800` +
-`TimeoutStartSec=1800` — rather than guessed at, and `tests/deploy/run.sh` §10
-recomputes that arithmetic so moving either number fails a gate instead of
-silently overlapping two jobs.
+time every night.) The same line is there for the derive and the price build.
+
+Since `pd-i08u` there is a fourth, and it is a *data* dependency rather than a
+mutual-exclusion one: `After=pkdump-ship@%i.service`, because that unit's
+second half is the only thing that writes the `zone_holdings` this job values.
+The two swapped places — the shipment used to run last, after the transform —
+so the chain is now
+
+    land → derive → prices → **ship (+ read back)** → transform
+
+and the timer's `OnCalendar=07:30` is *derived* from the shipment unit's own
+declared bounds (`07:00` + `TimeoutStartSec=1800`) rather than guessed at.
+`tests/deploy/run.sh` §10 recomputes that arithmetic — and asserts the old
+`After=` is gone from the other file, because two units each ordered after the
+other is a dependency cycle systemd resolves by dropping a job rather than by
+complaining.
 
 **0, 2 and 1 are three different answers, and the unit knows it.** Exit 2 —
 completed, some tenant skipped because their database is absent or someone holds
@@ -498,7 +528,7 @@ Pushover *warning* — so a half-completed run is neither silent nor an alarm. E
 
 **`catalog.prices` is built by the unit before this one** (§6, `pd-up36`).
 `pkdump-prices@%i` is ordered `After=` the derive and this unit is ordered
-`After=` it, so the night runs land → derive → prices → transform in sequence
+`After=` it, so the night runs land → derive → prices → ship → transform in sequence
 however long each takes. Until that unit existed this job valued each night's
 collection from the newest partition the lake happened to hold — correct
 arithmetic over stale prices, advancing nightly. Arming this timer without
@@ -584,7 +614,8 @@ of the CLI unchanged. Only where the bytes come from differs.
 | --- | --- |
 | `pkdump-refresh@<instance>` | **lands**: fetches the upstreams, and with `--land-raw` puts every response in the bucket |
 | `pkdump-derive@<instance>` | **derives**: rebuilds `shared.sqlite` from one partition |
-| `pkdump-value-snapshots@<instance>` | **transforms**: values every tenant from `catalog.prices` |
+| `pkdump-ship@<instance>` | **ships and reads back**: the outbox into the tenant zone, and the zone into each tenant's `zone_holdings` |
+| `pkdump-value-snapshots@<instance>` | **transforms**: values every tenant's `zone_holdings` from `catalog.prices` |
 
 Separate units are what let a derive run against yesterday's raw on a night the
 fetch failed. The trap on the other side of that is *yesterday's raw silently

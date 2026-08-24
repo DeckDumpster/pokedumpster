@@ -41,6 +41,41 @@ per (product, sub_type). Which is also what makes **backfill** correct: point
 it at an older date and it reconstructs what the collection was worth *then*,
 not what it is worth now.
 
+## Phase 3: the holdings come from the TENANT ZONE, and from nowhere else
+
+The copies this job values are read from :data:`ZONE_HOLDINGS`, materialised
+out of the **tenant zone** by ``pkdump-ship holdings``. That is Phase 3 of the
+cycle — land raw, build the catalog, ingest tenant state, **compute
+valuations**, publish back — and it is the half of the loop the inbound-leg
+epic exists to close: the write had moved offline and the read had stayed
+online.
+
+pd-szh2 shipped that read **alongside** the online one, behind ``--holdings``,
+with a ``--compare`` that valued every tenant both ways and diffed the rows.
+It came back clean, and pd-i08u is the change that acts on it: the online read
+is **gone**, there is no flag to bring it back, and there is no fallback if
+the zone has not been read. One valuation path, so a number on a chart has
+exactly one provenance.
+
+Two things follow, and they are the whole of the operational contract:
+
+* **The zone must be read back before this job runs.** ``pkdump-ship run``
+  puts the outbox in the zone; ``pkdump-ship holdings`` brings it back into
+  :data:`ZONE_HOLDINGS`. ``deploy/ship.sh`` does both, and
+  ``pkdump-value-snapshots@`` is ordered ``After=pkdump-ship@``. A tenant
+  whose zone was never read is **skipped, naming the command** — see
+  :func:`require_zone_holdings`.
+* **A stale read is refused too**, and that is the refusal worth having. See
+  :func:`require_zone_holdings` for why a plausible number is worse than none.
+
+**What the zone does not carry.** Only ``collection`` rows are shipped
+(``pkdump_db::outbox::SOURCE_TABLES``). The condition multiplier
+(``conditions``), and the third arm of the price rule (``manual_prices`` over
+``user_printings``), are read from the tenant's own database — they were on
+the online path and they still are. Deleting the online *holdings* read did
+not make the tenant database unnecessary and must not be read as though it
+had: Phase 3 narrowed *which table the copies come from* and nothing else.
+
 ## The publish contract
 
 * **Idempotent** for a given (tenant, artefact, date, lake_ref). The rows are a
@@ -54,8 +89,10 @@ not what it is worth now.
   path, and ``GET /api/collection/value-history`` reads an empty table as an
   empty chart. This job being absent, late, or half-done is not an outage.
 
-Run it against a data directory the app is not currently writing::
+Run it against a data directory the app is not currently writing, after the
+zone has been shipped and read back::
 
+    pkdump-ship run --data-dir /data && pkdump-ship holdings --data-dir /data
     pkdump-lake-value-snapshots --date 2026-08-11 --data-dir /data
 
 """
@@ -98,12 +135,29 @@ TENANTS_DIR = "tenants"
 
 #: All tenants snapshotted.
 EXIT_OK = 0
-#: The run could not start at all: no registry, no lake, bad arguments.
+#: The run could not start at all — no registry, no lake, bad arguments — or
+#: it started and snapshotted **nobody**. The second is the same fact as the
+#: first arriving one tenant at a time, and :data:`EXIT_PARTIAL` would report
+#: it as a warning about a night when nothing happened.
 EXIT_FAILED = 1
 #: The run completed, and at least one tenant was skipped. Deliberately its own
 #: code: "some tenants have no value history today" must not read as success,
 #: and must not read as "the job did not run" either.
 EXIT_PARTIAL = 2
+
+#: The staging table this job reads — the tenant zone, brought back by
+#: ``pkdump-ship holdings``. Spelled the same in
+#: ``pkdump_db::outbox::ZONE_HOLDINGS_TABLE`` and in ``pkdump_ship::zone`` —
+#: three places, because this job is not a Rust program, and
+#: ``tests/lake/phase3.sh`` is what holds them together.
+#:
+#: It is a constant rather than an argument (pd-i08u). While the online read
+#: existed this was one of two table names a caller chose between; with that
+#: read deleted there is nothing to choose, and a parameter that can only take
+#: one value is a seam for a second value to come back through.
+ZONE_HOLDINGS = "zone_holdings"
+#: The provenance of :data:`ZONE_HOLDINGS`, written by the same command.
+ZONE_HOLDINGS_RUN = "zone_holdings_run"
 
 #: The per-copy projection, one row per owned copy, carrying its set, binder,
 #: purchase price, condition multiplier and current market price.
@@ -131,7 +185,13 @@ EXIT_PARTIAL = 2
 #: The two implementations must agree to the byte, and are held to it: the
 #: container gate runs Rust ``snapshot_today`` and this job over one fixture
 #: and compares the rows.
-OWNED_SQL = """
+#:
+#: The holdings table is :data:`ZONE_HOLDINGS`, named once. pd-szh2 made it a
+#: ``{holdings}`` substitution so the same arithmetic could be run over the
+#: online table and the zone and the results diffed; that comparison came back
+#: clean and pd-i08u deleted the online side of it, so there is one table here
+#: and no substitution to make.
+OWNED_SQL = f"""
 CREATE TEMP TABLE _snap_owned AS
 SELECT c.id,
        c.purchase_price,
@@ -151,7 +211,7 @@ SELECT c.id,
                            WHERE up.printing_id = mp.printing_id)
             ORDER BY mp.observed_at DESC LIMIT 1)
        ) AS market_price
-  FROM collection c
+  FROM {ZONE_HOLDINGS} c
   JOIN (
          SELECT printing_id, card_id, tcgplayer_product_id, sub_type_name
            FROM shared.printings
@@ -329,12 +389,20 @@ def market_prices(identifier: str, date: dt.date, lake_ref: str) -> dict[tuple[i
     return {key: price for key, (_, price) in latest.items()}
 
 
-def stage_prices(conn: sqlite3.Connection, prices: dict[tuple[int, str], float]) -> int:
+def stage_prices(
+    conn: sqlite3.Connection,
+    prices: dict[tuple[int, str], float],
+) -> int:
     """Stage the prices this tenant can actually use into ``_lake_prices``.
 
     Restricted to the products the tenant owns a copy of — a collection touches
     a few thousand products out of the catalog's hundreds of thousands, and the
     join in :data:`OWNED_SQL` cannot tell the difference.
+
+    "Owns" is read from :data:`ZONE_HOLDINGS`, the same table
+    :data:`OWNED_SQL` values. Staging from one table and valuing from another
+    would price the products in one collection and count the copies in
+    another.
     """
     conn.execute("DROP TABLE IF EXISTS temp._lake_prices")
     conn.execute(
@@ -347,7 +415,7 @@ def stage_prices(conn: sqlite3.Connection, prices: dict[tuple[int, str], float])
     )
     owned = conn.execute(
         "SELECT DISTINCT p.tcgplayer_product_id, p.sub_type_name "
-        "  FROM collection c "
+        f"  FROM {ZONE_HOLDINGS} c "
         "  JOIN shared.printings p ON c.printing_id = p.printing_id "
         " WHERE c.status = 'owned' AND p.tcgplayer_product_id IS NOT NULL"
     ).fetchall()
@@ -360,6 +428,56 @@ def stage_prices(conn: sqlite3.Connection, prices: dict[tuple[int, str], float])
     return len(staged)
 
 
+def require_zone_holdings(conn: sqlite3.Connection, tenant: Tenant) -> str:
+    """Refuse a tenant whose staged zone read is missing or behind the zone.
+
+    Two refusals, and the second is the one worth having. An **absent**
+    staging table is obvious. A **stale** one is not: it values today's
+    collection at the holdings of whenever somebody last ran the reader, and
+    every number it produces looks entirely reasonable. The shipper's own
+    cursor is what makes it detectable — ``shipped_thru`` is the highest seq
+    in the zone, ``max_seq`` is the highest seq that was read out of it, and
+    the second being behind the first means the read predates the last ship.
+
+    A tenant whose OUTBOX is ahead of the zone is *not* refused, and that stays
+    true now that this is the only path (pd-i08u). It means the shipper skipped
+    that tenant, and the shipper is what says so — ``deploy/ship.sh`` names them
+    in the same nightly run and pushes its own PARTIAL warning. Refusing here
+    would report one shipping failure twice and, worse, would withhold a
+    valuation of holdings that are genuinely what the offline side was told.
+    What this function refuses is the case nothing else can see: a read-back
+    that never happened, or one that happened too early.
+
+    Returns the ``read_at`` of the materialisation, for the log line.
+    """
+    row = conn.execute(
+        "SELECT max_seq, read_at, parts, rows FROM " + ZONE_HOLDINGS_RUN + " WHERE dataset = ?",
+        ("holdings",),
+    ).fetchone()
+    if row is None:
+        raise TransformError(
+            f"{tenant.handle} has no staged zone holdings — run `pkdump-ship holdings "
+            f"--tenant {tenant.database_id}` first (deploy/TENANT_ZONE.md). Valuing from a "
+            "missing table would be valuing from nothing; valuing from a stale one would be "
+            "worse, so neither is guessed at."
+        )
+    max_seq, read_at, parts, rows = row
+
+    cursor = conn.execute(
+        "SELECT shipped_thru FROM ownership_outbox_cursor WHERE id = 1"
+    ).fetchone()
+    shipped_thru = cursor[0] if cursor else 0
+    if shipped_thru > max_seq:
+        raise TransformError(
+            f"{tenant.handle}'s staged zone holdings stop at seq {max_seq} but the shipper has "
+            f"put {shipped_thru} into the zone — the materialisation ({read_at}) predates the "
+            "last ship, so these numbers would be yesterday's holdings at today's prices. "
+            f"Re-run `pkdump-ship holdings --tenant {tenant.database_id}`."
+        )
+    print(f"    zone: {rows} holding(s) from {parts} part(s) through seq {max_seq}, read {read_at}")
+    return read_at
+
+
 def snapshot(
     tenant: Tenant,
     shared: Path,
@@ -370,11 +488,14 @@ def snapshot(
     lake_ref: str,
     dry_run: bool = False,
 ) -> int:
-    """Compute and write one tenant's snapshot for ``date``. Returns rows written.
+    """Compute one tenant's snapshot for ``date``. Returns the rows written.
+
+    Writes them unless ``dry_run``.
 
     Raises on anything that makes this tenant unsnapshottable — a missing file,
     a database another process holds, a schema that predates the provenance
-    table. The caller logs it and moves to the next tenant.
+    table, a zone read that never happened. The caller logs it and moves to the
+    next tenant.
     """
     if not tenant.path.exists():
         raise TransformError(f"no database at {tenant.path}")
@@ -388,6 +509,7 @@ def snapshot(
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("ATTACH DATABASE ? AS shared", (str(shared),))
         require_provenance_table(conn)
+        require_zone_holdings(conn, tenant)
 
         conn.execute("BEGIN IMMEDIATE")
         staged = stage_prices(conn, prices)
@@ -413,13 +535,18 @@ def snapshot(
                 dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             ),
         )
-
         if dry_run:
             conn.execute("ROLLBACK")
-            print(f"    dry-run: {written} row(s) from {copies} owned cop(ies), not written")
+            print(
+                f"    dry-run: {written} row(s) from {copies} owned cop(ies) "
+                f"in {ZONE_HOLDINGS}, not written"
+            )
             return written
         conn.execute("COMMIT")
-        print(f"    {written} row(s) from {copies} owned cop(ies), {staged} price(s) staged")
+        print(
+            f"    {written} row(s) from {copies} owned cop(ies) in {ZONE_HOLDINGS}, "
+            f"{staged} price(s) staged"
+        )
         return written
     finally:
         conn.close()
@@ -455,26 +582,7 @@ def run(
     dry_run: bool = False,
 ) -> list[Outcome]:
     """Snapshot every registered tenant for ``date``. One tenant's failure is not the run's."""
-    shared = root / "shared.sqlite"
-    if not shared.exists():
-        raise TransformError(f"no catalog at {shared} — run `pkdump setup` first")
-
-    registered = tenants(root, only)
-    if not registered:
-        raise TransformError(
-            f"the registry at {root / REGISTRY_FILE} holds no active user — "
-            "`pkdump tenant create <handle>` provisions one"
-        )
-
-    lake_ref = pin(ref)
-    print(f"==> lake {identifier} at {lake_ref}")
-    print(f"==> data directory {root}, {len(registered)} active tenant(s)")
-    prices = market_prices(identifier, date, lake_ref)
-    if not prices:
-        raise TransformError(
-            f"{identifier} holds no {PRICE_TYPE} price at or before {date} at {lake_ref} — "
-            "there is nothing to value a collection with"
-        )
+    registered, shared, prices, lake_ref = _prepare(date, root, identifier, ref, only)
 
     outcomes = []
     for tenant in registered:
@@ -499,6 +607,41 @@ def run(
     return outcomes
 
 
+def _prepare(
+    date: dt.date,
+    root: Path,
+    identifier: str,
+    ref: str | None,
+    only: list[str] | None,
+) -> tuple[list[Tenant], Path, dict[tuple[int, str], float], str]:
+    """Everything the run needs before it touches a tenant.
+
+    Its own function because every tenant must be valued from ONE pinned
+    catalog commit and one price map — see :func:`pin`.
+    """
+    shared = root / "shared.sqlite"
+    if not shared.exists():
+        raise TransformError(f"no catalog at {shared} — run `pkdump setup` first")
+
+    registered = tenants(root, only)
+    if not registered:
+        raise TransformError(
+            f"the registry at {root / REGISTRY_FILE} holds no active user — "
+            "`pkdump tenant create <handle>` provisions one"
+        )
+
+    lake_ref = pin(ref)
+    print(f"==> lake {identifier} at {lake_ref}")
+    print(f"==> data directory {root}, {len(registered)} active tenant(s)")
+    prices = market_prices(identifier, date, lake_ref)
+    if not prices:
+        raise TransformError(
+            f"{identifier} holds no {PRICE_TYPE} price at or before {date} at {lake_ref} — "
+            "there is nothing to value a collection with"
+        )
+    return registered, shared, prices, lake_ref
+
+
 def report(outcomes: list[Outcome], date: dt.date) -> int:
     """Print the per-tenant tally and return the process exit status."""
     done = [o for o in outcomes if o.ok]
@@ -507,6 +650,15 @@ def report(outcomes: list[Outcome], date: dt.date) -> int:
     print(f"==> {date}: {len(done)} tenant(s) snapshotted, {len(skipped)} skipped")
     for outcome in skipped:
         print(f"    skipped {outcome.tenant.handle}: {outcome.error}")
+    if not done and skipped:
+        # "Some tenants" and "nobody" are different nights. A run that
+        # snapshotted no one achieved nothing however politely each tenant
+        # declined, and a warning is the wrong volume for it — this is the
+        # shape of a missing catalog or a data directory nobody has read the
+        # zone into, not of one database mid-import. Same rule as
+        # `pkdump_ship::run`'s Outcome::Failed, and for the same reason.
+        print(f"==> exiting {EXIT_FAILED}: nobody was snapshotted at all")
+        return EXIT_FAILED
     if skipped:
         print(f"==> exiting {EXIT_PARTIAL} (partial): a run that half-completes says so")
         return EXIT_PARTIAL
@@ -546,9 +698,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # There is deliberately no flag for where the holdings come from. pd-szh2
+    # had `--holdings {collection,zone}` and a `--compare` that ran both;
+    # pd-i08u deleted the online read once that comparison was clean, so the
+    # answer is `zone_holdings` and there is nothing to ask.
+
+    date = dt.date.fromisoformat(args.date)
     try:
         outcomes = run(
-            dt.date.fromisoformat(args.date),
+            date,
             root=data_dir(args.data_dir),
             identifier=args.table,
             ref=args.ref,
@@ -558,7 +716,7 @@ def main(argv: list[str] | None = None) -> int:
     except TransformError as exc:
         print(f"!! {exc}", file=sys.stderr)
         return EXIT_FAILED
-    return report(outcomes, dt.date.fromisoformat(args.date))
+    return report(outcomes, date)
 
 
 if __name__ == "__main__":

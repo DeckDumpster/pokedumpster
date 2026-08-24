@@ -140,7 +140,7 @@ pkdump_par_kill_all() {
 
 # Is there room on disk to start one more gate? Quiet when the answer is yes —
 # the floor is reported once by deploy/ci.sh at startup and does not need
-# repeating eleven times.
+# repeating fifteen times.
 _pkdump_par_disk_ok() {
 	local out rc=0
 	out="$(bash "$PKDUMP_PAR_DISKCHECK" --floor "${PKDUMP_PAR_DISK_PATHS[@]}" 2>&1)" || rc=$?

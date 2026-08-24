@@ -1,0 +1,25 @@
+[package]
+name = "pkdump-erase"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The deletion path: tombstone the key, drop the partition, prove it unreadable"
+
+[dependencies]
+pkdump-db.workspace = true
+pkdump-keys.workspace = true
+pkdump-lake.workspace = true
+# The verification opens a stray copy under a live tenant's key, which is the
+# only thing that makes "it does not open after deletion" mean anything. That
+# is `cipher::open`, and there is exactly one implementation of the envelope.
+pkdump-ship.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -338,7 +338,25 @@ bash deploy/setup.sh prod 8090            # build image + install units (keep th
 #     setup.sh writes all of these; it is only listed here so you can check them.
 #   ~/.config/pkdump/prod/aws/config       ([profile pkdump] role_arn=... source_profile=bootstrap region=...)
 #   podman secret create pkdump-prod-s3-bootstrap -   (paste the [bootstrap] key; from your password manager)
+
+# The tenant-zone master key comes out of the SAME password manager, and it is
+# a file rather than a podman secret because the offline jobs read it directly:
+bash deploy/keys.sh prod restore -i /path/to/the/pasted/key   # mode 600, refuses over a live key
+bash deploy/keys.sh prod status                               # check the fingerprint you recorded
 ```
+
+> **The master key is not restored from S3, and that is deliberate.** It is
+> the key that protects the tenant zone; replicating it into the bucket the
+> tenant zone lives in would store a key beside its own ciphertext. Its only
+> backup is your password manager — the same place the `[bootstrap]` key is.
+> See `deploy/KEYS.md` §4.
+>
+> **If you cannot find it: that is an outage, not a deletion.** A missing
+> master key makes every tenant's zone data unreadable at once with nothing
+> revoked and nobody deleted, and it must never be recorded, reported or acted
+> on as though an account had been removed. Tombstones — the actual record of
+> deliberate revocation — live in `registry.sqlite`, restored below, and a
+> restored master key lifts none of them.
 
 ### ⚠️ Restore the REGISTRY first, then the tenant databases
 

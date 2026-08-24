@@ -73,3 +73,50 @@ CREATE TABLE IF NOT EXISTS user (
 -- never share one, and the database is what says so.
 CREATE UNIQUE INDEX IF NOT EXISTS user_one_active_handle
     ON user(handle) WHERE state = 'active';
+
+-- ── KEY CUSTODY (pd-ulds) ──────────────────────────────────────────────────
+--
+-- Per-tenant encryption keys for the tenant zone are DERIVED, never stored:
+-- HKDF(master key, database_id). So there is no key column here and never will
+-- be — the only thing worth recording is whether this database's key may still
+-- be derived at all. See crates/pkdump-keys.
+--
+-- Three properties of this table are decisions, not implementation:
+--
+--   1. NO FOREIGN KEY to user(database_id). A tombstone must OUTLIVE the row
+--      it names. `pkdump tenant purge` deletes the user row; if that cascaded
+--      to the tombstone, deletion would silently un-revoke the key it just
+--      destroyed and the account would become readable again the moment the
+--      partition was restored from anywhere. The tombstone is the durable
+--      half of the deletion, so it deliberately does not depend on the
+--      ephemeral half.
+--   2. ABSENCE IS NOT PERMISSION. Derivation requires an explicit `active`
+--      row; a database_id with no row here is refused (KeyError::NotRegistered)
+--      rather than derived for. A registry restored empty is missing its
+--      tombstones as well as its users, and the fail-closed direction is the
+--      one where that is loud.
+--   3. A TOMBSTONE IS TERMINAL. There is no path back to 'active' — not in
+--      the accessor, and the CHECK below means an operator with sqlite3 open
+--      on the file cannot half-do it either (clearing the state without
+--      clearing tombstoned_at, or the reverse, fails the row constraint).
+--      Revocation that can be undone by accident is not revocation.
+--
+-- What this table is NOT is the master key's business. The master key is a
+-- file; this is a database. Backing the key up never touches a row here, and
+-- tombstoning a tenant never touches that file — see crates/pkdump-keys, where
+-- the two paths are kept apart on purpose.
+CREATE TABLE IF NOT EXISTS tenant_key (
+    -- The database whose key state this is. Opaque ULID, exactly as
+    -- user.database_id — but joined by value, never by constraint (1, above).
+    database_id   TEXT PRIMARY KEY,
+    -- active     — the key may be derived.
+    -- tombstoned — it may not, ever again. Deliberate revocation.
+    state         TEXT NOT NULL CHECK (state IN ('active', 'tombstoned')),
+    -- When the id was first registered here (RFC 3339).
+    created_at    TEXT NOT NULL,
+    -- When the key was revoked. NULL while active, and the two move together.
+    tombstoned_at TEXT,
+    -- Whatever the operator said at the time. Free text, for the audit trail.
+    reason        TEXT,
+    CHECK ((state = 'tombstoned') = (tombstoned_at IS NOT NULL))
+);

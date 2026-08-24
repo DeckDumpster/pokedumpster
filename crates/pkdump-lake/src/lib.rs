@@ -48,6 +48,23 @@
 //! A bucket named by `~/.config/pkdump/lake.env` — host configuration, no
 //! default, deliberately a *different* bucket from the Litestream backup
 //! bucket. See [`config`].
+//!
+//! ## The other zone in that bucket
+//!
+//! Everything above describes the **catalog zone**: `raw/` and the `lake/`
+//! warehouse beside it, cross-tenant, shared, retained indefinitely. The
+//! same bucket also holds the **tenant zone** under `tenant/` — holdings and
+//! valuations, always tenant-keyed, retained 90 days, reachable only by
+//! credentials that reach nothing else. It is a different object under
+//! different governance that happens to share a bucket, and [`tenant`] is
+//! where its layout, its retention and its credential rule live.
+//!
+//! This crate says where those objects go and hands out the handle that
+//! reaches them ([`open_tenant_zone`]) — it does not decide what is in one.
+//! The shipper is its own crate (`pkdump-ship`), because filling a tenant
+//! part means reading a tenant's SQLite, and this crate deliberately links no
+//! SQLite at all: that is what makes "no lake write path can open a tenant
+//! database" structural rather than reviewed (`pd-cgi9` §1).
 
 pub mod config;
 mod error;
@@ -56,6 +73,7 @@ pub mod manifest;
 pub mod reader;
 pub mod sink;
 pub mod store;
+pub mod tenant;
 
 pub use config::{Backend, LakeConfig};
 pub use error::{LakeError, Result};
@@ -63,7 +81,11 @@ pub use keys::{Dataset, PartFormat, Source};
 pub use manifest::{Manifest, PartRecord};
 pub use reader::{RawZone, Run, select_run};
 pub use sink::RawLanding;
-pub use store::{DirStore, ObjectSource, ObjectStore, S3Store};
+pub use store::{DirStore, ObjectPurge, ObjectSource, ObjectStore, S3Store};
+pub use tenant::{
+    Dataset as TenantDataset, PART_SUFFIX, RETENTION_DAYS, TENANT_ROOT, TenantZoneConfig,
+    dataset_prefix, part_key, partition_prefix, range_part_key, tenant_prefix,
+};
 
 /// Build the landing zone this host is configured for, for **writing**.
 ///
@@ -113,6 +135,98 @@ pub fn open_reader() -> Result<RawZone> {
         )?),
     };
     Ok(RawZone::new(source))
+}
+
+/// A handle on the **tenant zone**, for writing.
+///
+/// The bucket is the lake's — one bucket, separate prefixes — but the
+/// identity is not: [`TenantZoneConfig`] names a profile that reaches
+/// `tenant/` and nothing else, and refuses to be the catalog's. So this is
+/// the one entry point in the crate that does not take its credentials from
+/// whatever the process happens to be configured with.
+///
+/// Write-only, like [`open`] and for the same reason: the shipper knows its
+/// own key space and has no business reading anybody's holdings back.
+/// [`open_tenant_zone_reader`] is the other half, for the paths that do.
+pub fn open_tenant_zone() -> Result<(Box<dyn ObjectStore>, TenantZoneConfig)> {
+    let zone = TenantZoneConfig::load()?;
+    let store: Box<dyn ObjectStore> = match config()? {
+        Backend::Dir(path) => Box::new(DirStore::new(path)),
+        Backend::S3 {
+            bucket,
+            region,
+            prefix,
+            endpoint,
+        } => Box::new(S3Store::connect_as(
+            &bucket,
+            &region,
+            &prefix,
+            endpoint.as_deref(),
+            Some(&zone.profile),
+        )?),
+    };
+    Ok((store, zone))
+}
+
+/// A handle on the **tenant zone**, for reading.
+///
+/// Not the shipper's — it never reads. This is what the decrypt path and the
+/// deletion sweep hold, and it has no `put` for the mirror-image reason
+/// [`open_reader`] does not: a job whose business is reading a tenant's data
+/// must not be able to write to it.
+pub fn open_tenant_zone_reader() -> Result<(Box<dyn ObjectSource>, TenantZoneConfig)> {
+    let zone = TenantZoneConfig::load()?;
+    let source: Box<dyn ObjectSource> = match config()? {
+        Backend::Dir(path) => Box::new(DirStore::new(path)),
+        Backend::S3 {
+            bucket,
+            region,
+            prefix,
+            endpoint,
+        } => Box::new(S3Store::connect_as(
+            &bucket,
+            &region,
+            &prefix,
+            endpoint.as_deref(),
+            Some(&zone.profile),
+        )?),
+    };
+    Ok((source, zone))
+}
+
+/// A handle on the **tenant zone**, for the deletion sweep.
+///
+/// The third of three, and the narrowest: it can enumerate a prefix and
+/// remove a key, and it can do nothing else. No `get`, so the job that
+/// deletes a tenant's holdings never reads them; no `put`, so it cannot
+/// write. That is not tidiness — a deletion is the one operation that runs
+/// against data the operator has undertaken to stop holding, and the handle
+/// it runs through should not be able to do anything with that data except
+/// stop it existing.
+///
+/// The credentials are the tenant profile's, like the other two: `tenant/` is
+/// the only prefix it reaches, and `s3:DeleteObject` there is already in
+/// `deploy/policies/tenant-zone/tenant-credentials.json` — the sweep needs no
+/// grant the shipper does not already have. Confinement to ONE tenant's
+/// prefix is a level up, in `pkdump_erase::sweep`.
+pub fn open_tenant_zone_purge() -> Result<(Box<dyn ObjectPurge>, TenantZoneConfig)> {
+    let zone = TenantZoneConfig::load()?;
+    let purge: Box<dyn ObjectPurge> = match config()? {
+        Backend::Dir(path) => Box::new(DirStore::new(path)),
+        Backend::S3 {
+            bucket,
+            region,
+            prefix,
+            endpoint,
+        } => Box::new(S3Store::connect_as(
+            &bucket,
+            &region,
+            &prefix,
+            endpoint.as_deref(),
+            Some(&zone.profile),
+        )?),
+    };
+    Ok((purge, zone))
 }
 
 fn config() -> Result<Backend> {

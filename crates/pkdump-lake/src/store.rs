@@ -15,6 +15,13 @@
 //! evidence it exists to preserve. Nothing implements both halves *as one
 //! handle*; the two are constructed from the same config by different
 //! entry points ([`crate::open`] and [`crate::open_reader`]).
+//!
+//! [`ObjectPurge`] is the third, and it is narrower than either: enumerate a
+//! prefix, and remove one key. It exists for exactly one caller — the tenant
+//! zone's deletion sweep (`pd-qbrf`) — and it deliberately has no `get` and
+//! no `put`, because a job whose business is *removing* a tenant's holdings
+//! has none reading them and none adding to them. It is handed out only by
+//! [`crate::open_tenant_zone_purge`], never by [`crate::open`].
 
 use std::path::{Path, PathBuf};
 
@@ -55,7 +62,69 @@ pub trait ObjectSource: Send + Sync {
     /// the caller turns into its own refusal, with the date in it.
     fn child_dirs(&self, key_prefix: &str) -> Result<Vec<String>>;
 
+    /// Every object key at or below `key_prefix`, **whole keys** rather than
+    /// names, sorted.
+    ///
+    /// [`Self::child_dirs`] answers "which runs does this date hold"; a
+    /// consumer of the tenant zone asks the other question — "which parts is
+    /// this tenant's holdings dataset made of" — and it cannot know the
+    /// answer in advance, because a part is named for the outbox range it
+    /// carries (`pkdump_lake::range_part_key`) and no reader knows which
+    /// ranges were shipped.
+    ///
+    /// Sorted because the zone's part names are zero-padded for exactly that
+    /// reason: sequence order out of a listing alone. An empty prefix is
+    /// empty, not an error — a tenant who has shipped nothing has no parts,
+    /// and that is a fact about them rather than a fault.
+    fn list_keys(&self, key_prefix: &str) -> Result<Vec<String>>;
+
     /// A short description of where this source reads, for progress output.
+    fn describe(&self) -> String;
+}
+
+/// Enumerate and remove objects. The deletion sweep's handle, and nothing
+/// else's.
+///
+/// What makes it its own trait is `delete`, which neither of the others has
+/// and neither should: [`ObjectStore`] writes and [`ObjectSource`] reads, and
+/// a handle that could remove an object would make either one able to lose
+/// the evidence it exists to keep. The absences are the design too — no
+/// `get`, so the job whose business is *removing* a tenant's holdings has
+/// nothing that reads them, and no `put`, so it has nothing that adds to
+/// them.
+///
+/// `list` is deliberately **not** a second definition of "under this prefix".
+/// It is [`ObjectSource::list_keys`], delegated to by every implementor, and
+/// that is load-bearing rather than tidy: a sweep enumerating a prefix
+/// differently from the reader that later checks it is exactly how a deletion
+/// misses an object a reader can still see. One definition means the proof
+/// and the deletion cannot disagree.
+///
+/// **This trait carries no scoping of its own.** `list` and `delete` will
+/// address whatever key they are given; the prefix a caller is confined to is
+/// the caller's business, and for the one caller there is that confinement is
+/// `pkdump_erase::sweep`, which refuses a key outside the single tenant prefix
+/// it was constructed with. Putting the guard there rather than here is
+/// deliberate: a trait that tried to be safe would need to know what
+/// `tenant/` means, and this module is about bytes and keys.
+pub trait ObjectPurge: Send + Sync {
+    /// Every object key under `key_prefix`, recursively, in sorted order —
+    /// the same answer [`ObjectSource::list_keys`] gives, and implementors
+    /// are expected to delegate to it rather than re-derive it.
+    ///
+    /// Recursive, unlike [`ObjectSource::child_dirs`]: a tenant's partition is
+    /// two levels of `key=value` deep and the sweep's whole claim is that
+    /// nothing under the prefix survives, which is not a claim any single
+    /// level can make. A prefix holding nothing is an empty list rather than
+    /// an error — "already gone" is the normal second run.
+    fn list(&self, key_prefix: &str) -> Result<Vec<String>>;
+
+    /// Remove one object. Removing a key that is not there is **not** an
+    /// error: deletion is re-run after a crash, and a sweep that failed on
+    /// the objects it had already removed could never finish.
+    fn delete(&self, key: &str) -> Result<()>;
+
+    /// A short description of where this handle deletes from.
     fn describe(&self) -> String;
 }
 
@@ -116,9 +185,58 @@ impl ObjectSource for DirStore {
         Ok(out)
     }
 
+    fn list_keys(&self, key_prefix: &str) -> Result<Vec<String>> {
+        // A prefix, not a directory: `tenant/database_id=X/dataset=holdings/`
+        // is a directory here, but S3 would answer the same call for a
+        // prefix that stops mid-name. Walking from the deepest existing
+        // ancestor and filtering keeps the two stores answering alike.
+        let mut out = Vec::new();
+        walk(&self.root, &self.root, &mut out)?;
+        out.retain(|key| key.starts_with(key_prefix));
+        out.sort();
+        Ok(out)
+    }
+
     fn describe(&self) -> String {
         format!("dir {}", self.root.display())
     }
+}
+
+impl ObjectPurge for DirStore {
+    fn list(&self, key_prefix: &str) -> Result<Vec<String>> {
+        ObjectSource::list_keys(self, key_prefix)
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        match std::fs::remove_file(self.root.join(key)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn describe(&self) -> String {
+        format!("dir {}", self.root.display())
+    }
+}
+
+/// Every file under `dir`, as keys relative to `root`.
+fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            walk(root, &path, out)?;
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            out.push(rel.to_string_lossy().into_owned());
+        }
+    }
+    Ok(())
 }
 
 /// The real landing zone: an S3 bucket.
@@ -148,6 +266,28 @@ impl S3Store {
         prefix: &str,
         endpoint: Option<&str>,
     ) -> Result<Self> {
+        Self::connect_as(bucket, region, prefix, endpoint, None)
+    }
+
+    /// [`Self::connect`], under a named AWS profile.
+    ///
+    /// The tenant zone shares a bucket with the catalog and is separated from
+    /// it by nothing but a pair of credential policies (`pd-uz8q`), so the
+    /// identity a handle uses cannot be ambient — it is named, per handle, at
+    /// the point the handle is built. Setting `AWS_PROFILE` in the process
+    /// instead would make it a property of the *process*, and a process that
+    /// touches both zones would then reach one of them with the other's role.
+    ///
+    /// Only the shared-config half of the chain is affected: an environment
+    /// carrying explicit keys still wins, which is what lets a MinIO stand in
+    /// for S3 in a gate that has no roles to assume.
+    pub fn connect_as(
+        bucket: &str,
+        region: &str,
+        prefix: &str,
+        endpoint: Option<&str>,
+        profile: Option<&str>,
+    ) -> Result<Self> {
         // A current-thread runtime owned by the store: every caller in this
         // workspace's ingest path is blocking, and the alternative — making
         // the whole fetch path async for the sake of a PUT — would be a much
@@ -162,6 +302,9 @@ impl S3Store {
                 aws_config::defaults(aws_config::BehaviorVersion::latest()).region(region);
             if let Some(endpoint) = endpoint {
                 loader = loader.endpoint_url(endpoint);
+            }
+            if let Some(profile) = profile {
+                loader = loader.profile_name(profile);
             }
             let conf = loader.load().await;
             // Path-style addressing keeps a MinIO endpoint working; against
@@ -283,6 +426,76 @@ impl ObjectSource for S3Store {
         })
     }
 
+    fn list_keys(&self, key_prefix: &str) -> Result<Vec<String>> {
+        // No delimiter: every object at or below the prefix, however deep.
+        // The keys come back with `self.prefix` on them and go out without
+        // it, because a caller that built the prefix with
+        // `TenantZoneConfig::rooted` would otherwise get it twice.
+        let prefix = self.full_key(key_prefix);
+        let strip = self.prefix.clone();
+        self.runtime.block_on(async {
+            let mut out = Vec::new();
+            let mut pages = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(&prefix)
+                .into_paginator()
+                .send();
+            while let Some(page) = pages.next().await {
+                let page = page.map_err(|e| {
+                    LakeError::S3(format!(
+                        "list s3://{}/{}: {}",
+                        self.bucket,
+                        prefix,
+                        aws_error_text(&e)
+                    ))
+                })?;
+                for object in page.contents() {
+                    if let Some(key) = object.key() {
+                        out.push(key.strip_prefix(&strip).unwrap_or(key).to_string());
+                    }
+                }
+            }
+            out.sort();
+            Ok(out)
+        })
+    }
+
+    fn describe(&self) -> String {
+        format!("s3://{}/{}", self.bucket, self.prefix)
+    }
+}
+
+impl ObjectPurge for S3Store {
+    fn list(&self, key_prefix: &str) -> Result<Vec<String>> {
+        ObjectSource::list_keys(self, key_prefix)
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        // S3's DELETE is already idempotent — removing an absent key answers
+        // 204 — which is the behaviour this trait requires and the reason
+        // there is no existence check here.
+        let key = self.full_key(key);
+        self.runtime.block_on(async {
+            self.client
+                .delete_object()
+                .bucket(&self.bucket)
+                .key(&key)
+                .send()
+                .await
+                .map_err(|e| {
+                    LakeError::S3(format!(
+                        "delete s3://{}/{}: {}",
+                        self.bucket,
+                        key,
+                        aws_error_text(&e)
+                    ))
+                })
+        })?;
+        Ok(())
+    }
+
     fn describe(&self) -> String {
         format!("s3://{}/{}", self.bucket, self.prefix)
     }
@@ -332,6 +545,116 @@ mod tests {
             .unwrap(),
             b"hi"
         );
+    }
+
+    /// The listing a zone reader works from: whole keys, sorted, and scoped
+    /// to the prefix it asked about rather than to the store.
+    #[test]
+    fn dir_store_lists_whole_keys_under_a_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = DirStore::new(tmp.path());
+        for key in [
+            "tenant/database_id=B/dataset=holdings/as_of=2026-08-14/part-seq-000000000001-000000000002.parquet.enc",
+            "tenant/database_id=A/dataset=holdings/as_of=2026-08-14/part-seq-000000000003-000000000004.parquet.enc",
+            "tenant/database_id=A/dataset=holdings/as_of=2026-08-13/part-seq-000000000001-000000000002.parquet.enc",
+            "raw/source=tcgcsv/dataset=groups/x/part-0000.json.zst",
+        ] {
+            store.put(key, b"x".to_vec()).unwrap();
+        }
+
+        let a = store.list_keys("tenant/database_id=A/").unwrap();
+        assert_eq!(a.len(), 2, "A's two parts and nobody else's: {a:?}");
+        assert!(a[0].contains("as_of=2026-08-13"), "sorted: {a:?}");
+        assert!(a.iter().all(|k| k.contains("database_id=A/")));
+
+        assert_eq!(store.list_keys("tenant/").unwrap().len(), 3);
+        assert!(store.list_keys("tenant/database_id=C/").unwrap().is_empty());
+    }
+
+    /// The sweep's whole claim rests on this being recursive: a tenant
+    /// partition is three `key=value` levels deep before an object appears.
+    #[test]
+    fn dir_store_lists_a_prefix_recursively_and_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = DirStore::new(tmp.path());
+        for key in [
+            "tenant/database_id=A/dataset=holdings/as_of=2026-08-14/part-0001",
+            "tenant/database_id=A/dataset=holdings/as_of=2026-08-13/part-0000",
+            "tenant/database_id=A/dataset=valuations/as_of=2026-08-14/part-0000",
+            "tenant/database_id=B/dataset=holdings/as_of=2026-08-14/part-0000",
+            "raw/source=tcgcsv/x",
+        ] {
+            store.put(key, b"x".to_vec()).unwrap();
+        }
+
+        assert_eq!(
+            ObjectPurge::list(&store, "tenant/database_id=A/").unwrap(),
+            vec![
+                "tenant/database_id=A/dataset=holdings/as_of=2026-08-13/part-0000",
+                "tenant/database_id=A/dataset=holdings/as_of=2026-08-14/part-0001",
+                "tenant/database_id=A/dataset=valuations/as_of=2026-08-14/part-0000",
+            ],
+            "one tenant's prefix must cover every dataset and no other tenant"
+        );
+    }
+
+    /// The sweep and the reader must mean the SAME thing by "under this
+    /// prefix", including for a prefix that stops mid-name — the case the two
+    /// implementations this merge reconciled disagreed on. `list` walking from
+    /// `root.join(prefix)` answered *empty* here, because that path is neither
+    /// a file nor a directory, while S3 and `list_keys` answer with every key
+    /// the prefix matches. That gap runs in the one direction that matters: a
+    /// sweep that under-reports deletes less than the proof later looks for.
+    #[test]
+    fn purge_lists_exactly_what_the_reader_lists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = DirStore::new(tmp.path());
+        for key in [
+            "tenant/database_id=AB/dataset=holdings/as_of=2026-08-14/part-0000",
+            "tenant/database_id=A/dataset=holdings/as_of=2026-08-14/part-0000",
+        ] {
+            store.put(key, b"x".to_vec()).unwrap();
+        }
+
+        // Stops mid-name: matches `database_id=A/…` and `database_id=AB/…` both.
+        let prefix = "tenant/database_id=A";
+        let listed = ObjectSource::list_keys(&store, prefix).unwrap();
+        assert_eq!(
+            listed.len(),
+            2,
+            "a key prefix is not a directory: {listed:?}"
+        );
+        assert_eq!(
+            ObjectPurge::list(&store, prefix).unwrap(),
+            listed,
+            "the sweep must enumerate what the reader enumerates, exactly"
+        );
+    }
+
+    /// A prefix nothing is under is an empty answer, not an error — the
+    /// normal shape of the second run of a deletion.
+    #[test]
+    fn dir_store_lists_an_absent_prefix_as_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = DirStore::new(tmp.path());
+        assert!(
+            ObjectPurge::list(&store, "tenant/database_id=NOBODY/")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// Deleting twice is what a resumed sweep does on every object it already
+    /// removed. It has to be free.
+    #[test]
+    fn dir_store_deletes_idempotently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = DirStore::new(tmp.path());
+        let key = "tenant/database_id=A/dataset=holdings/as_of=2026-08-14/part-0000";
+        store.put(key, b"x".to_vec()).unwrap();
+        store.delete(key).unwrap();
+        store.delete(key).unwrap();
+        assert!(ObjectPurge::list(&store, "tenant/").unwrap().is_empty());
     }
 
     #[test]

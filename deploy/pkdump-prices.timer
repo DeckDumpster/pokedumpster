@@ -12,10 +12,12 @@ Description=Nightly PokeDumpster catalog.prices build (%i)
 # tests/deploy/run.sh recomputes it rather than trusting the comment.
 #
 # It is not the guarantee, though — the ordering dependencies in the .service
-# are. The derive and the transform are also at 07:00, and that is fine: all
-# three are ordered, so the night runs land -> derive -> prices -> transform in
-# sequence however long each takes. The calendar entry only decides when the
-# day's work is ASKED for; systemd decides in what order it happens.
+# are. The derive and the shipment are also at 07:00, and that is fine: the
+# whole wave is ordered, so the night runs land -> derive -> prices -> ship ->
+# transform in sequence however long each takes. The calendar entry only
+# decides when the day's work is ASKED for; systemd decides in what order it
+# happens. (The transform is the one unit NOT in this wave: since pd-i08u it
+# waits at 07:30, derived from the shipment's own bounds.)
 OnCalendar=*-*-* 07:00:00
 # No RandomizedDelaySec: unlike the landing there is no upstream to be polite to
 # — everything this job reads is the bucket and the box's own catalog — and

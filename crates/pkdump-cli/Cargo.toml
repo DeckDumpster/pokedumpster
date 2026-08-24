@@ -14,6 +14,7 @@ pkdump-core.workspace = true
 pkdump-db.workspace = true
 pkdump-derive.workspace = true
 pkdump-ingest.workspace = true
+pkdump-keys.workspace = true
 pkdump-lake.workspace = true
 pkdump-server.workspace = true
 rusqlite.workspace = true

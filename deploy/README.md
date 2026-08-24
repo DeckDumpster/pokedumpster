@@ -590,6 +590,25 @@ closed `Source` enum. The transform tier (`value_snapshots.py`) is the one job
 that opens tenant databases on purpose, and its half of the rule is the other
 direction: it reads the lake and never writes to it.
 
+**The rule is about the CATALOG ZONE**, and since the inbound leg (pd-8lw7) that
+distinction is load-bearing: the same bucket also holds the **tenant zone** under
+`tenant/` — holdings and valuations, always tenant-keyed, retained 90 days,
+reached by credentials that reach nothing else (`deploy/TENANT_ZONE.md`). So the
+guard's axis is the catalog zone against the tenant zone rather than the lake
+against everything else (pd-7x83), and the tenant zone is a carve-out with the
+rules INVERTED: every key it builds takes a `database_id`, it resolves no tenant
+identity of its own, the shipper that fills it reaches no catalog prefix and no
+catalog credential, and the online path (`pkdump-db`, `pkdump-server`,
+`pkdump-keys`) links neither zone. The carve-out is total rather than a list of
+exceptions — every Rust file in `crates/pkdump-lake` must be classified into
+exactly one zone, so adding one is a decision the gate makes you take.
+
+And the guard has been **seen red**: `tests/lake/tenant_isolation_selftest.sh`
+(lint tier) injects one violation at a time into a copy of the tree and requires
+the specific assertion to fail on each — including a tenant-keyed column added
+to a catalog table, and including the four cases that must *not* fire, where the
+tenant zone is being legitimately tenant-keyed.
+
 Two pieces, both instance-scoped:
 
 - **`pkdump-nessie-<inst>`** — the versioned Iceberg catalog. The one JVM

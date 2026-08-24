@@ -24,6 +24,14 @@ pub enum LakeError {
     /// Read-side only; the writer cannot produce one of these.
     #[error("{0}")]
     Raw(String),
+
+    /// A partition value would not survive being a path component — an id
+    /// carrying a separator, a malformed date. Distinct from
+    /// [`LakeError::Raw`] because it is caught before anything is written,
+    /// and the thing at risk is a key landing outside the prefix its
+    /// tenant's deletion drops. See [`crate::tenant`].
+    #[error("{0}")]
+    Layout(String),
 }
 
 /// Convenience alias for results in this crate.

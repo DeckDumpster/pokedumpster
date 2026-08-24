@@ -280,6 +280,31 @@ if [ -f "${LS_CONF_DIR}/litestream.env" ]; then
     fi
 fi
 
+# --- Tenant-zone master key (pd-ulds) --------------------------------------
+# NOT created here, on purpose, and for the same reason the bootstrap key is
+# not: a secret minted by a script nobody was watching is a secret nobody
+# backed up — and this one has no second copy anywhere by design. So setup.sh
+# prepares the DIRECTORY (already done above, 700, beside litestream.env) and
+# names the step; `pkdump keys init` is the operator's deliberate act.
+#
+# There is exactly one master key and every tenant's key is derived from it, so
+# overwriting it destroys every tenant's key at once. `keys init` refuses to
+# overwrite and there is no --force.
+if [ ! -f "${LS_CONF_DIR}/tenant-master.key" ]; then
+    echo "    No tenant-zone master key for '${INSTANCE}' (${LS_CONF_DIR}/tenant-master.key)."
+    echo "    Crypto-shredding is off until there is one. To create it:"
+    echo "      1. bash deploy/keys.sh ${INSTANCE} init"
+    echo "      2. bash deploy/keys.sh ${INSTANCE} backup --yes   # into your password manager,"
+    echo "         the same place the [bootstrap] key above lives. There is no other copy."
+    echo "    Losing that key is NOT the same event as deleting a tenant — see deploy/KEYS.md."
+else
+    KEY_MODE="$(stat -c '%a' "${LS_CONF_DIR}/tenant-master.key")"
+    if [ "$KEY_MODE" != "600" ]; then
+        echo "    WARNING: ${LS_CONF_DIR}/tenant-master.key is mode ${KEY_MODE}, not 600." >&2
+        echo "             Fix it: chmod 600 ${LS_CONF_DIR}/tenant-master.key" >&2
+    fi
+fi
+
 # Per-instance alert config: the healthchecks.io ping URL for THIS instance's
 # backup-freshness dead-man's switch (pokedumpster-ivq.2). Empty = Layer 1 off.
 if [ ! -f "${LS_CONF_DIR}/alerts.env" ]; then
@@ -368,10 +393,14 @@ echo "    Port:              podman port systemd-${SERVICE_NAME}"
 echo "    Logs:              journalctl --user -u ${SERVICE_NAME} -f"
 echo "    Refresh timer:     systemctl --user enable --now pkdump-refresh@${INSTANCE}.timer"
 echo "    Nightly lake chain: needs the lakehouse first (bash deploy/setup-lake.sh ${INSTANCE}), then"
-echo "                       land -> derive -> prices -> transform, each ordered after the last:"
+echo "                       land -> derive -> prices -> ship -> transform, each ordered after the last:"
 echo "                       systemctl --user enable --now pkdump-derive@${INSTANCE}.timer"
 echo "                       systemctl --user enable --now pkdump-prices@${INSTANCE}.timer"
+echo "                       systemctl --user enable --now pkdump-ship@${INSTANCE}.timer"
 echo "                       systemctl --user enable --now pkdump-value-snapshots@${INSTANCE}.timer"
+echo "                       (ship needs a master key + PKDUMP_TENANT_AWS_PROFILE, and the"
+echo "                        backfill run first — deploy/TENANT_ZONE.md. The transform values"
+echo "                        what ship reads back, so arming it alone snapshots nobody.)"
 echo "    Uptime (L0):       edit ~/.config/pkdump/${INSTANCE}/alerts.env (PKDUMP_UPTIME_PING_URL,"
 echo "                       PKDUMP_HEARTBEAT_URL — a SEPARATE check from the backup one), then:"
 echo "                       systemctl --user enable --now pkdump-heartbeat@${INSTANCE}.timer"

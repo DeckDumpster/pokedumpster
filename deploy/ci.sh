@@ -52,6 +52,14 @@
 #                      assert what it answers to a tenant header: malformed is
 #                      400, unknown is 404, and single-tenant mode does not read
 #                      the header at all. See tests/tenants/handles.sh.
+#  9b. Key custody:    mint the tenant-zone master key with the SHIPPED binary
+#                      and stat the file ON THE HOST — "the code sets 600" and
+#                      "the file is 600" are different claims. Then the property
+#                      the whole item turns on, on a real box: with the master
+#                      key moved away, a tombstoned tenant still reads as
+#                      REVOKED while a live one reads as an OPERATIONAL failure.
+#                      A lost key never reports as a deleted tenant. See
+#                      tests/keys/run.sh.
 #  10. Browser gate:   screenshot every route at 1440 and 768 against that
 #                      same instance and diff against the committed baselines,
 #                      and assert the DOM bounds that a screenshot cannot see —
@@ -80,20 +88,49 @@
 #                      tests/lake/derive.sh.
 #  14. Transform gate: value snapshots for EVERY registered tenant, computed
 #                      from that table. Byte-identical to what Rust's
-#                      snapshot_today produces for the same tenant and date, a
-#                      second tenant who never had a snapshot row gets one
-#                      (pd-s5yn inverted), and a tenant nobody can write to is
-#                      skipped with the run exiting 2 rather than 0. §10 then
-#                      drives the SHIPPED deploy/value-snapshots.sh — the file
-#                      the nightly timer executes — over the same lake. See
+#                      snapshot_today produces for the same tenant and date —
+#                      and since pd-i08u that is asserted THROUGH the tenant
+#                      zone, because the online holdings read is gone and §4b
+#                      has to ship and read back before the transform has
+#                      anything to value. A second tenant who never had a
+#                      snapshot row gets one (pd-s5yn inverted), and a tenant
+#                      nobody can write to is skipped with the run exiting 2
+#                      rather than 0. §10 then drives the SHIPPED
+#                      deploy/value-snapshots.sh — the file the nightly timer
+#                      executes — over the same lake. See
 #                      tests/lake/value_snapshots.sh.
+#  14b.Tenant-zone gate: the tenant zone shares the lake's bucket and is
+#                      separated from it by a prefix — which is to say by two
+#                      credential policies and a lifecycle rule, and by nothing
+#                      else. Assert the boundary in BOTH directions against a
+#                      MinIO, then BREAK it deliberately and assert the same
+#                      checks go red; assert the 90-day retention is mechanical
+#                      and that no rule can reach raw/, whose retention is
+#                      indefinite by decision. See tests/lake/tenant_zone.sh.
+#  14e.Phase 3 gate:   a collection valued from the TENANT ZONE, which since
+#                      pd-i08u is the only way to value one — §5 also asserts
+#                      that neither --holdings nor --compare is still
+#                      reachable. §6 is the section that matters: a collection
+#                      changed WITHOUT shipping must leave the valuation
+#                      UNMOVED, and §6b requires shipping and reading back to
+#                      move it. A Phase 3 that quietly read the live table
+#                      fails the first half; one that is frozen or cached fails
+#                      the second. See tests/lake/phase3.sh.
+#  14f.Deletion gate:  a tenant erased from the zone, and PROVEN erased —
+#                      against a VERSIONED bucket, so the drop leaves a
+#                      noncurrent version of a really-shipped part behind and
+#                      that surviving copy is fetched back and proven
+#                      unopenable. Every check is run one step EARLIER too and
+#                      required to report the path OPEN: a proof only ever seen
+#                      passing is not known to prove anything. See
+#                      tests/lake/deletion.sh.
 #  15. Refresh gate:   the other half of that — a real `pkdump data refresh`,
 #                      through the shipped image, over a data directory with
 #                      two provisioned tenants in it, must leave every tenant
 #                      database byte-identical. The refresh is a SHARED-catalog
 #                      job. See tests/refresh/tenant_bytes.sh.
 #
-# Steps 5-9 and 11-15 do not run where they are written. Each one QUEUES itself
+# Steps 5-9b and 11-15 do not run where they are written. Each one QUEUES itself
 # under its own tier guard and they are run together, two at a time, by step
 # 16 — see the "PARALLEL GATES" note below and deploy/ci-parallel.sh.
 #
@@ -107,7 +144,7 @@
 # Exits non-zero on the first failure of the sequential steps. Fast and
 # re-runnable.
 #
-# PARALLEL GATES (pd-2nl9). Eleven of the steps above stand up their own
+# PARALLEL GATES (pd-2nl9). Fourteen of the steps above stand up their own
 # containers and share nothing — every name each of them uses is derived from
 # its own prefix plus a per-checkout hash, because concurrent polecats already
 # run whole suites of this script beside each other. So they are queued rather
@@ -387,7 +424,7 @@ if tier lint; then
     # into a backup that quietly stopped running and nobody hears about it.
     # Same tier, and it guards a gate that can SKIP the whole suite. The key is
     # (epoch, tree, tier set); if the tier set ever falls out of the key, a
-    # docs-only pass silently certifies eleven container gates that never ran.
+    # docs-only pass silently certifies fourteen container gates that never ran.
     # §1 asserts exactly that, in both directions, along with the TTL, the epoch
     # and the refusal to key a dirty tree.
     step "Tree-hash cache (deploy/ci-cache.sh --self-test)"
@@ -472,6 +509,19 @@ if tier lint; then
     # See tests/lake/tenant_isolation_test.sh.
     step "Tenant data stays out of the lake (tests/lake/tenant_isolation_test.sh)"
     bash "$REPO_DIR/tests/lake/tenant_isolation_test.sh"
+
+    # And the half without which the one above is a guess. The inbound leg
+    # (pd-8lw7) gave that guard four new sections about a zone that did not
+    # exist when it was written, and a section whose corpus is empty passes
+    # forever — three gates went green that way in one day on this repo. This
+    # breaks the property on purpose, one violation at a time, and requires the
+    # SPECIFIC assertion to be the one that reddens; the last block is the
+    # opposite claim, that the tenant zone being legitimately tenant-keyed
+    # fires nothing. Hermetic — it copies the source trees to a temp dir — but
+    # it runs the guard once per case, so it is tens of seconds rather than
+    # sub-second. See tests/lake/tenant_isolation_selftest.sh.
+    step "That guard has been seen RED (tests/lake/tenant_isolation_selftest.sh)"
+    bash "$REPO_DIR/tests/lake/tenant_isolation_selftest.sh"
 
     # A formatter check, not a compile — `cargo fmt` parses and never builds,
     # so it costs a second and belongs with the lint tier rather than behind
@@ -670,6 +720,22 @@ if tier tenants; then
 
     step "Queueing: Tenant header — malformed 400 vs unknown 404 (pd-4g7c)"
     pkdump_par_add tenant-header bash "$REPO_DIR/tests/tenants/handles.sh"
+
+    # --- 9b. Key custody ----------------------------------------------------
+    # Tenant-zone key custody in the SHIPPED image (pd-ulds). Two claims the
+    # hermetic Rust tests cannot make: that the master key file is mode 600
+    # WHERE IT IS DEPLOYED (a umask, a mount or a later chmod all sit between
+    # "the code sets 600" and "the file is 600"), and that deploy/keys.sh — the
+    # one layer that could quietly undo the backup/destruction separation by
+    # mounting everything for everything — does not. Its own image tag, temp
+    # dir and fake HOME; the data "volume" is a host path under its own temp
+    # dir, so it touches no pkdump-*-data volume.
+    #
+    # In the tenants tier because key state is keyed on database_id and lives
+    # in registry.sqlite — the same file this tier's other two gates are about.
+
+    step "Queueing: Key custody — mode 600 deployed, and a lost key is not a deletion (pd-ulds)"
+    pkdump_par_add keys bash "$REPO_DIR/tests/keys/run.sh"
 fi
 
 # --- 10. Browser gate --------------------------------------------------------
@@ -728,6 +794,14 @@ if tier lake; then
     # who has never had a snapshot row gets one — which is pd-s5yn inverted
     # into a test. A tenant whose database is missing or locked is skipped and
     # the run exits 2.
+    #
+    # Since pd-i08u it also stands up a tenant zone (§4b): the transform has no
+    # online holdings read left, so keys, a backfill, a shipment and a
+    # read-back are what give it anything to value. That puts the round trip
+    # INSIDE the arithmetic claim — alice's holdings reach the SQL through
+    # Parquet, AES-GCM and outbox::project and still have to produce
+    # byte-identical rows — rather than losing the claim because its input
+    # moved.
 
     step "Queueing: Lakehouse — per-tenant value snapshots, for every tenant"
     pkdump_par_add value-snapshots bash "$REPO_DIR/tests/lake/value_snapshots.sh"
@@ -745,6 +819,83 @@ if tier lake; then
 
     step "Queueing: Lakehouse — shared.sqlite derived from raw/ alone, no network"
     pkdump_par_add derive bash "$REPO_DIR/tests/lake/derive.sh"
+
+    # --- 14c. The tenant zone is governed -------------------------------------
+    # The tenant zone shares the lake's bucket and is separated from it by a
+    # prefix — which is to say by a pair of credential policies and a lifecycle
+    # rule, and by nothing else. A policy is one misconfiguration from being
+    # nothing at all while looking identical from outside, so this gate asserts
+    # the boundary in BOTH directions and then deliberately breaks it and
+    # asserts the same checks go RED. It also proves the 90-day retention is
+    # mechanical rather than documented, and that no rule can reach `raw/`,
+    # whose retention is indefinite by decision.
+    #
+    # It lives in this tier for the same reason the derive does: it is a
+    # lakehouse claim about a bucket, not something a frontend change can move.
+
+    step "Queueing: Lakehouse — the tenant zone's credential boundary and its 90-day retention"
+    pkdump_par_add tenant-zone bash "$REPO_DIR/tests/lake/tenant_zone.sh"
+
+    # --- 14d. The shipper -----------------------------------------------------
+    # §14c proves the zone is governed while it is EMPTY. This proves the thing
+    # that fills it: the shipped image's `pkdump-ship` moving a real outbox into
+    # a real bucket under the real tenant policy, killed mid-run and resumed,
+    # with the catalog role unable to read a byte of what it wrote — asserted in
+    # the failing direction too. The Rust tier already covers gap detection,
+    # idempotence and the key; what only exists here is the deployment: the
+    # binary being in the image at all, an IAM policy that can refuse, a process
+    # that can actually die, and deploy/ship.sh's four exit statuses.
+    #
+    # Same tier as the derive and the zone, for the same reason: it is a
+    # lakehouse claim about a bucket.
+
+    step "Queueing: Lakehouse — the shipper, against a real bucket, killed and resumed"
+    pkdump_par_add shipper bash "$REPO_DIR/tests/lake/shipper.sh"
+
+    # --- 14e. Phase 3: a collection valued from the tenant zone ---------------
+    # §14d proves the zone holds what the collection holds. This proves the
+    # thing that USES it: the valuation, computed from the zone rather than
+    # from `collection` — and since pd-i08u, computed from the zone or not at
+    # all. §5 diffs it against Rust's own rows for the same collection and
+    # asserts that neither --holdings nor --compare survives.
+    #
+    # The section that matters is the RED one. A Phase 3 that quietly read the
+    # live table would pass every equivalence check ever written, so the gate
+    # changes a collection WITHOUT shipping it and requires the valuation NOT
+    # TO MOVE — then ships, reads back, and requires it to move. Frozen fails
+    # the second half; live-reading fails the first. The other half is
+    # staleness: the zone moving on while nobody re-reads it must be a refusal,
+    # not a beautiful number about last week.
+    #
+    # It needs both images — the app image for the shipper and the zone reader,
+    # the lake image for prices out of Iceberg — which is why it is the
+    # longest gate in this tier.
+
+    step "Queueing: Lakehouse — Phase 3 valuation from the tenant zone, the only path"
+    pkdump_par_add phase3 bash "$REPO_DIR/tests/lake/phase3.sh"
+
+    # --- 14f. The deletion path -----------------------------------------------
+    # §14d fills the zone; this empties it for one tenant and then has to PROVE
+    # it. The bar the design sets is "proven, not asserted", so the gate runs
+    # the same verification a step BEFORE the deletion and requires it to report
+    # every path open — a check only ever seen passing is not known to check
+    # anything.
+    #
+    # Its bucket is VERSIONED, which is the configuration the Rust tier cannot
+    # have: the drop leaves a noncurrent version of a really-shipped part
+    # behind, and that surviving copy is fetched back out and proven unopenable.
+    # That is the whole crypto-shredding claim, against real bytes. What else is
+    # only true here: the binary being in the image, an IAM policy that actually
+    # permits the delete and the listing, the objects being gone as seen by the
+    # BUCKET ROOT rather than merely hidden from the role that deleted them, and
+    # deploy/erase.sh's three exit statuses — including 4, which nothing else in
+    # the system reports.
+    #
+    # Same tier as the zone and the shipper, for the same reason: it is a
+    # lakehouse claim about a bucket.
+
+    step "Queueing: Lakehouse — the deletion path, proven against a versioned bucket"
+    pkdump_par_add deletion bash "$REPO_DIR/tests/lake/deletion.sh"
 fi
 
 # --- 15. The refresh writes no tenant bytes ---------------------------------

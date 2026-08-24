@@ -1,0 +1,88 @@
+[Unit]
+Description=PokeDumpster ownership shipment to the tenant zone (%i)
+# pd-dxn3, item 4 of the inbound-leg epic. The outbox (pd-5m54) records every
+# holdings change atomically; this unit is what moves those rows into the
+# tenant zone (pd-uz8q), encrypted under each tenant's derived key (pd-ulds).
+#
+# Without it the outbox grows forever and the offline side learns nothing —
+# which is the same failure class as pd-8m5c and pd-up36: a mechanism that
+# works, wired to no schedule, so the numbers quietly stop moving.
+#
+# Since pd-i08u it runs BOTH halves of the zone round trip: `pkdump-ship run`
+# out, then `pkdump-ship holdings` back into each tenant's `zone_holdings`.
+# The online holdings read is deleted, so that table is the only thing the
+# transform can value a collection from — and this is the only thing that
+# writes it. See deploy/ship.sh.
+#
+# {{REPO_DIR}} is sed-substituted by deploy/units-lib.sh (single-clone
+# deployment). Installed for every instance, enabled for none — see the timer.
+#
+# ── ORDERING: BEFORE the transform, never beside it (pd-i08u) ───────────────
+# This unit and pkdump-value-snapshots@%i both open every tenant's database:
+# this one writes each one's shipping cursor and `zone_holdings`, the transform
+# writes a value snapshot into each. Two writers on one SQLite file is a busy
+# timeout at best and a skipped tenant at worst.
+#
+# Until pd-i08u that was the WHOLE relationship, and this unit ran After= the
+# transform. It is now a data dependency and it points the other way: the
+# transform values a collection out of `zone_holdings`, and this unit's second
+# half is the only thing that writes it. Ship after the transform and the
+# transform values whatever last night left behind — or, on a box where nobody
+# has ever read the zone back, refuses every tenant. So the ordering line moved
+# to pkdump-value-snapshots@.service (`After=pkdump-ship@%i.service`) and this
+# unit takes the place in the chain the transform used to have:
+#
+#   land -> derive -> prices -> SHIP (+ read back) -> transform
+#
+# Deliberately NOT `Wants=` on any of them: every job in that chain is a
+# oneshot without RemainAfterExit, so a Wants= would find it inactive and run
+# the whole thing again. Exactly the trap pkdump-value-snapshots@.service
+# documents.
+After=pkdump-refresh@%i.service
+After=pkdump-derive@%i.service
+After=pkdump-prices@%i.service
+# The tenant zone is in S3.
+After=network-online.target
+Wants=network-online.target
+# The same half-guard the other lake units carry: deploy/setup.sh scaffolds
+# lake.env (commented out) on every box, so this passes anywhere that has been
+# set up at all. The real refusals — no tenant profile, no master key, no image
+# — are in the wrapper, which can say which file and which command; a condition
+# cannot.
+ConditionPathExists=%h/.config/pkdump/lake.env
+# Layer 2 (pokedumpster-ivq.3): push the journal tail on a real failure. Exit 2
+# is not one — see SuccessExitStatus below. Exit 3 IS one, deliberately.
+OnFailure=pkdump-alert@%n.service
+
+[Service]
+Type=oneshot
+# ── 0 / 2 / 3 / 1 ARE FOUR DIFFERENT ANSWERS ───────────────────────────────
+#   0  every registered tenant's outbox is in the zone, and the zone is in
+#      every registered tenant's `zone_holdings`.
+#   2  the run COMPLETED and at least one tenant was skipped by one of the two
+#      halves — an absent or locked database, or one whose key nobody has
+#      registered. A normal partial night, and a unit that paged on it would be
+#      a unit whose pages get ignored (pd-me6h). A SUCCESS here; the wrapper
+#      says PARTIAL in the journal and pushes a warning naming the half and the
+#      tenants, so it is not silent either.
+#   3  a SEQUENCE GAP: outbox events were LOST before reaching the zone. NOT a
+#      success. It is listed nowhere in SuccessExitStatus on purpose — the
+#      offline copy is incomplete, no later run can repair it (the sequence
+#      numbers are never reissued), and nothing else in the system would ever
+#      notice. The wrapper pushes its own message naming the tenant and the
+#      range, because the journal tail OnFailure= sends does not.
+#   1  the run never started, or skipped every tenant, in EITHER half — a
+#      missing master key, an unreachable bucket, a zone nobody could read
+#      back. A failure, and OnFailure= pages for it. A read-back that reached
+#      nobody is a failure rather than a partial because tonight's valuation
+#      then skips everyone, which is the silence this whole chain exists to
+#      end.
+SuccessExitStatus=2
+ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/ship.sh %i'
+# The bound the timer that FOLLOWS this one is derived from — since pd-i08u
+# that is pkdump-value-snapshots@.timer, not the other way round. The work is
+# one pass over each tenant's unshipped outbox rows and a PUT per part, then
+# one pass reading each tenant's partitions back; seconds on a normal night,
+# minutes after a long outage. The ceiling is here so a bucket that never
+# answers fails the unit rather than hanging the timer until the next one.
+TimeoutStartSec=1800

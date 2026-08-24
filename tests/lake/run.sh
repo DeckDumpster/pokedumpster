@@ -32,11 +32,13 @@
 #
 # Prod-safe: its own podman network, its own MinIO, its own Nessie, its own temp
 # dir, its own image tag. Touches no pkdump-* unit, no pkdump-*-data volume, no
-# real S3 bucket, and no tenant database — the lake never holds tenant data at
-# all, which is the standing decision this whole design rests on. That decision
-# has its own gate now: tests/lake/tenant_isolation_test.sh, in the lint tier,
-# because asserting it needs no container and it should fail in a second rather
-# than behind this two-minute run (pd-cgi9).
+# real S3 bucket, and no tenant database — the CATALOG ZONE never holds tenant
+# data at all, which is the standing decision this whole design rests on. (The
+# tenant zone under `tenant/` is a different object in the same bucket, governed
+# separately; tests/lake/tenant_zone.sh is its gate.) That decision has its own
+# gate now: tests/lake/tenant_isolation_test.sh, in the lint tier, because
+# asserting it needs no container and it should fail in a second rather than
+# behind this two-minute run (pd-cgi9, re-cut by pd-7x83).
 set -euo pipefail
 
 NESSIE_IMAGE=${NESSIE_IMAGE:-ghcr.io/projectnessie/nessie:0.104.3}

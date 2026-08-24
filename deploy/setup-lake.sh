@@ -199,6 +199,17 @@ cat <<EOF
                 bash deploy/prices.sh ${INSTANCE}            # or run one now
                 bash deploy/value-snapshots.sh ${INSTANCE}
 
+    The ownership shipment (pd-dxn3) is installed too and is NOT armed here:
+                systemctl --user enable --now pkdump-ship@${INSTANCE}.timer
+
+    Arming it needs two things first — a master key (bash deploy/keys.sh
+    ${INSTANCE} init, BACKED UP) and PKDUMP_TENANT_AWS_PROFILE in lake.env —
+    and it should wait for the backfill: pkdump outbox emit --all
+    --all-tenants (pd-385w). The shipper ships the OUTBOX, and an existing
+    collection's outbox starts empty (pd-whsw): armed before the backfill has
+    run, it faithfully ships every change made from tonight and nothing
+    anybody already owns, which is a zone that looks populated and is not.
+
     The catalog has NO authentication (Nessie says so in its own startup log),
     which is why it publishes on 127.0.0.1 only and jobs reach it over the
     pkdump-lake-${INSTANCE} network. Do not publish it on 0.0.0.0.

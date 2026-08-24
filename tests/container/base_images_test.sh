@@ -24,6 +24,17 @@
 #      to the builder's release, and that id is asserted to AGREE with the FROM
 #      line — a base change that forgets the id fails here rather than shipping
 #      an image that cannot start.
+#   §4 THE SAME ARGUMENT, ONE AXIS OVER (pd-sjn7). A cargo fingerprint does not
+#      record which CHECKOUT produced the objects either, and one box runs the
+#      rig root, a CI runner and any number of polecat worktrees — all building
+#      /app. A constant id shares one target directory between them, and the
+#      worktree whose rlib is merely newer wins. That failed a real CI run with
+#      `cannot find trait ObjectPurge in crate pkdump_lake` while COPY
+#      demonstrably delivered the right sources; the quieter form of it links
+#      cleanly and ships old behaviour. So the id carries a second component the
+#      caller supplies per checkout, and this asserts both that the Containerfile
+#      takes one and that the helper every gate builds through actually passes a
+#      per-checkout value.
 #
 # Deliberately hermetic — no podman, no network, no build — so deploy/ci.sh can
 # run it in the sub-second tier beside tests/lib/ports_test.sh, long before any
@@ -136,6 +147,29 @@ CACHE_ID="${CACHE_ID#id=}"
 # an image that cannot start.
 check "the id names the builder's release" "${BUILDER_RELEASE:-<none>}" \
 	"$(release_of "$CACHE_ID")"
+
+log "4. the target cache is scoped to the CHECKOUT as well (pd-sjn7)"
+# The Containerfile half: the id must not be a constant. A build arg is what
+# lets the caller distinguish two checkouts, and a literal id cannot.
+check "the cache id takes a build-arg component" "yes" \
+	"$(grep -qE -- 'id=pkdump-target-[a-z]+-\$\{[A-Z_]+\}' <<<"$TARGET_MOUNT" && echo yes || echo no)"
+SCOPE_ARG="$(grep -oE -- 'id=pkdump-target-[a-z]+-\$\{([A-Z_]+)\}' <<<"$TARGET_MOUNT" |
+	grep -oE '[A-Z_]+' | tail -1)"
+check "…and that arg is declared in the builder stage" "1" \
+	"$(grep -cE "^ARG ${SCOPE_ARG:-__none__}=" "$CONTAINERFILE")"
+
+# The caller half, and it is the half that actually varies: a Containerfile that
+# takes a scope nobody passes is scoped to the literal default on every box.
+IMAGE_LIB="${REPO_DIR}/deploy/image-lib.sh"
+check "deploy/image-lib.sh is there to check" "yes" \
+	"$([[ -f "$IMAGE_LIB" ]] && echo yes || echo no)"
+check "the build helper passes the scope" "1" \
+	"$(grep -cE -- "--build-arg \"?${SCOPE_ARG:-__none__}=" "$IMAGE_LIB")"
+# Per CHECKOUT, not per anything else. A constant passed as a build arg would
+# satisfy every check above and fix nothing, so this asks where the value comes
+# from: the same sha1-of-the-path the container gates already derive.
+check "…and derives it from this checkout's path" "yes" \
+	"$(grep -qE 'printf .%s. "\$repo_dir" \| sha1sum' "$IMAGE_LIB" && echo yes || echo no)"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"

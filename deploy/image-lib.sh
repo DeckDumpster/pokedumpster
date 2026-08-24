@@ -45,7 +45,23 @@ pkdump_image_ensure() {
 	local prebuilt="${PKDUMP_PREBUILT_IMAGE:-}"
 
 	if [ -z "$prebuilt" ]; then
-		podman build -t "$tag" -f "${repo_dir}/Containerfile" "$repo_dir"
+		# Scope the cargo target cache to THIS checkout (pd-sjn7). One box runs
+		# the rig root, a CI runner and any number of polecat worktrees; with a
+		# constant cache id they share one target directory, and cargo
+		# fingerprints do not record which checkout produced the objects, so a
+		# neighbour's merely-newer rlib gets reused and the build fails on
+		# whatever it does not export — or, worse, links cleanly and ships old
+		# behaviour. The same sha1-of-the-path suffix every container gate
+		# already derives for its network, volume and image names.
+		#
+		# Every gate in one ci.sh run shares a checkout, so they still share the
+		# cache: this removes the cross-checkout hazard without giving up the
+		# build-once-and-tag benefit the id exists for.
+		local scope
+		scope="$(printf '%s' "$repo_dir" | sha1sum | cut -c1-8)"
+		podman build -t "$tag" \
+			--build-arg "CARGO_TARGET_CACHE_SCOPE=${scope}" \
+			-f "${repo_dir}/Containerfile" "$repo_dir"
 		return
 	fi
 

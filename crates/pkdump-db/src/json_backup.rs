@@ -64,10 +64,11 @@ pub enum OnExisting {
 /// Rows written per table by an import.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportSummary {
-    /// `(table, rows)` for every user table, in schema order — counted after
-    /// the load, and since the load empties every table first, that count is
-    /// what the import put there. Tables absent from the envelope report
-    /// zero, unless the schema's own seed refilled them.
+    /// `(table, rows)` for every table the envelope carries, in schema order
+    /// — counted after the load, and since the load empties every one of them
+    /// first, that count is what the import put there. Tables absent from the
+    /// envelope report zero, unless the schema's own seed refilled them. The
+    /// ownership outbox is not among them (see [`envelope_tables`]).
     pub tables: Vec<(String, usize)>,
 }
 
@@ -95,6 +96,31 @@ pub fn user_tables(conn: &Connection) -> Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The tables the envelope carries: every user table except the ownership
+/// outbox, its emit ledger, and the shipper's own state beside them
+/// ([`crate::outbox::TRANSPORT_TABLES`]; pd-5m54, pd-385w, pd-dxn3).
+///
+/// The one exception, and not a reopening of pd-yj40's exclusion list: none
+/// of them is collection state. The outbox is the log of holdings changes
+/// *leaving* the collection for the lakehouse, written by triggers on
+/// `collection` rather than by anything a user does; the emit ledger is the
+/// record of who re-emitted them; the cursor and the gap ledger are where
+/// the shipper has got to in reading it. Carrying any of them would mean an
+/// envelope restored into a fresh database replayed events that were shipped
+/// months ago — while the restore's own deletes and inserts fired the
+/// triggers and wrote the correct ones alongside them — would tell that
+/// database it had already been backfilled when it has not, or worse, would
+/// arrive carrying somebody else's cursor and so skip its own. The exclusion
+/// is symmetric: not exported, not imported, and not cleared by an import,
+/// because clearing the outbox would drop the very events that describe the
+/// restore.
+fn envelope_tables(conn: &Connection) -> Result<Vec<String>> {
+    Ok(user_tables(conn)?
+        .into_iter()
+        .filter(|t| !crate::outbox::TRANSPORT_TABLES.contains(&t.as_str()))
+        .collect())
+}
+
 /// The column names of `table`, in declaration order.
 fn columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
@@ -117,7 +143,7 @@ pub fn export_value(conn: &Connection) -> Result<Value> {
         Value::String(chrono::Utc::now().to_rfc3339()),
     );
 
-    for table in user_tables(conn)? {
+    for table in envelope_tables(conn)? {
         if META_KEYS.contains(&table.as_str()) {
             return Err(DbError::Import(format!(
                 "table '{table}' collides with a reserved envelope key"
@@ -207,13 +233,21 @@ pub fn import(conn: &mut Connection, json: &str, on_existing: OnExisting) -> Res
         }
     }
 
-    let known = user_tables(conn)?;
+    let known = envelope_tables(conn)?;
     // Validate the whole envelope against the live schema before touching a
     // single row: unknown tables, unknown columns and non-scalar values are
     // rejected up front.
     let mut payload: Vec<StagedTable> = Vec::new();
     for (key, value) in envelope {
         if META_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        // A build from before pd-5m54 walked every table on the way out, so
+        // its envelopes carry the outbox. Dropped rather than refused: the
+        // rows are transport state that this database must not adopt, and a
+        // restore is the worst possible moment to be loud about something
+        // harmless.
+        if crate::outbox::TRANSPORT_TABLES.contains(&key.as_str()) {
             continue;
         }
         if !known.iter().any(|t| t == key) {
@@ -564,7 +598,9 @@ mod tests {
         let envelope = export_value(&conn).unwrap();
         let obj = envelope.as_object().unwrap();
 
-        let tables = user_tables(&conn).unwrap();
+        // Over the tables the envelope carries — the ownership outbox is
+        // deliberately not one of them, and `outbox.rs` owns that assertion.
+        let tables = envelope_tables(&conn).unwrap();
         assert!(
             tables.len() >= 14,
             "expected the full user schema: {tables:?}"

@@ -9,7 +9,9 @@ mod db;
 mod export;
 mod fixture;
 mod import;
+mod keys;
 mod landing;
+mod outbox;
 mod serve;
 mod setup;
 mod tenant;
@@ -37,6 +39,8 @@ enum Command {
     Serve(serve::ServeArgs),
     /// Provision the per-tenant collection databases.
     Tenant(tenant::TenantArgs),
+    /// Tenant-zone key custody: the master key, and which keys may be derived.
+    Keys(keys::KeysArgs),
     /// Build the deterministic test fixture for the intents UI harness.
     SeedFixture(fixture::FixtureArgs),
     /// Database maintenance — snapshot/restore for the UI test harness.
@@ -45,6 +49,8 @@ enum Command {
     Export(export::ExportArgs),
     /// Load a portable export back into the collection.
     Import(import::ImportArgs),
+    /// Emit current holdings as outbox events — backfill, redrive, DR.
+    Outbox(outbox::OutboxArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -53,9 +59,11 @@ fn main() -> anyhow::Result<()> {
         Command::Data(args) => data::run(args),
         Command::Serve(args) => serve::run(args),
         Command::Tenant(args) => tenant::run(args),
+        Command::Keys(args) => keys::run(args),
         Command::SeedFixture(args) => fixture::run(args),
         Command::Db(args) => db::run(args),
         Command::Export(args) => export::run(args),
         Command::Import(args) => import::run(args),
+        Command::Outbox(args) => outbox::run(args),
     }
 }

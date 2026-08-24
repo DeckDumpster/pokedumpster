@@ -78,21 +78,42 @@ cargo test -p pkdump-ingest --test raw_landing
                                  # the real HTTP clients against a local
                                  #   upstream: landing is a tee, a retry never
                                  #   overwrites, a short run says so
+cargo test -p pkdump-ship        # the shipper: part planning and gap
+                                 #   detection, the sealed envelope, Parquet —
+                                 #   and tests/shipping.rs, the four claims
+                                 #   pd-dxn3 asks for, end to end
+cargo test -p pkdump-erase       # the deletion path: the prefix-confined sweep,
+                                 #   the proof and both its vacuity guards —
+                                 #   and tests/deletion.rs, the whole path over
+                                 #   really-shipped holdings, seen green AND red
 cargo test -p pkdump-lakehouse   # partition choice, replay, the comparator —
                                  #   and tests/row_identical.rs, the acceptance
                                  #   matrix, against the shipped binary
 bash tests/lake/derive.sh        # the whole CATALOG from raw/, in the shipped
                                  #   image, on an --internal network with the
                                  #   socket-to-1.1.1.1 egress assertion
-PKDUMP_REAL_DERIVE=1 bash tests/lake/real_upstream_derive.sh
-                                 # NOT in CI: the same claim against the REAL
-                                 #   upstreams at real catalog scale, ~5min and
-                                 #   ~1,350 live fetches. Run per milestone.
 bash tests/lake/value_snapshots.sh
                                  # the transform tier: value snapshots for EVERY
                                  #   registered tenant, byte-identical to the
                                  #   Rust aggregate they replace — and §10, the
                                  #   shipped wrapper its timer runs
+bash tests/lake/tenant_zone.sh   # the tenant zone's credential boundary, BOTH
+                                 #   directions, seen green AND red — plus the
+                                 #   90-day retention, mechanically
+bash tests/lake/shipper.sh       # the shipper against a real bucket under the
+                                 #   real tenant policy: killed mid-run and
+                                 #   resumed, and the catalog role unable to
+                                 #   read a byte of what it wrote (seen red)
+bash tests/lake/phase3.sh        # Phase 3: a collection valued from the TENANT
+                                 #   ZONE, which is now the ONLY way to value
+                                 #   one — and §6, the change that never
+                                 #   shipped, where the valuation MUST NOT move
+                                 #   (and §6b, where shipping moves it)
+bash tests/lake/deletion.sh      # the deletion path against a real bucket with
+                                 #   VERSIONING ON: the drop leaves a noncurrent
+                                 #   version of a really-shipped part, which is
+                                 #   fetched back and proven unopenable. Seen red
+                                 #   too — the same verify one step earlier
 bash tests/refresh/tenant_bytes.sh
                                  # the other half: a real `pkdump data refresh`
                                  #   over a data dir with two tenants in it
@@ -106,10 +127,17 @@ cargo run --bin pkdump -- serve  # start the HTTP server
 cargo run --bin pkdump -- data refresh   # incremental catalog refresh (ONLINE)
 cargo run --bin pkdump-lake-derive -- shared --ingest-date 2026-08-11 \
                                  # the same derivation, OFFLINE, replaying raw/
-                                 #   a URL not in raw/ refuses; there is no
-                                 #   fallback to the live upstream
 cargo run --bin pkdump-lake-derive -- diff --left a.sqlite --right b.sqlite \
     --exclude raw_derivation     # row-by-row, never byte-by-byte
+cargo run --bin pkdump-ship -- run       # outbox -> tenant zone, every tenant
+cargo run --bin pkdump-ship -- status    # what is unshipped, and any gaps
+cargo run --bin pkdump-ship -- decrypt --key tenant/… --json
+                                 # read one shipped part back
+cargo run --bin pkdump-erase -- verify --tenant alice
+                                 # attempt every read path; change nothing
+cargo run --bin pkdump-erase -- delete --tenant alice --yes --reason "closed"
+                                 # tombstone the key, drop the partition, PROVE
+                                 #   it. Exit 4 = it ran and is NOT proven
 cargo run --bin pkdump -- seed-fixture   # build the deterministic UI-test fixture
 
 # Portable collection backup — every user table in one versioned JSON
@@ -151,7 +179,7 @@ cd tests/ui && npm test
 
 ## Architecture Overview
 
-Cargo workspace, eight crates (`crates/`):
+Cargo workspace, ten crates (`crates/`):
 
 - **pkdump-core** — domain types + pure logic (variant code parsing,
   override matching, import format adapters). No IO.
@@ -181,6 +209,16 @@ Cargo workspace, eight crates (`crates/`):
   run manifest, the object stores, and the `lake.env` config. Write-only
   and offline-only; nothing on the serving path touches it. See
   `deploy/LAKE.md`.
+- **pkdump-ship** — the shipper (`pkdump-ship`): the ownership outbox into
+  the tenant zone, encrypted per tenant. Offline and bin-plus-lib; it is a
+  separate crate because it must read SQLite, and `pkdump-lake` deliberately
+  links no SQLite at all. See "The shipper" below.
+- **pkdump-erase** — the deletion path (`pkdump-erase`): tombstone the
+  tenant's key, drop their partition, and then prove the result by attempting
+  every read path and requiring each to fail. Offline and its own crate for
+  the same reason the shipper is — it needs the tenant credentials and the
+  master key, and `pkdump-cli` must not link either. See "The deletion path"
+  below.
 - **pkdump-server** — Axum HTTP app; JSON API under `/api` + serves the
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).
@@ -443,10 +481,10 @@ reports the conclusion whatever the trigger was. Never conclude a PR is green fr
 If a branch has already been dispatched and needs a real PR check, push another
 commit: a new SHA gets a new suite, and the `pull_request` event creates it.
 
-**Eleven of the gates run in parallel, two at a time** (pd-2nl9; lowered from
+**Seventeen of the gates run in parallel, two at a time** (pd-2nl9; lowered from
 three on 2026-08-13 — see `PKDUMP_CI_JOBS` in `deploy/ci-parallel.sh`) —
-litestream, drill, alarming, recreate, upgrade, tenant-header, schema-version,
-the three lake gates and refresh. They do not run where they are written: each
+litestream, drill, alarming, recreate, upgrade, tenant-header, keys,
+schema-version, the eight lake gates and refresh. They do not run where they are written: each
 **queues** itself under its own tier guard and `deploy/ci-parallel.sh` runs the
 queue at the end. What makes that safe is not new — every one of those scripts
 already derives every name it uses (network, container, volume, image tag, unit
@@ -477,7 +515,7 @@ the cap is reached and never exceeded, that a failure among passes is red and
 named, that output survives concurrency, that the *real* `diskcheck.sh` trips
 against an impossible floor, that the hold branch waits rather than aborts, that
 a background job of the *caller's* is never mistaken for a gate, and that every
-one of the eleven gate scripts is still queued exactly once under a real tier.
+one of the seventeen gate scripts is still queued exactly once under a real tier.
 That last one is the refactor's own failure mode: a gate queued nowhere runs
 never, and a green run cannot show you that.
 
@@ -569,6 +607,333 @@ wrapper's last line is the guard that matters: landing asked for and no landing
 zone opened **fails the unit**, because that is the silent green no-op the
 whole landing zone is worthless without.
 
+### The tenant zone
+
+Everything above is the **catalog zone**. The same bucket also holds the
+**tenant zone** under `tenant/` — holdings and valuations, and it is a
+different object under different governance that happens to share a bucket
+(pd-uz8q, item 2 of the inbound-leg epic pd-8lw7). The standing "tenant data
+never enters the lake" rule is **restated by it, not broken**: that rule was
+always about the catalog — cross-tenant, shared, retained forever.
+
+```text
+tenant/database_id=<id>/dataset=<holdings|valuations>/as_of=YYYY-MM-DD/part-NNNN.parquet
+```
+
+Five things are decisions, not implementation:
+
+- **`database_id` is the FIRST partition**, above `dataset=`, so deleting a
+  tenant is ONE prefix drop covering their holdings *and* their valuations.
+  Derived artifacts inherit the deletion obligation; a layout with `dataset=`
+  on top would make every future dataset another thing a deletion has to
+  remember.
+- **Plain partitioned Parquet, not Iceberg.** Iceberg records absolute paths
+  in its metadata, so a later bucket split would mean rewriting manifests.
+  It also gives up snapshots/time-travel deliberately — holdings want current
+  state per tenant, deletable, not history. The catalog wants the opposite,
+  which is why the catalog *is* Iceberg.
+- **90-day retention, and it is a product limit rather than a tunable.** The
+  catalog's indefinite window is justified by "we may need to rebuild any
+  historical price"; nothing equivalent covers holdings. 90 days IS the
+  backfill window, and it is what bounds a missed deletion's blast radius.
+  Enforced by a lifecycle rule that `deploy/setup-tenant-zone.sh` applies
+  **and then reads back** — a PUT that scoped itself to the wrong prefix
+  succeeds identically to one that did not.
+- **Separate credentials from day one**, and the boundary is a TEST. One
+  bucket means a pair of IAM documents is the *only* thing separating the
+  zones. `TenantZoneConfig` refuses an unset `PKDUMP_TENANT_AWS_PROFILE`, and
+  refuses one equal to `AWS_PROFILE` — one profile for both zones is not a
+  wide policy, it is no boundary, and it looks exactly like a correct one.
+- **The explicit `Deny` statements are load-bearing.** A whole-bucket grant
+  added *beside* either policy still cannot cross, because an explicit Deny
+  beats any Allow — so a later broad grant elsewhere cannot silently widen a
+  zone. Asserted (gate §6b), not assumed.
+
+The prefixes and the window live in three places that cannot share code —
+Rust (the shipper reads them at runtime), the policy documents (AWS reads
+them) and the bash script — so `tests/lake/tenant_zone.sh` §8 holds them
+together. A prefix changed in one and not the others does not fail loudly; it
+silently widens a policy.
+
+`tests/lake/tenant_zone.sh` is the gate, and every claim in it is seen **both
+green and red**: the boundary in both directions, then the *same assertion
+functions* re-run against a credential replaced by a whole-bucket grant; the
+retention check refused three separate ways of getting the rule wrong. That gate's
+own fixtures leave the zone **empty**, deliberately — it is about the
+governance, and `tests/lake/shipper.sh` is what puts real (invented) holdings
+through it. Runbook: `deploy/TENANT_ZONE.md`.
+
+### The catalog/tenant zone guard
+
+`tests/lake/tenant_isolation_test.sh` is the source-level boundary gate (lint
+tier, hermetic, ~2s). It shipped with the lakehouse epic asserting one rule —
+*the LAKE holds no tenant data* — over directory globs. The tenant zone makes
+that premise false **by design**, so pd-7x83 re-cut its axis rather than
+carving holes in it: it is now the **catalog zone** (`raw/`, `lake/` —
+cross-tenant, shared, forever) against the **tenant zone** (`tenant/` —
+tenant-keyed by construction, governed separately). Four things about it are
+decisions:
+
+- **The catalog zone keeps every assertion it had.** No Iceberg field is
+  tenant-identifying, `crates/pkdump-lake` links no SQLite at all, the Python
+  write path imports no `sqlite3`, the derive resolves no tenant.
+- **The tenant zone's rules are INVERTED, not relaxed.** It must be
+  tenant-keyed — every key builder in `tenant.rs` takes a `database_id`,
+  because that prefix is what a deletion drops — and it must resolve no
+  identity: being handed an id is the contract, looking one up is not. The
+  shipper reaches no catalog prefix, no catalog entry point and no catalog
+  credential; the online path (`pkdump-db`, `pkdump-server`, `pkdump-keys`)
+  links neither zone, which is what makes the outbox the only way holdings
+  leave a collection.
+- **The carve-out is by ZONE and it is TOTAL.** Every Rust file in
+  `crates/pkdump-lake` must be classified into exactly one zone, and §12 fails
+  if the three lists do not cover the directory. A per-file exemption list is
+  what erodes; a classification that has to cover the directory cannot be
+  added to silently.
+- **It has been seen red.** `tests/lake/tenant_isolation_selftest.sh` (lint
+  tier, ~45s) copies the source trees, injects ONE violation at a time and
+  requires the *specific* assertion to be the one that fails — 25 of them,
+  including a tenant column added to a catalog table and every fail-closed
+  case. Four cases assert the opposite: the tenant zone being legitimately
+  tenant-keyed must fire nothing, because a guard whose first contact with
+  real work is a false positive is a guard that gets an exemption list.
+
+The credential half of the same boundary is not here and cannot be — it is two
+IAM documents against a real bucket, and `tests/lake/tenant_zone.sh` §4-§6 is
+where it is asserted, in both directions, seen red.
+
+### Key custody for the tenant zone
+
+`pkdump-keys` is crypto-shredding for the tenant zone, defence in depth beside
+the partition-drop deletion. One **master key** on the box (mode 600, in
+`~/.config/pkdump/<instance>/` beside `litestream.env`), per-tenant keys
+**derived** — `HKDF-SHA256(master, database_id)` — and a `tenant_key` table in
+`registry.sqlite` mapping `database_id` to `active | tombstoned`. No key
+service, no per-tenant secret to rotate or lose. Runbook: `deploy/KEYS.md`.
+
+The whole thing is arranged around one property:
+
+> **A lost key is indistinguishable from a deleted tenant, by design.**
+
+True of the ciphertext, and it must not become true of the *system* — the two
+call for opposite responses (do nothing; page somebody). Four things hold it:
+
+- **Backup and destruction are different code paths**, and the difference is
+  structural rather than nominal. `backup.rs` is about a **file** and never
+  opens the registry; `destroy.rs` is about a **row** and never opens the key
+  file. `crates/pkdump-keys/tests/separation.rs` reads both sources and fails
+  if either grows a reference to the other's world, so it stays true of code
+  nobody has written yet. Sharing a helper is how "we lost it" becomes "we
+  destroyed it"; sharing a name is not.
+- **The order of the two lookups in `derive::tenant_key` is the design.** The
+  registry is consulted FIRST, so a tombstone answers *even with the master
+  key gone* — and a live tenant whose key is missing answers
+  `MasterKeyUnavailable`, never `Tombstoned`. Invert it and the two collapse
+  exactly when somebody is trying to tell them apart.
+- **`KeyError::is_deliberate_revocation()` is the only sanctioned way to ask
+  "was this on purpose".** It answers `true` for one variant. Item 8's
+  deletion path goes through it; `Err(_) => "deleted"` is one keystroke from
+  turning a missing backup into a compliance claim.
+- **Absence is not permission.** An unregistered `database_id` is refused, not
+  derived for — a registry restored empty is missing its tombstones too, and
+  fail-closed is the direction where that is loud. The tombstone table has no
+  foreign key to `user`, deliberately: it must outlive the row it names or
+  `tenant purge` would un-revoke the key it just destroyed.
+
+The backup **mechanism is matched, not invented**: the master key goes in the
+operator's password manager, exactly like the Litestream bootstrap key, and
+comes back in `deploy/RESTORE.md` Scenario C. Nothing replicates it to S3 —
+that is where the data it protects lives.
+
+The trade is stated, not hidden: one master key means destroying *it* destroys
+everything, which is why `keys init` refuses to overwrite (no `--force`) and
+why the destruction path cannot reach the file. A tombstone stops OUR code
+deriving a key; it is not itself an unrecoverable erasure. Stored per-tenant
+random keys are a documented future option — a re-encrypt of at most 90 days,
+the zone's whole retention window — and are deliberately not built.
+
+Gates: the hermetic crate tests (45 of them, including RFC 5869 vectors and
+the separation gate) and `tests/keys/run.sh`, the container tier, which stats
+the **deployed** key file for mode 600 — "the code sets 600" and "the file is
+600" are different claims — and re-runs the crux on a real box.
+
+### The shipper
+
+`pkdump-ship` is what moves the ownership outbox into the tenant zone
+(pd-dxn3, item 4 of the inbound-leg epic). It is the seam between the outbox
+(pd-5m54), the zone (pd-uz8q) and key custody (pd-ulds), and it is the ONLY
+thing in the workspace that writes under `tenant/`.
+
+```text
+tenant/database_id=<id>/dataset=holdings/as_of=<date>/part-seq-<from>-<to>.parquet.enc
+```
+
+It is a **separate crate** for a structural reason, not a tidiness one: the
+shipper must open a tenant's SQLite, and `crates/pkdump-lake` links no SQLite
+crate at all — which is what makes pd-cgi9 §1 ("no lake write path can open a
+tenant database") true by construction rather than by review. `pkdump-lake`
+still owns where the bytes go and hands out the handle
+(`open_tenant_zone`); `pkdump-ship` decides what is in one.
+
+Five things are decisions:
+
+- **It reads no clock.** `as_of` is the UTC date of the event's own
+  `occurred_at`, and a part is a maximal run of consecutive rows sharing that
+  date. So re-shipping a range on a later day lands in the partition it landed
+  in the first time, and there is no `--date` for a scheduler to lend
+  (contrast the transform tier, where choosing the day is the whole point).
+- **A part is addressed by the sequence range it carries, never an ordinal.**
+  Delivery is at-least-once — the cursor is written *after* the PUT, so a
+  crash in between re-ships a part, which is the direction that repeats events
+  instead of losing them. An ordinal would make the retry a second object
+  beside the first; a range makes it land on the object it is retrying. That
+  is the whole of idempotence.
+- **The encryption is deterministic**, so the retry is byte-identical rather
+  than merely equivalent. AES-256-GCM under the derived key, with a synthetic
+  nonce hashed from the object key and the plaintext, and **the object key as
+  associated data** — so a part authenticates only under the prefix it was
+  written to, and one moved into another tenant's partition fails to open
+  rather than decrypting into the wrong holdings. `.parquet.enc` on every key
+  in the zone, because every object in it is sealed.
+- **The cursor and the gap ledger live in the tenant's own database**
+  (`ownership_outbox_cursor`, `ownership_outbox_gap`), beside the outbox they
+  point into, and are excluded from the portable JSON envelope for the reason
+  the outbox is: transport state, not collection state. An envelope carrying a
+  cursor would make a restore skip events it had never shipped.
+- **A gap is recorded, alarmed, and shipped past.** `seq` is gap-free by
+  construction, so a hole means an event was **lost**. The missing range is
+  written to the ledger *before* the cursor moves past it — once past, nothing
+  can detect it again — and the run ends at exit 3. It does not stop: the
+  missing rows are already gone, and withholding the rows that survive would
+  be a second loss caused by detecting the first.
+
+**Four exit statuses, because there are four things to say** — 0 clean, 2 some
+tenants skipped (warned, `SuccessExitStatus=2`), 3 SEQUENCE GAP (paged, with
+its own message naming the tenant and the range), 1 the run never started or
+shipped nobody at all. A tombstoned tenant is **not** an anomaly: the key
+refuses to derive, the tenant is skipped, and the run is still clean. An
+*unregistered* one is a warning naming `pkdump keys register`, because absence
+is not permission.
+
+It does not branch on where an outbox row came from. Item 5 (backfill/redrive)
+emits synthetic events *through the outbox* with a provenance column; a
+consumer that treated those differently would make the backfill a second code
+path instead of the same one. It does **carry** that column — a part is
+`pkdump_db::outbox::Event`'s seven fields, all of them, and there is exactly
+one struct for an outbox row (pd-mixm). Two spellings of one table is how a
+column added to it stops reaching the bucket; one means the schema fails to
+compile instead. Carrying is not branching, and it is what lets
+`encode::decode` compose with `pkdump_db::outbox::project` — so a reader
+reduces a shipped part with the SAME implementation of the resolution rule
+the collection's own gate uses, rather than a second one that agrees today.
+
+**A part carries `source_table` beside `row_id`, and that pair is the
+identity** — `row_id` alone is not (pd-4gop). `collection` and
+`sealed_collection` number their rows independently, so the first single and
+the first sealed lot are both `row_id = 1`, which is the ordinary shape of a
+collection rather than a corner case. A reader that grouped a holdings part by
+`row_id` would merge two unrelated streams into one projection and produce a
+plausible wrong number. The shipper itself keys nothing on either: its only
+key is `seq`, unique across the whole outbox.
+
+**It is installed on a timer and armed by nobody yet** —
+`pkdump-ship@<instance>.timer`, at 07:00 with the rest of that wave, `After=`
+the landing, the derive and the price build. Since pd-i08u its wrapper runs
+BOTH halves of the round trip (`pkdump-ship run`, then `pkdump-ship holdings`)
+and the transform is the unit that waits on it, so the chain is land → derive
+→ prices → **ship (+ read back)** → transform. Do not arm it on prod before
+the backfill has run: the shipper ships the OUTBOX, an existing collection's
+outbox starts empty (pd-whsw), and armed early it faithfully ships every
+change made from tonight and nothing anybody already owns. `pkdump outbox emit
+--all --all-tenants` (pd-385w) is what makes the outbox describe the
+collection that is already there; arming is the step after it, per instance.
+**And it is no longer optional beside the transform**: with the online
+holdings read deleted, a box running `pkdump-value-snapshots@` without this
+unit records no value history for anybody.
+
+Gates: `cargo test -p pkdump-ship` (hermetic — planning, the envelope, Parquet,
+and `tests/shipping.rs`, which proves gap detection, idempotence, resumability
+and encryption-under-the-right-key over a `DirStore`, plus the seam with item
+5: a backfilled collection ships as ordinary events, dated from the rows' own
+timestamps rather than the day the backfill ran) and
+`tests/lake/shipper.sh` (container tier — the shipped image against a real
+MinIO under the real tenant policy, a real process killed mid-run and resumed,
+the catalog role's denial seen both green and red, and `deploy/ship.sh`'s four
+exit statuses).
+
+### The deletion path
+
+Deleting an account from the tenant zone is `pkdump-erase` (pd-qbrf), and it
+is **two acts plus a proof**, in that order:
+
+```
+1. tombstone   registry.sqlite : tenant_key(<id>) -> tombstoned
+2. drop        tenant/database_id=<id>/  emptied, object by object
+3. verify      every read path attempted, every one required to fail
+```
+
+Five things about it are decisions, not implementation:
+
+- **Neither act is sufficient, and the verification says so separately.** A
+  drop without a tombstone leaves a live key, so any copy that survived
+  anywhere is readable; a tombstone without a drop leaves the objects there,
+  and the design says the drop is the erasure. The proof names `derivation`
+  and `partition` as different checks for exactly that reason.
+- **The tombstone goes FIRST**, and the order is the difference between an
+  interrupted deletion that is safe to resume and one that reverses itself.
+  There is no transaction across SQLite and an object store. Tombstone-first,
+  a crash leaves a tenant nothing can derive a key for and whose remaining
+  objects are ciphertext — *more* deleted than intended, and a re-run
+  finishes it. Drop-first, a crash leaves an ACTIVE tenant whose partition
+  vanished: their key still derives, the shipper still ships, and tonight puts
+  fresh holdings back under a prefix that was supposed to be gone.
+- **"Proven" means the proof cannot be vacuous**, and there are two ways it
+  could be. A box with no master key derives nothing for *anybody*, so
+  `machinery` runs first and the stray-copy check refuses to conclude anything
+  without it. And the `derivation` check insists on `is_deliberate_revocation`
+  rather than on any error — an unregistered id refuses too, and accepting
+  that would let "we never heard of them" be filed as "we destroyed their
+  data". That is pd-ulds's distinction enforced from the reader's side.
+- **The claim is checked against a copy that SURVIVED**, not only against an
+  empty prefix. The drop has to find every copy; the tombstone does not, and
+  that asymmetry is the whole reason crypto-shredding is in the design. So
+  `--stray <file> --stray-key <key>` opens real bytes taken before the
+  deletion, and `tests/lake/deletion.sh` runs on a **versioned** bucket where
+  the drop genuinely leaves a noncurrent version behind. A "copy" that is not
+  a sealed object makes the check FAIL rather than pass — a text file does not
+  open either.
+- **Exit 4 is not exit 1.** A deletion that ran and cannot be proven is a
+  different event from one that never started: the data may well be gone and
+  what is missing is the evidence, so the two need different first questions.
+  `deploy/erase.sh` alarms on 4 itself, because there is no unit here and
+  therefore no `OnFailure=`.
+
+**There is no timer, deliberately.** Every other container job under `deploy/`
+is fired by a calendar; a deletion is an act somebody decides to perform on
+one named account, and a scheduled deleter is a thing that can delete the
+wrong account at 3am with nobody watching.
+
+The **online** half — releasing the handle, removing the collection database
+and its replica — stays `pkdump tenant detach` / `pkdump tenant purge`. Doing
+it here would put a tenant-zone credential and the master key inside the
+binary that serves requests.
+
+`ObjectPurge` (`pkdump-lake`) is the third and narrowest zone handle: list a
+prefix, delete a key, and nothing else — no `get`, so the job that deletes a
+tenant's holdings never reads them. Confinement to ONE tenant's prefix is a
+level up, in `pkdump_erase::sweep`, which refuses a key outside it fatally
+rather than skipping it.
+
+Gates: `cargo test -p pkdump-erase` (hermetic — the sweep, both vacuity
+guards, and `tests/deletion.rs`, which runs the whole path over holdings the
+real shipper really wrote, then runs every check one step EARLIER and requires
+all of them to report the path open) and `tests/lake/deletion.sh` (container
+tier — the shipped image against a versioned MinIO under the real tenant
+policy, the objects gone as seen by the bucket root rather than merely hidden
+from the role that deleted them, the surviving version fetched back and proven
+unopenable, and `deploy/erase.sh`'s three exit statuses). Runbook:
+`deploy/DELETION.md`.
+
 ### The transform tier
 
 `lake/src/pkdump_lake/value_snapshots.py` is the first job that *reads* the
@@ -581,8 +946,10 @@ tenant's own database. Three rules hold it in shape:
   resolves to, and reported success for everybody (pd-s5yn). Any successor to
   it walks the registry, or it has reintroduced the bug.
 - **A failing tenant is logged and skipped; the run finishes and exits 2.**
-  Exit 0 means every tenant, 1 means the run never started. Silence over a
-  half-completed run is the failure mode being replaced.
+  Exit 0 means every tenant, 1 means the run never started **or snapshotted
+  nobody at all** — "some tenants" and "nobody" are different nights, and a
+  warning is the wrong volume for the second. Silence over a half-completed
+  run is the failure mode being replaced.
 - **Tenant data never enters the lake.** Prices come out of Iceberg; the
   collection is read from, and the snapshot written back to, SQLite. Neither
   ever travels the other way, and `tests/lake/value_snapshots.sh` §9 asserts
@@ -596,7 +963,9 @@ tenant's own database. Three rules hold it in shape:
   never landed". Adding a tenant column or a tenant DB open now fails in a
   second instead of nothing at all. The transform tier is the deliberate
   exception the guard encodes: it opens every tenant's database, and is
-  asserted to only ever READ the lake.
+  asserted to only ever READ the lake. Since the inbound leg that guard's axis
+  is the **catalog zone against the tenant zone** rather than the lake against
+  everything else — see "The catalog/tenant zone guard" below.
 
 The aggregate itself is a transliteration of `value_history.rs` — two
 implementations of one calculation, deliberately, because the rewrite has to
@@ -624,41 +993,80 @@ the scheduling are decisions:
   from the clock (backfilling an older day is the same operation), so the
   wrapper — the one component that is allowed to know what day it is — names it.
 
-### The nightly price build
+`catalog.prices` itself is still built by hand between the two (pd-up36).
 
-`catalog.prices` is what the transform tier reads, and until pd-up36 nothing
-built it on a schedule — `pkdump-lake-build-prices` was a hand-run podman
-invocation. The transform therefore valued every tenant's collection from
-whatever day someone last built: **correct arithmetic over stale prices,
-advancing every night, with nothing anywhere saying the numbers had stopped
-moving.** Same failure class as pd-s5yn — a job that looks like it ran.
+### Phase 3: valuing a collection from the tenant zone
 
-`pkdump-prices@<instance>.timer` closes it, running `deploy/prices.sh`. Two
-things about it are decisions:
+The transform reads its holdings out of the **tenant zone** (pd-szh2) rather
+than out of `collection`. That is Phase 3 of the cycle — land raw, build the
+catalog, ingest tenant state, *compute valuations*, publish back — and it
+closes the half of the loop the epic exists for: the write moved offline, the
+read stayed online.
 
-- **The nightly build passes `--allow-incomplete`; the alarm is on AGE.** A
-  hand run should refuse a day holding no complete run, but `complete` is
-  conservative across datasets — a pokemontcg.io tail that died marks the
-  *prices* manifest incomplete on a night when every price fetch succeeded,
-  which is the normal shape of a flaky night. A unit that failed there would
-  page most nights, and a pager that cries wolf gets ignored (pd-me6h). So the
-  day is built, the snapshot records `pkdump.raw-complete=false`, and
-  `pkdump-lake-prices-age` (`lake/src/pkdump_lake/freshness.py`) pages when the
-  newest partition falls more than two days behind. That check runs on **every**
-  run, not only after a failed build: a check wired to the failure path fires on
-  almost no night and nobody would notice it had broken — and on the success
-  path it is the only thing that asks the table rather than believing the
-  build's report of itself.
-- **0 / 2 / 1 are three answers**, as for the transform: built-and-fresh, a
-  missed day over a still-fresh table (`SuccessExitStatus=2`, warned not paged),
-  and a stale table or an age that could not be established at all — both page.
+It shipped **alongside** the online path behind `--holdings`, with a
+`--compare` that valued every tenant both ways and diffed the rows; that came
+back clean (2 tenants, 7 rows, 0 differing) and pd-i08u deleted the online
+read. **There is now one valuation path and no flag selects it** — no
+`--holdings`, no `--compare`, and no fallback when the zone has not been read.
+A deleted path that leaves its flag behind is a path a runbook can still reach
+for, and the argument for the deletion was that one number should have one
+provenance.
 
-The chain is now total and every link is declared, never inferred from three
-timers sharing 07:00: **land → derive → prices → transform**. Arming one of the
-lake timers without the others is what reintroduces the bug, which is why
-`deploy/setup-lake.sh` names them together. Gates: `tests/deploy/run.sh` §13
-(units + the wrapper's whole exit mapping, hermetic) and `tests/lake/prices.sh`
-§10–§12 (the real freshness job and the shipped wrapper against a real lake).
+Five things about it are decisions:
+
+- **The seam is a table, because neither language may implement the other's
+  half.** The envelope, the key derivation and the resolution rule have one
+  implementation each and it is Rust (`pkdump-ship`); `catalog.prices` is
+  Iceberg and `pyiceberg` is the only client here. So `pkdump-ship holdings`
+  reduces the zone with `pkdump_db::outbox::project` into `zone_holdings`, and
+  the transform's existing SQL reads that name instead of `collection`.
+  **One token differed**, which is what made a difference between the two
+  valuations a difference in *holdings* and not one in arithmetic. A
+  from-scratch offline computation could differ for a dozen reasons and the
+  proof would have to rule out each. That is why the switchover was a table
+  name and nothing else, and why it stayed reviewable as its own change.
+- **`zone_holdings` is derived, never declared.** Created from `collection`'s
+  own `pragma_table_info`, so a column added there reaches it with nothing to
+  remember — a hand-written mirror in `schema_user.sql` would be the *third*
+  place the collection's shape lives (`encode.rs` declined to be the second).
+  Being created also means it carries no triggers, so materialising cannot
+  emit outbox events and a Phase 3 run cannot feed itself back into the zone
+  it just read. Both it and `zone_holdings_run` are in `TRANSPORT_TABLES`.
+- **A stale materialisation is refused, not valued.** `zone_holdings_run.
+  max_seq` behind `ownership_outbox_cursor.shipped_thru` means the read
+  predates the last ship, and left alone it would value today's collection at
+  older holdings while every number looked reasonable. That is the quiet
+  failure this item could otherwise become. A tenant whose *outbox* is ahead
+  of the zone is not refused: that means the shipper skipped them, and the
+  shipper says so in the same nightly run. Refusing here would report one
+  shipping failure twice and withhold a valuation of holdings that are
+  genuinely what the offline side was told.
+- **The read-back is scheduled with the shipment, not on its own.**
+  `deploy/ship.sh` runs `pkdump-ship run` and then `pkdump-ship holdings`:
+  `zone_holdings` is only correct when it was read immediately after a ship,
+  and both halves need the master key and the tenant profile that nothing else
+  on the box holds. Two units would be two chances to arm one of them. The
+  wrapper's four statuses compose 3 > 1 > 2 > 0 — a GAP outranks even a failed
+  read-back, being the only one no later run can repair — and a shipment that
+  shipped *nothing* does not attempt the read-back at all.
+- **What replaced the equivalence proof is stronger than it was.** With one
+  path there is no second computation to diff against, so `tests/lake/
+  phase3.sh` §5 and `tests/lake/value_snapshots.sh` §5 both diff the zone
+  valuation against the rows Rust `value_history::snapshot_today` computed
+  over the same collection — a holding lost, duplicated or wrongly resolved
+  anywhere between the outbox and `zone_holdings` is a changed number. And
+  **phase3.sh §6 is the section that matters**: a collection changed without
+  shipping must leave the valuation UNMOVED, and §6b requires shipping and
+  reading back to move it. A Phase 3 that quietly read the live table fails
+  the first half; one that is frozen or cached fails the second.
+
+What the zone does not carry: only `collection` rows are shipped, so the
+condition multiplier and `manual_prices`/`user_printings` are read from the
+tenant's own database. **Deleting the online holdings read did not remove the
+tenant-database dependency** — the valuation still opens each tenant's SQLite
+to read those, to read `zone_holdings`, and to write the snapshot back. Phase
+3 narrowed which table the *copies* come from and nothing else. Runbook:
+`deploy/TENANT_ZONE.md` §7.
 
 ### The offline catalog derive
 
@@ -683,25 +1091,11 @@ not implementation:
   rerun is *identifiable* rather than merely tolerated. `observed_at` stays
   distinct from `ingest_date` — they differ for exactly the run that crossed
   UTC midnight.
-- **A URL missing from `raw/` is FATAL, unconditionally.** Coverage has
-  regressed; the run refuses, naming the URL and saying to re-land the date.
-  Item 2's temporary fallback — fetch live, print `!! raw coverage has
-  REGRESSED`, finish anyway — and its `--no-upstream-fallback` opt-out are
-  **gone** (item 4, pd-6yql), removed once pd-vves proved row-identity against
-  the real bucket. The flag is rejected by name rather than ignored, so an old
-  invocation fails loudly instead of appearing to work. A fallback is not a
-  safety net to restore: it makes the landing zone decorative, producing a
-  correct catalog whose lineage cannot be reproduced, which surfaces on the day
-  an upstream is down — the day the lake was bought for.
-- **Set symbols are not an exception to that rule, and never went through it.**
-  `symbols::normalize_all_symbols` takes `(&mut Connection, &Path)` — no `Wire`
-  — and builds its own HTTP client, because images are deliberately outside
-  `raw/`. So an offline derive still fetches them live, and a fetch that fails
-  is counted, logged, and **not** fatal: the set keeps its upstream URL, which
-  still renders. `row_identical.rs::a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it`
-  is the gate, on a catalog whose symbols have never been normalised — the shape
-  pd-vves's proof could not exercise, because prod's catalog was already
-  normalised and both sides skipped the phase (pd-5w4n).
+- **The upstream fallback is temporary and LOUD.** A URL missing from `raw/`
+  means coverage has regressed; the run says so per-URL and in a summary,
+  `deploy/derive.sh` pushes a warning, and `--no-upstream-fallback` makes it
+  fatal. Item 4 of the epic removes it, as its own change, once row-identity is
+  proven in production. **Do not remove it as a side effect of anything else.**
 
 Anything that lands in a ROW is passed in rather than read: `DeriveClock`
 carries the one instant a run read, `Manifest.started_at` is where the landing
@@ -714,7 +1108,8 @@ Two units, and the split is the point (item 5): `pkdump-refresh@` LANDS,
 `pkdump-derive@` DERIVES, so a derive can run against yesterday's raw on a
 night the fetch failed. Ordering is declared (`After=`, never `Wants=` — the
 refresh is a oneshot without `RemainAfterExit`), the calendar entry is derived
-from the refresh unit's own bounds, and the chain is land → derive → transform.
+from the refresh unit's own bounds, and the chain is land → derive → ship →
+transform.
 The derive unit has **no `SuccessExitStatus=`**, unlike the transform: that job
 writes N tenant databases and "some of them" is normal, this one writes ONE
 catalog and a smaller catalog reads as cards that do not exist.
@@ -724,18 +1119,6 @@ over two days, idempotence, reproducing an older date, both refusals, a
 corrupted payload, the fallback loud one way and fatal the other) and
 `tests/lake/derive.sh` (the container tier, shipped image, `--internal`
 network, socket-to-1.1.1.1). Runbook: `deploy/LAKE.md` §8.
-
-Both of those upstreams are fixtures, so a third gate exists and is deliberately
-**not** in CI: `tests/lake/real_upstream_derive.sh` makes the same claim against
-the REAL tcgcsv.com and api.pokemontcg.io, at real catalog scale (pd-aer9). On
-2026-08-13 it landed 1,345 real responses and rebuilt them into a catalog
-row-identical across all 21 tables — 47,640 cards, 75,627 printings, 289,255
-prices. What it cannot yet be run against is **prod's own `raw/`**: the lake's
-only partition (2026-08-11) predates `Manifest.started_at` and is refused for
-having no clock, and nothing has landed since because `pd-kncd` is unmerged. The
-sequence is pd-kncd → one night's raw → derive that date from the bucket. Do not
-arm `pkdump-derive@prod` before then: it has no `SuccessExitStatus=`, so a
-refusal every night is a page every night.
 
 One phase cannot be replayed: set-symbol normalisation fetches images, and
 images are deliberately not landed (pd-5w4n).
@@ -749,6 +1132,7 @@ upstream is `tests/refresh/upstream.py`, a fixture that publishes nothing —
 reached through `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL`
 (`crates/pkdump-ingest/src/upstream.rs`, test-tier, and an override announces
 itself on stderr so a catalog can never be quietly built from the wrong place).
+
 
 ### When an upstream is having a bad day
 
@@ -803,6 +1187,258 @@ Gates: `crates/pkdump-ingest/tests/retry.rs`,
 `tests/refresh/tenant_bytes.sh` §9 (container tier — the shipped binary's exit
 status, its retry count against the `/v2-down` fixture prefix, and that the
 derivation continued past the failure).
+
+
+### The ownership outbox
+
+The inbound leg — online tenant state into the lakehouse — starts at
+`ownership_outbox` in `schema_user.sql` (pd-5m54). Every change to a tenant's
+**holdings** is appended there as an event, in the SAME TRANSACTION as the
+change. The offline side is fed from those events, so it is eventually
+consistent *by construction*: a dual write to SQLite and a bucket has no
+atomicity, and the disagreement a crash leaves behind is undetectable.
+
+**Both halves of the holdings are in it** — `collection` (singles) and
+`sealed_collection` (sealed product), listed in `outbox::SOURCE_TABLES`.
+Sealed was deferred by pd-5m54 and settled IN by pd-4gop: sealed product is a
+holding like any other — a catalog id, a value that moves with the market —
+and a collection that reports a tenant's worth while silently omitting it
+**under-reports**, which is the wrong direction to be wrong in. Whatever the
+outbox emits for singles it emits for sealed. It cost three more triggers, one
+entry in that list and no schema change, which is exactly what `source_table`
+was put there for.
+
+**The writer is triggers, not the call sites, and that is the whole point.**
+A trigger fires inside the statement's own transaction, so there is no
+instant at which a holding has changed and the event has not — no window to
+crash in, and nothing to remember to call. It also covers the paths that
+write those tables in raw SQL (`orders.rs`, `import.rs`, `json_backup.rs`,
+the fixture seeder) and the ones no Rust performs at all (`ON DELETE SET
+NULL` from `binders`/`decks`), without any of them knowing the table exists.
+
+Five things about it are decisions:
+
+- **`seq` is AUTOINCREMENT**, so a number is never reused after the shipper
+  trims a shipped prefix and a missing one means an event was LOST rather
+  than deleted. A rolled-back write burns nothing (`sqlite_sequence` rolls
+  back with it) — asserted, because phantom gaps would make gap detection
+  useless. `occurred_at` is metadata; `datetime('now')` ties inside one
+  transaction and cannot order anything.
+- **One sequence over both sources, and `row_id` is unique only WITHIN
+  one.** The two tables number their rows independently and both start at 1,
+  so **a consumer projects on the `(source_table, row_id)` pair.** Replaying
+  on `row_id` alone silently merges a single and a sealed lot that share a
+  number, which is the normal case rather than a rare one — the atomicity
+  gate fails on iteration 0 if you try it.
+- **`payload` is the whole row as JSON** — post-image for insert/update,
+  pre-image for delete. Whole, so a later consumer needing a column nobody
+  anticipated costs no schema change here, and so nothing can be silently
+  omitted: `outbox.rs` asserts the payload keys against `PRAGMA
+  table_info(<source>)` for every source, which is what catches a column
+  added to a table and forgotten in the hand-written `json_object` lists.
+  A sealed lot's `quantity` is carried, never expanded — one lot is one
+  event, and a consumer that wants copies multiplies.
+- **The outbox is not collection state**, so `pkdump export --json` does not
+  carry it and an import neither restores nor clears it — the import's own
+  deletes and inserts fire the triggers and describe the restore correctly.
+  This is the one exception to pd-yj40's "no exclusion list in the exporter",
+  and it is in one place (`json_backup::envelope_tables`, filtering on
+  `outbox::TRANSPORT_TABLES`). Both holdings tables *are* collection state
+  and both stay in the envelope.
+- **`outbox::SOURCE_TABLES` is a claim about the schema, not a copy of it.**
+  `every_triggered_table_is_emittable` reads the triggers off `sqlite_master`
+  and compares both directions, so a third source wired up and not declared —
+  or declared with no triggers — fails in a second. That gate is what made
+  this change land safely on top of the emitter: it went red the moment the
+  sealed triggers arrived and stayed red until the backfill covered them, so
+  singles could not be backfilled while sealed was silently missed. Adding a
+  source is: the table, three triggers, one entry, and the gates come free.
+  The entry's second element is the column that dates a row which has never
+  emitted an event — `acquired_at` for singles, and `added_at` rather than
+  `purchase_date` for sealed, because it is NOT NULL and machine-written, so
+  `strftime` always parses it.
+
+Changing a trigger body needs a deliberate `DROP TRIGGER` in the schema file
+— `IF NOT EXISTS` will not replace one an existing collection already
+carries, and a stale trigger writes a stale payload forever.
+
+Gates: `outbox.rs`'s unit tests (every mutation path on both sources, the
+payload-coverage comparison, the shared interleaved sequence, the shared
+`row_id`, rollback, concurrent writers contending on both tables, the
+envelope rules, the `SOURCE_TABLES` drift check) and
+`crates/pkdump-db/tests/outbox_atomicity.rs` — a child process writing
+batches, SIGKILLed mid-transaction, the outbox replayed from seq 1 and
+compared to the holdings tables row by row, sixteen times. It fails unless at
+least one kill actually landed inside a transaction, because a crash test
+that never crashed anything proves nothing, and unless BOTH sources left rows
+behind, because a run that only wrote singles would stay green with the
+sealed triggers deleted.
+
+**Every batch mutates both sources inside ONE transaction**, rather than
+alternating batches. A kill has to be able to land *between* the two tables'
+writes — precisely where a per-table outbox would tear — and it keeps the two
+tables' ids in lockstep, so every single has a sealed lot sharing its
+`row_id` and a projection keyed on `row_id` alone cannot accidentally pass.
+
+**The child acquires, SELLS and deletes** — all three ops, and the middle one
+is the one to keep. An insert or a delete lost in a crash shows up as a wrong
+row COUNT; a stale UPDATE payload leaves the counts identical and one row's
+contents wrong, which is the only divergence the projection can carry
+silently. A child that only inserted and deleted let the update trigger be
+deleted outright with the gate still green. The in-flight marker carries two
+counts for the same reason — a kill inside an update batch moves no rows in
+or out, and against a single count would look like a batch that never
+started.
+
+Nothing ships the outbox yet. The shipper is its own change (pd-dxn3), and it
+is the thing that has to honour the `(source_table, row_id)` pair.
+
+### Backfill, redrive and DR reconcile are ONE command
+
+The triggers above only fire on FUTURE mutations. On a collection that
+already holds cards when they are created — which is every existing box —
+every current holding generated no event and never will. **Arm the shipper
+against that outbox and the tenant zone silently covers only post-deployment
+changes, and every valuation computed from it under-reports.** That is the
+gap `pkdump outbox emit` closes (pd-385w), and it is why this must ship
+before the shipper is armed on prod.
+
+```bash
+pkdump outbox emit --all                # backfill this collection
+pkdump outbox emit --all --all-tenants  # ...every registered one
+pkdump outbox emit --seq 1200..1310     # redrive a slice the shipper lost
+pkdump outbox emit --row collection:481        # redrive one holding
+pkdump outbox emit --row sealed_collection:12  # ...sealed is one too
+pkdump outbox status                    # what has been emitted, and when
+```
+
+**`--row` names a `TABLE:ID` pair and does not default the table** (pd-4gop).
+A bare row id names one row in *each* holdings table — `collection` and
+`sealed_collection` number their rows independently and both start at 1 — so
+`--row 481` would redrive a single and an unrelated sealed lot together.
+Defaulting to `collection` would be worse than ambiguous: it is the same
+"singles are the real holdings" assumption the sealed source exists to delete.
+The operator always has the pair to hand, because they read it off the event
+they are redriving, and the ledger records `row:collection:481` for the same
+reason — `row:481` would not say which holding was covered.
+
+**One command over a scope, not three tools**, and that is the point rather
+than tidiness: the rare uses run under pressure, at 3am, after something is
+already broken. A backfill that shares its code with the everyday path has
+been exercised every day; a separate `--repair` script has been exercised
+never. Backfill, redrive and DR reconcile differ only in the scope argument.
+
+What makes any of it tractable is the payload being **the whole row**, not a
+delta — replay is then an upsert to the same value, where `+1` applied twice
+is a corruption. If you find yourself shrinking the payload for size, stop:
+that trade destroys backfill, redrive and DR reconcile together.
+
+Four rules, and none of them is an implementation detail:
+
+1. **Through the outbox, never straight to the zone.** `emit` appends
+   ordinary outbox rows and writes no holding. Two writers with different
+   code paths means the rare one is untested, and the zone can then disagree
+   with the outbox with nothing able to detect it.
+2. **Provenance without different handling.** Every event carries `source` —
+   `trigger`, `backfill` or `redrive`. **The shipper must NOT branch on it.**
+   The moment it does, backfill stops being the same path. The column
+   defaults to `'trigger'` rather than being named in the three trigger
+   bodies, because `IF NOT EXISTS` will not replace a trigger an existing
+   collection already carries — every writer that is not `emit` is a trigger,
+   so the default IS the rule.
+3. **Last-write-wins by `occurred_at`, tie-broken by `seq`** — implemented
+   once, in `outbox::project`, which is the reduction the tenant zone holds.
+   A redrive appends a snapshot with a NEW, higher `seq`; resolving by `seq`
+   alone would let stale state overwrite a live mutation that landed in
+   between. Resolving by `occurred_at` cannot, **because an emitted event
+   carries the row's own last-known change time** — the newest `occurred_at`
+   the outbox already holds for it, else the row's own timestamp column
+   normalised through `strftime`, else a floor. Never the moment of
+   re-emission. Every read during an emit is bounded to the `max(seq)` seen
+   when the transaction opened, or the run's own events would feed back into
+   that lookup and date themselves from what they just wrote.
+4. **Re-running is safe but not silent.** Every run lands a row in
+   `ownership_emit_log`, in the same transaction as its events; a second full
+   backfill without `--force` is refused, naming when the first completed.
+   Idempotent does not mean invisible.
+
+Two more decisions:
+
+- **The unit of work is the registry, not the current user.** `--all-tenants`
+  walks `pkdump tenant list`. This is pd-s5yn's lesson applied before the
+  bug: a backfill of the one collection `$PKDUMP_USER` resolves to would
+  report success for everybody while every other tenant stayed invisible to
+  the zone. Under that flag a failing tenant is named and skipped, the run
+  finishes, and it exits **2** — 0 whole / 2 partial / 1 failed or never
+  started, the same three answers the transform tier gives. Over ONE
+  collection there is no partial state to be in, so a failure exits 1; the
+  distinction follows the *flag*, never the number of tenants that happen to
+  be registered, or the exit code a runbook was written against would change
+  the day somebody signs up.
+- **A full backfill emits current rows; a redrive also re-emits removals.**
+  A backfill's job is "these are the rows", against a zone being rebuilt from
+  nothing. A redrive exists because a slice of the stream was lost, and if
+  that slice removed a holding, replaying only the survivors leaves the zone
+  holding a card the tenant does not own.
+
+Gates, all in `outbox.rs` and all seen red:
+
+- **The headline proof** —
+  `a_zone_rebuilt_by_backfill_equals_the_zone_incremental_shipping_built`:
+  throw every event away (that is what "delete the zone" means — the zone
+  holds exactly this projection), rebuild by backfill, assert the projection
+  equals what the triggers produced one mutation at a time. The row-identical
+  discipline of the lake-as-source design applied to the inbound leg, and the
+  only test that shows the two paths *agree* rather than that both run. Seen
+  red by making the backfill skip rows that are not `status = 'owned'` — a
+  plausible optimisation that silently under-reports.
+- **Rule 3 in the failing direction** —
+  `a_stale_redrive_with_a_higher_seq_does_not_clobber_a_live_mutation`,
+  constructed directly. Seen red by ordering `project` by `seq` alone.
+- `an_emitted_event_carries_the_rows_own_time_not_the_moment_of_emission` —
+  the property rule 3 rests on. Seen red by stamping `now`.
+- `every_triggered_table_is_emittable` — reads the outbox triggers out of
+  `sqlite_master` and asserts they fire on exactly `SOURCE_TABLES`. It earned
+  its keep immediately: adding the sealed triggers turned it red, and it
+  stayed red until the emitter covered them.
+- `a_row_scope_redrives_only_its_own_table` — the pair rule on the emit side.
+  Seen red by dropping the table guard from `scope_predicate`: a redrive of
+  one single then emits an unrelated sealed lot sharing its number.
+- `a_collection_from_before_the_sealed_triggers_gains_them_and_backfills` —
+  **the upgrade path every existing box takes.** A collection older than the
+  sealed triggers holds lots that generated no event and never would have;
+  opening it must hang the triggers (re-applying `schema_user.sql` is what
+  makes three `CREATE TRIGGER IF NOT EXISTS` statements a migration) and the
+  backfill must then cover those lots. Nothing about a box in the failing
+  state looks broken — its singles ship normally while its sealed holdings
+  stay invisible — which is why this is a test and not a runbook step.
+- The rule-4 refusal, the DR reconcile, idempotence under `--force`, the
+  payload being byte-identical to the trigger's, and all three scope refusals
+  (a backwards range, a range starting below 1, a table the outbox does not
+  carry).
+
+The fixture every emit proof is stated over — `a_collection_with_history` —
+holds **both** sources, and the surviving sealed lot deliberately shares its
+`row_id` with a surviving single. A fixture of singles alone would let a
+backfill that skipped sealed pass the headline proof, which is the failure
+this bead exists to prevent arriving through the test suite instead of
+through the code.
+
+**Still owed before this is armed on prod**: the proof is stated against
+`outbox::project` rather than against a tenant zone, because the shipper
+(pd-dxn3) is being built in parallel and does not exist yet. `project` is the
+contract between them — the shipper writes that reduction — so re-stating the
+headline proof against real Parquet in the zone is a container-tier gate that
+belongs with the shipper (pd-880q, filed rather than forgotten).
+
+**The sealed triggers have landed** (pd-4gop), so `SOURCE_TABLES` carries
+`("sealed_collection", "added_at")` and every claim above is a claim about
+both halves of the holdings. It cost exactly what was predicted: one entry in
+that list, and nothing else in the emitter — `emit` already looped over
+`SOURCE_TABLES`, the payload already came from `pragma_table_info`, and
+`per_table` already reported per source. The one thing that was NOT free is
+`Scope::Row`, which had to grow its table, because a scope naming a bare row
+id stopped identifying a holding the moment there were two sources.
 
 ### Variant expansion
 
@@ -885,10 +1521,7 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
 
 - **No fallback logic.** Errors propagate. No silent defaults, no
   swallowed exceptions, as few error paths as possible — let it crash
-  visibly. A bounded transport retry is not an exception to this — nothing
-  is defaulted or substituted, the request is simply made again, and the
-  original error still propagates when the budget is spent. See "When an
-  upstream is having a bad day".
+  visibly.
 - **Strict one row per physical card** in `collection`; no quantity
   aggregation. Each copy carries its own condition / status / batch /
   binder/deck assignment.

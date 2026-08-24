@@ -27,6 +27,8 @@
 #   §1 an activated store's rootless netns is built under ITS OWN runroot
 #   §2 the shared directory is not created by that, and not touched if it exists
 #   §3 pkdump_store_netns_name derives the name podman really used
+#   §4 a caller with none of our environment gets the split anyway
+#   §5 a store wedged FOR REAL is repaired, and the first start after it works
 #
 # NOT hermetic — it runs real podman. It needs no image, no container, no
 # network and no registry: `podman unshare --rootless-netns true` runs the same
@@ -189,6 +191,71 @@ QUADLET_RC=$?
 check "and a bridge container it starts comes up" "0" "$QUADLET_RC"
 check "still under this store's runroot" "present" \
 	"$([ -d "${RUNROOT}/libpod-tmp/rootless-netns/run/user/${UID_N}" ] && echo present || echo absent)"
+check "with the shared directory still as it was found" "$SHARED_BEFORE" \
+	"$([ -d "$SHARED" ] && echo present || echo absent)"
+
+# ---------------------------------------------------------------------------
+log "5. Wedged for real, repaired for real, and the FIRST start after it works"
+# ---------------------------------------------------------------------------
+#
+# Everything above is about the split that PREVENTS the wedge. This is the other
+# end: a store that is wedged anyway — the shape every store created before the
+# split still has — and pkdump_store_netns_ensure, the thing the two lake jobs
+# call before they start a container on the lake network.
+#
+# tests/deploy/run.sh §8c drives that function against a fake podman, which is
+# where its branches (who is on the namespace, the refusal, the readiness wait)
+# can be exercised cheaply. What a fake cannot say is whether dropping the netns
+# file really puts podman back on the branch that rebuilds — that is a fact about
+# podman 4.9.3, the same class of fact as the rest of this file. So here the
+# wedge is real and the repair is measured by asking podman afterwards.
+#
+# SAFE ON THE BOX THAT RUNS PROD, by construction and not by care: the only
+# scaffolding removed is this run's own, under the runroot §1 just measured, and
+# prod's store — which never opts in — is a different directory that §2 asserts
+# is untouched throughout.
+
+WEDGE_SCAFFOLD="${RUNROOT}/libpod-tmp/rootless-netns"
+rm -rf "$WEDGE_SCAFFOLD"
+
+# The wedge has to be real before the repair means anything. This is the exact
+# state pd-3zjt left prod in: a netns file that still looks valid, mounted into
+# a directory that is gone.
+podman unshare --rootless-netns true >/dev/null 2>&1
+WEDGED_RC=$?
+check "removing the scaffolding wedges the store" "1" \
+	"$([ $WEDGED_RC -eq 0 ] && echo 0 || echo 1)"
+
+# A readiness command that would FAIL if it were ever run. Nothing is running in
+# this store, so nothing is restarted, so there is nothing to wait for — and a
+# repair that waited anyway would make every quiet night pay for a JVM that is
+# not booting.
+READY_CALLS=0
+never_ready() {
+	READY_CALLS=$((READY_CALLS + 1))
+	return 1
+}
+
+ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-nonexistent never_ready 2>&1)"
+ENS_RC=$?
+check "the repair reports success" "0" "$ENS_RC"
+check "and did not wait for something it never restarted" "0" "$READY_CALLS"
+[[ $ENS_RC -eq 0 ]] || printf '%s\n' "$ENS_OUT" | sed 's/^/        /'
+
+# THE ASSERTION THE BEAD ASKED FOR (pd-p39v): the FIRST thing to run after the
+# repair works. `podman unshare --rootless-netns true` is the same namespace
+# setup a `podman run --network <user-defined>` performs and fails at — it is the
+# probe this whole guard is built on — so this is that first job start, minus an
+# image the throwaway store deliberately does not have.
+podman unshare --rootless-netns true >/dev/null 2>&1
+FIRST_RC=$?
+check "the first start after the repair succeeds" "0" "$FIRST_RC"
+
+# And the repair rebuilt it back inside this store, rather than falling back onto
+# the shared directory — a repair that undid the split would fix tonight and wedge
+# prod again tomorrow.
+check "rebuilt under this store's own runroot" "present" \
+	"$([ -d "${WEDGE_SCAFFOLD}/run/user/${UID_N}" ] && echo present || echo absent)"
 check "with the shared directory still as it was found" "$SHARED_BEFORE" \
 	"$([ -d "$SHARED" ] && echo present || echo absent)"
 

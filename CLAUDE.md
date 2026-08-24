@@ -364,10 +364,25 @@ for that case (never `podman system migrate`: that kills the per-user pause
 process prod's store shares), and `pkdump_store_netns_ensure` is what the two
 jobs on a user-defined network call before they start — it probes with `podman
 unshare --rootless-netns true`, repairs when only its own containers are on the
-namespace, and refuses when anything else is. See `deploy/store-lib.sh`, the
-README's "Container storage", and `tests/store/netns_split.sh` — the one store
-gate that is not hermetic, because `[engine] tmp_dir` moving the scaffolding is a
-fact about podman, not about this repo.
+namespace, and refuses when anything else is.
+
+**That repair is not finished when the restart returns** (pd-p39v). `systemctl
+--user restart` returns when the *container* is running; Nessie is a JVM and does
+not answer for another 30-40s, so the repair raced its own remedy — the job it
+was clearing the way for died on a connection error, the condition self-healed by
+the next run, and the unit paged for something already fixed. So a repair that
+RESTARTED something waits for it to ANSWER: the caller passes a readiness command
+(`pkdump_lake_catalog_answering`, `deploy/lake-lib.sh` — an HTTP GET of Nessie's
+`/api/v2/config` from a throwaway container ON the network, the same path the job
+itself takes), it is polled to a 120s deadline, and a deadline that passes FAILS
+the repair rather than proceeding. A caller that restarts something and offers no
+way to confirm it came back is refused rather than defaulted: an unverifiable
+repair *is* this bug. The wait is paid only when something was restarted.
+
+See `deploy/store-lib.sh`, the README's "Container storage", and
+`tests/store/netns_split.sh` — the one store gate that is not hermetic, because
+`[engine] tmp_dir` moving the scaffolding is a fact about podman, not about this
+repo.
 
 The image runs `pkdump serve`; the data volume holds both `shared.sqlite`
 and the per-user collection DB. Off-box backup is the

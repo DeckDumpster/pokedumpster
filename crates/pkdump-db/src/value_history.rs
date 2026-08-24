@@ -5,12 +5,18 @@
 //! along three dimensions: the whole collection (`all`), per set (`set`), and
 //! per binder (`binder`). This module owns the three operations over it:
 //!
-//! - [`snapshot_today`] computes and upserts *today's* rows using the
-//!   materialized `latest_prices` table (with a `manual_prices` fallback,
-//!   matching the collection page's market-price expression).
+//! - [`snapshot_today`] computes and upserts *today's* rows.
 //! - [`backfill`] reconstructs history from `shared.prices` × each copy's
 //!   `acquired_at` / `status_log`, so the chart has a past even though the
 //!   snapshot table starts empty.
+//!
+//! Both price a copy with the **same** three-arm rule, from the one macro in
+//! [`crate::prices`] — `latest_prices` → `catalog_price_overrides` →
+//! `manual_prices` — differing only in the feed relation and arm 3's cutoff
+//! (see [`OWNED_TODAY_SQL`] and [`OWNED_ASOF_SQL`]). They used not to: backfill
+//! carried its own query with arm 1 and nothing else, so re-running it silently
+//! rewrote every historical point *without* the curated and hand-entered
+//! prices today's point has (pd-3lg8).
 //! - [`value_history`] reads the table back for the API.
 //!
 //! VALUE model: for every OWNED copy, `market_price × conditionMultiplier`.
@@ -79,6 +85,41 @@ const OWNED_TODAY_SQL: &str = concat!(
       JOIN cards cd ON p.card_id = cd.card_id \
       LEFT JOIN conditions cond ON cond.name = c.condition \
      WHERE c.status = 'owned';"
+);
+
+/// The same per-copy projection as [`OWNED_TODAY_SQL`], for the collection as
+/// it stood on a date D bound to `?1`: the copies owned on D, at the price
+/// they carried on D. `_prices_asof` (staged per date by
+/// [`backfill_one_date`]) stands in for `latest_prices`, and arm 3 is cut off
+/// at D — every other arm is the *same text*, because it is the same macro.
+const OWNED_ASOF_SQL: &str = concat!(
+    "\
+    CREATE TEMP TABLE _snap_owned AS \
+    SELECT c.id, \
+           c.purchase_price, \
+           c.binder_id, \
+           cd.set_code, \
+           COALESCE(cond.multiplier, 1.0) AS mult, \
+           ",
+    crate::market_price_expr_asof!("?1"),
+    " AS market_price \
+      FROM collection c \
+      JOIN ( \
+             SELECT printing_id, card_id, tcgplayer_product_id, sub_type_name \
+               FROM printings \
+             UNION ALL \
+             SELECT printing_id, card_id, NULL, NULL \
+               FROM user_printings \
+           ) p ON c.printing_id = p.printing_id \
+      JOIN cards cd ON p.card_id = cd.card_id \
+      LEFT JOIN conditions cond ON cond.name = c.condition \
+     WHERE date(c.acquired_at) <= ?1 \
+       AND COALESCE( \
+             (SELECT sl.to_status FROM status_log sl \
+               WHERE sl.collection_id = c.id \
+                 AND date(sl.changed_at) <= ?1 \
+               ORDER BY sl.changed_at DESC, sl.id DESC LIMIT 1), \
+             'owned') = 'owned';"
 );
 
 /// Compute and upsert today's value rows for all three dimensions. `date` is
@@ -156,9 +197,13 @@ fn insert_dimensions(tx: &rusqlite::Transaction, date: &str) -> Result<usize> {
 ///   transition with `date(changed_at) <= D`; if there is none (e.g. the only
 ///   log row is a backdated acquisition recorded later), the copy is treated
 ///   as owned since acquisition.
-/// - **price as of D**: the latest `prices` row (`price_type='market'`) with
-///   `observed_at <= D` for the copy's product+sub_type. Backfill uses only
-///   `prices` (not `manual_prices`), per the design.
+/// - **price as of D**: [`crate::prices`]'s three arms, resolved at D — the
+///   latest `prices` row (`price_type='market'`) with `observed_at <= D` for
+///   the copy's product+sub_type, then `catalog_price_overrides`, then the
+///   tenant's own `manual_prices` observed on or before D. Arm 1 is the only
+///   one whose *shape* changes with the date; the expression itself is the
+///   same macro `snapshot_today` spends, so the two paths cannot drift
+///   (pd-3lg8).
 /// - **condition**: the copy's *current* condition — the accepted
 ///   approximation, since there is no condition history.
 ///
@@ -255,7 +300,7 @@ fn backfill_one_date(conn: &mut Connection, date: &str) -> Result<usize> {
     tx.execute_batch("DROP TABLE IF EXISTS _prices_asof; DROP TABLE IF EXISTS _snap_owned;")?;
     tx.execute(
         "CREATE TEMP TABLE _prices_asof AS \
-         SELECT pr.tcgplayer_product_id, pr.sub_type_name, pr.price \
+         SELECT pr.tcgplayer_product_id, pr.sub_type_name, pr.price_type, pr.price \
            FROM prices pr \
            JOIN _owned_products op \
              ON op.tcgplayer_product_id = pr.tcgplayer_product_id \
@@ -279,38 +324,12 @@ fn backfill_one_date(conn: &mut Connection, date: &str) -> Result<usize> {
            ON _prices_asof(tcgplayer_product_id, sub_type_name);",
     )?;
 
-    // Copies owned on D, joined to their as-of-D price. Same _snap_owned shape
-    // insert_dimensions expects (market_price + mult columns).
-    tx.execute(
-        "CREATE TEMP TABLE _snap_owned AS \
-         SELECT c.id, \
-                c.purchase_price, \
-                c.binder_id, \
-                cd.set_code, \
-                COALESCE(cond.multiplier, 1.0) AS mult, \
-                pa.price AS market_price \
-           FROM collection c \
-           JOIN ( \
-                  SELECT printing_id, card_id, tcgplayer_product_id, sub_type_name \
-                    FROM printings \
-                  UNION ALL \
-                  SELECT printing_id, card_id, NULL, NULL \
-                    FROM user_printings \
-                ) p ON c.printing_id = p.printing_id \
-           JOIN cards cd ON p.card_id = cd.card_id \
-           LEFT JOIN conditions cond ON cond.name = c.condition \
-           LEFT JOIN _prices_asof pa \
-             ON pa.tcgplayer_product_id = p.tcgplayer_product_id \
-            AND pa.sub_type_name = p.sub_type_name \
-          WHERE date(c.acquired_at) <= ?1 \
-            AND COALESCE( \
-                  (SELECT sl.to_status FROM status_log sl \
-                    WHERE sl.collection_id = c.id \
-                      AND date(sl.changed_at) <= ?1 \
-                    ORDER BY sl.changed_at DESC, sl.id DESC LIMIT 1), \
-                  'owned') = 'owned'",
-        params![date],
-    )?;
+    // Copies owned on D, priced as of D. Same _snap_owned shape
+    // insert_dimensions expects (market_price + mult columns), and the same
+    // three-arm rule snapshot_today spends — spelled once, in
+    // `market_price_expr_from!`, with `_prices_asof` standing in for
+    // `latest_prices` and arm 3 cut off at D.
+    tx.execute(OWNED_ASOF_SQL, params![date])?;
 
     let written = insert_dimensions(&tx, date)?;
 
@@ -717,6 +736,117 @@ mod tests {
         let d2 = point_for(&conn, "all", None, "2026-06-01");
         assert_eq!(d2.card_count, 0, "sold copy drops out after the sale date");
         assert!((d2.market_value - 0.00).abs() < 1e-9);
+    }
+
+    /// Every snapshot row for `date`, in a stable order — what the two paths
+    /// must agree on, column for column.
+    fn rows_on(
+        conn: &Connection,
+        date: &str,
+    ) -> Vec<(String, String, Option<String>, f64, f64, i64)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT date, dimension, bucket, market_value, cost_basis, card_count \
+                   FROM collection_value_snapshot \
+                  WHERE date = ?1 \
+                  ORDER BY dimension, bucket",
+            )
+            .unwrap();
+        stmt.query_map(params![date], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
+    /// pd-3lg8: the live path and the backfill must be the SAME arithmetic.
+    ///
+    /// The collection holds one copy priced by each of the three arms — the
+    /// TCGplayer feed, a curated `catalog_price_overrides` row for a catalog
+    /// printing the feed does not price, and a `manual_prices` row for a
+    /// printing this tenant invented. `snapshot_today` for D and `backfill`
+    /// ending on D must write byte-identical rows for D.
+    ///
+    /// Before the fix backfill resolved arm 1 alone, so it wrote a strictly
+    /// smaller number for the same day — which is what re-running it against
+    /// prod did to 60 dates.
+    #[test]
+    fn snapshot_today_and_backfill_agree_on_the_same_date() {
+        let (_d, mut conn, shared) = fixture();
+
+        // Arm 2's subject: a catalog printing the feed does not price, with a
+        // curated override. Both live in `shared`.
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+                 VALUES ('set1-3', 'set1', '3', 3, 'Gamma')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id, card_id, variant) \
+                 VALUES ('set1-3-normal', 'set1-3', 'normal')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO catalog_price_overrides (printing_id, price, observed_at, note) \
+                 VALUES ('set1-3-normal', 61.00, '2026-05-01', 'feed has no product')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Arm 3's subject: a printing this tenant invented, hand-priced.
+        conn.execute(
+            "INSERT INTO user_printings (printing_id, card_id, variant, created_at) \
+             VALUES ('set1-1-user-1', 'set1-1', 'invented', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO manual_prices (printing_id, price, observed_at) \
+             VALUES ('set1-1-user-1', 7.50, '2026-05-20T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        // Arm 1's subject, observed on the very day we snapshot — which is
+        // also what puts D in backfill's date list.
+        set_price(&shared, 100, "Normal", 10.00, "2026-06-02");
+        refresh_shared_latest(&shared);
+
+        add_copy(&mut conn, "set1-1-normal", "Near Mint", 3.00);
+        add_copy(&mut conn, "set1-3-normal", "Lightly Played", 40.00);
+        add_copy(&mut conn, "set1-1-user-1", "Near Mint", 2.00);
+
+        snapshot_today(&mut conn, "2026-06-02").unwrap();
+        let live = rows_on(&conn, "2026-06-02");
+
+        // 10.00 + 61.00 * 0.85 + 7.50 = 69.35 — every arm contributing.
+        assert_eq!(live.len(), 2, "1 'all' + 1 'set' row");
+        assert!(
+            (live[0].3 - 69.35).abs() < 1e-9,
+            "live 'all' value {} — all three arms must contribute",
+            live[0].3
+        );
+
+        backfill(&mut conn).unwrap();
+        let reconstructed = rows_on(&conn, "2026-06-02");
+
+        assert_eq!(
+            reconstructed, live,
+            "backfill must reconstruct the same day the live path computes"
+        );
     }
 
     #[test]

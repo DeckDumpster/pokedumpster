@@ -489,6 +489,17 @@ Concrete examples already in place:
   exactly one thing: a printing that tenant invented (`user_printings`);
   `manual_prices::insert` refuses anything else with a 400. One rule for
   "what is this printing worth" — `pkdump-db::prices::MARKET_PRICE_EXPR`.
+  **"As it stood on date D" is the same rule, not a second one.** Only arm 1
+  is date-sensitive in a way that changes its shape (`latest_prices` is a
+  materialized "newest, full stop"), so `market_price_expr_from!` takes the
+  feed relation and arm 3's cutoff, and both `market_price_expr!` (today) and
+  `market_price_expr_asof!` (the value-history backfill, over its per-date
+  `_prices_asof` TEMP table) are one line each. Backfill used to carry its own
+  query with arm 1 alone, so every historical chart point silently lacked the
+  curated and hand-entered prices today's point had — re-running it against
+  prod rewrote 60 dates ~2.3% low (pd-3lg8). The gate is
+  `value_history::tests::snapshot_today_and_backfill_agree_on_the_same_date`:
+  both paths over one fixture, one date, rows compared column for column.
 
 When you find logic that should be data, file a `bd create
 --type=decision` issue and propose the schema before writing more code

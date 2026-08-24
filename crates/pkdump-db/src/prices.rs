@@ -35,27 +35,85 @@
 //! The expression assumes the printing is bound to the alias **`p`**, exposing
 //! `p.printing_id`, `p.tcgplayer_product_id` and `p.sub_type_name` — which is
 //! how all six callers already shape their `FROM`.
+//!
+//! ## "Right now" and "as it stood on D" are the same rule
+//!
+//! The value-history backfill needs the same three arms for a *past* date, and
+//! for a while it carried its own query that had arm 1 and nothing else — so a
+//! curated catalog override or a tenant's own price counted on today's chart
+//! point and vanished from every historical one, which reads as a price event
+//! that never happened (pd-3lg8; found on prod rewriting 60 dates ~2.3% low).
+//!
+//! Only arm 1 is genuinely date-sensitive in a way that changes its *shape*:
+//! `latest_prices` is a materialized "newest observation, full stop" and has
+//! no date parameter. So the rule is written **once**, in
+//! [`market_price_expr_from!`], over a feed relation shaped like
+//! `latest_prices` (`tcgplayer_product_id`, `sub_type_name`, `price_type`,
+//! `price`) plus an optional cutoff on arm 3's observations:
+//!
+//! - today → [`market_price_expr!`], feed `latest_prices`, no cutoff;
+//! - date D → [`market_price_expr_asof!`], feed `_prices_asof` (the caller's
+//!   TEMP table of the newest observation at or before D), cutoff
+//!   `date(mp.observed_at) <= D`.
+//!
+//! Arm 2 is a static curated patch and is not date-sensitive at all. Adding a
+//! fourth caller means passing a different feed, never re-typing an arm.
 
-/// Effective market price for the printing aliased `p`, as a literal — so a
-/// caller that assembles its SQL in a `const` can `concat!` it in rather than
-/// dropping to a runtime `format!`. Most callers want [`MARKET_PRICE_EXPR`].
+/// Effective market price for the printing aliased `p`, resolved against the
+/// feed relation `$feed` and with `$manual_cutoff` (SQL text, possibly empty)
+/// spliced into arm 3's `WHERE`. The ONE definition of the three arms — see
+/// the module docs. Callers want [`market_price_expr!`] or
+/// [`market_price_expr_asof!`].
+#[macro_export]
+macro_rules! market_price_expr_from {
+    ($feed:expr, $manual_cutoff:expr) => {
+        concat!(
+            "COALESCE( \
+                 (SELECT lp.price FROM ",
+            $feed,
+            " lp \
+                    WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
+                      AND lp.sub_type_name = p.sub_type_name \
+                      AND lp.price_type = 'market' \
+                    LIMIT 1), \
+                 (SELECT o.price FROM catalog_price_overrides o \
+                    WHERE o.printing_id = p.printing_id), \
+                 (SELECT mp.price FROM manual_prices mp \
+                    WHERE mp.printing_id = p.printing_id \
+                      AND EXISTS (SELECT 1 FROM user_printings up \
+                                   WHERE up.printing_id = mp.printing_id) \
+                      ",
+            $manual_cutoff,
+            " ORDER BY mp.observed_at DESC LIMIT 1) \
+               )"
+        )
+    };
+}
+
+/// Effective market price for the printing aliased `p` **right now**, as a
+/// literal — so a caller that assembles its SQL in a `const` can `concat!` it
+/// in rather than dropping to a runtime `format!`. Most callers want
+/// [`MARKET_PRICE_EXPR`].
 #[macro_export]
 macro_rules! market_price_expr {
     () => {
-        "COALESCE( \
-             (SELECT lp.price FROM latest_prices lp \
-                WHERE lp.tcgplayer_product_id = p.tcgplayer_product_id \
-                  AND lp.sub_type_name = p.sub_type_name \
-                  AND lp.price_type = 'market' \
-                LIMIT 1), \
-             (SELECT o.price FROM catalog_price_overrides o \
-                WHERE o.printing_id = p.printing_id), \
-             (SELECT mp.price FROM manual_prices mp \
-                WHERE mp.printing_id = p.printing_id \
-                  AND EXISTS (SELECT 1 FROM user_printings up \
-                               WHERE up.printing_id = mp.printing_id) \
-                ORDER BY mp.observed_at DESC LIMIT 1) \
-           )"
+        $crate::market_price_expr_from!("latest_prices", "")
+    };
+}
+
+/// Effective market price for the printing aliased `p` **as it stood on date
+/// D**, where `$date` is the SQL text of the bound date parameter (e.g.
+/// `"?1"`). The caller must have staged a `_prices_asof` TEMP relation shaped
+/// like `latest_prices` — `tcgplayer_product_id`, `sub_type_name`,
+/// `price_type`, `price` — holding the newest market observation at or before
+/// D. See [`crate::value_history::backfill`], its only caller.
+#[macro_export]
+macro_rules! market_price_expr_asof {
+    ($date:expr) => {
+        $crate::market_price_expr_from!(
+            "_prices_asof",
+            concat!("AND date(mp.observed_at) <= ", $date, " ")
+        )
     };
 }
 

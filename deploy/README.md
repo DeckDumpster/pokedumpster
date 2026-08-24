@@ -402,10 +402,30 @@ too (they are on the old namespace and would otherwise be unreachable). With
 prints the two commands, because a nightly job may not restart someone else's
 service to get its own work done.
 
-Gates: `tests/deploy/run.sh` §8b–§8c for everything that is shell, and
-`tests/store/netns_split.sh` — the one non-hermetic store gate — for the part
-only podman can answer: that an activated store really does build its namespace
-under its own runroot and leaves the shared directory alone.
+**A repair that restarted something is not finished until that something
+answers** (pd-p39v). `systemctl --user restart` returns when the *container* is
+running, and Nessie is a JVM that will not serve for another 30–40 seconds — so
+the repair used to hand a still-booting catalog to the job that asked for it,
+which then died on a connection error. By the next run everything was healthy, so
+the unit paged for a condition that had already fixed itself. Both wrappers
+therefore pass `pkdump_store_netns_ensure` a readiness command
+(`pkdump_lake_catalog_answering` from `deploy/lake-lib.sh`: an HTTP GET of
+`/api/v2/config` from a throwaway container **on** the network, which is the same
+path the job is about to take). The repair polls it for up to
+`PKDUMP_NETNS_READY_TIMEOUT` seconds (120) and **fails** rather than proceeding if
+it never holds. A caller that restarts something and supplies no readiness
+command is refused: an unverifiable repair is this bug, and a default would buy a
+silent second copy of it. The wait is paid only when something was actually
+restarted — nothing running means nothing is mid-start.
+
+Gates: `tests/deploy/run.sh` §8b–§8c for everything that is shell (including the
+poll, its deadline, and the refusal), `tests/lake/value_snapshots.sh` §11 for the
+readiness probe itself against a real Nessie — it runs only during a wedge, so
+nothing else would ever exercise it — and `tests/store/netns_split.sh`, the one
+non-hermetic store gate, for the parts only podman can answer: that an activated
+store really does build its namespace under its own runroot and leaves the shared
+directory alone (§1–§4), and that a store wedged for real is repaired and the
+first start after it succeeds (§5).
 
 ### Low-disk guard
 

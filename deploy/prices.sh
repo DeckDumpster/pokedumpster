@@ -107,6 +107,11 @@ MAX_AGE_DAYS="${PKDUMP_LAKE_PRICES_MAX_AGE_DAYS:-2}"
 pkdump_store_adopt_instance "$INSTANCE"
 pkdump_store_activate
 
+# What this job and deploy/value-snapshots.sh have to agree about the lake
+# network.
+# shellcheck source=deploy/lake-lib.sh
+. "$SCRIPT_DIR/lake-lib.sh"
+
 # --- Is there a lakehouse here at all? --------------------------------------
 # The unit's ConditionPathExists on lake.env does NOT answer this: deploy/setup.sh
 # scaffolds that file (commented out) on every box, so it exists everywhere and
@@ -129,10 +134,20 @@ if ! podman network exists "$NETWORK" 2>/dev/null; then
     exit 1
 fi
 
+# Where the catalog is, and what "the catalog is answering" means — both shared
+# with deploy/value-snapshots.sh, which runs on the same network against the same
+# Nessie.
+CATALOG_URI="$(pkdump_lake_catalog_uri "$INSTANCE")"
+CATALOG_HEALTH_URL="$(pkdump_lake_health_url "$CATALOG_URI")"
+
 # The network EXISTING is not the same as being able to start a container on it —
 # see deploy/value-snapshots.sh for the same guard and pd-3zjt for the bug. This
-# job runs on the same lake network and fails the same way.
-if ! pkdump_store_netns_ensure "$NETWORK"; then
+# job runs on the same lake network and fails the same way, and it is the one
+# that runs FIRST at 07:00 — so it is the unit that pays for a repair reported
+# before the catalog it restarted can answer (pd-p39v). The readiness command is
+# what makes the repair wait for that rather than page over it.
+if ! pkdump_store_netns_ensure "$NETWORK" \
+    pkdump_lake_catalog_answering "$NETWORK" "$JOB_IMAGE" "$CATALOG_HEALTH_URL"; then
     echo "prices: FAILED — rootless networking is wedged (${INSTANCE})" >&2
     exit 1
 fi
@@ -174,7 +189,7 @@ esac
 # No data volume is mounted, deliberately: this job reads raw/ from the bucket
 # and writes Iceberg. It opens no SQLite file, and nothing keyed by a tenant is
 # within its reach.
-ENV_ARGS=(-e "PKDUMP_LAKE_NESSIE_URI=${PKDUMP_LAKE_NESSIE_URI:-http://pkdump-nessie-${INSTANCE}:19120/iceberg/}")
+ENV_ARGS=(-e "PKDUMP_LAKE_NESSIE_URI=${CATALOG_URI}")
 for VAR in PKDUMP_LAKE_REF PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION \
     PKDUMP_LAKE_S3_PREFIX PKDUMP_LAKE_S3_ENDPOINT PKDUMP_LAKE_S3_ACCESS_KEY_ID \
     PKDUMP_LAKE_S3_SECRET_ACCESS_KEY PKDUMP_LAKE_S3_PATH_STYLE AWS_PROFILE \

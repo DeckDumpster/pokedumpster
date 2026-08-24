@@ -856,12 +856,28 @@ check "leaving the namespace up" "present" \
 check "and telling the operator how to do it by hand" "1" \
 	"$(printf '%s' "$ENS_OUT" | grep -c 'systemctl --user restart' || true)"
 
+# What the caller passes to say "the network is usable again". Counting the calls
+# is how the polling is observed: asking once and asking until it holds are the
+# same function with the same answer, and only the second one is the fix.
+READY_SUCCEED_AFTER=0
+ready_probe() {
+	local n
+	n=$(($(cat "${NS_STATE}/ready-calls" 2>/dev/null || echo 0) + 1))
+	echo "$n" > "${NS_STATE}/ready-calls"
+	[ "$n" -gt "$READY_SUCCEED_AFTER" ]
+}
+ready_calls() { cat "${NS_STATE}/ready-calls" 2>/dev/null || echo 0; }
+# A bounded wait, made cheap: the production numbers (120s / 3s) are sized for a
+# JVM, and this asserts the loop, not the clock.
+export PKDUMP_NETNS_READY_TIMEOUT=5 PKDUMP_NETNS_READY_INTERVAL=0.1
+
 # Only ours on it: the repair is in scope, and finishing it means restarting them
 # — they are on the old namespace and would be unreachable otherwise.
 ns_case ours
 printf '%s\n' "pkdump-nessie-prod pkdump-lake-prod" > "${NS_STATE}/ps"
+READY_SUCCEED_AFTER=0
 set +e
-ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-prod 2>&1)"
+ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-prod ready_probe 2>&1)"
 ENS_RC=$?
 set -e
 check "only our containers -> repairs" "0" "$ENS_RC"
@@ -872,11 +888,79 @@ check "the stale netns is dropped" "gone" \
 check "and what was on it is restarted, by unit" "pkdump-nessie-prod.service" \
 	"$(cat "${NS_STATE}/systemctl-restarts" 2>/dev/null || echo none)"
 
-# Nothing running at all — the usual case for a nightly job on a quiet box.
+# ---------------------------------------------------------------------------
+# pd-p39v. THE REPAIR IS NOT FINISHED WHEN THE RESTART RETURNS.
+#
+# `systemctl --user restart` returns when the CONTAINER is running. Nessie is a
+# JVM and does not answer for another 30-40s, so the repair above used to print
+# "Rootless networking repaired" and hand a still-booting catalog to the job that
+# asked for it. The job died on a connection error; the next night's run found
+# everything healthy. A unit without SuccessExitStatus= paged for a condition
+# that had already fixed itself — the false page this repo has now paid for three
+# times.
+#
+# So a repair that RESTARTED something waits for it to ANSWER, and the caller
+# says what answering means.
+
+# It is a POLL, not a question asked once. The catalog is not up on the first
+# ask — that is the entire scenario — so a fix that checks and gives up is the
+# bug with an extra line in it.
+ns_case slow-catalog
+printf '%s\n' "pkdump-nessie-prod pkdump-lake-prod" > "${NS_STATE}/ps"
+READY_SUCCEED_AFTER=3
+set +e
+ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-prod ready_probe 2>&1)"
+ENS_RC=$?
+set -e
+check "a catalog that is still booting -> waits for it" "0" "$ENS_RC"
+check "and kept asking until it answered" "4" "$(ready_calls)"
+check "saying the repair is complete, not merely started" "1" \
+	"$(printf '%s' "$ENS_OUT" | grep -c 'answers again' || true)"
+
+# The wait is BOUNDED, and running out is a FAILURE. Returning success here is
+# exactly what produced the false page: the caller starts a job against a service
+# that is not there, and reports a fault in the job.
+ns_case dead-catalog
+printf '%s\n' "pkdump-nessie-prod pkdump-lake-prod" > "${NS_STATE}/ps"
+READY_SUCCEED_AFTER=999999
+PKDUMP_NETNS_READY_TIMEOUT=1
+set +e
+ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-prod ready_probe 2>&1)"
+ENS_RC=$?
+set -e
+PKDUMP_NETNS_READY_TIMEOUT=5
+check "a catalog that never answers -> fails the repair" "1" "$ENS_RC"
+check "rather than hanging" "1" \
+	"$(printf '%s' "$ENS_OUT" | grep -c 'never answered within' || true)"
+# Named in the failure itself, not only in the "Restarting …" line above it: the
+# operator reads the last thing the unit said.
+check "and names what did not come back" "1" \
+	"$(printf '%s\n' "$ENS_OUT" | grep -c '^    pkdump-nessie-prod$' || true)"
+
+# A caller that restarts something and cannot confirm it came back is refused.
+# Defaulting to "proceed" would be a silent second copy of this bug, in whatever
+# script forgot the argument, found the same way — a page at 07:00.
+ns_case unverifiable
+printf '%s\n' "pkdump-nessie-prod pkdump-lake-prod" > "${NS_STATE}/ps"
+set +e
+ENS_OUT="$(pkdump_store_netns_ensure pkdump-lake-prod 2>&1)"
+ENS_RC=$?
+set -e
+check "a restart with no readiness command -> refuses" "1" "$ENS_RC"
+check "and says a repair it cannot confirm is not COMPLETE" "1" \
+	"$(printf '%s' "$ENS_OUT" | grep -c 'cannot be reported COMPLETE' || true)"
+
+# Nothing running at all — the usual case for a nightly job on a quiet box. And
+# nothing was restarted, so there is nothing to wait for: the caller's own
+# container is what rebuilds the namespace. The readiness command is handed over
+# anyway and must go unused, or every quiet night pays for a wait it does not
+# need. READY_SUCCEED_AFTER is set to never so a call would also FAIL the run,
+# not merely be counted.
 ns_case empty
 : > "${NS_STATE}/ps"
+READY_SUCCEED_AFTER=999999
 set +e
-pkdump_store_netns_ensure pkdump-lake-prod >/dev/null 2>&1
+pkdump_store_netns_ensure pkdump-lake-prod ready_probe >/dev/null 2>&1
 ENS_RC=$?
 set -e
 check "nothing on it -> just rebuilt" "0" "$ENS_RC"
@@ -884,6 +968,8 @@ check "netns dropped" "gone" \
 	"$([ -e "$NS_NETNS_FILE" ] && echo present || echo gone)"
 check "and nothing restarted" "none" \
 	"$(cat "${NS_STATE}/systemctl-restarts" 2>/dev/null || echo none)"
+check "and no readiness wait was paid for" "0" "$(ready_calls)"
+READY_SUCCEED_AFTER=0
 
 # The repair not working is a failure, not a shrug: the job that called this
 # cannot run, and saying so here is the difference between a named cause and an
@@ -923,7 +1009,38 @@ check "the transform tier checks before it runs" "1" \
 check "the price build too" "1" \
 	"$(grep -c 'pkdump_store_netns_ensure' "${REPO_DIR}/deploy/prices.sh" || true)"
 
-unset NS_NETNS_FILE NS_STATE
+# And each hands it a readiness command, which is the half a repair cannot supply
+# for itself. Without one the guard is back to reporting a restart it never
+# confirmed, and the unit pages on a condition that healed before anyone read the
+# alert (pd-p39v).
+check "the transform tier says what answering means" "1" \
+	"$(grep -c 'pkdump_lake_catalog_answering "\$NETWORK" "\$JOB_IMAGE"' \
+		"${REPO_DIR}/deploy/value-snapshots.sh" || true)"
+check "the price build too" "1" \
+	"$(grep -c 'pkdump_lake_catalog_answering "\$NETWORK" "\$JOB_IMAGE"' \
+		"${REPO_DIR}/deploy/prices.sh" || true)"
+
+# The probe itself, and it is defined ONCE. Two wrappers around one network with
+# two copies of its address is how one of them drifts, and this copy runs only
+# during a wedge — the least-exercised path there is.
+# shellcheck source=deploy/lake-lib.sh
+. "${REPO_DIR}/deploy/lake-lib.sh"
+check "the catalog URI is the container name setup-lake installs" \
+	"http://pkdump-nessie-prod:19120/iceberg/" "$(pkdump_lake_catalog_uri prod)"
+check "and lake.env redirects it" "http://nessie-x:19120/iceberg/" \
+	"$(PKDUMP_LAKE_NESSIE_URI=http://nessie-x:19120/iceberg/ pkdump_lake_catalog_uri prod)"
+# DERIVED from the catalog URI rather than built from the instance a second time:
+# a gate that points the job at its own Nessie must not leave the repair waiting
+# on prod's.
+check "the health URL follows the catalog" "http://nessie-x:19120/api/v2/config" \
+	"$(pkdump_lake_health_url http://nessie-x:19120/iceberg/)"
+# Asked from a container ON the network, not from the host: the published-port
+# path can answer yes about a network the job itself cannot use.
+check "asked from where the job will ask" "1" \
+	"$(grep -c 'podman run --rm --network "\$1" "\$2"' \
+		"${REPO_DIR}/deploy/lake-lib.sh" || true)"
+
+unset NS_NETNS_FILE NS_STATE PKDUMP_NETNS_READY_TIMEOUT PKDUMP_NETNS_READY_INTERVAL
 rm -f "${NETNS_DIR}"/rootless-netns-*
 reset_store
 

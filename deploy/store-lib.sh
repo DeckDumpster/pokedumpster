@@ -457,10 +457,19 @@ pkdump_store_netns_repair() {
     rm -f "$netns_file"
 }
 
-# pkdump_store_netns_ensure <network> — make sure a container can actually be
-# started on a user-defined network in the ACTIVE store, and say something useful
-# when it cannot. Called by the wrappers that run a job on the lake network
-# (pd-3zjt); nothing else needs it, and nothing else should pay for it.
+# How long a repair waits for what it restarted to answer, and how often it asks.
+# 120s because pkdump-nessie is a JVM measured at 30-40s on this box and its own
+# unit allows TimeoutStartSec=120, while the units that call this allow 1800 — so
+# the wait cannot be what times a nightly job out. Overridable as a test seam;
+# nothing in production sets either.
+PKDUMP_NETNS_READY_TIMEOUT="${PKDUMP_NETNS_READY_TIMEOUT:-120}"
+PKDUMP_NETNS_READY_INTERVAL="${PKDUMP_NETNS_READY_INTERVAL:-3}"
+
+# pkdump_store_netns_ensure <network> [<ready-command>...] — make sure a
+# container can actually be started on a user-defined network in the ACTIVE
+# store, and say something useful when it cannot. Called by the wrappers that run
+# a job on the lake network (pd-3zjt); nothing else needs it, and nothing else
+# should pay for it.
 #
 # WHY THIS EXISTS SEPARATELY FROM pkdump_store_netns_repair. That one is a
 # file-stat, runs at every activation, and answers only for a store this shell
@@ -493,8 +502,37 @@ pkdump_store_netns_repair() {
 # Rebuilding the scaffolding in place instead was tried and does not work: podman
 # wants live files there (resolv.conf, the slirp4netns pid), not just directories,
 # and hand-made empty ones only move the failure to the next mount.
+#
+# <ready-command> — WHY THE REPAIR IS NOT DONE WHEN THE RESTART RETURNS (pd-p39v).
+# `systemctl --user restart` returns when the CONTAINER is running, which for
+# pkdump-nessie means a JVM that will not answer for another 30-40 seconds. The
+# repair therefore raced its own remedy: it printed "Rootless networking
+# repaired", the caller started its job immediately, and the job died on a
+# connection error to a service that was coming up fine. The condition self-heals
+# by the next run, so the unit paged for something already fixed — the exact
+# false page this repo has paid for twice before.
+#
+# So a repair that RESTARTED something is only complete once that something
+# ANSWERS again, and what "answers" means is the caller's to say: this file knows
+# about container stores, not about Nessie. The caller passes a command that
+# exits 0 when its network is usable again — for both lake jobs, an HTTP GET of
+# the catalog's config endpoint from a throwaway container ON the network, which
+# is the same path the job itself is about to take. It is polled, bounded, and
+# a deadline that passes FAILS the repair rather than proceeding: proceeding is
+# what produced the false page.
+#
+# The wait is paid ONLY when something was restarted. Nothing running means
+# nothing is mid-start — the next container rebuilds the namespace itself — and
+# the healthy path never reaches any of this at all.
+#
+# A caller that restarts something and offers no way to confirm it came back is
+# refused, loudly, rather than allowed to return the old success: an unverifiable
+# repair IS this bug, and a silent second copy of it is what a default would buy.
 pkdump_store_netns_ensure() {
-    local network="$1" probe rundir graph netns_file stranded foreign name
+    local network="$1"
+    shift
+    local ready=("$@")
+    local probe rundir graph netns_file stranded foreign restarted name deadline
 
     probe="$(podman unshare --rootless-netns true 2>&1)" && return 0
 
@@ -543,18 +581,53 @@ pkdump_store_netns_ensure() {
         return 1
     fi
 
+    # Nothing was on the old namespace, so nothing is mid-start: the caller's own
+    # container rebuilds the namespace when it starts, and there is nothing to
+    # wait for. This is the quiet-box case and it stays as cheap as it was.
+    restarted="$(printf '%s\n' "$stranded" | awk 'NF > 1 {print $1}')"
+    if [ -z "$restarted" ]; then
+        echo "    Rootless networking repaired; nothing was on the old namespace." >&2
+        return 0
+    fi
+
     # Only ours were on it, so restarting them is in scope and finishes the job.
     # A Quadlet container is named by its unit (ContainerName=), so the unit is
     # tried first — restarting the container behind systemd's back leaves the
     # unit's idea of it wrong.
-    printf '%s\n' "$stranded" | awk 'NF > 1 {print $1}' | while read -r name; do
+    printf '%s\n' "$restarted" | while read -r name; do
         echo "    Restarting ${name}, which was left on the old namespace." >&2
         systemctl --user restart "${name}.service" 2>/dev/null ||
             podman restart "$name" >/dev/null 2>&1 ||
             echo "    WARNING: could not restart ${name}; this job may not reach it." >&2
     done
 
-    echo "    Rootless networking repaired." >&2
+    # The restart has RETURNED, which is not the same as the service ANSWERING —
+    # see the header. Without a way to tell the two apart this function would go
+    # back to reporting a repair it has not finished, so it refuses instead.
+    if [ "${#ready[@]}" -eq 0 ]; then
+        echo "  Restarted the containers above, but the caller gave no way to confirm" >&2
+        echo "  they answer again, so this repair cannot be reported COMPLETE (pd-p39v)." >&2
+        echo "  Pass a readiness command: pkdump_store_netns_ensure <network> <cmd...>" >&2
+        return 1
+    fi
+
+    echo "    Waiting up to ${PKDUMP_NETNS_READY_TIMEOUT}s for them to answer again — a restart" >&2
+    echo "    returns when the container is RUNNING, and a JVM is not answering yet." >&2
+    deadline=$((SECONDS + PKDUMP_NETNS_READY_TIMEOUT))
+    while :; do
+        if "${ready[@]}"; then
+            echo "    Rootless networking repaired, and what was restarted answers again." >&2
+            return 0
+        fi
+        [ "$SECONDS" -lt "$deadline" ] || break
+        sleep "$PKDUMP_NETNS_READY_INTERVAL"
+    done
+
+    echo "  The namespace was rebuilt, but what was restarted never answered within" >&2
+    echo "  ${PKDUMP_NETNS_READY_TIMEOUT}s. FAILING rather than starting a job that would die on it:" >&2
+    printf '%s\n' "$restarted" | while read -r name; do echo "    ${name}" >&2; done
+    echo "  Check it: systemctl --user status <name>; podman logs <name>" >&2
+    return 1
 }
 
 # pkdump_store_teardown — remove the active store: every container and image in

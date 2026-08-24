@@ -79,6 +79,10 @@ fi
 pkdump_store_adopt_instance "$INSTANCE"
 pkdump_store_activate
 
+# What this job and deploy/prices.sh have to agree about the lake network.
+# shellcheck source=deploy/lake-lib.sh
+. "$SCRIPT_DIR/lake-lib.sh"
+
 # --- Is there a lakehouse here at all? --------------------------------------
 # The unit's ConditionPathExists on lake.env does NOT answer this: deploy/setup.sh
 # scaffolds that file (commented out) on every box, so it exists everywhere and
@@ -100,6 +104,11 @@ if ! podman network exists "$NETWORK" 2>/dev/null; then
     exit 1
 fi
 
+# Where the catalog is, and what "the catalog is answering" means — both shared
+# with deploy/prices.sh, which runs on the same network against the same Nessie.
+CATALOG_URI="$(pkdump_lake_catalog_uri "$INSTANCE")"
+CATALOG_HEALTH_URL="$(pkdump_lake_health_url "$CATALOG_URI")"
+
 # The network EXISTING is not the same as being able to start a container on it.
 # A second rootless store's cleanup can leave this one holding a network
 # namespace whose scaffolding is gone, and every start on a user-defined network
@@ -107,7 +116,14 @@ fi
 # is what failed this unit every night from 2026-08-12 (pd-3zjt). Checked here,
 # where it can be named and usually repaired, rather than inside podman where it
 # reads as an unexplained mount error.
-if ! pkdump_store_netns_ensure "$NETWORK"; then
+#
+# The readiness command is not optional garnish (pd-p39v): repairing that wedge
+# restarts the catalog, `systemctl restart` returns while the JVM is still
+# booting, and this job then dies on a connection error to a service that is
+# coming up fine — a page for a condition that has already healed. Handing the
+# repair a way to tell "restarted" from "answering" is what makes it wait.
+if ! pkdump_store_netns_ensure "$NETWORK" \
+    pkdump_lake_catalog_answering "$NETWORK" "$JOB_IMAGE" "$CATALOG_HEALTH_URL"; then
     echo "value-snapshots: FAILED — rootless networking is wedged (${INSTANCE})" >&2
     exit 1
 fi
@@ -126,7 +142,7 @@ esac
 # real deployment. The PKDUMP_LAKE_S3_* names are forwarded when lake.env sets
 # them because the test substrate (MinIO) takes static keys — see
 # lake/src/pkdump_lake/catalog.py.
-ENV_ARGS=(-e "PKDUMP_LAKE_NESSIE_URI=${PKDUMP_LAKE_NESSIE_URI:-http://pkdump-nessie-${INSTANCE}:19120/iceberg/}")
+ENV_ARGS=(-e "PKDUMP_LAKE_NESSIE_URI=${CATALOG_URI}")
 for VAR in PKDUMP_LAKE_REF PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION \
     PKDUMP_LAKE_S3_ENDPOINT PKDUMP_LAKE_S3_ACCESS_KEY_ID \
     PKDUMP_LAKE_S3_SECRET_ACCESS_KEY PKDUMP_LAKE_S3_PATH_STYLE AWS_PROFILE \

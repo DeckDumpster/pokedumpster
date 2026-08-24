@@ -542,5 +542,33 @@ wrapper --date "$DATE_SCHED" --tenant alice --tenant bob >/dev/null ||
 	die "a wrapper run over two present tenants must exit 0"
 echo "    ok   a complete run exits 0"
 
+echo "==> §11 The readiness probe a netns repair waits on, against the real catalog"
+# pd-p39v. When `pkdump_store_netns_ensure` repairs a wedged rootless netns it
+# restarts what was on it — here, Nessie — and `systemctl restart` returns while
+# the JVM is still booting. The repair therefore waits for the catalog to ANSWER,
+# and deploy/lake-lib.sh is what "answer" means.
+#
+# That probe runs ONLY during a wedge, which is the least-exercised path in the
+# whole deployment: a typo in it would surface at 07:00 on the one morning it was
+# needed, as the same false page it exists to prevent. tests/deploy/run.sh §8c
+# drives the waiting around it against a fake podman; this drives the probe
+# itself against the real thing, on a real network, with the real job image.
+# shellcheck source=deploy/lake-lib.sh
+. "${REPO_DIR}/deploy/lake-lib.sh"
+
+PROBE_HEALTH="$(pkdump_lake_health_url "http://${NESSIE_CTR}:19120/iceberg/")"
+[ "$PROBE_HEALTH" = "http://${NESSIE_CTR}:19120/api/v2/config" ] ||
+	die "the health URL derived from the catalog is '${PROBE_HEALTH}'"
+pkdump_lake_catalog_answering "$NET" "$JOB_IMAGE" "$PROBE_HEALTH" ||
+	die "the probe says a Nessie that has been serving this whole file is not answering"
+echo "    ok   a live catalog answers, asked from a container on the network"
+
+# And it is a real check, not a rubber stamp. A probe that cannot fail would make
+# the wait return on its first ask, which is the bug with more code in it.
+if pkdump_lake_catalog_answering "$NET" "$JOB_IMAGE" "http://${NESSIE_CTR}:19121/api/v2/config"; then
+	die "the probe answered yes about a port nothing is listening on"
+fi
+echo "    ok   and says no when nothing is listening"
+
 echo ""
 echo "==> tests/lake/value_snapshots.sh PASSED"

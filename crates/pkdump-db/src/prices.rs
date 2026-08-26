@@ -58,6 +58,18 @@
 //!
 //! Arm 2 is a static curated patch and is not date-sensitive at all. Adding a
 //! fourth caller means passing a different feed, never re-typing an arm.
+//!
+//! ## Sealed product is a second rule, deliberately
+//!
+//! A sealed lot has no `printing_id`, so two of the three arms above are
+//! unreachable for one and the feed is a different table
+//! (`shared.sealed_prices`, wide, `UNIQUE(product, observed_at)`). It gets
+//! its own one-arm expression — [`sealed_market_price_expr_from!`] — rather
+//! than a widened version of this one, because "what is this printing worth"
+//! and "what is this sealed lot worth" are different questions with different
+//! keys. What matters is that each has exactly ONE spelling: the sealed one
+//! is spent by the `/sealed` page and by both value-history paths, so the
+//! chart cannot value a box differently from the page that lists it.
 
 /// Effective market price for the printing aliased `p`, resolved against the
 /// feed relation `$feed` and with `$manual_cutoff` (SQL text, possibly empty)
@@ -119,6 +131,58 @@ macro_rules! market_price_expr_asof {
 
 /// Effective market price for the printing aliased `p`. See the module docs.
 pub const MARKET_PRICE_EXPR: &str = crate::market_price_expr!();
+
+/// Effective market price for the **sealed lot** aliased `sc`, exposing
+/// `sc.product_id`, resolved against a feed relation shaped like
+/// `latest_sealed_prices` — `tcgplayer_product_id`, `market_price`,
+/// `mid_price`.
+///
+/// One arm, not three, and the `COALESCE` inside it is a different thing from
+/// the one above: it picks a *price type* off ONE observation, because TCGCSV
+/// quotes many sealed products a mid and no market. Arms 2 and 3 have no
+/// sealed counterpart — `catalog_price_overrides` and `manual_prices` are
+/// both keyed by `printing_id`, and a sealed lot has none.
+///
+/// The feed must already be reduced to the newest observation per product:
+/// `latest_sealed_prices` is (that view), and the value-history backfill
+/// stages `_sealed_prices_asof` the same shape at or before its date. Taking
+/// the market from one day and the mid from another would invent a price
+/// nobody quoted.
+#[macro_export]
+macro_rules! sealed_market_price_expr_from {
+    ($feed:expr) => {
+        concat!(
+            "(SELECT COALESCE(lsp.market_price, lsp.mid_price) FROM ",
+            $feed,
+            " lsp \
+                WHERE lsp.tcgplayer_product_id = sc.product_id LIMIT 1)"
+        )
+    };
+}
+
+/// Effective market price for the sealed lot aliased `sc` **right now**.
+#[macro_export]
+macro_rules! sealed_market_price_expr {
+    () => {
+        $crate::sealed_market_price_expr_from!("latest_sealed_prices")
+    };
+}
+
+/// Effective market price for the sealed lot aliased `sc` **as it stood on
+/// date D**. The caller must have staged a `_sealed_prices_asof` TEMP
+/// relation — `tcgplayer_product_id`, `market_price`, `mid_price` — holding
+/// the newest observation at or before D. See
+/// [`crate::value_history::backfill`].
+#[macro_export]
+macro_rules! sealed_market_price_expr_asof {
+    () => {
+        $crate::sealed_market_price_expr_from!("_sealed_prices_asof")
+    };
+}
+
+/// Effective market price for the sealed lot aliased `sc`. See
+/// [`sealed_market_price_expr_from!`].
+pub const SEALED_MARKET_PRICE_EXPR: &str = crate::sealed_market_price_expr!();
 
 #[cfg(test)]
 mod tests {

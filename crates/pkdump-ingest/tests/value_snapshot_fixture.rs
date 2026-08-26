@@ -33,6 +33,8 @@
 //! | copies in two sets, one binder | the `set` and `binder` dimensions have more than one bucket |
 //! | a `sold` copy and a `Lightly Played` one | status filtering and the condition multiplier |
 //! | **three** registered tenants | two with collections, and one whose file is gone — a run must skip it and say so |
+//! | sealed lots, one of a product nobody quotes | the `sealed` dimension: units not lots, and skipped-and-counted |
+//! | a tenant with NO sealed product at all | the `sealed` row must then not be written — bob is that tenant |
 //!
 //! The tenants are provisioned by the real `pkdump_db::tenants::create`, so
 //! the registry rows, the opaque ids and the `tenants/<id>.sqlite` layout are
@@ -60,18 +62,31 @@ pub const DATE_OLD: &str = "2026-08-09";
 /// The newer priced day, and what `latest_prices` therefore holds.
 pub const DATE_NEW: &str = "2026-08-10";
 
-/// One group of single cards. Sealed product is deliberately absent: a
-/// collection values single cards, and `catalog.prices` carrying sealed rows
-/// as well is `tests/lake/prices.sh`'s business, not this gate's.
+/// One group, holding both kinds of product.
 const GROUPS: &str = r#"{"success":true,"errors":[],"results":[
     {"groupId":1,"name":"Base Set","abbreviation":"BS","publishedOn":"1999-01-09T00:00:00"}
 ]}"#;
 
+/// Two single cards and two sealed products (pd-bbv7).
+///
+/// The discriminator is the one both importers use and the one the lake job
+/// transliterates: a product with an extended-data `Number` is a single card,
+/// and a product without one is sealed product. So 201 and 202 travel the
+/// sealed path — into `sealed_products`, into `shared.sealed_prices`, and into
+/// `catalog.sealed_prices` — without anything here saying which they are.
+///
+/// 202 is catalogued and **never quoted**: the "skipped and counted" case,
+/// which has to be in the fixture or the two implementations agree on an
+/// arithmetic neither of them ever performs.
 const PRODUCTS: &str = r#"{"success":true,"errors":[],"results":[
     {"productId":101,"groupId":1,"name":"Charizard - 4/102","imageCount":1,
      "extendedData":[{"name":"Number","value":"4/102"}]},
     {"productId":102,"groupId":1,"name":"Blastoise - 2/102","imageCount":1,
-     "extendedData":[{"name":"Number","value":"2/102"}]}
+     "extendedData":[{"name":"Number","value":"2/102"}]},
+    {"productId":201,"groupId":1,"name":"Base Set Booster Box","imageCount":1,
+     "extendedData":[]},
+    {"productId":202,"groupId":1,"name":"Base Set Theme Deck","imageCount":1,
+     "extendedData":[]}
 ]}"#;
 
 /// Prices for one "day". Every quoted value shifts with `day`, so a snapshot
@@ -90,12 +105,19 @@ fn prices_json(day: usize) -> String {
             {{"productId":101,"subTypeName":"Holofoil","lowPrice":null,"midPrice":null,
               "highPrice":null,"marketPrice":{:.2},"directLowPrice":null}},
             {{"productId":102,"subTypeName":null,"lowPrice":null,"midPrice":null,
+              "highPrice":null,"marketPrice":{:.2},"directLowPrice":null}},
+            {{"productId":201,"subTypeName":null,"lowPrice":null,"midPrice":{:.2},
               "highPrice":null,"marketPrice":{:.2},"directLowPrice":null}}
         ]}}"#,
         10.0 + d,
         25.50 + d,
         300.0 + d * 10.0,
         5.25 + d,
+        // The sealed box, quoted a mid and a market. Both, because the price
+        // rule coalesces them and a fixture quoting only one would let a
+        // reader that took the wrong column pass.
+        400.0 + d * 20.0,
+        420.0 + d * 20.0,
     )
 }
 
@@ -137,6 +159,11 @@ fn land_run(base_url: &str, raw_root: &Path, db: &Path, ingest_date: &str) {
     for group in &groups {
         let products = client.fetch_products(group.group_id).expect("products");
         let prices = client.fetch_prices(group.group_id).expect("prices");
+        // The order `pkdump_derive::import_tcgcsv` uses, and it is load-bearing:
+        // `import_prices` splits card prices from sealed ones by looking the
+        // product up in `sealed_products`, so the sealed catalog has to exist
+        // before the prices arrive or every sealed quote lands in `prices`.
+        tcgcsv::import_sealed_products(&mut conn, &products, &now).expect("import sealed");
         tcgcsv::import_products(&mut conn, &products, &now).expect("import products");
         tcgcsv::import_prices(&mut conn, &prices, ingest_date).expect("import prices");
     }
@@ -216,6 +243,27 @@ fn fill_collection(conn: &Connection, rows: &[(&str, &str, Option<f64>, &str, bo
     .expect("manual price");
 }
 
+/// Sealed lots for a collection: a quoted product held in quantity, an
+/// unquoted one, and one disposed of.
+///
+/// Only alice gets these. Bob is the collection with no sealed product in it,
+/// which is the half of the claim that says a `sealed` row is not written
+/// unconditionally — a flat zero line on every chart would be a worse answer
+/// than none.
+fn fill_sealed(conn: &Connection) {
+    conn.execute_batch(
+        "INSERT INTO sealed_collection \
+             (product_id, quantity, purchase_price, added_at, status) VALUES \
+             -- Quoted. 3 units at the day's market price, $90 a unit paid.
+             (201, 3, 90.0, '2026-01-03T00:00:00Z', 'owned'), \
+             -- Catalogued and never quoted: skipped by the sum, counted in units.
+             (202, 2, 15.0, '2026-01-03T00:00:00Z', 'owned'), \
+             -- Opened, so no longer a sealed holding at all.
+             (201, 1, 90.0, '2026-01-03T00:00:00Z', 'opened');",
+    )
+    .expect("sealed lots");
+}
+
 /// The snapshot rows for one date, in the stable text form the container gate
 /// diffs. Ten decimal places rather than a bare `{}`: the two implementations
 /// sum the same values, and printing them at a fixed width states how closely
@@ -253,7 +301,19 @@ fn dump_snapshot(conn: &Connection, date: &str) -> String {
 /// *older* day. That is the only way to get a Rust-computed expectation for
 /// the backfill date, and it is a fixture-only manoeuvre: nothing in the app
 /// rewrites `latest_prices` to a past day.
-fn pin_latest_prices_to(shared: &Path, date: &str) {
+///
+/// **Both feeds, or the expectation is a hybrid.** `snapshot_today` values the
+/// cards from `latest_prices` and the sealed lots from `latest_sealed_prices`,
+/// so pinning one and not the other produces a "day" that priced its cards on
+/// D and its boxes on today — which is not a day that ever existed, and which
+/// the transform (reading each partition at or before D) can only disagree
+/// with. That is exactly what this gate caught on its first run.
+///
+/// `latest_sealed_prices` is a VIEW over the newest `sealed_prices`
+/// observation per product, so pinning it means setting the newer
+/// observations aside rather than rewriting a materialized table.
+/// [`unpin_prices`] puts them back.
+fn pin_prices_to(shared: &Path, date: &str) {
     let conn = pkdump_db::open_shared(shared).expect("open shared");
     conn.execute("DELETE FROM latest_prices", [])
         .expect("clear latest_prices");
@@ -265,6 +325,31 @@ fn pin_latest_prices_to(shared: &Path, date: &str) {
         params![date],
     )
     .expect("pin latest_prices");
+
+    conn.execute_batch("DROP TABLE IF EXISTS _pinned_aside;")
+        .expect("clear any previous pin");
+    conn.execute(
+        "CREATE TABLE _pinned_aside AS SELECT * FROM sealed_prices WHERE observed_at > ?1",
+        params![date],
+    )
+    .expect("set the newer sealed observations aside");
+    conn.execute(
+        "DELETE FROM sealed_prices WHERE observed_at > ?1",
+        params![date],
+    )
+    .expect("pin latest_sealed_prices");
+}
+
+/// Undo [`pin_prices_to`], so the fixture the gate consumes is not carrying a
+/// fixture-only manoeuvre in its state. `SELECT *` round-trips the `id`, so
+/// the restored rows are the rows that were there.
+fn unpin_prices(shared: &Path) {
+    let conn = pkdump_db::open_shared(shared).expect("open shared");
+    pkdump_db::latest_prices::refresh_latest_prices(&conn).expect("restore latest_prices");
+    conn.execute("INSERT INTO sealed_prices SELECT * FROM _pinned_aside", [])
+        .expect("restore the newer sealed observations");
+    conn.execute_batch("DROP TABLE _pinned_aside;")
+        .expect("drop the holding table");
 }
 
 /// Where to build the fixture: `PKDUMP_VALUE_FIXTURE_OUT` if the caller wants
@@ -353,6 +438,10 @@ fn builds_a_data_directory_and_the_snapshot_rust_computes_from_it() {
         );
     }
     {
+        let conn = pkdump_db::connect_user(&alice.path, &shared).expect("open alice");
+        fill_sealed(&conn);
+    }
+    {
         let conn = pkdump_db::connect_user(&bob.path, &shared).expect("open bob");
         fill_collection(
             &conn,
@@ -381,8 +470,28 @@ fn builds_a_data_directory_and_the_snapshot_rust_computes_from_it() {
         let mut conn = pkdump_db::connect_user(&alice.path, &shared).expect("open alice");
         let n = pkdump_db::value_history::snapshot_today(&mut conn, DATE_NEW).expect("snapshot");
         // Counted by hand from the collection above: one 'all', two sets
-        // (base1 holds three owned copies, base2 two), one binder.
-        assert_eq!(n, 4, "1 'all' + 2 sets + 1 binder");
+        // (base1 holds three owned copies, base2 two), one binder, one
+        // 'sealed'.
+        assert_eq!(n, 5, "1 'all' + 2 sets + 1 binder + 1 sealed");
+        // The sealed row, spelled out rather than merely present: five UNITS
+        // across two owned lots (the opened one is not a holding), valued at
+        // the quoted product alone.
+        let (value, cost, units): (f64, f64, i64) = conn
+            .query_row(
+                "SELECT market_value, cost_basis, card_count \
+                   FROM collection_value_snapshot \
+                  WHERE date = ?1 AND dimension = 'sealed'",
+                params![DATE_NEW],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("the sealed row");
+        assert_eq!(units, 5, "3 quoted units + 2 unquoted — UNITS, not lots");
+        assert_eq!(cost, 3.0 * 90.0 + 2.0 * 15.0);
+        assert!(
+            (value - 3.0 * 460.0).abs() < 1e-9,
+            "sealed market value {value} — 3 × the day-2 market price of 201, and \
+             nothing at all for the product nobody quotes"
+        );
         dump_snapshot(&conn, DATE_NEW)
     };
 
@@ -390,7 +499,7 @@ fn builds_a_data_directory_and_the_snapshot_rust_computes_from_it() {
     // Rust aggregate over the prices that day actually quoted. Its rows are
     // then REMOVED: the transform has to reconstruct history that was never
     // captured, which is the backfill claim.
-    pin_latest_prices_to(&shared, DATE_OLD);
+    pin_prices_to(&shared, DATE_OLD);
     let expected_old = {
         let mut conn = pkdump_db::connect_user(&alice.path, &shared).expect("open alice");
         pkdump_db::value_history::snapshot_today(&mut conn, DATE_OLD).expect("snapshot");
@@ -404,15 +513,29 @@ fn builds_a_data_directory_and_the_snapshot_rust_computes_from_it() {
     };
     // Put the catalog back the way a real one stands, so the fixture the gate
     // consumes is not carrying a fixture-only manoeuvre in its state.
-    {
-        let conn = pkdump_db::open_shared(&shared).expect("open shared");
-        pkdump_db::latest_prices::refresh_latest_prices(&conn).expect("restore latest_prices");
-    }
+    unpin_prices(&shared);
 
     assert_ne!(
         expected_new, expected_old,
         "the two days must value the collection differently, or the backfill \
          assertion downstream proves nothing"
+    );
+    // …and specifically on the SEALED row, which the whole-dump comparison
+    // above cannot speak for: the card rows differing is enough to satisfy it
+    // while the two days' sealed rows are identical, and that is precisely the
+    // state a half-pinned fixture leaves behind. Left unchecked, §7 of the
+    // container gate would be asserting nothing about sealed at all.
+    let sealed_row = |dump: &str| -> String {
+        dump.lines()
+            .find(|line| line.starts_with("sealed\t"))
+            .unwrap_or_else(|| panic!("no sealed row in:\n{dump}"))
+            .to_string()
+    };
+    assert_ne!(
+        sealed_row(&expected_new),
+        sealed_row(&expected_old),
+        "the two days quote the same sealed price, so the backfill's sealed \
+         half proves nothing — is the sealed feed being pinned with the card one?"
     );
 
     std::fs::write(
@@ -443,7 +566,7 @@ fn builds_a_data_directory_and_the_snapshot_rust_computes_from_it() {
             |r| r.get::<_, i64>(0)
         )
         .expect("count"),
-        4,
+        5,
         "alice keeps the DATE_NEW rows for the byte-identity comparison"
     );
     assert_eq!(
@@ -451,7 +574,7 @@ fn builds_a_data_directory_and_the_snapshot_rust_computes_from_it() {
             r.get::<_, i64>(0)
         })
         .expect("count"),
-        4,
+        5,
         "and only those — the older day is the transform's to reconstruct"
     );
     assert_eq!(

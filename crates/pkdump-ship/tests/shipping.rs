@@ -191,6 +191,21 @@ fn add_holdings(conn: &Connection, n: usize, date: &str) {
     redate(conn, before, date);
 }
 
+/// `n` sealed lots, dated onto `date` the same way. Sealed product is a
+/// holding like any other (pd-4gop) and, since pd-bbv7, one the read-back
+/// stages rather than declines.
+fn add_sealed(conn: &Connection, n: usize, date: &str) {
+    let before = high_water(conn);
+    for i in 0..n {
+        conn.execute(
+            "INSERT INTO sealed_collection (product_id, quantity, added_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![9000 + i as i64, 2 + i as i64, format!("{date}T00:00:00Z")],
+        )
+        .unwrap();
+    }
+    redate(conn, before, date);
+}
+
 fn high_water(conn: &Connection) -> i64 {
     conn.query_row(
         "SELECT coalesce(max(seq), 0) FROM ownership_outbox",
@@ -922,7 +937,7 @@ fn the_zone_read_back_materialises_the_collection_row_for_row() {
         "both days were read — a reader that stopped at one partition would \
          value a collection at whichever day it happened to find"
     );
-    assert_eq!(holdings.other_tables, 0);
+    assert!(holdings.declined.is_empty(), "{:?}", holdings.declined);
 
     pkdump_ship::zone::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
 
@@ -935,6 +950,75 @@ fn the_zone_read_back_materialises_the_collection_row_for_row() {
         .query_row("SELECT count(*) FROM zone_holdings", [], |r| r.get(0))
         .unwrap();
     assert_eq!(staged, 5, "four inserted, one deleted, two more");
+}
+
+/// pd-bbv7. Sealed product ships exactly as singles do and now comes back the
+/// same way, into its OWN staging table. Both halves in one round trip, with
+/// a single and a sealed lot deliberately sharing `row_id = 1` — the ordinary
+/// shape of a collection, and the shape a reduction keyed on `row_id` alone
+/// silently merges.
+#[test]
+fn the_zone_read_back_materialises_the_sealed_lots_too() {
+    let world = World::new();
+    let alice = world.tenant("alice", ALICE);
+    let conn = world.collection(ALICE);
+
+    add_holdings(&conn, 3, "2026-08-13");
+    add_sealed(&conn, 3, "2026-08-13");
+    // Every op on the sealed side: a lot resized, a lot disposed of.
+    conn.execute("UPDATE sealed_collection SET quantity = 7 WHERE id = 1", [])
+        .unwrap();
+    conn.execute("DELETE FROM sealed_collection WHERE id = 3", [])
+        .unwrap();
+    add_sealed(&conn, 1, "2026-08-14");
+
+    let report = ship(&world, &[alice], 3);
+    assert_eq!(report.outcome(), Outcome::Clean);
+
+    let key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+    let holdings = pkdump_ship::zone::read(&world.zone(), &config(), &key, ALICE).unwrap();
+    assert!(
+        holdings.declined.is_empty(),
+        "sealed is materialised now, not declined: {:?}",
+        holdings.declined
+    );
+    pkdump_ship::zone::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
+
+    assert_eq!(
+        dump(&conn, "zone_sealed_holdings"),
+        dump(&conn, "sealed_collection"),
+        "the sealed staging table IS the sealed collection"
+    );
+    assert_eq!(
+        dump(&conn, "zone_holdings"),
+        dump(&conn, "collection"),
+        "and the singles are still themselves — the two reductions did not mix"
+    );
+
+    let (cards, sealed): (i64, i64) = conn
+        .query_row(
+            "SELECT rows, sealed_rows FROM zone_holdings_run WHERE dataset = 'holdings'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (cards, sealed),
+        (3, 3),
+        "the run row counts both halves: three singles, three sealed lots \
+         (four added, one deleted)"
+    );
+
+    // The pair rule, stated over real shipped bytes: id 1 exists on both
+    // sides and they are different holdings.
+    let quantity: i64 = conn
+        .query_row(
+            "SELECT quantity FROM zone_sealed_holdings WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(quantity, 7, "the update won, in the sealed table");
 }
 
 /// The red direction, and the only thing that proves the valuation reads the
@@ -1066,13 +1150,14 @@ fn the_staged_holdings_are_not_carried_by_the_json_envelope() {
 
     let mut holdings = pkdump_ship::ZoneHoldings::default();
     holdings.rows.insert(
-        1,
+        ("collection".into(), 1),
         serde_json::json!({"id": 1, "printing_id": "p", "acquired_at": "x", "source": "zone"}),
     );
     pkdump_ship::zone::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
 
     let envelope = pkdump_db::json_backup::export(&conn).unwrap();
     assert!(!envelope.contains("zone_holdings"), "{envelope}");
+    assert!(!envelope.contains("zone_sealed_holdings"), "{envelope}");
 }
 
 /// Every column of a table, as text, ordered — the unit "the staging table IS

@@ -604,8 +604,11 @@ none "no catalog-zone reader reaches the registry or the tenants dir" "${PY_READ
 log "6. no Iceberg table carries a tenant-identifying column"
 # The literal first half of assertion 3. catalog.prices is five fields —
 # tcgplayer_product_id, sub_type_name, price_type, price, observed_date — and
-# none of them says which collection the row belongs to, because none of them
-# can: the catalog zone holds catalog data only.
+# catalog.sealed_prices (pd-bbv7) is the same four without the sub-type. None
+# of them says which collection the row belongs to, because none of them can:
+# the catalog zone holds catalog data only, and a SEALED price is a catalog
+# fact about a product exactly as a card price is — what a tenant OWNS lives in
+# the tenant zone and is valued against these.
 #
 # Unchanged by the re-cut, and it must stay that way: the tenant zone is plain
 # partitioned Parquet, NOT Iceberg (crates/pkdump-lake/src/tenant.rs), so every

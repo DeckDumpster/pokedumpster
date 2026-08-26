@@ -478,8 +478,26 @@ difference in holdings and cannot be a difference in arithmetic.
 declared, so a column added to `collection` reaches it with no change here —
 and it carries no triggers, so materialising cannot emit outbox events and a
 Phase 3 run cannot feed itself. `zone_holdings_run` beside it records which
-parts produced it. Both are transport state: neither travels in the portable
+parts produced it. All are transport state: none travels in the portable
 JSON envelope, and the deletion that drops a tenant drops them.
+
+**One staging table per outbox source (`pd-bbv7`).** The zone has always
+carried both holdings tables — `collection` and `sealed_collection` — and the
+read-back used to decline the second, on the grounds that valuing sealed
+product was a decision rather than a table name. It is now a decision that has
+been taken, so `sealed_collection` lands in `zone_sealed_holdings`, built from
+its own `pragma_table_info` the same way. Two tables, never one: `row_id` is
+unique only *within* a source (`pd-4gop`), so the first single and the first
+sealed lot are both 1 and reducing them together would merge two unrelated
+holdings into a plausible wrong number. `zone_holdings_run.sealed_rows` counts
+the second half beside `rows`.
+
+An event from a source this reader has **no** staging table for is still
+declined — and now counted **by name**, per table, on stderr. The single
+number it used to print is precisely what let half a tenant's holdings sit
+unvalued without anybody being able to see what was being ignored;
+`pkdump_ship::zone::every_outbox_source_has_a_staging_table` is the gate that
+stops a third source getting that far.
 
 ### It shipped alongside the online path, and then replaced it
 
@@ -507,7 +525,7 @@ zone valuation against the rows Rust `value_history::snapshot_today` computed
 over the same collection — so a holding lost, duplicated or wrongly resolved
 anywhere between the outbox and `zone_holdings` shows up as a changed number.
 
-### Two refusals, and the second is the one that matters
+### Three refusals, and the last two are the ones that matter
 
 - **No staging table** → that tenant is skipped, naming `pkdump-ship
   holdings`. Obvious.
@@ -517,6 +535,15 @@ anywhere between the outbox and `zone_holdings` shows up as a changed number.
   materialisation predates the last ship. Left to run, it would value today's
   collection at last week's holdings and every number would look reasonable.
   That is the quiet failure this whole item could otherwise become.
+- **Staging tables from two different reads** → skipped too (`pd-bbv7`).
+  `zone_holdings_run.sealed_rows` against `COUNT(*)` in
+  `zone_sealed_holdings`: any build that materialises both writes the two in
+  ONE transaction, so a disagreement means they were not written together. It
+  is a **rollback's** fingerprint — an older `pkdump-ship holdings` rebuilds
+  `zone_holdings`, leaves `zone_sealed_holdings` exactly as it found it, and
+  rewrites the run row with no sealed count to put in it. What is left is one
+  read's cards beside an earlier read's sealed lots, and nothing else in the
+  system can see it.
 
 A tenant whose OUTBOX is ahead of the zone is *not* refused, and that stayed
 true when the online path went away. It means the shipper skipped that tenant,
@@ -524,15 +551,23 @@ and **the shipper is what says so** — the same nightly run names them and
 pushes its own PARTIAL warning. Refusing here would report one shipping
 failure twice, and would withhold a valuation of holdings that are genuinely
 what the offline side was told. What the transform refuses is the case nothing
-else can see: a read-back that never happened, or one that happened too early.
+else can see: a read-back that never happened, one that happened too early, or
+one that happened in two halves.
 
 ### What the zone does not carry
 
-Only `collection` rows are shipped (`pkdump_db::outbox::SOURCE_TABLES`). The
+Both holdings tables are shipped (`pkdump_db::outbox::SOURCE_TABLES`). The
 condition multiplier (`conditions`) and the third arm of the price rule
 (`manual_prices` over `user_printings`) are read from the tenant's own
 database. They are not holdings and the outbox does not emit them. Phase 3
 narrowed which table the copies come from and nothing else.
+
+The sealed half needs neither: nothing prices a sealed lot off its condition
+(`/sealed` does not, so the chart must not), and `manual_prices` is keyed by
+`printing_id`, which a sealed lot has none of. Its price rule is one arm —
+`COALESCE(market_price, mid_price)` off the newest observation, spelled once in
+`pkdump_db::prices::sealed_market_price_expr_from!` and spent by the `/sealed`
+page and both value-history paths.
 
 **Deleting the online holdings read did not remove the tenant-database
 dependency**, and nothing should be written as though it had. The valuation

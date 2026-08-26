@@ -966,8 +966,9 @@ unopenable, and `deploy/erase.sh`'s three exit statuses). Runbook:
 
 `lake/src/pkdump_lake/value_snapshots.py` is the first job that *reads* the
 lake: it values **every registered tenant's** collection from `catalog.prices`
-at a pinned Nessie commit and writes `collection_value_snapshot` into that
-tenant's own database. Three rules hold it in shape:
+and `catalog.sealed_prices` at a pinned Nessie commit and writes
+`collection_value_snapshot` into that tenant's own database. Three rules hold
+it in shape:
 
 - **The unit of work is the registry, not the current user.** The refresh used
   to end with a step 7 that snapshotted the one collection `$PKDUMP_USER`
@@ -1022,6 +1023,79 @@ the scheduling are decisions:
   wrapper — the one component that is allowed to know what day it is — names it.
 
 `catalog.prices` itself is still built by hand between the two (pd-up36).
+
+### Sealed is its own value series (pd-bbv7)
+
+A collection is worth its loose cards **plus its sealed product**, and the
+chart reported only the first — prod read $10,636.81 with $10,351.47 of sealed
+product across 140 units invisible beside it. The fix is a second series, not a
+bigger number:
+
+- **`catalog.sealed_prices`** is a second Iceberg table, written by the SAME
+  run of `pkdump-lake-build-prices` from the SAME raw partition, with the
+  identical `pkdump.raw-runs` provenance — so the two tables cannot silently
+  come from different nights. Grain `(product, price_type, observed_date)`,
+  no `sub_type_name` (mirroring `shared.sealed_prices`, which is
+  `UNIQUE(product, observed_at)`), partitioned the same way. **The sealed
+  price bytes were already in `raw/`**: `tcgcsv.rs::import_prices` splits one
+  payload, so this is no new upstream, ingest or fetch. What counts as sealed
+  is read from the same partition's `products` dataset by the same
+  discriminator the two Rust importers use (a `Number` for category 3, a
+  `CardType` for Japan's 85, category read off the part's URL); a missing
+  products partition is **fatal**, because classifying nothing as sealed
+  produces a table saying every tenant owns nothing sealed.
+  **`catalog.prices` is unchanged** — it still holds every product's prices —
+  which is what makes the cards half provably untouched.
+- **`zone_sealed_holdings`** is the second staging table the read-back writes,
+  from `sealed_collection`, beside `zone_holdings`. Two tables, never one:
+  `row_id` is unique only within a source. A source with no staging table is
+  declined **by name** now, per table, because the single number it printed
+  before is how sealed stayed invisible.
+- **`dimension='sealed'`** in `collection_value_snapshot`, bucket NULL.
+  `card_count` is **UNITS** (`SUM(quantity)`) not lots; `cost_basis`
+  multiplies by quantity (a lot's price is per unit); there is **no condition
+  multiplier**, because nothing in the app prices a box off its condition; and
+  a lot whose product nobody quotes is **skipped by the sum and counted in the
+  units**, never valued at zero. Written only when the tenant owns some, the
+  same rule `set` and `binder` buckets follow.
+- **`dimension='all'` still means the loose cards**, to the cent. Every row
+  ever written under it was computed over cards alone and widening it would
+  restate months of chart silently. There is **no stored combined total**: the
+  `all` dimension of `GET /api/collection/value-history` answers with two
+  series (cards at `bucket = null`, sealed at `bucket = "sealed"`) and the
+  chart and the home page sum them at read time.
+- **Never join a sealed holding through `tcgcsv_products`.** That table holds
+  single-card products; no sealed id is in it, so such a join drops every
+  sealed row and reports a collection with no sealed product in it. The
+  `sealed` dimension is one bucket and therefore joins nothing at all; where a
+  catalog attribute is ever wanted it comes from `sealed_products`, by
+  `product_id`.
+- One spelling of what a sealed lot is worth —
+  `pkdump_db::prices::sealed_market_price_expr_from!`,
+  `COALESCE(market_price, mid_price)` off ONE observation — spent by the
+  `/sealed` page and by both value-history paths.
+
+**An existing box gets sealed history only if it asks.** The sealed line
+starts empty and advances from the first night the transform runs with this
+build. `pkdump data backfill-value-history` reconstructs it from
+`shared.sealed_prices`, which prod already holds for every past night — but it
+rewrites the *card* rows for those dates too, so it is an explicit operator
+step rather than something a deploy does. That rewrite is safe now for the
+reason pd-3lg8 made it safe: both value-history paths spend the same two price
+rules, and `snapshot_today_and_backfill_agree_on_the_same_date` /
+`…_on_the_sealed_row` hold them to it.
+
+The hard gate is that the cards must not move, and it is stated as a real
+before-and-after rather than against a constant:
+`value_history::tests::sealed_holdings_do_not_move_the_cards_dimensions`
+(hermetic — one collection snapshotted with its sealed lots and again without,
+`all`/`set`/`binder` required identical) and `tests/lake/value_snapshots.sh`
+§5b, which empties the sealed staging table and re-runs the real transform.
+§5c is the inverse — a transform that never wrote a sealed row would pass §5b
+— and bob, who owns no sealed product, is the tenant who must get no sealed
+row at all. `tests/lake/prices.sh` §5b asserts the two price tables name the
+same raw run, and the verifier now compares `catalog.sealed_prices` to
+`shared.sealed_prices` **exactly, in both directions**.
 
 ### Phase 3: valuing a collection from the tenant zone
 
@@ -1088,9 +1162,9 @@ Five things about it are decisions:
   reading back to move it. A Phase 3 that quietly read the live table fails
   the first half; one that is frozen or cached fails the second.
 
-What the zone does not carry: only `collection` rows are shipped, so the
-condition multiplier and `manual_prices`/`user_printings` are read from the
-tenant's own database. **Deleting the online holdings read did not remove the
+What the zone does not carry: the condition multiplier and
+`manual_prices`/`user_printings` are read from the tenant's own database
+(neither applies to a sealed lot — see the sealed series above). **Deleting the online holdings read did not remove the
 tenant-database dependency** — the valuation still opens each tenant's SQLite
 to read those, to read `zone_holdings`, and to write the snapshot back. Phase
 3 narrowed which table the *copies* come from and nothing else. Runbook:

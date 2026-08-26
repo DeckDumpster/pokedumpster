@@ -26,7 +26,10 @@ export async function steps(h: ReplayHarness) {
   await h.wait_for_visible(CHART, 6000);
   await h.assert_text_present('Collection value over time');
 
-  // The 'all' dimension is a single line (bucket = NULL).
+  // The 'all' dimension answers with the collection's priced halves — the
+  // loose cards (bucket = NULL) and, for a tenant who owns sealed product, a
+  // second series (pd-bbv7). The committed fixture holds no sealed lots, so
+  // one line here is the whole answer rather than a rule about the endpoint.
   await h.assert_element_count(`${CHART}[data-series-count="1"]`, 1);
 
   // Escape returns me to the collection.

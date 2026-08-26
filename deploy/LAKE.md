@@ -369,6 +369,48 @@ other dataset was. `shared.sqlite` splits the same bytes at import time into
 decimal would round, and "the sampled prices match" would stop meaning what it
 says.
 
+### The same run also builds `catalog.sealed_prices` (`pd-bbv7`)
+
+A collection is worth its loose cards **plus its sealed product**, and the
+chart reported only the first. The sealed price bytes were already in `raw/` —
+the split above is performed at import time on one payload — so this is a
+second Iceberg table off bytes we already have, not a new upstream, a new
+ingest or a new nightly fetch.
+
+```text
+catalog.sealed_prices   (tcgplayer_product_id, price_type, price, observed_date)
+                        partitioned by observed_date, exactly as catalog.prices is
+```
+
+Four things about it are decisions:
+
+- **It is the same job, and that is what makes the two tables the same
+  night's bytes.** One `pkdump-lake-build-prices --ingest-date D` reads the
+  partition once and writes both, with the identical `pkdump.raw-runs`
+  provenance on each. Two jobs would make "same run ULID" a thing to check
+  after the fact; one makes it a thing that cannot be otherwise.
+  `tests/lake/prices.sh` §5b asserts it anyway, for the day somebody splits
+  them.
+- **`catalog.prices` is unchanged.** Nothing is moved out of it — it still
+  holds every product's prices — so nothing downstream of it can move either.
+  That is what makes the cards half of every valuation provably untouched.
+- **No `sub_type_name`.** `shared.sealed_prices` has none and is
+  `UNIQUE(product, observed_at)`: a sealed product is one product, where a
+  sub-type is a card's Normal/Holofoil printing. A product quoted under two
+  sub-types collapses to the first entry whole, exactly as `INSERT OR IGNORE`
+  does on the SQLite side — and the rows that collapse are still in
+  `catalog.prices`, which keeps everything. That makes the verifier's sealed
+  comparison **exact in both directions** rather than "the lake may hold more".
+- **What counts as sealed is read from the SAME partition's `products`
+  dataset**, never from a catalog database, using the same discriminator the
+  two Rust importers use: a product with an extended-data `Number` is a single
+  card (category 3), a Japanese product with a `CardType` is a card (category
+  85, where ~40% of vintage products carry no number at all), and a product
+  that is neither is sealed. The category comes off the part's own URL in the
+  manifest. **A missing `products` partition is fatal** — classifying nothing
+  as sealed produces a table saying every tenant's sealed holdings are worth
+  nothing, and under-reporting is the defect this exists to fix.
+
 ### It is on a timer (`pd-up36`)
 
 `pkdump-prices@<instance>.timer`, whose service runs `deploy/prices.sh` — the
@@ -423,12 +465,16 @@ Checking the table against the catalog we already have:
 pkdump-lake-verify-prices --sqlite /path/to/shared.sqlite --observed-date 2026-08-11
 ```
 
-It asserts that, restricted to single cards, the two agree **exactly** — same
-rows, same values — and that every sealed price SQLite kept is present in the
-lake. The lake legitimately holds *more* sealed rows: `sealed_prices` has no
-`sub_type_name` column, so a sealed product quoted under two sub-types loses
-one of them in SQLite. The verifier prints that as a note rather than a
-failure, because it is SQLite dropping data rather than the lake inventing it.
+It asserts three things. Restricted to single cards, `catalog.prices` and
+`shared.prices` agree **exactly** — same rows, same values. Restricted to
+sealed products, every price SQLite kept is present in `catalog.prices`, which
+legitimately holds *more*: `sealed_prices` has no `sub_type_name` column, so a
+sealed product quoted under two sub-types loses one of them in SQLite. The
+verifier prints that as a note rather than a failure, because it is SQLite
+dropping data rather than the lake inventing it. And `catalog.sealed_prices`
+is compared to `shared.sealed_prices` **exactly, in both directions** — it is
+built to be the same thing, and it is the table a collection's sealed half is
+valued from, so "nearly right" there is a wrong number that looks reasonable.
 
 ---
 
@@ -436,8 +482,8 @@ failure, because it is SQLite dropping data rather than the lake inventing it.
 
 `pd-ruwh`. The first job that *reads* the lake rather than filling it:
 `pkdump-lake-value-snapshots` values every registered tenant's collection from
-`catalog.prices` and writes `collection_value_snapshot` back into that
-tenant's own database.
+`catalog.prices` and `catalog.sealed_prices`, and writes
+`collection_value_snapshot` back into that tenant's own database.
 
 ```bash
 podman run --rm --network pkdump-lake-<inst> \
@@ -448,9 +494,22 @@ podman run --rm --network pkdump-lake-<inst> \
   pkdump-lake-value-snapshots --date 2026-08-11 --data-dir /data
 ```
 
+**Two halves, two dimensions (`pd-bbv7`).** A collection is its loose cards
+*and* its sealed product, and the job writes them as separate rows rather than
+one blended number: `dimension='all'` is the cards, unchanged and still meaning
+exactly what every row already written under it means, and `dimension='sealed'`
+is the sealed product — valued from `catalog.sealed_prices`, counted in
+**units** (`SUM(quantity)`, so a lot of four boxes is four), and written only
+when the tenant owns some. There is no stored combined total: the API sums the
+two series at read time, because a stored total is a third number that can
+disagree with the two it is made of. A sealed product nobody quotes is skipped
+by the sum and still counted in the units — the run says how many — because a
+zero is indistinguishable from a box that is worthless.
+
 **Where the holdings come from: the tenant zone, and nowhere else.** The
-copies it values are read from `zone_holdings`, which `pkdump-ship holdings`
-materialises out of the tenant zone (`pd-szh2`). The online read of each
+copies it values are read from `zone_holdings`, and the sealed lots from
+`zone_sealed_holdings`, which `pkdump-ship holdings` materialises out of the
+tenant zone (`pd-szh2`, `pd-bbv7`). The online read of each
 tenant's live `collection` table shipped beside it for exactly one item and
 was then deleted (`pd-i08u`), so there is no `--holdings` flag to choose with
 and no fallback when the zone has not been read back — a tenant whose
@@ -615,7 +674,7 @@ of the CLI unchanged. Only where the bytes come from differs.
 | `pkdump-refresh@<instance>` | **lands**: fetches the upstreams, and with `--land-raw` puts every response in the bucket |
 | `pkdump-derive@<instance>` | **derives**: rebuilds `shared.sqlite` from one partition |
 | `pkdump-ship@<instance>` | **ships and reads back**: the outbox into the tenant zone, and the zone into each tenant's `zone_holdings` |
-| `pkdump-value-snapshots@<instance>` | **transforms**: values every tenant's `zone_holdings` from `catalog.prices` |
+| `pkdump-value-snapshots@<instance>` | **transforms**: values every tenant's `zone_holdings` from `catalog.prices` and their `zone_sealed_holdings` from `catalog.sealed_prices` |
 
 Separate units are what let a derive run against yesterday's raw on a night the
 fetch failed. The trap on the other side of that is *yesterday's raw silently
@@ -898,7 +957,7 @@ discovered from a row count. Filed as **pd-5w4n**.
 | flag → landing zone (the WRITING half only) | `crates/pkdump-cli/src/landing.rs` |
 | the acquisition phase it brackets | `acquire()` in `crates/pkdump-derive/src/lib.rs` and `crates/pkdump-cli/src/setup.rs` |
 | reading `raw/` back — runs, manifests, payloads | `lake/src/pkdump_lake/raw.py` |
-| `catalog.prices`, and only that | `lake/src/pkdump_lake/prices.py` |
+| `catalog.prices` + `catalog.sealed_prices`, and only those | `lake/src/pkdump_lake/prices.py` |
 | the check against `shared.sqlite` | `lake/src/pkdump_lake/verify.py` |
 | per-tenant value snapshots (the transform tier) | `lake/src/pkdump_lake/value_snapshots.py` |
 | what the timer runs it as | `deploy/value-snapshots.sh` + `deploy/pkdump-value-snapshots.{service,timer}` |

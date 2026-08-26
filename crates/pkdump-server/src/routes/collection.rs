@@ -206,8 +206,16 @@ struct ValueHistoryParams {
 }
 
 /// Collection value over time. `dimension` is `all` (default), `set`, or
-/// `binder`; an absent or unrecognized value falls back to `all`. Returns one
-/// series for `all`, one per bucket (sorted by latest value, desc) otherwise.
+/// `binder`; an absent or unrecognized value falls back to `all`.
+///
+/// `all` returns the collection's two priced halves (pd-bbv7): the loose-card
+/// series first, with `bucket`/`label` null as it always has been, and — when
+/// the tenant has ever owned sealed product — a second series at
+/// `bucket = "sealed"`. There is no combined total in the response, by
+/// design: a server-side total is a third number that can disagree with the
+/// two it is made of, so the caller sums the halves it draws.
+///
+/// `set` / `binder` return one series per bucket, sorted by latest value desc.
 async fn value_history(
     State(state): State<AppState>,
     Query(p): Query<ValueHistoryParams>,

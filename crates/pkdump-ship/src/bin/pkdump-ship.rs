@@ -319,10 +319,12 @@ fn do_holdings(a: &ScopeArgs) -> anyhow::Result<i32> {
         let id = &tenant.user.database_id;
         match materialize_one(source.as_ref(), &config, &registry, tenant, &read_at) {
             Ok(Some(holdings)) => println!(
-                "    {} ({}): {} holding(s) from {} part(s) over {} partition(s), through seq {}",
+                "    {} ({}): {} card(s) + {} sealed lot(s) from {} part(s) over {} \
+                 partition(s), through seq {}",
                 tenant.user.handle,
                 id,
-                holdings.rows.len(),
+                holdings.count_of("collection"),
+                holdings.count_of("sealed_collection"),
                 holdings.parts,
                 holdings.partitions.len(),
                 holdings.max_seq
@@ -398,11 +400,13 @@ fn materialize_one(
     );
 
     let holdings = pkdump_ship::zone::read(source, config, &key, id)?;
-    if holdings.other_tables > 0 {
+    // Named, not merely counted (pd-bbv7). A source the zone carries and this
+    // reader has no staging table for is a holding nothing values, every
+    // night, and the operator has to be able to read WHICH from one line.
+    for (table, count) in &holdings.declined {
         eprintln!(
-            "    {id}: {} event(s) in the zone are not `collection` rows and were not \
-             materialised — valuing them is a decision, not a table name",
-            holdings.other_tables
+            "    {id}: {count} event(s) from `{table}` were not materialised — this reader \
+             has no staging table for it, so nothing values those holdings"
         );
     }
     let conn = pkdump_db::open_user(&tenant.path)?;

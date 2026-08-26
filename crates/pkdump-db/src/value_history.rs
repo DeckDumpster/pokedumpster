@@ -2,8 +2,9 @@
 //!
 //! The `collection_value_snapshot` table (schema_user.sql) records the owned
 //! collection's total market value, cost basis, and card count on each date,
-//! along three dimensions: the whole collection (`all`), per set (`set`), and
-//! per binder (`binder`). This module owns the three operations over it:
+//! along four dimensions: the loose cards (`all`), per set (`set`), per
+//! binder (`binder`), and the sealed product (`sealed`). This module owns the
+//! three operations over it:
 //!
 //! - [`snapshot_today`] computes and upserts *today's* rows.
 //! - [`backfill`] reconstructs history from `shared.prices` × each copy's
@@ -26,6 +27,42 @@
 //! for an unknown condition, the
 //! same defensive default the frontend uses. Cost basis is the sum of owned
 //! copies' `purchase_price`; card count is the number of owned copies.
+//!
+//! ## Sealed is its own series, and `all` still means loose cards
+//!
+//! pd-bbv7. A collection's worth is two halves — loose cards and sealed
+//! product — and reporting only the first under-reports it. They are two
+//! *dimensions* rather than one blended number, because the two are priced
+//! from different feeds against different keys and a reader is entitled to
+//! know which half moved.
+//!
+//! `all` therefore keeps meaning exactly what every row already written under
+//! it means: the loose cards. Widening it would silently restate months of
+//! history. There is deliberately **no stored combined total** either — a
+//! stored total can disagree with its parts, so the API sums the two series at
+//! read time.
+//!
+//! The sealed row's shape is not the cards row's shape, and each difference is
+//! a fact about sealed product rather than a convenience:
+//!
+//! * `card_count` is **units**, `SUM(quantity)` — one `sealed_collection` row
+//!   is a lot of N identical boxes, where one `collection` row is one physical
+//!   card. Counting rows would report 46 where the tenant owns 140.
+//! * `cost_basis` is `SUM(purchase_price × quantity)`: `purchase_price` on a
+//!   lot is per unit (it is Collectr's "Average Cost Paid", and
+//!   `collectr_export` writes it back out beside `Quantity`).
+//! * there is **no condition multiplier**. A sealed lot carries a `condition`,
+//!   but nothing prices a box off it — `/sealed` does not, and inventing a
+//!   multiplier here would make the chart disagree with the page.
+//! * a lot whose product has no price is **skipped and counted**: `SUM` passes
+//!   over the NULL while `SUM(quantity)` still counts the units. That is the
+//!   same treatment an unpriced card already gets, and it is the point — a
+//!   zero is indistinguishable from "worthless" on a chart.
+//!
+//! The sealed row is written only when the tenant owns at least one sealed
+//! lot, exactly as a `set` or `binder` bucket exists only if something is in
+//! it. A collection with no sealed product is left with the rows it has always
+//! had.
 
 use rusqlite::{Connection, params};
 
@@ -122,7 +159,59 @@ const OWNED_ASOF_SQL: &str = concat!(
              'owned') = 'owned';"
 );
 
-/// Compute and upsert today's value rows for all three dimensions. `date` is
+/// The per-lot "owned sealed product today" projection: one row per owned
+/// `sealed_collection` lot, carrying its quantity, per-unit purchase price and
+/// current market price. Staged into a TEMP TABLE beside `_snap_owned` so
+/// [`insert_dimensions`] can aggregate both without either query knowing about
+/// the other.
+///
+/// It joins **nothing**. The `sealed` dimension is one bucket, so it needs no
+/// catalog attribute at all — and the join it is therefore not tempted to make
+/// is the one that would quietly empty it: sealed product ids are not in
+/// `tcgcsv_products` (that table holds single-card products), so
+/// `JOIN tcgcsv_products` drops every sealed row and reports a collection with
+/// no sealed product in it. Should a by-set sealed breakdown ever want a set
+/// code, it comes from `sealed_products`, which is where a sealed product is
+/// catalogued.
+const OWNED_SEALED_TODAY_SQL: &str = concat!(
+    "\
+    CREATE TEMP TABLE _snap_sealed AS \
+    SELECT sc.id, \
+           sc.quantity, \
+           sc.purchase_price, \
+           ",
+    crate::sealed_market_price_expr!(),
+    " AS market_price \
+      FROM sealed_collection sc \
+     WHERE sc.status = 'owned';"
+);
+
+/// The same per-lot projection for a date D bound to `?1`, over the
+/// `_sealed_prices_asof` relation [`backfill_one_date`] stages.
+///
+/// "Owned on D" is weaker here than it is for cards, and deliberately so:
+/// `status_log` records transitions for `collection` rows only, so a lot's
+/// **current** status is all there is to go on — the same accepted
+/// approximation the card path already makes for condition. A lot acquired
+/// after D is excluded; a lot sold since is absent from every reconstructed
+/// day rather than from the days after the sale. Recording it would take a
+/// status log for sealed, which is a change to the collection and not to this
+/// reconstruction.
+const OWNED_SEALED_ASOF_SQL: &str = concat!(
+    "\
+    CREATE TEMP TABLE _snap_sealed AS \
+    SELECT sc.id, \
+           sc.quantity, \
+           sc.purchase_price, \
+           ",
+    crate::sealed_market_price_expr_asof!(),
+    " AS market_price \
+      FROM sealed_collection sc \
+     WHERE sc.status = 'owned' \
+       AND date(sc.added_at) <= ?1;"
+);
+
+/// Compute and upsert today's value rows for every dimension. `date` is
 /// the `YYYY-MM-DD` snapshot key (the caller passes today). Idempotent: a
 /// full delete-then-insert per `(date, dimension)`, so re-running replaces the
 /// day's rows rather than duplicating them (a plain upsert can't, because the
@@ -135,20 +224,28 @@ pub fn snapshot_today(conn: &mut Connection, date: &str) -> Result<usize> {
         "DELETE FROM collection_value_snapshot WHERE date = ?1",
         params![date],
     )?;
-    tx.execute_batch("DROP TABLE IF EXISTS _snap_owned;")?;
+    tx.execute_batch("DROP TABLE IF EXISTS _snap_owned; DROP TABLE IF EXISTS _snap_sealed;")?;
     tx.execute_batch(OWNED_TODAY_SQL)?;
+    tx.execute_batch(OWNED_SEALED_TODAY_SQL)?;
 
     let written = insert_dimensions(&tx, date)?;
 
-    tx.execute_batch("DROP TABLE IF EXISTS _snap_owned;")?;
+    tx.execute_batch("DROP TABLE IF EXISTS _snap_owned; DROP TABLE IF EXISTS _snap_sealed;")?;
     tx.commit()?;
     Ok(written)
 }
 
-/// Insert the `all` / `set` / `binder` aggregate rows for `date` from the
-/// current `_snap_owned` TEMP TABLE. Shared by [`snapshot_today`] and the
-/// per-date step of [`backfill`], which both stage owned copies (with a
-/// `market_price` + `mult` column) into `_snap_owned` first.
+/// Insert the `all` / `set` / `binder` / `sealed` aggregate rows for `date`
+/// from the current `_snap_owned` and `_snap_sealed` TEMP TABLEs. Shared by
+/// [`snapshot_today`] and the per-date step of [`backfill`], which both stage
+/// owned copies (with a `market_price` + `mult` column) into `_snap_owned` and
+/// owned sealed lots (with `quantity`, `purchase_price` and `market_price`)
+/// into `_snap_sealed` first.
+///
+/// The three card dimensions are computed from `_snap_owned` alone and the
+/// sealed one from `_snap_sealed` alone. Nothing here reads both, which is
+/// what makes "`all` still means loose cards" a property of the code rather
+/// than of a filter somebody has to keep right.
 fn insert_dimensions(tx: &rusqlite::Transaction, date: &str) -> Result<usize> {
     let mut written = 0usize;
     written += tx.execute(
@@ -184,13 +281,30 @@ fn insert_dimensions(tx: &rusqlite::Transaction, date: &str) -> Result<usize> {
           GROUP BY binder_id",
         params![date],
     )?;
+    // Sealed. `SUM(quantity)` because the count is UNITS, `× quantity` on both
+    // money columns because a lot's prices are per unit, and no `mult` because
+    // nothing prices a box off its condition. `HAVING COUNT(*) > 0` is what
+    // keeps a collection that owns no sealed product exactly as it was: the
+    // bucket exists only when something is in it, the same rule `set` and
+    // `binder` follow.
+    written += tx.execute(
+        "INSERT INTO collection_value_snapshot \
+             (date, dimension, bucket, market_value, cost_basis, card_count) \
+         SELECT ?1, 'sealed', NULL, \
+                COALESCE(SUM(market_price * quantity), 0.0), \
+                COALESCE(SUM(purchase_price * quantity), 0.0), \
+                COALESCE(SUM(quantity), 0) \
+           FROM _snap_sealed \
+          HAVING COUNT(*) > 0",
+        params![date],
+    )?;
     Ok(written)
 }
 
-/// Reconstruct historical value rows from `shared.prices` and each copy's
-/// acquisition + status history. For every distinct market-price observation
-/// date D at or after the earliest acquisition, records the value of the
-/// collection as it stood on D:
+/// Reconstruct historical value rows from `shared.prices` /
+/// `shared.sealed_prices` and each copy's acquisition + status history. For
+/// every distinct price-observation date D at or after the earliest
+/// acquisition, records the value of the collection as it stood on D:
 ///
 /// - **owned on D**: a copy with `date(acquired_at) <= D` whose status as of D
 ///   is `owned`. Status-as-of-D is the `to_status` of the latest `status_log`
@@ -206,6 +320,10 @@ fn insert_dimensions(tx: &rusqlite::Transaction, date: &str) -> Result<usize> {
 ///   (pd-3lg8).
 /// - **condition**: the copy's *current* condition — the accepted
 ///   approximation, since there is no condition history.
+/// - **sealed on D**: a lot with `date(added_at) <= D` that is `owned` today,
+///   at the newest `sealed_prices` observation on or before D. See
+///   [`OWNED_SEALED_ASOF_SQL`] for why that filter is weaker than the card
+///   one.
 ///
 /// Idempotent: each date's rows are deleted before being re-inserted.
 ///
@@ -233,24 +351,48 @@ pub fn backfill(conn: &mut Connection) -> Result<usize> {
          CREATE INDEX _owned_products_idx \
            ON _owned_products(tcgplayer_product_id, sub_type_name);",
     )?;
+    // The same restriction for the sealed feed, and for the same reason: a
+    // per-date materialization of `sealed_prices` is only cheap if it is
+    // scoped to the handful of products the tenant has ever held.
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS _owned_sealed_products; \
+         CREATE TEMP TABLE _owned_sealed_products AS \
+         SELECT DISTINCT product_id FROM sealed_collection; \
+         CREATE INDEX _owned_sealed_products_idx \
+           ON _owned_sealed_products(product_id);",
+    )?;
 
     // Earliest acquisition date — no point recording dates before the
-    // collection had a single card (they would all be value 0).
-    let earliest: Option<String> =
-        conn.query_row("SELECT MIN(date(acquired_at)) FROM collection", [], |r| {
-            r.get(0)
-        })?;
+    // collection held anything (those days would all be value 0). Both
+    // halves count: a tenant who owns sealed product and no loose cards has a
+    // value history, and reading `collection` alone would report that they
+    // have none.
+    let earliest: Option<String> = conn.query_row(
+        "SELECT MIN(d) FROM ( \
+             SELECT MIN(date(acquired_at)) AS d FROM collection \
+             UNION ALL \
+             SELECT MIN(date(added_at))    AS d FROM sealed_collection)",
+        [],
+        |r| r.get(0),
+    )?;
     let Some(earliest) = earliest else {
         println!("Backfill: collection is empty — nothing to reconstruct.");
         return Ok(0);
     };
 
-    // Distinct market-price observation dates at or after the first
-    // acquisition, oldest first.
+    // Distinct price-observation dates at or after the first acquisition,
+    // oldest first — from BOTH feeds. A day the sealed feed moved is a day
+    // the collection's value moved, and it would otherwise be reconstructed
+    // only if the card feed happened to be quoted the same day. (It is, every
+    // night; the union is here so that staying true is not a coincidence.)
     let dates: Vec<String> = {
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT observed_at FROM prices \
-              WHERE price_type = 'market' AND observed_at >= ?1 \
+            "SELECT DISTINCT observed_at FROM ( \
+                 SELECT observed_at FROM prices WHERE price_type = 'market' \
+                 UNION \
+                 SELECT observed_at FROM sealed_prices \
+               ) \
+              WHERE observed_at >= ?1 \
               ORDER BY observed_at",
         )?;
         let rows = stmt.query_map(params![earliest], |r| r.get(0))?;
@@ -278,7 +420,9 @@ pub fn backfill(conn: &mut Connection) -> Result<usize> {
         }
     }
 
-    conn.execute_batch("DROP TABLE IF EXISTS _owned_products;")?;
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS _owned_products; DROP TABLE IF EXISTS _owned_sealed_products;",
+    )?;
     println!(
         "Backfill: wrote {written} snapshot rows across {} dates.",
         dates.len()
@@ -297,7 +441,10 @@ fn backfill_one_date(conn: &mut Connection, date: &str) -> Result<usize> {
 
     // Latest market price <= D per owned product+sub_type. Built once per
     // date; the owned-products restriction keeps it small.
-    tx.execute_batch("DROP TABLE IF EXISTS _prices_asof; DROP TABLE IF EXISTS _snap_owned;")?;
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS _prices_asof; DROP TABLE IF EXISTS _snap_owned; \
+         DROP TABLE IF EXISTS _sealed_prices_asof; DROP TABLE IF EXISTS _snap_sealed;",
+    )?;
     tx.execute(
         "CREATE TEMP TABLE _prices_asof AS \
          SELECT pr.tcgplayer_product_id, pr.sub_type_name, pr.price_type, pr.price \
@@ -324,52 +471,112 @@ fn backfill_one_date(conn: &mut Connection, date: &str) -> Result<usize> {
            ON _prices_asof(tcgplayer_product_id, sub_type_name);",
     )?;
 
+    // The sealed feed as of D: the newest observation at or before D per
+    // owned product, whole — market and mid come off the SAME row, because
+    // `COALESCE(market, mid)` is a choice between two quotes of one day and
+    // not a search back through the series for whichever exists.
+    tx.execute(
+        "CREATE TEMP TABLE _sealed_prices_asof AS \
+         SELECT sp.tcgplayer_product_id, sp.market_price, sp.mid_price \
+           FROM sealed_prices sp \
+           JOIN ( \
+                  SELECT tcgplayer_product_id, MAX(observed_at) AS mo \
+                    FROM sealed_prices \
+                   WHERE observed_at <= ?1 \
+                     AND tcgplayer_product_id IN \
+                         (SELECT product_id FROM _owned_sealed_products) \
+                   GROUP BY tcgplayer_product_id \
+                ) m \
+             ON m.tcgplayer_product_id = sp.tcgplayer_product_id \
+            AND m.mo = sp.observed_at",
+        params![date],
+    )?;
+    tx.execute_batch(
+        "CREATE INDEX _sealed_prices_asof_idx \
+           ON _sealed_prices_asof(tcgplayer_product_id);",
+    )?;
+
     // Copies owned on D, priced as of D. Same _snap_owned shape
     // insert_dimensions expects (market_price + mult columns), and the same
     // three-arm rule snapshot_today spends — spelled once, in
     // `market_price_expr_from!`, with `_prices_asof` standing in for
     // `latest_prices` and arm 3 cut off at D.
     tx.execute(OWNED_ASOF_SQL, params![date])?;
+    tx.execute(OWNED_SEALED_ASOF_SQL, params![date])?;
 
     let written = insert_dimensions(&tx, date)?;
 
-    tx.execute_batch("DROP TABLE IF EXISTS _prices_asof; DROP TABLE IF EXISTS _snap_owned;")?;
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS _prices_asof; DROP TABLE IF EXISTS _snap_owned; \
+         DROP TABLE IF EXISTS _sealed_prices_asof; DROP TABLE IF EXISTS _snap_sealed;",
+    )?;
     tx.commit()?;
     Ok(written)
 }
 
+/// The `bucket` the sealed series is returned under by [`value_history`], and
+/// the one value of `bucket` on the `all` dimension that is not `None`.
+///
+/// A constant because the frontend matches on it: the two series the `all`
+/// dimension answers with are told apart by this, never by their order.
+pub const SEALED_BUCKET: &str = "sealed";
+
 /// Read the value history for the API. `dimension` is `all`, `set`, or
 /// `binder` (an unknown value is the caller's responsibility to default).
 ///
-/// - `all` → exactly one series (`bucket`/`label` both `None`), points sorted
-///   by date ascending.
+/// - `all` → the collection's two priced halves, cards first: the loose-card
+///   series (`bucket`/`label` both `None` — unchanged, and always present
+///   even when empty) and, when the tenant has ever owned sealed product, a
+///   second series at [`SEALED_BUCKET`]. Points sorted by date ascending.
 /// - `set` / `binder` → one series per bucket, points sorted by date; series
 ///   sorted by their latest (most recent date) market value, descending. The
 ///   label is the set name / binder name.
+///
+/// **There is no combined total here, deliberately** (pd-bbv7). A stored or
+/// server-side total is a third number that can disagree with the two it is
+/// made of; the caller adds the halves it drew, on the date it drew them.
 pub fn value_history(conn: &Connection, dimension: &str) -> Result<Vec<ValueSeries>> {
     if dimension == "all" {
-        let mut stmt = conn.prepare(
-            "SELECT date, market_value, cost_basis, card_count \
-               FROM collection_value_snapshot \
-              WHERE dimension = 'all' \
-              ORDER BY date",
-        )?;
-        let points: Vec<ValuePoint> = stmt
-            .query_map([], |r| {
-                Ok(ValuePoint {
-                    date: r.get(0)?,
-                    market_value: r.get(1)?,
-                    cost_basis: r.get(2)?,
-                    card_count: r.get(3)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        // Always return exactly one series for 'all', even when empty.
-        return Ok(vec![ValueSeries {
+        let points_of = |dim: &str| -> Result<Vec<ValuePoint>> {
+            let mut stmt = conn.prepare(
+                "SELECT date, market_value, cost_basis, card_count \
+                   FROM collection_value_snapshot \
+                  WHERE dimension = ?1 \
+                  ORDER BY date",
+            )?;
+            let points = stmt
+                .query_map(params![dim], |r| {
+                    Ok(ValuePoint {
+                        date: r.get(0)?,
+                        market_value: r.get(1)?,
+                        cost_basis: r.get(2)?,
+                        card_count: r.get(3)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(points)
+        };
+
+        // Always exactly one series for the cards, even when empty — the
+        // frontend has read `series[0]` as "the collection" since e1vo.
+        let mut series = vec![ValueSeries {
             bucket: None,
             label: None,
-            points,
-        }]);
+            points: points_of("all")?,
+        }];
+        // And the sealed half beside it, only when there is one. An empty
+        // series would draw a flat zero line for every tenant who owns no
+        // sealed product, which says "worth nothing" where the truth is
+        // "none held".
+        let sealed = points_of(SEALED_BUCKET)?;
+        if !sealed.is_empty() {
+            series.push(ValueSeries {
+                bucket: Some(SEALED_BUCKET.to_string()),
+                label: Some("Sealed".to_string()),
+                points: sealed,
+            });
+        }
+        return Ok(series);
     }
 
     // set / binder: bucket + label come from the catalog / user tables.
@@ -511,6 +718,56 @@ mod tests {
             params![product, sub, price, observed],
         )
         .unwrap();
+    }
+
+    /// Catalogue a sealed product and quote it, on the shared DB. `market` is
+    /// deliberately optional: TCGCSV quotes plenty of sealed products a mid
+    /// and no market, which is why the price rule coalesces the two.
+    fn set_sealed_price(
+        shared: &std::path::Path,
+        product: i64,
+        market: Option<f64>,
+        mid: Option<f64>,
+        observed: &str,
+    ) {
+        let c = open_shared(shared).unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO sealed_products (product_id, name, category, fetched_at) \
+             VALUES (?1, 'A Booster Box', 'booster_box', '2026-01-01T00:00:00Z')",
+            params![product],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO sealed_prices \
+               (tcgplayer_product_id, market_price, mid_price, observed_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![product, market, mid, observed],
+        )
+        .unwrap();
+    }
+
+    /// Add a sealed lot to the collection. `quantity` is the whole point: one
+    /// row is N identical boxes.
+    fn add_sealed(conn: &Connection, product: i64, quantity: i64, unit_cost: Option<f64>) {
+        conn.execute(
+            "INSERT INTO sealed_collection \
+               (product_id, quantity, purchase_price, added_at, status) \
+             VALUES (?1, ?2, ?3, '2026-01-01T00:00:00Z', 'owned')",
+            params![product, quantity, unit_cost],
+        )
+        .unwrap();
+    }
+
+    /// One dimension's row for a date, or `None` if it was not written.
+    fn dimension_row(conn: &Connection, date: &str, dimension: &str) -> Option<(f64, f64, i64)> {
+        conn.query_row(
+            "SELECT market_value, cost_basis, card_count \
+               FROM collection_value_snapshot \
+              WHERE date = ?1 AND dimension = ?2 AND bucket IS NULL",
+            params![date, dimension],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .ok()
     }
 
     /// Rebuild the materialized `latest_prices` table on the shared DB — the
@@ -846,6 +1103,190 @@ mod tests {
         assert_eq!(
             reconstructed, live,
             "backfill must reconstruct the same day the live path computes"
+        );
+    }
+
+    /// **The hard gate of pd-bbv7.** Sealed product must not move the cards.
+    ///
+    /// Stated the only way a test can state "before and after": the same
+    /// collection, snapshotted with its sealed lots in place and again with
+    /// them gone, and the `all` / `set` / `binder` rows required to be
+    /// identical to the last bit. An accidental blend — a sealed lot joined
+    /// into `_snap_owned`, a widened `all` — changes the first set of rows and
+    /// not the second, and this is where that shows up.
+    #[test]
+    fn sealed_holdings_do_not_move_the_cards_dimensions() {
+        let (_d, mut conn, shared) = fixture();
+        set_price(&shared, 100, "Normal", 10.00, "2026-06-02");
+        refresh_shared_latest(&shared);
+        add_copy(&mut conn, "set1-1-normal", "Near Mint", 3.00);
+        set_sealed_price(&shared, 7001, Some(120.00), Some(115.00), "2026-06-02");
+        add_sealed(&conn, 7001, 4, Some(90.00));
+
+        snapshot_today(&mut conn, "2026-06-02").unwrap();
+        let with_sealed = rows_on(&conn, "2026-06-02");
+        assert_eq!(
+            dimension_row(&conn, "2026-06-02", "sealed"),
+            Some((480.0, 360.0, 4)),
+            "4 boxes at $120 = $480, at $90 each paid = $360, 4 UNITS"
+        );
+
+        // The same collection with no sealed product in it at all.
+        conn.execute("DELETE FROM sealed_collection", []).unwrap();
+        snapshot_today(&mut conn, "2026-06-02").unwrap();
+        let cards_only = rows_on(&conn, "2026-06-02");
+
+        assert_eq!(
+            with_sealed
+                .iter()
+                .filter(|r| r.1 != "sealed")
+                .collect::<Vec<_>>(),
+            cards_only.iter().collect::<Vec<_>>(),
+            "owning sealed product changed a cards row — `all` has been blended"
+        );
+        assert!(
+            cards_only.iter().all(|r| r.1 != "sealed"),
+            "a collection with no sealed product must get no sealed row"
+        );
+    }
+
+    /// A sealed lot whose product nobody quotes is **skipped and counted**:
+    /// out of the money, still in the unit count. Valuing it at zero would be
+    /// indistinguishable from a box that is worthless.
+    #[test]
+    fn an_unpriced_sealed_lot_is_skipped_and_still_counted() {
+        let (_d, mut conn, shared) = fixture();
+        set_sealed_price(&shared, 7001, Some(50.00), None, "2026-06-02");
+        add_sealed(&conn, 7001, 2, Some(30.00));
+        // Catalogued, never quoted.
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sealed_products (product_id, name, category, fetched_at) \
+                 VALUES (7002, 'An Unquoted Tin', 'tin', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        add_sealed(&conn, 7002, 3, Some(20.00));
+
+        snapshot_today(&mut conn, "2026-06-02").unwrap();
+        assert_eq!(
+            dimension_row(&conn, "2026-06-02", "sealed"),
+            Some((100.0, 120.0, 5)),
+            "the priced lot's $100 alone, both lots' cost, and all FIVE units"
+        );
+    }
+
+    /// TCGCSV quotes many sealed products a mid and no market, so the rule is
+    /// `COALESCE(market, mid)` — off ONE observation, never market from one
+    /// day and mid from another.
+    #[test]
+    fn a_sealed_lot_falls_back_to_the_mid_price() {
+        let (_d, mut conn, shared) = fixture();
+        set_sealed_price(&shared, 7001, None, Some(45.00), "2026-06-02");
+        add_sealed(&conn, 7001, 1, None);
+
+        snapshot_today(&mut conn, "2026-06-02").unwrap();
+        assert_eq!(
+            dimension_row(&conn, "2026-06-02", "sealed"),
+            Some((45.0, 0.0, 1))
+        );
+    }
+
+    /// pd-3lg8's rule, extended to the row pd-bbv7 adds: the live path and the
+    /// backfill must be the same arithmetic on the sealed side too, or every
+    /// historical sealed point disagrees with today's.
+    #[test]
+    fn snapshot_today_and_backfill_agree_on_the_sealed_row() {
+        let (_d, mut conn, shared) = fixture();
+        // Two sealed observations, so "as of D" has an older one to reject.
+        set_sealed_price(&shared, 7001, Some(100.00), Some(99.00), "2026-06-01");
+        set_sealed_price(&shared, 7001, Some(130.00), Some(128.00), "2026-06-02");
+        add_sealed(&conn, 7001, 3, Some(80.00));
+        // A card too, so backfill has a `collection` to walk and the two
+        // dimensions are written by the same call.
+        set_price(&shared, 100, "Normal", 10.00, "2026-06-02");
+        refresh_shared_latest(&shared);
+        add_copy(&mut conn, "set1-1-normal", "Near Mint", 3.00);
+
+        snapshot_today(&mut conn, "2026-06-02").unwrap();
+        let live = rows_on(&conn, "2026-06-02");
+        assert_eq!(
+            dimension_row(&conn, "2026-06-02", "sealed"),
+            Some((390.0, 240.0, 3)),
+            "the newest quote, 3 × $130"
+        );
+
+        backfill(&mut conn).unwrap();
+        assert_eq!(
+            rows_on(&conn, "2026-06-02"),
+            live,
+            "backfill must reconstruct the same day the live path computes"
+        );
+        // And the older day is valued at the older quote, not today's.
+        assert_eq!(
+            dimension_row(&conn, "2026-06-01", "sealed"),
+            Some((300.0, 240.0, 3)),
+            "3 × $100 — the observation that stood on 2026-06-01"
+        );
+    }
+
+    /// A tenant who owns sealed product and no loose cards still has a value
+    /// history. Reading `collection` alone for the earliest date would report
+    /// that they have none.
+    #[test]
+    fn a_sealed_only_collection_still_backfills() {
+        let (_d, mut conn, shared) = fixture();
+        set_sealed_price(&shared, 7001, Some(60.00), None, "2026-06-02");
+        add_sealed(&conn, 7001, 2, Some(50.00));
+
+        assert!(
+            backfill(&mut conn).unwrap() > 0,
+            "nothing was reconstructed"
+        );
+        assert_eq!(
+            dimension_row(&conn, "2026-06-02", "sealed"),
+            Some((120.0, 100.0, 2))
+        );
+    }
+
+    /// The API's `all` dimension answers with the collection's two priced
+    /// halves. The cards series stays first and keeps `bucket = None`, which
+    /// is what every existing reader indexes.
+    #[test]
+    fn value_history_all_returns_the_sealed_series_beside_the_cards() {
+        let (_d, mut conn, shared) = fixture();
+        set_price(&shared, 100, "Normal", 10.00, "2026-06-02");
+        refresh_shared_latest(&shared);
+        add_copy(&mut conn, "set1-1-normal", "Near Mint", 3.00);
+
+        // No sealed yet: exactly the one series this has always returned.
+        snapshot_today(&mut conn, "2026-06-02").unwrap();
+        let series = value_history(&conn, "all").unwrap();
+        assert_eq!(series.len(), 1);
+        assert!(series[0].bucket.is_none());
+
+        set_sealed_price(&shared, 7001, Some(25.00), None, "2026-06-02");
+        add_sealed(&conn, 7001, 2, Some(20.00));
+        snapshot_today(&mut conn, "2026-06-02").unwrap();
+
+        let series = value_history(&conn, "all").unwrap();
+        assert_eq!(series.len(), 2, "cards and sealed");
+        assert!(
+            series[0].bucket.is_none(),
+            "the cards series is still first"
+        );
+        assert_eq!(series[0].points.last().unwrap().market_value, 10.0);
+        assert_eq!(series[1].bucket.as_deref(), Some(SEALED_BUCKET));
+        assert_eq!(series[1].label.as_deref(), Some("Sealed"));
+        assert_eq!(series[1].points.last().unwrap().market_value, 50.0);
+        // No combined total anywhere: the caller adds the halves it drew.
+        assert!(
+            series
+                .iter()
+                .all(|s| s.points.iter().all(|p| p.market_value != 60.0)),
+            "a blended total has appeared in the response"
         );
     }
 

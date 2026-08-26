@@ -15,11 +15,19 @@ The two sides are not the same shape, and the difference is not an accident:
 * ``catalog.prices`` holds every product's prices, narrow, because a price
   payload does not say which kind of product it describes.
 
-So the check has two halves. Restricted to products the catalog calls single
-cards, the two must agree **exactly** — same rows, same values. Restricted to
-sealed products, every price SQLite kept must be present in the lake; the
-lake may hold more, and where it does, that is SQLite dropping data rather
-than the lake inventing it.
+So the check has three halves. Restricted to products the catalog calls single
+cards, ``catalog.prices`` and ``shared.prices`` must agree **exactly** — same
+rows, same values. Restricted to sealed products, every price SQLite kept must
+be present in ``catalog.prices``; the lake may hold more, and where it does,
+that is SQLite dropping data rather than the lake inventing it.
+
+And ``catalog.sealed_prices`` (pd-bbv7) is checked **exactly**, in both
+directions, because it is built to be the same thing ``shared.sealed_prices``
+is: one row per (product, price_type, day), resolved by the same
+first-entry-wins-per-product rule. That is the strictest comparison here, and
+deliberately so — it is the table a collection's sealed half is valued from,
+and the one thing that would make a wrong number look reasonable is a sealed
+feed that is nearly right.
 
 Run it against a copy of a real catalog::
 
@@ -40,7 +48,7 @@ import sys
 from pyiceberg.expressions import EqualTo
 
 from .catalog import catalog
-from .prices import DEFAULT_TABLE, PRICE_TYPES
+from .prices import DEFAULT_TABLE, PRICE_TYPES, SEALED_TABLE
 
 #: How many matched rows to print as evidence. The bead asks for "a sampled
 #: set of prices", so the sample is shown rather than merely counted.
@@ -59,6 +67,16 @@ def lake_rows(identifier: str, observed_date: dt.date) -> dict[tuple[int, str, s
     return {
         (row["tcgplayer_product_id"], row["sub_type_name"], row["price_type"]): row["price"]
         for row in batch
+    }
+
+
+def lake_sealed_rows(identifier: str, observed_date: dt.date) -> dict[tuple[int, str], float]:
+    """``catalog.sealed_prices`` for one day, keyed at its grain."""
+    table = catalog().load_table(identifier)
+    scan = table.scan(row_filter=EqualTo("observed_date", observed_date.isoformat()))
+    return {
+        (row["tcgplayer_product_id"], row["price_type"]): row["price"]
+        for row in scan.to_arrow().to_pylist()
     }
 
 
@@ -115,7 +133,11 @@ def report(differences: list[str], label: str, limit: int = 10) -> None:
 
 
 def verify(
-    identifier: str, sqlite_path: str, observed_date: dt.date, sample: int = DEFAULT_SAMPLE
+    identifier: str,
+    sqlite_path: str,
+    observed_date: dt.date,
+    sample: int = DEFAULT_SAMPLE,
+    sealed_identifier: str = SEALED_TABLE,
 ) -> int:
     lake = lake_rows(identifier, observed_date)
     singles, sealed, sealed_ids = sqlite_sides(sqlite_path, observed_date)
@@ -174,6 +196,31 @@ def verify(
             "shared.sqlite. The lake keeps them."
         )
 
+    print(f"==> {sealed_identifier}: the two must agree exactly, both ways")
+    # Not "the lake may hold more", as above. This table is built to be what
+    # `shared.sealed_prices` is, so a difference in EITHER direction is a
+    # defect in one of them — which is the whole reason it can be valued from.
+    lake_sealed_table = lake_sealed_rows(sealed_identifier, observed_date)
+    print(f"    lake  {sealed_identifier:<24} {len(lake_sealed_table):>9} rows")
+    missing = [
+        f"{key} in sqlite, not in the lake" for key in sealed.keys() - lake_sealed_table.keys()
+    ]
+    extra = [
+        f"{key} in the lake, not in sqlite" for key in lake_sealed_table.keys() - sealed.keys()
+    ]
+    differing = [
+        f"{key}: sqlite {sealed[key]!r} vs lake {lake_sealed_table[key]!r}"
+        for key in sealed.keys() & lake_sealed_table.keys()
+        if sealed[key] != lake_sealed_table[key]
+    ]
+    if missing or extra or differing:
+        failures += 1
+        report(missing, "row(s) only in sqlite")
+        report(extra, "row(s) only in the lake")
+        report(differing, "row(s) whose price differs")
+    else:
+        print(f"    ok   {len(sealed)} sealed rows identical, value for value")
+
     print(f"==> sample of {sample} matched rows")
     for key in sorted(singles)[:sample]:
         print(f"    {key} price {singles[key]!r} (both sides)")
@@ -181,22 +228,28 @@ def verify(
     if failures:
         print("==> MISMATCH")
         return 1
-    print("==> catalog.prices and shared.sqlite agree")
+    print(f"==> {identifier}, {sealed_identifier} and shared.sqlite agree")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pkdump-lake-verify-prices",
-        description="Compare catalog.prices against a shared.sqlite for one observed_date.",
+        description="Compare catalog.prices and catalog.sealed_prices against a shared.sqlite "
+        "for one observed_date.",
     )
     parser.add_argument("--sqlite", required=True, help="path to a shared.sqlite (opened read-only)")
     parser.add_argument("--observed-date", required=True, help="YYYY-MM-DD")
     parser.add_argument("--table", default=DEFAULT_TABLE)
+    parser.add_argument("--sealed-table", default=SEALED_TABLE)
     parser.add_argument("--sample", type=int, default=DEFAULT_SAMPLE)
     args = parser.parse_args(argv)
     return verify(
-        args.table, args.sqlite, dt.date.fromisoformat(args.observed_date), sample=args.sample
+        args.table,
+        args.sqlite,
+        dt.date.fromisoformat(args.observed_date),
+        sample=args.sample,
+        sealed_identifier=args.sealed_table,
     )
 
 

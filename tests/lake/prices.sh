@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Container-tier gate (pd-1ojt): catalog.prices is built from raw/ ALONE.
+# Container-tier gate (pd-1ojt): catalog.prices — and, since pd-bbv7,
+# catalog.sealed_prices beside it — are built from raw/ ALONE.
 #
 # Run by deploy/ci.sh. Standalone:
 #   bash tests/lake/prices.sh          # ~3min, full run + teardown
@@ -25,6 +26,18 @@
 # raw objects through the REAL client and landing zone, and imports the SAME
 # responses into a shared.sqlite through the REAL `import_prices`. §4 compares
 # them row for row. A disagreement is a finding about one parser or the other.
+#
+# ── THE SEALED HALF (pd-bbv7) ───────────────────────────────────────────────
+# The same run also writes `catalog.sealed_prices`, and the two things worth
+# proving about it are in §5 and §5b. §5 (the verifier) compares it to
+# `shared.sealed_prices` EXACTLY, both directions — it is built to be the same
+# thing, so unlike the sealed subset of catalog.prices there is no "the lake
+# may hold more" to allow for. §5b asserts what a comparison cannot: that it
+# holds the sealed products and not the single cards, and that both tables name
+# the same raw run. The second is unfalsifiable today, because one job writes
+# both from one read — which is why it is the assertion that catches the day
+# that stops being true and the two halves of a collection start coming
+# from two nights.
 #
 # Prod-safe: its own podman network, MinIO, Nessie, temp dir and image tag.
 # Touches no pkdump-* unit, no pkdump-*-data volume, no real S3 bucket and no
@@ -153,6 +166,19 @@ echo "==> §1  Build the lake job image"
 podman build -t "$JOB_IMAGE" -f "${REPO_DIR}/lake/Containerfile" "${REPO_DIR}/lake" >/dev/null
 echo "    ${JOB_IMAGE}"
 
+# The same, for the sealed table this run also writes.
+sealed_day_digest() {
+	run_job python -c "
+import hashlib, sys
+from pyiceberg.expressions import EqualTo
+from pkdump_lake.catalog import catalog
+rows = catalog().load_table('catalog.sealed_prices').scan(
+    row_filter=EqualTo('observed_date', '$1')).to_arrow().to_pylist()
+keyed = sorted((r['tcgplayer_product_id'], r['price_type'], r['price']) for r in rows)
+print(len(keyed), hashlib.sha256(repr(keyed).encode()).hexdigest()[:16])
+" | tail -1
+}
+
 echo "==> §2  An INTERNAL network: there is no upstream to call"
 podman network create --internal "$NET" >/dev/null
 # The assertion the whole bead turns on, made mechanically rather than by
@@ -225,11 +251,96 @@ run_job pkdump-lake-build-prices --ingest-date "$DATE_OLD" ||
 OLD_STATE=$(day_digest "$DATE_OLD")
 [ "${OLD_STATE%% *}" = "$ROWS_PER_DAY" ] ||
 	die "${DATE_OLD}: expected ${ROWS_PER_DAY} rows, got ${OLD_STATE%% *}"
-echo "    ok   ${OLD_STATE}"
+OLD_SEALED_STATE=$(sealed_day_digest "$DATE_OLD")
+echo "    ok   ${OLD_STATE}, sealed ${OLD_SEALED_STATE}"
 
 echo "==> §5  It matches the shared.sqlite built from the same bytes"
 run_job pkdump-lake-verify-prices --sqlite /fixture/shared.sqlite --observed-date "$DATE_OLD" ||
 	die "catalog.prices and shared.sqlite disagree for ${DATE_OLD}"
+
+echo "==> §5b catalog.sealed_prices: the same night's bytes, and only sealed"
+# pd-bbv7. The second table the same run writes. §5 already compared it to
+# shared.sealed_prices row for row, both ways — what is left is the two claims
+# a comparison cannot make.
+#
+# One: it holds the SEALED products and no others. The fixture's group 2 is
+# sealed product (no `Number` in extendedData) and group 1 is single cards, and
+# the discriminator is read out of the landed products dataset — so a
+# classifier that had it backwards, or that classified nothing, shows up here
+# as the wrong product ids rather than as a smaller number somebody has to
+# recognise.
+SEALED_IDS=$(run_job python -c "
+from pyiceberg.expressions import EqualTo
+from pkdump_lake.catalog import catalog
+rows = catalog().load_table('catalog.sealed_prices').scan(
+    row_filter=EqualTo('observed_date', '$DATE_OLD')).to_arrow().to_pylist()
+print(' '.join(str(i) for i in sorted({r['tcgplayer_product_id'] for r in rows})))
+" | tail -1)
+[ "$SEALED_IDS" = "201 202" ] ||
+	die "catalog.sealed_prices holds products '${SEALED_IDS}' — the sealed ones are 201 and 202, \
+and 101/102 are single cards that must never appear in it"
+echo "    ok   sealed products ${SEALED_IDS}, and no single card"
+
+# Two: the two tables came from the SAME run. Built by one job from one read,
+# so this cannot currently differ — which is exactly why it is worth asserting
+# rather than assuming. The day somebody splits the job in two, a sealed feed
+# quietly one night behind the card feed values every collection's two halves
+# at two different catalogs, and nothing else here would notice.
+RUNS=$(run_job python -c "
+from pkdump_lake.catalog import catalog
+cat = catalog()
+for name in ('catalog.prices', 'catalog.sealed_prices'):
+    print(cat.load_table(name).current_snapshot().summary['pkdump.raw-runs'])
+" | tail -2)
+CARD_RUNS=$(printf '%s\n' "$RUNS" | head -1)
+SEALED_RUNS=$(printf '%s\n' "$RUNS" | tail -1)
+[ -n "$CARD_RUNS" ] && [ "$CARD_RUNS" = "$SEALED_RUNS" ] ||
+	die "the two price tables name different raw runs: '${CARD_RUNS}' vs '${SEALED_RUNS}'"
+echo "    ok   both tables built from run(s) ${CARD_RUNS}"
+
+# Three: the classifier itself, over BOTH TCGplayer categories. The fixture is
+# category 3 only, and the Japanese rule (`japan.rs::is_card` — a card carries
+# `CardType`, because ~40% of vintage Japanese products carry no `Number` at
+# all) would therefore never be exercised by the data above. Applying the
+# English rule to category 85 files 450 groups of Japanese SINGLES as sealed
+# product, which is a wrong number nothing else here would notice. So the pure
+# functions are driven directly, in the shipped job image, in both directions.
+run_job python -c "
+from pkdump_lake.prices import CATEGORY_POKEMON_JAPAN, category_of, is_sealed
+
+def card(**kw): return {'extendedData': [{'name': k, 'value': v} for k, v in kw.items()]}
+
+# Category 3: a Number makes it a card; nothing makes it sealed.
+assert not is_sealed(card(Number='4/102'), 3), 'an English single was called sealed'
+assert is_sealed({'extendedData': []}, 3), 'an English sealed product was called a card'
+assert is_sealed({}, 3), 'a product with no extendedData at all must be sealed'
+# Case-insensitively, the way both Rust importers compare the field name.
+assert not is_sealed(card(number='4/102'), 3), 'the field name is matched case-sensitively'
+
+# Category 85: CardType makes it a card, and a Japanese vintage card with NO
+# number must NOT be filed as sealed product.
+jp = CATEGORY_POKEMON_JAPAN
+assert not is_sealed(card(CardType='Pokemon'), jp), 'a Japanese single was called sealed'
+assert is_sealed(card(Number='001/102'), jp), 'a Japanese product without CardType is sealed'
+assert is_sealed({'extendedData': []}, jp), 'a Japanese sealed product was called a card'
+
+# And the category is READ, not assumed: the same product classifies both ways.
+vintage = card(CardType='Trainer')
+assert is_sealed(vintage, 3) and not is_sealed(vintage, jp),     'the rule does not vary by category — one of the two importers is being ignored'
+
+# The category comes off the part URL the manifest recorded.
+assert category_of('https://tcgcsv.com/tcgplayer/85/1234/products', 'k') == 85
+assert category_of('http://127.0.0.1:8080/3/1/products', 'k') == 3
+for bad in ('https://tcgcsv.com/tcgplayer/3/1/prices', 'https://x/products', 'https://x/a/b/products'):
+    try:
+        category_of(bad, 'k')
+    except Exception:
+        continue
+    raise AssertionError(f'{bad!r} was accepted as a products URL')
+print('CLASSIFIER OK')
+" | grep -q 'CLASSIFIER OK' ||
+	die "the sealed classifier does not follow the two Rust importers — see pkdump_lake.prices.is_sealed"
+echo "    ok   the classifier matches is_single_card (cat 3) and japan::is_card (cat 85)"
 
 echo "==> §6  Re-running the build is idempotent"
 # Same input, same table STATE. The Nessie commit is new either way — a build
@@ -239,7 +350,10 @@ run_job pkdump-lake-build-prices --ingest-date "$DATE_OLD" >/dev/null ||
 AGAIN=$(day_digest "$DATE_OLD")
 [ "$AGAIN" = "$OLD_STATE" ] ||
 	die "rebuilding ${DATE_OLD} changed it: ${OLD_STATE} -> ${AGAIN}"
-echo "    ok   ${AGAIN} unchanged"
+SEALED_AGAIN=$(sealed_day_digest "$DATE_OLD")
+[ "$SEALED_AGAIN" = "$OLD_SEALED_STATE" ] ||
+	die "rebuilding ${DATE_OLD} changed catalog.sealed_prices: ${OLD_SEALED_STATE} -> ${SEALED_AGAIN}"
+echo "    ok   ${AGAIN} unchanged, sealed ${SEALED_AGAIN} unchanged"
 
 echo "==> §7  A newer date lands beside it, and takes the COMPLETE run"
 # ${DATE_NEW} holds two runs: one complete, and a later retry that died with
@@ -262,7 +376,10 @@ print(rows[0]['price'])
 # 27.5 is the complete run's price; 34.5 is the failed retry's.
 [ "$MARKET" = "27.5" ] ||
 	die "${DATE_NEW} took the wrong run: product 101 market is ${MARKET}, expected 27.5"
-echo "    ok   ${NEW_STATE}, from the complete run (101 market ${MARKET})"
+NEW_SEALED_STATE=$(sealed_day_digest "$DATE_NEW")
+[ "$NEW_SEALED_STATE" != "$OLD_SEALED_STATE" ] ||
+	die "the two days' sealed prices are identical — the fixture would prove nothing"
+echo "    ok   ${NEW_STATE}, from the complete run (101 market ${MARKET}); sealed ${NEW_SEALED_STATE}"
 
 echo "==> §8  Rebuilding the OLDER date reproduces that day, not today"
 run_job pkdump-lake-build-prices --ingest-date "$DATE_OLD" >/dev/null ||
@@ -271,7 +388,14 @@ run_job pkdump-lake-build-prices --ingest-date "$DATE_OLD" >/dev/null ||
 	die "rebuilding ${DATE_OLD} after ${DATE_NEW} did not reproduce it"
 [ "$(day_digest "$DATE_NEW")" = "$NEW_STATE" ] ||
 	die "rebuilding ${DATE_OLD} disturbed ${DATE_NEW} — the partition filter is wrong"
-echo "    ok   both days intact, each from its own ingest_date"
+# The sealed table is partitioned the same way and rebuilt by the same call, so
+# it has the same claim to make. A filter right on one table and wrong on the
+# other is a night's sealed prices doubled or lost with the cards intact.
+[ "$(sealed_day_digest "$DATE_OLD")" = "$OLD_SEALED_STATE" ] ||
+	die "rebuilding ${DATE_OLD} did not reproduce its sealed prices"
+[ "$(sealed_day_digest "$DATE_NEW")" = "$NEW_SEALED_STATE" ] ||
+	die "rebuilding ${DATE_OLD} disturbed ${DATE_NEW}'s sealed prices"
+echo "    ok   both days intact in both tables, each from its own ingest_date"
 
 echo "==> §9  A date with no complete run refuses, and says why"
 REFUSE_RC=0

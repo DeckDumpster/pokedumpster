@@ -84,13 +84,17 @@ pub struct SealedEdit {
     pub status: Option<String>,
 }
 
-const ENTRY_COLS: &str = "sc.id, sc.product_id, sc.quantity, sc.condition, \
+const ENTRY_COLS: &str = concat!(
+    "sc.id, sc.product_id, sc.quantity, sc.condition, \
      sc.purchase_price, sc.sale_price, sc.purchase_date, sc.source, \
      sc.seller_name, sc.notes, sc.status, sc.added_at, \
-     sp.name, sp.category, sp.set_code, sp.image_url, \
-     (SELECT COALESCE(lsp.market_price, lsp.mid_price) \
-        FROM latest_sealed_prices lsp \
-        WHERE lsp.tcgplayer_product_id = sc.product_id LIMIT 1) AS market_price";
+     sp.name, sp.category, sp.set_code, sp.image_url, ",
+    // The ONE spelling of what a sealed lot is worth (`crate::prices`). The
+    // value chart's `sealed` dimension spends the same macro, so a box on
+    // this page and the same box on the chart cannot be priced by two rules.
+    crate::sealed_market_price_expr!(),
+    " AS market_price"
+);
 
 const ENTRY_FROM: &str = "FROM sealed_collection sc \
      JOIN sealed_products sp ON sc.product_id = sp.product_id";

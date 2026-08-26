@@ -266,7 +266,7 @@ pub fn clock_of(chosen: &[Chosen], ingest_date: &str) -> anyhow::Result<DeriveCl
              run's clock are neither run's output, which is precisely the \"old data looks \
              new\" failure the ingest_date partition exists to prevent.\n\
              Derive a date that one run landed, or re-land this one \
-             (pkdump data refresh --land-raw) so every dataset comes from the same run."
+             (pkdump data refresh) so every dataset comes from the same run."
         );
     }
 
@@ -326,9 +326,9 @@ mod tests {
 
     /// The night `api.pokemontcg.io` is down: TCGCSV lands whole, the tail
     /// records the failure its retries ended on and lands no part. This is
-    /// what `pkdump data refresh --land-raw` leaves behind on such a night —
-    /// `finalize` is called with `None`, because the run was not cut short,
-    /// only the tail was (see `pkdump_derive::derive`).
+    /// what `pkdump data refresh` — which since pd-lunn IS the landing run —
+    /// leaves behind on such a night: `finalize` is called with `None`, because
+    /// the run was not cut short, only the tail was (see `pkdump_derive::land`).
     fn land_with_dead_tail(root: &std::path::Path, date: &str, started: &str) -> String {
         let sink = RawLanding::new(Box::new(DirStore::new(root)), date, started);
         for (source, dataset, url) in [

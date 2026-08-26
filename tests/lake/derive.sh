@@ -32,7 +32,8 @@
 #     the network" cannot be a slow success either way.
 #
 # And the comparison is against a catalog built by the OTHER path from the SAME
-# bytes: §0 lands raw and derives online in one pass over one set of responses.
+# bytes: §0 lands raw and derives by fetching, in one pass over one set of
+# responses.
 # Fetching twice would make "the two catalogs disagree" and "the upstream
 # answered differently" indistinguishable.
 #
@@ -184,13 +185,13 @@ check "every request was answered from raw/" "1" \
 check "the clock came from the manifests" "1" \
 	"$(grep -c "recovered from the run's manifests" "${WORK}/derive1.log" || true)"
 
-log "4. it is ROW-IDENTICAL to the catalog the online refresh built"
+log "4. it is ROW-IDENTICAL to the catalog a FETCHING pass built"
 # Not an empty comparison: two empty catalogs are also row-identical.
 ROWS=$(podman run --rm -v "${FIXTURE}:/fixture:Z" --entrypoint pkdump-lake-derive "$IMAGE" \
 	diff --left /fixture/day1.sqlite --right /fixture/derived.sqlite --exclude raw_derivation |
 	tee "${WORK}/diff1.log" | grep -c '^  ok ' || true)
 check "the comparison covered real tables" "yes" "$([[ "$ROWS" -ge 10 ]] && echo yes || echo "no (${ROWS})")"
-check "${DAY1} derived from raw == ${DAY1} derived online" "1" \
+check "${DAY1} derived from raw == ${DAY1} derived by fetching" "1" \
 	"$(grep -c 'ROW-IDENTICAL' "${WORK}/diff1.log" || true)"
 grep -q 'ROW-IDENTICAL' "${WORK}/diff1.log" || {
 	sed 's/^/  /' "${WORK}/diff1.log"
@@ -209,7 +210,7 @@ diff_catalogs /fixture/online.sqlite /fixture/derived.sqlite >"${WORK}/diff2.log
 	sed 's/^/  /' "${WORK}/diff2.log"
 	die "day two is not row-identical"
 }
-check "${DAY2} derived from raw == ${DAY2} derived online" "1" \
+check "${DAY2} derived from raw == ${DAY2} derived by fetching" "1" \
 	"$(grep -c 'ROW-IDENTICAL' "${WORK}/diff2.log" || true)"
 
 log "6. re-deriving the same date changes nothing"
@@ -241,8 +242,8 @@ check "it said it never falls back" "yes" \
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"
 if [[ "$fail" -ne 0 ]]; then
-	echo "  FAIL — the offline derive is not reproducing the online catalog from raw/ alone."
+	echo "  FAIL — the offline derive is not reproducing the fetched catalog from raw/ alone."
 	exit 1
 fi
 echo "  PASS — shared.sqlite derives from raw/ with egress provably blocked,"
-echo "         row-identical to the online refresh over the same bytes."
+echo "         row-identical to a catalog fetched from the same bytes."

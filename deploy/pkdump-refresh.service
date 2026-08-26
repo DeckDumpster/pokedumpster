@@ -1,8 +1,14 @@
 [Unit]
-Description=PokeDumpster catalog refresh (%i)
+Description=PokeDumpster catalog landing run (%i)
 # pd-1uem item 5: LANDING AND DERIVING ARE TWO UNITS. This is the landing half —
-# it fetches from the upstreams and, with landing on, puts every response in the
-# bucket. pkdump-derive@%i is the deriving one.
+# it fetches from the upstreams and puts every response in the bucket.
+# pkdump-derive@%i is the deriving one, and since pd-lunn (item 6) it is the
+# ONLY thing that builds shared.sqlite. This unit writes no catalog table.
+#
+# Which makes the two units a PAIR rather than a choice: a box running this one
+# without pkdump-derive@%i enabled lands every night, stays green every night,
+# and serves a catalog frozen at the day of the upgrade. deploy/refresh.sh
+# refuses to start in that state — see its header.
 #
 # {{REPO_DIR}} is sed-substituted by deploy/units-lib.sh (single-clone
 # deployment).
@@ -30,17 +36,19 @@ Type=oneshot
 # container from the same image over the same volume — the pattern
 # deploy/derive.sh and deploy/value-snapshots.sh already use.
 #
-# Landing stays OFF unless something asks for it. To turn it on for an instance:
-#   ~/.config/systemd/user/pkdump-refresh@<instance>.service.d/lake.conf
-#   [Service]
-#   Environment=PKDUMP_LAND_RAW=1
-# The wrapper forwards it into the container. See deploy/LAKE.md §4.
+# ── LANDING IS NOT A FLAG ANY MORE (pd-lunn) ────────────────────────────────
+# There is no --land-raw and no PKDUMP_LAND_RAW. The flag was the optional half
+# of a command whose other half derived the catalog; with that half deleted, a
+# run that does not land does nothing at all. ~/.config/pkdump/lake.env is
+# therefore REQUIRED, and the wrapper refuses without it, by name, before the
+# first fetch. A drop-in that still sets PKDUMP_LAND_RAW=1 is inert — harmless,
+# and worth removing. See deploy/LAKE.md §4.
 # ── EXIT STATUS, AND WHY 2 STILL PAGES (pd-nons) ────────────────────────────
-#   0  every upstream was acquired.
+#   0  every upstream was fetched and its bytes are in raw/.
 #   2  PARTIAL: the pokemontcg.io tail failed after exhausting its retries, so
-#      the set list is as old as the last run that finished one — but the run
-#      CONTINUED, and TCGCSV (a day's prices, which cannot be fetched later)
-#      was acquired and the catalog derived from it.
+#      tonight's partition carries a set list as old as the last one that
+#      carried a whole one — but the run CONTINUED, and TCGCSV (a day's prices,
+#      which cannot be fetched later) was landed.
 #   1  the run failed.
 #
 # There is deliberately NO SuccessExitStatus=2 here, unlike
@@ -72,8 +80,8 @@ Type=oneshot
 # crates/pkdump-ingest/src/retry.rs) widen the retry budget without a rebuild, for a
 # stretch of bad upstream weather. Unset is 4 attempts at 500ms doubling.
 #
-# Set them the same way as PKDUMP_LAND_RAW above — a drop-in Environment= — because
-# deploy/refresh.sh forwards them into the container. (Before pd-kncd this unit was a
+# Set them with a drop-in Environment= — deploy/refresh.sh forwards them into the
+# container. (Before pd-kncd this unit was a
 # `podman exec`, which drops the caller's environment, so a drop-in reached the systemd
 # unit and never reached the refresh. That is exactly the bug pd-kncd fixed, and it is
 # why this paragraph no longer says "put it on the exec".)

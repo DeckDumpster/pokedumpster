@@ -466,7 +466,7 @@ pub struct JapanStats {
 
 /// Fetch and import the whole Pokémon Japan catalog: groups → sets,
 /// products → cards + sealed, and a price snapshot. Shared by
-/// `pkdump setup` and `pkdump data refresh`.
+/// `pkdump setup` and the offline `pkdump-lake-derive shared`.
 ///
 /// Japanese responses land under the same `source=tcgcsv` prefixes as the
 /// English ones — same host, same endpoints, same shape. The `categoryId`
@@ -510,6 +510,41 @@ pub fn import_all(
         }
     }
     Ok(stats)
+}
+
+/// Fetch every Japanese response [`import_all`] would fetch, and import none
+/// of them — the landing half of that pass on its own (pd-lunn).
+///
+/// `pkdump data refresh` no longer derives anything: it fetches, lands, and
+/// leaves the catalog to `pkdump-lake-derive`. Which URLs it has to ask for is
+/// therefore a claim about what the *derivation* will later ask for, so this
+/// function is deliberately the same three calls in the same order as the loop
+/// in [`import_all`], one screen away from it, rather than a second idea of
+/// what the Japanese catalog is made of. Neither reads the database to choose a
+/// URL — the group list comes off the wire — so there is nothing here that can
+/// drift with the catalog's contents.
+///
+/// Returns the number of groups walked. The bytes are in the landing zone;
+/// nothing is parsed beyond what the client needs to hand back a response.
+pub fn land_all(wire: crate::landing::Wire) -> Result<usize> {
+    use std::io::Write;
+
+    let client = TcgcsvClient::for_category(CATEGORY_POKEMON_JAPAN)?.on_wire(wire);
+    let groups = client.fetch_groups()?;
+
+    const PROGRESS_EVERY: usize = 50;
+    let total = groups.len();
+    for (i, group) in groups.iter().enumerate() {
+        client.fetch_products(group.group_id)?;
+        client.fetch_prices(group.group_id)?;
+
+        let done = i + 1;
+        if done % PROGRESS_EVERY == 0 || done == total {
+            println!("  [{done:>4}/{total}] landed");
+            let _ = std::io::stdout().flush();
+        }
+    }
+    Ok(total)
 }
 
 // ---------------------------------------------------------------------

@@ -43,8 +43,9 @@ fn default_series() -> String {
     "Trick or Trade Bundle".to_string()
 }
 
-/// Re-seed `bundles` from `data/bundles.json`. Called by `pkdump setup`
-/// (and `data refresh`) before anything consults the table.
+/// Re-seed `bundles` from `data/bundles.json`. Called from `open_shared`, so
+/// every read-write open of the catalog converges it before anything consults
+/// the table.
 pub fn reconcile(conn: &mut Connection) -> Result<usize> {
     let seed: Vec<Bundle> = serde_json::from_str(BUNDLES_SEED)?;
     let tx = conn.transaction()?;

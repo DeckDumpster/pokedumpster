@@ -1,17 +1,20 @@
-//! Turning `--land-raw` into a landing zone.
+//! Opening a landing zone.
 //!
-//! Landing is **opt-in**, and the two states are deliberately far apart:
+//! Two callers, and they want different answers to "there is no lake here":
 //!
-//! - **off** — the flag is absent, `lake.env` is never read, no S3 client is
-//!   built, and the fetch path behaves exactly as it did before the landing
-//!   zone existed. Every offline gate and every container test stays offline.
-//! - **on** — the destination must resolve or the command fails before it
-//!   fetches anything, naming the file the operator has to write.
+//! - [`open`] — `pkdump setup`, where landing is still **opt-in**. With the
+//!   flag absent, `lake.env` is never read, no S3 client is built, and the
+//!   fetch path behaves exactly as it did before the landing zone existed.
+//!   Every offline gate and every container test stays offline.
+//! - [`require`] — `pkdump data refresh`, which since pd-lunn *is* the landing
+//!   run and has nothing else to do. There is no off for it.
 //!
-//! What must never exist is a third state where landing was asked for and
-//! quietly did nothing: the whole value of the landing zone is that the
-//! bytes are there afterwards, so "misconfigured" and "landed nothing" must
-//! not look alike from the outside.
+//! Either way, the destination must resolve or the command fails before it
+//! fetches anything, naming the file the operator has to write. What must
+//! never exist is a state where landing was asked for and quietly did nothing:
+//! the whole value of the landing zone is that the bytes are there afterwards,
+//! so "misconfigured" and "landed nothing" must not look alike from the
+//! outside.
 //!
 //! This module is the *writing* half only. Nothing in `pkdump-cli` reads
 //! `raw/` — that is `pkdump-lakehouse`'s job, on the other side of the
@@ -61,6 +64,39 @@ pub fn open(flag: bool, clock: &DeriveClock) -> anyhow::Result<Option<Arc<RawLan
         landing.describe()
     );
     Ok(Some(Arc::new(landing)))
+}
+
+/// The landing zone, or a refusal — for the caller that has nothing to do
+/// without one.
+///
+/// `pkdump data refresh` is that caller since pd-lunn: it no longer derives
+/// anything, so a run with no landing zone would fetch every upstream, parse
+/// none of it, write nothing anywhere and exit 0. That is not a degraded
+/// refresh, it is an expensive no-op against somebody else's API — and it is
+/// exactly the shape of failure this module exists to make impossible, one
+/// level up. So landing is not a flag on that command any more; it is the
+/// command.
+///
+/// The refusal names the file an operator has to write, the same way
+/// [`open`]'s does, because "the lake is not configured" is a host-config
+/// problem and never a code one.
+pub fn require(clock: &DeriveClock) -> anyhow::Result<Arc<RawLanding>> {
+    let ingest_date = clock.observed_date();
+    let landing = pkdump_lake::open(ingest_date, clock.fetched_at()).map_err(|e| {
+        anyhow::anyhow!(
+            "{e:#}\n\n`pkdump data refresh` fetches the upstreams and LANDS them; the catalog \
+             is built from that partition by `pkdump-lake-derive shared` (pd-lunn). Without a \
+             landing zone there is nowhere for tonight's bytes to go and nothing that will ever \
+             derive them, so the run refuses rather than fetching into a bin. Configure the \
+             lake (deploy/LAKE.md §3) — or, on a box that has none, build the catalog with \
+             `pkdump setup`."
+        )
+    })?;
+    println!(
+        "Landing raw upstream responses in {} (ingest_date={ingest_date})",
+        landing.describe()
+    );
+    Ok(Arc::new(landing))
 }
 
 /// The wire a client fetches on: writing through to `landing` when there is

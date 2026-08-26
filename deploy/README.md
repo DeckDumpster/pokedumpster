@@ -527,10 +527,21 @@ changed.
   transform wrappers. It used to `podman exec` into the running server, which
   silently dropped the environment the drop-in that turns raw landing on sets
   (pd-kncd); see [deploy/LAKE.md](LAKE.md) §4.
+    It **lands and builds nothing** (pd-lunn): the catalog is written by
+    `pkdump-derive@<instance>`, from the partition this job leaves. So the two
+    are a pair — this wrapper refuses to fetch anything while the derive timer
+    is disabled, because landing without deriving is a box that is green every
+    night and serves a catalog frozen at the day of the upgrade. `lake.env` is
+    required for the same reason, and there is no `--land-raw` any more.
     Exit 2 is a **partial** run: the pokemontcg.io tail failed every retry, so the
-    set list is stale, but the run continued and TCGCSV's prices — the half a night
-    cannot get back — landed (pd-nons). Unlike the transform tier's, it is
-    deliberately not declared a success, so a partial run still pages.
+    set list in tonight's partition is stale, but the run continued and TCGCSV's
+    prices — the half a night cannot get back — landed (pd-nons). Unlike the
+    transform tier's, it is deliberately not declared a success, so a persistent
+    stall still pages.
+- `pkdump-derive@<instance>` — nightly `pkdump-lake-derive shared` (07:00),
+  ordered `After=` the landing. **The only thing that builds `shared.sqlite`.**
+  Enable it on any box that runs the refresh; enable it *first*. See
+  [deploy/LAKE.md](LAKE.md) §8.
 - `pkdump-backup-check@<instance>` — backup-freshness dead-man's switch
   (Layer 1, every 6h). See [Backup-failure alarming](#backup-failure-alarming).
 - `pkdump-value-snapshots@<instance>` — the transform tier's nightly run
@@ -547,7 +558,8 @@ The `@`-templated units are `%i`-templated, so one copy serves every instance �
 the instance name is the part after `@`. Enable per-instance:
 
 ```bash
-systemctl --user enable --now pkdump-refresh@prod.timer
+systemctl --user enable --now pkdump-derive@prod.timer         # BUILDS — enable first
+systemctl --user enable --now pkdump-refresh@prod.timer        # LANDS — refuses without it
 systemctl --user enable --now pkdump-backup-check@prod.timer   # after arming alerts.env
 systemctl --user enable --now pkdump-value-snapshots@prod.timer # after setup-lake.sh
 systemctl --user enable --now pkdump-diskcheck.timer           # host-wide, once

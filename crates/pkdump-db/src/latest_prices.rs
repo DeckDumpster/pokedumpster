@@ -10,8 +10,8 @@
 //! The table + its index are defined once, in `schema_shared.sql` (applied by
 //! `open_shared`). This module owns only the *contents*: the table does not
 //! auto-reflect `prices`, so it must be rebuilt after prices change. Callers:
-//! `pkdump setup`, `pkdump data refresh`, and the UI fixture — all after they
-//! finish writing `prices`. It lives in `pkdump-db` (not `pkdump-ingest`) so
+//! `pkdump setup`, the offline `pkdump-lake-derive shared`, and the UI fixture
+//! — all after they finish writing `prices`. It lives in `pkdump-db` (not `pkdump-ingest`) so
 //! the db-layer price tests can rebuild it too.
 //!
 //! Migrating an existing catalog that still has the pre-vi37 VIEW is a

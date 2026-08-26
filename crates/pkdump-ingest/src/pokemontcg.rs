@@ -1,6 +1,7 @@
 //! Client for the pokemontcg.io v2 API.
 //!
-//! Cache-population use only (`pkdump setup` / `pkdump data refresh`) — never
+//! Cache-population use only (`pkdump setup`, `pkdump data refresh`, the
+//! offline derive) — never
 //! called at request time. The `PokemonTCG/pokemon-tcg-data` GitHub repo is
 //! the primary bulk source; this client fills the tail of newest sets that
 //! the repo lags on (RESEARCH.md §2).

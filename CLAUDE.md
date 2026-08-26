@@ -878,20 +878,34 @@ collection rather than a corner case. A reader that grouped a holdings part by
 plausible wrong number. The shipper itself keys nothing on either: its only
 key is `seq`, unique across the whole outbox.
 
-**It is installed on a timer and armed by nobody yet** —
+**It is installed on a timer for every instance and armed per instance** —
 `pkdump-ship@<instance>.timer`, at 07:00 with the rest of that wave, `After=`
 the landing, the derive and the price build. Since pd-i08u its wrapper runs
 BOTH halves of the round trip (`pkdump-ship run`, then `pkdump-ship holdings`)
 and the transform is the unit that waits on it, so the chain is land → derive
-→ prices → **ship (+ read back)** → transform. Do not arm it on prod before
+→ prices → **ship (+ read back)** → transform. Do not arm it on a box before
 the backfill has run: the shipper ships the OUTBOX, an existing collection's
 outbox starts empty (pd-whsw), and armed early it faithfully ships every
 change made from tonight and nothing anybody already owns. `pkdump outbox emit
 --all --all-tenants` (pd-385w) is what makes the outbox describe the
 collection that is already there; arming is the step after it, per instance.
-**And it is no longer optional beside the transform**: with the online
-holdings read deleted, a box running `pkdump-value-snapshots@` without this
-unit records no value history for anybody.
+**Prod is armed** (pd-r130, 2026-08-26), on a collection whose backfill
+`ownership_emit_log` records as complete through seq 4814.
+
+**Arming it is not optional beside the transform, and the missing half is
+INVISIBLE** — this is why pd-r130 was a P1 rather than a tidy-up. With the
+online holdings read deleted, `zone_holdings` is the only thing the transform
+can value a collection from and this unit is the only thing that writes it. A
+box that runs `pkdump-value-snapshots@` without it does not go quiet: Phase 3
+refuses only the INVERSE (a materialisation older than the cursor), so a zone
+that is merely *behind the outbox* is valued as it stands. Reproduced on prod
+before arming — one card added, no shipment, and the transform exited 0 with
+"1 tenant(s) snapshotted, 0 skipped" over `through seq 4814`, a full day's
+holdings out of date and a plausible number on the chart. That is deliberate
+(a tenant ahead of the zone means the shipper skipped them, and the shipper
+says so in the same nightly run) and it is exactly why it is *conditional on
+there being a nightly shipper run to say anything at all*. Enable the two
+together.
 
 Gates: `cargo test -p pkdump-ship` (hermetic — planning, the envelope, Parquet,
 and `tests/shipping.rs`, which proves gap detection, idempotence, resumability

@@ -382,12 +382,18 @@ Two things must exist first: a master key (`bash deploy/keys.sh <instance>
 init`, **backed up**) and `PKDUMP_TENANT_AWS_PROFILE` in `lake.env`. The
 wrapper refuses by name without either.
 
-**Do not arm it on prod before the backfill has run.** The shipper ships the
+**Do not arm it on a box before the backfill has run.** The shipper ships the
 OUTBOX, and an existing collection's outbox starts empty (`pd-whsw`): armed
 early it faithfully ships every change made from tonight and nothing anybody
 already owns — a zone that looks populated and is not. `pkdump outbox emit
 --all --all-tenants` (`pd-385w`) is what makes the outbox describe the
 collection that is already there; arm the timer after it, per instance.
+`pkdump outbox status`, and `ownership_emit_log` in the tenant's own database,
+are how you confirm it already ran: a `backfill` row naming the range it
+covered and when it finished.
+
+**prod is armed** (`pd-r130`, 2026-08-26), after confirming exactly that —
+`ownership_emit_log` recording a completed `backfill` of seq 1..4814.
 
 **And on a box where the transform timer is already armed, arming this one is
 no longer optional.** Until `pd-i08u` the transform valued the live collection
@@ -395,6 +401,27 @@ and this unit was purely additive; now the transform has no other source, so a
 box running `pkdump-value-snapshots@` without `pkdump-ship@` records no value
 history for anybody and says so nightly (exit 1, "nobody was snapshotted at
 all"). Enable them together, backfill first.
+
+**A box that has been shipped to ONCE and then left unarmed is worse, and it
+is silent.** `zone_holdings` exists, so the transform does not skip anybody —
+it values the collection as the zone last saw it, at exit 0. Phase 3 refuses
+only the inverse (a materialisation older than the cursor); a zone merely
+*behind the outbox* is deliberately not refused, because that normally means
+the shipper skipped that tenant and the shipper says so in the same nightly
+run — which is an argument that needs a nightly shipper run to exist. `pd-r130`
+found prod in exactly that state and reproduced it before arming: one card
+added, no shipment, and the transform reported `1 tenant(s) snapshotted, 0
+skipped` over `through seq 4814`. Nothing about the run looks wrong; the number
+is simply a day out of date, and it drifts further every day.
+
+If you are not sure which state a box is in, ask the tenant's own database —
+these three should be one number:
+
+```sql
+SELECT (SELECT MAX(seq)       FROM ownership_outbox)        AS outbox_max,
+       (SELECT shipped_thru   FROM ownership_outbox_cursor) AS cursor,
+       (SELECT max_seq        FROM zone_holdings_run)       AS zone_max;
+```
 
 ### Gates
 

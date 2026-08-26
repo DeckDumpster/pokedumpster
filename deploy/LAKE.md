@@ -945,11 +945,69 @@ online catalog to diff against. What is held to at real scale from here is in
 byte-identical, a partition that answers every URL the derive asks for, and two
 independent derives of it that are row-identical.
 
+### Cut over on prod (2026-08-26, `pd-9bz7`)
+
+`pkdump-derive@prod.timer` is **enabled** as of 2026-08-26 11:49 UTC. Before
+that it had never been on and `raw_derivation` was empty, so the catalog had
+exactly one builder and it was the half `pd-lunn` deleted.
+
+The comparison the section above says cannot be re-run got run once more, and
+the window is genuinely shut now. On the morning of the cutover the box was in
+the one state that allows it: the 06:11 refresh had run the **pre-`pd-lunn`**
+image and built the catalog inline, and the image was rebuilt at 11:05. So the
+derive replayed the very bytes that inline run had landed
+(`ingest_date=2026-08-26`, `run=01M0YB3P8GPPK909VGPHQPDNCM`, 1351 replayable
+URLs, 4 partitions all `complete`), and the two catalogs were compared with the
+shipped comparator:
+
+```
+raw coverage: complete — every upstream request was answered from raw/
+provenance:   4 partition(s) recorded in raw_derivation for 2026-08-26
+ROW-IDENTICAL: every compared table matches, row for row.
+```
+
+Twenty tables, `raw_derivation` excluded and named. `prices` 12,888,516 rows,
+`latest_prices` 300,059, `sealed_prices` 234,895, `printings` 70,490, `cards`
+47,671. The derive took **2m11s** and exited 0.
+
+Then the other half, the one that had never run on prod at all —
+`pkdump-refresh@prod` under the new image, with the derive timer enabled so its
+guard passes:
+
+```
+Opening shared catalog READ-ONLY at /data/shared.sqlite
+Landing raw upstream responses in s3://…/ run=01M0YYP4T1GFRC97SRNHQ7NJZV
+  raw: pokemontcgio/sets — 1 part(s), complete
+  raw: tcgcsv/groups — 2 part(s), complete
+  raw: tcgcsv/products — 674 part(s), complete
+  raw: tcgcsv/prices — 674 part(s), complete
+Refresh complete: landed, not derived. The catalog is built by pkdump-lake-derive.
+```
+
+2m22s, exit 0, and `shared.sqlite`'s mtime stayed at the derive's own finish —
+the landing run wrote no catalog byte, which is `pd-lunn`'s whole claim observed
+on the real box rather than in a fixture. The second `run=` ULID landing beside
+the first for the same `ingest_date` is the retry layout doing its job.
+
+Two things worth knowing before the next box:
+
+- **`Persistent=true` did not back-fill a run at `enable --now` time.** 07:00
+  had already passed that day and the timer still scheduled for tomorrow. If you
+  want the first cycle today, start the service by hand — which is also the only
+  way to watch it inside one sitting.
+- **`pokemontcgio/cards` landed nothing**, because no set was new. The derive
+  says `nothing landed (optional)` and carries on; it is the ordinary case, and
+  it means prod has still never exercised a replay of that dataset.
+
+The `PKDUMP_LAND_RAW=1` drop-in described in §4 was removed from
+`pkdump-refresh@prod.service.d/` in the same sitting.
+
 ### Enabling it
 
 Installed for every instance. On any box that runs `pkdump-refresh@`, **enable
 it** — it is the only thing that builds the catalog, and the refresh refuses to
-run while it is off:
+run while it is off. On prod that was done on 2026-08-26 (`pd-9bz7`, recorded
+above); this is what to do on the next box:
 
 ```bash
 # On the deployment box, as the pkdump user. The derive FIRST: the refresh

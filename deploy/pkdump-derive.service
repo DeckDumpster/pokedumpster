@@ -42,20 +42,38 @@ Wants=network-online.target
 # cannot ask podman anything.
 ConditionPathExists=%h/.config/pkdump/lake.env
 # Layer 2 (pokedumpster-ivq.3): push the journal tail to Pushover on failure.
+# Exit 2 is not one — see SuccessExitStatus below.
 OnFailure=pkdump-alert@%n.service
 
 [Service]
 Type=oneshot
-# ── THERE IS NO PARTIAL SUCCESS HERE ────────────────────────────────────────
+# ── 0 / 2 / 1 ARE THREE DIFFERENT ANSWERS (pd-llbq) ─────────────────────────
 #   0  the catalog was derived from the partition it was asked for.
-#   1  it was not: the partition is absent, incomplete, clockless, or the
-#      derivation failed.
+#   2  it was derived from a PARTIAL partition: the pokemontcg.io tail did not
+#      complete that night, so the catalog's set list is as old as the last run
+#      that finished one. TCGCSV — the half a night cannot lose, because a
+#      day's prices cannot be re-fetched later — is whole, and tomorrow's tail
+#      supersedes tonight's set list. A SUCCESS here; the wrapper says PARTIAL
+#      in the journal and pushes a warning so it is not silent either.
+#   1  there is no catalog for that partition: absent, SHORT IN TCGCSV,
+#      clockless, missing a URL the derivation asked for, or the derivation
+#      itself failed. A failure, and OnFailure= above pages for it.
 #
-# No SuccessExitStatus=, unlike pkdump-value-snapshots@.service. That job writes
-# N tenant databases and "some of them" is a real and normal outcome worth
-# distinguishing. This one writes ONE catalog — it either holds that date's data
-# or it does not, and a catalog that is quietly smaller reads as cards that do
-# not exist. So every non-zero status pages.
+# This unit carried no SuccessExitStatus= until pd-llbq, and the argument for
+# that was sound as far as it went: unlike pkdump-value-snapshots@.service, this
+# job writes ONE catalog, and a catalog that is quietly smaller reads as cards
+# that do not exist. What it missed is that `pkdump data refresh` — the OTHER
+# unit fed by the same upstreams — already answers a night api.pokemontcg.io is
+# down with exit 2 and a stale set list (pd-nons). Two units taking opposite
+# policies on one upstream's weather is not a decision anybody made.
+#
+# The narrowness is what keeps the original argument intact: exit 2 is reachable
+# ONLY when the incomplete prefix is the pokemontcg.io tail's. A short TCGCSV
+# prefix is still exit 1 and still pages, because "200 groups of an unknown 450"
+# is precisely the quietly-smaller catalog this comment was written about. The
+# exemption is per dataset in crates/pkdump-lakehouse/src/partition.rs, where
+# the compiler makes adding another one a decision somebody has to write down.
+SuccessExitStatus=2
 ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/derive.sh %i'
 # The bound the timer below is derived from. Variant expansion walks ~50k cards
 # with a transaction each; measured in minutes on a real catalog, and the

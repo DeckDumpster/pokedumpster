@@ -2,10 +2,23 @@
 # Container-tier gate (pd-hkbc): `pkdump data refresh` writes the SHARED
 # catalog and NOT ONE BYTE of any tenant database.
 #
-# §9 (pd-nons) is the second thing it gates, and it is here rather than in its
-# own script because it needs exactly this scaffolding — the shipped image, a
-# fixture upstream, and a data directory with real tenants in it — and because
-# its own claim ends with "and it still wrote no tenant database".
+# §9 (pd-nons, pd-llbq) is the second thing it gates, and it is here rather than
+# in its own script because it needs exactly this scaffolding — the shipped
+# image, a fixture upstream, and a data directory with real tenants in it — and
+# because its own claim ends with "and it still wrote no tenant database".
+#
+# §9 LANDS. It used to run the partial refresh without `--land-raw`, which meant
+# the shape a dead tail leaves in the landing zone was never produced by the
+# shipped binary anywhere: `finalize` computes `complete` PER DATASET and
+# `acquire` deliberately does not hand it the tail's error, so the night is
+# supposed to come out honest — `pokemontcgio/sets` short, `tcgcsv/*` whole.
+# That asymmetry is the input `pkdump-lake-derive` reads to decide whether a
+# date is a partial night (exit 2) or an underivable one (exit 1), and it went
+# unexercised for long enough that the two units ended up answering the same
+# night in opposite ways (pd-llbq). The hermetic half of that claim is
+# crates/pkdump-derive/tests/tail_failure.rs; this is the shipped binary making
+# the same partition, and it lands into a directory OUTSIDE the data dir, which
+# is its own small assertion about where a landing write goes.
 #
 # Run by deploy/ci.sh. Standalone:
 #   bash tests/refresh/tenant_bytes.sh          # ~1min after the image is warm
@@ -74,6 +87,10 @@ UPSTREAM_PORT=${UPSTREAM_PORT:-$(free_port)}
 
 WORK=${WORK:-$(mktemp -d /tmp/pd-refresh.XXXXXX)}
 DATA="$WORK/data"
+# The landing zone §9 writes into. Deliberately NOT under $DATA: the lake and
+# the data directory are different places, and mounting it separately is what
+# lets the tenant and inventory assertions stay about the data directory alone.
+RAW="$WORK/raw-zone"
 UPSTREAM_LOG="$WORK/upstream.jsonl"
 UPSTREAM_PID=""
 
@@ -297,12 +314,15 @@ log "9. a dead pokemontcg.io no longer ends the run (pd-nons)"
 # its unit hands it, keeps going, and exits 2 rather than 0 or 1.
 DOWN_BEFORE=$(grep -c '"path": "/v2-down/sets' "$UPSTREAM_LOG" || true)
 DOWN_RC=0
-podman run --rm -v "${DATA}:/data:Z" \
+mkdir -p "$RAW"
+podman run --rm -v "${DATA}:/data:Z" -v "${RAW}:/raw:Z" \
 	-e PKDUMP_TCGCSV_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/tcgplayer" \
 	-e PKDUMP_POKEMONTCG_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/v2-down" \
 	-e PKDUMP_HTTP_RETRY_ATTEMPTS=3 \
 	-e PKDUMP_HTTP_RETRY_BASE_MS=25 \
-	--entrypoint pkdump "$IMAGE" data refresh \
+	-e PKDUMP_LAKE_DIR=/raw \
+	-e PKDUMP_LAKE_ENV=/raw/no-such-lake.env \
+	--entrypoint pkdump "$IMAGE" data refresh --land-raw \
 	>"${WORK}/refresh-down.log" 2>&1 || DOWN_RC=$?
 
 # 2, not 1 and not 0. 1 is "the run failed"; 0 would say a stale set list is
@@ -332,6 +352,45 @@ TCGCSV_LINE=$(grep -nF "Importing TCGCSV groups, products, prices" \
 check "TCGCSV was acquired after the tail gave up" "yes" \
 	"$([[ -n "${TCGCSV_LINE:-}" && -n "${TAIL_LINE:-}" && "$TAIL_LINE" -lt "$TCGCSV_LINE" ]] &&
 		echo yes || echo no)"
+
+# --- and the partition it left behind (pd-llbq) -----------------------------
+# The half of pd-nons's honesty that only the landing path can show: `finalize`
+# computes `complete` per DATASET, and `acquire` does not hand it the tail's
+# error, so a night only the tail lost comes out short in the tail and whole
+# everywhere else. The offline derive reads exactly this to tell a partial
+# night (exit 2) from an underivable one (exit 1).
+manifest_of() { # manifest_of <dataset>
+	find "$RAW" -path "*dataset=$1/*" -name '_manifest.json' 2>/dev/null | head -1
+}
+SETS_MANIFEST=$(manifest_of sets)
+GROUPS_MANIFEST=$(manifest_of groups)
+check "the landing zone is outside the data directory" "0" \
+	"$(find "$DATA" -name '_manifest.json' 2>/dev/null | wc -l)"
+check "the dead tail still landed a manifest" "yes" \
+	"$([[ -n "$SETS_MANIFEST" ]] && echo yes || echo no)"
+if [[ -n "$SETS_MANIFEST" ]]; then
+	# INCOMPLETE, and it says what it ended on. A prefix that read as whole
+	# here is what would let a smaller catalog derive from a lost night.
+	check "…and it says INCOMPLETE" "1" \
+		"$(grep -c '"complete": false' "$SETS_MANIFEST" || true)"
+	check "…naming the 502 its retries ended on" "1" \
+		"$(grep -c '"status": 502' "$SETS_MANIFEST" || true)"
+	# ONE failure, not three. A manifest failure means "this URL was not
+	# fetched"; recording the attempts a retry recovers from would mark a
+	# whole night incomplete for a hiccup it survived.
+	check "…once, not once per attempt" "1" \
+		"$(grep -c '"url":' "$SETS_MANIFEST" || true)"
+fi
+check "the TCGCSV half of the SAME run landed" "yes" \
+	"$([[ -n "$GROUPS_MANIFEST" ]] && echo yes || echo no)"
+if [[ -n "$GROUPS_MANIFEST" ]]; then
+	# The asymmetry itself. Same run, same `finalize` call, opposite answers —
+	# which is only possible because completeness is computed per dataset.
+	check "…and it is COMPLETE despite the dead tail" "1" \
+		"$(grep -c '"complete": true' "$GROUPS_MANIFEST" || true)"
+fi
+check "one run landed this night, not one per failure" "1" \
+	"$(find "$RAW" -name 'run=*' -type d 2>/dev/null | sed 's#.*/##' | sort -u | wc -l)"
 
 # A partial run is still a run that writes no tenant database. Compared
 # against AFTER_BACKFILL_TENANTS (step 8's own write already accounted for),

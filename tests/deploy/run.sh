@@ -1441,8 +1441,11 @@ DV_TMR="${REPO_DIR}/deploy/pkdump-derive.timer"
 # grown a derive step.
 check "the landing unit does not derive from raw" "0" \
 	"$(grep -c 'pkdump-lake-derive' "${REPO_DIR}/deploy/pkdump-refresh.service" || true)"
+# Scoped to what the unit EXECUTES rather than to the whole file: since pd-llbq
+# the comment block explains the exit statuses by comparing them to the online
+# refresh's, and naming the other unit in prose is not the same as running it.
 check "the derive unit does not fetch upstream" "0" \
-	"$(grep -c 'data refresh' "$DV_SVC" || true)"
+	"$(grep '^Exec' "$DV_SVC" | grep -c 'data refresh' || true)"
 
 # The ordering, which is the guarantee: both write shared.sqlite today, so they
 # may never run beside each other.
@@ -1456,10 +1459,15 @@ check "does not pull the landing in" "0" \
 check "the transform is ordered after the derive" "1" \
 	"$(grep -c '^After=pkdump-derive@%i.service$' "${REPO_DIR}/deploy/pkdump-value-snapshots.service" || true)"
 
-# There is no partial success for a catalog. Unlike the transform tier, which
-# writes N tenant databases and legitimately exits 2, this job writes ONE
-# catalog: it either holds that date's data or it does not.
-check "no exit status is silently a success" "0" \
+# There IS one partial success for a catalog, and exactly one (pd-llbq): a
+# partition short only in the pokemontcg.io tail. `pkdump data refresh` answers
+# that same night with exit 2 and a stale set list (pd-nons), and this unit used
+# to answer it with a refusal and a page — two units taking opposite policies on
+# one upstream's weather. Everything else is still exit 1: a short TCGCSV prefix
+# is the quietly-smaller catalog the original comment was written about.
+check "a partial night is a success, not a page" "1" \
+	"$(grep -c '^SuccessExitStatus=2$' "$DV_SVC" || true)"
+check "and 2 is the ONLY status that is" "1" \
 	"$(grep -c '^SuccessExitStatus=' "$DV_SVC" || true)"
 check "a failure pages" "1" \
 	"$(grep -c '^OnFailure=pkdump-alert@%n.service$' "$DV_SVC" || true)"
@@ -1522,6 +1530,12 @@ check "the wrapper names today's UTC date" "1" \
 	"$(printf '%s' "$DV_OK" | grep -c -- "--ingest-date $(date -u +%F)" || true)"
 check "an explicit --ingest-date is not overridden" "1" \
 	"$(run_derive --ingest-date 2026-08-09 | grep -c -- '--ingest-date 2026-08-09' || true)"
+# …and a PARTIAL message about a hand-run rebuild names THAT night, not today's.
+# A wrapper that reconstructed the date from the clock would say the wrong one
+# in the one situation an operator is reading it most carefully.
+check "a partial rebuild of an older date names that date" "1" \
+	"$(PKDUMP_TEST_JOB_RC=2 run_derive --ingest-date=2026-08-09 |
+		grep -c 'PARTIAL — 2026-08-09 did not complete' || true)"
 
 # The wrapper no longer reads the job's output at all. Item 4 made a gap in
 # raw/ a refusal inside the job, so the "correct catalog, unreproducible
@@ -1531,8 +1545,28 @@ check "an explicit --ingest-date is not overridden" "1" \
 # safety net.
 check "the wrapper greps the job's output for nothing" "0" \
 	"$(grep -c 'raw coverage' "${REPO_DIR}/deploy/derive.sh" || true)"
-check "and pushes no alert of its own" "0" \
-	"$(grep -c 'alert.sh' "${REPO_DIR}/deploy/derive.sh" || true)"
+
+# A PARTIAL night: the catalog WAS rebuilt, from a partition whose tail was
+# short. Not a page — the unit's SuccessExitStatus=2 above — and not silent
+# either. The status is the whole message; nothing is greped out of the job's
+# output to reach it.
+DV_PARTIAL="$(PKDUMP_TEST_JOB_RC=2 run_derive)"
+check "a partial derive exits 2" "1" "$(printf '%s' "$DV_PARTIAL" | grep -c 'RC=2$' || true)"
+check "and says PARTIAL rather than FAILED" "1" \
+	"$(printf '%s' "$DV_PARTIAL" | grep -c 'derive: PARTIAL' || true)"
+check "and does not claim the catalog was not rebuilt" "0" \
+	"$(printf '%s' "$DV_PARTIAL" | grep -c 'derive: FAILED' || true)"
+# The warning has to leave the script. alerts.env is deliberately absent in this
+# harness, so alert.sh exits non-zero and the wrapper says the warning reached
+# nobody — which is the assertion that it tried at all rather than skipping.
+check "the partial warning is pushed, not swallowed" "1" \
+	"$(printf '%s' "$DV_PARTIAL" | grep -c 'PARTIAL warning reached nobody' || true)"
+check "…by the shared alert sink, naming the instance" "1" \
+	"$(printf '%s' "$DV_PARTIAL" | grep -c 'derive PARTIAL (dvtest)' || true)"
+# …and an unconfigured alert channel must not turn a partial night into a
+# failure. `set -euo pipefail` plus a bare alert.sh call would do exactly that.
+check "an unreachable channel does not change the status" "1" \
+	"$(printf '%s' "$DV_PARTIAL" | grep -c 'RC=2$' || true)"
 # The retired flag is gone from the runbook line too — an invocation carrying
 # it would now be rejected by clap rather than quietly accepted.
 check "the retired flag is not documented as usable" "0" \

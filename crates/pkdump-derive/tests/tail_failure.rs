@@ -36,7 +36,9 @@
 mod support;
 
 use std::path::Path;
+use std::sync::Arc;
 
+use pkdump_lake::{Dataset, DirStore, RawLanding, RawZone, Source};
 use support::{FakeUpstream, Reply};
 
 /// `derive` reads the origin and the retry budget from the environment,
@@ -74,6 +76,16 @@ fn route(target: &str, tail: fn(&str) -> Reply) -> Reply {
 /// Run one derivation against `upstream`, with `attempts` retries per URL and
 /// no waiting between them.
 fn derive_against(upstream: &FakeUpstream, dir: &Path, attempts: &str) -> pkdump_derive::Report {
+    derive_landing(upstream, dir, attempts, None)
+}
+
+/// As [`derive_against`], landing every response into `landing` on the way past.
+fn derive_landing(
+    upstream: &FakeUpstream,
+    dir: &Path,
+    attempts: &str,
+    landing: Option<Arc<RawLanding>>,
+) -> pkdump_derive::Report {
     // SAFETY: ENV_LOCK is held by the caller for the whole of this call, and
     // nothing else in this binary touches the environment.
     unsafe {
@@ -90,7 +102,7 @@ fn derive_against(upstream: &FakeUpstream, dir: &Path, attempts: &str) -> pkdump
                 "2026-08-11T04:51:02Z".parse().expect("a fixed instant"),
             ),
             data_dir: dir,
-            landing: None,
+            landing,
             replay: None,
         },
     )
@@ -182,4 +194,111 @@ fn a_healthy_tail_still_imports_its_sets() {
     assert!(report.tail_error.is_none(), "{:?}", report.tail_error);
     assert_eq!(report.sets_added, 1);
     assert_eq!(price_rows(tmp.path()), 5);
+}
+
+/// The MANIFEST consequence of a dead tail, which is where pd-nons meets the
+/// landing zone — and the thing neither test above could reach, both passing
+/// `landing: None`.
+///
+/// `finalize` computes `complete` PER DATASET, and `acquire` deliberately does
+/// not hand it the tail's error: the run was not cut short, only the tail was,
+/// and every prefix written after it is whole. So the night this leaves behind
+/// is a partition that is honest about which half is short —
+///
+///   pokemontcgio/sets   INCOMPLETE, carrying the 502 the retries ended on
+///   tcgcsv/prices       complete, with the day's prices in it
+///
+/// — and that asymmetry is what `pkdump-lake-derive` reads to decide whether a
+/// date is a partial night (exit 2) or an underivable one (exit 1). Passing
+/// `landing: None` here for as long as we did is why nothing noticed the
+/// derive was answering that night with a page (pd-llbq).
+#[test]
+fn a_dead_tail_leaves_a_partition_that_says_which_half_is_short() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let upstream =
+        FakeUpstream::start(|target, _| route(target, |_| Reply::status(502, "bad gateway")));
+    let tmp = tempfile::tempdir().unwrap();
+    let raw = tmp.path().join("raw-zone");
+
+    const DATE: &str = "2026-08-11";
+    let landing = Arc::new(RawLanding::new(
+        Box::new(DirStore::new(&raw)),
+        DATE,
+        "2026-08-11T04:51:02Z",
+    ));
+    let report = derive_landing(&upstream, tmp.path(), "2", Some(Arc::clone(&landing)));
+    assert!(report.tail_error.is_some(), "the tail was supposed to fail");
+
+    // Read back through the real reader rather than the writer's own state:
+    // what the derive decides from is bytes in the zone, not an in-process
+    // struct, and the two agreeing is part of the claim.
+    let zone = RawZone::new(Box::new(DirStore::new(&raw)));
+    let one = |source: Source, dataset: Dataset| {
+        let runs = zone.runs(source, dataset, DATE).expect("list runs");
+        assert_eq!(
+            runs.len(),
+            1,
+            "{source}/{dataset}: one run landed this date"
+        );
+        runs.into_iter().next().unwrap()
+    };
+
+    // 1. The tail's own dataset is INCOMPLETE, and it says why.
+    let sets = one(Source::PokemonTcgIo, Dataset::Sets);
+    assert!(
+        !sets.manifest.complete,
+        "a failed tail is not a complete prefix"
+    );
+    assert_eq!(sets.manifest.parts.len(), 0, "a 502 lands no bytes");
+    assert_eq!(
+        sets.manifest.failures.len(),
+        1,
+        "{:?}",
+        sets.manifest.failures
+    );
+    let failure = &sets.manifest.failures[0];
+    assert_eq!(failure.status, Some(502));
+    assert!(failure.url.contains("/sets?"), "{}", failure.url);
+
+    // 2. …and only ONE failure, though the tail spent two attempts. A manifest
+    //    failure means "this URL was not fetched", so recording the attempts a
+    //    retry recovers from would mark a whole night incomplete for a hiccup
+    //    it survived.
+    assert_eq!(
+        upstream
+            .requests()
+            .iter()
+            .filter(|r| r.starts_with("/sets"))
+            .count(),
+        2,
+        "the budget was spent"
+    );
+
+    // 3. The half a night cannot lose is COMPLETE, in the same run. This is the
+    //    whole asymmetry: `finalize` was called with `None`, so completeness is
+    //    each dataset's own answer rather than the run's.
+    for dataset in [Dataset::Groups, Dataset::Products, Dataset::Prices] {
+        let run = one(Source::Tcgcsv, dataset);
+        assert!(
+            run.manifest.complete,
+            "tcgcsv/{dataset} must be complete on a night only the tail failed: {:?}",
+            run.manifest.error
+        );
+        assert!(
+            run.manifest.failures.is_empty(),
+            "{:?}",
+            run.manifest.failures
+        );
+        assert!(
+            !run.manifest.parts.is_empty(),
+            "tcgcsv/{dataset} landed nothing"
+        );
+    }
+
+    // 4. One run, not two: the tail's failure did not start a new one.
+    assert_eq!(
+        one(Source::Tcgcsv, Dataset::Prices).run_id,
+        sets.run_id,
+        "every dataset of a night belongs to that night's run"
+    );
 }

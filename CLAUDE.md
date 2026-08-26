@@ -1119,11 +1119,19 @@ not implementation:
   rerun is *identifiable* rather than merely tolerated. `observed_at` stays
   distinct from `ingest_date` — they differ for exactly the run that crossed
   UTC midnight.
-- **The upstream fallback is temporary and LOUD.** A URL missing from `raw/`
-  means coverage has regressed; the run says so per-URL and in a summary,
-  `deploy/derive.sh` pushes a warning, and `--no-upstream-fallback` makes it
-  fatal. Item 4 of the epic removes it, as its own change, once row-identity is
-  proven in production. **Do not remove it as a side effect of anything else.**
+- **"Complete" has one exemption, and it is the pokemontcg.io TAIL** (pd-llbq).
+  A partition short only in `pokemontcgio/{sets,cards}` DERIVES and exits **2**;
+  every other short prefix is still a refusal and exit 1. See "A partial night
+  is exit 2" below.
+- **A URL missing from `raw/` is FATAL, and there is no flag.** It means
+  coverage has regressed — an input added without landing it, or an upstream's
+  origin moved — and the run stops naming the URL. The temporary fallback item 2
+  shipped with, and its `--no-upstream-fallback` opt-out, are gone (pd-6yql,
+  item 4): the flag is rejected by name rather than ignored, so an old
+  invocation carrying it fails loudly instead of appearing to work. A fallback
+  makes the landing zone decorative — a correct catalog whose lineage is not
+  reproducible, discovered on the day an upstream is down, which is the day the
+  lake was bought for.
 
 Anything that lands in a ROW is passed in rather than read: `DeriveClock`
 carries the one instant a run read, `Manifest.started_at` is where the landing
@@ -1138,15 +1146,45 @@ night the fetch failed. Ordering is declared (`After=`, never `Wants=` — the
 refresh is a oneshot without `RemainAfterExit`), the calendar entry is derived
 from the refresh unit's own bounds, and the chain is land → derive → ship →
 transform.
-The derive unit has **no `SuccessExitStatus=`**, unlike the transform: that job
-writes N tenant databases and "some of them" is normal, this one writes ONE
-catalog and a smaller catalog reads as cards that do not exist.
+#### A partial night is exit 2, not a refusal (pd-llbq)
+
+The derive unit carries `SuccessExitStatus=2`, and **only** 2. The argument that
+kept it from carrying any — this job writes ONE catalog, and a smaller catalog
+reads as cards that do not exist — was right about TCGCSV and wrong about the
+tail, and it made the two units answer one upstream's weather in opposite ways.
+
+On a night `api.pokemontcg.io` is down, `pkdump data refresh` keeps the prices
+and exits 2 (pd-nons). The landing zone records that per dataset:
+`pokemontcgio/sets` INCOMPLETE, `tcgcsv/*` complete — `finalize` computes
+completeness per dataset and `acquire` deliberately does not hand it the tail's
+error. The derive used to refuse that partition outright and **page**, and
+`deploy/derive.sh` always asks for TODAY, so no later run recovered the night.
+Harmless while the online refresh still builds the catalog inline; at epic item
+6 it throws away the night's **prices**, which is pd-nons's own bug on the
+offline side of the split.
+
+Three things keep the exemption narrow:
+
+- **It is per dataset, in `partition::requirement`** — an `Incomplete::{Refuse,
+  Partial}` axis beside the existing `Need`, exhaustive with no wildcard arm, so
+  a second exemption is a decision somebody has to write down. `tcgcsv/*` short
+  is still exit 1.
+- **A short prefix is not an absent one.** A date the tail landed *nothing* for
+  is still "no runs landed" and still a refusal: partial means a run that landed
+  short, never a night that did not happen.
+- **The night replays to the same catalog.** The URL the tail died on was never
+  landed, so the offline tail fails at exactly the request the online one did.
+  `RawReplay::missing` tells the two apart — a URL the manifest recorded as
+  FAILED gets a different sentence from one `raw/` has no record of, because
+  "re-land the date" is advice that cannot work for the first.
 
 Gates: `crates/pkdump-lakehouse/tests/row_identical.rs` (hermetic — row-identity
-over two days, idempotence, reproducing an older date, both refusals, a
-corrupted payload, the fallback loud one way and fatal the other) and
-`tests/lake/derive.sh` (the container tier, shipped image, `--internal`
-network, socket-to-1.1.1.1). Runbook: `deploy/LAKE.md` §8.
+over two days, idempotence, reproducing an older date, every refusal, a
+corrupted payload, and `a_night_short_only_in_the_tail_derives_and_says_so`,
+which lands a dead-tail night, derives it with the shipped binary, and requires
+exit 2 **and** row-identity with the catalog the online refresh built from the
+same bytes) and `tests/lake/derive.sh` (the container tier, shipped image,
+`--internal` network, socket-to-1.1.1.1). Runbook: `deploy/LAKE.md` §8.
 
 One phase cannot be replayed: set-symbol normalisation fetches images, and
 images are deliberately not landed (pd-5w4n).
@@ -1210,11 +1248,22 @@ pushes its own warning and this one does not, and a set list that silently
 stopped advancing is exactly what nothing else on the box would report. A
 partial run still pages. What changed is that the night is no longer lost.
 
+**The offline derive answers that same night the same way** (pd-llbq). It used
+to refuse the partition and page, which made two units fed by one upstream take
+opposite policies on its weather — see "A partial night is exit 2" above. The
+derive unit *does* carry `SuccessExitStatus=2`, because `deploy/derive.sh` is a
+wrapper that pushes its own warning, which is precisely the distinction this
+paragraph draws.
+
 Gates: `crates/pkdump-ingest/tests/retry.rs`,
-`crates/pkdump-derive/tests/tail_failure.rs`, and
+`crates/pkdump-derive/tests/tail_failure.rs` (including
+`a_dead_tail_leaves_a_partition_that_says_which_half_is_short`, which lands
+through the real `RawLanding` — the two tests before it passed `landing: None`,
+so the manifest consequence went unexercised for as long as it did), and
 `tests/refresh/tenant_bytes.sh` §9 (container tier — the shipped binary's exit
-status, its retry count against the `/v2-down` fixture prefix, and that the
-derivation continued past the failure).
+status, its retry count against the `/v2-down` fixture prefix, that the
+derivation continued past the failure, and that the partition it LANDS is short
+in the tail and whole in TCGCSV).
 
 
 ### The ownership outbox

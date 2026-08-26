@@ -31,7 +31,9 @@
 //! - a date whose partition was never landed, or landed incompletely — it
 //!   never falls back to the newest available date, because "yesterday's raw
 //!   silently deriving today's catalog" is the failure this whole design is
-//!   arranged against;
+//!   arranged against. **One incompleteness is exempt**: a partition short
+//!   only in the pokemontcg.io tail derives and exits 2 rather than refusing,
+//!   see below;
 //! - a partition whose manifests carry no clock, or disagree about it;
 //! - a URL the partition has no record of. There is no fallback to the live
 //!   upstream: a derive that fetched what `raw/` did not hold would produce a
@@ -46,6 +48,30 @@
 //!   The *scheduler* is the component allowed to know what day it is, so
 //!   `deploy/derive.sh` names the date explicitly — exactly as
 //!   `pkdump-lake-value-snapshots` already requires.
+//!
+//! ## 0 / 2 / 1 are three different answers (pd-llbq)
+//!
+//! | | |
+//! | --- | --- |
+//! | **0** | the catalog is the derivation of that partition |
+//! | **2** | it is the derivation of a **partial** partition: the pokemontcg.io tail did not complete, so the set list is as old as the last run that finished one |
+//! | **1** | there is no catalog for that partition — absent, short in TCGCSV, clockless, a URL `raw/` has no record of, or the derivation itself failed |
+//!
+//! Exit 2 exists because `pkdump data refresh` already answers a night
+//! upstream is down that way (pd-nons) and this job was answering the same
+//! night with a refusal and a page. Two units taking opposite policies on one
+//! upstream's weather is not a decision anybody made; it is what falls out of
+//! two beads landing beside each other. What settles it is which mistake is
+//! cheaper: paging most nights trains the pager to be ignored (pd-me6h), and
+//! once this job is the only builder of `shared.sqlite` — epic item 6 —
+//! refusing the night also throws away its **prices**, which is the one thing
+//! that cannot be re-fetched tomorrow. So: derive it, say PARTIAL, and let the
+//! provenance rows carry `complete: false` for the half that was short.
+//!
+//! What exit 2 is NOT is a licence for a smaller catalog generally. Every
+//! other short prefix is still exit 1: see `partition::requirement`, where the
+//! exemption is spelled out per dataset and the compiler makes adding one a
+//! decision.
 
 mod diff;
 mod partition;
@@ -141,15 +167,36 @@ fn shared(args: SharedArgs) -> anyhow::Result<()> {
 
     // Which runs, and the refusals. Before anything opens the catalog: a date
     // that cannot be derived must not leave a half-written one behind.
-    let chosen = partition::choose(&zone, &args.ingest_date)?;
-    let clock = partition::clock_of(&chosen, &args.ingest_date)?;
+    let plan = partition::choose(&zone, &args.ingest_date)?;
+    let clock = partition::clock_of(&plan.chosen, &args.ingest_date)?;
     println!(
         "  clock {} (observed {}) — recovered from the run's manifests, not read here",
         clock.fetched_at(),
         clock.observed_date()
     );
 
-    let replay = Arc::new(replay::RawReplay::new(zone, &chosen)?);
+    // Said before the derive rather than after it, because the derive is
+    // minutes of progress lines and this is what an operator needs in order to
+    // read the ones that follow — the tail is about to fail again, at the same
+    // request it failed at when the partition was landed, and that is the
+    // expected shape rather than a new fault.
+    if plan.is_partial() {
+        eprintln!(
+            "!! PARTIAL PARTITION: ingest_date={} did not land whole. The pokemontcg.io tail \
+             was short:",
+            args.ingest_date
+        );
+        for line in &plan.partial {
+            eprintln!("!!   {line}");
+        }
+        eprintln!(
+            "!! Deriving anyway. The night's TCGCSV half — the half that cannot be re-fetched \
+             — is whole, and the set list will be as old as the last run that finished one. \
+             This run will exit 2."
+        );
+    }
+
+    let replay = Arc::new(replay::RawReplay::new(zone, &plan.chosen)?);
     println!("  {} URL(s) replayable from this partition", replay.urls());
 
     println!("Opening shared catalog at {}", db_path.display());
@@ -168,25 +215,36 @@ fn shared(args: SharedArgs) -> anyhow::Result<()> {
         },
     )?;
 
-    // A partial derivation is a failure HERE, unlike in `pkdump data refresh`
-    // (pd-nons). The online refresh may end with a stale set list because the
-    // dataset it could not lose — a day's prices — is already in the catalog
-    // by then, and it says so with exit status 2. This job makes a different
-    // claim: that `shared.sqlite` is what this partition derives to. A catalog
-    // missing the sets the partition holds does not answer that claim, and the
-    // unit that runs this has no SuccessExitStatus= precisely because a
-    // quietly smaller catalog reads as cards that do not exist.
-    if let Some(e) = &report.tail_error {
+    // A tail that failed on a partition the landing zone says is WHOLE is a
+    // fault rather than a partial night: every URL the tail asked for is in
+    // `raw/`, so the failure came from replaying them — a corrupt payload, or
+    // a derivation that grew a request the fetch never made. That is exit 1,
+    // and it is the behaviour this job has always had.
+    //
+    // A partition that is short in the tail is the other case, and it is the
+    // one pd-llbq is about. It is not a failure: it derives, records honest
+    // provenance, and exits 2 like `pkdump data refresh` does on that same
+    // night. See the module docs for why the two units must agree here.
+    if let Some(e) = &report.tail_error
+        && !plan.is_partial()
+    {
         anyhow::bail!(
             "the pokemontcg.io tail did not complete, so this catalog is NOT the derivation of \
-             ingest_date={}: {e}",
+             ingest_date={}: {e}\n\
+             The partition itself landed WHOLE — every URL the tail asked for is in raw/ — so \
+             this is not the partial night a short tail prefix would be. Something failed on \
+             the way back OUT of the landing zone.",
             args.ingest_date
         );
     }
 
-    // Provenance, written only on success: a row saying this catalog came from
-    // that run is a claim about a catalog that exists.
-    let rows = partition::provenance(&chosen, &args.ingest_date, &clock);
+    // Provenance, written for a partial run too: `raw_derivation.complete`
+    // carries each dataset's own answer, so a row saying this catalog came
+    // from that run is a claim about a catalog that exists — and the record of
+    // WHICH half of that night was short is exactly what an operator reading
+    // back a stale set list needs. Not written when the run failed outright,
+    // because there is then no catalog for it to describe.
+    let rows = partition::provenance(&plan.chosen, &args.ingest_date, &clock);
     let derived_at = chrono::Utc::now().to_rfc3339();
     pkdump_db::raw_derivation::record(&mut conn, &args.ingest_date, &derived_at, &rows)?;
     println!(
@@ -201,6 +259,34 @@ fn shared(args: SharedArgs) -> anyhow::Result<()> {
     // is intact — and because the phase that still fetches, set-symbol
     // normalisation, prints its own line just above and would otherwise read as
     // a hole in this claim.
+    //
+    // Not said on a partial night, and the difference is not cosmetic: the run
+    // asked for a URL the partition does not hold. It holds a *failure record*
+    // for it rather than nothing at all, which is why the run is a partial
+    // night and not a coverage regression — but "every upstream request was
+    // answered from raw/" would be false, and this line is read as a claim.
+    if plan.is_partial() {
+        eprintln!(
+            "!! PARTIAL DERIVATION: {} is derived from ingest_date={}, whose pokemontcg.io tail \
+             did not complete. Its TCGCSV half is whole; its set list is as old as the last run \
+             that finished one. raw_derivation records which datasets were short. Exit status 2.",
+            db_path.display(),
+            args.ingest_date
+        );
+        println!(
+            "Derive PARTIAL: {} ({} printings, {} latest prices)",
+            db_path.display(),
+            report.printings,
+            report.latest_prices
+        );
+        // Not an `Err`: anyhow's main would print it and exit 1, which is the
+        // status a run that produced NO catalog carries. This one produced a
+        // catalog, and said what is missing from it. Same shape, same reason,
+        // as `pkdump data refresh` (crates/pkdump-cli/src/data.rs).
+        drop(conn);
+        std::process::exit(2);
+    }
+
     println!("  raw coverage: complete — every upstream request was answered from raw/");
 
     println!(

@@ -16,6 +16,16 @@
 //! the derivation grew an input the landing zone does not capture, or an
 //! upstream's origin moved. That is a refusal, full stop.
 //!
+//! A URL the partition has a *failure* record for is a different fact and gets
+//! a different sentence (pd-llbq). Nothing regressed there: that request was
+//! made, it exhausted its retries, and the landing zone wrote down what it
+//! answered. There is nothing to replay because there was nothing to land, and
+//! the derivation fails at exactly the request the fetch failed at — which is
+//! what makes a partial night replay to the catalog the online refresh built
+//! rather than to a different one. Which of the two it is decides whether the
+//! job exits 1 or 2, so telling an operator "re-land the date" for a night
+//! upstream was down would be advice that cannot work.
+//!
 //! Item 2 of the epic shipped with a temporary fallback for that case: reach
 //! the live upstream, say so loudly, and let the run finish. It was there to
 //! keep the offline derive usable while row-identity was still unproven, and
@@ -56,6 +66,13 @@ pub struct RawReplay {
     /// selected; the payload itself is read (and verified against the
     /// manifest's SHA-256) only when it is asked for.
     index: HashMap<String, PartRecord>,
+    /// URL → what the landing zone recorded when that URL's fetch failed.
+    ///
+    /// Built from the same manifests as `index`, from their `failures` rather
+    /// than their `parts`. It answers nothing — a failed fetch has no bytes —
+    /// but it is what lets [`RawReplay::missing`] say "upstream was down when
+    /// this was fetched" instead of "the landing zone stopped covering this".
+    failed: HashMap<String, String>,
 }
 
 impl RawReplay {
@@ -67,7 +84,17 @@ impl RawReplay {
     /// so a duplicate means the manifest disagrees with itself.
     pub fn new(zone: RawZone, chosen: &[Chosen]) -> anyhow::Result<Self> {
         let mut index: HashMap<String, PartRecord> = HashMap::new();
+        let mut failed: HashMap<String, String> = HashMap::new();
         for c in chosen {
+            for failure in &c.run.manifest.failures {
+                failed.insert(
+                    failure.url.clone(),
+                    match failure.status {
+                        Some(status) => format!("HTTP {status}: {}", failure.error),
+                        None => failure.error.clone(),
+                    },
+                );
+            }
             for part in &c.run.manifest.parts {
                 if let Some(prior) = index.insert(part.url.clone(), part.clone())
                     && prior.key != part.key
@@ -84,7 +111,11 @@ impl RawReplay {
                 }
             }
         }
-        Ok(Self { zone, index })
+        Ok(Self {
+            zone,
+            index,
+            failed,
+        })
     }
 
     /// How many distinct URLs this partition can answer.
@@ -106,6 +137,18 @@ impl ReplaySource for RawReplay {
     }
 
     fn missing(&self, url: &str) -> IngestError {
+        // The partition WROTE DOWN that this fetch failed. Nothing regressed,
+        // and re-landing the date cannot help: that response never existed.
+        if let Some(why) = self.failed.get(url) {
+            return IngestError::BadResponse(format!(
+                "{url} was fetched when this partition was landed and the fetch FAILED \
+                 ({why}), so there is nothing to replay.\n\
+                 This is a PARTIAL night rather than a gap in raw/: the derivation stops at the \
+                 same request the original fetch stopped at, which is what makes it reproduce \
+                 that night's catalog rather than a different one. Re-landing the date cannot \
+                 help — that response never existed."
+            ));
+        }
         IngestError::BadResponse(format!(
             "raw/ has no record of {url}.\n\
              The landing zone no longer covers this derivation's inputs: either an \
@@ -184,6 +227,67 @@ mod tests {
             "{err}"
         );
         assert!(err.contains("--land-raw"), "{err}");
+    }
+
+    /// A URL the partition recorded a FAILURE for is not a gap in raw/, and
+    /// the two must not read alike: one is upstream having a bad night and the
+    /// job exits 2, the other is coverage regressing and the job exits 1
+    /// (pd-llbq). "Re-land the date" is advice that cannot work for the first.
+    #[test]
+    fn a_url_whose_fetch_failed_says_so_rather_than_blaming_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), DATE, STARTED);
+        sink.land(
+            Source::Tcgcsv,
+            Dataset::Groups,
+            URL,
+            200,
+            PartFormat::Json,
+            BODY,
+        )
+        .unwrap();
+        sink.record_failure(
+            Source::PokemonTcgIo,
+            Dataset::Sets,
+            "https://up/sets",
+            Some(502),
+            "http 502 after 4 attempts",
+        )
+        .unwrap();
+        sink.finalize(None).unwrap();
+
+        let zone = RawZone::new(Box::new(DirStore::new(tmp.path())));
+        let runs = zone
+            .runs(Source::PokemonTcgIo, Dataset::Sets, DATE)
+            .unwrap();
+        let replay = RawReplay::new(
+            zone,
+            &[Chosen {
+                source: Source::PokemonTcgIo,
+                dataset: Dataset::Sets,
+                // The run is INCOMPLETE, which is exactly the shape
+                // `partition::choose` admits for the tail — so `select_run`
+                // is not what picks it.
+                run: runs
+                    .last()
+                    .expect("the failed run landed a manifest")
+                    .clone(),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(replay.urls(), 0, "a failed fetch landed no part");
+        let err = replay.missing("https://up/sets").to_string();
+        assert!(err.contains("the fetch FAILED"), "{err}");
+        assert!(err.contains("502"), "{err}");
+        assert!(err.contains("PARTIAL"), "{err}");
+        assert!(!err.contains("no record of"), "{err}");
+
+        // …and a URL that really is outside the partition still gets the
+        // other sentence. One message for both would be the bug.
+        let gap = replay.missing("https://up/3/9/prices").to_string();
+        assert!(gap.contains("raw/ has no record of"), "{gap}");
+        assert!(gap.contains("--land-raw"), "{gap}");
     }
 
     /// The manifest's digest is not decoration. A part whose bytes changed

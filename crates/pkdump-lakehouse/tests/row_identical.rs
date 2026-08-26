@@ -57,7 +57,7 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use pkdump_derive::DeriveClock;
@@ -249,12 +249,15 @@ fn prices_json(group: i64, day: usize) -> String {
 
 /// The upstream both halves of a comparison read from. `day` selects which
 /// day's payloads it serves; `fail_group` makes one `/prices` request return a
-/// 503, which is how a run that dies partway is produced; `symbols` is the
-/// origin set symbols are advertised under, filled in after the listener binds
-/// because that is when the port is known.
+/// 503, which is how a run that dies partway is produced; `tail_down` makes
+/// `/sets` answer 503 to everything, which is the OTHER failure shape and a
+/// different one — see [`a_night_short_only_in_the_tail_derives_and_says_so`];
+/// `symbols` is the origin set symbols are advertised under, filled in after
+/// the listener binds because that is when the port is known.
 struct Script {
     day: AtomicUsize,
     fail_group: AtomicUsize,
+    tail_down: AtomicBool,
     symbols: Mutex<Option<String>>,
 }
 
@@ -264,6 +267,11 @@ fn start_upstream(script: Arc<Script>) -> FakeUpstream {
         let (path, _query) = target.split_once('?').unwrap_or((target, ""));
 
         if path == "/sets" {
+            // The 2026-08-11 shape: api.pokemontcg.io answering 5xx to
+            // everything while TCGCSV is fine. Every retry gets this.
+            if script.tail_down.load(Ordering::SeqCst) {
+                return Reply::status(503, r#"{"error":"api.pokemontcg.io is having 2026-08-11"}"#);
+            }
             let symbols = script.symbols.lock().expect("symbols lock").clone();
             return Reply::ok(sets_json(symbols.as_deref()));
         }
@@ -327,6 +335,7 @@ impl Harness {
         let script = Arc::new(Script {
             day: AtomicUsize::new(1),
             fail_group: AtomicUsize::new(0),
+            tail_down: AtomicBool::new(false),
             symbols: Mutex::new(None),
         });
         let upstream = start_upstream(Arc::clone(&script));
@@ -356,6 +365,16 @@ impl Harness {
 
     fn day(&self, day: usize) {
         self.script.day.store(day, Ordering::SeqCst);
+    }
+
+    /// Take `api.pokemontcg.io` down without touching TCGCSV.
+    ///
+    /// It affects the ONLINE half only. The offline job replays, and the URL a
+    /// dead tail failed on is not in the partition, so its tail fails at that
+    /// same request without a socket being opened — which is the property the
+    /// partial night rests on.
+    fn tail_down(&self, down: bool) {
+        self.script.tail_down.store(down, Ordering::SeqCst);
     }
 
     /// The ONLINE path: fetch from the fixture upstream, land every response,
@@ -683,6 +702,130 @@ fn an_older_date_rebuilds_that_date_and_not_the_newest_one() {
 /// An incomplete run's parts are real bytes and an unknown fraction of the
 /// day. Deriving from them would produce a catalog that is quietly smaller —
 /// which, in a catalog, reads as *cards that do not exist*.
+/// pd-llbq: the night `api.pokemontcg.io` is down, end to end.
+///
+/// This is the OTHER failure shape, and the whole reason it needed its own
+/// gate. [`an_incomplete_partition_is_refused_rather_than_half_derived`] above
+/// kills a TCGCSV `/prices` request, which makes `acquire` return `Err`, ends
+/// the run, and marks EVERY dataset of that run incomplete. A dead tail does
+/// none of that: `acquire` carries the tail's error in `Report::tail_error`
+/// (pd-nons) and every step after it runs to its end, so `finalize` is called
+/// with `None` and the partition it leaves behind is honest per dataset —
+/// `pokemontcgio/sets` short, `tcgcsv/prices` whole.
+///
+/// Nothing landed a partition of that shape and then tried to derive it, which
+/// is how the two units came to answer one night's weather in opposite ways:
+/// `pkdump data refresh` exits 2 and keeps the prices, and this job exited 1
+/// and paged, on a partition it can perfectly well derive.
+///
+/// So: it derives, it is **row-identical to the catalog the online refresh
+/// built on that same night**, and it says PARTIAL with exit 2.
+#[test]
+fn a_night_short_only_in_the_tail_derives_and_says_so() {
+    let h = Harness::start();
+
+    // A whole night first, so the partial one lands on a real catalog rather
+    // than on nothing — two empty catalogs are also row-identical.
+    h.day(1);
+    assert!(h.online(&h.db("online"), DAY1, DAY1_CLOCK, false), "day 1");
+    let target = h.db("derived");
+    let out = h.derive(&target, DAY1, &[]);
+    assert!(out.status.success(), "day 1 offline:\n{}", text(&out));
+
+    // …then the night upstream is down. TCGCSV is untouched, so day 2's
+    // PRICES — the half that cannot be re-fetched tomorrow — are fetched and
+    // landed exactly as on any other night.
+    h.day(2);
+    h.tail_down(true);
+    assert!(
+        h.online(&h.db("online"), DAY2, DAY2_CLOCK, false),
+        "a dead tail does not end the online run (pd-nons)"
+    );
+
+    // The partition really is short in the tail and whole everywhere else.
+    // Read off the landed manifests, because that asymmetry is the input the
+    // decision under test is made from.
+    let sets = std::fs::read_to_string(find_manifest(
+        &h.raw(),
+        "dataset=sets/ingest_date=2026-08-11",
+    ))
+    .expect("the tail's manifest");
+    assert!(sets.contains("\"complete\": false"), "{sets}");
+    assert!(sets.contains("503"), "{sets}");
+    let prices = std::fs::read_to_string(find_manifest(
+        &h.raw(),
+        "dataset=prices/ingest_date=2026-08-11",
+    ))
+    .expect("the prices manifest");
+    assert!(prices.contains("\"complete\": true"), "{prices}");
+
+    // The shipped binary, on that partition.
+    let out = h.derive(&target, DAY2, &[]);
+    let said = text(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a partial night is exit 2 — not 1 (a refusal) and not 0 (nothing to mention):\n{said}"
+    );
+    assert!(said.contains("PARTIAL PARTITION"), "{said}");
+    assert!(said.contains("PARTIAL DERIVATION"), "{said}");
+    assert!(said.contains("pokemontcgio/sets"), "{said}");
+    // It must NOT claim complete raw coverage: the run asked for a URL the
+    // partition does not hold. That line is read as a claim.
+    assert!(!said.contains("raw coverage: complete"), "{said}");
+    // …and it must not read as a coverage regression either. The partition
+    // recorded that fetch FAILING, which is a different fact with different
+    // advice — "re-land the date" cannot work for a night upstream was down.
+    assert!(said.contains("the fetch FAILED"), "{said}");
+    assert!(!said.contains("raw/ has no record of"), "{said}");
+
+    // THE POINT: the night's prices are in the catalog. Refusing the partition
+    // would have thrown them away, and there is no asking for them later —
+    // which is pd-nons's whole argument, on the offline side of the split.
+    assert!(
+        scalar::<i64>(
+            &target,
+            "SELECT COUNT(*) FROM prices WHERE observed_at = '2026-08-11'"
+        ) > 0,
+        "the partial derive must still hold day two's prices"
+    );
+
+    // And it is the same catalog the online refresh built from the same bytes,
+    // row for row — deprecations included, since day 2 renumbers a product.
+    let cmp = h.diff(&h.db("online"), &target);
+    assert!(
+        cmp.status.success(),
+        "a partial night must still be row-identical:\n{}",
+        text(&cmp)
+    );
+
+    // Provenance IS written for a partial run, and it records which half was
+    // short. A catalog with a stale set list and nothing saying so is the
+    // quiet version of this failure.
+    assert_eq!(
+        scalar::<i64>(
+            &target,
+            "SELECT COUNT(*) FROM raw_derivation \
+             WHERE ingest_date = '2026-08-11' AND dataset = 'sets' AND complete = 0"
+        ),
+        1,
+        "the tail's dataset is recorded incomplete"
+    );
+    assert_eq!(
+        scalar::<i64>(
+            &target,
+            "SELECT COUNT(*) FROM raw_derivation \
+             WHERE ingest_date = '2026-08-11' AND source = 'tcgcsv' AND complete = 0"
+        ),
+        0,
+        "the half a night cannot lose is recorded whole"
+    );
+}
+
+/// A run cut short in TCGCSV. The exemption above is the TAIL's, and only the
+/// tail's: `products` with 200 groups of an unknown 450 is precisely the
+/// quietly-smaller catalog the refusal exists for, and it is the half of a
+/// night that no later run can re-fetch.
 #[test]
 fn an_incomplete_partition_is_refused_rather_than_half_derived() {
     let h = Harness::start();

@@ -629,7 +629,9 @@ deriving today's catalog and looking current*, and four things close it:
   the newest available. A date that landed nothing refuses; a date whose only
   run died partway refuses, because nothing in the landing zone can say whether
   an incomplete run's parts add up to a day, and a catalog that is quietly
-  smaller reads as *cards that do not exist*.
+  smaller reads as *cards that do not exist*. **One exception, and it is
+  narrow** — a partition short only in the pokemontcg.io tail derives and exits
+  **2**; see "A partial night is exit 2" below.
 - **Re-deriving a date replaces it.** Twice equals once.
 - **Provenance**: `shared.raw_derivation` records which run ULIDs produced the
   catalog, how many parts each held, and when the derive ran — so a rerun is
@@ -645,6 +647,65 @@ SELECT ingest_date, source, dataset, run_id, parts, observed_at, derived_at
 as `ingest_date`. They agree for almost every run and differ for exactly the one
 that crossed UTC midnight — the run where taking the partition for the
 observation date would file yesterday's prices under today.
+
+### A partial night is exit 2, not a refusal (pd-llbq)
+
+```
+0  the catalog is the derivation of that partition
+2  it is the derivation of a PARTIAL partition — the pokemontcg.io tail did not
+   complete that night, so the set list is as old as the last run that finished
+   one. The TCGCSV half is whole.
+1  there is no catalog for that partition
+```
+
+On a night `api.pokemontcg.io` is having — 5xx to ~45% of requests on
+2026-08-11 — the tail spends its retries and gives up. `pkdump data refresh`
+carries on, imports the prices, and exits 2 (pd-nons), because a day's prices
+cannot be re-fetched later and a day's set list can: tomorrow's is a superset of
+tonight's. The landing zone records that honestly, per dataset:
+
+```
+raw: pokemontcgio/sets — 0 part(s), 0 byte(s), INCOMPLETE (1 failure(s))
+raw: tcgcsv/groups     — 2 part(s), complete
+raw: tcgcsv/prices     — 1 part(s), complete
+```
+
+The derive used to **refuse** that partition outright — "no complete run" — and
+`pkdump-derive@` had no `SuccessExitStatus=`, so it paged. Two units answering
+one upstream's weather in opposite ways, which nobody decided; it is what fell
+out of pd-nons and pd-1uem landing beside each other. Since pd-llbq the derive
+answers it the way the refresh does.
+
+Two things keep this from becoming a licence for a smaller catalog:
+
+- **It is per dataset, and only the tail's.** `pokemontcgio/sets` and
+  `pokemontcgio/cards` are `Incomplete::Partial`; every other dataset is
+  `Incomplete::Refuse` and still exits 1. A `tcgcsv/products` prefix holding 200
+  groups of an unknown 450 is exactly the quietly-smaller catalog the refusal
+  exists for. The table is `crates/pkdump-lakehouse/src/partition.rs::
+  requirement`, exhaustive with no wildcard arm, so adding another exemption is
+  a decision somebody has to write down.
+- **The night still replays to the same catalog.** The URL the tail died on was
+  never landed, so the replay fails at exactly that request and the offline
+  derive's tail fails where the online one's did. `row_identical.rs::
+  a_night_short_only_in_the_tail_derives_and_says_so` is the gate: it lands a
+  dead-tail night, derives it with the shipped binary, and requires the result
+  to be row-identical to the catalog the online refresh built from the same
+  bytes.
+
+`raw_derivation` carries `complete` per dataset, so a partial night is
+identifiable afterwards rather than merely tolerated:
+
+```sql
+SELECT ingest_date, source, dataset, complete FROM raw_derivation
+ WHERE complete = 0 ORDER BY ingest_date DESC;
+```
+
+**What to do about it:** nothing, usually. The catalog is serving and its prices
+are tonight's; the next whole night's tail supersedes the set list. The warning
+`deploy/derive.sh` pushes exists so a *run* of partial nights is visible — that
+is upstream being down for days, and a set published in that window will not
+appear until it ends.
 
 ### The clock
 
@@ -678,9 +739,12 @@ was added without landing it, or the upstream's origin moved. Re-land the date
 pkdump-refresh@<instance>.service`, the landing half of the pair, or check that
 it ran at all — then derive again.
 Deriving a *different*, complete date is the other option — the catalog is a
-day behind rather than wrong. `pkdump-derive@` has no `SuccessExitStatus=`, so
-this pages through `OnFailure=`, which is intended: a catalog that quietly
-skipped a price feed reads downstream as cards that do not exist.
+day behind rather than wrong. This is exit **1**, and the unit's
+`SuccessExitStatus=2` does not cover it, so it pages through `OnFailure=` —
+which is intended: a catalog that quietly skipped a price feed reads downstream
+as cards that do not exist. A URL the partition recorded as *failed* is a
+different thing and says so in its own words; that is the partial night above,
+and re-landing the date cannot help it.
 
 Item 2 of the epic shipped a temporary fallback here — reach the live upstream,
 print `!! raw coverage has REGRESSED`, finish anyway — with
@@ -804,8 +868,9 @@ sqlite3 ~/.local/share/containers/storage/volumes/pkdump-prod-data/_data/shared.
 ```
 
 Do not arm it before `pkdump-refresh@prod` is provably landing raw (pd-kncd):
-a derive with nothing to read is a refusal every night, and the unit has **no**
-`SuccessExitStatus=`, so it will page.
+a derive with nothing to read is a refusal every night, and the unit's
+`SuccessExitStatus=2` covers a partial night only — "nothing landed" is exit 1,
+so it will page.
 
 Think before you do, even then. Today `pkdump data refresh` still derives the
 catalog inline, so an enabled derive timer rebuilds it a second time from raw —

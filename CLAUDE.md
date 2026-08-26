@@ -49,6 +49,24 @@ bd close <id>         # Complete work
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
 
+## When to escalate to Ryan, and when to just do the work
+
+**As of 2026-08-26 there is no approval gate.** A bead you file is not deferred by default —
+work proceeds unless it matches the escalate list below. If you file a bead and move on
+without acting on it (or dispatching it), that is the exact bug this policy replaces: 130
+real findings sat parked and invisible under the old gate, including a bug Ryan hit himself.
+
+**Escalate** (label the bead `needs-ryan`, state the decision as a question with a default,
+say what's blocked vs. not, say what it costs to reverse): anything needing a credential,
+account or console only Ryan holds; destructive or irreversible action on production data;
+a product decision about what a feature IS or what a number MEANS; work outside the approved
+design's Intent; anything that changes when he gets paged; a choice between two defensible
+options where the wrong one is expensive to undo.
+
+**Proceed, do not ask:** bug fixes with one clearly correct answer; missing tests or a stale
+spec; wrong docs; behaviour-preserving refactors and cleanups behind a green suite;
+operational fixes with an existing runbook; anything an approved design already implies,
+even if not itemised. **Filing is not a substitute for doing.**
 
 ## Project Overview
 

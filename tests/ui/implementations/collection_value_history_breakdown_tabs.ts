@@ -30,7 +30,8 @@ export async function steps(h: ReplayHarness) {
   await h.click_by_selector('button.countline');
   await h.wait_for_visible(DIALOG, 6000);
 
-  // Opens on Total: the whole collection as one line.
+  // Opens on Total: the loose cards as one line. A fixture holding sealed
+  // product would make this two (pd-bbv7) — the committed one holds none.
   await h.assert_visible(`${tab('Total')}[aria-selected="true"]`);
   await expectSeries(h, 1);
 

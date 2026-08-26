@@ -26,6 +26,15 @@ onto the property that actually matters: **has a new day of prices landed in
 the table recently.** One incomplete-but-recent day is not an alarm. Three days
 of nothing is.
 
+## Why one table is enough for two
+
+``catalog.sealed_prices`` (pd-bbv7) advances on exactly the nights this table
+does: one invocation of ``pkdump-lake-build-prices`` reads the partition once
+and writes both, so there is no state in which one is fresh and the other is
+stale — the run either writes both days or fails. Checking the second would be
+checking the same fact twice, and a second alarm on the same event is a second
+page for one problem.
+
 ## What it reads
 
 Table *metadata*, never data files. ``inspect.partitions()`` lists the live

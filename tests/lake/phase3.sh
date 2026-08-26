@@ -123,6 +123,9 @@ DATE_NEW=2026-08-10
 # (`pkdump_lake.value_snapshots.ZONE_HOLDINGS`); this gate is the fourth place
 # and the one that holds them together.
 ZONE_TABLE=zone_holdings
+# The sealed half of the same read-back (pd-bbv7), named in the same three
+# places plus this one.
+ZONE_SEALED_TABLE=zone_sealed_holdings
 
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
@@ -392,6 +395,15 @@ sed 's/^/  | /' "${WORK}/holdings.log"
 check "alice's staged holdings are her collection, row for row" \
 	"$(tenant_exec "$ALICE" 'SELECT count(*) FROM collection')" \
 	"$(tenant_exec "$ALICE" "SELECT count(*) FROM ${ZONE_TABLE}")"
+# Both halves of the holdings make the round trip (pd-bbv7). A zero here would
+# be indistinguishable from a tenant who owns no sealed product, which is why
+# the fixture gives alice some.
+check "…and her sealed lots too" \
+	"$(tenant_exec "$ALICE" 'SELECT count(*) FROM sealed_collection')" \
+	"$(tenant_exec "$ALICE" "SELECT count(*) FROM ${ZONE_SEALED_TABLE}")"
+check "…and there really are some" "yes" \
+	"$([ "$(tenant_exec "$ALICE" "SELECT count(*) FROM ${ZONE_SEALED_TABLE}")" -gt 0 ] &&
+		echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 log "5. THE ACCEPTANCE BAR: the zone valuation IS the valuation, row for row"
@@ -439,12 +451,22 @@ log "6. SEEN RED: a collection change that never shipped must NOT move the value
 # directly, and it cannot be satisfied by accident — a valuation that tracks
 # the live table fails this half, and one that is merely frozen or cached fails
 # §6b. If both halves pass green, the whole item is unfounded.
+ALICE_SEALED=$(tenant_exec "$ALICE" "SELECT market_value FROM collection_value_snapshot WHERE dimension = 'sealed' AND date = '${DATE_NEW}'")
 tenant_exec "$ALICE" "DELETE FROM collection WHERE status = 'owned' AND id = (
     SELECT min(id) FROM collection WHERE status = 'owned')" >/dev/null
+# Both halves changed, so both halves have to fail to notice. A sealed
+# dimension wired to `sealed_collection` instead of to the zone would pass
+# every card assertion in this file and be exactly the bug §6 exists to catch.
+tenant_exec "$ALICE" "DELETE FROM sealed_collection WHERE status = 'owned' AND id = (
+    SELECT min(id) FROM sealed_collection WHERE status = 'owned')" >/dev/null
 LIVE_COPIES=$(tenant_exec "$ALICE" "SELECT count(*) FROM collection WHERE status = 'owned'")
 ZONE_COPIES=$(tenant_exec "$ALICE" "SELECT count(*) FROM ${ZONE_TABLE} WHERE status = 'owned'")
 check "the live collection really did change" "yes" \
 	"$([ "$LIVE_COPIES" -lt "$ZONE_COPIES" ] && echo yes || echo no)"
+LIVE_LOTS=$(tenant_exec "$ALICE" "SELECT count(*) FROM sealed_collection WHERE status = 'owned'")
+ZONE_LOTS=$(tenant_exec "$ALICE" "SELECT count(*) FROM ${ZONE_SEALED_TABLE} WHERE status = 'owned'")
+check "…and so did the live sealed collection" "yes" \
+	"$([ "$LIVE_LOTS" -lt "$ZONE_LOTS" ] && echo yes || echo no)"
 
 expect_rc 2 "${WORK}/unshipped.log" snapshot --date "$DATE_NEW"
 diff <(dump "$ALICE" "$DATE_NEW") "$FIXTURE/expected-alice-${DATE_NEW}.tsv" ||
@@ -462,6 +484,10 @@ AFTER=$(tenant_exec "$ALICE" "SELECT market_value FROM collection_value_snapshot
 check "…and it moved DOWN, a card having been removed" "yes" \
 	"$(awk -v a="$AFTER" -v b="$ALICE_VALUE" 'BEGIN { print (a < b) ? "yes" : "no" }')"
 echo "  ${ALICE_VALUE} -> ${AFTER} once the zone was told"
+AFTER_SEALED=$(tenant_exec "$ALICE" "SELECT market_value FROM collection_value_snapshot WHERE dimension = 'sealed' AND date = '${DATE_NEW}'")
+check "…and so did the sealed half, a lot having been removed" "yes" \
+	"$(awk -v a="$AFTER_SEALED" -v b="$ALICE_SEALED" 'BEGIN { print (a < b) ? "yes" : "no" }')"
+echo "  sealed ${ALICE_SEALED} -> ${AFTER_SEALED}"
 
 # ---------------------------------------------------------------------------
 log "7. a STALE materialisation is refused, not valued"

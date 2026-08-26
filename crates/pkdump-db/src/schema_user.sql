@@ -452,18 +452,19 @@ CREATE TABLE IF NOT EXISTS ownership_outbox_gap (
 -- resolution rule (`outbox::project`) into a staging table `zone_holdings`
 -- — which the lake transform then joins exactly as it joins `collection`.
 --
--- `zone_holdings` is deliberately NOT declared here. It is created from
--- `collection`'s own `pragma_table_info` by `pkdump_ship::zone`, because a
--- hand-written mirror would be a third place the collection's shape is
--- written down and would silently stop carrying a column the day one is
--- added. Being created rather than declared also means it carries no
--- triggers: materialising the zone cannot emit outbox events, so a Phase 3
--- run cannot feed itself back into the zone it just read.
+-- `zone_holdings` — and `zone_sealed_holdings` beside it, one staging table
+-- per outbox source (pd-bbv7) — are deliberately NOT declared here. They are
+-- created from their source table's own `pragma_table_info` by
+-- `pkdump_ship::zone`, because a hand-written mirror would be a third place
+-- the collection's shape is written down and would silently stop carrying a
+-- column the day one is added. Being created rather than declared also means
+-- they carry no triggers: materialising the zone cannot emit outbox events,
+-- so a Phase 3 run cannot feed itself back into the zone it just read.
 --
--- This table is the provenance of that one, and it IS declared, because it
--- has a shape of its own. Both are transport state — a materialised copy of
--- what is already in the zone — so both are in
--- `crate::outbox::TRANSPORT_TABLES` and neither travels in the portable
+-- This table is the provenance of both of those, and it IS declared, because
+-- it has a shape of its own. All three are transport state — a materialised
+-- copy of what is already in the zone — so all three are in
+-- `crate::outbox::TRANSPORT_TABLES` and none travels in the portable
 -- JSON envelope. Restoring somebody's staged zone read into a fresh
 -- database would tell it that it had been shipped when it has not.
 -- ---------------------------------------------------------------------
@@ -474,8 +475,14 @@ CREATE TABLE IF NOT EXISTS zone_holdings_run (
     events        INTEGER NOT NULL,          -- outbox events in them
     max_seq       INTEGER NOT NULL,          -- how far through the outbox the zone has got
     partitions    TEXT NOT NULL,             -- the as_of= dates read, comma-separated
-    rows          INTEGER NOT NULL,          -- holdings the reduction produced
-    read_at       TEXT NOT NULL              -- UTC ISO-8601
+    rows          INTEGER NOT NULL,          -- `collection` holdings the reduction produced
+    read_at       TEXT NOT NULL,             -- UTC ISO-8601
+    -- `sealed_collection` lots the same reduction produced (pd-bbv7). One
+    -- read of one dataset fills two staging tables, so the row that describes
+    -- the read counts both. A collection whose last read-back predates sealed
+    -- reports 0 here, which is exactly what that read materialised — see
+    -- `connection.rs::USER_ADDED_COLUMNS`.
+    sealed_rows   INTEGER NOT NULL DEFAULT 0
 );
 
 -- ---------------------------------------------------------------------
@@ -668,20 +675,34 @@ CREATE INDEX IF NOT EXISTS idx_import_unresolved_status ON import_unresolved(sta
 -- ---------------------------------------------------------------------
 -- Collection value history (pokedumpster-e1vo). One row per
 -- (date, dimension, bucket): the total market value, cost basis, and card
--- count of the owned collection on that date, for the whole collection
--- ('all', bucket NULL), per set ('set', bucket = set_code), or per binder
--- ('binder', bucket = binder-id-as-text). Written idempotently — a full
+-- count of the owned collection on that date, for the loose cards
+-- ('all', bucket NULL), per set ('set', bucket = set_code), per binder
+-- ('binder', bucket = binder-id-as-text), or for the sealed product
+-- ('sealed', bucket NULL). Written idempotently — a full
 -- delete-then-insert per (date, dimension) — by the nightly snapshot and
 -- the one-time backfill. Read by GET /api/collection/value-history.
+--
+-- 'all' means the LOOSE CARDS and nothing else (pd-bbv7). Sealed product is
+-- its own dimension rather than a widening of that one, because every row
+-- already written under 'all' was computed over cards alone and widening it
+-- would silently restate months of history. There is deliberately no stored
+-- combined total either: a stored total can disagree with its parts, so the
+-- API sums the two at read time.
+--
+-- On the 'sealed' row, `card_count` is UNITS — SUM(quantity) — not lots.
+-- One sealed_collection row is a lot of N identical boxes where one
+-- collection row is one physical card, so counting rows would report 46 where
+-- the tenant owns 140. `cost_basis` multiplies by quantity for the same
+-- reason: a lot's purchase_price is per unit.
 -- ---------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS collection_value_snapshot (
     date          TEXT NOT NULL,             -- 'YYYY-MM-DD'
-    dimension     TEXT NOT NULL,             -- 'all' | 'set' | 'binder'
-    bucket        TEXT,                      -- NULL for 'all'; set_code / binder id
+    dimension     TEXT NOT NULL,             -- 'all' | 'set' | 'binder' | 'sealed'
+    bucket        TEXT,                      -- NULL for 'all'/'sealed'; set_code / binder id
     market_value  REAL NOT NULL,
     cost_basis    REAL NOT NULL,
-    card_count    INTEGER NOT NULL,
+    card_count    INTEGER NOT NULL,          -- copies, or UNITS on the 'sealed' row
     PRIMARY KEY (date, dimension, bucket)
 );
 

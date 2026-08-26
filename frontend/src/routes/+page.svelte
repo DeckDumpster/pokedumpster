@@ -9,12 +9,22 @@
 	backend surface was added for it):
 
 	  headline figures  /api/collection/value-history?dimension=all, latest
-	                    point. This is the app's OWN canonical answer for
-	                    "what is the collection worth" — the same series the
-	                    /collection value chart draws, condition-adjusted
-	                    server-side. It is a snapshot table, written by
-	                    `pkdump data refresh`, so the date it was valued on is
-	                    printed beside it rather than implied to be now.
+	                    point of EACH series it returns. This is the app's OWN
+	                    canonical answer for "what is the collection worth" —
+	                    the same series the /collection value chart draws,
+	                    condition-adjusted server-side. It is a snapshot table,
+	                    written by the nightly transform, so the date it was
+	                    valued on is printed beside it rather than implied to
+	                    be now.
+
+	                    That dimension answers with the collection's two priced
+	                    halves — the loose cards and the sealed product — and
+	                    the headline is their SUM, added here (pd-bbv7). There
+	                    is no stored combined total on purpose: a stored total
+	                    is a third number that can disagree with the two it is
+	                    made of. The split is printed under the figure, because
+	                    a total that does not say which half is which is how
+	                    half a collection stayed invisible.
 	  set completion    /api/sets, the same summaries /browse tiles.
 	  recent additions  the newest ingest batches + their cards, which is what
 	                    /recent already means by "activity". Deliberately NOT
@@ -52,7 +62,10 @@
 	 *  thumbnail strip rather than leave the column half-empty. */
 	const HIGHLIGHT_SETS = 8;
 
+	/** The latest point of each half, both on the SAME date — see below. */
 	let latest = $state<ValuePoint | null>(null);
+	let sealedLatest = $state<ValuePoint | null>(null);
+	let valuedOn = $state<string | null>(null);
 	let sets = $state<SetSummary[]>([]);
 	let recent = $state<CollectionRow[]>([]);
 	let loading = $state(true);
@@ -65,8 +78,23 @@
 				api.sets(),
 				api.batches(RECENT_BATCHES)
 			]);
-			// One series for the `all` dimension, points ascending by date.
-			latest = series[0]?.points.at(-1) ?? null;
+			// The `all` dimension answers with the loose cards (bucket null) and,
+			// when the tenant owns any, the sealed product. Told apart by
+			// `bucket`, never by order.
+			//
+			// Both halves are read at ONE date — the newest either reports —
+			// rather than each at its own latest point. Two halves valued on
+			// two days would add up to a number that was never true on either.
+			// A half with no row on that date contributes nothing and shows as
+			// absent in the split below.
+			const cards = series.find((s) => s.bucket == null);
+			const sealed = series.find((s) => s.bucket === 'sealed');
+			const lastDates = [cards?.points.at(-1)?.date, sealed?.points.at(-1)?.date].filter(
+				(d): d is string => d != null
+			);
+			valuedOn = lastDates.sort().at(-1) ?? null;
+			latest = cards?.points.find((p) => p.date === valuedOn) ?? null;
+			sealedLatest = sealed?.points.find((p) => p.date === valuedOn) ?? null;
 			sets = allSets;
 			// Batches arrive newest-first, so flattening preserves recency.
 			const details = await Promise.all(batches.map((b) => api.batchDetail(b.id)));
@@ -110,9 +138,31 @@
 		return rows.slice(0, HIGHLIGHT_SETS);
 	});
 
-	const unrealized = $derived(latest == null ? null : latest.market_value - latest.cost_basis);
+	/**
+	 * The split, under the figures it explains. Built here rather than in the
+	 * markup so a collection with no sealed product renders EXACTLY the string
+	 * it always did — this page is screenshotted, and a conditional block in
+	 * the template would move pixels for every tenant who owns no sealed
+	 * product.
+	 */
+	const ownedMeta = $derived(
+		(sealedLatest ? `${count(sealedLatest.card_count)} sealed · ` : '') +
+			`${count(setsStarted)} of ${count(realSets.length)} sets started`
+	);
+	const valueMeta = $derived(
+		sealedLatest
+			? `cards ${money(latest?.market_value ?? 0)} · sealed ${money(sealedLatest.market_value)}`
+			: 'condition-adjusted'
+	);
+
+	/** Both halves, summed at read time. The headline is the whole collection. */
+	const marketValue = $derived((latest?.market_value ?? 0) + (sealedLatest?.market_value ?? 0));
+	const costBasis = $derived((latest?.cost_basis ?? 0) + (sealedLatest?.cost_basis ?? 0));
+	const unrealized = $derived(valuedOn == null ? null : marketValue - costBasis);
 	/** Nothing snapshotted, or nothing owned — a genuinely empty collection. */
-	const started = $derived(latest != null && latest.card_count > 0);
+	const started = $derived(
+		valuedOn != null && (latest?.card_count ?? 0) + (sealedLatest?.card_count ?? 0) > 0
+	);
 </script>
 
 <svelte:head><title>PokeDumpster</title></svelte:head>
@@ -131,32 +181,32 @@
 	</Panel>
 {/if}
 
-<SectionHeader title="Your collection" meta={latest ? `valued ${latest.date}` : undefined} divider>
+<SectionHeader title="Your collection" meta={valuedOn ? `valued ${valuedOn}` : undefined} divider>
 	{#snippet actions()}
 		<Button variant="link" href="/collection">Open collection</Button>
 	{/snippet}
 </SectionHeader>
 
-{#if started && latest}
+{#if started}
 	<div class="stats">
 		<Panel padding="md">
 			<div class="stat">
 				<span class="stat-label">Cards owned</span>
-				<strong class="stat-figure">{count(latest.card_count)}</strong>
-				<span class="stat-meta">{count(setsStarted)} of {count(realSets.length)} sets started</span>
+				<strong class="stat-figure">{count(latest?.card_count ?? 0)}</strong>
+				<span class="stat-meta">{ownedMeta}</span>
 			</div>
 		</Panel>
 		<Panel padding="md">
 			<div class="stat">
 				<span class="stat-label">Market value</span>
-				<strong class="stat-figure">{money(latest.market_value)}</strong>
-				<span class="stat-meta">condition-adjusted</span>
+				<strong class="stat-figure">{money(marketValue)}</strong>
+				<span class="stat-meta">{valueMeta}</span>
 			</div>
 		</Panel>
 		<Panel padding="md">
 			<div class="stat">
 				<span class="stat-label">Cost basis</span>
-				<strong class="stat-figure">{money(latest.cost_basis)}</strong>
+				<strong class="stat-figure">{money(costBasis)}</strong>
 				<span class="stat-meta">what you paid</span>
 			</div>
 		</Panel>

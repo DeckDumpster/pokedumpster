@@ -110,6 +110,11 @@ pub const GAP_TABLE: &str = "ownership_outbox_gap";
 /// same round trip as [`TABLE`] — and because [`TRANSPORT_TABLES`] below is
 /// the list that must not miss one.
 pub const ZONE_HOLDINGS_TABLE: &str = "zone_holdings";
+/// The same, for the outbox's second source (`pd-bbv7`). One staging table
+/// per [`SOURCE_TABLES`] entry, because `row_id` is unique only within a
+/// source: reducing both into one table would merge a single and a sealed lot
+/// that merely share a number.
+pub const ZONE_SEALED_HOLDINGS_TABLE: &str = "zone_sealed_holdings";
 /// See [`ZONE_HOLDINGS_TABLE`].
 pub const ZONE_HOLDINGS_RUN_TABLE: &str = "zone_holdings_run";
 
@@ -129,6 +134,7 @@ pub const TRANSPORT_TABLES: &[&str] = &[
     CURSOR_TABLE,
     GAP_TABLE,
     ZONE_HOLDINGS_TABLE,
+    ZONE_SEALED_HOLDINGS_TABLE,
     ZONE_HOLDINGS_RUN_TABLE,
 ];
 

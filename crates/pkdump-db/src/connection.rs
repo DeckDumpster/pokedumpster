@@ -95,7 +95,8 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[(
 /// The same convergence for `schema_user.sql`. A collection created between
 /// pd-5m54 and pd-385w already carries `ownership_outbox`, so the amended
 /// `CREATE TABLE IF NOT EXISTS` above does nothing to it and the provenance
-/// column arrives only here.
+/// column arrives only here. Same for `zone_holdings_run.sealed_rows` on any
+/// collection that has been read back from the zone at least once.
 ///
 /// This one is not defaultless, and that is the point rather than an
 /// exception to the rule above: every event such a collection already holds
@@ -109,12 +110,26 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[(
 /// build labels correctly by default. Refusing to open would be a rollback
 /// broken for a column that costs nothing to ignore — the same reasoning
 /// `schema_user.sql` records for dropping `refinery_schema_history`.
-const USER_ADDED_COLUMNS: &[(&str, &str, &str)] = &[(
-    "ownership_outbox",
-    "source",
-    "ALTER TABLE ownership_outbox ADD COLUMN source TEXT NOT NULL \
-     DEFAULT 'trigger' CHECK (source IN ('trigger', 'backfill', 'redrive'))",
-)];
+const USER_ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    (
+        "ownership_outbox",
+        "source",
+        "ALTER TABLE ownership_outbox ADD COLUMN source TEXT NOT NULL \
+         DEFAULT 'trigger' CHECK (source IN ('trigger', 'backfill', 'redrive'))",
+    ),
+    // pd-bbv7. A collection read back from the zone before sealed had a
+    // staging table has a `zone_holdings_run` row that counts only its
+    // singles, and `0` is the true number of sealed lots that read
+    // materialised — so the default is a statement about those rows rather
+    // than a placeholder in them. No `user_version` bump, for the reason
+    // above it: an older binary writes the row without this column and reads
+    // the collection exactly as it did before.
+    (
+        "zone_holdings_run",
+        "sealed_rows",
+        "ALTER TABLE zone_holdings_run ADD COLUMN sealed_rows INTEGER NOT NULL DEFAULT 0",
+    ),
+];
 
 fn add_missing_columns(conn: &Connection) -> Result<()> {
     add_columns(conn, ADDED_COLUMNS)

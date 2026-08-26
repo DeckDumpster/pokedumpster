@@ -68,13 +68,40 @@ Two things follow, and they are the whole of the operational contract:
 * **A stale read is refused too**, and that is the refusal worth having. See
   :func:`require_zone_holdings` for why a plausible number is worse than none.
 
-**What the zone does not carry.** Only ``collection`` rows are shipped
-(``pkdump_db::outbox::SOURCE_TABLES``). The condition multiplier
-(``conditions``), and the third arm of the price rule (``manual_prices`` over
+**What the zone does not carry.** The condition multiplier (``conditions``),
+and the third arm of the price rule (``manual_prices`` over
 ``user_printings``), are read from the tenant's own database — they were on
 the online path and they still are. Deleting the online *holdings* read did
 not make the tenant database unnecessary and must not be read as though it
 had: Phase 3 narrowed *which table the copies come from* and nothing else.
+
+## Two halves, two dimensions: `all` is the loose cards (pd-bbv7)
+
+The zone ships both holdings tables (``pkdump_db::outbox::SOURCE_TABLES``) and
+the read-back now stages both — ``collection`` into :data:`ZONE_HOLDINGS`,
+``sealed_collection`` into :data:`ZONE_SEALED_HOLDINGS`. This job values each
+against its own feed and writes them as **separate dimensions**:
+
+===============  ====================  ===========================  ============
+dimension        holdings              prices                       card_count
+===============  ====================  ===========================  ============
+``all``          :data:`ZONE_HOLDINGS` ``catalog.prices``           owned copies
+``sealed``       sealed staging table  ``catalog.sealed_prices``    owned UNITS
+===============  ====================  ===========================  ============
+
+``all`` keeps meaning the loose cards and nothing else. Every row ever written
+under it was computed over cards alone, and widening it would restate months of
+chart silently. There is no combined total written here either — the API adds
+the two series at read time, because a stored total is a third number that can
+disagree with the two it is made of.
+
+The sealed row's arithmetic is `value_history.rs`'s, transliterated the same
+way the card one is: ``SUM(price × quantity)``, ``SUM(purchase_price ×
+quantity)`` (a lot's price is per unit), ``SUM(quantity)`` for the count, and
+**no condition multiplier** — nothing in the app prices a box off its
+condition. A lot whose product nobody quotes is skipped by the ``SUM`` and
+still counted by ``SUM(quantity)``: valuing it at zero would be
+indistinguishable from a box that is worthless.
 
 ## The publish contract
 
@@ -116,9 +143,22 @@ from .catalog import DEFAULT_REF, REF_ENV, catalog, head_hash
 #: observed_date) — see :mod:`pkdump_lake.prices`.
 DEFAULT_TABLE = "catalog.prices"
 
+#: The second table it reads (pd-bbv7): the sealed series, at the grain
+#: (product, price_type, observed_date). Written by the same run of the same
+#: job that writes :data:`DEFAULT_TABLE`, so the two cannot be different
+#: nights' prices.
+DEFAULT_SEALED_TABLE = "catalog.sealed_prices"
+
 #: The one price type a collection is valued at, matching the collection page
 #: and ``value_history.rs``.
 PRICE_TYPE = "market"
+
+#: …and the one a SEALED lot falls back to. TCGCSV quotes plenty of sealed
+#: products a mid and no market, so `latest_sealed_prices` is read through
+#: ``COALESCE(market_price, mid_price)`` everywhere in the app — the /sealed
+#: page, and `prices.rs::sealed_market_price_expr_from!`. This job resolves the
+#: same pair, off the same single observation.
+SEALED_FALLBACK_PRICE_TYPE = "mid"
 
 #: Where the databases live when ``--data-dir`` is not given. Same default as
 #: ``pkdump_db::paths::pkdump_home``.
@@ -156,7 +196,11 @@ EXIT_PARTIAL = 2
 #: read deleted there is nothing to choose, and a parameter that can only take
 #: one value is a seam for a second value to come back through.
 ZONE_HOLDINGS = "zone_holdings"
-#: The provenance of :data:`ZONE_HOLDINGS`, written by the same command.
+#: The sealed half of the same read-back (pd-bbv7), spelled in the same three
+#: places — ``pkdump_db::outbox::ZONE_SEALED_HOLDINGS_TABLE``,
+#: ``pkdump_ship::zone::SEALED_HOLDINGS_TABLE``, and here.
+ZONE_SEALED_HOLDINGS = "zone_sealed_holdings"
+#: The provenance of both, written by the same command.
 ZONE_HOLDINGS_RUN = "zone_holdings_run"
 
 #: The per-copy projection, one row per owned copy, carrying its set, binder,
@@ -224,7 +268,35 @@ SELECT c.id,
  WHERE c.status = 'owned';
 """
 
-#: The three aggregates, in the order ``value_history::insert_dimensions``
+#: The per-lot sealed projection, one row per owned sealed lot, carrying its
+#: quantity, per-unit purchase price and current market price.
+#:
+#: A transliteration of ``OWNED_SEALED_TODAY_SQL`` in
+#: ``crates/pkdump-db/src/value_history.rs``, with the same one substitution
+#: the card projection makes: ``latest_sealed_prices`` becomes
+#: ``_lake_sealed_prices``, staged from Iceberg below. The ``COALESCE(market,
+#: mid)`` the Rust expression spells is resolved during that staging — see
+#: :func:`sealed_market_prices` — so one price reaches the SQL, off one
+#: observation.
+#:
+#: It joins **nothing**, and that is the trap this dimension exists beside:
+#: sealed product ids are not in ``shared.tcgcsv_products`` (which holds
+#: single-card products), so joining a sealed holding through it drops every
+#: row and reports a collection with no sealed product in it. The dimension is
+#: one bucket, so it needs no catalog attribute at all; where one is ever
+#: wanted it comes from ``shared.sealed_products``, keyed by ``product_id``.
+OWNED_SEALED_SQL = f"""
+CREATE TEMP TABLE _snap_sealed AS
+SELECT sc.id,
+       sc.quantity,
+       sc.purchase_price,
+       (SELECT lsp.price FROM _lake_sealed_prices lsp
+          WHERE lsp.tcgplayer_product_id = sc.product_id LIMIT 1) AS market_price
+  FROM {ZONE_SEALED_HOLDINGS} sc
+ WHERE sc.status = 'owned';
+"""
+
+#: The four aggregates, in the order ``value_history::insert_dimensions``
 #: writes them. Same expressions, same COALESCE, same CAST — see OWNED_SQL.
 DIMENSION_SQL = (
     """
@@ -256,6 +328,20 @@ DIMENSION_SQL = (
       FROM _snap_owned
      WHERE binder_id IS NOT NULL
      GROUP BY binder_id
+    """,
+    # Sealed. `HAVING COUNT(*) > 0` so a tenant who owns no sealed product
+    # gets no sealed row at all — the bucket exists when something is in it,
+    # exactly as `set` and `binder` do — and a collection that has never held
+    # any is left with precisely the rows it has always had.
+    """
+    INSERT INTO collection_value_snapshot
+        (date, dimension, bucket, market_value, cost_basis, card_count)
+    SELECT ?, 'sealed', NULL,
+           COALESCE(SUM(market_price * quantity), 0.0),
+           COALESCE(SUM(purchase_price * quantity), 0.0),
+           COALESCE(SUM(quantity), 0)
+      FROM _snap_sealed
+     HAVING COUNT(*) > 0
     """,
 )
 
@@ -389,6 +475,79 @@ def market_prices(identifier: str, date: dt.date, lake_ref: str) -> dict[tuple[i
     return {key: price for key, (_, price) in latest.items()}
 
 
+def sealed_market_prices(identifier: str, date: dt.date, lake_ref: str) -> dict[int, float]:
+    """The newest sealed price per product at or before ``date``, resolved.
+
+    Resolved, because ``COALESCE(market_price, mid_price)`` is a choice between
+    two quotes of ONE observation — the app reads it off a single
+    ``latest_sealed_prices`` row, and taking the market from one day and the
+    mid from another would invent a price nobody published. So this keeps, per
+    product, the newest ``observed_date`` seen and the price types quoted on
+    it, and picks between them at the end.
+
+    A product quoted neither market nor mid on its newest day is **absent**
+    from the result, not zero: the aggregate skips it and still counts its
+    units. Falling back to an older day's quote instead would be a different
+    rule from the one every page in the app uses.
+
+    Read in batches for the reason :func:`market_prices` is: the scan grows
+    with the lake's age, the result with the product count.
+    """
+    try:
+        table = catalog(lake_ref).load_table(identifier)
+    except NoSuchTableError as exc:
+        raise TransformError(
+            f"no {identifier} at {lake_ref} — it is built by the same run that builds "
+            "catalog.prices, so a lake that has one and not the other was built by a "
+            "`pkdump-lake-build-prices` that predates pd-bbv7. Re-run it for this date."
+        ) from exc
+    # Both price types are wanted, so the filter is the date alone and the
+    # pair is separated below. `price_type` is not a partition column and the
+    # rows are two per product; filtering it here would buy nothing.
+    scan = table.scan(
+        row_filter=LessThanOrEqual("observed_date", date.isoformat()),
+        selected_fields=("tcgplayer_product_id", "price_type", "price", "observed_date"),
+    )
+
+    newest: dict[int, tuple[dt.date, dict[str, float]]] = {}
+    batches = 0
+    for batch in scan.to_arrow_batch_reader():
+        batches += 1
+        columns = batch.to_pydict()
+        for product_id, price_type, price, observed in zip(
+            columns["tcgplayer_product_id"],
+            columns["price_type"],
+            columns["price"],
+            columns["observed_date"],
+        ):
+            # The date is taken from EVERY row, including the price types this
+            # rule does not spend. `latest_sealed_prices` picks the product's
+            # newest observation and then coalesces within it, so a day that
+            # quoted only a low is still that product's newest day — and the
+            # answer is "no price", not an older day's market. Skipping such
+            # rows here would quietly resolve to a stale quote the /sealed page
+            # does not show.
+            seen = newest.get(product_id)
+            if seen is None or observed > seen[0]:
+                seen = (observed, {})
+                newest[product_id] = seen
+            if observed == seen[0] and price_type in (
+                PRICE_TYPE,
+                SEALED_FALLBACK_PRICE_TYPE,
+            ):
+                seen[1][price_type] = price
+
+    resolved = {
+        product_id: quotes[PRICE_TYPE]
+        if PRICE_TYPE in quotes
+        else quotes[SEALED_FALLBACK_PRICE_TYPE]
+        for product_id, (_, quotes) in newest.items()
+        if PRICE_TYPE in quotes or SEALED_FALLBACK_PRICE_TYPE in quotes
+    }
+    print(f"    {len(resolved)} sealed product price(s) from {batches} batch(es)")
+    return resolved
+
+
 def stage_prices(
     conn: sqlite3.Connection,
     prices: dict[tuple[int, str], float],
@@ -428,6 +587,32 @@ def stage_prices(
     return len(staged)
 
 
+def stage_sealed_prices(conn: sqlite3.Connection, prices: dict[int, float]) -> int:
+    """The same, for the sealed products this tenant actually holds.
+
+    Restricted to :data:`ZONE_SEALED_HOLDINGS` for the reason the card side is
+    restricted to :data:`ZONE_HOLDINGS`: staging from one table and valuing
+    from another prices the lots in one collection and counts the units in
+    another. No join to a catalog table — a lot's ``product_id`` IS the
+    TCGplayer product id the sealed feed is keyed on.
+    """
+    conn.execute("DROP TABLE IF EXISTS temp._lake_sealed_prices")
+    conn.execute(
+        "CREATE TEMP TABLE _lake_sealed_prices ("
+        "  tcgplayer_product_id INTEGER PRIMARY KEY,"
+        "  price                REAL NOT NULL"
+        ")"
+    )
+    owned = conn.execute(
+        f"SELECT DISTINCT product_id FROM {ZONE_SEALED_HOLDINGS} WHERE status = 'owned'"
+    ).fetchall()
+    staged = [
+        (product_id, prices[product_id]) for (product_id,) in owned if product_id in prices
+    ]
+    conn.executemany("INSERT INTO _lake_sealed_prices VALUES (?, ?)", staged)
+    return len(staged)
+
+
 def require_zone_holdings(conn: sqlite3.Connection, tenant: Tenant) -> str:
     """Refuse a tenant whose staged zone read is missing or behind the zone.
 
@@ -450,8 +635,30 @@ def require_zone_holdings(conn: sqlite3.Connection, tenant: Tenant) -> str:
 
     Returns the ``read_at`` of the materialisation, for the log line.
     """
+    # Both staging tables, because a read-back that produced only the first is
+    # one from before sealed had a table of its own — and valuing a collection
+    # against a missing sealed table would report every tenant's sealed
+    # holdings as nothing owned. That is the under-reporting this bead exists
+    # to end, arriving through the back door.
+    missing = [
+        table
+        for table in (ZONE_HOLDINGS, ZONE_SEALED_HOLDINGS)
+        if not conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()[0]
+    ]
+    if missing:
+        raise TransformError(
+            f"{tenant.handle} has no {', '.join(missing)} — run `pkdump-ship holdings "
+            f"--tenant {tenant.database_id}` with a build that carries pd-bbv7 "
+            "(deploy/TENANT_ZONE.md)."
+        )
+
     row = conn.execute(
-        "SELECT max_seq, read_at, parts, rows FROM " + ZONE_HOLDINGS_RUN + " WHERE dataset = ?",
+        "SELECT max_seq, read_at, parts, rows, sealed_rows FROM "
+        + ZONE_HOLDINGS_RUN
+        + " WHERE dataset = ?",
         ("holdings",),
     ).fetchone()
     if row is None:
@@ -461,7 +668,7 @@ def require_zone_holdings(conn: sqlite3.Connection, tenant: Tenant) -> str:
             "missing table would be valuing from nothing; valuing from a stale one would be "
             "worse, so neither is guessed at."
         )
-    max_seq, read_at, parts, rows = row
+    max_seq, read_at, parts, rows, sealed_rows = row
 
     cursor = conn.execute(
         "SELECT shipped_thru FROM ownership_outbox_cursor WHERE id = 1"
@@ -474,7 +681,27 @@ def require_zone_holdings(conn: sqlite3.Connection, tenant: Tenant) -> str:
             "last ship, so these numbers would be yesterday's holdings at today's prices. "
             f"Re-run `pkdump-ship holdings --tenant {tenant.database_id}`."
         )
-    print(f"    zone: {rows} holding(s) from {parts} part(s) through seq {max_seq}, read {read_at}")
+    # A third staleness, and the only one a version rollback can produce: an
+    # older `pkdump-ship holdings` drops and rebuilds `zone_holdings` while
+    # leaving `zone_sealed_holdings` exactly as it found it, and rewrites the
+    # run row without a `sealed_rows` to put in it. The staging table is then
+    # some earlier read's sealed lots beside this read's cards, which is the
+    # same "plausible wrong number" the max_seq check exists for — and this is
+    # the one thing that can see it, because the two counts are written in ONE
+    # transaction by any build that materialises both.
+    staged_sealed = conn.execute(f"SELECT COUNT(*) FROM {ZONE_SEALED_HOLDINGS}").fetchone()[0]
+    if staged_sealed != sealed_rows:
+        raise TransformError(
+            f"{tenant.handle}'s {ZONE_SEALED_HOLDINGS} holds {staged_sealed} lot(s) but the "
+            f"read that filled {ZONE_HOLDINGS} recorded {sealed_rows} — the two were not "
+            "materialised together, so these sealed lots belong to an earlier read of the "
+            f"zone. Re-run `pkdump-ship holdings --tenant {tenant.database_id}`."
+        )
+
+    print(
+        f"    zone: {rows} card(s) + {sealed_rows} sealed lot(s) from {parts} part(s) "
+        f"through seq {max_seq}, read {read_at}"
+    )
     return read_at
 
 
@@ -482,6 +709,7 @@ def snapshot(
     tenant: Tenant,
     shared: Path,
     prices: dict[tuple[int, str], float],
+    sealed_prices: dict[int, float],
     date: dt.date,
     *,
     identifier: str,
@@ -513,11 +741,18 @@ def snapshot(
 
         conn.execute("BEGIN IMMEDIATE")
         staged = stage_prices(conn, prices)
+        staged_sealed = stage_sealed_prices(conn, sealed_prices)
         conn.execute("DROP TABLE IF EXISTS temp._snap_owned")
-        # `execute`, not `executescript`: OWNED_SQL is one statement, and
+        conn.execute("DROP TABLE IF EXISTS temp._snap_sealed")
+        # `execute`, not `executescript`: each is one statement, and
         # executescript commits whatever transaction is open before it runs.
         conn.execute(OWNED_SQL)
+        conn.execute(OWNED_SEALED_SQL)
         copies = conn.execute("SELECT COUNT(*) FROM _snap_owned").fetchone()[0]
+        lots, units, unpriced = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(quantity), 0), "
+            "       COUNT(*) FILTER (WHERE market_price IS NULL) FROM _snap_sealed"
+        ).fetchone()
 
         conn.execute("DELETE FROM collection_value_snapshot WHERE date = ?", (date.isoformat(),))
         written = 0
@@ -539,14 +774,23 @@ def snapshot(
             conn.execute("ROLLBACK")
             print(
                 f"    dry-run: {written} row(s) from {copies} owned cop(ies) "
-                f"in {ZONE_HOLDINGS}, not written"
+                f"in {ZONE_HOLDINGS} and {lots} sealed lot(s) ({units} unit(s)), not written"
             )
             return written
         conn.execute("COMMIT")
         print(
-            f"    {written} row(s) from {copies} owned cop(ies) in {ZONE_HOLDINGS}, "
-            f"{staged} price(s) staged"
+            f"    {written} row(s) from {copies} owned cop(ies) in {ZONE_HOLDINGS} "
+            f"and {lots} sealed lot(s) ({units} unit(s)), "
+            f"{staged} price(s) + {staged_sealed} sealed price(s) staged"
         )
+        # Named rather than silently skipped: a lot nobody quotes contributes
+        # nothing to the value and every unit to the count, and the operator
+        # is entitled to know the number is short and by how many products.
+        if unpriced:
+            print(
+                f"    {unpriced} owned sealed lot(s) have no price at all and were NOT "
+                "valued — their units are still counted, never valued at zero"
+            )
         return written
     finally:
         conn.close()
@@ -577,12 +821,15 @@ def run(
     *,
     root: Path,
     identifier: str = DEFAULT_TABLE,
+    sealed_identifier: str = DEFAULT_SEALED_TABLE,
     ref: str | None = None,
     only: list[str] | None = None,
     dry_run: bool = False,
 ) -> list[Outcome]:
     """Snapshot every registered tenant for ``date``. One tenant's failure is not the run's."""
-    registered, shared, prices, lake_ref = _prepare(date, root, identifier, ref, only)
+    registered, shared, prices, sealed_prices, lake_ref = _prepare(
+        date, root, identifier, sealed_identifier, ref, only
+    )
 
     outcomes = []
     for tenant in registered:
@@ -592,6 +839,7 @@ def run(
                 tenant,
                 shared,
                 prices,
+                sealed_prices,
                 date,
                 identifier=identifier,
                 lake_ref=lake_ref,
@@ -611,13 +859,17 @@ def _prepare(
     date: dt.date,
     root: Path,
     identifier: str,
+    sealed_identifier: str,
     ref: str | None,
     only: list[str] | None,
-) -> tuple[list[Tenant], Path, dict[tuple[int, str], float], str]:
+) -> tuple[list[Tenant], Path, dict[tuple[int, str], float], dict[int, float], str]:
     """Everything the run needs before it touches a tenant.
 
     Its own function because every tenant must be valued from ONE pinned
-    catalog commit and one price map — see :func:`pin`.
+    catalog commit and one price map — see :func:`pin` — and that is as true
+    of the two feeds against each other as it is of the tenants: the cards and
+    the sealed product are read at the same commit, so a collection's two
+    halves are never priced from two catalogs.
     """
     shared = root / "shared.sqlite"
     if not shared.exists():
@@ -631,7 +883,7 @@ def _prepare(
         )
 
     lake_ref = pin(ref)
-    print(f"==> lake {identifier} at {lake_ref}")
+    print(f"==> lake {identifier} + {sealed_identifier} at {lake_ref}")
     print(f"==> data directory {root}, {len(registered)} active tenant(s)")
     prices = market_prices(identifier, date, lake_ref)
     if not prices:
@@ -639,7 +891,14 @@ def _prepare(
             f"{identifier} holds no {PRICE_TYPE} price at or before {date} at {lake_ref} — "
             "there is nothing to value a collection with"
         )
-    return registered, shared, prices, lake_ref
+    # Not refused when empty, unlike the card feed above. A lake can honestly
+    # hold no sealed price for a date — every collection's sealed dimension is
+    # then simply not written — where a lake with no CARD price for a date is
+    # a lake that cannot value anything and is the run's problem, not a
+    # tenant's. The table being absent altogether is still a refusal; see
+    # :func:`sealed_market_prices`.
+    sealed_prices = sealed_market_prices(sealed_identifier, date, lake_ref)
+    return registered, shared, prices, sealed_prices, lake_ref
 
 
 def report(outcomes: list[Outcome], date: dt.date) -> int:
@@ -682,6 +941,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--table", default=DEFAULT_TABLE, help=f"default {DEFAULT_TABLE}")
     parser.add_argument(
+        "--sealed-table",
+        default=DEFAULT_SEALED_TABLE,
+        help=f"the sealed price feed (default {DEFAULT_SEALED_TABLE})",
+    )
+    parser.add_argument(
         "--ref",
         help="the Nessie ref to read (default: $PKDUMP_LAKE_REF, then main). A bare branch is "
         "pinned to its current commit for the whole run; pass 'main@<hash>' to pin it yourself.",
@@ -709,6 +973,7 @@ def main(argv: list[str] | None = None) -> int:
             date,
             root=data_dir(args.data_dir),
             identifier=args.table,
+            sealed_identifier=args.sealed_table,
             ref=args.ref,
             only=args.tenant,
             dry_run=args.dry_run,

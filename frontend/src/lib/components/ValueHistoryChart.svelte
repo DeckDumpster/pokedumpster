@@ -4,7 +4,7 @@
 	import { chartFill, chartPalette, token } from '$lib/styles/tokens';
 	import { money } from '$lib/format';
 	import { EmptyState } from '$lib/components/ui';
-	import type { ValueSeries } from '$lib/api';
+	import type { ValueSeries, ValuePoint } from '$lib/api';
 
 	Chart.register(...registerables);
 
@@ -23,33 +23,71 @@
 
 		let datasets;
 		if (dimension === 'all') {
-			// One series (the whole owned collection): a market-value line and a
-			// cost-basis line so the gap reads as unrealized gain/loss.
-			const s = series[0];
-			const mv = new Map((s?.points ?? []).map((p) => [p.date, p.market_value]));
-			const cb = new Map((s?.points ?? []).map((p) => [p.date, p.cost_basis]));
-			datasets = [
+			// The collection's two priced halves as two lines, plus the cost basis
+			// of both so the gap still reads as unrealized gain/loss (pd-bbv7).
+			//
+			// Two lines rather than one blended total, because the halves are
+			// priced from different feeds against different keys and a reader is
+			// entitled to see which one moved. The two series are told apart by
+			// `bucket`, never by their order: the cards series is the one whose
+			// bucket is null, and the sealed series is absent entirely for a
+			// collection that has never held sealed product.
+			const cards = series.find((s) => s.bucket == null);
+			const sealed = series.find((s) => s.bucket === 'sealed');
+			const at = (s: ValueSeries | undefined, pick: (p: ValuePoint) => number) =>
+				new Map((s?.points ?? []).map((p) => [p.date, pick(p)] as const));
+			const cardsMv = at(cards, (p) => p.market_value);
+			const sealedMv = at(sealed, (p) => p.market_value);
+			const cardsCb = at(cards, (p) => p.cost_basis);
+			const sealedCb = at(sealed, (p) => p.cost_basis);
+			// Summed at READ time, here, from the points actually drawn — there is
+			// no stored combined total, and a date only one half reports is that
+			// half's number rather than a hole.
+			const costBasis = dates.map((d) => {
+				const a = cardsCb.get(d);
+				const b = sealedCb.get(d);
+				return a == null && b == null ? null : (a ?? 0) + (b ?? 0);
+			});
+			// Typed, because the array grows conditionally below and the
+			// inferred element type would be whatever the first line happens
+			// to spell.
+			const allDatasets: ChartConfiguration['data']['datasets'] = [
 				{
-					label: 'Market value',
-					data: dates.map((d) => mv.get(d) ?? null),
+					label: 'Cards',
+					data: dates.map((d) => cardsMv.get(d) ?? null),
 					borderColor: token('--color-chart-1'),
 					backgroundColor: token('--color-surface-selected'),
 					spanGaps: true,
 					tension: 0.2,
 					pointRadius: 2,
 					fill: true
-				},
-				{
-					label: 'Cost basis',
-					data: dates.map((d) => cb.get(d) ?? null),
-					borderColor: axis,
-					backgroundColor: 'transparent',
-					borderDash: [5, 4],
-					spanGaps: true,
-					tension: 0.2,
-					pointRadius: 2
 				}
 			];
+			if (sealed) {
+				allDatasets.push({
+					// The label comes off the series — the server names it, the
+					// same way it names a set or a binder bucket.
+					label: sealed.label ?? 'Sealed',
+					data: dates.map((d) => sealedMv.get(d) ?? null),
+					borderColor: token('--color-chart-2'),
+					backgroundColor: 'transparent',
+					spanGaps: true,
+					tension: 0.2,
+					pointRadius: 2,
+					fill: false
+				});
+			}
+			allDatasets.push({
+				label: 'Cost basis',
+				data: costBasis,
+				borderColor: axis,
+				backgroundColor: 'transparent',
+				borderDash: [5, 4],
+				spanGaps: true,
+				tension: 0.2,
+				pointRadius: 2
+			});
+			datasets = allDatasets;
 		} else {
 			// One market-value line per bucket (set / binder).
 			datasets = series.map((s, i) => {

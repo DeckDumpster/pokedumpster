@@ -23,6 +23,19 @@
 # missing tenant and §8's locked one are skipped, the run finishes the other
 # tenants, and the process exits 2 rather than 0.
 #
+# ── AND THE SEALED HALF (pd-bbv7) ───────────────────────────────────────────
+# The collection has two priced halves, and this gate now covers both. §5's
+# byte-identity diff includes the `sealed` row, so the transform's sealed
+# arithmetic is held to `value_history::snapshot_today`'s the same way the card
+# arithmetic is. §5b is the hard gate of that bead stated as a real
+# before-and-after: the same build, the same collection, with and without its
+# sealed holdings, and `dimension='all'` required to be identical to the cent.
+# §5c is the refusal a version rollback would need — sealed lots from an
+# EARLIER read of the zone sitting beside this read's cards — and §5d is the
+# inverse of §5b, since a transform that simply never wrote a sealed row would
+# pass it. Bob, who owns no sealed product, is the tenant who must get no
+# sealed row at all.
+#
 # ── WHY THIS GATE NOW STANDS UP A TENANT ZONE (pd-i08u) ─────────────────────
 # The transform used to read each tenant's live `collection`. pd-i08u deleted
 # that read: it values `zone_holdings`, and the only thing that writes
@@ -306,7 +319,7 @@ sys.exit(1)
 }
 echo "    Nessie up, warehouse ${WAREHOUSE}"
 
-echo "==> §4  catalog.prices, both days, from raw/"
+echo "==> §4  catalog.prices and catalog.sealed_prices, both days, from raw/"
 run_job pkdump-lake-build-prices --ingest-date "$DATE_OLD" >/dev/null || die "the ${DATE_OLD} build failed"
 run_job pkdump-lake-build-prices --ingest-date "$DATE_NEW" >/dev/null || die "the ${DATE_NEW} build failed"
 echo "    ok   ${DATE_OLD} and ${DATE_NEW} in the lake"
@@ -338,7 +351,15 @@ for T in "$ALICE" "$BOB"; do
 	STAGED=$(tenant_query "$T" "SELECT COUNT(*) FROM zone_holdings")
 	[ "$LIVE" = "$STAGED" ] ||
 		die "tenant ${T}: ${STAGED} row(s) came back from the zone against ${LIVE} in the collection — the round trip lost or duplicated holdings"
-	echo "    ok   ${T}: ${STAGED} holding(s) round-tripped through the zone"
+	# And the other half of the holdings (pd-bbv7). Alice has sealed lots and
+	# bob has none, so this is checked over a tenant with some and a tenant
+	# with none — the second is what stops "the sealed table exists" passing
+	# for "the sealed rows arrived".
+	LIVE_SEALED=$(tenant_query "$T" "SELECT COUNT(*) FROM sealed_collection")
+	STAGED_SEALED=$(tenant_query "$T" "SELECT COUNT(*) FROM zone_sealed_holdings")
+	[ "$LIVE_SEALED" = "$STAGED_SEALED" ] ||
+		die "tenant ${T}: ${STAGED_SEALED} sealed lot(s) came back from the zone against ${LIVE_SEALED} held — sealed product ships and must come back"
+	echo "    ok   ${T}: ${STAGED} holding(s) + ${STAGED_SEALED} sealed lot(s) round-tripped through the zone"
 done
 
 echo "==> §5  Every tenant, and the numbers are the old ones exactly"
@@ -375,6 +396,91 @@ ALICE_VALUE=$(tenant_query "$ALICE" "SELECT market_value FROM collection_value_s
 [ "$BOB_VALUE" != "$ALICE_VALUE" ] ||
 	die "bob and alice have the same total (${BOB_VALUE}) — one collection was valued twice"
 echo "    ok   bob ${BOB_ROWS} row(s), total ${BOB_VALUE} (alice ${ALICE_VALUE})"
+
+echo "==> §5b THE HARD GATE: sealed does not move the cards"
+# pd-bbv7. `dimension='all'` means the LOOSE CARDS and must keep meaning it to
+# the cent — every row ever written under it was computed over cards alone, and
+# a blend would restate months of chart with nothing saying so.
+#
+# Stated as a real before-and-after rather than as an assertion about a
+# constant: alice's sealed holdings are emptied out of the staging table, the
+# transform is re-run, and the cards rows are required to be byte-identical to
+# the ones it just produced WITH them. The staging table is the transform's
+# only source of sealed holdings, so emptying it is exactly "this build without
+# the feature", computed by this build.
+#
+# `zone_sealed_holdings` is transport state and the next `pkdump-ship holdings`
+# rewrites it wholesale, so emptying it here damages nothing — and §5c puts it
+# back before anything else reads it.
+CARDS_WITH_SEALED=$(dump "$ALICE" "$DATE_NEW" | grep -v '^sealed	')
+SEALED_ROW=$(dump "$ALICE" "$DATE_NEW" | grep '^sealed	') ||
+	die "alice has no sealed row — the fixture holds sealed lots, so the dimension is missing"
+echo "    alice sealed row: ${SEALED_ROW}"
+
+# The run row is rewritten with it, in one statement, because a read that
+# materialised no sealed lots is what this is standing in for — and the
+# transform refuses a staging table whose count disagrees with the read that
+# filled it (that mismatch is a rollback's fingerprint, not a fixture's).
+run_job python -c "
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1], isolation_level=None)
+conn.execute('BEGIN IMMEDIATE')
+conn.execute('DELETE FROM zone_sealed_holdings')
+conn.execute('UPDATE zone_holdings_run SET sealed_rows = 0')
+conn.execute('COMMIT')
+" "/fixture/home/tenants/${ALICE}.sqlite" || die "could not empty the sealed staging table"
+
+snapshot --date "$DATE_NEW" --tenant alice >/dev/null ||
+	die "the cards-only run failed"
+CARDS_ALONE=$(dump "$ALICE" "$DATE_NEW")
+diff <(printf '%s\n' "$CARDS_WITH_SEALED") <(printf '%s\n' "$CARDS_ALONE") ||
+	die "owning sealed product moved a cards row — dimension='all' has been blended, which is \
+the one thing this change may not do"
+case "$CARDS_ALONE" in
+*sealed*) die "a collection with no sealed holdings got a sealed row" ;;
+esac
+echo "    ok   the cards dimensions are identical with and without sealed, to the cent"
+
+echo "==> §5c A half-materialised zone is refused, and a real read restores it"
+# The rollback shape: an older `pkdump-ship holdings` rebuilds zone_holdings and
+# leaves zone_sealed_holdings alone, so the staging table holds an EARLIER
+# read's sealed lots beside this read's cards. Nothing else can see that, and
+# valued it would be a plausible wrong number.
+run_job python -c "
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1], isolation_level=None)
+conn.execute(\"INSERT INTO zone_sealed_holdings (id, product_id, quantity, status, added_at) \
+               VALUES (99, 201, 1, 'owned', '2026-01-01T00:00:00Z')\")
+" "/fixture/home/tenants/${ALICE}.sqlite" || die "could not stage a mismatched sealed lot"
+HALF_RC=0
+HALF_OUT=$(snapshot --date "$DATE_NEW" --tenant alice 2>&1) || HALF_RC=$?
+[ "$HALF_RC" -eq 1 ] ||
+	die "a half-materialised zone exited ${HALF_RC}: the only tenant asked for was skipped, so the run valued NOBODY and that is exit 1"
+case "$HALF_OUT" in
+*"not materialised together"*) ;;
+*) die "the refusal did not say the two staging tables came from different reads: ${HALF_OUT}" ;;
+esac
+echo "    ok   sealed lots from an earlier read are refused, not valued"
+
+echo "==> §5d And the sealed row comes back when the zone is read again"
+# The inverse, and it is what stops §5b passing on a transform that simply
+# never writes a sealed row. Re-read the zone — the real path, the shipped
+# binary — and the same sealed row must return.
+expect_rc 2 "${WORK}/holdings2.log" ship_job holdings
+snapshot --date "$DATE_NEW" --tenant alice >/dev/null || die "the re-run failed"
+diff <(dump "$ALICE" "$DATE_NEW") "$FIXTURE/expected-alice-${DATE_NEW}.tsv" ||
+	die "re-reading the zone did not restore alice's rows"
+echo "    ok   ${SEALED_ROW} is back, from the zone"
+
+
+# And bob, who owns no sealed product at all, has no sealed row — which is the
+# rule "a bucket exists when something is in it", not a special case.
+BOB_SEALED=$(tenant_query "$BOB" \
+	"SELECT COUNT(*) FROM collection_value_snapshot WHERE dimension = 'sealed'")
+[ "$BOB_SEALED" = "0" ] ||
+	die "bob owns no sealed product and got ${BOB_SEALED} sealed row(s) — a flat zero line is \
+not the same answer as 'none held'"
+echo "    ok   bob owns no sealed product and has no sealed row"
 
 echo "==> §6  Re-running produces the same rows"
 snapshot --date "$DATE_NEW" --tenant alice --tenant bob >/dev/null ||
@@ -452,7 +558,7 @@ print(' '.join(sorted(
     for ns in cat.list_namespaces()
     for _, name in cat.list_tables(ns))))
 " | tail -1)
-[ "$TABLES" = "catalog.prices" ] ||
+[ "$TABLES" = "catalog.prices catalog.sealed_prices" ] ||
 	die "the lake holds '${TABLES}' — tenant data NEVER enters the lake, and neither does anything else this bead adds"
 echo "    ok   ${TABLES}"
 

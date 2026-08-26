@@ -11,7 +11,7 @@
 //!
 //! 1. **`latest_prices`** — the TCGplayer market price for the printing's
 //!    `(tcgplayer_product_id, sub_type_name)`. Lives in `shared`, rebuilt by
-//!    `pkdump data refresh`.
+//!    the nightly `pkdump-lake-derive shared`.
 //! 2. **`catalog_price_overrides`** — the curated patch for a catalog printing
 //!    the feed does not price. Also `shared`; see [`crate::catalog_prices`].
 //! 3. **`manual_prices`** — the tenant's own hand-entered price, and **only

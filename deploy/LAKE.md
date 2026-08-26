@@ -173,52 +173,62 @@ not look alike.
 
 ## 4. Turning it on
 
-Landing is **opt-in**, and off by default. With the flag absent, `lake.env`
-is never read, no S3 client is built, and the fetch path behaves exactly as
-it did before the landing zone existed — which is what keeps every offline
-gate and container test offline.
+`pkdump data refresh` **is** the landing run since `pd-lunn`. It fetches every
+upstream, writes each response into `raw/`, and builds nothing — the catalog is
+built from that partition by `pkdump-lake-derive shared`, hours later, in its
+own unit. So there is no `--land-raw` and no `PKDUMP_LAND_RAW`: a run that does
+not land does nothing at all, and `lake.env` is required.
 
 ```bash
-# One run, ad hoc:
-pkdump data refresh --land-raw
-pkdump setup --land-raw
+# The landing run. There is no flag; the lake must be configured.
+pkdump data refresh
 
-# Or by environment, which is how a fixed command line turns it on:
-PKDUMP_LAND_RAW=1 pkdump data refresh
+# `pkdump setup` is the exception — it still fetches AND builds, because a
+# cold start has no partition to derive from. Landing is opt-in there.
+pkdump setup --land-raw
 ```
 
-The destination is resolved **before the first fetch**, so a lake that was
-asked for and is not configured stops the run at the start rather than after
-an hour of requests whose bytes then have nowhere to go. A typo'd bucket or a
-role that cannot write surfaces on the first PUT instead — which follows the
-first response by milliseconds, and costs no bucket permission beyond the
-`PutObject` the job actually needs.
+The destination is resolved **before the first fetch**, so a lake that is not
+configured stops the run at the start rather than after an hour of requests
+whose bytes then have nowhere to go. A typo'd bucket or a role that cannot
+write surfaces on the first PUT instead — which follows the first response by
+milliseconds, and costs no bucket permission beyond the `PutObject` the job
+actually needs.
 
 ### For the nightly refresh
 
-`pkdump-refresh@<instance>.service` runs a fixed command line, so it opts in
-by environment. It is **not** enabled by default — do this only once the
-bucket exists and `lake.env` names it:
+Two units, and they are a **pair**:
 
 ```bash
-mkdir -p ~/.config/systemd/user/pkdump-refresh@<instance>.service.d
-cat > ~/.config/systemd/user/pkdump-refresh@<instance>.service.d/lake.conf <<'EOF'
-[Service]
-Environment=PKDUMP_LAND_RAW=1
-EOF
-systemctl --user daemon-reload
+systemctl --user enable --now pkdump-derive@<instance>.timer    # BUILDS
+systemctl --user enable --now pkdump-refresh@<instance>.timer   # LANDS
 ```
 
-That drop-in sets the variable in the *unit's* environment, and the unit runs
-`deploy/refresh.sh`, which forwards it into the container along with the
-bucket, region and profile from `lake.env` and mounts the instance's
+Enable the derive first. `deploy/refresh.sh` asks `systemctl --user is-enabled`
+for `pkdump-derive@<instance>.timer` before it fetches anything and **refuses**
+while it is off, because that combination is the cutover's one silent failure:
+landing succeeds every night, every timer stays green, and the catalog is
+frozen at the day of the upgrade. Nothing else on the box would report it — the
+thing that did not happen has no unit to fail.
+
+A drop-in left over from when landing was opt-in:
+
+```
+[Service]
+Environment=PKDUMP_LAND_RAW=1
+```
+
+is inert. Nothing reads that variable any more. Harmless, and worth deleting.
+
+The unit runs `deploy/refresh.sh`, which forwards the bucket, region and
+profile from `lake.env` into the container and mounts the instance's
 `~/.config/pkdump/<instance>/aws/config` beside the
 `pkdump-<instance>-s3-bootstrap` secret. Nothing else is needed: everything
 landing requires comes from that one file plus the credentials the Litestream
 sidecar already uses.
 
 Verify it reached the process — the run says where it is landing, before the
-first fetch:
+first fetch, and the wrapper **fails the unit** if that line never appears:
 
 ```bash
 systemctl --user start pkdump-refresh@<instance>.service
@@ -260,10 +270,11 @@ Four refusals keep the silent no-op from coming back, and
 
 | you did | it does |
 | --- | --- |
-| asked to land with no `lake.env` on the box | refuses before the first fetch, naming the file to write |
-| asked to land with a `lake.env` that does not set `PKDUMP_LAKE_S3_BUCKET` / `_REGION` | refuses before a container starts, naming the **host** file and both variables |
-| asked to land into S3 with no credentials mounted | says so by name, then fails at the first PUT |
-| asked to land, and the run never opened a landing zone | **fails the unit** — the catalog is fine, the wiring is not |
+| ran it with no `lake.env` on the box | refuses before the first fetch, naming the file to write |
+| ran it with a `lake.env` that does not set `PKDUMP_LAKE_S3_BUCKET` / `_REGION` | refuses before a container starts, naming the **host** file and both variables |
+| ran it into S3 with no credentials mounted | says so by name, then fails at the first PUT |
+| ran it and the run never opened a landing zone | **fails the unit** — the wiring is broken and nothing is in `raw/` |
+| ran it with `pkdump-derive@<instance>.timer` disabled | refuses before the first fetch, naming the timer — see above |
 
 The second one is checked on the host rather than left to the binary
 deliberately. The binary refuses too, but from inside the container, where
@@ -278,8 +289,9 @@ It stays a refusal rather than an alias table. Teaching the code to accept both
 spellings is the fallback logic this project's No-Fallback convention forbids,
 and a half-configured lake that half-works is worse than one that stops.
 
-A refresh nobody asked to land is untouched by any of it, on a box with no
-lake configuration at all.
+There is no longer a shape of this job that legitimately lands nothing, which
+is what lets the last two rows be unconditional. A box with no lake has no
+nightly catalog update either; building one there is `pkdump setup` by hand.
 
 ---
 
@@ -605,21 +617,33 @@ rule exists to break. `pkdump-lakehouse` is bin-only, so no online target can
 link it even by accident.
 
 It is not a second derivation either. The pipeline it runs is
-`pkdump_derive::derive` — the same function the online refresh calls, moved out
-of the CLI unchanged. Only where the bytes come from differs.
+`pkdump_derive::derive` — the function that used to be the body of `pkdump data
+refresh`, moved out of the CLI unchanged.
+
+Since `pd-lunn` it is also not a second *builder*. The refresh called `derive`
+too until item 6, which is why this timer shipped disabled everywhere: arming
+it rebuilt from `raw/` what the online run had already built, correctly and
+redundantly. The refresh now calls `pkdump_derive::land` — the acquisition half
+alone, over a catalog opened read-only — and this job is the only thing in the
+workspace that writes `shared.sqlite`.
 
 ### Two units, and the trap they are arranged against
 
 | unit | what it does |
 | --- | --- |
-| `pkdump-refresh@<instance>` | **lands**: fetches the upstreams, and with `--land-raw` puts every response in the bucket |
+| `pkdump-refresh@<instance>` | **lands**: fetches the upstreams and puts every response in the bucket. Writes no catalog table |
 | `pkdump-derive@<instance>` | **derives**: rebuilds `shared.sqlite` from one partition |
 | `pkdump-ship@<instance>` | **ships and reads back**: the outbox into the tenant zone, and the zone into each tenant's `zone_holdings` |
 | `pkdump-value-snapshots@<instance>` | **transforms**: values every tenant's `zone_holdings` from `catalog.prices` |
 
 Separate units are what let a derive run against yesterday's raw on a night the
-fetch failed. The trap on the other side of that is *yesterday's raw silently
-deriving today's catalog and looking current*, and four things close it:
+fetch failed. They are also a **pair** rather than a choice: with the inline
+derive gone, a box that lands and does not derive serves a catalog that stops
+advancing in silence, so `deploy/refresh.sh` refuses to fetch while the derive
+timer is disabled (§4).
+
+The trap on the other side of the split is *yesterday's raw silently deriving
+today's catalog and looking current*, and four things close it:
 
 - **`--ingest-date` never defaults from the clock.** Rebuilding an older day is
   the same operation, and a job that reads the clock has two behaviours where
@@ -671,7 +695,7 @@ the date:
 raw/ has no record of https://tcgcsv.com/tcgplayer/3/9/prices.
 The landing zone no longer covers this derivation's inputs: either an endpoint
 was added without landing it, or the upstream's origin moved. Re-land the date
-(pkdump data refresh --land-raw) and derive again.
+(pkdump data refresh) and derive again.
 ```
 
 **What to do about it.** Re-land the date — `systemctl --user start
@@ -728,10 +752,15 @@ cargo build --release -p pkdump-cli -p pkdump-lakehouse
 PKDUMP_REAL_DERIVE=1 bash tests/lake/real_upstream_derive.sh
 ```
 
-It builds a baseline catalog, copies it to both sides, runs `pkdump data
-refresh --land-raw` into a landing zone **on local disk**, rebuilds the same
-date from that partition with `--no-upstream-fallback`, and diffs the two row
-by row. It writes nothing to any bucket and touches no instance.
+It builds a baseline catalog, runs the real `pkdump data refresh` into a
+landing zone **on local disk**, checks that the catalog it read is byte-
+identical afterwards, rebuilds that date from the partition with
+`--no-upstream-fallback`, and derives it a second time independently to diff
+the two row by row. It writes nothing to any bucket and touches no instance.
+
+Until `pd-lunn` its two sides were the online refresh's catalog and the
+replayed one. That comparison retired with the second builder — see "Proven on
+prod's own `raw/`" below for the run that made deleting it safe.
 
 **The run of 2026-08-13** (`ingest_date=2026-08-13`, `run=01KZWST5KCAXBK5JTGKNJ811AS`):
 1,345 parts landed, 85.3 MB uncompressed / 11 MB stored; the online refresh took
@@ -762,38 +791,47 @@ Two honest caveats, both visible in the run's own output:
   reason), and it means the replay of *that* dataset is still only proven
   against the fixture.
 
-### What is still NOT proven: prod's own `raw/`
+### Proven on prod's own `raw/` (2026-08-25)
 
-The lake holds exactly one partition today, `ingest_date=2026-08-11`, landed by
-hand by pd-fet2. **The derive refuses it**, correctly:
+This section used to say what was still missing, and the sequence it said could
+not be short-circuited has now run end to end:
 
-```
-$ pkdump-lake-derive shared --ingest-date 2026-08-11 --no-upstream-fallback
-Deriving ingest_date=2026-08-11 from s3://pkdump-lake-…/
-  tcgcsv/products 2026-08-11: 01KZRWPR39WMHMARZ9WK5S0ND7 (671 part(s))
-  …
-Error: …: the run's manifest records no started_at, so the clock its rows were
-stamped with cannot be recovered.
-```
+- **`pd-kncd` landed.** The `PKDUMP_LAND_RAW=1` drop-in went on
+  `pkdump-refresh@prod` on 2026-08-24, and `raw/` has landed nightly since.
+- **A partition with a clock in it.** The 2026-08-25 manifests carry
+  `started_at: 2026-08-25T06:01:54.168387729+00:00`, `complete: true`, 674
+  parts — the field the hand-landed 2026-08-11 partition lacked, and the reason
+  that one is still correctly refused.
+- **The diff.** 2026-08-25 was derived into a VACUUM'd copy of prod's catalog
+  and compared against the catalog the same nightly refresh had built:
 
-It predates `Manifest.started_at`. And the nights since have landed nothing at
-all — `--ingest-date 2026-08-12` against the real bucket answers `no runs
-landed … never falls back`, which is `pd-kncd` (the nightly's env never reaches
-the process) seen from the reading end.
+  ```
+  raw coverage: complete — every upstream request was answered from raw/
+  provenance:   4 partition(s) recorded in raw_derivation for 2026-08-25
+  ROW-IDENTICAL: every compared table matches, row for row.
+  ```
 
-So the sequence, and it cannot be short-circuited: **pd-kncd lands** → one
-night's raw lands with a clock in its manifests → derive *that* date from the
-bucket and diff it against the catalog the same refresh built. Until then the
-strongest available statement is the one above: row-identical on real upstream
-payloads at real catalog scale, over a partition landed by the same writer prod
-uses.
+  Twenty tables, `raw_derivation` excluded and named. `prices` 12,598,388 rows,
+  `latest_prices` 299,918, `sealed_prices` 230,739, `printings` 70,462, `cards`
+  47,660. Nothing on prod was touched.
+
+That is what unblocked `pd-lunn`, and deleting the second builder is what it
+bought. It also means the comparison cannot be re-run: there is no longer an
+online catalog to diff against. What is held to at real scale from here is in
+`tests/lake/real_upstream_derive.sh` — a landing run that leaves its catalog
+byte-identical, a partition that answers every URL the derive asks for, and two
+independent derives of it that are row-identical.
 
 ### Enabling it
 
-Installed for every instance and enabled for none:
+Installed for every instance. On any box that runs `pkdump-refresh@`, **enable
+it** — it is the only thing that builds the catalog, and the refresh refuses to
+run while it is off:
 
 ```bash
-# On the deployment box, as the pkdump user:
+# On the deployment box, as the pkdump user. The derive FIRST: the refresh
+# checks for it, and a box that lands without deriving is a box whose catalog
+# silently stops advancing.
 systemctl --user enable --now pkdump-derive@prod.timer
 
 # What it will run, and what to watch the first morning after:
@@ -805,13 +843,8 @@ sqlite3 ~/.local/share/containers/storage/volumes/pkdump-prod-data/_data/shared.
 
 Do not arm it before `pkdump-refresh@prod` is provably landing raw (pd-kncd):
 a derive with nothing to read is a refusal every night, and the unit has **no**
-`SuccessExitStatus=`, so it will page.
-
-Think before you do, even then. Today `pkdump data refresh` still derives the
-catalog inline, so an enabled derive timer rebuilds it a second time from raw —
-correct and idempotent, but redundant. It becomes the only builder in item 6 of
-the epic. What is worth having now is the mechanism, the provenance, and the
-proof.
+`SuccessExitStatus=`, so it will page. That has been true on prod since
+2026-08-24.
 
 ### The one phase a replay cannot supply
 
@@ -942,7 +975,7 @@ yourself, and none of them were visible from a hermetic gate.
 
 The file on the box had been written from the design note as
 `PKDUMP_LAKE_BUCKET` / `PKDUMP_LAKE_REGION` / `PKDUMP_LAKE_RAW_PREFIX`. Nothing
-reads those names. `--land-raw` refused at startup — correctly, and naming the
+reads those names. Landing refused at startup — correctly, and naming the
 file — but "the lake is configured" and "the lake is configured with the names
 the code reads" are not the same statement, and only §3's spelling is the
 second one. `grep PKDUMP_LAKE_S3_BUCKET ~/.config/pkdump/lake.env` before a

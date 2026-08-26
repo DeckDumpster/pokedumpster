@@ -65,8 +65,9 @@ DATA="${PKDUMP_DERIVE_DATA:-pkdump-${INSTANCE}-data}"
 if [ ! -f "$LAKE_ENV" ]; then
     echo "derive: ${LAKE_ENV} does not exist — this box has no lake configured." >&2
     echo "  The bucket's name is host config, like alerts.env and litestream.env beside it." >&2
-    echo "  Without a landing zone there is no raw/ to derive from; the catalog is still" >&2
-    echo "  built by the online 'pkdump data refresh' on this box." >&2
+    echo "  Without a landing zone there is no raw/ to derive from — and since pd-lunn" >&2
+    echo "  nothing else builds the catalog either. 'pkdump data refresh' lands; this job" >&2
+    echo "  builds. A box with no lake has no nightly catalog update: 'pkdump setup'." >&2
     exit 1
 fi
 # shellcheck disable=SC1090

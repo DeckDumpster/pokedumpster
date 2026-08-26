@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Container-tier gate (pd-hkbc): `pkdump data refresh` writes the SHARED
-# catalog and NOT ONE BYTE of any tenant database.
+# Container-tier gate (pd-hkbc, pd-lunn): `pkdump data refresh` LANDS, and
+# writes NOTHING — not one byte of any tenant database, and since pd-lunn not
+# one byte of the shared catalog either.
 #
 # §9 (pd-nons) is the second thing it gates, and it is here rather than in its
 # own script because it needs exactly this scaffolding — the shipped image, a
 # fixture upstream, and a data directory with real tenants in it — and because
-# its own claim ends with "and it still wrote no tenant database".
+# its own claim ends with "and it still wrote nothing".
 #
 # Run by deploy/ci.sh. Standalone:
 #   bash tests/refresh/tenant_bytes.sh          # ~1min after the image is warm
@@ -25,6 +26,17 @@
 # HAS tenant databases and see whether they moved. pd-s0i4 wanted this assertion
 # and could not have it: with step 7 in place it fails, which is the point.
 #
+# ── AND WHAT pd-lunn ADDED TO IT ────────────────────────────────────────────
+# Item 6 of the lake epic deleted the inline derivation too, so the refresh now
+# writes no CATALOG table either. That turns §5's assertion inside out — the
+# shared catalog used to have to CHANGE for this gate to mean anything, and now
+# it has to be byte-identical — and it is the acceptance criterion for pd-lunn
+# checked against the shipped binary rather than against a function.
+#
+# The claim is enforced one level in, at the connection: the command opens the
+# catalog with `open_shared_readonly`, so a write is an error rather than a
+# review note. This gate is what says the shipped binary really does that.
+#
 # ── WHY THE UPSTREAM IS A FIXTURE ───────────────────────────────────────────
 # The assertion only means something if the refresh RUNS TO THE END — a refresh
 # that dies at the first fetch would pass this gate with step 7 still in it. So
@@ -33,14 +45,19 @@
 # depend on somebody else's uptime.
 #
 # tests/refresh/upstream.py publishes NOTHING instead: no sets, no groups. Every
-# local phase still runs — variants, sub-type map, bundles, search metadata, set
-# discovery, promo synthesis, variant expansion, symbols, latest_prices — and
-# the run reaches the end, which is the only part this gate is about. §5 asserts
-# it really got there rather than exiting early.
+# phase still runs and the run reaches the end, which is the only part this gate
+# is about. §5 asserts it really got there rather than exiting early.
 #
 # `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL` are how it is pointed
 # there; see crates/pkdump-ingest/src/upstream.rs for why that seam exists and
 # why an override announces itself.
+#
+# ── AND WHY THERE IS A LANDING ZONE ─────────────────────────────────────────
+# Landing is not opt-in any more (pd-lunn): a refresh that lands nothing does
+# nothing, so the command requires one. It is a DIRECTORY on the host, mounted
+# at /lake — deliberately not inside the data directory, because §6 asserts that
+# directory gains no new files and a landing zone under it would be a stream of
+# them.
 #
 # Prod-safe: its own image tag, its own temp directory, its own host port from
 # the kernel. It touches no pkdump-* unit, no pkdump-*-data volume, no bucket,
@@ -74,6 +91,8 @@ UPSTREAM_PORT=${UPSTREAM_PORT:-$(free_port)}
 
 WORK=${WORK:-$(mktemp -d /tmp/pd-refresh.XXXXXX)}
 DATA="$WORK/data"
+# The landing zone, OUTSIDE the data directory — see the header.
+LAKE="$WORK/lake"
 UPSTREAM_LOG="$WORK/upstream.jsonl"
 UPSTREAM_PID=""
 
@@ -112,11 +131,16 @@ pkdump() { podman run --rm -v "${DATA}:/data:Z" --entrypoint pkdump "$IMAGE" "$@
 # how a rootless container reaches a listener on the host (the pattern
 # tests/alarming/run.sh uses for its sink).
 refresh() {
-	podman run --rm -v "${DATA}:/data:Z" \
+	podman run --rm -v "${DATA}:/data:Z" -v "${LAKE}:/lake:Z" \
 		-e PKDUMP_TCGCSV_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/tcgplayer" \
 		-e PKDUMP_POKEMONTCG_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/v2" \
+		-e PKDUMP_LAKE_DIR=/lake \
 		--entrypoint pkdump "$IMAGE" data refresh
 }
+
+# Every landed part, so "it fetched and threw the bytes away" is not a way to
+# pass this gate.
+landed_parts() { find "$LAKE" -name 'part-*' 2>/dev/null | wc -l; }
 
 # Every byte under tenants/, keyed by path. WAL and shared-memory sidecars are
 # deliberately included: a refresh that merely OPENS a tenant database in WAL
@@ -128,14 +152,31 @@ tenant_fingerprint() {
 
 # Everything else in the data directory, so a stray write somewhere new — a
 # registry row, a fresh tenants/ entry, a snapshot file — cannot hide.
-data_inventory() { (cd "$DATA" && find . -type f -printf '%P\n' | sort); }
+#
+# The catalog's OWN `-wal` / `-shm` sidecars are excluded, and that is a fact
+# about SQLite rather than a hole: opening a WAL database read-only still
+# creates the wal-index beside it, and a read-only connection cannot clean it up
+# on close. Measured, not assumed:
+#
+#   $ sqlite3 "file:t.sqlite?mode=ro" 'SELECT 1'   # -> t.sqlite-shm, t.sqlite-wal
+#
+# What matters is that the catalog's CONTENT did not move, and §5b hashes
+# shared.sqlite itself for that. Nothing else is excluded — a tenant sidecar is
+# still a tenant byte, and `tenant_fingerprint` above counts it as one.
+data_inventory() {
+	# `|| true` on the filter: grep exits 1 when it selects nothing, and this
+	# runs under `set -e` inside a command substitution, where that would abort
+	# the gate rather than report an empty directory.
+	(cd "$DATA" && find . -type f -printf '%P\n' |
+		{ grep -v '^shared\.sqlite-\(wal\|shm\)$' || true; } | sort)
+}
 
 log "1. the shipped image"
 pkdump_image_ensure "$IMAGE" "$REPO_DIR" >/dev/null
 echo "  $IMAGE"
 
 log "2. a data directory with real tenant databases in it"
-mkdir -p "$DATA"
+mkdir -p "$DATA" "$LAKE"
 cp "${FIXTURES}/shared.sqlite" "${DATA}/shared.sqlite"
 # The symbol glyphs are pre-normalized so the symbols phase has nothing to
 # fetch. It reaches images.pokemontcg.io, which is deliberately outside the
@@ -144,6 +185,25 @@ cp "${FIXTURES}/shared.sqlite" "${DATA}/shared.sqlite"
 # Nothing about the tenant claim depends on card art.
 sqlite3 "${DATA}/shared.sqlite" \
 	"UPDATE sets SET symbol_url = '/sym/' || set_code || '.png' WHERE symbol_url LIKE 'http%';"
+
+# Converge the fixture's schema, the way `pkdump setup` or the nightly derive
+# would. `open_shared` re-applies schema_shared.sql on every read-WRITE open, so
+# any of those commands heals a catalog that predates a table; the committed
+# fixture predates `catalog_price_overrides` and `raw_derivation`.
+#
+# It is here, explicitly, because the refresh used to do it as a side effect and
+# no longer can (pd-lunn): it opens the catalog READ-ONLY, which is the whole
+# point. A gate whose scaffolding depended on the thing under test healing it
+# would be measuring the wrong binary — and §8's backfill, which ATTACHes the
+# catalog read-only, fails outright on the un-converged fixture.
+#
+# `apply-corrections --dry-run` is the cheapest command that opens the catalog
+# read-write: it applies the schema and the seeds, reports, and writes no row.
+pkdump data apply-corrections --db /data/shared.sqlite --dry-run >/dev/null
+check "the fixture catalog carries the current schema" "yes" \
+	"$(sqlite3 "file:${DATA}/shared.sqlite?mode=ro" \
+		"SELECT COUNT(*) FROM sqlite_master WHERE name IN ('raw_derivation','catalog_price_overrides')" |
+		grep -qx 2 && echo yes || echo no)"
 
 # TWO tenants, provisioned by the REAL `pkdump tenant create` so the registry
 # and the opaque-id layout are prod's, not a hand-built approximation. One of
@@ -156,7 +216,7 @@ TENANT_FILES=$(find "${DATA}/tenants" -name '*.sqlite' | wc -l)
 check "two tenants provisioned" "2" "$TENANT_FILES"
 
 # Give each one a real collection. An empty database would let "the refresh
-# wrote nothing" pass for the wrong reason: there would be nothing to value.
+# wrote nothing" pass for the wrong reason: there would be nothing to write.
 for db in "${DATA}"/tenants/*.sqlite; do
 	cp "${FIXTURES}/collection.sqlite" "$db"
 done
@@ -168,9 +228,9 @@ rm -f "${DATA}"/tenants/*.sqlite-wal "${DATA}"/tenants/*.sqlite-shm
 SEED_ROWS=$(sqlite3 "file:$(find "${DATA}/tenants" -name '*.sqlite' | head -1)?mode=ro" \
 	'SELECT count(*) FROM collection;')
 if [[ "${SEED_ROWS:-0}" -lt 2 ]]; then
-	echo "  ABORT: the fixture collection has ${SEED_ROWS:-0} rows — with nothing to"
-	echo "         value, step 7 would write nothing and this gate would pass on"
-	echo "         a binary that still has it."
+	echo "  ABORT: the fixture collection has ${SEED_ROWS:-0} rows — with nothing in"
+	echo "         it, the deleted step 7 would have written nothing either and this"
+	echo "         gate would pass on a binary that still has it."
 	exit 1
 fi
 echo "  ${SEED_ROWS} collection rows in each tenant"
@@ -207,32 +267,45 @@ fi
 # It reached the end rather than exiting quietly partway. The last line the
 # refresh prints is its own completion.
 check "the refresh ran to completion" "1" \
-	"$(grep -c '^Refresh complete: /data/shared.sqlite$' "${WORK}/refresh.log" || true)"
+	"$(grep -c '^Refresh complete: landed, not derived' "${WORK}/refresh.log" || true)"
 
 log "5. and it really did the work, rather than skipping to the end"
 # A refresh that no-ops everything would also leave the tenants alone. These
-# are the local derivation phases, each of which must have run for §6 to mean
-# "the refresh does its job without touching a tenant" rather than "the refresh
-# does nothing".
-# Matched as FIXED strings, not patterns: one of these lines is literally
-# "N (group, sub_type) → variant rows", and as an ERE its parentheses are
-# grouping — the check would look for text that never appears and fail for a
-# reason that has nothing to do with the refresh.
+# are the phases the command has left, each of which must have run for §6 to
+# mean "the refresh does its job without touching anything" rather than "the
+# refresh does nothing".
+# Matched as FIXED strings, not patterns.
 for phase in \
-	"variant rows reconciled" \
-	"(group, sub_type) → variant rows" \
-	"bundles registered" \
-	"cards synthesized" \
-	"printings" \
-	"latest-price rows materialized"; do
+	"Landing raw upstream responses in " \
+	"Landing the newest sets from pokemontcg.io" \
+	"Landing TCGCSV groups, products, prices" \
+	"Landing the Pokémon Japan catalog"; do
 	check "phase ran: ${phase}" "yes" \
 		"$(grep -qF "$phase" "${WORK}/refresh.log" && echo yes || echo no)"
 done
-check "the shared catalog was written" "changed" \
-	"$([[ "$(sha256sum "${DATA}/shared.sqlite" | cut -d' ' -f1)" == "$BEFORE_SHARED" ]] &&
-		echo unchanged || echo changed)"
+# It opened the catalog read-only and said so, which is the mechanism the whole
+# claim below rests on.
+check "the catalog was opened READ-ONLY" "1" \
+	"$(grep -c '^Opening shared catalog READ-ONLY at /data/shared.sqlite$' "${WORK}/refresh.log" || true)"
+# And the bytes really left the process. A run that fetched and dropped
+# everything on the floor would satisfy every other assertion here.
+check "responses were landed" "yes" \
+	"$([[ "$(landed_parts)" -gt 0 ]] && echo yes || echo "no ($(landed_parts))")"
+check "…under a manifest that says the run completed" "yes" \
+	"$(grep -rl '"complete": true' "$LAKE" >/dev/null 2>&1 && echo yes || echo no)"
 
-log "6. NOT ONE BYTE of any tenant database moved"
+log "5b. and the SHARED CATALOG did not move either (pd-lunn)"
+# The acceptance criterion for item 6, against the shipped binary. This
+# assertion is the inverse of the one that stood here until pd-lunn — the
+# refresh used to have to WRITE the catalog for this gate to mean anything, and
+# it must now leave it alone. A binary that still derived inline fails here.
+check "shared.sqlite is byte-identical" "unchanged" \
+	"$([[ "$(sha256sum "${DATA}/shared.sqlite" | cut -d' ' -f1)" == "$BEFORE_SHARED" ]] &&
+		echo unchanged || echo CHANGED)"
+check "…and nothing was derived into it" "0" \
+	"$(sqlite3 "file:${DATA}/shared.sqlite?mode=ro" 'SELECT COUNT(*) FROM raw_derivation' 2>/dev/null || echo ERR)"
+
+log "6. NOT ONE BYTE of any tenant database moved either"
 # The assertion the bead exists for. With step 7 in place this diff shows every
 # tenant `collection` resolves to, changed by the snapshot rows it wrote.
 if diff <(echo "$BEFORE_TENANTS") <(tenant_fingerprint) >"${WORK}/tenants.diff" 2>&1; then
@@ -245,7 +318,9 @@ else
 fi
 
 # Nothing appeared anywhere else either — no new tenant file, no sidecar, no
-# registry row written by a job that has no business provisioning one.
+# registry row written by a job that has no business provisioning one. The
+# landing zone is mounted OUTSIDE this directory precisely so that landing —
+# which is now the job's whole output — does not have to be excluded from here.
 if diff <(echo "$BEFORE_INVENTORY") <(data_inventory) >"${WORK}/inventory.diff" 2>&1; then
 	check "and the data directory gained no new files" "same" "same"
 else
@@ -254,12 +329,15 @@ else
 fi
 
 log "7. a second refresh is the same story"
-# Once could be an accident of ordering — the first run finding today's rows
-# already present, say. The tenant bytes have to survive a refresh over a
-# catalog the previous refresh already touched.
+# Once could be an accident of ordering. A second run lands into the SAME
+# ingest_date under a new run ULID — which is what a retry after a partial
+# night does in production — and must still leave every byte on disk alone.
 SECOND_RC=0
 refresh >"${WORK}/refresh2.log" 2>&1 || SECOND_RC=$?
 check "the second refresh succeeded" "0" "$SECOND_RC"
+check "shared.sqlite is still byte-identical" "unchanged" \
+	"$([[ "$(sha256sum "${DATA}/shared.sqlite" | cut -d' ' -f1)" == "$BEFORE_SHARED" ]] &&
+		echo unchanged || echo CHANGED)"
 if diff <(echo "$BEFORE_TENANTS") <(tenant_fingerprint) >"${WORK}/tenants2.diff" 2>&1; then
 	check "tenants still byte-identical after two refreshes" "identical" "identical"
 else
@@ -296,10 +374,12 @@ log "9. a dead pokemontcg.io no longer ends the run (pd-nons)"
 # is the part systemd actually sees: the SHIPPED binary retries on the budget
 # its unit hands it, keeps going, and exits 2 rather than 0 or 1.
 DOWN_BEFORE=$(grep -c '"path": "/v2-down/sets' "$UPSTREAM_LOG" || true)
+PARTS_BEFORE_DOWN=$(landed_parts)
 DOWN_RC=0
-podman run --rm -v "${DATA}:/data:Z" \
+podman run --rm -v "${DATA}:/data:Z" -v "${LAKE}:/lake:Z" \
 	-e PKDUMP_TCGCSV_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/tcgplayer" \
 	-e PKDUMP_POKEMONTCG_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/v2-down" \
+	-e PKDUMP_LAKE_DIR=/lake \
 	-e PKDUMP_HTTP_RETRY_ATTEMPTS=3 \
 	-e PKDUMP_HTTP_RETRY_BASE_MS=25 \
 	--entrypoint pkdump "$IMAGE" data refresh \
@@ -316,20 +396,29 @@ check "and says so on stderr" "1" \
 DOWN_HITS=$(($(grep -c '"path": "/v2-down/sets' "$UPSTREAM_LOG" || true) - DOWN_BEFORE))
 check "the tail spent its whole retry budget" "3" "$DOWN_HITS"
 
-# And the run carried on past it: the local derivation phases after the
-# acquisition all ran. This is the difference between a lost night and a
-# partial one.
-check "the derivation continued past the failed tail" "yes" \
-	"$(grep -qF "latest-price rows materialized" "${WORK}/refresh-down.log" && echo yes || echo no)"
+# And the run carried on past it: the perishable half was still landed. This is
+# the difference between a lost night and a partial one — and since pd-lunn the
+# night's prices are BYTES IN THE BUCKET rather than rows in a catalog, so a
+# tail that took the run with it would leave the derive nothing to build from
+# and lose the day exactly as before.
+check "the landing continued past the failed tail" "yes" \
+	"$(grep -qF "Landing TCGCSV groups, products, prices" "${WORK}/refresh-down.log" && echo yes || echo no)"
+# Not merely a log line: the partial run put MORE bytes in the zone than were
+# there before it. (The fixture publishes no groups, so what lands is the group
+# lists themselves — this gate is about the run reaching TCGCSV at all, and
+# tests/lake/real_upstream_derive.sh is where a real price partition is landed.)
+check "…and it really left bytes behind" "yes" \
+	"$([[ "$(landed_parts)" -gt "$PARTS_BEFORE_DOWN" ]] && echo yes ||
+		echo "no ($(landed_parts) vs ${PARTS_BEFORE_DOWN})")"
 # Order, not merely presence: TCGCSV is fetched AFTER the tail has given up.
 # That is the difference between a partial night and a lost one, and it is the
 # assertion that would have failed on the old binary — which returned from the
 # tail's error without issuing a single TCGCSV request.
-TAIL_LINE=$(grep -nF "Filling newest sets from pokemontcg.io" \
+TAIL_LINE=$(grep -nF "Landing the newest sets from pokemontcg.io" \
 	"${WORK}/refresh-down.log" | head -1 | cut -d: -f1)
-TCGCSV_LINE=$(grep -nF "Importing TCGCSV groups, products, prices" \
+TCGCSV_LINE=$(grep -nF "Landing TCGCSV groups, products, prices" \
 	"${WORK}/refresh-down.log" | head -1 | cut -d: -f1)
-check "TCGCSV was acquired after the tail gave up" "yes" \
+check "TCGCSV was landed after the tail gave up" "yes" \
 	"$([[ -n "${TCGCSV_LINE:-}" && -n "${TAIL_LINE:-}" && "$TAIL_LINE" -lt "$TCGCSV_LINE" ]] &&
 		echo yes || echo no)"
 

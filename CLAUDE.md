@@ -118,15 +118,18 @@ bash tests/refresh/tenant_bytes.sh
                                  # the other half: a real `pkdump data refresh`
                                  #   over a data dir with two tenants in it
                                  #   leaves every tenant database byte-identical
+                                 #   — and, since pd-lunn, shared.sqlite too
 cargo clippy --all-targets       # lint (must be clean before commit)
 cargo fmt                        # format
 
 # CLI / server
 cargo run --bin pkdump -- setup  # build the shared catalog (downloads upstream)
 cargo run --bin pkdump -- serve  # start the HTTP server
-cargo run --bin pkdump -- data refresh   # incremental catalog refresh (ONLINE)
+cargo run --bin pkdump -- data refresh   # fetch every upstream and LAND it.
+                                 #   Builds nothing; needs a lake configured
 cargo run --bin pkdump-lake-derive -- shared --ingest-date 2026-08-11 \
-                                 # the same derivation, OFFLINE, replaying raw/
+                                 # the ONLY thing that builds shared.sqlite,
+                                 #   OFFLINE, replaying raw/
 cargo run --bin pkdump-lake-derive -- diff --left a.sqlite --right b.sqlite \
     --exclude raw_derivation     # row-by-row, never byte-by-byte
 cargo run --bin pkdump-ship -- run       # outbox -> tenant zone, every tenant
@@ -584,7 +587,7 @@ only by `pkdump setup` / `pkdump data refresh`. See
 
 ### The raw landing zone
 
-`pkdump data refresh --land-raw` (and `pkdump setup --land-raw`) writes every
+`pkdump data refresh` (and `pkdump setup --land-raw`) writes every
 upstream response it fetches to S3, immutably, **before parsing it** —
 `raw/source=…/dataset=…/ingest_date=…/run=<ULID>/part-NNNN.<ext>.zst` plus a
 `_manifest.json` carrying the URL, HTTP status, byte count and SHA-256 of
@@ -604,9 +607,12 @@ Three rules that are settled, and are the ones easiest to erode:
   retention is measured — ~7.4 MB/night in the bucket across all four
   datasets, from a real run (`deploy/LAKE.md` §2) — and intentional.
 
-Landing is opt-in and off by default: with the flag absent, `lake.env` is
-never read and the fetch path is exactly what it was. `deploy/LAKE.md` is the
-runbook.
+Landing is opt-in on `pkdump setup` — a cold start has no partition to derive
+from — and **unconditional** on `pkdump data refresh`, which since pd-lunn *is*
+the landing run and builds nothing. There is no `--land-raw` on it and no
+`PKDUMP_LAND_RAW`: a run that does not land does nothing at all, so `lake.env`
+is required and its absence is a refusal that names the file.
+`deploy/LAKE.md` is the runbook.
 
 **The nightly refresh runs in its own container** (`deploy/refresh.sh`), like
 the derive and transform jobs beside it — it does not `podman exec` into the
@@ -618,9 +624,17 @@ running container either, and the alternative — putting the lake's credentials
 on the app container — would give the always-on web server ambient write access
 to the lake bucket, which is the exact coupling `pkdump-lake` is offline-only to
 prevent. **Nothing that serves a request may hold a lake credential.** The
-wrapper's last line is the guard that matters: landing asked for and no landing
-zone opened **fails the unit**, because that is the silent green no-op the
+wrapper's last line is the guard that matters: a run that never opened a
+landing zone **fails the unit**, because that is the silent green no-op the
 whole landing zone is worthless without.
+
+**And the wrapper refuses to fetch at all while `pkdump-derive@<instance>
+.timer` is disabled** (pd-lunn). With the inline derive gone the two units are
+a pair: landing without deriving is a box that is green every night and serves
+a catalog frozen at the day of the upgrade, and the half that went missing has
+no unit to fail. Checked by name with `systemctl --user is-enabled`, before the
+first fetch, with no seam to switch it off — a check a harness can skip is a
+check production can be missing.
 
 ### The tenant zone
 
@@ -1119,11 +1133,14 @@ not implementation:
   rerun is *identifiable* rather than merely tolerated. `observed_at` stays
   distinct from `ingest_date` — they differ for exactly the run that crossed
   UTC midnight.
-- **The upstream fallback is temporary and LOUD.** A URL missing from `raw/`
-  means coverage has regressed; the run says so per-URL and in a summary,
-  `deploy/derive.sh` pushes a warning, and `--no-upstream-fallback` makes it
-  fatal. Item 4 of the epic removes it, as its own change, once row-identity is
-  proven in production. **Do not remove it as a side effect of anything else.**
+- **A URL missing from `raw/` is a REFUSAL.** There was a temporary upstream
+  fallback, loud, with a `--no-upstream-fallback` to make it fatal; item 4
+  deleted both, so a gap in the partition now fails the derive by name. A run
+  that needed the fallback was *correct but not reproducible from the lake* —
+  every gate green, and the failure surfacing on the day an upstream was down,
+  which is the day the lake was bought for. `--no-upstream-fallback` is refused
+  by clap as an unknown argument, deliberately: a flag that silently means
+  nothing is worse than one that is gone.
 
 Anything that lands in a ROW is passed in rather than read: `DeriveClock`
 carries the one instant a run read, `Manifest.started_at` is where the landing
@@ -1142,20 +1159,62 @@ The derive unit has **no `SuccessExitStatus=`**, unlike the transform: that job
 writes N tenant databases and "some of them" is normal, this one writes ONE
 catalog and a smaller catalog reads as cards that do not exist.
 
+**That sentence used to describe the units and not the code** (pd-ju9c): the
+refresh went on deriving inline, so with both timers armed the catalog was
+built twice a night, online at 06:00 and again from `raw/` at 07:00. **Item 6
+(pd-lunn) deleted the inline derivation**, and the split is now what it always
+said it was:
+
+- `pkdump data refresh` calls `pkdump_derive::land` — the acquisition half
+  alone. It opens the catalog with `pkdump_db::open_shared_readonly` and asks
+  it ONE question, which sets it already has, because that is the only URL
+  choice that depends on the catalog's contents. A read-only handle is what
+  makes "the refresh writes no catalog table" a fact about the connection
+  rather than a claim about the function.
+- `pkdump-lake-derive shared` calls `pkdump_derive::derive`, and is the only
+  caller left. One catalog, one builder.
+- Landing is therefore not a flag: there is no `--land-raw` on the refresh and
+  no `PKDUMP_LAND_RAW`, and `lake.env` is required.
+- **The two units are a pair.** A box that lands without deriving is green
+  every night and serves a catalog frozen at the day of the upgrade, so
+  `deploy/refresh.sh` refuses to fetch while `pkdump-derive@<instance>.timer`
+  is disabled.
+
+What unblocked it: the derive was run against prod's OWN nightly partition
+(`ingest_date=2026-08-25`, 674 parts, a real `started_at`) into a VACUUM'd copy
+of prod's catalog and diffed against the catalog that night's refresh had
+built — `raw coverage: complete`, twenty tables **row-identical**, 12,598,388
+price rows included. That comparison cannot be re-run now: there is no second
+builder to diff against, which was the point.
+
 Gates: `crates/pkdump-lakehouse/tests/row_identical.rs` (hermetic — row-identity
 over two days, idempotence, reproducing an older date, both refusals, a
-corrupted payload, the fallback loud one way and fatal the other) and
-`tests/lake/derive.sh` (the container tier, shipped image, `--internal`
-network, socket-to-1.1.1.1). Runbook: `deploy/LAKE.md` §8.
+corrupted payload, the retired fallback flag refused by name, and
+**`a_catalog_derived_from_a_landing_only_refresh_is_row_identical_to_a_fetched_one`**,
+which is item 6's acceptance gate: `land` leaves its catalog byte-identical,
+the partition it left says `raw coverage: complete`, and the catalog derived
+from it equals one built by fetching) and `tests/lake/derive.sh` (the container
+tier, shipped image, `--internal` network, socket-to-1.1.1.1). Runbook:
+`deploy/LAKE.md` §8.
 
 One phase cannot be replayed: set-symbol normalisation fetches images, and
-images are deliberately not landed (pd-5w4n).
+images are deliberately not landed (pd-5w4n). What is proven about that is
+narrower than it used to read (pd-ju9c): the Rust tier fetches a real PNG over
+loopback and takes a 404 in one run, on a catalog whose sets carry genuine
+`http` symbol URLs. **No gate exercises a fetch that never reaches a server** —
+`tests/lake/derive.sh`'s fixture advertises no symbol URL at all, so on the
+`--internal` network the phase is *skipped*, not exercised-and-failed. A 404
+and a connect refusal reach the same `error_for_status()?` arm, so the
+behaviour is almost certainly identical; "almost certainly" is said out loud
+rather than rounded off, because a green result over a phase that never ran is
+this epic's own recurring lesson.
 
-**The catalog refresh writes no tenant database at all** (pd-hkbc). Step 7 is
-gone; `pkdump data refresh` touches `shared.sqlite` and, with `--land-raw`, the
-`raw/` prefix, and nothing else. `tests/refresh/tenant_bytes.sh` is the gate: a
-real refresh through the shipped image over a data directory with two
-provisioned tenants, every tenant database byte-identical afterwards. Its
+**The catalog refresh writes nothing at all** (pd-hkbc, pd-lunn). Step 7 —
+which snapshotted ONE tenant's value — is gone, and so is the derivation;
+`pkdump data refresh` touches the `raw/` prefix and nothing else.
+`tests/refresh/tenant_bytes.sh` is the gate: a real refresh through the shipped
+image over a data directory with two provisioned tenants, every tenant database
+byte-identical afterwards **and `shared.sqlite` byte-identical too**. Its
 upstream is `tests/refresh/upstream.py`, a fixture that publishes nothing —
 reached through `PKDUMP_TCGCSV_BASE_URL` / `PKDUMP_POKEMONTCG_BASE_URL`
 (`crates/pkdump-ingest/src/upstream.rs`, test-tier, and an override announces
@@ -1178,20 +1237,22 @@ about them are decisions:
   spent the original error propagates as it always did. It lives in
   `landing::fetch_bytes`, the one place any client executes a request, so a
   client added later cannot forget to retry. `PKDUMP_HTTP_RETRY_ATTEMPTS` /
-  `PKDUMP_HTTP_RETRY_BASE_MS` widen it without a rebuild — on the `podman
-  exec` or on the container, since the refresh unit execs into a running
-  instance.
+  `PKDUMP_HTTP_RETRY_BASE_MS` widen it without a rebuild, as a drop-in
+  `Environment=` on `pkdump-refresh@<instance>.service`.
 - **Only the FINAL failure reaches the manifest.** `complete` is computed from
   `failures.is_empty()`, so logging the attempts a retry recovered from would
   mark a whole night's raw partition incomplete for a hiccup it survived. A
   failure record means "this URL was not fetched". The retries are still loud —
   on stderr, in the unit's journal.
-- **The tail may fail without ending the run; TCGCSV may not.** `acquire`
-  carries a tail error into `Report.tail_error` instead of returning it, so the
-  perishable half is still acquired and every local phase still runs.
-  `pkdump data refresh` then exits **2** (0 whole / 2 partial / 1 failed) and
-  says so; `pkdump-lake-derive` bails and refuses to record provenance, because
-  its claim is that the catalog *is* the partition's derivation.
+- **The tail may fail without ending the run; TCGCSV may not.** Both `acquire`
+  and its landing-only twin carry a tail error into `Report.tail_error` instead
+  of returning it, so the perishable half is still fetched. Since pd-lunn "the
+  night's prices" are BYTES IN THE BUCKET rather than rows in a catalog, and a
+  tail that took the run with it would leave the morning's derive nothing to
+  build them from — the same lost night, one layer out. `pkdump data refresh`
+  exits **2** (0 whole / 2 partial / 1 failed) and says so;
+  `pkdump-lake-derive` bails and refuses to record provenance, because its
+  claim is that the catalog *is* the partition's derivation.
 
 **Do not "fix" this by fetching TCGCSV first.** That was tried and reverted.
 `tcgcsv::import_groups` links each group to the `sets` rows already in the

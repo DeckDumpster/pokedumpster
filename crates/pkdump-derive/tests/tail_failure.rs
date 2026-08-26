@@ -36,6 +36,7 @@
 mod support;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use support::{FakeUpstream, Reply};
 
@@ -182,4 +183,190 @@ fn a_healthy_tail_still_imports_its_sets() {
     assert!(report.tail_error.is_none(), "{:?}", report.tail_error);
     assert_eq!(report.sets_added, 1);
     assert_eq!(price_rows(tmp.path()), 5);
+}
+
+// ---------------------------------------------------------------------------
+// The same claim for the LANDING half (pd-lunn)
+// ---------------------------------------------------------------------------
+
+/// Run one LANDING pass against `upstream`, into a directory-backed lake.
+///
+/// The catalog is opened read-only, exactly as `pkdump data refresh` opens it
+/// — so a landing run that started writing rows would fail here rather than on
+/// prod's next morning.
+fn land_against(
+    upstream: &FakeUpstream,
+    dir: &Path,
+    attempts: &str,
+) -> (pkdump_derive::Report, std::path::PathBuf) {
+    // SAFETY: ENV_LOCK is held by the caller for the whole of this call, and
+    // nothing else in this binary touches the environment.
+    unsafe {
+        std::env::set_var("PKDUMP_TCGCSV_BASE_URL", upstream.base_url());
+        std::env::set_var("PKDUMP_POKEMONTCG_BASE_URL", upstream.base_url());
+        std::env::set_var("PKDUMP_HTTP_RETRY_ATTEMPTS", attempts);
+        std::env::set_var("PKDUMP_HTTP_RETRY_BASE_MS", "1");
+    }
+    let db = dir.join("shared.sqlite");
+    // The catalog the refresh reads. Creating one is `pkdump setup`'s job;
+    // this is that step.
+    drop(pkdump_db::open_shared(&db).unwrap());
+
+    let clock =
+        pkdump_derive::DeriveClock::at("2026-08-11T04:51:02Z".parse().expect("a fixed instant"));
+    let raw = dir.join("raw-zone");
+    let landing = Arc::new(pkdump_lake::RawLanding::new(
+        Box::new(pkdump_lake::DirStore::new(raw.clone())),
+        clock.observed_date(),
+        clock.fetched_at(),
+    ));
+
+    let conn = pkdump_db::open_shared_readonly(&db).unwrap();
+    let report = pkdump_derive::land(
+        &conn,
+        &pkdump_derive::Options {
+            clock,
+            data_dir: dir,
+            landing: Some(landing),
+            replay: None,
+        },
+    )
+    .expect("a landing run that landed TCGCSV is not a failed run");
+    unsafe {
+        std::env::remove_var("PKDUMP_TCGCSV_BASE_URL");
+        std::env::remove_var("PKDUMP_POKEMONTCG_BASE_URL");
+        std::env::remove_var("PKDUMP_HTTP_RETRY_ATTEMPTS");
+        std::env::remove_var("PKDUMP_HTTP_RETRY_BASE_MS");
+    }
+    (report, raw)
+}
+
+/// Every part file under `raw`, by name.
+fn landed_parts(raw: &Path) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else {
+                out.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(raw, &mut out);
+    out.sort();
+    out
+}
+
+/// pd-nons's claim, restated for the command that exists now.
+///
+/// `pkdump data refresh` no longer derives, so "the night's prices" are not
+/// rows in a catalog any more — they are bytes in `raw/`, and the catalog is
+/// built from them hours later. A tail that dies must still leave the
+/// perishable half of the day IN THE BUCKET, or the derive that follows has
+/// nothing to build them from and the day is lost exactly as it was in
+/// 2026-08-11.
+#[test]
+fn a_dead_pokemontcg_io_no_longer_costs_the_nights_landed_prices() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let upstream =
+        FakeUpstream::start(|target, _| route(target, |_| Reply::status(502, "bad gateway")));
+    let tmp = tempfile::tempdir().unwrap();
+
+    let (report, raw) = land_against(&upstream, tmp.path(), "3");
+
+    // 1. The tail failed, and the run says so rather than pretending.
+    let tail = report
+        .tail_error
+        .as_deref()
+        .expect("a 502 on every attempt is a failed tail");
+    assert!(tail.contains("502"), "{tail}");
+    assert_eq!(report.sets_added, 0);
+
+    // 2. And the prices are in the bucket anyway — the point of the change,
+    //    one layer further out than it used to be.
+    let parts = landed_parts(&raw);
+    assert!(
+        parts.iter().any(|p| p.contains("dataset=prices")),
+        "the perishable half must be landed even on a night the tail dies: {parts:?}"
+    );
+
+    // 3. The catalog was NOT touched. `land` took a read-only connection, so
+    //    this is belt and braces — but it is the acceptance criterion for
+    //    pd-lunn stated where a reader will look for it.
+    let db = tmp.path().join("shared.sqlite");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let cards: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cards", [], |r| r.get(0))
+        .unwrap();
+    let prices: i64 = conn
+        .query_row("SELECT COUNT(*) FROM prices", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!((cards, prices), (0, 0), "the landing run derived a catalog");
+
+    let served = upstream.requests();
+
+    // 4. And TCGCSV was fetched AFTER the tail had already failed — the
+    //    ordering claim, unchanged by the split.
+    let last_tail = served
+        .iter()
+        .rposition(|r| r.starts_with("/sets"))
+        .expect("the tail was attempted");
+    let first_tcgcsv = served
+        .iter()
+        .position(|r| r.starts_with("/3/"))
+        .expect("TCGCSV was fetched");
+    assert!(
+        last_tail < first_tcgcsv,
+        "TCGCSV must be fetched after the tail gave up, not instead of it: {served:?}"
+    );
+}
+
+/// The ordinary night for the landing half: a healthy tail lands its sets'
+/// cards, and the catalog is still untouched.
+#[test]
+fn a_healthy_tail_lands_the_cards_of_the_sets_the_catalog_lacks() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let upstream = FakeUpstream::start(|target, _| {
+        route(target, |t| {
+            if t.starts_with("/sets") {
+                Reply::ok(
+                    r#"{"data":[{"id":"base1","name":"Base","series":"Base",
+                                 "printedTotal":102,"total":102}]}"#,
+                )
+            } else {
+                Reply::ok(r#"{"data":[]}"#)
+            }
+        })
+    });
+    let tmp = tempfile::tempdir().unwrap();
+
+    let (report, raw) = land_against(&upstream, tmp.path(), "2");
+
+    assert!(report.tail_error.is_none(), "{:?}", report.tail_error);
+    assert_eq!(report.sets_added, 1, "one set the catalog does not have");
+
+    // The cards endpoint was asked for, which is the whole of the tail's
+    // catalog-dependent choice.
+    let served = upstream.requests();
+    assert!(
+        served.iter().any(|r| r.starts_with("/cards")),
+        "a set the catalog lacks must have its cards landed: {served:?}"
+    );
+    assert!(
+        landed_parts(&raw)
+            .iter()
+            .any(|p| p.contains("source=pokemontcgio")),
+        "and those bytes must be in the bucket"
+    );
+
+    let conn = rusqlite::Connection::open(tmp.path().join("shared.sqlite")).unwrap();
+    let sets: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sets", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(sets, 0, "the landing run wrote a set row");
 }

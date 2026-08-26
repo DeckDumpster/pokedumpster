@@ -1,5 +1,12 @@
 [Unit]
 Description=Nightly PokeDumpster offline catalog derive (%i)
+#
+# ENABLE THIS on any box whose catalog is refreshed. Since pd-lunn it is the
+# only thing that builds shared.sqlite: pkdump-refresh@%i lands the bytes and
+# this turns them into the catalog. Landing without deriving is a box that is
+# green every night and frozen at the day of the upgrade, which is why
+# deploy/refresh.sh checks that this timer is enabled before it fetches
+# anything.
 
 [Timer]
 # 07:00 is DERIVED from pkdump-refresh@.timer, not guessed at:

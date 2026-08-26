@@ -68,11 +68,43 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
     crate::bundles::reconcile(&mut conn)?;
     crate::set_aliases::reconcile(&mut conn)?;
     // Last of the seeds: its rows FK into `printings`, so it writes nothing
-    // until the catalog has been ingested. `pkdump data refresh` re-opens
-    // the catalog after every ingest, which is where it lands for real.
+    // until the catalog has been ingested. `pkdump-lake-derive shared` re-opens
+    // the catalog after every derivation, which is where it lands for real.
     crate::catalog_prices::reconcile(&mut conn)?;
     // Stamped last: the file claims this shape only once it has it.
     schema_version::stamp(&conn, Database::Shared)?;
+    Ok(conn)
+}
+
+/// Open the shared catalog **read-only**.
+///
+/// No schema application, no seed reconciliation, no version stamp — and no
+/// writes, enforced by SQLite rather than by review. `SQLITE_OPEN_READ_ONLY`
+/// makes an attempted write an error at the connection, so "this caller does
+/// not write the catalog" is a property of the handle rather than a claim
+/// about the code that holds it.
+///
+/// That is the whole reason it exists (pd-lunn). Since the derivation left
+/// `pkdump data refresh`, the refresh's only interest in the catalog is one
+/// question — which sets it already has, so it knows which cards to fetch —
+/// and the acceptance criterion for that change is that the command writes no
+/// catalog table at all. A read-only handle cannot, including from code
+/// nobody has written yet.
+///
+/// The file must already exist: creating it is `pkdump setup`'s job, and a
+/// refresh that quietly built an empty catalog would land every set's cards
+/// every night rather than the handful that are new.
+pub fn open_shared_readonly(path: &Path) -> Result<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    // The same refusal `open_shared` makes, in the same place: a catalog
+    // written by a newer build is not one this build may read rows out of and
+    // act on. Reading is what this handle is for, so the gate is the whole of
+    // the check — there is nothing here to stamp.
+    schema_version::gate(&conn, Database::Shared)?;
     Ok(conn)
 }
 
@@ -152,10 +184,10 @@ fn add_columns(conn: &Connection, columns: &[(&str, &str, &str)]) -> Result<()> 
 /// TEMP VIEW would not sit beside the collection's own table — it would
 /// shade it, and every join would silently read the catalog's rows instead.
 /// That is not hypothetical: `gate_attached` deliberately accepts a catalog
-/// that is *behind* this build, so a `shared.sqlite` that has not been
-/// through `pkdump setup` / `pkdump data refresh` since `conditions` moved
-/// into the collection (pd-s4c2) still physically holds the old table. The
-/// collection's own tables win; the catalog fills in around them.
+/// that is *behind* this build, so a `shared.sqlite` that has not been opened
+/// read-write since `conditions` moved into the collection (pd-s4c2) still
+/// physically holds the old table. The collection's own tables win; the
+/// catalog fills in around them.
 pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<()> {
     let uri = format!("file:{}?mode=ro", shared_path.display());
     conn.execute("ATTACH DATABASE ?1 AS shared", [uri])?;
@@ -809,8 +841,9 @@ mod tests {
     }
 
     /// The catalog carries its own copy. It is dropped by `open_shared` —
-    /// `pkdump setup` / `pkdump data refresh` — because that is the only
-    /// path that holds it read-write; the server merely attaches it.
+    /// `pkdump setup`, the offline derive, the server's own startup — because
+    /// those are the paths that hold it read-write. A connection that merely
+    /// attaches it, or `open_shared_readonly`, cannot.
     #[test]
     fn a_legacy_refinery_table_is_dropped_from_the_catalog_on_open() {
         let dir = tempfile::tempdir().unwrap();

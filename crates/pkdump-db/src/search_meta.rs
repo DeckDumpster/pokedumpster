@@ -5,7 +5,9 @@
 //! `data/search_keywords.json`, `data/rarities.json`, and
 //! `data/search_flags.json`; [`reconcile`] re-applies them into the
 //! `search_keywords` / `rarities` / `search_flags` tables on every
-//! `pkdump setup` and `pkdump data refresh`.
+//! `pkdump setup` and every offline `pkdump-lake-derive shared` — and on
+//! every `pkdump serve` startup, which is what keeps a fresh deploy from
+//! serving an empty keyword registry.
 //!
 //! The pure parser ([`pkdump_core::query`]) borrows the [`KeywordRegistry`]
 //! that [`load_registry`] builds from the table; the SQL compiler

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The acceptance harness for pd-aer9: the offline derive is row-identical to the
-# online refresh **on real upstream data, at real catalog scale**.
+# The real-scale acceptance harness for the offline derive (pd-aer9, pd-lunn):
+# a partition landed by the REAL `pkdump data refresh` from the REAL upstreams
+# derives into a real catalog, answering every URL out of raw/.
 #
 #   PKDUMP_REAL_DERIVE=1 bash tests/lake/real_upstream_derive.sh
 #
@@ -25,19 +26,40 @@
 #
 # A replay that got any of that subtly wrong would pass both existing gates.
 #
+# ── THE ROW-IDENTITY CLAIM THIS USED TO MAKE, AND WHERE IT WENT ────────────
+# Until pd-lunn this harness ran BOTH halves — `pkdump data refresh` fetched and
+# derived a catalog, the offline job replayed the same bytes into another, and
+# §4 diffed them. That comparison retired with its second half: item 6 deleted
+# the inline derive, so there is exactly one thing in the workspace that builds
+# `shared.sqlite` and nothing left to diff it against.
+#
+# It is not being quietly dropped. It was RUN, on prod's own nightly partition
+# (ingest_date=2026-08-25) against the catalog prod's own refresh had built:
+# row-identical across twenty tables, 12,598,388 price rows included. That run
+# is what unblocked item 6, and deleting the second builder is what it bought.
+#
+# What is left here is what one builder can still be held to at real scale, and
+# §4 is the part that is genuinely two-sided: derive the same partition twice,
+# independently, and require the two catalogs to be row-identical.
+#
 # ── WHAT IT DOES NOT PROVE, AND WHY ────────────────────────────────────────
-# It does not read the REAL raw partition prod's lake holds. §1 explains why in
-# the output, from the bucket itself: the only partition in there
-# (ingest_date=2026-08-11, landed by hand) predates `Manifest.started_at`, so
-# the derive refuses it by design — there is no clock to stamp its rows with.
-# Landing a fresh partition would mean WRITING to the real lake bucket, which
-# this work is not allowed to do. So §1 asserts the refusals against the real
-# bucket read-only, and §2-§5 prove row-identity over a partition landed HERE,
-# by the real writer, from the real upstreams.
+# It does not derive the REAL partitions prod's lake holds. Landing a fresh one
+# would mean WRITING to the real lake bucket, which this harness is not allowed
+# to do, so §2-§5 work over a partition landed HERE, by the real writer, from
+# the real upstreams.
+#
+# §1 still reads the real bucket, read-only, and asserts the two refusals that
+# have named dates behind them: the hand-landed 2026-08-11 partition that
+# predates `Manifest.started_at` (no clock, so no derive), and a date the
+# nightly never landed (no run, and it never reaches for the newest one). Both
+# dates are overridable — prod has landed nightly since 2026-08-24, so a date
+# picked at random is now a partition that derives fine, which is not what §1 is
+# asking about.
 #
 # Prod-safe: its own PKDUMP_HOME under $WORK, its own landing zone on local
 # disk (PKDUMP_LAKE_DIR), no container, no systemd unit, no tenant database,
-# and not one byte written to any S3 bucket.
+# and not one byte written to any S3 bucket. The catalog the landing run reads
+# is opened READ-ONLY by the command itself, and §4a checks the bytes.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -52,16 +74,17 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # The big disk, not the one prod runs from. Overridable, but never defaulted
 # into $HOME: a full catalog plus a landing zone is a couple of gigabytes.
 WORK="${WORK:-$(mktemp -d "${PKDUMP_REAL_DERIVE_ROOT:-/workspaces}/pdreal.XXXXXX")}"
-ONLINE="$WORK/online"
+READER="$WORK/reader"
 OFFLINE="$WORK/offline"
+OFFLINE2="$WORK/offline2"
 RAW="$WORK/raw-zone"
 LOGS="$WORK/logs"
-mkdir -p "$ONLINE" "$OFFLINE" "$RAW" "$LOGS"
+mkdir -p "$READER" "$OFFLINE" "$OFFLINE2" "$RAW" "$LOGS"
 
 PKDUMP="${PKDUMP_BIN:-$REPO_DIR/target/release/pkdump}"
 DERIVE="${PKDUMP_DERIVE_BIN:-$REPO_DIR/target/release/pkdump-lake-derive}"
 
-# The partition the online half lands and the offline half rebuilds. The clock
+# The partition the landing half lands and the offline half rebuilds. The clock
 # picks it (`DeriveClock::now`), so it is today in UTC — the same value
 # `pkdump data refresh` will choose a moment from now.
 DATE="${PKDUMP_REAL_DERIVE_DATE:-$(date -u +%F)}"
@@ -90,8 +113,9 @@ done
 log "0. what this run is"
 echo "  work dir      ${WORK}"
 echo "  ingest_date   ${DATE}"
-echo "  online  →     ${ONLINE}/shared.sqlite   (fetches, lands)"
-echo "  offline →     ${OFFLINE}/shared.sqlite  (replays ${RAW})"
+echo "  reader  →     ${READER}/shared.sqlite   (READ by the landing run; must not change)"
+echo "  offline →     ${OFFLINE}/shared.sqlite   (replays ${RAW})"
+echo "  offline2 →    ${OFFLINE2}/shared.sqlite  (replays it again, independently)"
 
 log "1. the REAL lake bucket, read-only: what it holds and what it refuses"
 # The operator's real lake.env, sourced for the S3 settings and the AWS profile
@@ -114,8 +138,10 @@ real_derive() { # real_derive <ingest-date> <logfile>
 if [[ ! -f "$LAKE_ENV_FILE" ]]; then
 	echo "  SKIP — no ${LAKE_ENV_FILE}; §1 needs the real bucket's host config"
 else
-	# The partition the lake actually holds. Landed by hand on 2026-08-11
-	# (pd-fet2), before `Manifest.started_at` existed.
+	# A partition the lake holds that CANNOT be derived: landed by hand on
+	# 2026-08-11 (pd-fet2), before `Manifest.started_at` existed. Nightly
+	# landing started on 2026-08-24 (pd-kncd), so every date from then on is
+	# derivable and would prove the opposite of what this section asks.
 	REAL_DATE="${PKDUMP_REAL_PARTITION_DATE:-2026-08-11}"
 	RC=0
 	real_derive "$REAL_DATE" "$LOGS/real-bucket.log" || RC=$?
@@ -138,9 +164,9 @@ else
 		"$(grep -q 'never falls back' "$LOGS/real-bucket-missing.log" && echo yes || echo no)"
 fi
 
-log "2. a baseline catalog, and the same bytes on both sides of it"
-# Both halves start from ONE catalog, copied. That is prod's shape — a nightly
-# refresh runs against a catalog that already holds every set — and it is what
+log "2. a baseline catalog, and the same bytes everywhere it is used"
+# Every side starts from ONE catalog, copied. That is prod's shape — a nightly
+# run happens against a catalog that already holds every set — and it is what
 # keeps the comparison about the derivation rather than about acquisition: the
 # interesting rows are the ones the compared pass writes on top.
 #
@@ -164,8 +190,9 @@ else
 	}
 	echo "  built in $((SECONDS - START))s — keep it with PKDUMP_REAL_DERIVE_BASELINE=$WORK/baseline.sqlite"
 fi
-cp "$WORK/baseline.sqlite" "$ONLINE/shared.sqlite"
+cp "$WORK/baseline.sqlite" "$READER/shared.sqlite"
 cp "$WORK/baseline.sqlite" "$OFFLINE/shared.sqlite"
+cp "$WORK/baseline.sqlite" "$OFFLINE2/shared.sqlite"
 # The symbol cache travels with it. Set symbols are IMAGES and images are
 # deliberately never landed (pd-5w4n), so this is the one phase a replay cannot
 # answer from raw/. It is a no-op on both sides here — the baseline already
@@ -175,46 +202,56 @@ cp "$WORK/baseline.sqlite" "$OFFLINE/shared.sqlite"
 # its PNG on disk rather than making the phase a live-network coin flip.
 # `$WORK/symbols` because a run's data dir is its DATABASE's directory, not
 # $PKDUMP_HOME.
-for side in "$ONLINE" "$OFFLINE"; do
+for side in "$READER" "$OFFLINE" "$OFFLINE2"; do
 	cp -r "$WORK/symbols" "$side/symbols" 2>/dev/null || true
 done
-check "both sides start from the same bytes" "yes" \
-	"$(cmp -s "$ONLINE/shared.sqlite" "$OFFLINE/shared.sqlite" && echo yes || echo no)"
+check "every side starts from the same bytes" "yes" \
+	"$(cmp -s "$OFFLINE/shared.sqlite" "$OFFLINE2/shared.sqlite" && echo yes || echo no)"
 echo "        baseline: $(sqlite3 "$WORK/baseline.sqlite" 'SELECT COUNT(*) FROM cards') cards, $(sqlite3 "$WORK/baseline.sqlite" 'SELECT COUNT(*) FROM sets') sets"
 
-log "2b. ONLINE: a real refresh from the real upstreams, landing every response"
-# Retried, because api.pokemontcg.io is answering 500 to a large fraction of
-# requests and `acquire()` reaches it FIRST — no client here retries, by design
-# (pd-nons). Every attempt starts from the pristine baseline and an empty
-# landing zone: a half-run catalog carried into the next attempt would make the
-# two sides differ by an accident of the network rather than by the derivation,
-# and two complete runs of one date would refuse for disagreeing about the
-# clock. So an attempt is all-or-nothing, exactly as the design intends.
+log "2b. LAND: a real \`pkdump data refresh\` against the real upstreams"
+# The whole of the online half since pd-lunn: fetch every upstream, write every
+# response into raw/, build nothing.
+#
+# Retried, because api.pokemontcg.io answers 500 to a large fraction of requests
+# and the tail is reached FIRST. A tail that gives up is not a failure here —
+# the run exits 2 and TCGCSV is landed anyway (pd-nons) — but it lands a short
+# partition, and a short partition is not what §3 is meant to derive. So an
+# attempt is all-or-nothing: exit 0 or start over with an empty landing zone. A
+# half-run's parts carried into the next attempt would make the derive read two
+# runs' bytes and refuse for disagreeing about the clock.
 START=$SECONDS
 ATTEMPTS="${PKDUMP_REAL_DERIVE_ATTEMPTS:-6}"
 for attempt in $(seq 1 "$ATTEMPTS"); do
 	rm -rf "$RAW"
 	mkdir -p "$RAW"
-	cp "$WORK/baseline.sqlite" "$ONLINE/shared.sqlite"
+	cp "$WORK/baseline.sqlite" "$READER/shared.sqlite"
 	if PKDUMP_LAKE_DIR="$RAW" PKDUMP_LAKE_ENV=/nonexistent/lake.env \
-		"$PKDUMP" data refresh --db "$ONLINE/shared.sqlite" --land-raw \
-		>"$LOGS/online.log" 2>&1; then
+		"$PKDUMP" data refresh --db "$READER/shared.sqlite" \
+		>"$LOGS/land.log" 2>&1; then
 		echo "  attempt ${attempt}: clean"
 		break
 	fi
-	echo "  attempt ${attempt}: FAILED — $(grep -m1 '^Error:' "$LOGS/online.log" || echo 'see the log')"
-	cp "$LOGS/online.log" "$LOGS/online-failed-${attempt}.log"
+	echo "  attempt ${attempt}: FAILED — $(grep -m1 '^Error:' "$LOGS/land.log" || echo 'see the log')"
+	cp "$LOGS/land.log" "$LOGS/land-failed-${attempt}.log"
 	[[ "$attempt" -lt "$ATTEMPTS" ]] || {
-		tail -40 "$LOGS/online.log"
-		die "the online refresh failed ${ATTEMPTS} times — the upstreams are having a day"
+		tail -40 "$LOGS/land.log"
+		die "the landing run failed ${ATTEMPTS} times — the upstreams are having a day"
 	}
 done
 echo "  $((SECONDS - START))s, $(find "$RAW" -name 'part-*.zst' | wc -l) part(s), $(du -sh "$RAW" | cut -f1) landed"
-grep -E '^  (raw:|added|[0-9]+ groups|wrote)' "$LOGS/online.log" | sed 's/^/  /' || true
+grep -E '^  (raw:|landed|[0-9]+ group)' "$LOGS/land.log" | sed 's/^/  /' || true
 check "every landed manifest is complete" "0" \
-	"$(grep -c 'INCOMPLETE' "$LOGS/online.log" || true)"
+	"$(grep -c 'INCOMPLETE' "$LOGS/land.log" || true)"
 check "the partition it landed is ${DATE}" "yes" \
 	"$([[ -d "$RAW/raw/source=tcgcsv/dataset=prices/ingest_date=${DATE}" ]] && echo yes || echo no)"
+# The acceptance criterion for pd-lunn, at real scale: the refresh READS the
+# catalog and writes no table of it. Byte-identical, because "no rows I thought
+# to count" is a weaker claim than the one the read-only connection makes.
+check "the landing run left the catalog it read untouched" "yes" \
+	"$(cmp -s "$WORK/baseline.sqlite" "$READER/shared.sqlite" && echo yes || echo no)"
+check "…and derived nothing into it" "yes" \
+	"$([[ "$(sqlite3 "$READER/shared.sqlite" 'SELECT COUNT(*) FROM raw_derivation')" == 0 ]] && echo yes || echo no)"
 
 log "3. OFFLINE: rebuild the same date from raw/ alone"
 START=$SECONDS
@@ -232,11 +269,25 @@ check "every request was answered from raw/" "1" \
 check "the clock came from the manifests" "1" \
 	"$(grep -c "recovered from the run's manifests" "$LOGS/offline.log" || true)"
 
-log "4. ROW-IDENTICAL, table by table"
-# `raw_derivation` is the one table that legitimately differs: the offline job
-# writes it and the online refresh has no run to name. Named on the command
-# line rather than skipped quietly.
-"$DERIVE" diff --left "$ONLINE/shared.sqlite" --right "$OFFLINE/shared.sqlite" \
+log "4. the SAME partition, derived a second time, independently"
+# The two-sided claim that survives having one builder. Not "derive twice into
+# the same file", which the hermetic tier already covers — a second catalog,
+# from the same baseline, from the same bytes, by a second process. A
+# derivation that read anything but that partition (a clock, a directory
+# listing, whatever raw/ happened to hold newest) differs here.
+START=$SECONDS
+PKDUMP_LAKE_DIR="$RAW" PKDUMP_LAKE_ENV=/nonexistent/lake.env \
+	"$DERIVE" shared --ingest-date "$DATE" \
+	--db "$OFFLINE2/shared.sqlite" --data-dir "$OFFLINE2" \
+	--no-upstream-fallback >"$LOGS/offline2.log" 2>&1 || {
+	tail -40 "$LOGS/offline2.log"
+	die "the second offline derive failed"
+}
+echo "  $((SECONDS - START))s"
+
+# `raw_derivation` records WHEN the derive ran, so two runs legitimately differ
+# in it. Named on the command line rather than skipped quietly.
+"$DERIVE" diff --left "$OFFLINE/shared.sqlite" --right "$OFFLINE2/shared.sqlite" \
 	--exclude raw_derivation >"$LOGS/diff.log" 2>&1 || true
 sed 's/^/  /' "$LOGS/diff.log"
 TABLES=$(grep -c '^  ok ' "$LOGS/diff.log" || true)
@@ -248,20 +299,21 @@ check "the two catalogs are row-identical" "1" \
 log "5. and it is not an empty comparison"
 rows() { sqlite3 "$1" "SELECT COUNT(*) FROM $2"; }
 for table in cards sets printings prices latest_prices tcgcsv_products sealed_prices; do
-	L=$(rows "$ONLINE/shared.sqlite" "$table")
-	R=$(rows "$OFFLINE/shared.sqlite" "$table")
-	check "${table}: online == offline, and non-trivial" "yes" \
-		"$([[ "$L" == "$R" && "$L" -gt 100 ]] && echo "yes" || echo "no (${L} vs ${R})")"
-	echo "        ${table}: ${L} rows"
+	L=$(rows "$OFFLINE/shared.sqlite" "$table")
+	B=$(rows "$WORK/baseline.sqlite" "$table")
+	check "${table}: non-trivial, and the derive added to it" "yes" \
+		"$([[ "$L" -gt 100 && "$L" -ge "$B" ]] && echo "yes" || echo "no (${L}, baseline ${B})")"
+	echo "        ${table}: ${L} rows (baseline ${B})"
 done
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"
 echo "  logs and both catalogs kept at ${WORK}"
 if [[ "$fail" -ne 0 ]]; then
-	echo "  FAIL — the offline derive does not reproduce the online catalog on real data."
+	echo "  FAIL — the offline derive does not hold up on real data."
 	exit 1
 fi
 echo "  PASS — on ${DATE}, at real catalog scale, from the real upstreams:"
-echo "         shared.sqlite derived from raw/ is row-identical to the one the"
-echo "         online refresh built from the same responses."
+echo "         a landing-only refresh left its catalog byte-identical, the"
+echo "         partition it landed answered every URL the derive asked for, and"
+echo "         two independent derives of it are row-identical."

@@ -110,7 +110,7 @@ impl ReplaySource for RawReplay {
             "raw/ has no record of {url}.\n\
              The landing zone no longer covers this derivation's inputs: either an \
              endpoint was added without landing it, or the upstream's origin moved. \
-             Re-land the date (pkdump data refresh --land-raw) and derive again."
+             Re-land the date (pkdump data refresh) and derive again."
         ))
     }
 }
@@ -183,7 +183,7 @@ mod tests {
             err.contains("raw/ has no record of https://up/3/9/prices"),
             "{err}"
         );
-        assert!(err.contains("--land-raw"), "{err}");
+        assert!(err.contains("pkdump data refresh"), "{err}");
     }
 
     /// The manifest's digest is not decoration. A part whose bytes changed

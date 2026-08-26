@@ -163,7 +163,7 @@ pub fn clock_of(chosen: &[Chosen], ingest_date: &str) -> anyhow::Result<DeriveCl
              run's clock are neither run's output, which is precisely the \"old data looks \
              new\" failure the ingest_date partition exists to prevent.\n\
              Derive a date that one run landed, or re-land this one \
-             (pkdump data refresh --land-raw) so every dataset comes from the same run."
+             (pkdump data refresh) so every dataset comes from the same run."
         );
     }
 

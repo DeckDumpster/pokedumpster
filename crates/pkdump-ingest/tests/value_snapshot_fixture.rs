@@ -301,7 +301,19 @@ fn dump_snapshot(conn: &Connection, date: &str) -> String {
 /// *older* day. That is the only way to get a Rust-computed expectation for
 /// the backfill date, and it is a fixture-only manoeuvre: nothing in the app
 /// rewrites `latest_prices` to a past day.
-fn pin_latest_prices_to(shared: &Path, date: &str) {
+///
+/// **Both feeds, or the expectation is a hybrid.** `snapshot_today` values the
+/// cards from `latest_prices` and the sealed lots from `latest_sealed_prices`,
+/// so pinning one and not the other produces a "day" that priced its cards on
+/// D and its boxes on today — which is not a day that ever existed, and which
+/// the transform (reading each partition at or before D) can only disagree
+/// with. That is exactly what this gate caught on its first run.
+///
+/// `latest_sealed_prices` is a VIEW over the newest `sealed_prices`
+/// observation per product, so pinning it means setting the newer
+/// observations aside rather than rewriting a materialized table.
+/// [`unpin_prices`] puts them back.
+fn pin_prices_to(shared: &Path, date: &str) {
     let conn = pkdump_db::open_shared(shared).expect("open shared");
     conn.execute("DELETE FROM latest_prices", [])
         .expect("clear latest_prices");
@@ -313,6 +325,31 @@ fn pin_latest_prices_to(shared: &Path, date: &str) {
         params![date],
     )
     .expect("pin latest_prices");
+
+    conn.execute_batch("DROP TABLE IF EXISTS _pinned_aside;")
+        .expect("clear any previous pin");
+    conn.execute(
+        "CREATE TABLE _pinned_aside AS SELECT * FROM sealed_prices WHERE observed_at > ?1",
+        params![date],
+    )
+    .expect("set the newer sealed observations aside");
+    conn.execute(
+        "DELETE FROM sealed_prices WHERE observed_at > ?1",
+        params![date],
+    )
+    .expect("pin latest_sealed_prices");
+}
+
+/// Undo [`pin_prices_to`], so the fixture the gate consumes is not carrying a
+/// fixture-only manoeuvre in its state. `SELECT *` round-trips the `id`, so
+/// the restored rows are the rows that were there.
+fn unpin_prices(shared: &Path) {
+    let conn = pkdump_db::open_shared(shared).expect("open shared");
+    pkdump_db::latest_prices::refresh_latest_prices(&conn).expect("restore latest_prices");
+    conn.execute("INSERT INTO sealed_prices SELECT * FROM _pinned_aside", [])
+        .expect("restore the newer sealed observations");
+    conn.execute_batch("DROP TABLE _pinned_aside;")
+        .expect("drop the holding table");
 }
 
 /// Where to build the fixture: `PKDUMP_VALUE_FIXTURE_OUT` if the caller wants
@@ -462,7 +499,7 @@ fn builds_a_data_directory_and_the_snapshot_rust_computes_from_it() {
     // Rust aggregate over the prices that day actually quoted. Its rows are
     // then REMOVED: the transform has to reconstruct history that was never
     // captured, which is the backfill claim.
-    pin_latest_prices_to(&shared, DATE_OLD);
+    pin_prices_to(&shared, DATE_OLD);
     let expected_old = {
         let mut conn = pkdump_db::connect_user(&alice.path, &shared).expect("open alice");
         pkdump_db::value_history::snapshot_today(&mut conn, DATE_OLD).expect("snapshot");
@@ -476,15 +513,29 @@ fn builds_a_data_directory_and_the_snapshot_rust_computes_from_it() {
     };
     // Put the catalog back the way a real one stands, so the fixture the gate
     // consumes is not carrying a fixture-only manoeuvre in its state.
-    {
-        let conn = pkdump_db::open_shared(&shared).expect("open shared");
-        pkdump_db::latest_prices::refresh_latest_prices(&conn).expect("restore latest_prices");
-    }
+    unpin_prices(&shared);
 
     assert_ne!(
         expected_new, expected_old,
         "the two days must value the collection differently, or the backfill \
          assertion downstream proves nothing"
+    );
+    // …and specifically on the SEALED row, which the whole-dump comparison
+    // above cannot speak for: the card rows differing is enough to satisfy it
+    // while the two days' sealed rows are identical, and that is precisely the
+    // state a half-pinned fixture leaves behind. Left unchecked, §7 of the
+    // container gate would be asserting nothing about sealed at all.
+    let sealed_row = |dump: &str| -> String {
+        dump.lines()
+            .find(|line| line.starts_with("sealed\t"))
+            .unwrap_or_else(|| panic!("no sealed row in:\n{dump}"))
+            .to_string()
+    };
+    assert_ne!(
+        sealed_row(&expected_new),
+        sealed_row(&expected_old),
+        "the two days quote the same sealed price, so the backfill's sealed \
+         half proves nothing — is the sealed feed being pinned with the card one?"
     );
 
     std::fs::write(

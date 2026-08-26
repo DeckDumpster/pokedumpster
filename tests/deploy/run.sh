@@ -2358,5 +2358,151 @@ check "the master key is mounted read-only" "1" \
 
 reset_store
 # ---------------------------------------------------------------------------
+log "15. ABSENT, FORBIDDEN and WRONG are three answers, not one (pd-2hnp)"
+# ---------------------------------------------------------------------------
+#
+# setup-tenant-zone.sh --check printed one sentence — "no lifecycle
+# configuration" — for a genuinely absent rule AND for an AccessDenied. "There
+# is no retention rule" and "I am not allowed to look" are opposite facts, and
+# the subject here is a rule whose job is DELETING TENANT DATA AFTER 90 DAYS.
+#
+# The direction that hurts is the inverse of the one it was found in: once the
+# rule IS applied, an operator whose credentials cannot read it is told the rule
+# was never applied, and the repair for that is to apply or widen one.
+#
+# The classification is pure string work over what the aws CLI says, so it is
+# tested here rather than in the container tier — hermetic, sub-second, and
+# every case is a red one. tests/lake/tenant_zone.sh §2 is where a REAL denial
+# by a REAL credential against a REAL bucket produces exit 4; this is where the
+# six-way answer is pinned, including the two the container tier cannot easily
+# stage (an unrecognised error, and a lifecycle that exists but says nothing
+# about the tenant zone).
+
+TZ_HOME="${WORK}/tzhome"
+mkdir -p "$TZ_HOME"
+: >"${WORK}/tz-lake.env"
+
+# A stand-in for the aws CLI. setup-tenant-zone.sh takes the whole command as
+# an override (PKDUMP_AWS) so the container tier can hand it a podman
+# invocation; the same seam is what lets this file hand it a fixture.
+cat >"${WORK}/tz-aws.sh" <<'EOF'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+*"sts get-caller-identity"*)
+	[ -n "${STUB_IDENTITY:-}" ] && {
+		printf '%s\n' "$STUB_IDENTITY"
+		exit 0
+	}
+	echo "Could not connect to the endpoint URL" >&2
+	exit 255
+	;;
+*get-bucket-lifecycle-configuration*)
+	case "${STUB_MODE:-}" in
+	absent)
+		echo "An error occurred (NoSuchLifecycleConfiguration) when calling the GetBucketLifecycleConfiguration operation: The lifecycle configuration does not exist" >&2
+		exit 254
+		;;
+	denied)
+		echo "An error occurred (AccessDenied) when calling the GetBucketLifecycleConfiguration operation: User: arn:aws:iam::111:user/gantt-mtgc-backup is not authorized to perform: s3:GetLifecycleConfiguration" >&2
+		exit 254
+		;;
+	weird)
+		echo "An error occurred (ServiceUnavailable) when calling the GetBucketLifecycleConfiguration operation: please retry" >&2
+		exit 254
+		;;
+	wrongdays) echo '{"Rules":[{"ID":"too-long","Status":"Enabled","Filter":{"Prefix":"tenant/"},"Expiration":{"Days":365}}]}' ;;
+	reachescatalog) echo '{"Rules":[{"ID":"tenant","Status":"Enabled","Filter":{"Prefix":"tenant/"},"Expiration":{"Days":90}},{"ID":"tidy-raw","Status":"Enabled","Filter":{"Prefix":"raw/"},"Expiration":{"Days":30}}]}' ;;
+	notenant) echo '{"Rules":[{"ID":"scratch","Status":"Enabled","Filter":{"Prefix":"scratch/"},"Expiration":{"Days":7}}]}' ;;
+	correct) echo '{"Rules":[{"ID":"pkdump-tenant-zone-90-day-expiry","Status":"Enabled","Filter":{"Prefix":"tenant/"},"Expiration":{"Days":90}}]}' ;;
+	esac
+	;;
+esac
+EOF
+chmod +x "${WORK}/tz-aws.sh"
+
+tz_check() { # tz_check <STUB_MODE> [extra args...]; prints output then RC=<n>
+	local mode="$1"
+	shift
+	set +e
+	STUB_MODE="$mode" STUB_IDENTITY="${STUB_IDENTITY:-}" \
+		PKDUMP_AWS="bash ${WORK}/tz-aws.sh" HOME="$TZ_HOME" \
+		PKDUMP_LAKE_ENV="${WORK}/tz-lake.env" \
+		bash "${REPO_DIR}/deploy/setup-tenant-zone.sh" --check \
+		--bucket pdtz-hermetic "$@" 2>&1
+	printf 'RC=%s' "$?"
+	set -e
+}
+
+tz_has() { # tz_has <output> <fixed string> -> 1 | 0
+	printf '%s' "$1" | grep -qF -- "$2" && echo 1 || echo 0
+}
+
+TZ_OK="$(tz_check correct)"
+check "the correct rule -> exit 0" "1" "$(printf '%s' "$TZ_OK" | grep -c 'RC=0$' || true)"
+
+# ABSENT. The one case where "no lifecycle configuration" is the truth.
+TZ_ABSENT="$(tz_check absent)"
+check "NoSuchLifecycleConfiguration -> exit 3" "1" \
+	"$(printf '%s' "$TZ_ABSENT" | grep -c 'RC=3$' || true)"
+check "…and says ABSENT" "1" "$(tz_has "$TZ_ABSENT" 'ABSENT')"
+check "…and names the repair" "1" \
+	"$(tz_has "$TZ_ABSENT" 'setup-tenant-zone.sh --apply')"
+
+# A lifecycle that exists and says nothing about tenant/ is ALSO absent
+# retention, with the same repair — not a wrong rule.
+TZ_NOTENANT="$(tz_check notenant)"
+check "a lifecycle with no tenant/ rule -> exit 3" "1" \
+	"$(printf '%s' "$TZ_NOTENANT" | grep -c 'RC=3$' || true)"
+
+# FORBIDDEN. The bug: this used to be indistinguishable from the case above.
+TZ_DENIED="$(tz_check denied)"
+check "AccessDenied -> exit 4, NOT 3" "1" \
+	"$(printf '%s' "$TZ_DENIED" | grep -c 'RC=4$' || true)"
+check "…and says CANNOT VERIFY" "1" "$(tz_has "$TZ_DENIED" 'CANNOT VERIFY')"
+# The regression this whole section exists to prevent. ABSENT is the verdict
+# label, so a denied run must never carry it — it may only mention the word in
+# the sentence saying this is NOT that answer.
+check "…and never renders the ABSENT verdict" "0" \
+	"$(tz_has "$TZ_DENIED" 'ABSENT')"
+check "…and names the missing permission" "1" \
+	"$(tz_has "$TZ_DENIED" 's3:GetLifecycleConfiguration')"
+check "…and quotes what aws actually said" "1" \
+	"$(tz_has "$TZ_DENIED" 'gantt-mtgc-backup')"
+
+# Fail closed: an error nobody anticipated is "cannot verify", never absence.
+TZ_WEIRD="$(tz_check weird)"
+check "an unrecognised error -> exit 4, not 3 and not 0" "1" \
+	"$(printf '%s' "$TZ_WEIRD" | grep -c 'RC=4$' || true)"
+check "…and never renders the ABSENT verdict" "0" \
+	"$(tz_has "$TZ_WEIRD" 'ABSENT')"
+
+# PRESENT BUT WRONG keeps exit 1 — both shapes of it.
+TZ_DAYS="$(tz_check wrongdays)"
+check "365 days on tenant/ -> exit 1" "1" \
+	"$(printf '%s' "$TZ_DAYS" | grep -c 'RC=1$' || true)"
+TZ_CAT="$(tz_check reachescatalog)"
+check "a second rule reaching raw/ -> exit 1" "1" \
+	"$(printf '%s' "$TZ_CAT" | grep -c 'RC=1$' || true)"
+
+# The identity. Tonight's real failure was a script silently acting as another
+# project's backup user; whatever else it does, it has to SAY who it is.
+check "the identity is printed before anything acts" "1" \
+	"$(tz_has "$TZ_OK" '==> Identity:')"
+check "…and ambient credentials are called ambient" "1" \
+	"$(tz_has "$TZ_OK" 'NO --profile GIVEN')"
+TZ_RESOLVED="$(STUB_IDENTITY=arn:aws:sts::237707363372:assumed-role/pokedump-data/x \
+	tz_check correct --profile pkdump)"
+check "a resolved ARN is printed verbatim" "1" \
+	"$(tz_has "$TZ_RESOLVED" 'assumed-role/pokedump-data')"
+check "…and --profile is named instead of the ambient warning" "0" \
+	"$(tz_has "$TZ_RESOLVED" 'NO --profile GIVEN')"
+# An endpoint that does not implement sts (MinIO does not) must not stop a
+# check — a governance script that cannot run against a stand-in bucket is one
+# that cannot be tested.
+check "an unresolvable identity is printed as unresolved, not fatal" "1" \
+	"$(tz_has "$TZ_OK" 'UNRESOLVED')"
+
+# ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

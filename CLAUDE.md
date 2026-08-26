@@ -654,6 +654,19 @@ Five things are decisions, not implementation:
   Enforced by a lifecycle rule that `deploy/setup-tenant-zone.sh` applies
   **and then reads back** — a PUT that scoped itself to the wrong prefix
   succeeds identically to one that did not.
+  **That read-back has three answers, and the exit code is which one**
+  (pd-2hnp): 3 ABSENT, 4 CANNOT VERIFY, 1 present but wrong. It printed one
+  sentence for the first two — "there is no retention rule" and "I am not
+  allowed to look" are opposite facts, and the direction that hurts is the
+  inverse of the one it was found in: once the rule IS applied, an operator
+  whose credentials cannot read it is told it was never applied, and the repair
+  for that is to apply or widen one. An unrecognised error is 4 as well, never
+  3. The script also resolves and PRINTS its identity before acting, because
+  with `--profile` omitted it acts as whatever is ambient — which on 2026-08-26
+  was another project's backup user against this project's lake bucket.
+  Applying retention needs a *third* identity (`role/pokedump-data`, via
+  `AWS_PROFILE=pkdump`): both zone credentials deny the lifecycle actions by
+  design. `deploy/TENANT_ZONE.md` §4a-§4b.
 - **Separate credentials from day one**, and the boundary is a TEST. One
   bucket means a pair of IAM documents is the *only* thing separating the
   zones. `TenantZoneConfig` refuses an unset `PKDUMP_TENANT_AWS_PROFILE`, and

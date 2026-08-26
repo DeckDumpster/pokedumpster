@@ -9,8 +9,31 @@
 # this script is what makes that separation real rather than described.
 #
 #   bash deploy/setup-tenant-zone.sh --apply            # apply retention, then verify it
-#   bash deploy/setup-tenant-zone.sh --check            # verify only; exits non-zero if wrong
+#   bash deploy/setup-tenant-zone.sh --check            # verify only; see the exits below
 #   bash deploy/setup-tenant-zone.sh --render --out DIR # write the two policy documents
+#
+# ── THREE OUTCOMES, THREE EXITS (pd-2hnp) ───────────────────────────────────
+#
+# "There is no retention rule" and "I am not allowed to look" are OPPOSITE
+# facts, and this script printed the same sentence for both. On a check whose
+# subject is a rule that DELETES TENANT DATA AFTER 90 DAYS that is worse than
+# having no check, because it is trusted: the direction that hurts is not the
+# one seen first (an identity that can read nothing, reported as "never
+# applied") but its inverse — once the rule IS applied, an operator whose
+# credentials cannot read it is told the same sentence, concludes retention was
+# never applied, and re-applies or widens one.
+#
+#   0  present and correct
+#   1  PRESENT BUT WRONG — a rule exists and is not the rule: the wrong window,
+#      or a prefix that reaches the catalog zone. Every configuration refusal
+#      below exits 1 too; each names itself
+#   2  usage
+#   3  ABSENT — the bucket carries no lifecycle configuration at all, or none of
+#      its enabled rules covers the tenant zone. Retention was never applied,
+#      and --apply is the repair
+#   4  CANNOT VERIFY — the read itself failed; AccessDenied first among them.
+#      NEVER rendered as absent, and never rendered as correct. The message
+#      names the missing permission and the identity that was refused
 #
 # ── WHAT IT APPLIES, AND WHAT IT ONLY PRINTS ────────────────────────────────
 #
@@ -191,18 +214,105 @@ if [ "$MODE" = "render" ]; then
 	exit 0
 fi
 
+# ── Whose credentials are these? ────────────────────────────────────────────
+# This script can apply a rule that DELETES OBJECTS, and with --profile omitted
+# it acts as whatever the environment happens to hold. On 2026-08-26 that was
+# another project's BACKUP user, pointed at this project's lake bucket; it
+# failed safe only because that user had no lifecycle permission anywhere. So
+# the identity is resolved and PRINTED before anything acts, and named again in
+# every refusal below — a denial is only diagnosable if you know who was denied.
+#
+# Resolution is best-effort on purpose. sts:GetCallerIdentity is not something
+# every endpoint implements (MinIO does not), and a governance check that
+# refuses to run against a stand-in bucket is a check that cannot be tested.
+# Unresolved is printed AS unresolved, with the reason — never as nothing.
+
+IDENTITY=""
+IDENTITY_ERR=""
+
+resolve_identity() {
+	local errfile out rc=0
+	errfile="$(mktemp)"
+	out="$("${AWS[@]}" "${AWS_ARGS[@]}" sts get-caller-identity \
+		--query Arn --output text 2>"$errfile")" || rc=$?
+	IDENTITY_ERR="$(tr '\n' ' ' <"$errfile")"
+	rm -f "$errfile"
+	[ "$rc" -eq 0 ] || return 0
+	[ -n "$out" ] && [ "$out" != "None" ] || return 0
+	IDENTITY="$out"
+}
+
+identity_line() {
+	if [ -n "$IDENTITY" ]; then
+		printf '%s' "$IDENTITY"
+	else
+		printf 'UNRESOLVED (sts get-caller-identity: %s)' "${IDENTITY_ERR:-no answer}"
+	fi
+}
+
+resolve_identity
+echo "==> Identity: $(identity_line)"
+if [ -n "$PROFILE" ]; then
+	echo "    named by --profile ${PROFILE}"
+else
+	echo "    NO --profile GIVEN — these are ambient credentials, whatever the"
+	echo "    environment holds. Pass --profile to name them instead of inheriting"
+	echo "    them; this script's output is a rule that deletes objects."
+fi
+
 # ── The check ───────────────────────────────────────────────────────────────
 # Shared by --apply (which runs it afterwards) and --check (which runs only it),
 # because "applied" and "applied where I meant" are different claims and only
 # the second one is worth anything.
 
+# Its three non-zero answers are 1 (present but wrong), 3 (absent) and 4 (cannot
+# verify), and keeping them apart is the whole of pd-2hnp. The read's own
+# failure is classified rather than collapsed: only NoSuchLifecycleConfiguration
+# is absence. Everything else — AccessDenied first, but anything unrecognised
+# too — is "cannot verify", because the one place a governance check must not
+# guess is about a deletion rule it could not read.
 check_lifecycle() {
-	local applied
+	local applied errfile err rc=0
+	errfile="$(mktemp)"
 	applied="$("${AWS[@]}" "${AWS_ARGS[@]}" s3api get-bucket-lifecycle-configuration \
-		--bucket "$BUCKET" --output json 2>/dev/null)" || {
-		echo "no lifecycle configuration on ${BUCKET}" >&2
-		return 1
-	}
+		--bucket "$BUCKET" --output json 2>"$errfile")" || rc=$?
+	err="$(tr '\n' ' ' <"$errfile")"
+	rm -f "$errfile"
+
+	if [ "$rc" -ne 0 ]; then
+		case "$err" in
+		*NoSuchLifecycleConfiguration*)
+			echo "   !! ABSENT: ${BUCKET} carries no lifecycle configuration at all, so" >&2
+			echo "      ${TENANT_PREFIX} retains INDEFINITELY — the catalog's policy applied to the" >&2
+			echo "      one kind of data it was never meant for." >&2
+			echo "      identity: $(identity_line)" >&2
+			echo "      repair  : bash deploy/setup-tenant-zone.sh --apply" >&2
+			return 3
+			;;
+		*AccessDenied* | *AccessDeniedException* | *"not authorized"* | *Forbidden*)
+			echo "   !! CANNOT VERIFY: reading the lifecycle configuration of ${BUCKET} was DENIED." >&2
+			echo "      This is NOT \"there is no retention rule\". It is \"I am not allowed to" >&2
+			echo "      look\", and the two are opposite facts. Conclude NOTHING about retention" >&2
+			echo "      from this run, and do not apply or widen a rule on the strength of it." >&2
+			echo "      identity: $(identity_line)" >&2
+			echo "      needs   : s3:GetLifecycleConfiguration on arn:aws:s3:::${BUCKET}" >&2
+			echo "      aws said: ${err}" >&2
+			echo "      Both tenant-zone roles deny the lifecycle actions BY DESIGN — retention" >&2
+			echo "      is not theirs to widen. deploy/TENANT_ZONE.md §4a names the identity that" >&2
+			echo "      is meant to hold them." >&2
+			return 4
+			;;
+		*)
+			echo "   !! CANNOT VERIFY: reading the lifecycle configuration of ${BUCKET} failed for" >&2
+			echo "      a reason this script does not recognise. It is deliberately NOT reported" >&2
+			echo "      as absent: an unrecognised failure is exactly where guessing would be" >&2
+			echo "      guessing about a rule that deletes tenant data." >&2
+			echo "      identity: $(identity_line)" >&2
+			echo "      aws said: ${err:-<no message>} (exit ${rc})" >&2
+			return 4
+			;;
+		esac
+	fi
 
 	TENANT_PREFIX="$TENANT_PREFIX" CATALOG_PREFIXES="$CATALOG_PREFIXES" \
 		RETENTION_DAYS="$RETENTION_DAYS" python3 -c '
@@ -258,37 +368,89 @@ for rule in doc.get("Rules", []):
             f"window, and it is what bounds a missed deletion s blast radius"
         )
 
+# Absence and wrongness are different answers with different repairs, so they
+# are different exits. A document that exists but says nothing about the tenant
+# zone is ABSENT retention, not wrong retention — and if it ALSO carries a rule
+# that reaches the catalog, that is the more urgent fact and it wins.
 if not covering:
-    problems.append(
-        f"no enabled rule expires {tenant!r}: the tenant zone retains indefinitely, which "
-        f"is the catalog s policy applied to the one kind of data it was never meant for"
+    print(
+        f"   !! ABSENT: no enabled rule expires {tenant!r}, so the tenant zone retains "
+        f"indefinitely — the catalog s policy applied to the one kind of data it was "
+        f"never meant for",
+        file=sys.stderr,
     )
 
 for p in problems:
     print("   !! " + p, file=sys.stderr)
 if problems:
     sys.exit(1)
+if not covering:
+    sys.exit(3)
 print(f"   ok   {tenant} expires after {want_days} days ({", ".join(covering)}); "
       f"no rule reaches the catalog zone")
 ' <<<"$applied"
 }
 
+# Three outcomes, three sentences, three exits. The summary line repeats which
+# one it was, because the detail above it scrolls and the last line is what an
+# operator reads.
 if [ "$MODE" = "check" ]; then
 	echo "==> Checking tenant-zone retention on ${BUCKET}"
-	check_lifecycle || die "the tenant zone's retention is not what it must be"
-	exit 0
+	CHECK_RC=0
+	check_lifecycle || CHECK_RC=$?
+	case "$CHECK_RC" in
+	0) exit 0 ;;
+	3)
+		echo "!! ABSENT: the tenant zone has NO retention rule (exit 3)" >&2
+		exit 3
+		;;
+	4)
+		echo "!! CANNOT VERIFY: this identity could not read ${BUCKET}'s retention (exit 4)." >&2
+		echo "   That is not the same answer as \"absent\", and must not be acted on as one." >&2
+		exit 4
+		;;
+	*)
+		echo "!! the tenant zone's retention is not what it must be (exit 1)" >&2
+		exit 1
+		;;
+	esac
 fi
 
 # ── Apply ───────────────────────────────────────────────────────────────────
 
 echo "==> Applying tenant-zone retention to ${BUCKET}"
 LIFECYCLE="$(cat "${POLICY_DIR}/lifecycle.json")"
+PUT_ERR="$(mktemp)"
+PUT_RC=0
 "${AWS[@]}" "${AWS_ARGS[@]}" s3api put-bucket-lifecycle-configuration \
-	--bucket "$BUCKET" --lifecycle-configuration "$LIFECYCLE" >/dev/null
+	--bucket "$BUCKET" --lifecycle-configuration "$LIFECYCLE" >/dev/null 2>"$PUT_ERR" || PUT_RC=$?
+if [ "$PUT_RC" -ne 0 ]; then
+	# The wall every operator hits here once: NEITHER zone role may hold this
+	# permission, so the identity that applies retention is a third one. Say so
+	# rather than leaving a bare aws traceback.
+	PUT_MSG="$(tr '\n' ' ' <"$PUT_ERR")"
+	rm -f "$PUT_ERR"
+	echo "!! the lifecycle rule was NOT applied" >&2
+	echo "   identity: $(identity_line)" >&2
+	echo "   needs   : s3:PutLifecycleConfiguration on arn:aws:s3:::${BUCKET}" >&2
+	echo "   aws said: ${PUT_MSG:-<no message>} (exit ${PUT_RC})" >&2
+	echo "   Neither tenant-zone credential may carry that permission — both documents" >&2
+	echo "   deny the lifecycle actions by design. Applying retention is a separate" >&2
+	echo "   identity's job; deploy/TENANT_ZONE.md §4a names it." >&2
+	exit 1
+fi
+rm -f "$PUT_ERR"
 
 # Applied is not the claim; applied WHERE I MEANT is. A PUT that scoped itself
-# to the wrong prefix succeeds identically to one that did not.
-check_lifecycle || die "the rule was accepted but is not what it must be — see above"
+# to the wrong prefix succeeds identically to one that did not. The read-back
+# keeps its own status: a PUT that landed and then could not be READ is exit 4,
+# not a silent success and not "absent".
+APPLY_RC=0
+check_lifecycle || APPLY_RC=$?
+if [ "$APPLY_RC" -ne 0 ]; then
+	echo "!! the rule was accepted but the read-back did not confirm it — see above (exit ${APPLY_RC})" >&2
+	exit "$APPLY_RC"
+fi
 
 echo ""
 echo "==> Credential policies (attach these; IAM is account config, not repo config)"

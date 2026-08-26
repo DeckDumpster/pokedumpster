@@ -81,7 +81,9 @@ consequences follow, and both are wanted:
 It is enforced by an S3 lifecycle rule
 ([`policies/tenant-zone/lifecycle.json`](policies/tenant-zone/lifecycle.json)),
 applied and then read back by `setup-tenant-zone.sh`. Not documented —
-*mechanical*.
+*mechanical*. What that read-back may and may not conclude is §4b: "there is no
+rule" and "I could not read the rule" are opposite facts and get different
+exits, because the repair for one is to apply a rule the other already has.
 
 Retention is measured on **object age**, not on `as_of`. So a tenant whose
 state is still current has to be re-materialised inside the window or they
@@ -150,11 +152,13 @@ else here. Nothing holds a long-lived key.
 ## 4. Running it
 
 ```bash
-# Apply the 90-day retention, then verify what actually landed
-bash deploy/setup-tenant-zone.sh --apply
+# Apply the 90-day retention, then verify what actually landed.
+# --profile names the identity; §4a says which one it has to be, and why it
+# is neither of the two zone credentials.
+bash deploy/setup-tenant-zone.sh --apply --profile pkdump
 
-# Verify only — safe to run any time, exits non-zero if the rule is wrong
-bash deploy/setup-tenant-zone.sh --check
+# Verify only — safe to run any time; the exit code is the answer (below)
+bash deploy/setup-tenant-zone.sh --check --profile pkdump
 
 # Render the two IAM documents with the bucket substituted, to attach
 bash deploy/setup-tenant-zone.sh --render --out /tmp/pkdump-policies
@@ -170,6 +174,65 @@ configuration it must not guess.
 `--apply` always re-reads the rule afterwards and checks it, because a
 lifecycle PUT that scoped itself to the wrong prefix succeeds *identically*
 to one that did not.
+
+### 4a. Which identity applies retention — and which one may check it
+
+**`role/pokedump-data`, reached as `AWS_PROFILE=pkdump`.** Write that down
+before reaching for the zone credentials, because they are the obvious guess
+and they are the wrong one *by design*:
+
+> Both `catalog-credentials.json` and `tenant-credentials.json` **explicitly
+> deny** `s3:PutLifecycleConfiguration`. Retention is not theirs to widen — a
+> zone credential that could rewrite the rule bounding its own blast radius
+> would make the 90-day limit advisory. So the identity that applies retention
+> is deliberately a *third* one, and on 2026-08-26 it did not exist on the box:
+> the permission was granted to `role/pokedump-data`, which is what
+> `AWS_PROFILE=pkdump` assumes.
+
+Checking needs `s3:GetLifecycleConfiguration` on the bucket, and that is a
+separate grant from the read/write access to either prefix. An identity that
+can list `raw/` all day may still be unable to read the bucket's lifecycle.
+
+**Pass `--profile`.** With it omitted the script acts as whatever the
+environment holds; on the night this was written that was *another project's
+backup user*, pointed at this project's lake bucket. It failed safe only
+because that user had no lifecycle permission anywhere. The script now resolves
+and prints its identity before it acts —
+
+```
+==> Identity: arn:aws:sts::…:assumed-role/pokedump-data/…
+    named by --profile pkdump
+```
+
+— and names it again in every refusal, because a denial is only diagnosable if
+you know who was denied. An endpoint that does not implement
+`sts:GetCallerIdentity` (MinIO does not) prints `UNRESOLVED` with the reason
+rather than stopping; a governance script that cannot run against a stand-in
+bucket is one that cannot be tested.
+
+### 4b. `--check` has three answers, and they are not interchangeable
+
+| exit | verdict | what it means | repair |
+|---|---|---|---|
+| 0 | correct | the rule is present and is the rule | — |
+| 1 | **PRESENT BUT WRONG** | a rule exists and is not the rule: wrong window, or a prefix reaching the catalog. Every configuration refusal below is also 1 | fix the rule |
+| 2 | usage | — | — |
+| 3 | **ABSENT** | no lifecycle configuration at all, or none of its enabled rules covers `tenant/`. Retention was never applied | `--apply` |
+| 4 | **CANNOT VERIFY** | the read itself failed — `AccessDenied` first among them. Says nothing about whether a rule exists | grant `s3:GetLifecycleConfiguration`, re-check |
+
+Exit 3 and exit 4 were **one sentence** until `pd-2hnp`: `--check` printed "no
+lifecycle configuration" for a genuinely absent rule *and* for an
+`AccessDenied`. "There is no retention rule" and "I am not allowed to look" are
+opposite facts.
+
+The direction that hurts is not the one it was found in. Once the rule IS
+applied, an operator whose credentials cannot read it is told the rule was
+never applied — and the repair for *that* is to apply or widen one, against a
+bucket whose retention is already correct. **A governance check that cannot
+tell absent from forbidden is worse than no check, because it is trusted.**
+
+So an unrecognised error is classified as 4 as well, never as 3. The one place
+this script may not guess is about a deletion rule it could not read.
 
 ### What it refuses
 
@@ -198,7 +261,8 @@ than trustable.
 | § | claim |
 |---|---|
 | §1/§1b | retention applied by the real script; it refuses an unnamed bucket and the backup bucket |
-| §2 | the retention check goes **red** three ways: whole-bucket rule, 365 days, a second rule reaching `raw/` — then green again |
+| §2 | the retention check goes **red** and the **exit code is asserted**: whole-bucket rule, 365 days and a second rule reaching `raw/` each give 1; the rule deleted gives 3 — then green again |
+| §2b | the same **correct** rule read by a real credential MinIO really denies gives **4, not 3**, names `s3:GetLifecycleConfiguration`, and never renders the ABSENT verdict — then the rule it could not see is confirmed still applied |
 | §3/§4 | the two identities carry the rendered documents, and each **can** reach its own zone (so a denial below is a denial, not an absence) |
 | §5 | **the boundary, both directions** — catalog cannot read/list/write `tenant/`; tenant cannot read/list/write `raw/` or `lake/` |
 | §6 | **the same assertion functions go red** when a credential is replaced by a whole-bucket grant — then green again |
@@ -209,6 +273,15 @@ than trustable.
 §6 is the point of the file. A boundary check that has only ever been seen
 passing is not known to check anything, so it runs the *identical functions*
 §5 ran against a deliberately broken configuration.
+
+`tests/deploy/run.sh` §15 is the other half of §2/§2b, and it is hermetic and
+sub-second: the classification is pure string work over what the aws CLI says,
+so it is pinned there against a stubbed CLI — six answers including the two the
+container tier cannot easily stage (an error nobody anticipated, and a
+lifecycle document that exists but says nothing about `tenant/`). The container
+tier is where a **real** credential is **really** denied by MinIO; this is where
+the mapping from what the CLI said to which of the three answers it is has been
+seen red for every case.
 
 §8 exists because the prefixes and the retention live in three places that
 **cannot** share code — Rust (the shipper reads them at runtime), the policy

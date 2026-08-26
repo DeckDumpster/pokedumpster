@@ -410,7 +410,7 @@ echo "==> §5b THE HARD GATE: sealed does not move the cards"
 # the feature", computed by this build.
 #
 # `zone_sealed_holdings` is transport state and the next `pkdump-ship holdings`
-# rewrites it wholesale, so emptying it here damages nothing — and §5c puts it
+# rewrites it wholesale, so emptying it here damages nothing — and §5d puts it
 # back before anything else reads it.
 CARDS_WITH_SEALED=$(dump "$ALICE" "$DATE_NEW" | grep -v '^sealed	')
 SEALED_ROW=$(dump "$ALICE" "$DATE_NEW" | grep '^sealed	') ||

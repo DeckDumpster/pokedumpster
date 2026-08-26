@@ -496,7 +496,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `seed.sh <instance>` | Populate one instance's catalog in place |
 | `seed.sh --volume [--force]` | Build the reusable `pkdump-seed-data` volume |
 | `setup.sh <name> [port] [--init] [--test]` | Create an instance. `--test` seeds from the committed fixture; `--init` clones the seed volume |
-| `deploy.sh <name>` | Rebuild image, reinstall the unit files from this checkout, and restart one instance |
+| `deploy.sh <name>` | Rebuild **both** images (the app, and the lake job image when the instance has a lakehouse), reinstall the unit files from this checkout, and restart one instance |
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
 | `restore-litestream.sh [--yes] [--at=<RFC3339>] [--unattributed] <inst> [database-id]` | Restore ONE collection from the S3 backup (latest or point-in-time). Addressed by the database's file stem, not by a handle — `pkdump tenant list` says which is whose. **Refuses a database the registry cannot name** (restore `--registry` first; `--unattributed` for a purged one). See [RESTORE.md](RESTORE.md) |
 | `backup-check.sh <inst> [user]` | Layer 1 — verify every S3 replica (tenants on freshness, the registry on correspondence), ping the off-box monitor (run by the `pkdump-backup-check@` timer). The verification always runs; the ping URL controls only the ping |
@@ -504,6 +504,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `diskcheck.sh --floor [path...]` | Gate — exit non-zero under `PKDUMP_DISK_FLOOR_GB` free; run by `ci.sh` before it builds |
 | `setup-lake.sh <inst> [--port N] [--remove]` | Install the offline lakehouse — the Nessie catalog's Quadlet units and the PyIceberg job image. Refuses to run without `~/.config/pkdump/lake.env`. See [Offline lakehouse](#offline-lakehouse--nessie--iceberg) |
+| `lake-lib.sh` | Sourced — the lake network as seen from outside a job (catalog URI, health URL, readiness probe), and the one place `localhost/pkdump-lake:<inst>` is named and built. Shared by `setup-lake.sh` and `deploy.sh` so a deploy cannot ship the app image and leave the job image behind (pd-rn4c) |
 | `store-lib.sh` | Sourced — resolves which Podman store an instance's image and volume live in (`PKDUMP_STORE_ROOT`) |
 | `units-lib.sh` | Sourced — renders every unit template this checkout ships into `~/.config`, preserving the instance's published port. Shared by `setup.sh` and `deploy.sh` so a deploy cannot ship a binary and leave the units behind (pd-2t6u) |
 | `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin); trims to the first 900 bytes, and sends an unchanged alert once per 24h ([the same page, twice](#the-same-page-twice)) |
@@ -649,10 +650,17 @@ Two pieces, both instance-scoped:
   directory**, not a podman volume: a rootless volume lives in the container
   store, and this box's default store is the 98 G disk prod runs from.
 - **`localhost/pkdump-lake:<inst>`** — the job runtime, `lake/` in this repo.
-  PyIceberg, no JVM. Built by `setup-lake.sh`.
+  PyIceberg, no JVM. Installed by `setup-lake.sh` and **rebuilt by every
+  `deploy.sh <inst>`** thereafter (pd-rn4c). It is a second image this checkout
+  ships, and while only the installer built it, a change under `lake/` reached a
+  box only if an operator remembered a second command — invisibly, because the
+  stale jobs go on exiting 0. Prod ran a value-snapshots transform six hours
+  older than its own checkout for a day, recording no sealed value series at
+  all.
 
 ```bash
-bash deploy/setup-lake.sh prod                 # unit + network + job image
+bash deploy/setup-lake.sh prod                 # unit + network + job image (install)
+bash deploy/deploy.sh prod                     # ...and every deploy rebuilds the job image
 systemctl --user start pkdump-nessie-prod
 journalctl --user -u pkdump-nessie-prod -f
 

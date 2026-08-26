@@ -1058,6 +1058,32 @@ discovered from a row count. Filed as **pd-5w4n**.
 | the provenance table | `crates/pkdump-db/src/raw_derivation.rs` |
 | the aggregate it must reproduce | `crates/pkdump-db/src/value_history.rs` |
 | the test-tier upstream override | `crates/pkdump-ingest/src/upstream.rs` |
+| the job image: named and built in ONE place | `deploy/lake-lib.sh` |
+
+### Shipping a change to `lake/` (`pd-rn4c`)
+
+`bash deploy/deploy.sh <inst>` — the ordinary deploy — **rebuilds the job image
+too**, for any instance that has a lakehouse installed. Nothing needs
+restarting: the lake jobs are one-off containers their timers start, so the next
+scheduled run is the one that picks the new image up.
+
+That was not always true, and the gap was expensive. `deploy/setup-lake.sh` is
+an *installer*; while it was the only thing that ever built
+`localhost/pkdump-lake:<inst>`, a change under `lake/` reached a box only if an
+operator remembered a second command. The stale half gives no signal at all —
+the jobs keep exiting 0 over yesterday's code. On 2026-08-26 prod's job image
+predated `pd-bbv7` by six hours while its checkout did not:
+`catalog.sealed_prices` was never written and the transform recorded no
+`dimension='sealed'` row, so three real runs each reported "1 tenant(s)
+snapshotted, 0 skipped" while the chart showed $10,636.81 of cards with
+$10,351.47 of sealed product beside it and no line for it.
+
+If you ever need to rebuild the image alone — after a `podman rmi`, or to check
+a build without touching the running app:
+
+```bash
+bash deploy/setup-lake.sh <inst>   # idempotent: image + network + unit
+```
 
 The Rust half writes `raw/` and never reads it; the Python half reads it and
 never writes. They share nothing but the key layout and the manifest shape,

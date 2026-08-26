@@ -39,6 +39,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # instance's store would arm that trap (pd-yfev).
 # shellcheck source=deploy/store-lib.sh
 . "$SCRIPT_DIR/store-lib.sh"
+# ...and where the job image is named and built, shared with deploy/deploy.sh so
+# that installing a lakehouse and shipping a change to one build the same image
+# the same way (pd-rn4c).
+# shellcheck source=deploy/lake-lib.sh
+. "$SCRIPT_DIR/lake-lib.sh"
 
 INSTANCE="${1:-}"
 [ -n "$INSTANCE" ] || {
@@ -68,7 +73,7 @@ LAKE_ENV="${HOME}/.config/pkdump/lake.env"
 QUADLET_DIR="${HOME}/.config/containers/systemd"
 NESSIE_UNIT="${QUADLET_DIR}/pkdump-nessie-${INSTANCE}.container"
 NETWORK="pkdump-lake-${INSTANCE}"
-JOB_IMAGE="localhost/pkdump-lake:${INSTANCE}"
+JOB_IMAGE="$(pkdump_lake_job_image "$INSTANCE")"
 
 if [ -n "$REMOVE" ]; then
     echo "==> Removing the lakehouse units for '${INSTANCE}'"
@@ -156,9 +161,7 @@ pkdump_store_adopt_instance "$INSTANCE"
 pkdump_store_activate
 
 echo "==> Building the PyIceberg job image"
-# The lake jobs' runtime: PyIceberg and nothing else. Nessie is the only JVM in
-# this design and it is somebody else's image.
-podman build -t "$JOB_IMAGE" -f "${REPO_DIR}/lake/Containerfile" "${REPO_DIR}/lake"
+pkdump_lake_job_image_build "$INSTANCE" "$REPO_DIR"
 
 echo "==> Installing the Quadlet unit"
 # The network is created here rather than as a .network unit, on purpose: a

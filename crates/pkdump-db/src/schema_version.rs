@@ -235,8 +235,8 @@ pub fn gate(conn: &Connection, db: Database) -> Result<i64> {
 /// Only the refusal applies here. An attached catalog is opened read-only
 /// and its schema is not applied through this connection, so a *lower*
 /// version is not this caller's to adopt: it means the catalog was built by
-/// an older binary and `pkdump setup` / `pkdump data refresh` will stamp it
-/// on their next run. Refusing it instead would take prod down on a version
+/// an older binary and the next read-write open — `pkdump setup`, or the
+/// nightly `pkdump-lake-derive shared` — will stamp it. Refusing it instead would take prod down on a version
 /// skew that is harmless in this direction.
 pub fn gate_attached(conn: &Connection, db: Database, schema: &str) -> Result<i64> {
     gate_schema(conn, db, schema)

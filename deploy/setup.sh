@@ -171,17 +171,18 @@ fi
 # fact about this AWS account, not a repo constant, so it is host config in the
 # same shape as alerts.env and store.env — and it is scaffolded commented-out so
 # a new box has the knob visible rather than undiscoverable. Nothing lands until
-# BOTH this file names a bucket AND a run passes --land-raw (or PKDUMP_LAND_RAW=1);
-# an unconfigured lake makes those commands refuse rather than land nothing.
-# See deploy/LAKE.md.
+# this file names a bucket, and an unconfigured lake makes the commands that
+# need one REFUSE rather than land nothing. Since pd-lunn `pkdump data refresh`
+# is one of them unconditionally — it lands and builds nothing, so a run with
+# nowhere to land has nothing to do. See deploy/LAKE.md.
 LAKE_ENV="${HOME}/.config/pkdump/lake.env"
 if [ ! -f "$LAKE_ENV" ]; then
     mkdir -p "${HOME}/.config/pkdump"
     cat > "$LAKE_ENV" <<'EOF'
 # Host-wide raw-landing-zone config for PokeDumpster (pd-th42).
 #
-# `pkdump data refresh --land-raw` writes every upstream response it fetches to
-# this bucket, immutably, before parsing it:
+# `pkdump data refresh` writes every upstream response it fetches to this
+# bucket, immutably, before parsing it:
 #
 #   raw/source=<tcgcsv|pokemontcgio|pokemon-tcg-data>/dataset=<...>/
 #       ingest_date=YYYY-MM-DD/run=<ULID>/part-NNNN.<ext>.zst  +  _manifest.json
@@ -391,10 +392,13 @@ fi
 echo "    Start:             systemctl --user start ${SERVICE_NAME}"
 echo "    Port:              podman port systemd-${SERVICE_NAME}"
 echo "    Logs:              journalctl --user -u ${SERVICE_NAME} -f"
-echo "    Refresh timer:     systemctl --user enable --now pkdump-refresh@${INSTANCE}.timer"
+echo "    Nightly catalog:   the refresh LANDS and the derive BUILDS — enable BOTH or neither."
+echo "                       The refresh refuses to run while the derive timer is off (pd-lunn),"
+echo "                       because landing without deriving freezes the catalog silently:"
+echo "                       systemctl --user enable --now pkdump-derive@${INSTANCE}.timer"
+echo "                       systemctl --user enable --now pkdump-refresh@${INSTANCE}.timer"
 echo "    Nightly lake chain: needs the lakehouse first (bash deploy/setup-lake.sh ${INSTANCE}), then"
 echo "                       land -> derive -> prices -> ship -> transform, each ordered after the last:"
-echo "                       systemctl --user enable --now pkdump-derive@${INSTANCE}.timer"
 echo "                       systemctl --user enable --now pkdump-prices@${INSTANCE}.timer"
 echo "                       systemctl --user enable --now pkdump-ship@${INSTANCE}.timer"
 echo "                       systemctl --user enable --now pkdump-value-snapshots@${INSTANCE}.timer"

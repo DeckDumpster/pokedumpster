@@ -1,20 +1,35 @@
 #!/usr/bin/env bash
 #
-# The nightly catalog refresh (pd-kncd). What
+# The nightly catalog LANDING run (pd-kncd, pd-lunn). What
 # pkdump-refresh@<instance>.service actually runs.
 #
-# `pkdump data refresh` fetches every upstream and rebuilds `shared.sqlite`.
-# With landing on (`--land-raw` / `PKDUMP_LAND_RAW=1`) it also writes every
-# response it fetched into the `raw/` prefix of the lake bucket, before parsing
-# it. This file is that invocation, with the instance's data volume, image, lake
+# `pkdump data refresh` fetches every upstream and writes each response into
+# the `raw/` prefix of the lake bucket. It builds no catalog: since pd-lunn
+# `shared.sqlite` has exactly ONE builder, `pkdump-lake-derive shared`, run by
+# pkdump-derive@<instance>.timer against the partition this job just landed.
+# This file is that invocation, with the instance's data volume, image, lake
 # settings and AWS credentials resolved from where they actually live, so a
 # timer can run it unattended.
 #
 # Usage:
 #   bash deploy/refresh.sh <instance> [refresh args...]
 #
-#   bash deploy/refresh.sh prod                 # fetch + derive, no landing
-#   bash deploy/refresh.sh prod --land-raw      # …and land every response
+#   bash deploy/refresh.sh prod                 # fetch + land
+#
+# ── LANDING IS NO LONGER OPTIONAL ───────────────────────────────────────────
+# There is no --land-raw and no PKDUMP_LAND_RAW opt-in any more, because there
+# is nothing left for a non-landing run to do. The flag was the optional half
+# of a command whose other half derived the catalog; with that half deleted, a
+# refresh that does not land fetches every upstream, parses none of it and
+# exits 0 — an expensive no-op against somebody else's API. So `lake.env` is
+# REQUIRED here, and the two refusals below fire before the first fetch.
+#
+# ── AND THE DERIVE TIMER IS NO LONGER OPTIONAL EITHER ───────────────────────
+# This is the cutover's one dangerous shape. Landing without deriving is a box
+# whose catalog silently stops advancing: every night green, every timer
+# healthy, prices frozen at the day of the upgrade. Nothing else here would
+# report it — the landing succeeded, and the thing that did not happen has no
+# unit to fail. So it is checked, by name, before anything is fetched.
 #
 # ── WHY THIS FILE EXISTS: podman exec DROPS THE ENVIRONMENT ─────────────────
 # The unit used to be one line:
@@ -58,12 +73,9 @@
 # container to get its work done.
 #
 # ── EXIT STATUS IS THE COMMAND'S, UNCHANGED ─────────────────────────────────
-#   0  the catalog was refreshed (and, with landing on, the bytes are in raw/)
-#   1  it was not
-#
-# There is no exit 2 here and no SuccessExitStatus= on the unit, for the same
-# reason deploy/derive.sh has none: this writes ONE catalog, and a catalog that
-# is quietly smaller reads as cards that do not exist.
+#   0  every upstream was fetched and the bytes are in raw/
+#   2  PARTIAL: the pokemontcg.io tail gave up, TCGCSV landed (see below)
+#   1  it did not run, or it failed
 set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
@@ -84,32 +96,49 @@ IMAGE="${PKDUMP_REFRESH_IMAGE:-localhost/pkdump:${INSTANCE}}"
 # A podman volume name or a host path — `-v` takes either.
 DATA="${PKDUMP_REFRESH_DATA:-pkdump-${INSTANCE}-data}"
 
-# --- Is landing being asked for? --------------------------------------------
-# Two ways in, and they must agree: the flag on this script's own command line,
-# and PKDUMP_LAND_RAW in the environment (which is how the unit's drop-in turns
-# it on, since a unit runs a fixed command line). The same two spellings
-# crates/pkdump-cli/src/landing.rs accepts.
-LAND_RAW=0
-case " $* " in *" --land-raw "*) LAND_RAW=1 ;; esac
-case "${PKDUMP_LAND_RAW:-}" in 1 | true | yes) LAND_RAW=1 ;; esac
+# --- The derive timer, which is what turns tonight's bytes into a catalog ---
+# Checked FIRST, before a container starts and long before an upstream is
+# touched: a refusal that costs an hour of somebody else's API is a bad
+# refusal.
+#
+# There is no seam and no way to skip it. A check that a harness can switch off
+# is a check production can be missing, and this is the one condition under
+# which the whole cutover fails silently. `systemctl --user is-enabled` is asked
+# directly; tests/deploy/run.sh drives this script with a systemctl of its own
+# on PATH, which exercises this branch rather than bypassing it.
+DERIVE_UNIT="pkdump-derive@${INSTANCE}.timer"
+DERIVE_STATE="$(systemctl --user is-enabled "$DERIVE_UNIT" 2>/dev/null || true)"
+case "$DERIVE_STATE" in
+enabled | enabled-runtime | static | indirect) ;;
+*)
+    echo "refresh: ${DERIVE_UNIT} is not enabled (${DERIVE_STATE:-not installed})." >&2
+    echo "  This job LANDS; it does not build the catalog. Since pd-lunn the only thing" >&2
+    echo "  that builds shared.sqlite is pkdump-lake-derive, and that unit is what runs it." >&2
+    echo "  Landing without deriving is a box whose catalog silently stops advancing:" >&2
+    echo "  every night green, prices frozen at the day of the upgrade. Refusing instead." >&2
+    echo "" >&2
+    echo "    systemctl --user enable --now ${DERIVE_UNIT}" >&2
+    echo "" >&2
+    echo "  See deploy/LAKE.md §8. If this box is meant to have no lake at all, it has no" >&2
+    echo "  nightly catalog update either — build one by hand with 'pkdump setup'." >&2
+    exit 1
+    ;;
+esac
 
-# --- The lake's settings ----------------------------------------------------
-# Sourced when the file is there, and NOT required: a box with no lake still
-# refreshes its catalog exactly as it did before any of this existed. That is
-# the difference from deploy/derive.sh, which reads raw/ and has nothing to do
-# without one.
+# --- The lake's settings, which are now REQUIRED --------------------------
+# This used to be sourced-when-present, because a box with no lake still
+# refreshed its catalog exactly as it did before any of this existed. That is
+# no longer a thing a box can do: the catalog is built from raw/, so a refresh
+# with nowhere to land is a refresh with nothing to do (pd-lunn). The refusal
+# names the file, the way deploy/derive.sh's does.
 if [ -f "$LAKE_ENV" ]; then
     # shellcheck disable=SC1090
     { set -a; . "$LAKE_ENV"; set +a; }
-elif [ "$LAND_RAW" = 1 ]; then
-    # Asked for and unconfigured is a REFUSAL that names the file, never a
-    # silent skip — deploy/LAKE.md §3. The binary refuses on this too, but it
-    # would be refusing about a path inside the container; the file an operator
-    # has to write is this one, on the host, and this is the process that reads
-    # it.
-    echo "refresh: landing was asked for but ${LAKE_ENV} does not exist." >&2
+else
+    echo "refresh: ${LAKE_ENV} does not exist — this box has no lake configured." >&2
     echo "  The lake bucket is host config, like alerts.env and litestream.env beside it." >&2
-    echo "  Write that file (deploy/LAKE.md §3), or stop asking for --land-raw." >&2
+    echo "  Without a landing zone there is nowhere for tonight's bytes to go, and nothing" >&2
+    echo "  that will ever derive them into a catalog. See deploy/LAKE.md §3." >&2
     exit 1
 fi
 
@@ -125,9 +154,9 @@ fi
 # Deliberately not an alias table. Teaching the code to accept both spellings is
 # the fallback logic this project's No-Fallback convention forbids, and a
 # half-configured lake that half-works is worse than one that refuses.
-if [ "$LAND_RAW" = 1 ] && [ -z "${PKDUMP_LAKE_DIR:-}" ] &&
+if [ -z "${PKDUMP_LAKE_DIR:-}" ] &&
     { [ -z "${PKDUMP_LAKE_S3_BUCKET:-}" ] || [ -z "${PKDUMP_LAKE_S3_REGION:-}" ]; }; then
-    echo "refresh: landing was asked for but ${LAKE_ENV} does not set PKDUMP_LAKE_S3_BUCKET and PKDUMP_LAKE_S3_REGION." >&2
+    echo "refresh: ${LAKE_ENV} does not set PKDUMP_LAKE_S3_BUCKET and PKDUMP_LAKE_S3_REGION." >&2
     echo "  Those exact names are what crates/pkdump-lake/src/config.rs reads. An earlier draft" >&2
     echo "  of that file used PKDUMP_LAKE_BUCKET / PKDUMP_LAKE_REGION, which nothing reads —" >&2
     echo "  'the lake is configured' and 'configured with the names the code reads' are not the" >&2
@@ -159,14 +188,15 @@ fi
 # the refresh rebuilds a catalog nothing will ever read.
 ENV_ARGS=(-e PKDUMP_HOME=/data)
 
-# Forwarded UNCONDITIONALLY when set — never gated on the lake being configured.
-# A wrapper that dropped this because it could not find a bucket would have
-# rebuilt the exact bug this file exists to fix: landing asked for, nothing
-# landed, exit 0.
-[ "$LAND_RAW" = 1 ] && ENV_ARGS+=(-e PKDUMP_LAND_RAW=1)
-
+# The retry budget is in this list because pkdump-refresh@.service documents a
+# drop-in `Environment=PKDUMP_HTTP_RETRY_ATTEMPTS=` as the way to widen it for a
+# stretch of bad upstream weather — and a drop-in sets it in THIS process's
+# environment, which is exactly the trip that pd-vk22 showed does not happen by
+# itself. A knob a unit documents and a wrapper drops is the same silent no-op
+# with a different variable name on it.
 for VAR in PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION PKDUMP_LAKE_S3_PREFIX \
-    PKDUMP_LAKE_S3_ENDPOINT PKDUMP_LAKE_DIR AWS_PROFILE; do
+    PKDUMP_LAKE_S3_ENDPOINT PKDUMP_LAKE_DIR AWS_PROFILE \
+    PKDUMP_HTTP_RETRY_ATTEMPTS PKDUMP_HTTP_RETRY_BASE_MS; do
     [ -n "${!VAR:-}" ] && ENV_ARGS+=(-e "${VAR}=${!VAR}")
 done
 
@@ -183,7 +213,7 @@ if [ -f "${CONF_DIR}/aws/config" ] && podman secret inspect "pkdump-${INSTANCE}-
         -e AWS_CONFIG_FILE=/aws/config
         -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials
     )
-elif [ "$LAND_RAW" = 1 ] && [ -z "${PKDUMP_LAKE_DIR:-}" ]; then
+elif [ -z "${PKDUMP_LAKE_DIR:-}" ]; then
     # Not a refusal: an endpoint-backed stand-in can be reached with static keys
     # already in this environment, and the run fails loudly at its first PUT
     # either way. It is said out loud because "AccessDenied on part-0000" is a
@@ -194,12 +224,14 @@ elif [ "$LAND_RAW" = 1 ] && [ -z "${PKDUMP_LAKE_DIR:-}" ]; then
 fi
 
 # --- Run it -----------------------------------------------------------------
-# The data volume is mounted read-WRITE: the catalog is the job's output. Not
-# :ro either way — shared.sqlite is a WAL database and SQLite cannot open one
-# through a read-only mount at all.
+# The data volume is mounted read-write even though this job no longer writes
+# the catalog: it READS shared.sqlite to decide which sets are new, and SQLite
+# cannot open a WAL database through a read-only mount at all. The read-only
+# part of the claim is enforced one level in, at the connection —
+# `pkdump_db::open_shared_readonly`.
 #
 # The server is running against this same volume, as it was when the refresh ran
-# inside its container: same host inode, same POSIX locks, one writer.
+# inside its container: same host inode, same POSIX locks.
 #
 # --entrypoint, because the image's is `pkdump serve`.
 # --pull=never, because the image is built locally and named localhost/… — a
@@ -211,7 +243,7 @@ fi
 # what keeps the job's status the one that is read, not tee's.
 
 echo "==> refresh ${INSTANCE}: $*"
-echo "    data ${DATA}, image ${IMAGE}, landing $([ "$LAND_RAW" = 1 ] && echo on || echo off)"
+echo "    data ${DATA}, image ${IMAGE}"
 
 LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
@@ -227,7 +259,7 @@ OUT="$(cat "$LOG")"
 
 # Exit 2 is PARTIAL, not failed (pd-nons, crates/pkdump-cli/src/data.rs): the
 # pokemontcg.io tail ran out of retries, the run carried on, and TCGCSV — the
-# perishable half — was acquired and derived. The set list is as old as the last
+# perishable half — was fetched and landed. The set list is as old as the last
 # run that finished one.
 #
 # That status deliberately pages, and the reasoning in pkdump-refresh.service is
@@ -261,7 +293,7 @@ if [ "$RC" -eq 2 ]; then
     STALL_H=$(( ( $(date +%s) - LAST_OK ) / 3600 ))
 
     if [ "$LAST_OK" -gt 0 ] && [ "$STALL_H" -lt "$PARTIAL_TOLERANCE_HOURS" ]; then
-        echo "refresh: PARTIAL — the pokemontcg.io tail failed, prices and products were acquired (${INSTANCE})."
+        echo "refresh: PARTIAL — the pokemontcg.io tail failed, prices and products were landed (${INSTANCE})."
         echo "  The set list last advanced ${STALL_H}h ago, inside the ${PARTIAL_TOLERANCE_HOURS}h tolerance — not paging."
         echo "  If this keeps up it WILL page: that is the stall the status exists to catch."
         exit 0
@@ -272,13 +304,13 @@ if [ "$RC" -eq 2 ]; then
         echo "  Nothing establishes that the set list was ever current, so this is not treated as a transient." >&2
     else
         echo "refresh: FAILED — the set list has not advanced in ${STALL_H}h (tolerance ${PARTIAL_TOLERANCE_HOURS}h) (${INSTANCE})." >&2
-        echo "  Prices are still being acquired; it is the pokemontcg.io tail that has stopped. This is the persistent stall, not one bad night." >&2
+        echo "  Prices are still being landed; it is the pokemontcg.io tail that has stopped. This is the persistent stall, not one bad night." >&2
     fi
     exit 2
 fi
 
 if [ "$RC" -ne 0 ]; then
-    echo "refresh: FAILED — the catalog was NOT refreshed (${INSTANCE})" >&2
+    echo "refresh: FAILED — nothing was landed (${INSTANCE})" >&2
     exit "$RC"
 fi
 
@@ -288,15 +320,18 @@ if [ -n "$TAIL_MARKER" ]; then
     date +%s > "$TAIL_MARKER" 2>/dev/null || true
 fi
 
-# Landing on and a run that never said where it was landing is the silent
-# green no-op this whole file exists to make impossible. `pkdump-cli`'s
-# landing::open prints that line before the first fetch, so its absence means
-# the flag did not survive the trip into the container — a wiring regression,
-# not a data problem, and it must not be reported as a successful refresh.
-if [ "$LAND_RAW" = 1 ] && ! printf '%s\n' "$OUT" | grep -q '^Landing raw upstream responses in '; then
-    echo "refresh: landing was asked for but the run never opened a landing zone (${INSTANCE})" >&2
-    echo "  PKDUMP_LAND_RAW did not reach the process — the catalog is fine, raw/ is not." >&2
+# A run that never said where it was landing is the silent green no-op this
+# whole file exists to make impossible. `pkdump-cli`'s landing::require prints
+# that line before the first fetch, so its absence means the lake settings did
+# not survive the trip into the container — a wiring regression, and it must not
+# be reported as a successful run. It is unconditional now: there is no longer a
+# shape of this job that legitimately lands nothing.
+if ! printf '%s\n' "$OUT" | grep -q '^Landing raw upstream responses in '; then
+    echo "refresh: the run never opened a landing zone (${INSTANCE})" >&2
+    echo "  The lake settings did not reach the process. Nothing is in raw/, so there is" >&2
+    echo "  nothing for tonight's derive to build a catalog from." >&2
     exit 1
 fi
 
-echo "refresh: OK — the catalog was refreshed (${INSTANCE})"
+echo "refresh: OK — tonight's upstream responses are in raw/ (${INSTANCE})"
+echo "  The catalog is built from them by pkdump-derive@${INSTANCE}.timer, not by this job."

@@ -7,7 +7,10 @@ SQLite catalog (`shared.sqlite`). The upstream APIs are accessed only during
 explicit cache-population commands:
 
 - `pkdump setup` — full rebuild of the shared catalog
-- `pkdump data refresh` — incremental nightly refresh (new sets + prices)
+- `pkdump data refresh` — the nightly LANDING run: it fetches the upstreams and
+  writes every response into `raw/`. Since pd-lunn it builds no catalog itself
+- `pkdump-lake-derive shared` — the nightly BUILD, replaying one `raw/`
+  partition. Offline; the only thing that writes `shared.sqlite` incrementally
 
 Every other code path — the HTTP API, the binder-browse endpoint, collection
 queries, CSV-import resolution, exports — reads exclusively from the local DB
@@ -25,6 +28,7 @@ no network access required and no upstream rate-limit exposure.
 2. Query through `pkdump-db` repositories — never call `pkdump-ingest`'s HTTP
    clients at request time.
 3. If the data isn't cached, return an error telling the user to run
-   `pkdump data refresh`. Do NOT fall back to the live API.
+   `pkdump setup`. Do NOT fall back to the live API. (`pkdump data refresh`
+   alone will not fill it any more — it lands, and the nightly derive builds.)
 4. If you need data not in the current schema, extend the ingest pipeline and
    add a migration — not a runtime fetch.

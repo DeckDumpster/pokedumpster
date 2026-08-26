@@ -66,8 +66,8 @@ impl DeriveClock {
                 "{what}: the run's manifest records no started_at, so the clock its rows were \
                  stamped with cannot be recovered.\n\
                  That partition was landed before the offline derive existed. Re-land the date \
-                 (pkdump data refresh --land-raw) and derive from the new run, or derive a date \
-                 whose manifests carry the field."
+                 (pkdump data refresh) and derive from the new run, or derive a date whose \
+                 manifests carry the field."
             );
         }
         let parsed = DateTime::parse_from_rfc3339(started_at.trim()).map_err(|e| {
@@ -117,7 +117,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("tcgcsv/groups 2026-08-01"), "{err}");
-        assert!(err.contains("--land-raw"), "{err}");
+        assert!(err.contains("pkdump data refresh"), "{err}");
         assert!(DeriveClock::from_manifest("not a date", "x").is_err());
     }
 }

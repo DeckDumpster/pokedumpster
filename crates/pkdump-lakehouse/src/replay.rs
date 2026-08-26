@@ -153,7 +153,7 @@ impl ReplaySource for RawReplay {
             "raw/ has no record of {url}.\n\
              The landing zone no longer covers this derivation's inputs: either an \
              endpoint was added without landing it, or the upstream's origin moved. \
-             Re-land the date (pkdump data refresh --land-raw) and derive again."
+             Re-land the date (pkdump data refresh) and derive again."
         ))
     }
 }
@@ -226,7 +226,7 @@ mod tests {
             err.contains("raw/ has no record of https://up/3/9/prices"),
             "{err}"
         );
-        assert!(err.contains("--land-raw"), "{err}");
+        assert!(err.contains("pkdump data refresh"), "{err}");
     }
 
     /// A URL the partition recorded a FAILURE for is not a gap in raw/, and
@@ -287,7 +287,9 @@ mod tests {
         // other sentence. One message for both would be the bug.
         let gap = replay.missing("https://up/3/9/prices").to_string();
         assert!(gap.contains("raw/ has no record of"), "{gap}");
-        assert!(gap.contains("--land-raw"), "{gap}");
+        // The advice the other sentence gives, and the one it cannot: landing
+        // is not a flag since pd-lunn, so `pkdump data refresh` IS the re-land.
+        assert!(gap.contains("pkdump data refresh"), "{gap}");
     }
 
     /// The manifest's digest is not decoration. A part whose bytes changed

@@ -22,8 +22,9 @@ pub struct SetAlias {
     pub set_code: String,
 }
 
-/// Re-seed `set_aliases` from `data/set_aliases.json`. Called by `pkdump
-/// setup` (and `data refresh`) before the importer consults the table.
+/// Re-seed `set_aliases` from `data/set_aliases.json`. Called from
+/// `open_shared`, so every read-write open of the catalog converges it before
+/// the importer consults the table.
 ///
 /// Each row is inserted only when its target `set_code` exists in this
 /// catalog — a seed pointing at a set the current DB doesn't carry (e.g. a

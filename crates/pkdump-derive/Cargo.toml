@@ -15,3 +15,6 @@ chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# The landing-half gates open a directory-backed lake and read the catalog back.
+pkdump-lake.workspace = true
+rusqlite.workspace = true

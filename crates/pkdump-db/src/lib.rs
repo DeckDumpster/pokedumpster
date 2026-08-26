@@ -47,8 +47,8 @@ mod error;
 mod paths;
 
 pub use connection::{
-    attach_shared_readonly, connect_user, init_user_schema, open_registry, open_shared, open_user,
-    restore_db, snapshot_db,
+    attach_shared_readonly, connect_user, init_user_schema, open_registry, open_shared,
+    open_shared_readonly, open_user, restore_db, snapshot_db,
 };
 pub use error::{DbError, Result};
 pub use paths::{

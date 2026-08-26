@@ -284,12 +284,13 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
     // Before anything is opened or bound: an unauthenticated resolver must
     // not become reachable from off-box.
     check_bind(cfg.multi_tenant, cfg.host, cfg.allow_insecure_bind)?;
-    // Idempotent shared-catalog migration on startup. `pkdump setup`
-    // and `pkdump data refresh` normally own shared schema, but a
-    // binary upgrade can ship a data-only migration (e.g. seeding a
-    // new variant) that must be applied before the server starts
-    // serving requests. open_shared runs pending migrations and is a
-    // no-op when nothing is pending.
+    // Idempotent shared-catalog migration on startup. `pkdump setup` and the
+    // nightly `pkdump-lake-derive shared` normally own shared schema — the
+    // refresh used to be on that list and is not since pd-lunn, because it
+    // opens the catalog read-only now — but a binary upgrade can ship a
+    // data-only migration (e.g. seeding a new variant) that must be applied
+    // before the server starts serving requests. open_shared runs pending
+    // migrations and is a no-op when nothing is pending.
     //
     // The search registry is read off the catalog here too: it is catalog
     // data, the same for every tenant, so it is loaded once from the one

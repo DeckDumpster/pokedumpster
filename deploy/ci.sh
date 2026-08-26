@@ -84,7 +84,7 @@
 #                      upstream bytes. See tests/lake/prices.sh. And the same
 #                      claim for the whole CATALOG: shared.sqlite derived from
 #                      raw/ by the shipped image with egress provably blocked,
-#                      row-identical to the online refresh. See
+#                      row-identical to a catalog built by fetching. See
 #                      tests/lake/derive.sh.
 #  14. Transform gate: value snapshots for EVERY registered tenant, computed
 #                      from that table. Byte-identical to what Rust's
@@ -127,8 +127,11 @@
 #  15. Refresh gate:   the other half of that — a real `pkdump data refresh`,
 #                      through the shipped image, over a data directory with
 #                      two provisioned tenants in it, must leave every tenant
-#                      database byte-identical. The refresh is a SHARED-catalog
-#                      job. See tests/refresh/tenant_bytes.sh.
+#                      database byte-identical. Since pd-lunn the refresh
+#                      LANDS and builds nothing, so shared.sqlite has to come
+#                      out byte-identical too: the same gate now covers item
+#                      6's acceptance criterion against the shipped binary.
+#                      See tests/refresh/tenant_bytes.sh.
 #
 # Steps 5-9b and 11-15 do not run where they are written. Each one QUEUES itself
 # under its own tier guard and they are run together, two at a time, by step
@@ -811,7 +814,7 @@ if tier lake; then
     # `pkdump-lake-derive` runs in the SHIPPED image on an --internal podman
     # network — §2 of the gate proves egress is gone by trying to reach
     # 1.1.1.1 from that image — and its output is compared row by row against
-    # the shared.sqlite the online refresh built from the same upstream bytes.
+    # a shared.sqlite built by fetching the same upstream bytes.
     #
     # It lives in this tier rather than `container` because it is a lakehouse
     # claim: a frontend change cannot affect whether a catalog rebuilds from
@@ -906,10 +909,14 @@ fi
 # to write — and every tenant database has to come out byte-identical. Its
 # upstream is a local fixture that publishes nothing, so the run completes in
 # seconds and depends on nobody's uptime; §5 of the gate asserts it really ran
-# the derivation phases rather than exiting early.
+# its phases rather than exiting early.
+#
+# Since pd-lunn it carries item 6's acceptance criterion as well: the refresh
+# lands and builds nothing, so §5b requires shared.sqlite to be byte-identical
+# after the run. A binary that still derived inline fails there.
 
 if tier refresh; then
-    step "Queueing: Refresh — the catalog refresh writes zero tenant bytes"
+    step "Queueing: Refresh — the catalog refresh writes zero bytes anywhere"
     pkdump_par_add refresh bash "$REPO_DIR/tests/refresh/tenant_bytes.sh"
 fi
 

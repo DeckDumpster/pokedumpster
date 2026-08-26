@@ -1,17 +1,25 @@
-//! Item 3: a catalog derived from `raw/` is the catalog the online refresh
-//! built from the responses `raw/` holds — **row by row**.
+//! Item 3: a catalog derived from `raw/` is the catalog a FETCHING pass built
+//! from the responses `raw/` holds — **row by row**.
 //!
 //! Both sides of every comparison here come from one pass over one set of
-//! upstream responses. The online side fetches them and lands them; the
+//! upstream responses. The fetching side fetches them and lands them; the
 //! offline side replays the bytes that landing kept. Fetching twice would make
 //! "the two catalogs disagree" and "the upstream answered differently"
 //! indistinguishable, which is the whole thing the gate exists to tell apart.
+//!
+//! **The fetching side is this harness, not a shipped command** (pd-lunn).
+//! `pkdump data refresh` used to fetch AND derive; item 6 split it, and
+//! [`Harness::online`] is what is left of the half that built a catalog. What
+//! ships is item 6's own gate,
+//! [`a_catalog_derived_from_a_landing_only_refresh_is_row_identical_to_a_fetched_one`],
+//! which runs the real landing path and measures its partition against this
+//! one.
 //!
 //! ## What is real here and what is a stand-in
 //!
 //! | | |
 //! | --- | --- |
-//! | the derivation | real — [`pkdump_derive::derive`], the same function `pkdump data refresh` calls |
+//! | the derivation | real — [`pkdump_derive::derive`], the function `pkdump-lake-derive shared` calls |
 //! | the landing zone | real — `RawLanding` over a `DirStore`, the same writer prod uses over S3 |
 //! | the reader | real — the shipped `pkdump-lake-derive` binary, run as a subprocess |
 //! | the comparison | real — `pkdump-lake-derive diff`, the shipped comparator |
@@ -378,20 +386,44 @@ impl Harness {
     }
 
     /// The ONLINE path: fetch from the fixture upstream, land every response,
-    /// derive into `db`. This is `pkdump data refresh --land-raw` minus its
-    /// argument parsing — the same `pkdump_derive::derive` call the CLI makes,
-    /// with the same landing zone and the same clock.
+    /// derive into `db`. This is what `pkdump data refresh` was until pd-lunn
+    /// split the two halves apart: one call that both landed and built. It is
+    /// kept as the FETCHING half of every comparison here — the catalog a
+    /// replay is measured against has to come from somewhere, and it has to
+    /// come from the wire.
     ///
     /// `fail` makes the acquisition phase die partway, which is how the
     /// incomplete partition the refusal test needs gets landed.
     fn online(&self, db: &Path, ingest_date: &str, clock_at: &str, fail: bool) -> bool {
-        let _guard = self.env_lock();
         let clock = DeriveClock::from_manifest(clock_at, "the test's clock").expect("clock");
         let landing = Arc::new(RawLanding::new(
             Box::new(DirStore::new(self.raw())),
             ingest_date,
             clock.fetched_at(),
         ));
+        self.fetch_and_derive(db, clock, Some(landing), fail)
+    }
+
+    /// A derivation that fetches and lands NOTHING — the reference catalog in
+    /// [`a_catalog_derived_from_a_landing_only_refresh_is_row_identical_to_a_fetched_one`].
+    ///
+    /// It exists because that gate's partition is landed by
+    /// [`Harness::land`], and a second writer into the same `raw/` prefix
+    /// would make the comparison one between two landings rather than one
+    /// between a landing and a fetch.
+    fn online_unlanded(&self, db: &Path, clock_at: &str) -> bool {
+        let clock = DeriveClock::from_manifest(clock_at, "the test's clock").expect("clock");
+        self.fetch_and_derive(db, clock, None, false)
+    }
+
+    fn fetch_and_derive(
+        &self,
+        db: &Path,
+        clock: DeriveClock,
+        landing: Option<Arc<RawLanding>>,
+        fail: bool,
+    ) -> bool {
+        let _guard = self.env_lock();
         self.script
             .fail_group
             .store(if fail { 2 } else { 0 }, Ordering::SeqCst);
@@ -402,12 +434,39 @@ impl Harness {
             &pkdump_derive::Options {
                 clock,
                 data_dir: &self.root,
-                landing: Some(Arc::clone(&landing)),
+                landing,
                 replay: None,
             },
         );
         self.script.fail_group.store(0, Ordering::SeqCst);
         outcome.is_ok()
+    }
+
+    /// The ONLINE path as it is since pd-lunn: `pkdump data refresh` — fetch
+    /// every upstream, land every response, and derive nothing at all.
+    ///
+    /// `db` must already exist; the catalog is opened READ-ONLY, which is how
+    /// the CLI opens it and is the whole of the claim that a refresh writes no
+    /// catalog table.
+    fn land(&self, db: &Path, ingest_date: &str, clock_at: &str) -> pkdump_derive::Report {
+        let _guard = self.env_lock();
+        let clock = DeriveClock::from_manifest(clock_at, "the test's clock").expect("clock");
+        let landing = Arc::new(RawLanding::new(
+            Box::new(DirStore::new(self.raw())),
+            ingest_date,
+            clock.fetched_at(),
+        ));
+        let conn = pkdump_db::open_shared_readonly(db).expect("open the catalog read-only");
+        pkdump_derive::land(
+            &conn,
+            &pkdump_derive::Options {
+                clock,
+                data_dir: &self.root,
+                landing: Some(landing),
+                replay: None,
+            },
+        )
+        .expect("the landing run")
     }
 
     /// The OFFLINE job, as shipped: the real binary, its own process, its own
@@ -522,6 +581,103 @@ fn a_catalog_derived_from_raw_is_row_identical_to_the_online_one() {
     assert!(
         diff.status.success(),
         "the two catalogs are not row-identical:\n{}",
+        text(&diff)
+    );
+    assert!(text(&diff).contains("ROW-IDENTICAL"));
+}
+
+/// **The acceptance gate for item 6** (pd-lunn): the catalog has ONE builder.
+///
+/// [`a_catalog_derived_from_raw_is_row_identical_to_the_online_one`] above
+/// proves that a replayed catalog equals a fetched one — but it lands with
+/// `pkdump_derive::derive`, which also *builds* a catalog as it goes. That was
+/// the shape of `pkdump data refresh` until item 6, and it is why
+/// `pkdump-derive@` shipped disabled everywhere: arming it only rebuilt from
+/// raw what the refresh had already built online.
+///
+/// The refresh now lands and nothing else, so the partition it leaves has to
+/// stand on its own. This is that claim, end to end, with each half doing only
+/// its own job:
+///
+/// 1. `pkdump_derive::land` fetches every upstream and lands it, over a
+///    catalog opened READ-ONLY — which is the enforcement, not a convention.
+///    The catalog is byte-identical afterwards.
+/// 2. the shipped `pkdump-lake-derive` builds a catalog from that partition,
+///    and says `raw coverage: complete` — every URL it asked for was there.
+/// 3. that catalog is row-identical to one built by fetching the same upstream
+///    with `derive`, which is the path this replaces.
+///
+/// Step 3 is what a URL the landing half stops asking for fails on: the derive
+/// refuses a partition that does not answer it (item 4 deleted the fallback),
+/// so the gate goes red here rather than on prod's next morning.
+#[test]
+fn a_catalog_derived_from_a_landing_only_refresh_is_row_identical_to_a_fetched_one() {
+    let h = Harness::start();
+    let read_by_refresh = h.db("read-by-refresh");
+    let offline = h.db("offline");
+    let reference = h.db("reference");
+
+    // The catalog the refresh reads. In production this is the one the box is
+    // already serving; creating it is `pkdump setup`'s job, and the refresh
+    // refuses rather than creating one itself.
+    drop(pkdump_db::open_shared(&read_by_refresh).expect("the catalog the refresh reads"));
+    let before = std::fs::read(&read_by_refresh).expect("read the catalog");
+
+    // 1. LAND. Every set is new to this catalog, so the tail's cards are
+    //    fetched — which is the one URL choice that depends on what the
+    //    catalog holds.
+    let report = h.land(&read_by_refresh, DAY1, DAY1_CLOCK);
+    assert!(
+        report.tail_error.is_none(),
+        "the fixture upstream answers everything: {:?}",
+        report.tail_error
+    );
+    assert_eq!(report.sets_added, 2, "both fixture sets are new");
+
+    // And it wrote no catalog table. Byte-identical, not "no rows I thought to
+    // count" — the claim is about the file.
+    assert_eq!(
+        before,
+        std::fs::read(&read_by_refresh).expect("re-read the catalog"),
+        "the landing run modified the catalog it was only meant to read"
+    );
+    assert_eq!(
+        scalar::<i64>(&read_by_refresh, "SELECT COUNT(*) FROM cards"),
+        0,
+        "the refresh derived cards"
+    );
+    assert_eq!(
+        scalar::<i64>(&read_by_refresh, "SELECT COUNT(*) FROM prices"),
+        0,
+        "the refresh derived prices"
+    );
+
+    // 2. DERIVE, from that partition alone, with the shipped binary.
+    let out = h.derive(&offline, DAY1, &[]);
+    assert!(
+        out.status.success(),
+        "the partition a landing-only refresh left is not derivable:\n{}",
+        text(&out)
+    );
+    assert!(
+        text(&out).contains("raw coverage: complete"),
+        "a landing-only refresh must land every URL the derive asks for:\n{}",
+        text(&out)
+    );
+
+    // 3. And it equals the catalog the deleted path would have built.
+    assert!(
+        h.online_unlanded(&reference, DAY1_CLOCK),
+        "the reference derivation"
+    );
+    assert!(scalar::<i64>(&reference, "SELECT COUNT(*) FROM cards") >= 3);
+    assert!(scalar::<i64>(&reference, "SELECT COUNT(*) FROM prices") > 0);
+    assert!(scalar::<i64>(&reference, "SELECT COUNT(*) FROM sealed_prices") > 0);
+
+    let diff = h.diff(&reference, &offline);
+    assert!(
+        diff.status.success(),
+        "a catalog built from a landing-only refresh differs from a fetched one:\n{}",
         text(&diff)
     );
     assert!(text(&diff).contains("ROW-IDENTICAL"));
@@ -903,7 +1059,7 @@ fn a_gap_in_raw_is_fatal_with_the_upstream_sitting_right_there() {
     let said = text(&out);
     assert!(said.contains("raw/ has no record of"), "{said}");
     assert!(said.contains(&dropped_url), "it must name the URL:\n{said}");
-    assert!(said.contains("--land-raw"), "{said}");
+    assert!(said.contains("pkdump data refresh"), "{said}");
 
     // Not "the network happened to be down". The fixture upstream is on
     // loopback and answering — the run before this one fetched every one of
@@ -955,9 +1111,28 @@ fn a_gap_in_raw_is_fatal_with_the_upstream_sitting_right_there() {
 /// phase that was never replayable and never claimed to be.
 ///
 /// Two outcomes in one run, because both matter and neither may be fatal:
-/// fk1's symbol is served and normalises, fk2's 404s and is counted. A box with
-/// no egress — `tests/lake/derive.sh`'s `--internal` network, or prod on a
-/// night `images.pokemontcg.io` is down — takes fk2's path for every set.
+/// fk1's symbol is served and normalises, fk2's 404s and is counted.
+///
+/// ## What that does and does not prove about a box with no egress (pd-ju9c)
+///
+/// This sentence used to read "a box with no egress — `tests/lake/derive.sh`'s
+/// `--internal` network, or prod on a night `images.pokemontcg.io` is down —
+/// takes fk2's path for every set", as though a gate covered it. None does.
+///
+/// - What IS covered, here, over loopback: a set carrying a genuine `http`
+///   symbol URL, a fetch that 404s, `failed` counted, the row left with its
+///   upstream URL, and the derive not refused for any of it.
+/// - What is NOT: a fetch that never reaches a server. The container gate does
+///   not close that gap either — its fixture
+///   ([`the_fixture_the_container_gate_reads`]) never calls `serve_symbols`, so
+///   no set carries a symbol URL and `normalize_all_symbols` continues past
+///   every row. On the `--internal` network the phase is SKIPPED, not
+///   exercised-and-failed, and the gate's log carries no symbol line to say so.
+///
+/// A 404 and a connect refusal do reach the same `error_for_status()?` arm, so
+/// the behaviour is almost certainly identical — but "almost certainly" is a
+/// judgement, and the epic's own lesson is that a green result over a phase
+/// that never executed is the thing to name rather than round off.
 #[test]
 fn a_cold_derive_fetches_set_symbols_live_and_is_not_refused_for_it() {
     let h = Harness::start();

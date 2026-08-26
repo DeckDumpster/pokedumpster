@@ -20,12 +20,18 @@
 //! data refresh` — because that puts a raw reader inside `pkdump-cli`, on the
 //! **online** side, which is the coupling the rule exists to break.
 //!
-//! So the derivation lives here, and there are two callers:
+//! So the derivation lives here, and this crate is both halves of a night:
 //!
-//! | caller | side | where its bytes come from |
-//! | --- | --- | --- |
-//! | `pkdump data refresh` (`pkdump-cli`) | online | live upstreams, landed into `raw/` with `--land-raw` |
-//! | `pkdump-lake-derive shared` (`pkdump-lakehouse`) | offline | `raw/`, replayed |
+//! | entry point | caller | side | what it does |
+//! | --- | --- | --- | --- |
+//! | [`land`] | `pkdump data refresh` (`pkdump-cli`) | online | fetches every upstream into `raw/`, and derives nothing |
+//! | [`derive`] | `pkdump-lake-derive shared` (`pkdump-lakehouse`) | offline | replays one `raw/` partition into `shared.sqlite` |
+//!
+//! `pkdump data refresh` used to call [`derive`] too, so the catalog had two
+//! builders and `pkdump-derive@<instance>.timer` shipped disabled everywhere —
+//! arming it only did the same work a second time. pd-lunn deleted that half.
+//! One catalog, one builder, and the two units are a pair rather than a
+//! choice.
 //!
 //! **Nothing in this crate reads `raw/`.** It does not know the landing zone
 //! can be read at all. It takes a [`pkdump_ingest::landing::Wire`], which is
@@ -81,8 +87,9 @@ pub struct Options<'a> {
     pub clock: DeriveClock,
     /// Where set-symbol PNGs are cached — the catalog's data directory.
     pub data_dir: &'a Path,
-    /// Land every upstream response before parsing it. `None` is the
-    /// ordinary case; `Some` is `--land-raw`.
+    /// Land every upstream response before parsing it. `Some` on every
+    /// [`land`] run — that is what a landing run is — and `None` on an offline
+    /// [`derive`], which is reading a partition rather than writing one.
     pub landing: Option<Arc<RawLanding>>,
     /// Answer every upstream request from bytes already landed. `Some` is the
     /// offline derive; nothing online ever sets it.
@@ -118,13 +125,13 @@ pub struct Report {
     pub symbols_failed: usize,
     /// Why the pokemontcg.io tail did not run to the end, when it did not.
     ///
-    /// `Some` is a **partial derivation**: everything else acquired and every
-    /// local phase ran, but the catalog's set list is as old as the last run
-    /// that finished one. See [`acquire`] for why that is not an early
-    /// return, and note that it is a `Report` field rather than an `Err`
-    /// precisely so a caller has to look at it — the two callers answer it
-    /// differently (`pkdump data refresh` exits 2; the offline derive
-    /// refuses to record provenance).
+    /// `Some` is **partial**: everything else was acquired and every local
+    /// phase ran, but the set list is as old as the last run that finished a
+    /// tail. See [`acquire`] for why that is not an early return, and note
+    /// that it is a `Report` field rather than an `Err` precisely so a caller
+    /// has to look at it — the two callers answer it differently (`pkdump data
+    /// refresh` exits 2, and its wrapper decides whether that pages; the
+    /// offline derive refuses to record provenance).
     pub tail_error: Option<String>,
 }
 
@@ -296,6 +303,112 @@ pub fn derive(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<Re
     Ok(report)
 }
 
+/// Fetch every upstream a derivation reads, land the bytes, and derive
+/// **nothing** — the landing half of [`derive`] on its own (pd-lunn).
+///
+/// This is what `pkdump data refresh` runs now. The catalog it is handed is
+/// opened read-only and asked exactly one question ([`missing_sets`]); no row
+/// of it is written by this function or by anything it calls, and the rows are
+/// written some hours later by `pkdump-lake-derive shared`, replaying the
+/// partition this run just landed. One catalog, one builder.
+///
+/// ## Why a second function and not a flag on `derive`
+///
+/// Because the two have different *shapes*, not different settings. `derive`
+/// takes `&mut Connection` and writes a catalog; this takes `&Connection` and
+/// cannot. A boolean inside `derive` would leave every phase below the
+/// acquisition reachable with a flag set wrong, and the claim "the refresh
+/// writes no catalog table" would be a thing to review rather than a thing the
+/// type says.
+///
+/// ## What makes the coverage claim hold
+///
+/// A landing run is only useful if the partition it leaves answers every URL
+/// the later derive asks for — item 4 removed the upstream fallback, so a URL
+/// that is missing is a refusal, not a quiet re-fetch. Three things keep the
+/// two in step, and none of them is vigilance:
+///
+/// - the one catalog-dependent choice is [`missing_sets`], called by both;
+/// - every other URL comes off the wire (the two TCGCSV group lists) or is a
+///   fixed endpoint, so there is nothing to disagree about;
+/// - `crates/pkdump-lakehouse/tests/row_identical.rs` derives a catalog from a
+///   partition landed by THIS function and diffs it, row for row, against one
+///   `derive` built from the same upstream. A URL this function stops asking
+///   for fails that gate rather than tomorrow's timer.
+///
+/// The tail is allowed to fail without ending the run, for the reason
+/// [`acquire`] gives: TCGCSV is the half a night cannot get back. A caller
+/// reads [`Report::tail_error`] and decides — `pkdump data refresh` exits 2.
+///
+/// `symbols::normalize_all_symbols` is not here, and its absence is not an
+/// omission: it fetches images, images are deliberately not landed, and it is
+/// a derivation phase rather than an acquisition one. The offline derive runs
+/// it, live, against `images.pokemontcg.io`.
+pub fn land(conn: &Connection, options: &Options<'_>) -> anyhow::Result<Report> {
+    let mut report = Report::default();
+
+    // The same bracket `derive` puts round its acquisition, for the same
+    // reason: a run that dies partway must leave a manifest that says so
+    // rather than a short prefix that reads as whole.
+    let acquired = land_acquisition(conn, options, &mut report);
+    if let Some(landing) = &options.landing {
+        finalize_landing(landing, acquired.as_ref().err())?;
+    }
+    acquired?;
+
+    if let Some(e) = &report.tail_error {
+        eprintln!("!! PARTIAL LANDING: the pokemontcg.io tail did not complete: {e}");
+    }
+    Ok(report)
+}
+
+/// [`acquire`]'s fetches, without the imports. Kept immediately beside it so
+/// the two orders are read together rather than remembered apart.
+fn land_acquisition(
+    conn: &Connection,
+    options: &Options<'_>,
+    report: &mut Report,
+) -> anyhow::Result<()> {
+    println!("Landing the newest sets from pokemontcg.io...");
+    match land_tail(conn, options) {
+        Ok(added) => {
+            report.sets_added = added;
+            println!("  landed {added} set(s) not yet in the catalog");
+        }
+        Err(e) => {
+            let text = format!("{e:#}");
+            eprintln!("!! the pokemontcg.io tail FAILED after exhausting its retries: {text}");
+            eprintln!(
+                "!! The catalog's set list will be as old as the last derive that had a whole \
+                 tail to replay. The run CONTINUES: TCGCSV is the half a night cannot lose and \
+                 it has not been fetched yet (pd-nons). This run is PARTIAL."
+            );
+            report.tail_error = Some(text);
+        }
+    }
+
+    println!("Landing TCGCSV groups, products, prices...");
+    let groups = land_tcgcsv(options)?;
+    println!("  {groups} group(s) walked");
+
+    println!("Landing the Pokémon Japan catalog (TCGCSV category 85)...");
+    let jp = japan::land_all(options.wire())?;
+    println!("  {jp} group(s) walked");
+
+    Ok(())
+}
+
+/// Fetch everything [`import_tcgcsv`] would fetch, and import none of it.
+fn land_tcgcsv(options: &Options<'_>) -> anyhow::Result<usize> {
+    let client = TcgcsvClient::new()?.on_wire(options.wire());
+    let groups = client.fetch_groups()?;
+    for group in &groups {
+        client.fetch_products(group.group_id)?;
+        client.fetch_prices(group.group_id)?;
+    }
+    Ok(groups.len())
+}
+
 /// Everything in a derivation that reaches an upstream whose bytes we keep —
 /// or replays bytes we kept.
 ///
@@ -421,31 +534,59 @@ fn acquire(
     Ok(())
 }
 
-/// Fetch the pokemontcg.io set list and import any set the catalog lacks.
+/// The pokemontcg.io sets this catalog does not have yet.
 ///
 /// A set row that exists but carries no `ptcgio_fetched_at` was
 /// synthesized locally — from a bridge entry, or by TCGCSV set discovery
 /// while upstream was still behind. Those count as missing: importing them
 /// is exactly how the real cards supersede the synthesized stubs the day
 /// pokemontcg.io publishes the set.
-fn import_tail(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<usize> {
-    let client = PokemonTcgClient::new()?.on_wire(options.wire());
-    let now = options.clock.fetched_at();
-    let mut added = 0;
+///
+/// **The only decision in the whole acquisition that depends on what the
+/// catalog already holds**, which is why it is one function that both callers
+/// share rather than a predicate written twice. [`import_tail`] imports exactly
+/// these sets and [`land_tail`] lands exactly these sets' cards, so the URLs a
+/// landing run puts in `raw/` are the URLs the derive that replays it will ask
+/// for. Everything else either comes off the wire (the TCGCSV group lists) or
+/// is a fixed endpoint.
+fn missing_sets(
+    conn: &Connection,
+    client: &PokemonTcgClient,
+) -> anyhow::Result<Vec<pkdump_ingest::pokemontcg::PokemonTcgSet>> {
+    let mut missing = Vec::new();
     for set in client.fetch_sets()? {
         let exists: bool = conn
             .prepare("SELECT 1 FROM sets WHERE set_code = ?1 AND ptcgio_fetched_at IS NOT NULL")?
             .exists([&set.id])?;
-        if exists {
-            continue;
+        if !exists {
+            missing.push(set);
         }
-        pokemon_tcg_data::upsert_set(conn, &set, now)?;
+    }
+    Ok(missing)
+}
+
+/// Fetch the pokemontcg.io set list and import any set the catalog lacks.
+fn import_tail(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<usize> {
+    let client = PokemonTcgClient::new()?.on_wire(options.wire());
+    let now = options.clock.fetched_at();
+    let sets = missing_sets(conn, &client)?;
+    for set in &sets {
+        pokemon_tcg_data::upsert_set(conn, set, now)?;
         for card in client.fetch_cards_for_set(&set.id)? {
             pokemon_tcg_data::upsert_card(conn, &card, &set.id)?;
         }
-        added += 1;
     }
-    Ok(added)
+    Ok(sets.len())
+}
+
+/// Fetch everything [`import_tail`] would fetch, and import none of it.
+fn land_tail(conn: &Connection, options: &Options<'_>) -> anyhow::Result<usize> {
+    let client = PokemonTcgClient::new()?.on_wire(options.wire());
+    let sets = missing_sets(conn, &client)?;
+    for set in &sets {
+        client.fetch_cards_for_set(&set.id)?;
+    }
+    Ok(sets.len())
 }
 
 /// Import every TCGCSV group: sealed products, single-card products

@@ -3,7 +3,7 @@ Description=PokeDumpster offline catalog derive (%i)
 # pd-1uem, item 5 of the lake-as-source epic: LANDING AND DERIVING ARE TWO UNITS.
 #
 # pkdump-refresh@%i is the landing unit — it fetches from the upstreams and,
-# with --land-raw, puts every response in the bucket. This unit is the deriving
+# puts every response in the bucket. This unit is the deriving
 # one: it rebuilds shared.sqlite from ONE raw/ partition, replaying those bytes
 # instead of fetching anything.
 #
@@ -13,13 +13,20 @@ Description=PokeDumpster offline catalog derive (%i)
 # not which language it is written in.
 #
 # {{REPO_DIR}} is sed-substituted by deploy/units-lib.sh (single-clone
-# deployment). Installed for every instance, enabled for none — see the timer.
+# deployment). Installed for every instance; on a box that runs
+# pkdump-refresh@%i it must be ENABLED — see the timer.
+#
+# ── SINCE pd-lunn THIS IS THE ONLY THING THAT BUILDS THE CATALOG ────────────
+# `pkdump data refresh` used to derive inline as well, which is why this timer
+# shipped disabled: arming it only did the same work a second time from the
+# bytes the first run had just landed. Item 6 of the epic deleted that half. The
+# refresh now lands and nothing else, and shared.sqlite has one builder — this
+# one. A box landing without this unit enabled serves a catalog that silently
+# stops advancing, so deploy/refresh.sh refuses to run in that state.
 #
 # ── ORDERING: after the landing, never beside it ────────────────────────────
-# Both units write shared.sqlite today (the online refresh still derives inline;
-# epic item 6 is what changes that). Running them concurrently would have two
-# processes rebuilding one catalog, so the ordering is declared rather than
-# assumed:
+# This unit reads the partition that one wrote, so the ordering is declared
+# rather than assumed:
 #
 #   After=pkdump-refresh@%i.service   — a systemd ordering dependency, enforced
 #   whenever both units have a job in the queue. If the landing is still running

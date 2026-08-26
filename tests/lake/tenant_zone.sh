@@ -30,11 +30,18 @@
 #     broad grant made somewhere else cannot silently widen either zone — which
 #     is the property that makes these two documents safe to live with, and it
 #     is asserted rather than assumed.
-#   * §2 does the same for retention: the 90-day rule is checked, then three
-#     ways of getting it wrong are applied in turn (whole-bucket, wrong number
-#     of days, a prefix reaching the catalog) and the checker must refuse each.
-#     A whole-bucket expiry would silently start deleting `raw/`, whose
-#     retention is INDEFINITE by decision.
+#   * §2 does the same for retention, and it asserts the EXIT CODE rather than
+#     "non-zero", because the check has three different answers and they are
+#     not interchangeable (pd-2hnp). Three ways of getting the rule wrong are
+#     applied in turn (whole-bucket, wrong number of days, a prefix reaching
+#     the catalog) and each must come back 1; the rule is then DELETED and must
+#     come back 3; and finally the correct rule is read by a real credential
+#     that MinIO really denies, which must come back 4. "There is no retention
+#     rule" and "I am not allowed to look" are opposite facts, and this script
+#     printed one sentence for both — on a check whose subject is a rule that
+#     deletes tenant data after 90 days, that is worse than no check, because
+#     it is trusted. A whole-bucket expiry would silently start deleting
+#     `raw/`, whose retention is INDEFINITE by decision.
 #   * §7 asserts the zone is still EMPTY of tenant data. This item builds the
 #     governance, not the data flow; a fixture holding that got left behind
 #     would be real tenant-shaped data sitting in a zone whose shipper does not
@@ -145,6 +152,18 @@ zone_script() {
 		--bucket "$BUCKET" --endpoint "$MINIO_URL" "$@"
 }
 
+# The same script as some OTHER identity. §2's forbidden case needs a real
+# credential that MinIO really refuses — a denial this gate invented as a
+# string would prove nothing about how the script classifies a real one.
+zone_script_as() {
+	local ak="$1" sk="$2"
+	shift 2
+	PKDUMP_AWS="podman run --rm --network ${NET} -e AWS_ACCESS_KEY_ID=${ak} -e AWS_SECRET_ACCESS_KEY=${sk} -e AWS_DEFAULT_REGION=us-west-2 ${AWSCLI_IMAGE}" \
+		PKDUMP_LAKE_ENV="${WORK}/lake.env" \
+		bash "${REPO_DIR}/deploy/setup-tenant-zone.sh" \
+		--bucket "$BUCKET" --endpoint "$MINIO_URL" "$@"
+}
+
 # ---------------------------------------------------------------------------
 echo "==> §0  Object store, and a catalog zone with real bytes in it"
 # The deny assertions below have to fail because they are DENIED, never because
@@ -214,8 +233,13 @@ case "$BACKUP_OUT" in
 esac
 
 # ---------------------------------------------------------------------------
-echo "==> §2  Retention seen RED: three ways of getting it wrong, each refused"
-# --check is the instrument, so it is the thing that has to be shown failing.
+echo "==> §2  Retention seen RED: ABSENT, FORBIDDEN and WRONG are three answers"
+# --check is the instrument, so it is the thing that has to be shown failing —
+# and since pd-2hnp it has to be shown failing three DIFFERENT ways, with the
+# exit code asserted rather than merely "non-zero". The failure this section
+# exists for is not the loud one: it is an operator whose credentials cannot
+# read an APPLIED rule being told there is no rule, and re-applying or widening
+# one on the strength of that.
 
 put_lifecycle() {
 	podman run --rm --network "$NET" \
@@ -225,31 +249,98 @@ put_lifecycle() {
 		--bucket "$BUCKET" --lifecycle-configuration "$1" >/dev/null
 }
 
-expect_check_red() {
-	local what="$1" rc=0
+delete_lifecycle() {
+	podman run --rm --network "$NET" \
+		-e AWS_ACCESS_KEY_ID="$ROOT_AK" -e AWS_SECRET_ACCESS_KEY="$ROOT_SK" \
+		-e AWS_DEFAULT_REGION=us-west-2 "$AWSCLI_IMAGE" \
+		--endpoint-url "$MINIO_URL" s3api delete-bucket-lifecycle \
+		--bucket "$BUCKET" >/dev/null
+}
+
+expect_check_rc() { # expect_check_rc <want-rc> <phrase> <what>
+	local want="$1" phrase="$2" what="$3" rc=0
 	zone_script --check >"${WORK}/check.log" 2>&1 || rc=$?
 	[ "$rc" -ne 0 ] || die "the retention check PASSED with ${what} — it is not checking anything"
-	echo "    red  ${what} -> refused"
+	[ "$rc" -eq "$want" ] ||
+		die "the retention check answered ${rc} for ${what}, expected ${want}: $(cat "${WORK}/check.log")"
+	grep -q "$phrase" "${WORK}/check.log" ||
+		die "the check exited ${rc} for ${what} without saying '${phrase}': $(cat "${WORK}/check.log")"
+	echo "    red  ${what} -> exit ${rc}"
 }
 
 # (a) A rule with no prefix spans the bucket: raw/ starts expiring, silently.
 put_lifecycle '{"Rules":[{"ID":"whole-bucket","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":90}}]}'
-expect_check_red "a whole-bucket rule (it would expire the catalog)"
+expect_check_rc 1 "spans the whole bucket" "a whole-bucket rule (it would expire the catalog)"
 
 # (b) The right prefix, the wrong window. 90 days IS the backfill window.
 put_lifecycle '{"Rules":[{"ID":"too-long","Status":"Enabled","Filter":{"Prefix":"tenant/"},"Expiration":{"Days":365}}]}'
-expect_check_red "365-day retention on tenant/"
+expect_check_rc 1 "not 90" "365-day retention on tenant/"
 
 # (c) A second rule that reaches the catalog, beside a correct tenant rule —
 #     the shape a well-meaning addition actually takes.
 put_lifecycle '{"Rules":[{"ID":"tenant","Status":"Enabled","Filter":{"Prefix":"tenant/"},"Expiration":{"Days":90}},{"ID":"tidy-raw","Status":"Enabled","Filter":{"Prefix":"raw/"},"Expiration":{"Days":30}}]}'
-expect_check_red "a second rule expiring raw/ (whose retention is indefinite by decision)"
+expect_check_rc 1 "reaches the catalog zone" "a second rule expiring raw/ (whose retention is indefinite by decision)"
+
+# (d) ABSENT — the one case where "there is no retention rule" is the truth,
+#     and the only one that may say so. Its repair is to apply the rule, which
+#     is exactly why none of the others may be reported this way.
+delete_lifecycle
+expect_check_rc 3 "ABSENT" "no lifecycle configuration at all"
 
 # And green again from the same instrument, so the red runs above were the
 # configuration failing and not the checker having broken.
 zone_script --apply >/dev/null 2>&1 || die "re-applying the correct rule failed"
 zone_script --check >/dev/null 2>&1 || die "the check did not go green again"
 echo "    ok   and green again once the correct rule is restored"
+
+# (e) FORBIDDEN, against the rule that was just restored — this is pd-2hnp
+#     itself. The retention IS applied and IS correct; the identity running the
+#     check cannot read it. A denial rendered as absence tells an operator to
+#     apply a rule that already exists, or to widen one.
+#
+#     A real MinIO credential refused by a real policy, not a string this gate
+#     invented: what is being tested is how the script classifies what the
+#     server actually says.
+echo "==> §2b The same correct rule, read by a credential that may not look"
+BLIND_AK=pdtzblind
+BLIND_SK=pdtzblindsecret123
+cat >"${WORK}/policies/blind.json" <<EOF
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+"Action":["s3:GetObject","s3:ListBucket"],
+"Resource":["arn:aws:s3:::${BUCKET}","arn:aws:s3:::${BUCKET}/*"]}]}
+EOF
+mc_root admin user add x "$BLIND_AK" "$BLIND_SK" >/dev/null
+mc_root admin policy create x pdtz-blind /policies/blind.json >/dev/null 2>&1 ||
+	mc_root admin policy add x pdtz-blind /policies/blind.json >/dev/null 2>&1 ||
+	die "could not install the lifecycle-blind policy"
+mc_root admin policy attach x pdtz-blind --user "$BLIND_AK" >/dev/null 2>&1 ||
+	die "could not attach the lifecycle-blind policy to ${BLIND_AK}"
+
+# It has to reach the bucket at all, or exit 4 could be the credential simply
+# being broken — the "passed because its subject never ran" failure again.
+mc_as "$BLIND_AK" "$BLIND_SK" ls "x/${BUCKET}/raw/" >/dev/null 2>&1 ||
+	die "the lifecycle-blind credential cannot reach the bucket at all — it proves nothing about lifecycle permission"
+
+BLIND_RC=0
+zone_script_as "$BLIND_AK" "$BLIND_SK" --check >"${WORK}/blind.log" 2>&1 || BLIND_RC=$?
+[ "$BLIND_RC" -eq 4 ] ||
+	die "a credential that may not READ the lifecycle answered ${BLIND_RC}; expected 4 (cannot verify): $(cat "${WORK}/blind.log")"
+grep -q "CANNOT VERIFY" "${WORK}/blind.log" ||
+	die "a denied read did not say CANNOT VERIFY: $(cat "${WORK}/blind.log")"
+grep -q "s3:GetLifecycleConfiguration" "${WORK}/blind.log" ||
+	die "a denied read did not name the missing permission: $(cat "${WORK}/blind.log")"
+# The regression itself. ABSENT is the verdict label; a denied run may say the
+# word "absent" only in the sentence explaining that this is NOT that answer.
+grep -q "ABSENT" "${WORK}/blind.log" &&
+	die "a DENIED read was reported as ABSENT — the two opposite facts are one sentence again: $(cat "${WORK}/blind.log")"
+echo "    red  a credential without s3:GetLifecycleConfiguration -> exit 4, not 3"
+
+# The rule the blind credential could not see is still there, and the identity
+# that CAN see it still says so. Without this, exit 4 above could be a bucket
+# that had quietly lost its rule.
+zone_script --check >/dev/null 2>&1 ||
+	die "the correct rule did not survive the forbidden probe"
+echo "    ok   and the rule it could not see is still applied, and still correct"
 
 # ---------------------------------------------------------------------------
 echo "==> §3  Two identities, from the rendered policy documents"

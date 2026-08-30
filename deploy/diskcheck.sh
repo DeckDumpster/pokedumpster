@@ -22,6 +22,14 @@
 #                                    and exit 101, which reads as a broken
 #                                    toolchain and cost real time to diagnose.
 #                                    With no paths given it checks PKDUMP_DISK_PATH.
+#                                    Each DEVICE is reported once however many
+#                                    paths name it, so a caller may hand it every
+#                                    directory it writes to without knowing which
+#                                    of them share a filesystem. ci.sh does
+#                                    exactly that — see PKDUMP_CI_DISK_PATHS, and
+#                                    note that TMPDIR is one of them: on a box
+#                                    where /tmp is its own mount, neither $HOME
+#                                    nor the store root can see it fill (pd-20ia).
 #
 # Env-driven (host-wide ~/.config/pkdump/alerts.env):
 #   PKDUMP_DISK_THRESHOLD   percent-used that triggers an alert (default 90)

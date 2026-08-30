@@ -94,10 +94,18 @@ log() { printf '\n=== %s ===\n' "$*"; }
 cleanup() {
 	if [[ -n "${KEEP:-}" ]]; then
 		echo
-		echo "KEEP=1 — leaving $APP_CTR and WORK=$WORK in place."
+		echo "KEEP=1 — leaving $APP_CTR, $IMAGE and WORK=$WORK in place."
 		return
 	fi
 	podman rm -f --ignore "$APP_CTR" >/dev/null 2>&1 || true
+	# The image too (pd-5aba). The tag carries the checkout hash, so every
+	# worktree that ever ran this gate left one behind and nothing collected
+	# them: handles-* and upgrade-* were the bulk of the leaked images found
+	# on the prod disk at 80%. `rmi -f` on a name an image shares with others
+	# only UNTAGS it, so under PKDUMP_PREBUILT_IMAGE — where
+	# pkdump_image_ensure tags deploy/ci.sh's one build rather than building —
+	# the gates running beside this one keep theirs.
+	podman rmi -f "$IMAGE" >/dev/null 2>&1 || true
 	rm -rf "$WORK"
 }
 trap cleanup EXIT

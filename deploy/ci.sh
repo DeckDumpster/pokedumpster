@@ -16,7 +16,8 @@
 #                     line that says what went wrong, and that an unchanged one
 #                     is not sent a second time. Hermetic and sub-second.
 #                     See tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh,
-#                     tests/lib/wait_test.sh, tests/container/base_images_test.sh,
+#                     tests/lib/wait_test.sh, tests/lib/images_test.sh,
+#                     tests/container/base_images_test.sh,
 #                     tests/alarming/journal_summary_test.sh and
 #                     tests/alarming/alert_suppress_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
@@ -472,6 +473,14 @@ if tier lint; then
     # tests/container/base_images_test.sh.
     step "Container base-image pins (tests/container/base_images_test.sh)"
     bash "$REPO_DIR/tests/container/base_images_test.sh"
+
+    # Same tier, same shape of ratchet, one layer over from the pins: a gate
+    # that builds an image at a per-checkout tag and never removes it. The tag
+    # outlives the worktree that made it and nothing collects it, so the cost
+    # shows up months later as a full disk (pd-5aba) rather than as a failing
+    # gate. Hermetic and sub-second. See tests/lib/images_test.sh.
+    step "Container gates remove their own images (tests/lib/images_test.sh)"
+    bash "$REPO_DIR/tests/lib/images_test.sh"
 
     # Path selection is itself a gate now, and one whose failure mode is a tier
     # quietly not running. Hermetic and sub-second, so it sits here rather than

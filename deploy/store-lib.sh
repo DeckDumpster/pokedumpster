@@ -76,7 +76,9 @@
 # NOT COVERED, deliberately: pkdump-refresh@.service and the backup-check timers
 # are a single %i template shared by every instance, so they cannot carry
 # per-instance store flags. An instance in an alternate store is a throwaway —
-# do not enable those timers for it.
+# do not enable those timers for it. Being one file per box is also why a
+# throwaway's setup.sh does not get to REWRITE them: see the "HOST-WIDE UNITS"
+# header in deploy/units-lib.sh (pd-onyd).
 #
 # ############################################################################
 # # NEVER RUN `podman system reset` — IT IS NOT SCOPED BY --root/--runroot.  #

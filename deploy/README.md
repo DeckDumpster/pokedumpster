@@ -566,6 +566,49 @@ systemctl --user enable --now pkdump-diskcheck.timer           # host-wide, once
 systemctl --user list-timers 'pkdump-*'        # check schedule
 ```
 
+### One copy per box — and it belongs to the deploy clone (pd-onyd)
+
+Every unit above is **a single file shared by every instance on the box**. The
+`@` templates look per-instance and are not: `pkdump-refresh@.service` is one
+file backing `pkdump-refresh@prod` and `pkdump-refresh@ci-9f2c1a` alike, and
+`pkdump-diskcheck` is not templated at all. Each of them has `{{REPO_DIR}}`
+substituted into its `ExecStart`, so a copy of `deploy/` has to still be there
+at 06:00 for the unit to do anything. (The two Quadlet units —
+`pkdump-<instance>.container` and `pkdump-litestream-<instance>.container` —
+carry the instance in their file name, so they are genuinely per-instance.)
+
+That made "install the units" mean "point prod's alerting, landing and disk
+check at whichever checkout ran `setup.sh` **last**". `deploy/ci.sh` runs
+`setup.sh` from a per-checkout worktree and `gt done` deletes that worktree.
+Observed on the deployment box 2026-08-09: `deploy/setup.sh vault-unitfix
+--test` from a polecat worktree left prod's units executing
+`.../polecats/vault/pokedumpster/deploy/alert.sh` — 203/EXEC the moment the
+branch landed, and the same shape as the Jun 2026 backup outage where the unit
+was installed, enabled and executing nothing.
+
+An install now rewrites them only when it is entitled to:
+
+- it is for an instance this box treats as a **real deployment** — `prod`, or
+  whatever `PKDUMP_ALERT_INSTANCES` names. That is the same predicate that
+  decides whether an instance's units may page (`deploy/alert-gate.sh`); "may
+  this instance own the pager" and "may it own the unit the pager lives in" get
+  one answer rather than two that can drift;
+- **nobody owns them yet** — a fresh box needs somebody to install them, and a
+  dev box may never have a `prod` at all;
+- the current owner's checkout **is gone** — those units are already broken, so
+  pointing them at a directory that exists is a repair;
+- `PKDUMP_INSTALL_HOST_UNITS=1`, the explicit override (`0` forces the skip).
+
+Otherwise the install says whose they are and leaves them alone; the instance's
+own Quadlet units are still written, because standing up a throwaway instance is
+the normal case. The owner is read back out of the installed `ExecStart` rather
+than kept in a marker file beside it — a marker can disagree with what systemd
+will execute.
+
+`deploy/alarm-status.sh` reports the other half: an alarming unit whose
+`ExecStart` names a file that is no longer on disk is **NOT ARMED**, naming the
+missing path, instead of reading as "alert unit installed".
+
 Backups themselves are **not** a timer — the Litestream sidecar replicates
 continuously (see below). `teardown.sh` disables the refresh, backup-check and
 value-snapshot timers for the instance (the host-wide disk timer is left alone).

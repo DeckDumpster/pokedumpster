@@ -43,6 +43,108 @@ PKDUMP_UNITS_CHANGED=()
 # shellcheck source=deploy/alert-gate.sh
 . "$(dirname "${BASH_SOURCE[0]}")/alert-gate.sh"
 
+# ── HOST-WIDE UNITS: ONE COPY PER BOX, AND IT IS NOT YOURS (pd-onyd) ─────────
+#
+# Everything this file writes into ~/.config/systemd/user is a SINGLE FILE
+# SHARED BY EVERY INSTANCE. The %i templates look per-instance and are not:
+# `pkdump-refresh@.service` is one file backing pkdump-refresh@prod,
+# pkdump-refresh@ci-9f2c1a and every other instance at once, and
+# pkdump-diskcheck is not even templated. Each of them bakes {{REPO_DIR}} into
+# an ExecStart. (The two Quadlet units ARE per-instance —
+# pkdump-<instance>.container and pkdump-litestream-<instance>.container — so
+# they are written unconditionally and are not in the list below.)
+#
+# So "install the units" used to mean "point every instance's alerting, landing
+# and disk check at whichever checkout ran setup.sh LAST". deploy/ci.sh runs
+# setup.sh from a per-checkout worktree and `gt done` DELETES that worktree.
+# Observed on the deployment box 2026-08-09: running `deploy/setup.sh
+# vault-unitfix --test` from a polecat worktree left prod's units executing
+# .../polecats/vault/pokedumpster/deploy/alert.sh, which is 203/EXEC the moment
+# the branch lands — the exact shape of the Jun 2026 backup outage, where the
+# unit was installed, enabled, and executing nothing. Prod only stayed alarmed
+# because a later prod-clone setup.sh happened to win the race.
+#
+# They are therefore written only by an install ENTITLED to them:
+#
+#   * one for an instance this box treats as a REAL DEPLOYMENT
+#     (pkdump_units_alerting — `prod`, or whatever PKDUMP_ALERT_INSTANCES
+#     names). That predicate already decides whether an instance's units may
+#     page; "may this instance own the pager" and "may this instance own the
+#     unit the pager lives in" are the same question from two sides, so they get
+#     one answer rather than two that can drift.
+#   * anyone, when NOBODY OWNS THEM YET. A box with none installed needs
+#     somebody to install them, and a dev box may never have a `prod` at all.
+#   * anyone, when the owner's checkout IS GONE. Those units are already broken;
+#     pointing them at a directory that exists is a repair, not a theft.
+#   * PKDUMP_INSTALL_HOST_UNITS=1, the explicit override. 0 forces the skip.
+#
+# Refusing is a SKIP, not a fatal error: the per-instance units are still
+# installed, because a CI gate standing up its own throwaway instance is the
+# normal case here, not the anomaly. It is loud on stdout, naming the owner.
+#
+# The owner is read back OUT OF THE INSTALLED UNITS rather than kept in a marker
+# file beside them, for the reason deploy/store-lib.sh gives about the Quadlet:
+# THE UNIT IS THE RECORD. A marker can disagree with what systemd will execute;
+# an ExecStart cannot.
+
+# Every unit file that is one-per-box. tests/deploy/run.sh §16 asserts this list
+# covers the directory in BOTH directions — an install writing a shared unit
+# that is not declared here would be unguarded, and a name declared here that
+# nothing writes would make the owner probe read a stale file forever.
+PKDUMP_HOST_WIDE_UNIT_FILES=(
+    pkdump-refresh@.service          pkdump-refresh@.timer
+    pkdump-derive@.service           pkdump-derive@.timer
+    pkdump-prices@.service           pkdump-prices@.timer
+    pkdump-value-snapshots@.service  pkdump-value-snapshots@.timer
+    pkdump-ship@.service             pkdump-ship@.timer
+    pkdump-backup-check@.service     pkdump-backup-check@.timer
+    pkdump-alert@.service
+    pkdump-diskcheck.service         pkdump-diskcheck.timer
+    pkdump-heartbeat@.service        pkdump-heartbeat@.timer
+)
+
+# pkdump_units_host_owners — every checkout the INSTALLED host-wide units
+# resolve their ExecStart against, one absolute path per line, deduplicated.
+# Empty output means no host-wide unit is installed (or none names a script,
+# which is true of every .timer).
+pkdump_units_host_owners() {
+    local dir="${HOME}/.config/systemd/user" u
+    for u in "${PKDUMP_HOST_WIDE_UNIT_FILES[@]}"; do
+        [ -f "${dir}/${u}" ] || continue
+        grep -oh "/[^ '\"]*/deploy/[A-Za-z0-9_.-]*\.sh" "${dir}/${u}" 2>/dev/null
+    done | sed 's|/deploy/[^/]*$||' | sort -u
+}
+
+# The checkout pkdump_units_host_entitled refused in favour of. Empty otherwise.
+PKDUMP_UNITS_HOST_OWNER=""
+
+# pkdump_units_host_entitled <instance> — may this install rewrite the units
+# there is one of per box? See the header for the four ways to be entitled.
+pkdump_units_host_entitled() {
+    local instance="$1" repo_dir owner
+    repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    PKDUMP_UNITS_HOST_OWNER=""
+
+    case "${PKDUMP_INSTALL_HOST_UNITS:-}" in
+        1) return 0 ;;
+        0) return 1 ;;
+    esac
+
+    pkdump_units_alerting "$instance" && return 0
+
+    while read -r owner; do
+        [ -n "$owner" ] || continue
+        [ "$owner" = "$repo_dir" ] && continue
+        # A checkout that is gone cannot be robbed, and its units are already
+        # executing nothing. Taking them over is the repair.
+        [ -d "$owner" ] || continue
+        PKDUMP_UNITS_HOST_OWNER="$owner"
+        return 1
+    done < <(pkdump_units_host_owners)
+
+    return 0
+}
+
 # _pkdump_units_render <dest> <stamp|nostamp> <template> [sed -e args...]
 #
 # Render a template to <dest>, but only replace the file when the result
@@ -74,59 +176,19 @@ _pkdump_units_render() {
     fi
 }
 
-# pkdump_units_install <instance> [port]
+# _pkdump_units_install_host_wide <repo_dir> <systemd_user_dir>
 #
-# (Re)install every unit file this checkout ships for <instance>. Idempotent.
-# The caller reloads systemd afterwards — this function only writes files.
-#
-# port: the host port to publish, or 0 / omitted for "decide". Deciding means
-# the port the instance ALREADY publishes if it has one, and otherwise ":8080"
-# so Podman picks a free one. Refreshing the units must never move a running
-# instance's address: without that, `deploy.sh prod` would rewrite prod's
-# Quadlet with a random host port and take prod off 8090 — an outage caused by
-# shipping a unit-file fix.
-pkdump_units_install() {
-    local _alert_sed=()
-    pkdump_units_alerting "$1" || _alert_sed=(-e '/^OnFailure=/d')
-    local instance="$1" port="${2:-0}"
-    local repo_dir quadlet_dir systemd_user_dir service_name
-    repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-    quadlet_dir="${HOME}/.config/containers/systemd"
-    systemd_user_dir="${HOME}/.config/systemd/user"
-    service_name="pkdump-${instance}"
-
-    PKDUMP_UNITS_CHANGED=()
-    mkdir -p "$quadlet_dir" "$systemd_user_dir"
-
-    local existing_port port_mapping
-    if [ "$port" = "0" ] && [ -f "${quadlet_dir}/${service_name}.container" ]; then
-        existing_port="$(sed -n 's|^PublishPort=\([0-9]\{1,\}\):8080$|\1|p' \
-            "${quadlet_dir}/${service_name}.container" | head -1)"
-        if [ -n "$existing_port" ]; then
-            port="$existing_port"
-            echo "    Keeping the port '${instance}' already publishes: ${port}"
-        fi
-    fi
-    # PORT=0 -> ":8080" lets Podman pick a free host port.
-    if [ "$port" = "0" ]; then
-        port_mapping=":8080"
-    else
-        port_mapping="${port}:8080"
-    fi
-
-    # --- The app's Quadlet unit ---------------------------------------------
-    _pkdump_units_render "${quadlet_dir}/${service_name}.container" stamp \
-        "$repo_dir/deploy/pkdump.container" \
-        -e "s|{{INSTANCE}}|${instance}|g" \
-        -e "s|{{PORT}}:8080|${port_mapping}|g" \
-        "${_alert_sed[@]}"
-
-    # --- Per-instance timer units -------------------------------------------
-    # %i-templated units installed under a concrete instance name so several
-    # instances can run side by side. Enable them after setup if desired.
-    # {{REPO_DIR}} resolves ExecStart against THIS checkout (single-clone
-    # deployment — the clone is not named per-instance).
+# The units there is ONE OF per box. See "HOST-WIDE UNITS" above for who may
+# write them and why that is not everybody.
+_pkdump_units_install_host_wide() {
+    local repo_dir="$1" systemd_user_dir="$2"
     local ext
+
+    # --- The nightly landing run (pd-1uem item 5, pd-lunn) ------------------
+    # A %i TEMPLATE, which is one file backing every instance — see the header
+    # above. Enable it per instance after setup if desired. {{REPO_DIR}}
+    # resolves ExecStart against THIS checkout (single-clone deployment — the
+    # clone is not named per-instance).
     for ext in service timer; do
         _pkdump_units_render "${systemd_user_dir}/pkdump-refresh@.${ext}" nostamp \
             "$repo_dir/deploy/pkdump-refresh.${ext}" \
@@ -215,6 +277,68 @@ pkdump_units_install() {
             "$repo_dir/deploy/pkdump-heartbeat.${ext}" \
             -e "s|{{REPO_DIR}}|${repo_dir}|g"
     done
+}
+
+# pkdump_units_install <instance> [port]
+#
+# (Re)install every unit file this checkout ships for <instance>. Idempotent.
+# The caller reloads systemd afterwards — this function only writes files.
+#
+# port: the host port to publish, or 0 / omitted for "decide". Deciding means
+# the port the instance ALREADY publishes if it has one, and otherwise ":8080"
+# so Podman picks a free one. Refreshing the units must never move a running
+# instance's address: without that, `deploy.sh prod` would rewrite prod's
+# Quadlet with a random host port and take prod off 8090 — an outage caused by
+# shipping a unit-file fix.
+pkdump_units_install() {
+    local _alert_sed=()
+    pkdump_units_alerting "$1" || _alert_sed=(-e '/^OnFailure=/d')
+    local instance="$1" port="${2:-0}"
+    local repo_dir quadlet_dir systemd_user_dir service_name
+    repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    quadlet_dir="${HOME}/.config/containers/systemd"
+    systemd_user_dir="${HOME}/.config/systemd/user"
+    service_name="pkdump-${instance}"
+
+    PKDUMP_UNITS_CHANGED=()
+    mkdir -p "$quadlet_dir" "$systemd_user_dir"
+
+    local existing_port port_mapping
+    if [ "$port" = "0" ] && [ -f "${quadlet_dir}/${service_name}.container" ]; then
+        existing_port="$(sed -n 's|^PublishPort=\([0-9]\{1,\}\):8080$|\1|p' \
+            "${quadlet_dir}/${service_name}.container" | head -1)"
+        if [ -n "$existing_port" ]; then
+            port="$existing_port"
+            echo "    Keeping the port '${instance}' already publishes: ${port}"
+        fi
+    fi
+    # PORT=0 -> ":8080" lets Podman pick a free host port.
+    if [ "$port" = "0" ]; then
+        port_mapping=":8080"
+    else
+        port_mapping="${port}:8080"
+    fi
+
+    # --- The app's Quadlet unit ---------------------------------------------
+    _pkdump_units_render "${quadlet_dir}/${service_name}.container" stamp \
+        "$repo_dir/deploy/pkdump.container" \
+        -e "s|{{INSTANCE}}|${instance}|g" \
+        -e "s|{{PORT}}:8080|${port_mapping}|g" \
+        "${_alert_sed[@]}"
+
+    # --- The host-wide units ------------------------------------------------
+    # One copy of each on the box, shared by every instance. Written only by an
+    # install entitled to them (pd-onyd) — see the header.
+    if pkdump_units_host_entitled "$instance"; then
+        _pkdump_units_install_host_wide "$repo_dir" "$systemd_user_dir"
+    elif [ -n "$PKDUMP_UNITS_HOST_OWNER" ]; then
+        echo "    Host-wide units NOT rewritten — they belong to ${PKDUMP_UNITS_HOST_OWNER}."
+        echo "      There is one copy of each on this box, shared by every instance"
+        echo "      including prod, and this checkout is not the one that deploys it."
+        echo "      Force with PKDUMP_INSTALL_HOST_UNITS=1 (pd-onyd)."
+    else
+        echo "    Host-wide units NOT rewritten — PKDUMP_INSTALL_HOST_UNITS=0."
+    fi
 
     # --- The Litestream backup sidecar (pokedumpster-8ch.3) -----------------
     _pkdump_units_render "${quadlet_dir}/pkdump-litestream-${instance}.container" stamp \

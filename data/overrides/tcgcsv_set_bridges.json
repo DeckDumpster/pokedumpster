@@ -31,5 +31,90 @@
     "set_code": "base1",
     "role": "shadowless",
     "comment": "Secondary bridge: base1's no-art-frame-shadow print run. TCGCSV splits Base Set into two productId-level groups — 604 (the regular Unlimited run with the shadow; auto-linked as the primary group) and 1663 (everything without the shadow). Within 1663 the 1st-Edition vs unstamped-transition split lives only in price.sub_type_name, mapped by tcgcsv_sub_type_variant_map for group 1663: 1st Edition* → first_ed_*; Unlimited*/Normal/Holofoil → shadowless_*. role='shadowless' tells import_groups to add the link instead of wiping the primary 604 → base1 mapping. See pokedumpster-5is."
+  },
+  {
+    "tcgcsv_group_id": 1407,
+    "set_code": "bwp",
+    "comment": "Bridge BW Black Star Promos. pokemontcg.io names the set 'BW Black Star Promos'; TCGCSV names group 1407 'Black and White Promos' — the era is abbreviated on one side and spelled out on the other, which no normalization rule reaches, and its abbreviation 'PR' is one of 21 groups carrying it so tier 1 correctly refuses it. Verified: 99 of bwp's 101 collector numbers are present in the group (the two absent are bw77/bw78). See pd-v0oi."
+  },
+  {
+    "tcgcsv_group_id": 1421,
+    "set_code": "dpp",
+    "comment": "Bridge DP Black Star Promos. Same shape as bwp: set 'DP Black Star Promos' against group 1421 'Diamond and Pearl Promos', abbreviation 'PR' (shared by 21 groups). Verified: 54 of dpp's 56 numbers present (dp54/dp55 absent). See pd-v0oi."
+  },
+  {
+    "tcgcsv_group_id": 2545,
+    "set_code": "swshp",
+    "comment": "Bridge SWSH Black Star Promos. The 'Black Star' reduction gets the set to 'swsh promos', but TCGCSV names group 2545 'SWSH: Sword & Shield Promo Cards' — the era is expanded AND 'Promos' is spelled 'Promo Cards', so tier 2 still misses; abbreviation 'SWSD' matches no ptcgo_code. Verified: all 304 of swshp's numbers are present in the group. Before this the set mapped 9 of 304 printings, all via the MCAP cross-group path. See pd-v0oi."
+  },
+  {
+    "tcgcsv_group_id": 1863,
+    "set_code": "sm1",
+    "comment": "Bridge Sun & Moon. TCGCSV names the base group 'SM Base Set'; stripping the ' Base Set' suffix leaves 'sm', which is not 'sun and moon'. Its abbreviation 'SM01' matches no English ptcgo_code (sm1's is 'SUM'). swsh1's sibling case is reachable by the suffix rule only because TCGCSV spells that era's name out. Verified: every one of the group's 163 numbers is an sm1 card; the 10 sm1 numbers with no product are the secret-rare tail (164-173) plus 101a. Before this the set mapped 26 of 180 printings via MCAP. See pd-v0oi."
+  },
+  {
+    "tcgcsv_group_id": 1428,
+    "set_code": "ex7",
+    "comment": "Bridge Team Rocket Returns. TCGCSV prefixes the ex era's groups with a bare 'EX ' ('EX Team Rocket Returns'); the era-prefix strip only fires on a ':' or '-' delimiter, and the group's abbreviation 'RR' matches no ptcgo_code (ex7's is 'TRR'). A general 'EX ' strip was measured and rejected — see normalize_set_name's doc comment: it buys exactly this one link and would let 2004's group 1853 'EX Battle Stadium' claim any future set named 'Battle Stadium' on tier 2, which has no era guard. Verified: all 111 of ex7's numbers are present in the group. See pd-v0oi."
+  },
+  {
+    "tcgcsv_group_id": 1433,
+    "set_code": "ru1",
+    "comment": "Bridge Pokémon Rumble. pokemontcg.io names the set 'Pokémon Rumble'; TCGCSV names group 1433 just 'Rumble', and its abbreviation 'RUM' matches no ptcgo_code (ru1 has none). Stripping a leading 'pokemon' from set names would reach it, but two sets carry the word and neither pair is a convention worth a rule. Verified: all 16 numbers present, exactly. See pd-v0oi."
+  },
+  {
+    "tcgcsv_group_id": 1455,
+    "set_code": "bp",
+    "comment": "Bridge Best of Game. Set 'Best of Game' against group 1455 'Best of Promos' — a shared prefix and nothing else — and abbreviation 'PR', which 21 groups carry. Verified: all 9 numbers present, exactly. See pd-v0oi."
+  },
+  {
+    "tcgcsv_group_id": 1401,
+    "set_code": "mcd11",
+    "comment": "Bridge the McDonald's promo sets. pokemontcg.io names them \"McDonald's Collection <year>\"; TCGCSV names the groups \"McDonald's Promos <year>\" (2021's is \"McDonald's 25th Anniversary Promos\"). 'Collection' against 'Promos' is a rename, not a convention — swapping one for the other in normalize_set_name would be a guess applied to the whole catalog — so each year takes a row. The abbreviations (M11..M24) match no ptcgo_code; these sets carry none at all. Every year was verified by collector-number overlap: each group holds exactly the set's numbers and no others. TCGCSV also has McDonald's Promos 2023 (23306) and 2024 (24163), which pokemontcg.io has not published — those need a synthesized set, not a bridge, and are filed separately. See pd-v0oi."
+  },
+  {
+    "tcgcsv_group_id": 1427,
+    "set_code": "mcd12",
+    "comment": "See the mcd11 entry — same class, verified the same way (pd-v0oi)."
+  },
+  {
+    "tcgcsv_group_id": 1692,
+    "set_code": "mcd14",
+    "comment": "See the mcd11 entry — same class, verified the same way (pd-v0oi)."
+  },
+  {
+    "tcgcsv_group_id": 1694,
+    "set_code": "mcd15",
+    "comment": "See the mcd11 entry — same class, verified the same way (pd-v0oi)."
+  },
+  {
+    "tcgcsv_group_id": 3087,
+    "set_code": "mcd16",
+    "comment": "See the mcd11 entry — same class, verified the same way (pd-v0oi)."
+  },
+  {
+    "tcgcsv_group_id": 2148,
+    "set_code": "mcd17",
+    "comment": "See the mcd11 entry — same class, verified the same way (pd-v0oi)."
+  },
+  {
+    "tcgcsv_group_id": 2364,
+    "set_code": "mcd18",
+    "comment": "See the mcd11 entry — same class, verified the same way (pd-v0oi)."
+  },
+  {
+    "tcgcsv_group_id": 2555,
+    "set_code": "mcd19",
+    "comment": "See the mcd11 entry — same class, verified the same way (pd-v0oi)."
+  },
+  {
+    "tcgcsv_group_id": 2782,
+    "set_code": "mcd21",
+    "comment": "See the mcd11 entry — same class, verified the same way (pd-v0oi)."
+  },
+  {
+    "tcgcsv_group_id": 3150,
+    "set_code": "mcd22",
+    "comment": "See the mcd11 entry — same class, verified the same way (pd-v0oi)."
   }
 ]

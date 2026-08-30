@@ -67,7 +67,12 @@ if [ "$VOLUME_MODE" = true ]; then
     fi
 
     echo "==> Building image pkdump:latest..."
-    podman build -t pkdump:latest -f "$REPO_DIR/Containerfile" "$REPO_DIR"
+    # Through the helper for the same two reasons deploy.sh is (pd-h3wy):
+    # the previous build's orphaned layers get collected, and the cargo target
+    # cache is scoped to this checkout rather than shared as `unscoped`.
+    # shellcheck source=deploy/image-lib.sh
+    . "$SCRIPT_DIR/image-lib.sh"
+    pkdump_image_ensure pkdump:latest "$REPO_DIR"
 
     echo "==> Creating seed volume ($SEED_VOLUME) — runs 'pkdump setup'..."
     podman volume create "$SEED_VOLUME" >/dev/null

@@ -203,6 +203,50 @@ the next two 4s each). What this removes is the *dependence* on that cache. One
 become four 5-7 minute compiles (`podman build --no-cache`, warm cargo mount
 cache: 447s).
 
+### A build collects what the build before it orphaned
+
+Two kinds of image go unreachable every time the builder runs, and neither is
+anybody's afterwards: a multi-stage build never tags its **stage** images (the
+Rust builder here is 1.62 GB), and re-pointing a tag orphans the image it used
+to name. Nothing on the box collected either. Measured: 5.1 GB in prod's default
+store from three builds, 3.6 GB in the non-prod store from two CI runs —
+roughly 2 GB per build, on the filesystem prod runs from. That is what took `/`
+to 91%, and at 91% `deploy/ci.sh` stops at its own disk floor with every
+container gate below it unrunnable (pd-h3wy).
+
+`pkdump_image_build_collecting` in `deploy/image-lib.sh` is the one builder
+invocation in `deploy/`, and the rule is one sentence: **a build collects what
+the build BEFORE it orphaned.**
+
+Not its own orphans. Those hold the layer cache — dropping the last reference
+lets podman cascade the intermediates away, and a store measured going 45 MB to
+5 MB recompiled from scratch next time. That is the "five compiles instead of
+one" regression the section above exists to prevent, arriving disguised as a
+disk fix. By the time the next build runs, its own predecessor holds those
+layers, so removing the older generation frees only what has genuinely
+diverged: over four consecutive builds the store stays flat and the cache hits
+do not change. One generation of litter is the steady state.
+
+The collection is confined **by label**, which is what makes it safe to run in
+prod's store at all. That store is shared — another project's images and another
+project's litter live in it — so `podman image prune` is not ours to run there.
+Every image this repo builds carries `pkdump.build=1`, stage images included
+(`Containerfile`, `lake/Containerfile`); a dangling image without it is somebody
+else's and is never touched. `-f` is never passed either: an image something
+still holds refuses to go, and that refusal is the right answer.
+
+This is the complement of "a container gate removes the image it named"
+(pd-5aba), not a duplicate of it — that rule is about the tag a gate *names*,
+this one about the layers a tag stopped pointing at.
+
+`tests/store/orphans.sh` is the gate (deploy tier, ~17s, not hermetic, pulls
+nothing): the store flat across four builds, the cache intact, a neighbour's
+dangling image untouched — and both red arms, a bare `podman build` growing the
+store and collecting your OWN generation losing the cache.
+`tests/deploy/run.sh` §11b holds the shell half, including that **every** stage
+of **every** `Containerfile` in the tree carries the label, since the next stage
+somebody adds is the one that would leak.
+
 ## Container storage
 
 Rootless Podman keeps images, layers and volumes under `$HOME`. On the box that

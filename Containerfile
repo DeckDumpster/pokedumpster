@@ -92,6 +92,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cp target/release/pkdump-ship /out/pkdump-ship \
  && cp target/release/pkdump-erase /out/pkdump-erase
 
+# Every image this build produces carries this label, stage images included.
+# It is what confines the orphan collection in deploy/image-lib.sh to layers
+# THIS repo orphaned: a dangling image without it belongs to something else
+# sharing the store, and prod's store is shared. See pkdump_image_orphans.
+LABEL pkdump.build="1"
+
 # --- Stage 2: SvelteKit build -----------------------------------------------
 # adapter-static emits the SPA to frontend/build. The committed ts-rs types in
 # frontend/src/lib/types/ mean this stage needs nothing from the Rust build.
@@ -106,6 +112,8 @@ RUN npm ci
 
 COPY frontend/ ./
 RUN npm run build
+
+LABEL pkdump.build="1"
 
 # --- Stage 3: runtime -------------------------------------------------------
 FROM docker.io/library/debian:bookworm-slim
@@ -127,5 +135,7 @@ ENV PKDUMP_HOME=/data
 # Directory holding the built SvelteKit SPA, served by `pkdump serve`.
 ENV PKDUMP_STATIC_DIR=/srv/pkdump/static
 EXPOSE 8080
+
+LABEL pkdump.build="1"
 
 ENTRYPOINT ["pkdump", "serve", "--host", "0.0.0.0", "--port", "8080"]

@@ -396,6 +396,7 @@ mkdir -p "$QUADLET" "$UNITS" "${WORK}/deploybin"
 # must report NOT active, so the sidecar-restart branch stays out of the way.
 cat > "${WORK}/deploybin/podman" <<'EOF'
 #!/usr/bin/env bash
+[ -n "${PKDUMP_TEST_DEPLOY_PODMAN_LOG:-}" ] && echo "PODMAN: $*" >> "$PKDUMP_TEST_DEPLOY_PODMAN_LOG"
 exit 0
 EOF
 cat > "${WORK}/deploybin/systemctl" <<'EOF'
@@ -414,11 +415,14 @@ printf '[Unit]\nDescription=stale sidecar\n' \
 	> "${QUADLET}/pkdump-litestream-prod.container"
 
 SYSCTL_LOG="${WORK}/systemctl.log"
+PODMAN_LOG="${WORK}/deploy-podman.log"
 : > "$SYSCTL_LOG"
+: > "$PODMAN_LOG"
 DEPLOY_OUT="$(
 	PATH="${WORK}/deploybin:${ORIG_PATH}" \
 		HOME="$FAKE_HOME" \
 		PKDUMP_TEST_SYSTEMCTL_LOG="$SYSCTL_LOG" \
+		PKDUMP_TEST_DEPLOY_PODMAN_LOG="$PODMAN_LOG" \
 		bash "${REPO_DIR}/deploy/deploy.sh" prod 2>&1
 )"
 
@@ -482,6 +486,72 @@ check "a second deploy rewrites nothing" "1" \
 	"$(printf '%s' "$DEPLOY_OUT2" | grep -c 'already match this checkout' || true)"
 check "and leaves no temp files behind" "0" \
 	"$(find "$QUADLET" "$UNITS" -name '.*.new.*' | wc -l)"
+
+# --- The OTHER image this checkout ships (pd-rn4c) --------------------------
+#
+# `lake/` builds a second image — the PyIceberg runtime the nightly price build
+# and the value-snapshots transform run in — and only deploy/setup-lake.sh, the
+# ONE-TIME installer, ever built it. So `deploy/deploy.sh prod` shipped the new
+# binary and left the job image at whatever version the lakehouse was installed
+# with, which is pd-2t6u's bug again against a different image.
+#
+# It is invisible from outside: the stale jobs keep exiting 0. Prod ran a
+# transform six hours older than its own checkout for a day, recording no
+# dimension='sealed' row at all — $10,351.47 of sealed product missing from a
+# chart that reported a plausible $10,636.81, over "1 tenant(s) snapshotted, 0
+# skipped".
+
+# One: a box with no lakehouse must not grow one. Installing one needs a bucket
+# name that lives in host config, and most instances — every `--test` one CI
+# throws away — have none. Asserted on the runs above, which had no Nessie unit.
+check "no lakehouse -> no lake job image built" "0" \
+	"$(grep -c 'PODMAN: build .*lake/Containerfile' "$PODMAN_LOG" || true)"
+check "and it says the lake image was skipped" "1" \
+	"$(printf '%s' "$DEPLOY_OUT" | grep -c 'No lakehouse installed' || true)"
+
+# Two: with a lakehouse installed, a deploy rebuilds its job image. The Nessie
+# Quadlet unit is the marker rather than the image, because `setup-lake.sh
+# --remove` deletes that unit and deliberately keeps the image — so an
+# image-exists test would go on rebuilding for an uninstalled lakehouse.
+printf '[Unit]\nDescription=nessie\n\n[Container]\nImage=ghcr.io/projectnessie/nessie\n' \
+	> "${QUADLET}/pkdump-nessie-prod.container"
+: > "$PODMAN_LOG"
+: > "$SYSCTL_LOG"
+DEPLOY_OUT3="$(
+	PATH="${WORK}/deploybin:${ORIG_PATH}" \
+		HOME="$FAKE_HOME" \
+		PKDUMP_TEST_SYSTEMCTL_LOG="$SYSCTL_LOG" \
+		PKDUMP_TEST_DEPLOY_PODMAN_LOG="$PODMAN_LOG" \
+		bash "${REPO_DIR}/deploy/deploy.sh" prod 2>&1
+)"
+check "a lakehouse -> the job image is rebuilt" "1" \
+	"$(grep -c "PODMAN: build -t localhost/pkdump-lake:prod -f ${REPO_DIR}/lake/Containerfile ${REPO_DIR}/lake" "$PODMAN_LOG" || true)"
+check "and the app image is still built too" "1" \
+	"$(grep -c "PODMAN: build -t pkdump:latest -f ${REPO_DIR}/Containerfile ${REPO_DIR}" "$PODMAN_LOG" || true)"
+check "and it names what it rebuilt" "1" \
+	"$(printf '%s' "$DEPLOY_OUT3" | grep -c 'Rebuilding the lake job image localhost/pkdump-lake:prod' || true)"
+
+# Three: the ORDER. The app is what serves requests; a lake build that fails
+# must never be able to leave the new binary built and not running. So the
+# restart happens first, and this is the assertion that keeps it there when
+# somebody tidies the file.
+check "the app restarts BEFORE the lake image is built" "yes" \
+	"$(printf '%s' "$DEPLOY_OUT3" | awk '
+		/restarted\. Port:/ { app = NR }
+		/Rebuilding the lake job image/ { lake = NR }
+		END { print (app && lake && app < lake) ? "yes" : "no" }')"
+
+# Four: one builder. setup-lake.sh installs a lakehouse and deploy.sh ships a
+# change to one; the day those two build the image differently is the day a
+# deploy produces an image the installer would not have.
+check "setup-lake.sh builds it through the helper" "1" \
+	"$(grep -c '^pkdump_lake_job_image_build ' "${REPO_DIR}/deploy/setup-lake.sh" || true)"
+check "deploy.sh builds it through the same helper" "1" \
+	"$(grep -c 'pkdump_lake_job_image_build ' "${REPO_DIR}/deploy/deploy.sh" || true)"
+check "and setup-lake.sh no longer runs the builder itself" "0" \
+	"$(grep -c 'podman build' "${REPO_DIR}/deploy/setup-lake.sh" || true)"
+check "and deploy.sh runs it only for the app image" "1" \
+	"$(grep -c 'podman build' "${REPO_DIR}/deploy/deploy.sh" || true)"
 
 reset_store
 

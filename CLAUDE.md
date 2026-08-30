@@ -346,10 +346,37 @@ Rootless Podman + systemd-user, scripts in `deploy/`:
 ```bash
 deploy/setup.sh prod        # one-time: build image, install Quadlet unit + timers
 deploy/seed.sh prod         # populate the catalog (pkdump setup in a one-off container)
-deploy/deploy.sh prod       # rebuild + reinstall the unit files + restart
+deploy/deploy.sh prod       # rebuild BOTH images + reinstall the unit files + restart
+deploy/setup-lake.sh prod   # one-time: install the offline lakehouse (deploy/LAKE.md)
 deploy/restore-litestream.sh prod   # restore the collection from S3 (see deploy/RESTORE.md)
 deploy/teardown.sh prod [--purge]
 ```
+
+**This checkout ships TWO images, and a deploy ships both** (pd-rn4c). The app
+image is `pkdump:<inst>`; `lake/` builds `localhost/pkdump-lake:<inst>`, the
+PyIceberg runtime the nightly price build and the value-snapshots transform run
+in. Until pd-rn4c only the one-time installer `deploy/setup-lake.sh` ever built
+the second one, so a change under `lake/` reached a box only if an operator
+remembered a second command — and the stale half is **invisible**, because the
+jobs go on exiting 0 over yesterday's code. Prod ran a transform six hours older
+than its own checkout for a day: `catalog.sealed_prices` was never written and no
+`dimension='sealed'` row was recorded, so the chart reported $10,636.81 of cards
+with $10,351.47 of sealed product beside it and no line for it, over three real
+runs each saying "1 tenant(s) snapshotted, 0 skipped".
+
+Three things about the rebuild are decisions. It happens **after** the app is
+restarted — the app serves requests, and a lake build that fails must not be
+able to leave the new binary built and not running. It is skipped for an
+instance with **no lakehouse**, which is the ordinary case (every `--test`
+instance CI throws away has none) — installing one needs a bucket name that is
+host config and `deploy.sh` has no business inventing one. And the marker for
+"has a lakehouse" is the **Nessie Quadlet unit**, not the image: `setup-lake.sh
+--remove` deletes that unit and deliberately keeps the image, so an
+image-exists test would go on rebuilding for a lakehouse that was uninstalled.
+Nothing is restarted — the lake jobs are one-off containers their timers start,
+so the next scheduled run is the one that picks the new image up.
+`deploy/lake-lib.sh` is the one place the image is named and built, shared by
+both scripts; `tests/deploy/run.sh` §7 is the gate.
 
 Non-prod container storage does not belong on the disk prod runs from.
 `PKDUMP_STORE_ROOT=<dir>` puts an instance's image, layers, volume and

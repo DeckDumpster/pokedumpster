@@ -53,3 +53,42 @@ pkdump_lake_catalog_answering() {
         'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5).read()' \
         "$3" >/dev/null 2>&1
 }
+
+# --- The job image ----------------------------------------------------------
+#
+# The lake jobs' runtime: PyIceberg and nothing else. Nessie is the only JVM in
+# this design and it is somebody else's image.
+#
+# This is here rather than inline in deploy/setup-lake.sh because of what
+# pd-rn4c cost. The app image had a deploy path (deploy/deploy.sh) and the job
+# image had only an INSTALL path (deploy/setup-lake.sh), so a change under
+# lake/ reached a box only if an operator remembered a second command. On
+# 2026-08-26 prod ran a value-snapshots transform six hours older than its own
+# checkout: `catalog.sealed_prices` was never written and no dimension='sealed'
+# row was recorded, so the chart reported $10,636.81 of cards with $10,351.47
+# of sealed product invisible beside it — at exit 0, over "every registered
+# tenant snapshotted", with a plausible number on the page. Same shape as
+# pd-2t6u: a deploy that ships some of what the checkout says it ships.
+
+# The image the wrappers run, honouring the same override they read — so a gate
+# that redirects the image redirects what gets built into it.
+pkdump_lake_job_image() {
+    printf '%s' "${PKDUMP_LAKE_JOB_IMAGE:-localhost/pkdump-lake:${1}}"
+}
+
+# Is a lakehouse installed for this instance at all? The Nessie Quadlet unit is
+# the marker, deliberately, and not the image: `setup-lake.sh --remove` deletes
+# the unit and KEEPS the image, so asking about the image would go on rebuilding
+# one for an instance whose lakehouse was uninstalled. A box with no lakehouse
+# is the ordinary case — nothing on the serving path touches one.
+pkdump_lake_installed() {
+    [ -f "${HOME}/.config/containers/systemd/pkdump-nessie-${1}.container" ]
+}
+
+# Build it. The caller has already adopted and activated the instance's store:
+# the lakehouse lives in whatever store the INSTANCE lives in (pd-yfev), never
+# in whatever store.env says.
+pkdump_lake_job_image_build() {
+    podman build -t "$(pkdump_lake_job_image "$1")" \
+        -f "${2}/lake/Containerfile" "${2}/lake"
+}

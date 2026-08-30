@@ -12,6 +12,9 @@
 # The instance's published port is preserved across the refresh (see
 # deploy/units-lib.sh) — shipping a unit-file change must not move the address.
 #
+# This checkout ships TWO images, and until pd-rn4c only one of them had a
+# deploy path. See the lake block at the bottom of this file.
+#
 # Usage:
 #   bash deploy/deploy.sh <instance>
 #
@@ -77,3 +80,38 @@ if systemctl --user is-active --quiet "pkdump-litestream-${INSTANCE}.service"; t
 fi
 
 echo "==> ${SERVICE_NAME} restarted. Port: podman port systemd-${SERVICE_NAME}"
+
+# --- The other image this checkout ships (pd-rn4c) --------------------------
+#
+# `lake/` builds a SECOND image — the PyIceberg job runtime the nightly price
+# build and the value-snapshots transform run in — and until now nothing but the
+# one-time installer, deploy/setup-lake.sh, ever built it. So a change under
+# lake/ reached a box only if an operator remembered a second command, and the
+# stale half is invisible: the jobs keep exiting 0 over yesterday's code.
+#
+# What it cost: on 2026-08-26 prod's job image predated pd-bbv7 by six hours
+# while its checkout did not. `catalog.sealed_prices` was never written and the
+# transform recorded no dimension='sealed' row, so the chart reported $10,636.81
+# of cards with $10,351.47 of sealed product beside it and no line for it —
+# three real runs, each "1 tenant(s) snapshotted, 0 skipped". Exactly pd-2t6u's
+# shape: a deploy that ships part of what the checkout says it ships.
+#
+# AFTER the app has been restarted, deliberately. The app is what serves
+# requests; a lake build that fails must not be able to leave the new binary
+# built and not running.
+#
+# Only for an instance that already HAS a lakehouse. Installing one is
+# setup-lake.sh's job — it needs a bucket name (deploy/LAKE.md) that this script
+# has no business inventing, and a box with no lakehouse is the ordinary case.
+# shellcheck source=deploy/lake-lib.sh
+. "$SCRIPT_DIR/lake-lib.sh"
+if pkdump_lake_installed "$INSTANCE"; then
+    echo "==> Rebuilding the lake job image $(pkdump_lake_job_image "$INSTANCE")..."
+    pkdump_lake_job_image_build "$INSTANCE" "$REPO_DIR"
+    # Nothing to restart: the lake jobs are one-off containers their timers
+    # start, so the next scheduled run is the one that picks this up.
+    echo "==> Lake job image rebuilt. Its timers run the new image from their next run."
+else
+    echo "==> No lakehouse installed for '${INSTANCE}' — lake job image skipped."
+    echo "    (bash deploy/setup-lake.sh ${INSTANCE} installs one.)"
+fi

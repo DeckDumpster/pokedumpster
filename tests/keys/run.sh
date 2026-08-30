@@ -112,9 +112,15 @@ log() { printf '\n=== %s ===\n' "$*"; }
 cleanup() {
 	if [[ -n "${KEEP:-}" ]]; then
 		echo
-		echo "KEEP=1 — leaving WORK=$WORK in place."
+		echo "KEEP=1 — leaving $IMAGE and WORK=$WORK in place."
 		return
 	fi
+	# The image (pd-5aba). The tag carries the checkout hash, so every worktree
+	# that ever ran this gate left one behind and nothing collected them.
+	# `rmi -f` on a name an image shares with others only UNTAGS it, so under
+	# PKDUMP_PREBUILT_IMAGE — where pkdump_image_ensure tags deploy/ci.sh's one
+	# build rather than building — the gates beside this one keep theirs.
+	podman rmi -f "$IMAGE" >/dev/null 2>&1 || true
 	rm -rf "$WORK"
 }
 trap cleanup EXIT

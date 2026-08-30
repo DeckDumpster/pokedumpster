@@ -178,10 +178,13 @@ bash tests/deploy/run.sh
 
 # Shell-harness self-tests — sub-second, no container. The second one also
 # greps tests/ and deploy/ for a picked host port and fails on one. The third
-# reads the Containerfile: builder and runtime must name the SAME Debian
-# release, and the target cache id must name it too.
+# asserts every gate under tests/ removes the per-checkout image tag it built,
+# because nothing else on the box ever will. The fourth reads the
+# Containerfile: builder and runtime must name the SAME Debian release, and the
+# target cache id must name it too.
 bash tests/lib/diagnostics_test.sh
 bash tests/lib/ports_test.sh
+bash tests/lib/images_test.sh
 bash tests/container/base_images_test.sh
 
 # Browser tier — every route screenshotted at 1440 and 768 against a
@@ -598,6 +601,30 @@ a background job of the *caller's* is never mistaken for a gate, and that every
 one of the seventeen gate scripts is still queued exactly once under a real tier.
 That last one is the refactor's own failure mode: a gate queued nowhere runs
 never, and a green run cannot show you that.
+
+### A container gate removes the image it named
+
+Every gate builds — or, under `PKDUMP_PREBUILT_IMAGE`, re-tags — its image at a
+tag carrying a sha1 of its own checkout path, because concurrent polecats run
+whole suites from their own worktrees. That suffix is what keeps two runs
+apart, and it is also what makes the leak unbounded: the tag is unique per
+(gate, checkout), the worktree is deleted when the polecat is done, and
+**nothing on the box ever collects the tag it left behind**. A deployment is
+the opposite case — `deploy/setup.sh` exists to leave an image behind — so the
+rule is `tests/` only.
+
+Six gates removed theirs and three did not, and the three were the bulk of the
+leaked images found on the prod disk with it at 80% (pd-5aba): fourteen
+`pkdump:{handles,upgrade}-*` tags from worktrees that no longer existed.
+Reclaiming those is operational and one-shot; the durable half is
+`tests/lib/images_test.sh`, which states the rule over the TREE rather than
+over the three files that were wrong. The failure mode is a gate nobody has
+written yet — a new harness copies a neighbour that leaks, and nothing says so
+until a disk fills up months later.
+
+`podman rmi -f` on a name an image shares with others only **untags** it, which
+is what makes the line safe under `PKDUMP_PREBUILT_IMAGE`: the gates running
+beside this one keep theirs, and `deploy/ci.sh`'s single build survives.
 
 ## Conventions & Patterns
 

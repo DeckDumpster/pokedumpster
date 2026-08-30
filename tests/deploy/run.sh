@@ -526,8 +526,16 @@ DEPLOY_OUT3="$(
 )"
 check "a lakehouse -> the job image is rebuilt" "1" \
 	"$(grep -c "PODMAN: build -t localhost/pkdump-lake:prod -f ${REPO_DIR}/lake/Containerfile ${REPO_DIR}/lake" "$PODMAN_LOG" || true)"
+# Built at the INSTANCE tag and through pkdump_image_ensure since pd-h3wy — the
+# bare `podman build -t pkdump:latest` this used to assert collected none of the
+# ~2 GB of layers it orphaned and passed no CARGO_TARGET_CACHE_SCOPE, so prod's
+# own rebuild was the box's biggest leak and shared the `unscoped` target cache
+# with every other unscoped build on it.
+DEPLOY_SCOPE="$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)"
 check "and the app image is still built too" "1" \
-	"$(grep -c "PODMAN: build -t pkdump:latest -f ${REPO_DIR}/Containerfile ${REPO_DIR}" "$PODMAN_LOG" || true)"
+	"$(grep -c "PODMAN: build -t pkdump:prod --build-arg CARGO_TARGET_CACHE_SCOPE=${DEPLOY_SCOPE} -f ${REPO_DIR}/Containerfile ${REPO_DIR}" "$PODMAN_LOG" || true)"
+check "...and pkdump:latest still names it afterwards" "1" \
+	"$(grep -c "PODMAN: tag pkdump:prod pkdump:latest" "$PODMAN_LOG" || true)"
 check "and it names what it rebuilt" "1" \
 	"$(printf '%s' "$DEPLOY_OUT3" | grep -c 'Rebuilding the lake job image localhost/pkdump-lake:prod' || true)"
 
@@ -1442,9 +1450,12 @@ unset PKDUMP_PREBUILT_IMAGE
 # one machine and fail on every other checkout, which is the opposite of the
 # property being asserted.
 IMG_SCOPE="$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)"
+# The build line alone: the wrapper that collects the previous build's orphans
+# (pd-h3wy) lists them first, and this check is about what the builder is asked
+# for. §11b is where the wrapper's own calls and their order are asserted.
 check "unset -> builds from this checkout's Containerfile" \
 	"PODMAN: build -t pkdump:x --build-arg CARGO_TARGET_CACHE_SCOPE=${IMG_SCOPE} -f ${REPO_DIR}/Containerfile ${REPO_DIR}" \
-	"$(img_run pkdump:x)"
+	"$(img_run pkdump:x | grep '^PODMAN: build')"
 # …and the scope is this checkout's, not a constant. A build arg that never
 # varied would satisfy the line above and share one cargo target cache with
 # every other tree on the box, which is the bug it exists to close.
@@ -1481,16 +1492,101 @@ BUILDERS="$(
 	grep -rn --include='*.sh' -e 'podman build' "${REPO_DIR}/tests" "${REPO_DIR}/deploy" /dev/null |
 		grep -F 'Containerfile' |
 		grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' |
-		grep -vE '/(image-lib\.sh|deploy\.sh|seed\.sh|mac-deploy\.sh|mac-setup\.sh|setup-lake\.sh):' |
+		grep -vE '/(image-lib\.sh|mac-deploy\.sh|mac-setup\.sh|setup-lake\.sh):' |
 		grep -vE 'lake/Containerfile' || true
 )"
-check "only image-lib.sh builds the shipped image on the CI path" "" "$BUILDERS"
-# ...and the gates that need it really do go through the helper.
+check "only image-lib.sh builds the shipped image" "" "$BUILDERS"
+# ...and the gates that need it really do go through the helper. deploy.sh and
+# seed.sh joined them with pd-h3wy: they each ran their own `podman build`, which
+# meant prod's rebuild path both leaked every layer it orphaned and compiled under
+# the `unscoped` cargo target-cache id, sharing it with every other unscoped build
+# on the box (pd-sjn7).
 for gate in tests/tenants/upgrade.sh tests/tenants/handles.sh \
-	tests/refresh/tenant_bytes.sh deploy/setup.sh; do
+	tests/refresh/tenant_bytes.sh deploy/setup.sh deploy/deploy.sh deploy/seed.sh; do
 	check "${gate} tags rather than rebuilds" "1" \
 		"$(grep -c '^[[:space:]]*pkdump_image_ensure ' "${REPO_DIR}/${gate}" || true)"
 done
+
+log "11b. A build collects what the build before it orphaned (pd-h3wy)"
+# ---------------------------------------------------------------------------
+#
+# A multi-stage build never tags its stage images and a re-pointed tag orphans
+# the image it used to name, so every build left ~2 GB unreachable in the store
+# and nothing collected it: 5.1 GB found in prod's default store, 3.6 GB in the
+# non-prod one, on the filesystem prod runs from. At 91% full ci.sh stopped at
+# its own disk floor and no container gate could run at all.
+#
+# tests/store/orphans.sh is where the podman half is measured — flat store, cache
+# intact, a neighbour untouched, all of it seen red. Three things about the rule
+# are shell, and each is a way it could silently stop applying.
+
+# THE LABEL IS THE CONFINEMENT, so a stage without one is a stage whose orphan
+# nothing will ever collect — and prod's store is shared with another project,
+# which is why `podman image prune` is not the fix and the label has to be total.
+# Stated over the TREE rather than over the two files that exist today: the next
+# stage somebody adds is the one that would leak.
+for cf in $(cd "$REPO_DIR" && git ls-files | grep -E '(^|/)Containerfile$'); do
+	CF_STAGES="$(grep -c '^FROM ' "${REPO_DIR}/${cf}" || true)"
+	CF_LABELS="$(grep -c '^LABEL pkdump.build=' "${REPO_DIR}/${cf}" || true)"
+	check "${cf}: every stage carries the build label" "$CF_STAGES" "$CF_LABELS"
+done
+
+# ...and the label the Containerfiles write is the one the collector filters on.
+# Two spellings is a filter that matches nothing, which fails as "the disk keeps
+# filling up" months later rather than as a broken build today.
+check "image-lib.sh filters on the label the Containerfiles write" "pkdump.build=1" \
+	"$PKDUMP_IMAGE_LABEL"
+
+# THE ORDER IS THE RULE. Listing the orphans BEFORE the build is what makes them
+# the previous build's rather than this one's; this one's are the layer cache,
+# and collecting those drops the last reference and cascades the intermediates
+# away (tests/store/orphans.sh §5). Swapping these two lines reads like a
+# simplification and turns every gate's 4-second re-tag back into a 5-minute
+# compile, while still looking like a disk fix.
+ORPHBIN="${WORK}/orphbin"
+mkdir -p "$ORPHBIN"
+cat > "${ORPHBIN}/podman" <<'EOF'
+#!/usr/bin/env bash
+echo "PODMAN: $*" >> "$PKDUMP_TEST_PODMAN_LOG"
+# One orphan to collect, so the reap has something to name.
+[ "$1" = images ] && echo deadbeef1234
+exit 0
+EOF
+chmod +x "${ORPHBIN}/podman"
+export PKDUMP_TEST_PODMAN_LOG="${WORK}/podman-orphans.log"
+: > "$PKDUMP_TEST_PODMAN_LOG"
+PATH="${ORPHBIN}:${ORIG_PATH}" pkdump_image_build_collecting -t o:x -f /dev/null . >/dev/null 2>&1
+ORPH_LOG="$(sed 's/^PODMAN: //' "$PKDUMP_TEST_PODMAN_LOG" | cut -d' ' -f1 | tr '\n' ' ')"
+check "list, then build, then reap — in that order" "images build rmi " "$ORPH_LOG"
+check "...and it reaps the id the listing returned" "1" \
+	"$(grep -c '^PODMAN: rmi deadbeef1234$' "$PKDUMP_TEST_PODMAN_LOG" || true)"
+
+# Never `-f`. An image something still holds refuses to go, and that refusal is
+# the right answer rather than a thing to force past — the collector runs in
+# prod's store, beside prod's own running container.
+check "the reap never forces" "0" \
+	"$(grep -c '^PODMAN: rmi -f' "$PKDUMP_TEST_PODMAN_LOG" || true)"
+
+# A build that FAILED collects nothing: its predecessor is the only thing still
+# holding those layers, so dropping them there is the cache loss above with
+# nothing gained.
+cat > "${ORPHBIN}/podman" <<'EOF'
+#!/usr/bin/env bash
+echo "PODMAN: $*" >> "$PKDUMP_TEST_PODMAN_LOG"
+[ "$1" = images ] && { echo deadbeef1234; exit 0; }
+[ "$1" = build ] && exit 7
+exit 0
+EOF
+chmod +x "${ORPHBIN}/podman"
+: > "$PKDUMP_TEST_PODMAN_LOG"
+set +e
+PATH="${ORPHBIN}:${ORIG_PATH}" pkdump_image_build_collecting -t o:x -f /dev/null . >/dev/null 2>&1
+ORPH_FAIL_RC=$?
+set -e
+check "a failed build propagates its status" "7" "$ORPH_FAIL_RC"
+check "...and collects nothing" "0" \
+	"$(grep -c '^PODMAN: rmi' "$PKDUMP_TEST_PODMAN_LOG" || true)"
+unset PKDUMP_TEST_PODMAN_LOG
 
 log "12. Landing and deriving are TWO units, and the derive is scheduled (pd-1uem)"
 # ---------------------------------------------------------------------------

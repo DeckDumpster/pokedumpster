@@ -626,6 +626,60 @@ until a disk fills up months later.
 is what makes the line safe under `PKDUMP_PREBUILT_IMAGE`: the gates running
 beside this one keep theirs, and `deploy/ci.sh`'s single build survives.
 
+### A build collects what the build before it orphaned
+
+The complement of the rule above, and the bigger half. That one is about the tag
+a gate NAMES; this one is about the layers a tag stopped pointing at. A
+multi-stage build never tags its **stage** images — 1.62 GB for the Rust builder
+— and re-pointing a tag orphans the image it used to name. Nothing on the box
+collected either, at roughly **2 GB per build, forever**, on the filesystem prod
+runs from: 5.1 GB found in prod's default store from three builds, 3.6 GB in the
+non-prod store from two CI runs. At 91% full `deploy/ci.sh` stops at its own
+disk floor and every container gate below it is unrunnable (pd-h3wy).
+
+`deploy/image-lib.sh::pkdump_image_build_collecting` is now the builder
+invocation on every path this box takes — `pkdump_image_ensure`,
+`pkdump_lake_job_image_build`, and since this change `deploy/deploy.sh` and
+`deploy/seed.sh`, which each ran their own bare `podman build` and so left
+prod's own rebuild path as the box's biggest leak (and, incidentally, compiling
+under the `unscoped` cargo target-cache id — pd-sjn7's cross-checkout hazard,
+live on prod). `deploy/mac-{setup,deploy}.sh` still build bare, as they already
+did before §11's builder assertion excluded them: they run against a podman
+machine on somebody's laptop, not against the store prod shares.
+
+Three things about it are decisions:
+
+- **It collects the PREVIOUS build's orphans, never its own.** Its own are the
+  layer cache: collecting them drops the last reference and podman cascades the
+  intermediates away (measured — a store went 45 MB to 5 MB and the next build
+  recompiled), which is exactly the "five compiles instead of one" regression
+  `image-lib.sh` exists to prevent, arriving disguised as a disk fix. By the
+  next build its own predecessor holds those layers, so removing the older
+  generation frees only what has diverged. Over four consecutive builds: store
+  flat, cache hits unchanged. **One generation of litter is the steady state;
+  unbounded growth was the bug.**
+- **It is confined by LABEL, and that is what makes it safe in prod's store.**
+  That store is shared with another project on this box, so `podman image prune`
+  is not ours to run there. Every image built from this repo carries
+  `pkdump.build=1`, stage images included, and a dangling image without it is
+  never touched. The label is asserted over the **tree** rather than over the
+  two `Containerfile`s that exist today — the next stage somebody adds is the
+  one that would leak.
+- **Never `-f`, and a failed build collects nothing.** An image something still
+  holds refuses to go, and that refusal is the right answer rather than a thing
+  to force past. A build that failed leaves its predecessor alone, because that
+  predecessor is the only thing still holding the cache.
+
+Gates: `tests/store/orphans.sh` (deploy tier, ~17s, NOT hermetic — that
+`-f dangling=true` omits the layer cache, and that removing the older generation
+frees bytes without costing the next build its cache, are facts about podman.
+Its fixture is `FROM scratch`, so it pulls nothing, and it works only inside a
+throwaway store it tears down. Store flat, cache intact, a neighbour's dangling
+image untouched, plus both red arms) and `tests/deploy/run.sh` §11b, which holds
+the shell half: the label on every stage of every `Containerfile`, one spelling
+of it, and the ORDER — list, build, reap. Swapping the first two reads like a
+simplification and is the cache loss above.
+
 ## Conventions & Patterns
 
 ### The data model IS the product

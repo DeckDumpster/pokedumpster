@@ -59,7 +59,7 @@ pkdump_image_ensure() {
 		# build-once-and-tag benefit the id exists for.
 		local scope
 		scope="$(printf '%s' "$repo_dir" | sha1sum | cut -c1-8)"
-		podman build -t "$tag" \
+		pkdump_image_build_collecting -t "$tag" \
 			--build-arg "CARGO_TARGET_CACHE_SCOPE=${scope}" \
 			-f "${repo_dir}/Containerfile" "$repo_dir"
 		return
@@ -74,4 +74,77 @@ pkdump_image_ensure() {
 	fi
 
 	podman tag "$prebuilt" "$tag"
+}
+
+# --- Collecting what a build orphaned ---------------------------------------
+#
+# A build leaves litter behind, and until pd-h3wy nothing on the box collected
+# it. Two sources, both structural:
+#
+#   * a multi-stage build's STAGE images are never tagged, so every one of them
+#     is untagged the moment the build ends — 1.62 GB for the Rust builder here;
+#   * re-pointing a tag leaves the image it USED to name unreachable.
+#
+# Neither belongs to anyone afterwards. Measured on the deployment box: 5.1 GB
+# of them in prod's default store from three builds, 3.6 GB in the non-prod
+# store from two CI runs — roughly 2 GB per build, accumulating forever on the
+# filesystem prod runs from. That is what took / to 91% and stopped the whole
+# container tier (pd-h3wy). pd-5aba's rule is the complement of this one: it is
+# about the tag a gate NAMES, this is about the layers a tag stopped pointing at.
+#
+# THE RULE: a build collects what the build BEFORE it orphaned.
+#
+# Not its own orphans — those are the layer cache. Collecting them drops the
+# last reference to the intermediates and podman cascades them away (measured:
+# a store went 45M -> 5M and the next build recompiled), which is exactly the
+# "five compiles instead of one" regression this file exists to prevent. By the
+# time the NEXT build runs, its own predecessor holds those layers, so removing
+# the older generation frees only what has genuinely diverged. Measured over
+# four consecutive builds: store size flat, cache hits unchanged. One
+# generation of litter is the steady state; unbounded growth was the bug.
+#
+# AND IT IS CONFINED BY LABEL, which is what makes it safe to run in prod's
+# store. That store is shared — another project's images and another project's
+# dangling layers live in it — so `podman image prune` is not ours to run there.
+# Every image this repo builds carries `pkdump.build=1` (Containerfile,
+# lake/Containerfile, stage images included); a dangling image without it is
+# somebody else's and is never touched.
+
+# The label every image built from this repo carries. One spelling, spent by the
+# filter below and asserted against both Containerfiles by tests/deploy/run.sh.
+PKDUMP_IMAGE_LABEL="pkdump.build=1"
+
+# pkdump_image_orphans
+#
+# The dangling images this repo left in the active store, ids only. Note that
+# `-f dangling=true` does NOT list build-cache intermediates — only the final
+# image of each stage — which is why removing what it returns is not the same
+# as dropping the cache.
+pkdump_image_orphans() {
+	podman images -f dangling=true -f "label=${PKDUMP_IMAGE_LABEL}" -q 2>/dev/null || true
+}
+
+# pkdump_image_orphans_reap <id>...
+#
+# Never `-f`: an image something still holds refuses to go and that is the right
+# answer, not a thing to force past. A removal that fails does not fail the
+# caller either — the build succeeded, and this is housekeeping after it.
+pkdump_image_orphans_reap() {
+	[ "$#" -gt 0 ] || return 0
+	echo "==> Collecting $# orphaned image layer(s) from the previous build."
+	local id
+	for id in "$@"; do
+		podman rmi "$id" >/dev/null 2>&1 || true
+	done
+}
+
+# pkdump_image_build_collecting <podman build arg>...
+#
+# `podman build`, with the previous build's orphans collected once this one has
+# succeeded. Every builder invocation in deploy/ goes through here.
+pkdump_image_build_collecting() {
+	local -a stale=()
+	mapfile -t stale < <(pkdump_image_orphans)
+	podman build "$@" || return
+	pkdump_image_orphans_reap "${stale[@]}"
 }

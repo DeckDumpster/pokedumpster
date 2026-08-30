@@ -1198,6 +1198,27 @@ printf '%s\n' "$OUT" | sed 's/^/    /'
 check "fully armed instance reports ARMED" "0" "$RC"
 check "and says so in as many words" "1" "$(printf '%s' "$OUT" | grep -c 'ALARMING: ARMED' || true)"
 
+# ── the unit is installed, enabled, and executing nothing (pd-onyd) ─────────
+# These units are HOST-WIDE — one copy of each on the box, shared by every
+# instance — and until pd-onyd any checkout that ran setup.sh rewrote their
+# {{REPO_DIR}}. A polecat/CI worktree is DELETED the moment its work lands, so
+# prod's alerting was routinely left pointing at a directory that no longer
+# existed: installed, enabled, green to every other check here, and 203/EXEC.
+# "Installed" cannot be the whole question, so this asks the other half.
+GONE_DIR="${WORK}/deleted-worktree"
+sed -i "s|${REPO_DIR}/deploy/diskcheck.sh|${GONE_DIR}/deploy/diskcheck.sh|g" \
+	"${SYSTEMD_USER_DIR}/${P}-diskcheck.service"
+OUT="$(status_run)"; RC=$?
+check "an ExecStart pointing at a deleted checkout flips it to NOT ARMED" "1" "$RC"
+check "and it names the file that is gone" "1" \
+	"$(printf '%s' "$OUT" | grep -c "${GONE_DIR}/deploy/diskcheck.sh" || true)"
+check "and says the unit would fail 203/EXEC" "1" \
+	"$(printf '%s' "$OUT" | grep -c '203/EXEC' || true)"
+sed -e "s|{{REPO_DIR}}|${REPO_DIR}|g" -e "s|pkdump-alert@|${P}-alert@|g" \
+	"${REPO_DIR}/deploy/pkdump-diskcheck.service" >"${SYSTEMD_USER_DIR}/${P}-diskcheck.service"
+OUT="$(status_run)"; RC=$?
+check "restoring the ExecStart restores ARMED" "0" "$RC"
+
 # Truthfulness runs both ways: take one thing away and the answer must flip.
 write_alerts_env ""
 OUT="$(status_run)"; RC=$?

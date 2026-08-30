@@ -95,6 +95,44 @@ configured() { [ -n "${1:-}" ] && [ "${1}" != CHANGE_ME ]; }
 
 unit_prop() { systemctl --user show "$1" -p "$2" --value 2>/dev/null; }
 
+# ── Does the unit actually have something to execute? (pd-onyd) ─────────────
+#
+# The alarming units are HOST-WIDE: one pkdump-alert@.service, one
+# pkdump-diskcheck.service, one pkdump-backup-check@.service and one
+# pkdump-heartbeat@.service on the whole box, each with {{REPO_DIR}}
+# sed-substituted into its ExecStart by deploy/units-lib.sh. Until pd-onyd any
+# checkout that ran setup.sh rewrote them, and a polecat/CI worktree is DELETED
+# the moment its work lands — so prod's alerting was routinely repointed at a
+# directory that then went away. The unit stays installed, stays enabled, and
+# fails 203/EXEC: installed, armed, and executing nothing, which is exactly the
+# Jun 2026 backup outage this script exists to refuse to report as fine.
+#
+# So "installed" is not the question this asks. "Will it run?" is.
+EXECSTART_MISSING=""
+execstart_resolves() { # <unit-file-basename>
+    local f="${SYSTEMD_USER_DIR}/$1" p
+    EXECSTART_MISSING=""
+    [ -f "$f" ] || return 1
+    while read -r p; do
+        [ -n "$p" ] || continue
+        [ -f "$p" ] && continue
+        EXECSTART_MISSING="$p"
+        return 1
+    done < <(grep -oh "/[^ '\"]*/deploy/[A-Za-z0-9_.-]*\.sh" "$f" 2>/dev/null | sort -u)
+    return 0
+}
+
+# Silent when the unit is not installed at all — the gate above each call site
+# already says so, and one fault should be reported once.
+execstart_gate() { # <unit-file-basename> <label>
+    if execstart_resolves "$1"; then
+        ok "$2 runs a script that is still on disk"
+    elif [ -n "$EXECSTART_MISSING" ]; then
+        bad "$2 would run ${EXECSTART_MISSING} — that file is GONE, so the unit fails 203/EXEC" \
+            "bash deploy/setup.sh ${INSTANCE}   # from the clone that DEPLOYS this box (pd-onyd)"
+    fi
+}
+
 echo "PokeDumpster backup alarming — instance '${INSTANCE}'"
 echo "  config: ${CONF_DIR}/alerts.env, ${ALERTS_ENV}"
 
@@ -109,6 +147,7 @@ layer "Layer 0 — off-box uptime heartbeat (${P}-heartbeat@${INSTANCE})"
 
 [ -f "${SYSTEMD_USER_DIR}/${P}-heartbeat@.service" ] && [ -f "${SYSTEMD_USER_DIR}/${P}-heartbeat@.timer" ]
 gate $? "heartbeat units installed" "bash deploy/setup.sh ${INSTANCE}   # reinstall the units"
+execstart_gate "${P}-heartbeat@.service" "heartbeat"
 
 HB_TIMER="${P}-heartbeat@${INSTANCE}.timer"
 [ "$(systemctl --user is-active "$HB_TIMER" 2>/dev/null)" = active ]
@@ -143,6 +182,7 @@ layer "Layer 1 — off-box freshness dead-man's switch (${P}-backup-check@${INST
 
 [ -f "${SYSTEMD_USER_DIR}/${P}-backup-check@.service" ] && [ -f "${SYSTEMD_USER_DIR}/${P}-backup-check@.timer" ]
 gate $? "checker units installed" "bash deploy/setup.sh ${INSTANCE}   # reinstall the units"
+execstart_gate "${P}-backup-check@.service" "checker"
 
 TIMER="${P}-backup-check@${INSTANCE}.timer"
 [ "$(systemctl --user is-enabled "$TIMER" 2>/dev/null)" = enabled ]
@@ -201,6 +241,7 @@ layer "Layer 2 — OnFailure push to Pushover (${P}-alert@)"
 
 [ -f "${SYSTEMD_USER_DIR}/${P}-alert@.service" ]
 gate $? "alert unit installed" "bash deploy/setup.sh ${INSTANCE}"
+execstart_gate "${P}-alert@.service" "alert unit"
 
 if configured "${PUSHOVER_TOKEN:-}" && configured "${PUSHOVER_USER:-}"; then
     ok "Pushover credentials configured"
@@ -224,6 +265,10 @@ done
 
 # ── Layer 4 — low-disk alert (host-wide) ────────────────────────────────────
 layer "Layer 4 — low-disk alert (${P}-diskcheck, host-wide)"
+
+[ -f "${SYSTEMD_USER_DIR}/${P}-diskcheck.service" ] && [ -f "${SYSTEMD_USER_DIR}/${P}-diskcheck.timer" ]
+gate $? "disk units installed" "bash deploy/setup.sh ${INSTANCE}   # reinstall the units"
+execstart_gate "${P}-diskcheck.service" "disk check"
 
 [ "$(systemctl --user is-enabled "${P}-diskcheck.timer" 2>/dev/null)" = enabled ]
 gate $? "disk timer enabled" "systemctl --user enable --now ${P}-diskcheck.timer"

@@ -2577,6 +2577,116 @@ check "…and --profile is named instead of the ambient warning" "0" \
 check "an unresolvable identity is printed as unresolved, not fatal" "1" \
 	"$(tz_has "$TZ_OK" 'UNRESOLVED')"
 
+
+# ---------------------------------------------------------------------------
+log "16. Host-wide units belong to the deploy clone (pd-onyd)"
+# ---------------------------------------------------------------------------
+#
+# Everything under ~/.config/systemd/user is ONE FILE PER BOX. The %i templates
+# look per-instance and are not — pkdump-refresh@.service backs prod and every
+# CI instance at once — and each bakes {{REPO_DIR}} into an ExecStart. So
+# "install the units" meant "point prod's alerting, landing and disk check at
+# whichever checkout ran setup.sh LAST".
+#
+# deploy/ci.sh runs setup.sh from a per-checkout worktree and `gt done` deletes
+# that worktree. Observed on the deployment box 2026-08-09: `deploy/setup.sh
+# vault-unitfix --test` from a polecat worktree left prod's units executing
+# .../polecats/vault/pokedumpster/deploy/alert.sh — 203/EXEC the moment the
+# branch landed, which is the Jun 2026 backup outage's exact shape.
+
+reset_store
+
+HOSTHOME="${WORK}/hosthome"
+HOST_UNITS="${HOSTHOME}/.config/systemd/user"
+HOST_QUADLET="${HOSTHOME}/.config/containers/systemd"
+
+# The library under test. Sourced once; every case drives it with HOME pointed
+# at a fake box, so nothing here can touch the operator's real units.
+# shellcheck source=deploy/units-lib.sh
+. "${REPO_DIR}/deploy/units-lib.sh"
+
+install_as() { # install_as <instance> [env=val ...] -> stdout of the install
+	local inst="$1"; shift
+	env HOME="$HOSTHOME" "$@" bash -c '
+		. "$1/deploy/store-lib.sh"; . "$1/deploy/units-lib.sh"
+		pkdump_units_install "$2" 0
+	' _ "$REPO_DIR" "$inst" 2>&1
+}
+owners_of() { HOME="$HOSTHOME" pkdump_units_host_owners; }
+
+# --- A fresh box: somebody has to install them, and it may be anyone ---------
+rm -rf "$HOSTHOME"; mkdir -p "$HOST_UNITS" "$HOST_QUADLET"
+install_as ci-9f2c1a >/dev/null
+check "a fresh box gets its host-wide units from whoever asked first" "$REPO_DIR" \
+	"$(owners_of)"
+
+# --- The classification covers the directory, both ways ---------------------
+# A shared unit written but not declared would be unguarded by everything
+# below; a name declared but never written would make the owner probe read a
+# file that no deploy can ever correct. Neither fails loudly on its own.
+check "every installed host-wide unit is declared" "" \
+	"$(comm -23 <(ls "$HOST_UNITS" | sort) \
+	            <(printf '%s\n' "${PKDUMP_HOST_WIDE_UNIT_FILES[@]}" | sort) | tr '\n' ' ' | sed 's/ $//')"
+check "every declared host-wide unit is installed" "" \
+	"$(comm -13 <(ls "$HOST_UNITS" | sort) \
+	            <(printf '%s\n' "${PKDUMP_HOST_WIDE_UNIT_FILES[@]}" | sort) | tr '\n' ' ' | sed 's/ $//')"
+# The Quadlet side is per-instance by construction — the instance is in the
+# file name — which is why it is written unconditionally and is not in the list.
+check "the Quadlet units are per-instance" "pkdump-ci-9f2c1a.container pkdump-litestream-ci-9f2c1a.container" \
+	"$(ls "$HOST_QUADLET" | sort | tr '\n' ' ' | sed 's/ $//')"
+
+# --- The bug: another checkout must not take them over ----------------------
+OTHER="${WORK}/otherclone"
+mkdir -p "${OTHER}/deploy"
+grep -rl "$REPO_DIR" "$HOST_UNITS" | xargs sed -i "s|${REPO_DIR}|${OTHER}|g"
+
+SKIP_OUT="$(install_as ci-9f2c1a)"
+check "a throwaway instance does NOT repoint them" "$OTHER" "$(owners_of)"
+check "and says whose they are" "1" \
+	"$(printf '%s' "$SKIP_OUT" | grep -c "belong to ${OTHER}" || true)"
+check "and names the override" "1" \
+	"$(printf '%s' "$SKIP_OUT" | grep -c 'PKDUMP_INSTALL_HOST_UNITS=1' || true)"
+# Refusing the host-wide units must not refuse the instance: standing up a
+# throwaway is the normal case here, not the anomaly.
+check "the instance's own Quadlet is still installed" "yes" \
+	"$([ -f "${HOST_QUADLET}/pkdump-ci-9f2c1a.container" ] && echo yes || echo no)"
+
+# --- The real deployment always wins ----------------------------------------
+install_as prod >/dev/null
+check "an install for prod takes them" "$REPO_DIR" "$(owners_of)"
+
+# ...and 'prod' is not hardcoded here any more than it is in the alert gate.
+grep -rl "$REPO_DIR" "$HOST_UNITS" | xargs sed -i "s|${REPO_DIR}|${OTHER}|g"
+install_as staging PKDUMP_ALERT_INSTANCES="prod staging" >/dev/null
+check "so does one for a second declared deployment" "$REPO_DIR" "$(owners_of)"
+
+# --- An owner that is gone is a repair, not a theft --------------------------
+grep -rl "$REPO_DIR" "$HOST_UNITS" | xargs sed -i "s|${REPO_DIR}|${OTHER}|g"
+rm -rf "$OTHER"
+install_as ci-9f2c1a >/dev/null
+check "units left pointing at a deleted worktree are taken over" "$REPO_DIR" "$(owners_of)"
+
+# --- Both overrides ----------------------------------------------------------
+mkdir -p "${OTHER}/deploy"
+grep -rl "$REPO_DIR" "$HOST_UNITS" | xargs sed -i "s|${REPO_DIR}|${OTHER}|g"
+install_as ci-9f2c1a PKDUMP_INSTALL_HOST_UNITS=1 >/dev/null
+check "=1 forces the write" "$REPO_DIR" "$(owners_of)"
+
+grep -rl "$REPO_DIR" "$HOST_UNITS" | xargs sed -i "s|${REPO_DIR}|${OTHER}|g"
+OFF_OUT="$(install_as prod PKDUMP_INSTALL_HOST_UNITS=0)"
+check "=0 forces the skip, even for prod" "$OTHER" "$(owners_of)"
+check "and says which reason it skipped for" "1" \
+	"$(printf '%s' "$OFF_OUT" | grep -c 'PKDUMP_INSTALL_HOST_UNITS=0' || true)"
+
+# --- The owner is read out of the unit, so it cannot disagree with systemd ---
+# There is no marker file to drift: what the probe reports is the directory the
+# ExecStart will actually execute.
+check "no marker file is kept beside the units" "0" \
+	"$(find "$HOSTHOME" -name '*owner*' -o -name '*.host-units*' | wc -l)"
+
+rm -rf "$HOSTHOME" "$OTHER"
+reset_store
+
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

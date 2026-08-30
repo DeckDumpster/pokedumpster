@@ -423,6 +423,23 @@ like a fix while changing nothing. Move the base, move the id.
 `tests/container/base_images_test.sh` asserts all three in under a second, and
 `deploy/ci.sh` runs it before anything builds the image.
 
+**Every unit under `~/.config/systemd/user` is ONE FILE PER BOX**, shared by
+every instance, with `{{REPO_DIR}}` baked into its `ExecStart` — the `@`
+templates included (`pkdump-refresh@.service` backs prod and every CI instance
+at once). Only the two Quadlet units carry the instance in their file name. So
+"install the units" used to mean "point prod's alerting, landing and disk check
+at whichever checkout ran `setup.sh` LAST", and `deploy/ci.sh` runs `setup.sh`
+from a per-checkout worktree that `gt done` then deletes: prod was found
+executing a polecat worktree's `alert.sh` on 2026-08-09, which is 203/EXEC the
+moment the branch lands (`pd-onyd`). `pkdump_units_host_entitled` is the guard —
+a real deployment (`pkdump_units_alerting`, the same predicate that decides who
+may page), or an unowned box, or an owner whose checkout is gone, or an explicit
+`PKDUMP_INSTALL_HOST_UNITS=1`. Anything else skips them loudly and still
+installs its own instance. The owner is read back out of the installed
+`ExecStart`, never a marker file beside it — the unit is the record.
+`deploy/alarm-status.sh` reports an `ExecStart` that no longer resolves as NOT
+ARMED, because "installed" was never the question.
+
 There's a `deploy` skill in this repo that wraps these scripts for AI use.
 
 ## CI

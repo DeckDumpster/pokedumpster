@@ -198,6 +198,34 @@ pub fn normalize_collector_number(raw: &str) -> String {
 /// unified with `and`, and everything reduces to lowercase alphanumeric
 /// words. `"SWSH08: Fusion Strike"` and `"Fusion Strike"` both become
 /// `"fusion strike"`.
+///
+/// Two house-style differences are reduced away after the prefix strip,
+/// because each is a *convention* the two upstreams re-apply every
+/// generation rather than a one-off name mismatch (pd-v0oi):
+///
+///   - **"Black Star".** pokemontcg.io names every generation's promo set
+///     `"<era> Black Star Promos"`; TCGCSV names the group `"<era>
+///     Promos"`. Ten sets carry the words and no TCGCSV group does, so
+///     dropping the pair costs nothing and bridges `np`, `xyp`, `hsp`
+///     and `smp` on tier 2 the day the next generation's promo set
+///     lists.
+///   - **A trailing `" Base Set"`.** TCGCSV suffixes an era's base group
+///     with it (`"SM Base Set"`, `"SWSH01: Sword & Shield Base Set"`,
+///     `"SV01: Scarlet & Violet Base Set"`) where pokemontcg.io names the
+///     set without. Never stripped down to nothing: group 604 is named
+///     exactly `"Base Set"`, and an empty key would be shared by every
+///     other name that reduced to nothing.
+///
+/// What is deliberately *not* reduced is TCGCSV's `"EX "` era prefix
+/// (`"EX Team Rocket Returns"` vs the set `"Team Rocket Returns"`). It
+/// belongs to a closed 2003-2007 era, so it buys no future links, and
+/// tier 2 carries no [`same_era`] guard — a later set named "Battle
+/// Stadium" would be claimed by 2004's group 1853 "EX Battle Stadium",
+/// which is pd-0o5m's swsh5/BST failure arriving through the other tier.
+/// `ex7` takes a bridge-overlay row instead.
+///
+/// Both reductions were measured against the live catalog before landing:
+/// they add five links and change none.
 pub fn normalize_set_name(raw: &str) -> String {
     let mut s = raw.to_ascii_lowercase();
     // Strip a leading era code prefix like "swsh08:" / "sm -" / "sv:".
@@ -220,10 +248,19 @@ pub fn normalize_set_name(raw: &str) -> String {
         break;
     }
     s = s.replace('&', " and ");
-    let words: Vec<&str> = s
+    let mut words: Vec<&str> = s
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|w| !w.is_empty())
         .collect();
+    // "<era> Black Star Promos" (pokemontcg.io) == "<era> Promos" (TCGCSV).
+    if let Some(i) = words.windows(2).position(|w| w == ["black", "star"]) {
+        words.drain(i..i + 2);
+    }
+    // TCGCSV's " Base Set" suffix on an era's base group. Guarded so
+    // "Base Set" itself keeps a key rather than reducing to nothing.
+    if words.len() > 2 && words[words.len() - 2..] == ["base", "set"] {
+        words.truncate(words.len() - 2);
+    }
     words.join(" ")
 }
 
@@ -1033,6 +1070,27 @@ impl TcgcsvClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
+
+    /// A set as the two upstreams really name it, and the TCGCSV group
+    /// it must end up bridged to: `(set_code, ptcgo_code, name, release
+    /// date, expected primary group)`.
+    type ExpectedSet = (
+        &'static str,
+        Option<&'static str>,
+        &'static str,
+        &'static str,
+        Option<i64>,
+    );
+
+    /// TCGCSV group metadata as the feed ships it: `(groupId, name,
+    /// abbreviation, publishedOn)`.
+    type LiveGroup = (
+        i64,
+        &'static str,
+        Option<&'static str>,
+        Option<&'static str>,
+    );
 
     fn shared_db() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
@@ -1471,6 +1529,424 @@ mod tests {
             normalize_set_name("Black and White - Boundaries Crossed"),
             "black and white boundaries crossed"
         );
+    }
+
+    #[test]
+    fn normalize_set_name_reduces_the_black_star_promo_convention() {
+        // pokemontcg.io writes "<era> Black Star Promos" for what TCGCSV
+        // names "<era> Promos". Ten sets carry the words; no TCGCSV group
+        // does. pd-v0oi.
+        for (set_name, group_name) in [
+            ("Nintendo Black Star Promos", "Nintendo Promos"),
+            ("XY Black Star Promos", "XY Promos"),
+            ("HGSS Black Star Promos", "HGSS Promos"),
+            ("SM Black Star Promos", "SM Promos"),
+        ] {
+            assert_eq!(
+                normalize_set_name(set_name),
+                normalize_set_name(group_name),
+                "{set_name} must reduce onto {group_name}"
+            );
+        }
+        // The reduction is a deletion, not a rewrite: a name that is only
+        // the house words keeps whatever is left rather than vanishing.
+        assert_eq!(normalize_set_name("Black Star Promos"), "promos");
+        // And it does not reach a name that merely contains one of them.
+        assert_eq!(normalize_set_name("Shining Star"), "shining star");
+        assert_eq!(normalize_set_name("Black and White"), "black and white");
+    }
+
+    #[test]
+    fn normalize_set_name_drops_tcgcsvs_base_set_suffix_but_never_to_nothing() {
+        // TCGCSV suffixes an era's base group; pokemontcg.io does not.
+        assert_eq!(
+            normalize_set_name("SWSH01: Sword & Shield Base Set"),
+            normalize_set_name("Sword & Shield"),
+        );
+        assert_eq!(
+            normalize_set_name("SV01: Scarlet & Violet Base Set"),
+            normalize_set_name("Scarlet & Violet"),
+        );
+        // Group 604 is named exactly "Base Set". Stripping it to the empty
+        // string would give it a key every other name that reduced to
+        // nothing would share, so the suffix rule leaves it alone.
+        assert_eq!(normalize_set_name("Base Set"), "base set");
+        // Three words is the shortest name the rule may shorten, and
+        // "Expedition Base Set" (the ecard1 set) is a real one.
+        assert_eq!(normalize_set_name("Expedition Base Set"), "expedition");
+    }
+
+    #[test]
+    fn normalize_set_name_leaves_tcgcsvs_ex_era_prefix_alone() {
+        // Deliberately NOT reduced — see the doc comment. Tier 2 has no
+        // era guard, so an "EX <name>" group stripped to "<name>" could
+        // claim a same-named set two decades later (pd-0o5m's swsh5/BST
+        // failure through the other tier). ex7 takes a bridge row.
+        assert_eq!(
+            normalize_set_name("EX Team Rocket Returns"),
+            "ex team rocket returns"
+        );
+        assert_ne!(
+            normalize_set_name("EX Battle Stadium"),
+            normalize_set_name("Battle Stadium"),
+        );
+    }
+
+    /// The 26 sets pd-v0oi found reaching no TCGplayer group, as they are
+    /// really named on both sides, run through the real linker and the
+    /// real bridge overlay. Group ids, group names and abbreviations are
+    /// the live TCGCSV values; set names and ptcgo_codes are
+    /// pokemontcg.io's.
+    ///
+    /// `None` is an assertion too: the four trainer-kit sets must still
+    /// reach nothing. One TCGCSV group holds both halves of a kit
+    /// (1543 = tk1a + tk1b) and `tcgplayer_groups.group_id` is the
+    /// primary key, so no bridge can express it — and
+    /// `variants_from_tcgcsv` matches on collector number alone, so
+    /// bridging the group to either half would price tk1a's Bagon (1/10)
+    /// off tk1b's Electrike (1/10) as well. A wrong price is worse than
+    /// none.
+    #[test]
+    fn every_set_in_the_pd_v0oi_coverage_report_reaches_its_group() {
+        let sets: &[ExpectedSet] = &[
+            // Reached by the "Black Star" reduction.
+            (
+                "np",
+                Some("PR-NP"),
+                "Nintendo Black Star Promos",
+                "2003/10/01",
+                Some(1423),
+            ),
+            (
+                "dpp",
+                Some("PR-DPP"),
+                "DP Black Star Promos",
+                "2007/05/01",
+                Some(1421),
+            ),
+            (
+                "hsp",
+                Some("PR-HS"),
+                "HGSS Black Star Promos",
+                "2010/02/10",
+                Some(1453),
+            ),
+            (
+                "bwp",
+                Some("PR-BLW"),
+                "BW Black Star Promos",
+                "2011/03/01",
+                Some(1407),
+            ),
+            (
+                "xyp",
+                Some("PR-XY"),
+                "XY Black Star Promos",
+                "2013/10/12",
+                Some(1451),
+            ),
+            (
+                "smp",
+                Some("PR-SM"),
+                "SM Black Star Promos",
+                "2017/02/03",
+                Some(1861),
+            ),
+            (
+                "swshp",
+                Some("PR-SW"),
+                "SWSH Black Star Promos",
+                "2019/11/15",
+                Some(2545),
+            ),
+            // Reached by the " Base Set" suffix rule.
+            (
+                "swsh1",
+                Some("SSH"),
+                "Sword & Shield",
+                "2020/02/07",
+                Some(2585),
+            ),
+            // Bridge-overlay rows.
+            ("bp", Some("BP"), "Best of Game", "2002/12/01", Some(1455)),
+            (
+                "ex7",
+                Some("TRR"),
+                "Team Rocket Returns",
+                "2004/11/01",
+                Some(1428),
+            ),
+            ("ru1", None, "Pokémon Rumble", "2009/12/02", Some(1433)),
+            ("sm1", Some("SUM"), "Sun & Moon", "2017/02/03", Some(1863)),
+            (
+                "mcd11",
+                None,
+                "McDonald's Collection 2011",
+                "2011/06/17",
+                Some(1401),
+            ),
+            (
+                "mcd12",
+                None,
+                "McDonald's Collection 2012",
+                "2012/06/15",
+                Some(1427),
+            ),
+            (
+                "mcd14",
+                None,
+                "McDonald's Collection 2014",
+                "2014/05/23",
+                Some(1692),
+            ),
+            (
+                "mcd15",
+                None,
+                "McDonald's Collection 2015",
+                "2015/11/27",
+                Some(1694),
+            ),
+            (
+                "mcd16",
+                None,
+                "McDonald's Collection 2016",
+                "2016/08/19",
+                Some(3087),
+            ),
+            (
+                "mcd17",
+                None,
+                "McDonald's Collection 2017",
+                "2017/11/07",
+                Some(2148),
+            ),
+            (
+                "mcd18",
+                None,
+                "McDonald's Collection 2018",
+                "2018/10/16",
+                Some(2364),
+            ),
+            (
+                "mcd19",
+                None,
+                "McDonald's Collection 2019",
+                "2019/10/15",
+                Some(2555),
+            ),
+            (
+                "mcd21",
+                None,
+                "McDonald's Collection 2021",
+                "2021/02/09",
+                Some(2782),
+            ),
+            (
+                "mcd22",
+                None,
+                "McDonald's Collection 2022",
+                "2022/08/03",
+                Some(3150),
+            ),
+            // Still unreachable, on purpose.
+            ("tk1a", None, "EX Trainer Kit Latias", "2004/06/01", None),
+            ("tk1b", None, "EX Trainer Kit Latios", "2004/06/01", None),
+            ("tk2a", None, "EX Trainer Kit 2 Plusle", "2006/03/01", None),
+            ("tk2b", None, "EX Trainer Kit 2 Minun", "2006/03/01", None),
+        ];
+        // Live TCGCSV group metadata for every group named above, plus the
+        // ones that make the ambiguity guards bite: 21 English groups
+        // carry "PR", and group 1853 is the era-collision case.
+        let groups: &[LiveGroup] = &[
+            (
+                609,
+                "DP Training Kit 1 Blue",
+                Some("PR"),
+                Some("2007-09-24T00:00:00"),
+            ),
+            (
+                1401,
+                "McDonald's Promos 2011",
+                Some("M11"),
+                Some("2011-06-17T00:00:00"),
+            ),
+            (
+                1407,
+                "Black and White Promos",
+                Some("PR"),
+                Some("2011-04-25T00:00:00"),
+            ),
+            (
+                1421,
+                "Diamond and Pearl Promos",
+                Some("PR"),
+                Some("2007-05-01T00:00:00"),
+            ),
+            (1423, "Nintendo Promos", Some("PR"), None),
+            (
+                1427,
+                "McDonald's Promos 2012",
+                Some("M12"),
+                Some("2012-06-15T00:00:00"),
+            ),
+            (
+                1428,
+                "EX Team Rocket Returns",
+                Some("RR"),
+                Some("2004-11-01T00:00:00"),
+            ),
+            (1433, "Rumble", Some("RUM"), Some("2009-11-16T00:00:00")),
+            (1451, "XY Promos", Some("PR"), Some("2013-12-16T00:00:00")),
+            (1453, "HGSS Promos", Some("PR"), Some("2010-02-01T00:00:00")),
+            (
+                1455,
+                "Best of Promos",
+                Some("PR"),
+                Some("2002-12-01T00:00:00"),
+            ),
+            (1542, "EX Trainer Kit 2: Plusle & Minun", Some("PR"), None),
+            (1543, "EX Trainer Kit 1: Latias & Latios", Some("PR"), None),
+            (
+                1692,
+                "McDonald's Promos 2014",
+                Some("M14"),
+                Some("2014-05-23T00:00:00"),
+            ),
+            (
+                1694,
+                "McDonald's Promos 2015",
+                Some("M15"),
+                Some("2015-11-23T00:00:00"),
+            ),
+            (
+                1853,
+                "EX Battle Stadium",
+                Some("BST"),
+                Some("2004-10-18T00:00:00"),
+            ),
+            (1861, "SM Promos", Some("SMP"), Some("2016-12-14T00:00:00")),
+            (
+                1863,
+                "SM Base Set",
+                Some("SM01"),
+                Some("2017-02-03T00:00:00"),
+            ),
+            (
+                2148,
+                "McDonald's Promos 2017",
+                Some("M17"),
+                Some("2017-11-07T00:00:00"),
+            ),
+            (
+                2364,
+                "McDonald's Promos 2018",
+                Some("M18"),
+                Some("2018-11-02T00:00:00"),
+            ),
+            (
+                2545,
+                "SWSH: Sword & Shield Promo Cards",
+                Some("SWSD"),
+                Some("2019-11-15T00:00:00"),
+            ),
+            (
+                2555,
+                "McDonald's Promos 2019",
+                Some("M19"),
+                Some("2019-10-01T00:00:00"),
+            ),
+            (
+                2585,
+                "SWSH01: Sword & Shield Base Set",
+                Some("SWSH01"),
+                Some("2020-02-07T00:00:00"),
+            ),
+            (
+                2782,
+                "McDonald's 25th Anniversary Promos",
+                Some("M21"),
+                Some("2021-02-09T00:00:00"),
+            ),
+            (
+                3087,
+                "McDonald's Promos 2016",
+                Some("M16"),
+                Some("2016-08-05T00:00:00"),
+            ),
+            (
+                3150,
+                "McDonald's Promos 2022",
+                Some("M22"),
+                Some("2022-08-03T00:00:00"),
+            ),
+        ];
+
+        let (_d, mut conn) = shared_db();
+        for (set_code, ptcgo, name, release, _) in sets {
+            conn.execute(
+                "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date)                  VALUES (?1, ?2, ?3, 'Test', ?4)",
+                rusqlite::params![set_code, ptcgo, name, release],
+            )
+            .unwrap();
+        }
+        let tcg: Vec<TcgGroup> = groups
+            .iter()
+            .map(|(group_id, name, abbreviation, published_on)| TcgGroup {
+                group_id: *group_id,
+                name: (*name).into(),
+                abbreviation: abbreviation.map(str::to_string),
+                published_on: published_on.map(str::to_string),
+            })
+            .collect();
+        import_groups(&mut conn, &tcg, "2026-08-30").unwrap();
+
+        for (set_code, _, name, _, want) in sets {
+            let got: Option<i64> = conn
+                .query_row(
+                    "SELECT group_id FROM tcgplayer_groups                       WHERE set_code = ?1 AND role = 'primary'",
+                    [set_code],
+                    |r| r.get(0),
+                )
+                .optional()
+                .unwrap();
+            assert_eq!(got, *want, "{set_code} ({name}) bridged to the wrong group");
+        }
+
+        // The era-collision group must still take nothing: 2004's "EX
+        // Battle Stadium" has no set here, and the "EX " prefix is not
+        // reduced away onto anything.
+        let stolen: Option<String> = conn
+            .query_row(
+                "SELECT set_code FROM tcgplayer_groups WHERE group_id = 1853",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stolen, None, "the ex-era group must claim nothing");
+    }
+
+    #[test]
+    fn the_bridge_overlay_names_each_group_once_and_each_set_once_per_role() {
+        // The overlay is a hand-edited file and its two collisions are
+        // both silent: a repeated group_id makes the last row win with no
+        // sign of the first, and two primary rows for one set make the
+        // last wipe the other in `import_groups`. 21 rows is already past
+        // the size a reader checks by eye.
+        let bridges = load_set_bridges().unwrap();
+        let mut groups: Vec<i64> = bridges.iter().map(|b| b.tcgcsv_group_id).collect();
+        groups.sort_unstable();
+        let mut deduped = groups.clone();
+        deduped.dedup();
+        assert_eq!(groups, deduped, "a group_id is bridged more than once");
+
+        let mut slots: Vec<(String, String)> = bridges
+            .iter()
+            .map(|b| (b.set_code.clone(), b.role.clone()))
+            .collect();
+        slots.sort();
+        let mut unique = slots.clone();
+        unique.dedup();
+        assert_eq!(slots, unique, "two bridges claim one (set_code, role) slot");
     }
 
     #[test]

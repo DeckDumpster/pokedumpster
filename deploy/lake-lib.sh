@@ -30,6 +30,11 @@
 # needs nothing the run does not already have: the job image is Python and
 # urllib is in its standard library.
 
+# The builder wrapper that collects what the previous build orphaned (pd-h3wy).
+# Both images this checkout ships leak the same way, so both go through it.
+# shellcheck source=deploy/image-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/image-lib.sh"
+
 # The Iceberg REST endpoint the jobs talk to. PKDUMP_LAKE_NESSIE_URI is how
 # lake.env (and every test substrate) redirects it; the default is the name
 # deploy/setup-lake.sh gives the container.
@@ -89,6 +94,6 @@ pkdump_lake_installed() {
 # the lakehouse lives in whatever store the INSTANCE lives in (pd-yfev), never
 # in whatever store.env says.
 pkdump_lake_job_image_build() {
-    podman build -t "$(pkdump_lake_job_image "$1")" \
+    pkdump_image_build_collecting -t "$(pkdump_lake_job_image "$1")" \
         -f "${2}/lake/Containerfile" "${2}/lake"
 }

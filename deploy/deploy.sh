@@ -45,8 +45,17 @@ if [ ! -f "$QUADLET_FILE" ]; then
     bash "$SCRIPT_DIR/setup.sh" "$INSTANCE"
 else
     echo "==> Rebuilding image pkdump:${INSTANCE}..."
-    podman build -t pkdump:latest -f "$REPO_DIR/Containerfile" "$REPO_DIR"
-    podman tag pkdump:latest "pkdump:${INSTANCE}"
+    # Through the helper, not a bare `podman build` (pd-h3wy). Two things came
+    # free with it that this line had been missing for as long as it existed:
+    # the build collects what the PREVIOUS build orphaned — prod's own rebuild
+    # was the biggest single producer of the ~2 GB of unreachable layers per
+    # build that filled / — and it passes CARGO_TARGET_CACHE_SCOPE, so prod
+    # stops compiling under the `unscoped` target-cache id it shared with every
+    # other unscoped build on the box (pd-sjn7).
+    # shellcheck source=deploy/image-lib.sh
+    . "$SCRIPT_DIR/image-lib.sh"
+    pkdump_image_ensure "pkdump:${INSTANCE}" "$REPO_DIR"
+    podman tag "pkdump:${INSTANCE}" pkdump:latest
 
     # Ship the unit files too, not just the image (pd-2t6u). The units under
     # deploy/ are templates that get copied into ~/.config at install time, so an

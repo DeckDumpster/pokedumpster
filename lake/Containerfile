@@ -16,5 +16,7 @@ COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir . && rm -rf /root/.cache
 
+LABEL pkdump.build="1"
+
 # No default command: the image is a runtime for whichever job the caller asks
 # for (`pkdump-lake-roundtrip` today, the table build next).

@@ -574,6 +574,19 @@ if tier deploy; then
     # throwaway store, about a second, and it removes nothing outside it.
     step "Container store: the rootless-netns split, against real podman"
     bash "$REPO_DIR/tests/store/netns_split.sh"
+
+    # The second non-hermetic store gate, and non-hermetic for the same reason:
+    # that a build orphans its stage images, that `-f dangling=true` does not
+    # list the layer cache, and that removing the previous generation therefore
+    # frees bytes WITHOUT costing the next build its cache are all facts about
+    # podman. Nothing on this box collected those layers, so every build left
+    # ~2 GB behind on the filesystem prod runs from — 5.1 GB found in prod's
+    # store — until / hit 91% and this script stopped at its own disk floor with
+    # the whole container tier below it unrunnable (pd-h3wy). ~17s, pulls
+    # nothing (its fixture is FROM scratch), and works only inside a throwaway
+    # store it tears down.
+    step "Container store: a build collects what the build before it orphaned"
+    bash "$REPO_DIR/tests/store/orphans.sh"
 fi
 
 # --- 3. Frontend gate -------------------------------------------------------

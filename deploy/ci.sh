@@ -337,7 +337,7 @@ if [ -n "${PKDUMP_CI_SELECT_ONLY:-}" ]; then
     exit 0
 fi
 
-# --- 0b. Container store + disk floor ----------------------------------------
+# --- 0b. Container store, housekeeping, disk floor ---------------------------
 
 # shellcheck source=deploy/store-lib.sh
 . "$SCRIPT_DIR/store-lib.sh"
@@ -352,26 +352,35 @@ pkdump_store_activate
 # teardown is still outstanding. Warns; never fails the run. See store-lib.sh.
 pkdump_store_split_check
 
-step "Disk floor check"
-# Before the build, not after it dies: at 697M free a cargo link failed with
-# `ld terminated with signal 7 [Bus error]`, which reads as a toolchain bug and
-# cost real time to diagnose (pd-fite). Both disks matter — $HOME still holds
-# the toolchain caches and the default store even when the container store moves.
-bash "$SCRIPT_DIR/diskcheck.sh" --floor "$HOME" "${PKDUMP_STORE_ROOT:-$HOME}"
-
-# Once here is enough while one gate runs at a time and the previous one's
-# teardown has already returned its space. Three at a time is three images,
-# three volumes and three MinIO stores deep at once, so the same guard runs
-# again before EVERY parallel dispatch — over the same two filesystems, since
-# both still matter (see the note above).
+# The parallel runner defines functions and runs nothing, so sourcing it here
+# costs nothing and lets the EXIT trap below — which kills the wave — be
+# installed before the first thing that can fail.
 # shellcheck source=deploy/ci-parallel.sh
 . "$SCRIPT_DIR/ci-parallel.sh"
+# Once at startup was enough while one gate ran at a time and the previous one's
+# teardown had already returned its space. Three at a time is three images,
+# three volumes and three MinIO stores deep at once, so the same guard runs
+# again before EVERY parallel dispatch — over the same two filesystems, since
+# both still matter (see the floor check below).
 PKDUMP_PAR_DISK_PATHS=("$HOME" "${PKDUMP_STORE_ROOT:-$HOME}")
 pkdump_par_reset
 
 DF_BEFORE="$(df -h "$HOME" | tail -n1)"
 
 # --- 1. Clean up any stale ci instance --------------------------------------
+#
+# RECLAIM BEFORE MEASURING, and that order is the fix rather than the tidy-up
+# (pd-h3wy). This block used to sit BELOW the floor check, which made a box
+# that CI's OWN litter had filled a box CI refused to run on: the floor check
+# exited 1, and the two lines that would have freed the space were downstream
+# of the gate they would have satisfied. The disk was found at 91% with
+# deploy/ci.sh stopping at its first step, and 5.1G of what was on it was
+# dangling layers from previous runs plus stale per-instance images and volumes
+# — exactly what this block collects. It had to be reclaimed by hand.
+#
+# Nothing here is a new power: both lines already ran on every CI run. Only
+# when they run has changed, so a run that was going to pass the floor anyway
+# is unaffected.
 
 step "Cleaning up stale '${INSTANCE}' instance..."
 bash "$SCRIPT_DIR/teardown.sh" "$INSTANCE" --purge 2>/dev/null || true
@@ -633,6 +642,25 @@ if [ "$NEEDS_IMAGE" = yes ]; then
 else
     echo ""
     echo "==> (skipped: no selected tier needs the container image)"
+fi
+
+# --- 1a. Disk floor check ----------------------------------------------------
+
+step "Disk floor check"
+# Before the build, not after it dies: at 697M free a cargo link failed with
+# `ld terminated with signal 7 [Bus error]`, which reads as a toolchain bug and
+# cost real time to diagnose (pd-fite). Both disks matter — $HOME still holds
+# the toolchain caches and the default store even when the container store moves.
+#
+# After the housekeeping above, never before it (pd-h3wy) — see the note there.
+if ! bash "$SCRIPT_DIR/diskcheck.sh" --floor "$HOME" "${PKDUMP_STORE_ROOT:-$HOME}"; then
+    # What is left is in use, so say that rather than leaving an operator to
+    # try the reclamation this run has already done.
+        diag "volume are gone, and every dangling layer older than 24h is pruned. What"
+    diag "is left on these filesystems is in use by something. See deploy/README.md"
+    diag "'Container storage' — PKDUMP_STORE_ROOT moves a non-prod run's images,"
+    diag "layers, volumes and build cache off the disk prod runs from."
+    exit 1
 fi
 
 # --- 4. Container gate ------------------------------------------------------

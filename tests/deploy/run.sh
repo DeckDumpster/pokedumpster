@@ -2758,5 +2758,70 @@ rm -rf "$HOSTHOME" "$OTHER"
 reset_store
 
 # ---------------------------------------------------------------------------
+log "17. ci.sh reclaims before it measures the floor (pd-h3wy)"
+# ---------------------------------------------------------------------------
+#
+# The order of two things deploy/ci.sh already did is the whole of this. Its
+# housekeeping — tearing down this instance's stale image and volume, and
+# pruning every dangling layer older than 24h — used to sit BELOW the disk
+# floor check, so a box that CI's own litter had filled was a box CI refused to
+# run on: the floor check exited 1 and the reclamation never happened. The disk
+# was found at 91% with 5.1G of exactly that litter on it, and it had to be
+# freed by hand.
+#
+# Asserted over the source, because that is where the property lives: running
+# ci.sh to observe it would mean filling a disk. Fails closed — a pattern that
+# matches nothing is a FAIL, never a silent pass, so renaming one of these
+# lines fails here rather than quietly retiring the rule.
+
+CI_SH="${REPO_DIR}/deploy/ci.sh"
+
+# First match only: each of these appears again later (the teardown in the EXIT
+# trap, the floor check inside deploy/ci-parallel.sh's per-dispatch guard), and
+# it is the first occurrence that orders the startup sequence.
+#
+# A pattern that matches nothing yields the empty string rather than killing
+# this file: the whole point of the anchors below is to REPORT a line that has
+# been renamed, and under `set -euo pipefail` an unmatched grep in a pipeline
+# would abort the run before the assertion that names it could print.
+line_of() { # line_of <extended-regex>
+	{ grep -nE "$1" "$CI_SH" || true; } | { grep -v '^[0-9]*:#' || true; } |
+		head -n1 | cut -d: -f1
+}
+
+CI_TEARDOWN="$(line_of 'teardown\.sh" "\$INSTANCE" --purge')"
+CI_PRUNE="$(line_of 'podman image prune')"
+CI_FLOOR="$(line_of 'diskcheck\.sh" --floor')"
+CI_BUILD="$(line_of 'pkdump_image_ensure')"
+
+# Fail closed: every anchor must exist before any ordering claim means anything.
+check "the stale-instance teardown is still there" "1" "$([ -n "$CI_TEARDOWN" ] && echo 1 || echo 0)"
+check "the dangling-layer prune is still there" "1" "$([ -n "$CI_PRUNE" ] && echo 1 || echo 0)"
+check "the disk floor check is still there" "1" "$([ -n "$CI_FLOOR" ] && echo 1 || echo 0)"
+check "the image build is still there" "1" "$([ -n "$CI_BUILD" ] && echo 1 || echo 0)"
+
+# A missing anchor is "not before" rather than an arithmetic error, so a
+# renamed line reports FAIL on its own assertion above AND here, instead of
+# spraying `integer expression expected` across the log.
+before() { # before <line> <line>
+	[ -n "$1" ] && [ -n "$2" ] && [ "$1" -lt "$2" ] && echo 1 || echo 0
+}
+
+# The fix itself.
+check "teardown runs before the floor is measured" "1" "$(before "$CI_TEARDOWN" "$CI_FLOOR")"
+check "dangling layers are pruned before the floor is measured" "1" \
+	"$(before "$CI_PRUNE" "$CI_FLOOR")"
+
+# ...and the property pd-fite bought, which the reordering must not spend: the
+# floor is still checked BEFORE the build, not after a link dies of it.
+check "the floor is still measured before the image is built" "1" \
+	"$(before "$CI_FLOOR" "$CI_BUILD")"
+
+# A floor failure must not send an operator off to run the reclamation this run
+# has already done.
+check "a floor failure says the housekeeping already ran" "1" \
+	"$(grep -c 'housekeeping above has already run' "$CI_SH" || true)"
+
+# ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

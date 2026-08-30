@@ -41,6 +41,16 @@
 #
 # Prod-safe: its own per-checkout instance name, its own volume, its own port.
 # Touches no pkdump-*@prod unit, no pkdump-prod-data volume, no real bucket.
+#
+# ── AND IT IS RE-RUNNABLE, WHICH IT WAS NOT (pd-xdsf) ───────────────────────
+# `deploy/setup.sh <inst> --test` REUSES an existing data volume rather than
+# recreating one, so everything a run writes into the registry is still there
+# the next time. §3 provisions two fixed handles, and `pkdump tenant create` on
+# a handle that is already taken exits non-zero — so the first run that died
+# anywhere past §3 made EVERY later run die in §3, for a different reason than
+# the first, with the first reason lost. Two things kept that invisible and
+# both are fixed below: the purge did not actually purge (see `purge_volume`),
+# and the failure said nothing at all (see `created_id`).
 set -euo pipefail
 
 # systemctl --user / podman need XDG_RUNTIME_DIR; CI runners and
@@ -49,6 +59,16 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Failure diagnostics (pd-8gjs): an ERR trap that names the failing file, line,
+# command and status before the EXIT trap's teardown chatter, and `diag`, which
+# writes through a descriptor no call-site redirection can reach. This gate is
+# the one that died mid-§3 having printed nothing between the section banner and
+# `deploy/ci.sh`'s own report (pd-xdsf) — the exact failure the library exists
+# for, in the one container gate that had not picked it up.
+# shellcheck source=tests/lib/diagnostics.sh
+. "${REPO_DIR}/tests/lib/diagnostics.sh"
+diag_init
 
 # Per-checkout instance name, for the reason spelled out in deploy/ci.sh: the
 # swarm runs several polecats per rig, each from its own worktree, and a shared
@@ -104,13 +124,38 @@ contains() { # contains <label> <needle> <haystack>
 	fi
 }
 
+# ── Owning the volume (pd-xdsf) ─────────────────────────────────────────────
+# `podman volume rm` REFUSES a volume any container still refers to, and
+# `deploy/teardown.sh --purge` calls it with `|| true` — so one leaked one-off
+# container is enough to turn the purge into a no-op that reports success. One
+# from 2026-08-13 was found on this box on 2026-08-30, still holding the volume
+# of a checkout that no longer exists.
+#
+# So the holders are removed first, by asking podman which containers refer to
+# the volume rather than by guessing their names — that catches the ones a
+# previous run leaked, whose PID-derived names this run cannot spell, and the
+# Quadlet container too.
+
+volume_holders() { # -> the name of every container still referring to $VOLUME
+	podman ps -a --filter "volume=${VOLUME}" --format '{{.Names}}' 2>/dev/null || true
+}
+
+purge_volume() {
+	local ctr
+	systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+	for ctr in $(volume_holders); do
+		podman rm -f "$ctr" >/dev/null 2>&1 || true
+	done
+	bash "$REPO_DIR/deploy/teardown.sh" "$INSTANCE" --purge >/dev/null 2>&1 || true
+}
+
 cleanup() {
 	rm -rf "$WORK"
 	if [[ -n "${KEEP:-}" ]]; then
 		echo "KEEP set — instance '${INSTANCE}' left in place."
 		return
 	fi
-	bash "$REPO_DIR/deploy/teardown.sh" "$INSTANCE" --purge >/dev/null 2>&1 || true
+	purge_volume
 }
 trap cleanup EXIT
 
@@ -121,7 +166,12 @@ trap cleanup EXIT
 # uses to seed the fixture.
 
 volume_container() { # -> prints the name of a fresh temp container
-	local ctr="pkdump-sv-$$-${RANDOM}"
+	# The name carries the instance so a leaked one is attributable in a bare
+	# `podman ps -a` — the one found holding a volume for seventeen days read
+	# `pkdump-sv-<pid>-<rand>` and named no checkout, no gate and no volume.
+	# Reaping does not depend on it (`volume_holders` asks podman), but a human
+	# reading the process list does.
+	local ctr="pkdump-oneoff-${INSTANCE}-$$-${RANDOM}"
 	podman run -d --name "$ctr" -v "${VOLUME}:/data:Z" \
 		--entrypoint sleep "$IMAGE" infinity >/dev/null
 	printf '%s' "$ctr"
@@ -191,8 +241,26 @@ wait_for_server() { # wait_for_server <seconds> -> prints the port, or fails
 
 echo "==> Schema-version container gate (instance '${INSTANCE}')"
 
-# Anything an interrupted previous run of THIS checkout left behind.
-bash "$REPO_DIR/deploy/teardown.sh" "$INSTANCE" --purge >/dev/null 2>&1 || true
+# Anything an interrupted previous run of THIS checkout left behind — and then
+# the check that makes this gate re-runnable at all (pd-xdsf). `setup.sh --test`
+# reuses a volume it finds, so a surviving one carries the registry rows §3
+# provisions and §3 dies on the second `tenant create`. A volume that outlives
+# the purge is therefore fatal HERE, naming what holds it, rather than a silent
+# death four sections later.
+purge_volume
+if podman volume exists "$VOLUME"; then
+	diag ''
+	diag "!! the data volume '${VOLUME}' survived a purge, so this run would"
+	diag "!! inherit the previous one's registry and die in §3 provisioning a"
+	diag "!! handle that is already taken."
+	diag "!! still holding it:"
+	if [[ -n "$(volume_holders)" ]]; then
+		volume_holders | sed 's/^/!!   /' >&"${PD_DIAG_FD:-2}"
+	else
+		diag '!!   nothing — podman volume rm failed for another reason.'
+	fi
+	exit 1
+fi
 
 # ── §1 Adoption ─────────────────────────────────────────────────────────────
 # `--test` seeds the volume from tests/ui/fixtures, which are pre-gate files.
@@ -288,6 +356,13 @@ check "the refused database is untouched" "$AHEAD" "$(read_version "$COLLECTION_
 # is only visible next to a database that is current and one row cannot show a
 # spread. Provisioning them also asserts something in passing: per-file
 # versions mean a user this build refuses is not a box-wide outage.
+#
+# The two handles are FIXED, deliberately, and pd-xdsf considered making them
+# unique per run. A unique handle would let a volume the purge failed to remove
+# be survived rather than reported — which is the bug, one layer along: the
+# state carries, nothing says so, and the next thing it breaks is something
+# else. The purge above is verified instead, so a taken handle here can only
+# mean that check was wrong, and `created_id` says which handle and why.
 
 echo ""
 echo "--- §3 Reporting: tenant list names each user's own version ---"
@@ -302,8 +377,27 @@ pkdump_in_volume() {
 # `tenant create` prints `Created user <handle> -> database <id> at <path>`.
 # The id is what names the file: a handle is never a path component, so the
 # database this section then reaches for cannot be spelled from the handle.
+#
+# The status is taken BEFORE anything is piped, and the container's own output
+# is printed on failure (pd-xdsf). Written as one `... | sed` pipeline under
+# `pipefail`, this call sent the container's stderr into the value being
+# captured and then died on the pipeline's status — so the gate ended at this
+# line having printed nothing since the section banner: no check() ran, and the
+# reason was in a variable nobody ever read. `diag` writes through a descriptor
+# a command substitution does not capture, which is the whole point of it.
 created_id() { # created_id <handle> -> prints the minted database_id
-	pkdump_in_volume tenant create "$1" | sed -n 's/.*-> database \([A-Z0-9]*\) .*/\1/p'
+	local out line status=0
+	out=$(pkdump_in_volume tenant create "$1") || status=$?
+	if ((status != 0)); then
+		diag ''
+		diag "!! provisioning user '$1' failed (status ${status})"
+		while IFS= read -r line; do diag "!!   $line"; done <<<"$out"
+		diag "!! a handle that is already taken means this run inherited a volume"
+		diag "!! a previous one left behind — which the pre-flight purge is"
+		diag "!! supposed to make impossible."
+		return "$status"
+	fi
+	printf '%s\n' "$out" | sed -n 's/.*-> database \([A-Z0-9]*\) .*/\1/p'
 }
 
 PROBE_ID=$(created_id drift-probe)

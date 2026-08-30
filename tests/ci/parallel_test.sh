@@ -243,6 +243,43 @@ check "the guard's own message is shown, not swallowed" "1" \
 	"$(printf '%s\n' "$out" | grep -c 'floor 999999999G')"
 
 # ---------------------------------------------------------------------------
+log "4b. The floor measures the TEMP filesystem, not only \$HOME and the store"
+
+# pd-20ia. Every gate's work directory, the source trees the isolation guards
+# copy, and the per-gate output ci-parallel.sh buffers all land under TMPDIR —
+# 47 mktemp sites across deploy/ and tests/. Where /tmp is its own mount that is
+# a third disk, and neither of the two the floor used to name can see it: on the
+# deployment box the check reported `/ has 40G free — ok` with 818M left on
+# /tmp, which is below the free space that produced pd-fite's bus error.
+#
+# The claim is device coverage, not a contrived shortage: a filesystem cannot be
+# made short on cue without root, so the temp mount is required to APPEAR in the
+# guard's own accounting — green (measured and ok) and red (named in the
+# refusal). Both arms bite on a box where /tmp is a separate mount, which is the
+# box CI runs on and the one this bug was found on. Where /tmp shares a device
+# with $HOME they still pass, but they are unfalsifiable there rather than
+# strong — and that is not a hole, it is the fact: on a single-disk box the
+# third arm IS the first one. Said out loud rather than rounded off. What is
+# deterministic everywhere is the dedup below, and §7's wiring assertions.
+FLOOR="${REPO_DIR}/deploy/diskcheck.sh"
+TMP_MOUNT="$(df --output=target "${TMPDIR:-/tmp}" | tail -n1)"
+
+out="$(PKDUMP_DISK_FLOOR_GB=0 bash "$FLOOR" --floor "$HOME" "${TMPDIR:-/tmp}" 2>&1)"
+check "above the floor, the temp mount is measured and named" "1" \
+	"$(printf '%s\n' "$out" | grep -cF "diskcheck: ${TMP_MOUNT} has")"
+
+out="$(PKDUMP_DISK_FLOOR_GB=999999999 bash "$FLOOR" --floor "$HOME" "${TMPDIR:-/tmp}" 2>&1)"
+check "below it, the refusal names the temp mount" "1" \
+	"$(printf '%s\n' "$out" | grep -cF "free on ${TMP_MOUNT} (floor")"
+
+# The dedup is what keeps the third arm free. Three aliases of one directory are
+# one filesystem and must be reported once, or a single-disk box would read
+# three identical lines and learn nothing from any of them.
+out="$(PKDUMP_DISK_FLOOR_GB=0 bash "$FLOOR" --floor "$HOME" "$HOME/." "$HOME" 2>&1)"
+check "paths sharing a device are reported once, not once each" "1" \
+	"$(printf '%s\n' "$out" | grep -c '^diskcheck: ')"
+
+# ---------------------------------------------------------------------------
 log "5. Below the floor with a gate running, it HOLDS instead of aborting"
 
 # A real disk cannot be made to cross a threshold on cue, and the branch worth
@@ -371,8 +408,19 @@ check "the queue is run exactly once" "1" \
 	"$(grep -cE '^ *pkdump_par_run' "$CI_SH")"
 check "ci.sh sources the runner" "1" \
 	"$(grep -c '\. "\$SCRIPT_DIR/ci-parallel.sh"' "$CI_SH")"
-check "the floor is measured on both disks ci.sh cares about" "1" \
-	"$(grep -c 'PKDUMP_PAR_DISK_PATHS=("\$HOME" "\${PKDUMP_STORE_ROOT:-\$HOME}")' "$CI_SH")"
+# One list of disks, named once and spent twice. The pre-build check and the
+# per-dispatch one drifting apart is the bug pd-20ia's array replaces, so the
+# assertion is that the second is a COPY of the first and not a second spelling
+# of it — a re-spelled list passes a "both mention $HOME" test and still drops
+# an arm from one of them.
+check "the disks are named once, in one array" "1" \
+	"$(grep -c 'PKDUMP_CI_DISK_PATHS=("\$HOME" "\${PKDUMP_STORE_ROOT:-\$HOME}" "\${TMPDIR:-/tmp}")' "$CI_SH")"
+check "the pre-build floor check spends that array" "1" \
+	"$(grep -c 'diskcheck.sh" --floor "\${PKDUMP_CI_DISK_PATHS\[@\]}"' "$CI_SH")"
+check "the wave's per-dispatch check COPIES it, never re-spells it" "1" \
+	"$(grep -c 'PKDUMP_PAR_DISK_PATHS=("\${PKDUMP_CI_DISK_PATHS\[@\]}")' "$CI_SH")"
+check "...and those two assignments are the only disk lists in ci.sh" "2" \
+	"$(grep -cE '^ *PKDUMP_(CI|PAR)_DISK_PATHS=\(' "$CI_SH")"
 # A cancelled run must not leave gates behind holding containers.
 check "the EXIT trap takes the wave down with it" "1" \
 	"$(grep -c 'pkdump_par_kill_all' "$CI_SH")"

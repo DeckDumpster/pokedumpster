@@ -355,18 +355,36 @@ pkdump_store_split_check
 step "Disk floor check"
 # Before the build, not after it dies: at 697M free a cargo link failed with
 # `ld terminated with signal 7 [Bus error]`, which reads as a toolchain bug and
-# cost real time to diagnose (pd-fite). Both disks matter — $HOME still holds
-# the toolchain caches and the default store even when the container store moves.
-bash "$SCRIPT_DIR/diskcheck.sh" --floor "$HOME" "${PKDUMP_STORE_ROOT:-$HOME}"
+# cost real time to diagnose (pd-fite).
+#
+# THE DISKS A RUN ACTUALLY WRITES TO, named ONCE and spent twice — here, and
+# again before every parallel dispatch below. Two spellings of this list is how
+# one of them quietly stops covering a disk, which is the shape of the bug this
+# array replaces (pd-20ia).
+#
+#   $HOME              prod's default podman store and its volumes, plus the
+#                      toolchain caches on a box that has not relocated them
+#   PKDUMP_STORE_ROOT  the non-prod container store, where the host moved it
+#   TMPDIR             every mktemp under deploy/ and tests/ — the gates' work
+#                      directories, the source trees the isolation guards copy,
+#                      and the per-gate output ci-parallel.sh buffers
+#
+# The third arm is not hypothetical. On the deployment box /tmp is its own LVM
+# volume, so a full /tmp is invisible to the other two: this check reported
+# `/ has 40G free — ok` with 818M left on /tmp, which is below the very number
+# that produced the bus error above. diskcheck.sh reports each DEVICE once, so
+# where /tmp shares a filesystem with either of the others this costs nothing.
+PKDUMP_CI_DISK_PATHS=("$HOME" "${PKDUMP_STORE_ROOT:-$HOME}" "${TMPDIR:-/tmp}")
+bash "$SCRIPT_DIR/diskcheck.sh" --floor "${PKDUMP_CI_DISK_PATHS[@]}"
 
 # Once here is enough while one gate runs at a time and the previous one's
 # teardown has already returned its space. Three at a time is three images,
 # three volumes and three MinIO stores deep at once, so the same guard runs
-# again before EVERY parallel dispatch — over the same two filesystems, since
-# both still matter (see the note above).
+# again before EVERY parallel dispatch — over the same list, copied rather than
+# re-spelled (see the note above).
 # shellcheck source=deploy/ci-parallel.sh
 . "$SCRIPT_DIR/ci-parallel.sh"
-PKDUMP_PAR_DISK_PATHS=("$HOME" "${PKDUMP_STORE_ROOT:-$HOME}")
+PKDUMP_PAR_DISK_PATHS=("${PKDUMP_CI_DISK_PATHS[@]}")
 pkdump_par_reset
 
 DF_BEFORE="$(df -h "$HOME" | tail -n1)"

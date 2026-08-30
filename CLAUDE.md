@@ -582,10 +582,24 @@ Four things about it are decisions:
   starts looking like flaky gates. `PKDUMP_CI_JOBS=1` is the serial run, and
   the first thing to try when a parallel run misbehaves.
 - **The disk floor is checked before every dispatch**, not once at startup —
-  the same `diskcheck.sh --floor` over the same two filesystems. Below the
-  floor with gates running it **holds** (the gate about to tear itself down is
-  what gives the space back); below the floor with nothing running it fails,
-  naming the gates that never started.
+  the same `diskcheck.sh --floor` over the same list. Below the floor with
+  gates running it **holds** (the gate about to tear itself down is what gives
+  the space back); below the floor with nothing running it fails, naming the
+  gates that never started.
+- **That list names THREE disks, once** (pd-20ia). `PKDUMP_CI_DISK_PATHS` is
+  `$HOME` (prod's default Podman store, and the toolchain caches on a box that
+  has not relocated them), `$PKDUMP_STORE_ROOT` (the non-prod store, where the
+  host moved it) and **`$TMPDIR`** — every `mktemp` under `deploy/` and
+  `tests/`, the source trees the isolation guards copy, and the per-gate output
+  `ci-parallel.sh` buffers. The pre-build check and the per-dispatch one *copy*
+  that array rather than spelling it a second time, because two spellings is how
+  one of them quietly stops covering a disk. The temp arm is not hypothetical:
+  on the deployment box `/tmp` is its own LVM volume, and the check reported
+  `/ has 40G free — ok` with 818M left on `/tmp` — below the free space that
+  produced pd-fite's bus error. `diskcheck.sh` reports each **device** once, so
+  where `/tmp` shares a filesystem the extra arm costs nothing. **Alert mode
+  still watches one filesystem** (`PKDUMP_DISK_PATH`): what pages the operator
+  is a separate decision from what blocks a build.
 - **A failing gate no longer stops the ones beside it.** The wave finishes,
   every gate's output is printed whole under its own name, and the run ends red
   naming all of them. One red run now reports everything that is broken instead
@@ -596,7 +610,8 @@ Four things about it are decisions:
 `tests/ci/parallel_test.sh` is the gate — hermetic, lint tier, ~4s. It asserts
 the cap is reached and never exceeded, that a failure among passes is red and
 named, that output survives concurrency, that the *real* `diskcheck.sh` trips
-against an impossible floor, that the hold branch waits rather than aborts, that
+against an impossible floor and measures the temp filesystem and not only
+`$HOME`, that the hold branch waits rather than aborts, that
 a background job of the *caller's* is never mistaken for a gate, and that every
 one of the seventeen gate scripts is still queued exactly once under a real tier.
 That last one is the refactor's own failure mode: a gate queued nowhere runs

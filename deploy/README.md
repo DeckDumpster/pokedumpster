@@ -149,8 +149,10 @@ ceiling is clamped, out loud.
 Startup was enough when one gate ran at a time and the previous one's teardown
 had already returned its space; two at a time can be two images, two
 volumes and two MinIO stores deep at once. It is the same
-`deploy/diskcheck.sh --floor` guard as everywhere else, over the same two
-filesystems, so `PKDUMP_DISK_FLOOR_GB` moves all of them together. Below the
+`deploy/diskcheck.sh --floor` guard as everywhere else, over the same list —
+copied from `PKDUMP_CI_DISK_PATHS` rather than spelled a second time, so
+`PKDUMP_DISK_FLOOR_GB` moves all of them together and neither check can quietly
+stop covering a disk. Below the
 floor with gates still running, the runner **holds** — the thing most likely to
 give the space back is the gate that is about to tear itself down. Below the
 floor with nothing running, the run fails naming the gates that never started,
@@ -170,10 +172,10 @@ Two things read differently in the log afterwards:
 `tests/ci/parallel_test.sh` gates all of it — hermetically, in the lint tier,
 in about four seconds: the cap holds and is actually reached, a failure among
 passing gates still goes red and is still named, output survives concurrency,
-the real `diskcheck.sh` trips against an impossible floor, the hold branch
-waits instead of aborting, a background job the *caller* started is never
-mistaken for a gate, and every one of the eleven gate scripts is still queued
-exactly once under a real tier.
+the real `diskcheck.sh` trips against an impossible floor, it measures the temp
+filesystem and not only `$HOME`, the hold branch waits instead of aborting, a
+background job the *caller* started is never mistaken for a gate, and every one
+of the seventeen gate scripts is still queued exactly once under a real tier.
 
 ### The image, once
 
@@ -483,9 +485,29 @@ bash deploy/diskcheck.sh                    # alert mode — Layer 4 timer, alwa
 bash deploy/diskcheck.sh --floor /some/path # gate mode — exits 1 under the floor
 ```
 
-Gate mode is what `ci.sh` runs before it builds anything, on both `$HOME` and the
-store root. `PKDUMP_DISK_FLOOR_GB` (default 10) sets the floor. It exists because
-running out of room mid-build does not announce itself as a disk problem.
+Gate mode is what `ci.sh` runs before it builds anything, and again before every
+parallel dispatch. `PKDUMP_DISK_FLOOR_GB` (default 10) sets the floor. It exists
+because running out of room mid-build does not announce itself as a disk problem.
+
+**It measures the three disks a run writes to**, named once in `ci.sh` as
+`PKDUMP_CI_DISK_PATHS` and spent by both checks:
+
+| path | what lives there |
+|------|------------------|
+| `$HOME` | prod's default Podman store and its volumes; the toolchain caches on a box that has not relocated them |
+| `$PKDUMP_STORE_ROOT` | the non-prod container store, where the host moved it (`store.env`) |
+| `$TMPDIR` (default `/tmp`) | every `mktemp` under `deploy/` and `tests/` — the gates' work directories, the source trees the isolation guards copy, and the per-gate output `ci-parallel.sh` buffers |
+
+The third one is not hypothetical (pd-20ia). On the deployment box `/tmp` is its
+own LVM volume, so a full `/tmp` is invisible to the other two: the check
+reported `/ has 40G free — ok` with **818M** left on `/tmp` — below the free
+space that produced pd-fite's bus error in the first place. `diskcheck.sh`
+reports each **device** once, so where `/tmp` shares a filesystem with either of
+the others the extra arm costs nothing.
+
+Note that **alert mode still watches one filesystem** (`PKDUMP_DISK_PATH`,
+default `$HOME`). Widening what pages the operator is a separate decision from
+widening what blocks a build.
 
 ## Seed volume (one-time, speeds up future instances)
 

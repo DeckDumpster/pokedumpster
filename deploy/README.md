@@ -481,9 +481,19 @@ first start after it succeeds (§5).
 `deploy/diskcheck.sh` has two modes off one threshold source:
 
 ```bash
-bash deploy/diskcheck.sh                    # alert mode — Layer 4 timer, always exits 0
+bash deploy/diskcheck.sh                    # alert mode — Layer 4 timer
 bash deploy/diskcheck.sh --floor /some/path # gate mode — exits 1 under the floor
 ```
+
+Alert mode is a timer, not a gate: a **full disk is not its failure**, so it
+reports, pages and exits 0. An **undelivered page is** — `alert.sh` exits 1 when
+the channel is unconfigured (pd-1717) and `diskcheck.sh` propagates that rather
+than swallowing it. Swallowing would leave a box over the threshold, alerting
+into nothing, and green; propagating fails `pkdump-diskcheck.service`, whose
+`OnFailure=` is the only remaining way a page that reached nobody becomes
+visible. Both arms are asserted in `tests/deploy/run.sh` §2; the third — over
+the threshold with a working channel, delivered, exit 0 — needs a real sink and
+lives in `tests/alarming/run.sh` §7.
 
 Gate mode is what `ci.sh` runs before it builds anything, and again before every
 parallel dispatch. `PKDUMP_DISK_FLOOR_GB` (default 10) sets the floor. It exists

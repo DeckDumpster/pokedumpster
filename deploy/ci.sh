@@ -20,6 +20,7 @@
 #                     See tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh,
 #                     tests/lib/wait_test.sh, tests/lib/images_test.sh,
 #                     tests/container/base_images_test.sh,
+#                     tests/visual/approval_test.sh,
 #                     tests/alarming/journal_summary_test.sh,
 #                     tests/alarming/alert_suppress_test.sh and
 #                     tests/ci/treewatch_test.sh.
@@ -562,6 +563,18 @@ if tier lint; then
     # gate. Hermetic and sub-second. See tests/lib/images_test.sh.
     step "Container gates remove their own images (tests/lib/images_test.sh)"
     bash "$REPO_DIR/tests/lib/images_test.sh"
+
+    # Same tier, same shape again, and this one guards the browser tier's own
+    # approval path. Narrowing `--update-snapshots` to one viewport was the
+    # README's documented way to approve a subset; a rendering change reaches
+    # both viewports, so what it actually produced was a stale baseline that
+    # stayed green on the branch that made it and went red on the next one
+    # (pd-4tce, from pd-tf4h). The gate refuses the pair, asserts every
+    # scripted approval arrives through the guard, and checks both baseline
+    # directories against routes.json. Hermetic and sub-second — it runs
+    # Playwright not at all. See tests/visual/approval_test.sh.
+    step "Baseline approvals cover every viewport (tests/visual/approval_test.sh)"
+    bash "$REPO_DIR/tests/visual/approval_test.sh"
 
     # Path selection is itself a gate now, and one whose failure mode is a tier
     # quietly not running. Hermetic and sub-second, so it sits here rather than

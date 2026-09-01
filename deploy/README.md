@@ -481,13 +481,52 @@ first start after it succeeds (§5).
 `deploy/diskcheck.sh` has two modes off one threshold source:
 
 ```bash
-bash deploy/diskcheck.sh                    # alert mode — Layer 4 timer, always exits 0
+bash deploy/diskcheck.sh                    # alert mode — Layer 4 timer, exits 0 having paged
 bash deploy/diskcheck.sh --floor /some/path # gate mode — exits 1 under the floor
 ```
 
 Gate mode is what `ci.sh` runs before it builds anything, and again before every
 parallel dispatch. `PKDUMP_DISK_FLOOR_GB` (default 10) sets the floor. It exists
 because running out of room mid-build does not announce itself as a disk problem.
+
+#### The page has to arrive before the block (pd-smcp)
+
+Alert mode has **two arms**, and the free-space one is the reason this layer is
+worth anything:
+
+| env | default | fires when |
+|-----|---------|-----------|
+| `PKDUMP_DISK_WARN_GB` | `2 × PKDUMP_DISK_FLOOR_GB` | free space drops under it |
+| `PKDUMP_DISK_THRESHOLD` | `90` | percent-used reaches it |
+
+A percentage cannot say whether work is about to be blocked, because the gate is
+denominated in **gigabytes**. On this box's 98G root the 10G floor sits at 89.8%
+used — *below* the 90% the alert fired at — so the page could not arrive before
+the thing it warns about. It arrived after, if at all, and the real failure mode
+stayed "the next agent to need CI discovers it": three polecats in a row hit a
+blocked `ci.sh`, at 91%, then 95%, then 96%, and each recovery was manual.
+
+The warn arm is stated in the floor's own currency, and **it must clear the
+floor** — a value at or under it is *refused*, not clamped, because a warning
+that cannot fire before the failure is not a warning. The default of twice the
+floor means the page arrives once the headroom above the floor has shrunk to
+less than the floor itself: ~20G free on the default, which on the 98G root is
+~80% used and roughly 10G of room to act in. `alarm-status.sh` gates the same
+relation, so a box configured out of usefulness reports **NOT ARMED**.
+
+Each arm has its **own title**, carrying the configured limit rather than
+today's percentage. That is what keeps the layer legible under `alert.sh`'s
+repeat suppression (pd-hqdt): the signature is the exact title plus the message
+with digit runs collapsed, so a title carrying a moving percentage would page
+every single day on a box parked just over the line. As it stands a disk sitting
+still pages once and goes quiet, while a disk that keeps falling crosses from
+`LOW DISK — under 20G free` into `DISK BELOW FLOOR — under 10G free` and pages
+again immediately. Two escalations, both meaning something: *act soon*, then
+*work is already blocked*.
+
+The page carries the reclaim steps with it. This disk has been cleared by hand
+three times; a page that arrives in time and still costs a fresh diagnosis has
+only moved the work earlier.
 
 **It measures the three disks a run writes to**, named once in `ci.sh` as
 `PKDUMP_CI_DISK_PATHS` and spent by both checks:
@@ -507,7 +546,9 @@ the others the extra arm costs nothing.
 
 Note that **alert mode still watches one filesystem** (`PKDUMP_DISK_PATH`,
 default `$HOME`). Widening what pages the operator is a separate decision from
-widening what blocks a build.
+widening what blocks a build — pd-smcp changed *when* Layer 4 pages, not *what*
+it watches, so a `/tmp` that fills still blocks `ci.sh` without paging anyone
+(filed as pd-g4ud).
 
 ## Seed volume (one-time, speeds up future instances)
 
@@ -622,7 +663,8 @@ changed.
   lakehouse is configured. Exit 2 (a tenant skipped) is a partial run, not a
   failure. See [deploy/LAKE.md](LAKE.md) §7.
 - `pkdump-diskcheck` — host-wide low-disk alert (Layer 4, daily). Not
-  per-instance; enable once.
+  per-instance; enable once. This is the only standing guard on the disk `ci.sh`
+  and prod share: unenabled, a full disk is discovered by whoever needs it next.
 
 The `@`-templated units are `%i`-templated, so one copy serves every instance —
 the instance name is the part after `@`. Enable per-instance:
@@ -972,8 +1014,11 @@ S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
   failed unit's journal tail to Pushover. Catches hard crashes fast; does *not*
   catch never-ran (that's Layer 1). The tail goes through `journal-summary.sh`
   first — see [Reading the page](#reading-the-page).
-- **Layer 4 — low-disk alert.** `diskcheck.sh` (daily, host-wide) pushes when the
-  disk crosses `PKDUMP_DISK_THRESHOLD` (default 90%).
+- **Layer 4 — low-disk alert.** `diskcheck.sh` (daily, host-wide) pushes when
+  free space drops under `PKDUMP_DISK_WARN_GB` (default twice the build floor,
+  so the page precedes the block) or percent-used reaches
+  `PKDUMP_DISK_THRESHOLD` (default 90%). See
+  [Low-disk guard](#low-disk-guard).
 - **Layer 3 — in-app banner.** The app shows a staleness banner when the
   `.backup-last-ok` marker goes old (`/api/backup-status`). Passive visibility;
   no paging.

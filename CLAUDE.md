@@ -599,13 +599,67 @@ Four things about it are decisions:
   produced pd-fite's bus error. `diskcheck.sh` reports each **device** once, so
   where `/tmp` shares a filesystem the extra arm costs nothing. **Alert mode
   still watches one filesystem** (`PKDUMP_DISK_PATH`): what pages the operator
-  is a separate decision from what blocks a build.
+  is a separate decision from what blocks a build (pd-g4ud is where that
+  decision is written down — a full `/tmp` still blocks `ci.sh` and pages
+  nobody).
 - **A failing gate no longer stops the ones beside it.** The wave finishes,
   every gate's output is printed whole under its own name, and the run ends red
   naming all of them. One red run now reports everything that is broken instead
   of only the earliest failure.
 - **Output is buffered per gate and printed on completion.** Concurrent writers
   shred each other, and a shredded CI log is a gate nobody can diagnose.
+
+#### The low-disk page arrives before the low-disk block (pd-smcp)
+
+The floor above is a **gate**; `pkdump-diskcheck.timer` is the **alarm** meant to
+make anybody ever hit it. It could not: the gate refuses in gigabytes and the
+alarm fired on a percentage, and on this box's 98G root the 10G floor sits at
+89.8% used — *below* the 90% threshold. The page was structurally incapable of
+arriving before the block it warns about. So the standing failure mode stayed
+"the next agent to need CI discovers it": three polecats hit a blocked `ci.sh`
+at 91%, 95% and 96%, and every recovery was a human clearing space by hand.
+
+Alert mode now has **two arms**, and four things about them are decisions:
+
+- **The arm that matters is denominated in the floor's own unit.**
+  `PKDUMP_DISK_WARN_GB` defaults to twice `PKDUMP_DISK_FLOOR_GB`, so the page
+  arrives once the headroom *above* the floor has shrunk to less than the floor
+  itself. That is proportional to what the operator declared work needs rather
+  than to a guess about disk size — ~20G free on the default, ~80% used on the
+  98G root, about 10G of room to act in. The percent threshold stays as the
+  size-independent "this disk is nearly full", and it is no longer the thing
+  standing between the operator and a blocked box.
+- **A warn line at or under the floor is REFUSED, not clamped.** It cannot fire
+  before the gate refuses, which makes Layer 4 decorative — the exact state
+  this was filed over. The refusal exits non-zero, so the unit's `OnFailure=`
+  pages; `alarm-status.sh` gates the same relation, so a box configured out of
+  usefulness reports NOT ARMED rather than reporting a healthy alarm.
+- **Each arm has its own title, carrying the CONFIGURED limit and never today's
+  percentage.** `alert.sh`'s suppression signature is the exact title plus the
+  message with digit runs collapsed (pd-hqdt), so a title carrying a moving
+  number pages *every day* on a box parked just over the line — which is the
+  noise that trains the channel off, and firing earlier would have bought more
+  of it. As it stands a disk sitting still pages once and goes quiet, and a disk
+  still falling crosses from `LOW DISK — under 20G free` into `DISK BELOW FLOOR
+  — under 10G free` and pages again immediately. Two escalations, both meaning
+  something: *act soon*, then *work is already blocked*.
+- **The remedies travel with the page.** This disk has been cleared by hand
+  three times. A page that arrives in time and still costs a fresh diagnosis has
+  moved the work earlier, not removed it.
+
+What it does NOT change is *which* filesystem pages — that stays one
+(`PKDUMP_DISK_PATH`), and pd-g4ud is where widening it is argued.
+
+Gates: `tests/deploy/run.sh` §2 (hermetic, deploy tier — the whole decision
+table against the real script run beside a stub `alert.sh`, seen red against the
+percent-only version) and `tests/alarming/run.sh` §7 (the same arms reaching the
+wire as three distinct pushes). §2 also stopped **paging Ryan**: it used to run
+`diskcheck.sh` in place with no `PKDUMP_ALERTS_ENV`, so on the self-hosted
+runner every CI run pushed a real LOW DISK alert to his phone — with a title
+carrying the day's percentage, so suppression could not collapse them. Its own
+comment said the push "no-ops unconfigured", which stopped being true the day
+after it landed (pd-1717 made an undeliverable alert exit 1); that is now
+asserted rather than assumed.
 
 `tests/ci/parallel_test.sh` is the gate — hermetic, lint tier, ~4s. It asserts
 the cap is reached and never exceeded, that a failure among passes is red and

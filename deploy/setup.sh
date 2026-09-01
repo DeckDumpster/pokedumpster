@@ -129,9 +129,14 @@ if [ ! -f "$ALERTS_ENV" ]; then
 # Create an app at https://pushover.net/apps/build for the token.
 PUSHOVER_TOKEN=CHANGE_ME
 PUSHOVER_USER=CHANGE_ME
-# Low-disk alert (Layer 4): percent-used trigger + filesystem to watch.
-PKDUMP_DISK_THRESHOLD=90
+# Low-disk alert (Layer 4): filesystem to watch, and the two arms that page.
+# The free-space arm is what buys lead time — deploy/ci.sh refuses to build under
+# PKDUMP_DISK_FLOOR_GB (10) free, and a percentage cannot say how close that is.
+# Blank PKDUMP_DISK_WARN_GB means twice the floor; it MUST clear the floor, and
+# a value that does not is refused rather than clamped (pd-smcp).
 PKDUMP_DISK_PATH=
+PKDUMP_DISK_WARN_GB=
+PKDUMP_DISK_THRESHOLD=90
 EOF
     chmod 600 "$ALERTS_ENV"
     echo "    Wrote ${ALERTS_ENV} (fill PUSHOVER_TOKEN/USER)."

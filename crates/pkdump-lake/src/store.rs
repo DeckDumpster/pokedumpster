@@ -234,11 +234,9 @@ impl ObjectSource for S3Store {
                         aws_error_text(&e)
                     ))
                 })?;
-            object
-                .body
-                .collect()
-                .await
-                .map_err(|e| LakeError::S3(format!("read s3://{}/{}: {e}", self.bucket, key)))
+            object.body.collect().await.map_err(|e| {
+                LakeError::S3(format!("read s3://{}/{}: {e}", self.bucket, key))
+            })
         })?;
         Ok(body.into_bytes().to_vec())
     }

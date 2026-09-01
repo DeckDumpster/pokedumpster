@@ -376,17 +376,7 @@ fn variants_from_tcgcsv(
 ///
 /// Printings expansion no longer produces are soft-deprecated — their
 /// `deprecated_at` is set, never deleted (PLAN.md §4.4). Idempotent.
-///
-/// `deprecated_at` is the run's clock (RFC 3339), passed in rather than read
-/// here. It is a value that lands in a ROW, so a second derivation from the
-/// same landed bytes has to be able to write the same one: this function used
-/// to call `Utc::now()` itself, which made a deprecation the one thing an
-/// offline rebuild could never reproduce. See `pkdump_derive::clock`.
-pub fn expand_all_printings(
-    conn: &mut Connection,
-    overrides: &[VariantOverride],
-    deprecated_at: &str,
-) -> Result<usize> {
+pub fn expand_all_printings(conn: &mut Connection, overrides: &[VariantOverride]) -> Result<usize> {
     let cards: Vec<CardRow> = {
         // Skip the curated standalone-promo set. Those cards have no TCGCSV
         // group bridge, so this pass would only ever hand them a `normal`
@@ -456,7 +446,7 @@ pub fn expand_all_printings(
         tx.commit()?;
     }
 
-    let now = deprecated_at;
+    let now = chrono::Utc::now().to_rfc3339();
     let mut printings = 0usize;
     // Periodic progress. Rust block-buffers stdout to pipes (so seed.sh's
     // tee shows nothing during the loop unless we flush). Emit a line
@@ -584,11 +574,6 @@ pub fn expand_all_printings(
 mod tests {
     use super::*;
 
-    /// The run's clock, as `expand_all_printings` now takes it. Fixed rather
-    /// than `now()`: the value lands in a row, and a test that asserted on a
-    /// clock reading would be asserting on the wall.
-    const DEPRECATED_AT: &str = "2026-08-11T04:51:02+00:00";
-
     /// Open a fresh shared catalog with the production-default variants
     /// and sub_type_variant_map seeds applied. Mirrors what `pkdump setup`
     /// does before expand_all_printings, so tests exercise the same FK
@@ -681,7 +666,7 @@ mod tests {
     #[test]
     fn asc_dreepy_resolves_to_three_truthful_variants() {
         let (_d, mut conn) = seed();
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let mut stmt = conn
             .prepare(
@@ -750,7 +735,7 @@ mod tests {
             .unwrap();
         }
         let mut conn = conn;
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let mut stmt = conn
             .prepare(
@@ -788,7 +773,7 @@ mod tests {
         )
         .unwrap();
         // No TCGCSV row for this set.
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
         let variants: Vec<String> = conn
             .prepare(
                 "SELECT variant FROM printings WHERE card_id = 'xx99-1' AND deprecated_at IS NULL",
@@ -816,7 +801,7 @@ mod tests {
             r#"[{"match":{"set":"me2pt5","number":"158"},"add":["stamp_pokemoncenter"]}]"#,
         )
         .unwrap();
-        expand_all_printings(&mut conn, &overlay, DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &overlay).unwrap();
         let stamp_sub: Option<Option<String>> = conn
             .query_row(
                 "SELECT sub_type_name FROM printings WHERE printing_id = 'me2pt5-158-stamp_pokemoncenter'",
@@ -884,7 +869,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         // Black Bolt Victini gains the stamp printing.
         let row: (String, Option<String>, Option<i64>) = conn
@@ -970,7 +955,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         // The Call of Legends Wartortle gains a stamp_prerelease printing.
         let resolved: i64 = conn
@@ -1044,7 +1029,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         // The ASC Erika's Tangela gains a cosmos_holo printing tied to
         // the MCAP product.
@@ -1112,7 +1097,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let row: (String, Option<i64>) = conn
             .query_row(
@@ -1190,7 +1175,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         // PFL Zacian gains a `normal` printing tied to the deck-exclusive product.
         let row: (Option<String>, Option<i64>) = conn
@@ -1262,7 +1247,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let row: (String, Option<i64>) = conn
             .query_row(
@@ -1339,7 +1324,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let row: (String, Option<i64>) = conn
             .query_row(
@@ -1403,7 +1388,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let row: (String, Option<i64>) = conn
             .query_row(
@@ -1452,7 +1437,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let row: (String, Option<i64>) = conn
             .query_row(
@@ -1537,7 +1522,7 @@ mod tests {
             .unwrap();
         }
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let mut stmt = conn
             .prepare(
@@ -1612,7 +1597,7 @@ mod tests {
             .unwrap();
         }
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let mut variants: Vec<String> = conn
             .prepare(
@@ -1641,13 +1626,13 @@ mod tests {
     fn soft_deprecates_dropped_printings() {
         let (_d, mut conn) = seed();
         // First run with no overlay — produces 3 variants.
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
         // Now wipe the Quick Ball product so the next expansion drops it.
         conn.execute("DELETE FROM tcgcsv_products WHERE product_id = 676976", [])
             .unwrap();
         conn.execute("DELETE FROM prices WHERE tcgplayer_product_id = 676976", [])
             .unwrap();
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
         let dropped: Option<String> = conn
             .query_row(
                 "SELECT deprecated_at FROM printings WHERE printing_id = 'me2pt5-158-quickball_rh'",
@@ -1698,7 +1683,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let resolved: i64 = conn
             .query_row(
@@ -1764,7 +1749,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let resolved: i64 = conn
             .query_row(
@@ -1828,7 +1813,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let resolved: i64 = conn
             .query_row(
@@ -1887,7 +1872,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let foil: i64 = conn
             .query_row(
@@ -1978,7 +1963,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let prerelease: (Option<String>, Option<i64>) = conn
             .query_row(
@@ -2038,7 +2023,7 @@ mod tests {
         )
         .unwrap();
 
-        expand_all_printings(&mut conn, &[], DEPRECATED_AT).unwrap();
+        expand_all_printings(&mut conn, &[]).unwrap();
 
         let resolved: i64 = conn
             .query_row(

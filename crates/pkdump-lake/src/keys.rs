@@ -64,23 +64,6 @@ pub enum Dataset {
 }
 
 impl Dataset {
-    /// Every dataset, for a caller that has to do something once per prefix.
-    ///
-    /// The offline derive is why this exists: rebuilding a date means looking
-    /// for a landed run of each of these, and deciding — per dataset — whether
-    /// a derive may proceed without one. A dataset missing from this list is
-    /// one whose bytes a rebuild would silently never look for, which is the
-    /// coverage regression the whole landing zone is meant to make impossible.
-    /// The test below is what keeps it exhaustive.
-    pub const ALL: &'static [Dataset] = &[
-        Dataset::Groups,
-        Dataset::Products,
-        Dataset::Prices,
-        Dataset::Sets,
-        Dataset::Cards,
-        Dataset::Bulk,
-    ];
-
     /// The `dataset=` partition value. On-disk layout, as with [`Source`].
     pub fn as_str(self) -> &'static str {
         match self {
@@ -170,30 +153,6 @@ mod tests {
 
     const RUN_A: &str = "01K2CJ1N0000000000000000AA";
     const RUN_B: &str = "01K2CJ1N0000000000000000BB";
-
-    /// `Dataset::ALL` must hold every variant, and the compiler is what
-    /// enforces it: the match below has no wildcard arm, so adding a variant
-    /// to the enum stops this test compiling until it is given an ordinal —
-    /// and the assertion then fails until it is added to `ALL` too.
-    #[test]
-    fn all_holds_every_dataset_exactly_once() {
-        let ordinal = |d: Dataset| match d {
-            Dataset::Groups => 0,
-            Dataset::Products => 1,
-            Dataset::Prices => 2,
-            Dataset::Sets => 3,
-            Dataset::Cards => 4,
-            Dataset::Bulk => 5,
-        };
-        let mut seen: Vec<usize> = Dataset::ALL.iter().copied().map(ordinal).collect();
-        seen.sort_unstable();
-        seen.dedup();
-        assert_eq!(
-            seen,
-            (0..Dataset::ALL.len()).collect::<Vec<_>>(),
-            "Dataset::ALL must list every variant exactly once"
-        );
-    }
 
     #[test]
     fn part_key_is_the_documented_layout() {

@@ -28,11 +28,6 @@ Description=PokeDumpster per-tenant value snapshots (%i)
 # without RemainAfterExit, so a Wants= would find it inactive and re-run the
 # whole catalog fetch a second time every night.
 After=pkdump-refresh@%i.service
-# …and after the offline catalog derive (pd-1uem), which is the OTHER unit that
-# fires at 07:00. Same shape and same reasoning as the line above: an ordering
-# dependency, never a Wants=, so the nightly chain is land -> derive -> transform
-# in sequence however long each takes, and nothing re-runs anything.
-After=pkdump-derive@%i.service
 # The lake is reached over the network (Nessie on the lake network, S3 beyond it).
 After=network-online.target
 Wants=network-online.target

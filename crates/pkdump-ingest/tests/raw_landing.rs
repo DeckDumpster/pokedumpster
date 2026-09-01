@@ -38,17 +38,8 @@ fn tcgcsv_route(target: &str, _n: usize) -> Reply {
     }
 }
 
-/// The run's clock. Fixed rather than `now()`: a manifest's `started_at` is
-/// what a later derive stamps into its rows, so a test that asserts on a
-/// manifest wants a value it chose.
-const STARTED_AT: &str = "2026-08-11T04:51:02Z";
-
 fn landing_in(dir: &std::path::Path) -> Arc<RawLanding> {
-    Arc::new(RawLanding::new(
-        Box::new(DirStore::new(dir)),
-        INGEST_DATE,
-        STARTED_AT,
-    ))
+    Arc::new(RawLanding::new(Box::new(DirStore::new(dir)), INGEST_DATE))
 }
 
 fn read_manifest(root: &std::path::Path, key: &str) -> Manifest {

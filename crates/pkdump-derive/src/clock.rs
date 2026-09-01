@@ -70,9 +70,8 @@ impl DeriveClock {
                  whose manifests carry the field."
             );
         }
-        let parsed = DateTime::parse_from_rfc3339(started_at.trim()).map_err(|e| {
-            anyhow::anyhow!("{what}: started_at {started_at:?} is not RFC 3339: {e}")
-        })?;
+        let parsed = DateTime::parse_from_rfc3339(started_at.trim())
+            .map_err(|e| anyhow::anyhow!("{what}: started_at {started_at:?} is not RFC 3339: {e}"))?;
         Ok(Self::at(parsed.with_timezone(&Utc)))
     }
 

@@ -202,7 +202,7 @@ pub fn derive(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<Re
     //    straight JOIN.
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
-    report.printings = overrides::expand_all_printings(conn, &overlay, options.clock.fetched_at())?;
+    report.printings = overrides::expand_all_printings(conn, &overlay)?;
     println!("  wrote {} printings", report.printings);
 
     // Report sets that mapped no printing to a TCGplayer product at all —
@@ -287,10 +287,7 @@ fn acquire(
     // 2. pokemontcg.io tail — pick up sets released since the last refresh.
     println!("Filling newest sets from pokemontcg.io...");
     report.sets_added = import_tail(conn, options)?;
-    println!(
-        "  added {} set(s) not yet in the catalog",
-        report.sets_added
-    );
+    println!("  added {} set(s) not yet in the catalog", report.sets_added);
 
     // 2b. Re-apply the upstream-correction registry to rows already in the
     //     catalog. `upsert_card` above only corrects the sets import_tail

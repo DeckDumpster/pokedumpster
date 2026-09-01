@@ -12,7 +12,6 @@ path = "src/main.rs"
 [dependencies]
 pkdump-core.workspace = true
 pkdump-db.workspace = true
-pkdump-derive.workspace = true
 pkdump-ingest.workspace = true
 pkdump-lake.workspace = true
 pkdump-server.workspace = true

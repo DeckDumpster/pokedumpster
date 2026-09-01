@@ -120,13 +120,9 @@ fn start_upstream(day: Arc<AtomicUsize>) -> FakeUpstream {
 /// and SQLite disagree" and "the upstream answered differently"
 /// indistinguishable.
 fn land_run(base_url: &str, raw_root: &Path, db: &Path, ingest_date: &str) {
-    // The run's clock, the same one its rows are stamped with — see
-    // `pkdump_derive::clock` for why the manifest records it.
-    let now = format!("{ingest_date}T00:00:00Z");
     let landing = Arc::new(RawLanding::new(
         Box::new(DirStore::new(raw_root)),
         ingest_date,
-        &now,
     ));
     let client = TcgcsvClient::new()
         .expect("client")
@@ -134,6 +130,7 @@ fn land_run(base_url: &str, raw_root: &Path, db: &Path, ingest_date: &str) {
         .landing_in(Arc::clone(&landing));
 
     let mut conn = pkdump_db::open_shared(db).expect("open shared catalog");
+    let now = format!("{ingest_date}T00:00:00Z");
 
     let groups = client.fetch_groups().expect("groups");
     tcgcsv::import_groups(&mut conn, &groups, &now).expect("import groups");

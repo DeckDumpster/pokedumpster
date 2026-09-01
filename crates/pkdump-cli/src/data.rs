@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use pkdump_ingest::{coverage, overrides, pokemon_tcg_data, symbols};
+use pkdump_ingest::{overrides, pokemon_tcg_data, symbols};
 
 /// The `pkdump data` subcommand group.
 #[derive(clap::Args)]
@@ -195,10 +195,7 @@ fn expand_only(args: RefreshArgs) -> anyhow::Result<()> {
 
     println!("Expanding variants into printings...");
     let overlay = overrides::load_variant_augmentations()?;
-    // `data expand` is the local re-run, so its clock is genuinely now: there
-    // are no landed bytes behind it to reproduce a timestamp from.
-    let printings =
-        overrides::expand_all_printings(&mut conn, &overlay, &chrono::Utc::now().to_rfc3339())?;
+    let printings = overrides::expand_all_printings(&mut conn, &overlay)?;
     println!("  wrote {printings} printings");
 
     println!("Checking TCGplayer mapping coverage...");

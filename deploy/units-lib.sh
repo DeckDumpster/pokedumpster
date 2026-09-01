@@ -124,18 +124,6 @@ pkdump_units_install() {
             -e "s|{{REPO_DIR}}|${repo_dir}|g"
     done
 
-    # --- The offline catalog derive (pd-1uem) -------------------------------
-    # The DERIVING half of the nightly pair; pkdump-refresh@ above is the
-    # landing half. Installed for every instance and enabled for none — a box
-    # whose catalog is still built by the online refresh needs no second
-    # rebuild, and the unit's ConditionPathExists on lake.env keeps an enabled
-    # timer inert on a box that has no landing zone at all.
-    for ext in service timer; do
-        _pkdump_units_render "${systemd_user_dir}/pkdump-derive@.${ext}" nostamp \
-            "$repo_dir/deploy/pkdump-derive.${ext}" \
-            -e "s|{{REPO_DIR}}|${repo_dir}|g"
-    done
-
     # --- The transform tier's nightly run (pd-8m5c) -------------------------
     # Per-tenant value snapshots from the lake, ordered after the refresh above.
     # Installed for every instance and enabled for none — the lakehouse itself is

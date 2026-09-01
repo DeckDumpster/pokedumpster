@@ -695,6 +695,67 @@ the shell half: the label on every stage of every `Containerfile`, one spelling
 of it, and the ORDER — list, build, reap. Swapping the first two reads like a
 simplification and is the cache loss above.
 
+### A run whose worktree moves underneath it is VOID, not red (pd-vnbc)
+
+`deploy/ci.sh` watches its own checkout and aborts with **exit 9** the moment
+anything moves HEAD while the suite is running. Nine is a third answer: not
+pass, not fail, but *this run describes no state this code was ever in*.
+
+The bug it answers looked like a compiler phantom. A polecat's suite died at
+`cargo clippy` with seven errors naming symbols that exist in **no commit** —
+two lines out of master's `data.rs`, a third carrying a call signature from
+before the landing zone. `cargo test` had passed on that tree minutes earlier
+and clippy passes on it now. The reflog, timestamped inside the CI window, had
+it: something outside the polecat rebased its **live worktree** onto
+`origin/master`, replayed eleven commits, conflicted, and aborted — all inside
+about one second, while clippy was reading the files. The abort put everything
+back, which is why nothing was left to find.
+
+Four things about the guard are decisions:
+
+- **It watches the REFLOG, not HEAD.** That rebase aborted, so HEAD ended
+  byte-identical to where it started; the obvious implementation of this guard
+  — snapshot HEAD, compare HEAD — passes the real case green. The reflog is
+  append-only, so an operation that undoes itself still leaves its lines
+  behind. `tests/ci/treewatch_test.sh` §3 runs a real rebase-and-abort and, in
+  the assertion beside it, measures the same rebase the naive way and requires
+  that to see nothing.
+- **It is a `wc -c` on the per-worktree `logs/HEAD`**, so it is affordable
+  inside `step()` — which is where it lives, because a new step is added by
+  writing `step "..."` and nobody adding one will remember a guard. Per
+  worktree matters: every polecat checkout is a linked worktree, and a
+  neighbour's rebase must not void this run. Both directions are asserted.
+- **Working-tree dirt is reported, never judged.** A CI run legitimately writes
+  to its own checkout — `cargo test` regenerates the ts-rs bindings, npm fills
+  `node_modules`. Failing on `git status` hands the guard a false positive on
+  its first contact with real work, which is how a guard earns an exemption
+  list and then earns being ignored.
+- **It aborts rather than warning, and it overrides a PASS.** Once HEAD has
+  moved, the gates that ALREADY RAN are the ones whose verdicts are void, and
+  thirty more minutes cannot recover them. A green from a mutated tree is worse
+  than a red from one. This composes with the tree-hash cache for free:
+  `ci.yml` writes an entry only `if: success()`, so a void run can never
+  certify a tree it did not really test.
+
+What it does not see, said out loud: a bare `git checkout -- <path>` or `git
+restore`, which rewrite files without touching HEAD. Everything that moves HEAD
+— rebase, checkout, reset, merge, and `git stash push`, which resets internally
+and is therefore the shared-stash hazard caught for free — appends there.
+
+**No step of this suite moves this checkout's HEAD** — the two gates that drive
+git (`ci-cache.sh --self-test`, `treewatch_test.sh`) do it inside throwaway
+repos under `mktemp` — so an observed movement is always an outside process. The
+actor is the surrounding agent machinery and the real fix is not ours to make.
+A worktree an agent owns must not be rebased under it — if a branch needs
+keeping current, do it at `gt done` time or in a scratch clone. Until that
+holds, this guard is what keeps the cost at one loud line instead of a
+forty-minute red and an afternoon spent believing the compiler.
+
+Gate: `tests/ci/treewatch_test.sh` (lint tier, hermetic, sub-second), seen red
+five ways — the naive HEAD comparison, an unwired `step()`, a guard that also
+judges dirt, one that watches the shared reflog instead of this worktree's, and
+a `ci.sh` that never arms it.
+
 ## Conventions & Patterns
 
 ### The data model IS the product

@@ -181,16 +181,20 @@ bash tests/deploy/run.sh
 # asserts every gate under tests/ removes the per-checkout image tag it built,
 # because nothing else on the box ever will. The fourth reads the
 # Containerfile: builder and runtime must name the SAME Debian release, and the
-# target cache id must name it too.
+# target cache id must name it too. The fifth refuses a baseline approval
+# narrowed to one viewport, and checks both baseline directories against
+# routes.json.
 bash tests/lib/diagnostics_test.sh
 bash tests/lib/ports_test.sh
 bash tests/lib/images_test.sh
 bash tests/container/base_images_test.sh
+bash tests/visual/approval_test.sh
 
 # Browser tier — every route screenshotted at 1440 and 768 against a
 # throwaway container instance, plus the DOM assertions a screenshot cannot
 # make (/collection renders a viewport-sized WINDOW of a 56k-row result). A
-# pixel diff fails; approving one is explicit.
+# pixel diff fails; approving one is explicit — and covers every viewport,
+# never one (pd-tf4h).
 bash tests/visual/run.sh         # check
 bash tests/visual/run.sh --update  # approve — see tests/visual/README.md
 
@@ -508,6 +512,53 @@ and runs nothing.
 so a docs-only PR still runs it). A tier renamed in one file and not the other
 fails it in a second, and a guard on a name that is not a tier is fatal rather
 than a silent skip.
+
+### A baseline approval covers every viewport
+
+`tests/visual/approval-guard.sh` refuses an approval narrowed to a single
+`--project`, and every path this repo has into Playwright asks it: `run.sh`
+before it stands a container up, `playwright.sh` before it installs anything,
+`npm run approve` through `playwright.sh`.
+
+A rendering change reaches both widths — a button that becomes a spacer is a
+spacer at 1440 and at 768 — so a one-viewport approval is not a smaller
+approval, it is a **stale baseline**, and the branch that makes it stays green
+because the run that would have failed is the one it filtered out. The next
+branch to run the browser tier wears it. That is pd-4tce: pd-0o5m re-recorded
+the mobile-768 pair only, `desktop-1440/card-detail-owned-vintage.png` sat
+stale for days, and the epic branch went red on 128 pixels that survived
+Playwright's retry — not a flake anybody could dismiss.
+
+The bypass was not a mistake in a script. **It was a recipe in
+`tests/visual/README.md`**, offered as the way to approve a subset. There was
+never anything to buy with it: baselines are deterministic — back-to-back runs
+against one instance differ by zero pixels — so a full `--update` rewrites the
+unmoved PNGs with the bytes they already hold and `git status` shows nothing
+for them. Narrowing to a **route** (`-g collection`) is a different thing and
+stays allowed, because it moves both viewports together.
+
+The criterion this came from used to read "baselines re-recorded **in the same
+commit**", and that phrasing could not survive the tooling: `gt`'s safety net
+commits work automatically at arbitrary points, so several of the changes the
+rule exists for landed in a `WIP: checkpoint (auto)` and could not have
+carried their baselines whatever anybody intended (pd-tf4h). It is stated
+against the **branch** now — the pixels and the code that moved them are
+reviewed together, and the commit recording the pixels says which change moved
+which. That works: all ten baselines re-recorded in `e37e2da` were attributed
+three weeks later from its commit message alone (eight fixture-date drifts,
+pd-w1dq; two real `/collection` changes), with nothing unexplained riding
+along.
+
+`tests/visual/approval_test.sh` is the gate (lint tier, hermetic,
+sub-second). It drives the guard both ways — the refusals, and the ordinary
+approvals that must still go through, since a guard whose first contact with
+real work is a false positive is one that gets routed around. It asserts every
+scripted approval arrives through the guard and does so *before* the run
+spends anything. And it fails on any **line** anywhere — documentation
+included — that spells an approval next to a viewport filter, because a line
+carrying both is the copy-pasteable form, which is exactly what this was.
+Its last section checks what nothing checked: a route with a baseline at one
+viewport and not the other, and a PNG no route in `routes.json` claims.
 
 ### CI triggers on the PR's BASE branch — master and `integration/**`
 

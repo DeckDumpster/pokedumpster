@@ -13,13 +13,16 @@
 #                     kernel, that they wait for conditions rather than for the
 #                     clock, that the Containerfile's base images are pinned to
 #                     a Debian release, that a Layer 2 page leads with the
-#                     line that says what went wrong, and that an unchanged one
-#                     is not sent a second time. Hermetic and sub-second.
+#                     line that says what went wrong, that an unchanged one
+#                     is not sent a second time, and that a run whose worktree
+#                     is rebased underneath it goes VOID rather than reporting
+#                     on a tree that never existed. Hermetic and sub-second.
 #                     See tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh,
 #                     tests/lib/wait_test.sh, tests/lib/images_test.sh,
 #                     tests/container/base_images_test.sh,
-#                     tests/alarming/journal_summary_test.sh and
-#                     tests/alarming/alert_suppress_test.sh.
+#                     tests/alarming/journal_summary_test.sh,
+#                     tests/alarming/alert_suppress_test.sh and
+#                     tests/ci/treewatch_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #  3b. The image:      built ONCE, here. Five gates below need the shipped image
@@ -148,6 +151,16 @@
 # Exits non-zero on the first failure of the sequential steps. Fast and
 # re-runnable.
 #
+# EXIT 9 IS NEITHER PASS NOR FAIL (pd-vnbc). This script watches its own
+# checkout and voids the run if anything moves HEAD while it is going — a
+# rebase, a checkout, a reset, a stash, from any process. It happened: a
+# polecat's worktree was rebased onto origin/master mid-suite and clippy
+# compiled the half-replayed tree, producing seven errors naming symbols that
+# exist in no commit. The rebase aborted a second later, leaving nothing to
+# find. A 9 means "this result describes no state this code was ever in" —
+# go and find what touched the checkout, then re-run from the top. See
+# deploy/ci-treewatch.sh and tests/ci/treewatch_test.sh.
+#
 # PARALLEL GATES (pd-2nl9). Fourteen of the steps above stand up their own
 # containers and share nothing — every name each of them uses is derived from
 # its own prefix plus a per-checkout hash, because concurrent polecats already
@@ -230,6 +243,17 @@ diag_init
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
 
+# Void a run whose checkout moves underneath it (pd-vnbc). Something outside
+# this repository rebased a live polecat worktree mid-suite, and clippy
+# compiled the half-replayed tree: seven errors naming symbols that exist in no
+# commit, on a tree that passes clean. The rebase aborted a second later, so
+# nothing was left to find and the whole thing read as a compiler phantom.
+# Armed here, before the first step, because it is the steps that ALREADY RAN
+# whose results a later mutation invalidates. See deploy/ci-treewatch.sh.
+# shellcheck source=deploy/ci-treewatch.sh
+. "$SCRIPT_DIR/ci-treewatch.sh"
+pkdump_treewatch_begin || exit "$PKDUMP_TREEWATCH_EXIT"
+
 # The instance name has to be unique per checkout. The swarm runs several
 # polecats per rig, each from its own worktree, and every one of them runs
 # this script; with a shared name, run B's opening teardown destroyed run A's
@@ -254,7 +278,18 @@ BUILD_IMAGE="localhost/pkdump:build-${INSTANCE}"
 START_TIME=$(date +%s)
 
 CURRENT_STEP="startup"
-step() { CURRENT_STEP="$*"; echo ""; echo "==> $*"; }
+# Every step boundary is a checkpoint for the worktree watch. The check is a
+# `wc -c` on one file, so it is affordable at this frequency, and the frequency
+# is what turns "the tree moved" into "the tree moved during step N" — a named
+# window instead of a forty-minute one. It aborts rather than warning: once the
+# tree has moved, the gates behind us are the ones whose verdicts are void, and
+# running the remaining thirty minutes cannot recover them.
+step() {
+    pkdump_treewatch_check "at the start of step: $*" || exit "$PKDUMP_TREEWATCH_EXIT"
+    CURRENT_STEP="$*"
+    echo ""
+    echo "==> $*"
+}
 
 # --- 0. Tier selection -------------------------------------------------------
 #
@@ -416,6 +451,19 @@ cleanup() {
     # After the teardown noise, so "which step failed, and with what status" is
     # the last thing in the log rather than something to infer from where it
     # stops.
+    # Asked before the line below, and asked whatever that line would have
+    # said: the final step has no boundary after it, and a movement re-reads
+    # everything printed above it — including a pass. The verdict overrides the
+    # exit status in both directions. A green run that was tampered with must
+    # not report green; a red one must not send the reader to look at their own
+    # diff. And it REPLACES the "CI FAILED during step" line rather than
+    # following it, because "failed" and "void" are different answers and
+    # printing both in the same breath is how a reader keeps the wrong one.
+    if ! pkdump_treewatch_check "after the run finished"; then
+        diag "!!   last step completed: ${CURRENT_STEP}"
+        pkdump_treewatch_verdict "$rc"
+        exit "$PKDUMP_TREEWATCH_EXIT"
+    fi
     [[ $rc -eq 0 ]] || diag "!! CI FAILED during step: ${CURRENT_STEP} (status ${rc})"
 }
 trap cleanup EXIT
@@ -512,6 +560,16 @@ if tier lint; then
     # is real but the gates are `true` and `sleep`. See tests/ci/parallel_test.sh.
     step "Parallel gate runner: cap, disk floor, no masked failure (tests/ci/parallel_test.sh)"
     bash "$REPO_DIR/tests/ci/parallel_test.sh"
+
+    # And the guard over this script's own footing. A run whose checkout is
+    # rebased underneath it reports on a tree that never existed — pd-vnbc,
+    # where clippy produced seven errors naming symbols from no commit and the
+    # rebase had already aborted by the time anyone looked. The case that makes
+    # this gate worth its second is §3: because that rebase ABORTED, HEAD ended
+    # where it began, so the obvious implementation of the guard passes it
+    # green. Hermetic. See tests/ci/treewatch_test.sh.
+    step "Worktree watch: a run whose tree moves is void (tests/ci/treewatch_test.sh)"
+    bash "$REPO_DIR/tests/ci/treewatch_test.sh"
 
     # Same tier again, and the same shape of bug: a layer that fires and says
     # nothing. §6 of the alarming gate proves Layer 2 PUSHES; this proves what

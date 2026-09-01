@@ -136,10 +136,87 @@ check "same filesystem checked once" "1" \
 check "unborn path resolves to its filesystem" "0" \
 	"$(PKDUMP_DISK_FLOOR_GB=0 bash "$DISKCHECK" --floor "${WORK}/not/created/yet" >/dev/null 2>&1; echo $?)"
 
-# Alert mode must stay a timer, not a gate: it reports and exits 0 even when the
-# threshold is crossed (the push is alert.sh's job, and it no-ops unconfigured).
+# --- alert mode -------------------------------------------------------------
+#
+# Run the REAL script from a copy, beside a stub alert.sh. diskcheck resolves its
+# sibling out of its own $0, so the copy exercises the shipped decision logic
+# while nothing leaves the box.
+#
+# The stub is not a convenience. This block used to invoke deploy/diskcheck.sh in
+# place with PKDUMP_DISK_THRESHOLD=0 and no PKDUMP_ALERTS_ENV, which read the
+# operator's REAL ~/.config/pkdump/alerts.env — so on the self-hosted runner every
+# CI run pushed a genuine LOW DISK page to Ryan's phone, with a title carrying the
+# day's percentage so pd-hqdt's suppression could not collapse them. And its
+# comment ("the push is alert.sh's job, and it no-ops unconfigured") stopped being
+# true the day after it landed: pd-1717 made an undeliverable alert exit 1, which
+# is asserted below rather than assumed.
+ALERT_DIR="${WORK}/alertmode"
+mkdir -p "$ALERT_DIR"
+: >"${WORK}/none.env"
+cp "$DISKCHECK" "${ALERT_DIR}/diskcheck.sh"
+cat >"${ALERT_DIR}/alert.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >>"${STUB_LOG}.title"
+printf '%s\n' "$2" >>"${STUB_LOG}.body"
+STUB
+chmod +x "${ALERT_DIR}/alert.sh"
+
+# alert_run <log-name> <env assignments...> -> prints the exit status
+alert_run() {
+	local name="$1"; shift
+	rm -f "${WORK}/${name}.title" "${WORK}/${name}.body"
+	env STUB_LOG="${WORK}/${name}" PKDUMP_ALERTS_ENV="${WORK}/none.env" \
+		PKDUMP_DISK_PATH="$WORK" "$@" \
+		bash "${ALERT_DIR}/diskcheck.sh" >/dev/null 2>&1
+	echo $?
+}
+paged()  { [ -s "${WORK}/$1.title" ] && echo yes || echo no; }
+title()  { cat "${WORK}/$1.title" 2>/dev/null; }
+
+# Alert mode is a timer, not a gate: over the line it pages and still exits 0.
 check "alert mode still exits zero" "0" \
-	"$(PKDUMP_DISK_THRESHOLD=0 PKDUMP_DISK_PATH="$WORK" bash "$DISKCHECK" >/dev/null 2>&1; echo $?)"
+	"$(alert_run pct PKDUMP_DISK_THRESHOLD=0 PKDUMP_DISK_FLOOR_GB=0 PKDUMP_DISK_WARN_GB=1)"
+check "the percent arm pages, naming the configured threshold" \
+	"PokeDumpster LOW DISK — over 0% used on $(df --output=target "$WORK" | tail -n1)" "$(title pct)"
+
+# Under both arms it says nothing at all. A guard that pages on a healthy disk is
+# a guard whose pages get ignored.
+check "a healthy disk pages nobody" "no" \
+	"$(alert_run quiet PKDUMP_DISK_THRESHOLD=101 PKDUMP_DISK_FLOOR_GB=0 PKDUMP_DISK_WARN_GB=1 >/dev/null; paged quiet)"
+
+# THE POINT OF pd-smcp. The gate refuses in gigabytes and the alert used to fire
+# in percent, so on the 98G root the 10G floor (89.8% used) sat BELOW the 90%
+# threshold: the page could not arrive before the block it warns about. The
+# free-space arm is stated in the floor's own currency, so it fires first — here
+# with a warn line the filesystem cannot meet and a percent threshold it can.
+check "the free-space arm pages while the percent arm is silent" "yes" \
+	"$(alert_run warn PKDUMP_DISK_THRESHOLD=101 PKDUMP_DISK_FLOOR_GB=1 PKDUMP_DISK_WARN_GB=999999999 >/dev/null; paged warn)"
+check "and its title names the warn line, not today's percentage" "1" \
+	"$(title warn | grep -c 'LOW DISK — under 999999999G free' || true)"
+check "and its body carries the reclaim steps" "1" \
+	"$(grep -c 'deploy/teardown.sh' "${WORK}/warn.body" 2>/dev/null || true)"
+
+# Below the floor is a DIFFERENT page, and the difference is what makes the
+# escalation survive pd-hqdt's repeat suppression: a title carrying a moving
+# percentage pages every day and trains the channel off, so these titles carry
+# the CONFIGURED limit — a disk sitting still pages once, a disk still falling
+# crosses into this title and pages again immediately.
+check "under the floor it escalates to its own title" "1" \
+	"$(alert_run floor PKDUMP_DISK_THRESHOLD=101 PKDUMP_DISK_FLOOR_GB=999999999 PKDUMP_DISK_WARN_GB=1999999998 >/dev/null; title floor | grep -c 'DISK BELOW FLOOR' || true)"
+
+# A warn line at or under the floor cannot fire before the gate refuses, which
+# makes Layer 4 decorative. Refused, not clamped — the unit's OnFailure= pages.
+check "a warn line that does not clear the floor is refused" "1" \
+	"$(alert_run bad PKDUMP_DISK_FLOOR_GB=10 PKDUMP_DISK_WARN_GB=10)"
+check "and it pages nobody, because it never measured anything" "no" "$(paged bad)"
+
+# pd-1717: an alert that cannot be delivered is a FAILURE, not a no-op. Asserted
+# against the real alert.sh with no credentials, so this file's own claim about
+# what happens off the stub stays true.
+check "an undeliverable alert fails the run" "1" \
+	"$(PKDUMP_ALERTS_ENV="${WORK}/none.env" PKDUMP_DISK_PATH="$WORK" \
+		PKDUMP_DISK_THRESHOLD=0 PKDUMP_DISK_FLOOR_GB=0 PKDUMP_DISK_WARN_GB=1 \
+		bash "$DISKCHECK" >/dev/null 2>&1; echo $?)"
 
 # ---------------------------------------------------------------------------
 log "3. Where the store root comes from: host config, never disk topology"

@@ -14,6 +14,18 @@
 #                                    Jun 2026 backup work; a full disk silently
 #                                    breaks backups, image builds, and the DB.
 #
+#                                    A FULL DISK IS NOT THIS SCRIPT'S FAILURE —
+#                                    it reports, pages and exits 0; it is a
+#                                    timer, not a gate. An UNDELIVERED PAGE is.
+#                                    alert.sh exits 1 on an unconfigured channel
+#                                    (pd-1717) and that status is propagated
+#                                    rather than swallowed: swallowing it leaves
+#                                    a box over the threshold, alerting into
+#                                    nothing, and green, while propagating fails
+#                                    the unit — and pkdump-diskcheck.service's
+#                                    OnFailure= is the only remaining way a page
+#                                    that reached nobody becomes visible.
+#
 #   diskcheck.sh --floor [path...]   GATE mode (pd-fite). Exits NON-ZERO when any
 #                                    named path's filesystem has less than
 #                                    PKDUMP_DISK_FLOOR_GB free. Run before work

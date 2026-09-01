@@ -40,6 +40,18 @@ trap 'rm -rf "$WORK"' EXIT
 export XDG_RUNTIME_DIR="${WORK}/run"
 mkdir -p "$XDG_RUNTIME_DIR"
 
+# Hermetic includes the host-wide alert config, and this one is not merely
+# tidiness. deploy/diskcheck.sh sources ${PKDUMP_ALERTS_ENV:-~/.config/pkdump/
+# alerts.env} with `set -a`, so the FILE wins over anything a caller passes on
+# the command line. Left unset, §2 read the operator's real alerts.env, had its
+# threshold and watched path replaced by that file's, and then asserted against
+# whatever this box's own disk usage and Pushover credentials happened to be —
+# which is exactly how it came to fail on a box at 93% (pd-s7d2). Point the
+# whole file at a throwaway: §2 writes it, and every other case here already
+# names its own.
+export PKDUMP_ALERTS_ENV="${WORK}/alerts-host.env"
+: >"$PKDUMP_ALERTS_ENV"
+
 pass=0
 fail=0
 check() { # check <label> <expected> <actual>
@@ -136,10 +148,56 @@ check "same filesystem checked once" "1" \
 check "unborn path resolves to its filesystem" "0" \
 	"$(PKDUMP_DISK_FLOOR_GB=0 bash "$DISKCHECK" --floor "${WORK}/not/created/yet" >/dev/null 2>&1; echo $?)"
 
-# Alert mode must stay a timer, not a gate: it reports and exits 0 even when the
-# threshold is crossed (the push is alert.sh's job, and it no-ops unconfigured).
-check "alert mode still exits zero" "0" \
-	"$(PKDUMP_DISK_THRESHOLD=0 PKDUMP_DISK_PATH="$WORK" bash "$DISKCHECK" >/dev/null 2>&1; echo $?)"
+# Alert mode has TWO answers, and the difference is whose failure it is.
+#
+# A FULL DISK is not diskcheck's failure — it reports, pages, and exits 0. That
+# half is what "a timer, not a gate" always meant, and it still holds.
+#
+# An UNDELIVERED PAGE is: alert.sh exits 1 when the channel is unconfigured
+# (pd-1717 — "asked to alert and unable to alert is a FAILURE"), and diskcheck
+# must PROPAGATE that rather than swallow it. Swallowing leaves a box over the
+# threshold, alerting into nothing, and green; propagating fails the unit, whose
+# OnFailure= is the only remaining way a page that reached nobody becomes
+# visible. This section used to assert the opposite, against a comment that
+# still said alert.sh no-ops unconfigured, so it only passed on a box with
+# working Pushover credentials (pd-s7d2).
+#
+# The threshold is driven through the throwaway alerts.env, never the caller's
+# environment, because that file is what diskcheck actually reads — see the
+# export above. tests/alarming/run.sh:103 is the pattern.
+#
+# The third case — over the threshold WITH a working channel, delivered, exit 0
+# — needs a real HTTP sink and lives where the sink does: tests/alarming/run.sh
+# §7, "diskcheck exits 0 having alerted".
+ALERT_LOG="${WORK}/alert.log"
+alert_run() { # alert_run <threshold> -> its exit status; output lands in ALERT_LOG
+	printf 'PUSHOVER_TOKEN=CHANGE_ME\nPUSHOVER_USER=CHANGE_ME\nPKDUMP_DISK_THRESHOLD=%s\nPKDUMP_DISK_PATH=%s\nPKDUMP_ALERT_STATE_DIR=%s\n' \
+		"$1" "$WORK" "${WORK}/alert-state" >"$PKDUMP_ALERTS_ENV"
+	local rc=0
+	bash "$DISKCHECK" >"$ALERT_LOG" 2>&1 || rc=$?
+	echo "$rc"
+}
+
+# 101% is a threshold no filesystem can cross, so this arm is the same on every
+# box: nothing to page about, nothing paged, exit 0.
+check "under the threshold, alert mode exits zero" "0" "$(alert_run 101)"
+check "and reports what it measured" "1" \
+	"$(grep -c "^diskcheck: ${WORK} at .* (threshold 101%)" "$ALERT_LOG" || true)"
+check "and pages nobody" "0" "$(grep -c 'alert.sh:' "$ALERT_LOG" || true)"
+
+# 0% is a threshold every filesystem crosses, and the channel is CHANGE_ME —
+# which is what deploy/setup.sh scaffolds, so this is the state a box is in
+# before anyone fills the file in.
+check "an undeliverable page exits non-zero" "1" "$(alert_run 0)"
+check "and says the alert reached nobody" "1" \
+	"$(grep -c 'reached nobody' "$ALERT_LOG" || true)"
+check "and still reported the disk it measured" "1" \
+	"$(grep -c "^diskcheck: ${WORK} at .* (threshold 0%)" "$ALERT_LOG" || true)"
+
+# Put it back the way the rest of the file found it — same discipline as
+# reset_store. A later case that forgets to name its own alerts.env should
+# inherit an EMPTY host file, not this section's threshold of 0.
+: >"$PKDUMP_ALERTS_ENV"
 
 # ...and it stays a timer on the ONE day it matters (pd-4sqi). alert.sh exits 1
 # when it could not deliver, and under `set -e` that became diskcheck's own exit

@@ -1098,20 +1098,54 @@ check "and with the line the service itself printed" "1" \
 check "and carries no OCI metadata at all" "0" "$(since_grep "$BEFORE" 'org.opencontainers')"
 
 # ── 7. Layer 4: low disk pushes ─────────────────────────────────────────────
-log "7. Layer 4 fires — low disk pushes, and only over the threshold"
-disk_run() { # disk_run <threshold>
+log "7. Layer 4 fires — low disk pushes, and only over one of its two arms"
+# Both arms are pinned on every call, never left to whatever $HOME happens to
+# have free today: the free-space arm added by pd-smcp fires off real numbers, so
+# an unpinned "sends nothing" case would pass or fail with the box's weather.
+# tests/deploy/run.sh owns the decision table hermetically; what this gate adds is
+# that the decision reaches the wire — a real diskcheck, a real alert.sh, a real
+# HTTP push — and that the two arms arrive as DIFFERENT pages.
+disk_run() { # disk_run <threshold> <floor-gb> <warn-gb>
 	sed -i "s|^PKDUMP_DISK_THRESHOLD=.*|PKDUMP_DISK_THRESHOLD=${1}|" "$TEST_ALERTS_ENV"
-	bash "${REPO_DIR}/deploy/diskcheck.sh" 2>&1
+	PKDUMP_DISK_FLOOR_GB="$2" PKDUMP_DISK_WARN_GB="$3" \
+		bash "${REPO_DIR}/deploy/diskcheck.sh" 2>&1
 }
+# Percent arm alone: a threshold nothing clears, a warn line every disk clears.
 BEFORE=$(sink_total)
-OUT="$(disk_run 0)"; RC=$?
+OUT="$(disk_run 0 0 1)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
 check "diskcheck exits 0 having alerted" "0" "$RC"
 check "a LOW DISK push was sent" "1" "$(since_grep "$BEFORE" 'LOW DISK')"
 
+# Free-space arm alone: a warn line no disk clears, a threshold every disk clears.
+# This is the arm that buys lead time — the percent one cannot fire before the
+# gate refuses, because the gate is denominated in gigabytes (pd-smcp).
 BEFORE=$(sink_total)
-disk_run 101 >/dev/null; RC=$?
-check "under the threshold it exits 0" "0" "$RC"
+OUT="$(disk_run 101 1 999999999)"; RC=$?
+check "the free-space arm exits 0 having alerted" "0" "$RC"
+check "and pushes a page naming its warn line" "1" \
+	"$(since_grep "$BEFORE" 'under 999999999G free')"
+
+# Below the floor is a distinct page. The titles carry the CONFIGURED limit
+# rather than today's percentage, so pd-hqdt's suppression collapses a disk
+# sitting still into one page while this escalation still gets through.
+BEFORE=$(sink_total)
+disk_run 101 999999999 1999999998 >/dev/null; RC=$?
+check "below the floor it exits 0 having escalated" "0" "$RC"
+check "and the escalation is its own page" "1" \
+	"$(since_grep "$BEFORE" 'DISK BELOW FLOOR')"
+
+# A warn line that does not clear the floor cannot page before the gate blocks
+# builds. Refused, not clamped — and the refusal reaches nobody by itself, which
+# is why pkdump-diskcheck.service carries OnFailure=.
+BEFORE=$(sink_total)
+disk_run 101 10 10 >/dev/null; RC=$?
+check "a warn line under the floor is refused" "1" "$RC"
+check "and the refusal itself pushes nothing" "0" "$(( $(sink_total) - BEFORE ))"
+
+BEFORE=$(sink_total)
+disk_run 101 0 1 >/dev/null; RC=$?
+check "under both arms it exits 0" "0" "$RC"
 check "and sends nothing" "0" "$(( $(sink_total) - BEFORE ))"
 sed -i "s|^PKDUMP_DISK_THRESHOLD=.*|PKDUMP_DISK_THRESHOLD=90|" "$TEST_ALERTS_ENV"
 

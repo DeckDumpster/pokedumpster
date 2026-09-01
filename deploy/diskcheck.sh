@@ -4,15 +4,31 @@
 # how full is too full.
 #
 #   diskcheck.sh                     ALERT mode (Layer 4, pokedumpster-ivq.4).
-#                                    Pushes a Pushover alert when the watched
-#                                    filesystem is at or over PKDUMP_DISK_THRESHOLD
-#                                    percent. Always exits 0 — it is a timer, not
-#                                    a gate, and an alert that could NOT be
-#                                    delivered is still not a gate (pd-4sqi): the
-#                                    drop is reported on stderr and the exit
-#                                    status stays 0. The host hit 94% during the
-#                                    Jun 2026 backup work; a full disk silently
-#                                    breaks backups, image builds, and the DB.
+#                                    Pushes a Pushover alert while there is still
+#                                    room to act. Exits 0 having paged — it is a
+#                                    timer, not a gate, and an alert that could
+#                                    NOT be delivered is still not a gate
+#                                    (pd-4sqi): the drop is reported on stderr
+#                                    and the exit status stays 0. The host hit 94% during
+#                                    the Jun 2026 backup work; a full disk
+#                                    silently breaks backups, image builds, and
+#                                    the DB.
+#
+#                                    TWO ARMS, and the free-space one is the
+#                                    point (pd-smcp). A percentage cannot say
+#                                    whether work is about to be blocked: the
+#                                    gate below is denominated in GIGABYTES, and
+#                                    on this box's 98G root its 10G floor sits at
+#                                    89.8% used — BELOW the 90% the alert fired
+#                                    at. So the page could not arrive before the
+#                                    thing it warns about. It arrived after, if
+#                                    at all, and the actual failure mode stayed
+#                                    'the next agent to need CI discovers it' —
+#                                    three polecats in a row, 91% -> 95% -> 96%.
+#                                    The free-space arm is stated in the floor's
+#                                    own currency and PKDUMP_DISK_WARN_GB must
+#                                    exceed the floor, so the page necessarily
+#                                    precedes the block whatever the disk's size.
 #
 #   diskcheck.sh --floor [path...]   GATE mode (pd-fite). Exits NON-ZERO when any
 #                                    named path's filesystem has less than
@@ -40,7 +56,16 @@
 #                                    (pd-20ia, pd-6jyd).
 #
 # Env-driven (host-wide ~/.config/pkdump/alerts.env):
-#   PKDUMP_DISK_THRESHOLD   percent-used that triggers an alert (default 90)
+#   PKDUMP_DISK_THRESHOLD   percent-used at or over which alert mode pages
+#                           (default 90). The size-independent arm: "this disk
+#                           is nearly full" is worth saying on any disk.
+#   PKDUMP_DISK_WARN_GB     gigabytes free below which alert mode pages
+#                           (default 2x PKDUMP_DISK_FLOOR_GB). The arm that
+#                           buys lead time, because it is denominated in the
+#                           same unit the gate refuses in. Must be GREATER than
+#                           the floor — a warning that fires no earlier than the
+#                           failure is not a warning, so a value at or under it
+#                           is REFUSED rather than clamped.
 #   PKDUMP_DISK_FLOOR_GB    gigabytes free below which --floor fails (default 10)
 #   PKDUMP_DISK_PATH        filesystem to watch (default $HOME — where the
 #                           podman volumes + image storage live under rootless)
@@ -54,6 +79,10 @@ ALERTS_ENV="${PKDUMP_ALERTS_ENV:-${HOME}/.config/pkdump/alerts.env}"
 
 THRESHOLD="${PKDUMP_DISK_THRESHOLD:-90}"
 FLOOR_GB="${PKDUMP_DISK_FLOOR_GB:-10}"
+# Twice the floor: the page arrives once the headroom ABOVE the floor has shrunk
+# to less than the floor itself. Proportional to whatever the operator declared
+# work needs, so it scales with the floor instead of with a guess about disk size.
+WARN_GB="${PKDUMP_DISK_WARN_GB:-$((FLOOR_GB * 2))}"
 DISK_PATH="${PKDUMP_DISK_PATH:-$HOME}"
 
 # --- Gate mode --------------------------------------------------------------
@@ -94,27 +123,63 @@ fi
 
 # --- Alert mode -------------------------------------------------------------
 
-# Use% of the filesystem backing DISK_PATH, digits only.
-USE="$(df --output=pcent "$DISK_PATH" | tail -n1 | tr -dc '0-9')"
-echo "diskcheck: ${DISK_PATH} at ${USE}% (threshold ${THRESHOLD}%)"
-
-# The push must not be able to fail this script (pd-4sqi). alert.sh exits 1 when
-# it could not deliver — an unconfigured or still-CHANGE_ME Pushover channel, a
-# curl that failed — and under `set -e` that became diskcheck's own exit status.
-# So the ONE run that matters, the day the disk is actually full, was the only
-# run that failed its unit: exit 0 every day the disk is fine, non-zero the day
-# it is not, with `systemctl status pkdump-diskcheck` reporting the inversion.
-# The OnFailure= that fires from it buys nothing either — it pages through
-# alert.sh, the same channel that just proved it cannot deliver.
-#
-# The delivery failure is NOT swallowed: alert.sh's own diagnosis is already on
-# stderr and in the journal, and the line below adds what only this caller knows
-# — that the disk really is over the threshold and nobody was told.
-if [ "$USE" -ge "$THRESHOLD" ]; then
-    "${SCRIPT_DIR}/alert.sh" "PokeDumpster LOW DISK (${USE}%)" \
-        "$(df -h "$DISK_PATH" | tail -n1) on $(hostname) — over ${THRESHOLD}% threshold" ||
-        echo "diskcheck: ALERT NOT DELIVERED — ${DISK_PATH} is at ${USE}% (threshold ${THRESHOLD}%) and the page above reached nobody; this check still exits 0 (pd-4sqi)" >&2
+# A warn line at or under the floor cannot fire before the gate refuses, which
+# makes this whole layer decorative — the exact state pd-smcp was filed over.
+# Refuse it rather than clamping: the unit's OnFailure= then pages, and a guard
+# that has been configured out of usefulness says so instead of running quietly.
+if [ "$WARN_GB" -le "$FLOOR_GB" ]; then
+    echo "diskcheck: REFUSING to run — PKDUMP_DISK_WARN_GB=${WARN_GB} is not above" >&2
+    echo "  PKDUMP_DISK_FLOOR_GB=${FLOOR_GB}, so this alert could not fire before the" >&2
+    echo "  gate that blocks builds. Raise the warn line or lower the floor." >&2
+    exit 1
 fi
+
+# Use% and free space of the filesystem backing DISK_PATH, digits only.
+USE="$(df --output=pcent "$DISK_PATH" | tail -n1 | tr -dc '0-9')"
+FREE_GB="$(df -BG --output=avail "$DISK_PATH" | tail -n1 | tr -dc '0-9')"
+MOUNT="$(df --output=target "$DISK_PATH" | tail -n1)"
+echo "diskcheck: ${DISK_PATH} (${MOUNT}) at ${USE}% used, ${FREE_GB}G free" \
+    "(warn under ${WARN_GB}G, floor ${FLOOR_GB}G, threshold ${THRESHOLD}%)"
+
+# Most severe arm wins, and each arm has its OWN title. That is deliberate, and
+# it is what keeps this honest under pd-hqdt's repeat suppression: the signature
+# is the exact title plus the message with digit runs collapsed, so a title
+# carrying today's percentage pages EVERY DAY on a box parked just over the line
+# — different number, different signature, no suppression — which is the noise
+# that trains the channel to be ignored. These titles carry the CONFIGURED limit
+# instead, so a disk sitting still pages once and then goes quiet, while a disk
+# that keeps falling crosses into the next title and pages again immediately.
+# Two escalations, both meaning something: "act soon", then "work is blocked".
+if [ "$FREE_GB" -lt "$FLOOR_GB" ]; then
+    TITLE="PokeDumpster DISK BELOW FLOOR — under ${FLOOR_GB}G free on ${MOUNT}"
+    WHY="free space is UNDER the ${FLOOR_GB}G floor: deploy/ci.sh will not build here, and a build that did would fail as a bus error rather than as a disk error."
+elif [ "$FREE_GB" -lt "$WARN_GB" ]; then
+    TITLE="PokeDumpster LOW DISK — under ${WARN_GB}G free on ${MOUNT}"
+    WHY="free space is heading for the ${FLOOR_GB}G floor deploy/ci.sh refuses to build under. Acting now is cheaper than being blocked."
+elif [ "$USE" -ge "$THRESHOLD" ]; then
+    TITLE="PokeDumpster LOW DISK — over ${THRESHOLD}% used on ${MOUNT}"
+    WHY="the filesystem is over the ${THRESHOLD}% threshold. A full disk silently breaks backups, image builds and the DB."
+else
+    exit 0
+fi
+
+# The remedies travel WITH the page. This disk has been reclaimed by hand three
+# times; a page that arrives in time and still costs a fresh diagnosis has only
+# moved the work earlier, not removed it.
+"${SCRIPT_DIR}/alert.sh" "$TITLE" "$(cat <<EOF
+$(df -h "$DISK_PATH" | tail -n1) on $(hostname)
+${USE}% used, ${FREE_GB}G free — ${WHY}
+
+Reclaim, safest first:
+  bash deploy/teardown.sh <instance> --purge   # retire a finished non-prod instance
+  bash deploy/store-teardown.sh <store-root>   # remove a whole non-prod store
+Prod's store is ~/.local/share/containers and is SHARED with another project:
+never prune it by hand. Builds there already collect the previous build's
+orphans (deploy/image-lib.sh), so growth in it is worth investigating, not pruning.
+EOF
+)" ||
+    echo "diskcheck: ALERT NOT DELIVERED — ${MOUNT} at ${USE}% used, ${FREE_GB}G free;"\
+         "the page above did not go out (pd-4sqi)" >&2
 
 # Explicit, so a line added below cannot quietly make this a gate again.
 exit 0

@@ -43,9 +43,31 @@ Then decide, and the decision is binary:
 
 - **The change is unintended** → it is a regression. Fix the CSS. Do not
   approve.
-- **The change is intended** → approve it, below, and commit the new PNGs in
-  the *same commit* as the code that moved them. A baseline commit with no
-  style change next to it is unreviewable.
+- **The change is intended** → approve it, below, and commit the new PNGs
+  with the code that moved them, in a commit whose message says which change
+  moved which baselines. A baseline commit with no style change next to it is
+  unreviewable.
+
+### "With the code that moved them" means the branch, not the SHA
+
+This used to read *the same commit*, and that criterion could not survive the
+tooling: `gt`'s safety net commits uncommitted work automatically at arbitrary
+points, so several of the changes this rule exists for landed in a
+`WIP: checkpoint (auto)` and could not have carried their baselines whatever
+anybody intended (pd-tf4h). Phrased against the SHA, the rule was violated by
+a machine and enforced against nobody.
+
+What is actually being bought is **reviewability**, and that is a property of
+the branch: the pixels and the code that moved them are read together, and the
+commit that records the pixels *says what moved them and why*. That much is
+worth insisting on, and it works — every one of the ten baselines re-recorded
+in `e37e2da` was attributed three weeks later purely from its commit message, which
+is how they were confirmed as eight fixture-date drifts (pd-w1dq) and two real
+`/collection` changes, with nothing unexplained riding along.
+
+The trap the SHA phrasing was reaching for is real, though, and it is
+mechanical: a re-record decoupled from the change gets done **by eye**, and by
+eye means one viewport. See the guard below.
 
 ## Approving
 
@@ -59,12 +81,37 @@ for every file in it**. If you changed the collection page's card spacing and
 17 baselines moved, that is the finding. `--update` is not a way to make the
 suite quiet; it is a way to record a change you have already looked at.
 
-Approving a *subset* is just Playwright's normal filtering:
+### An approval covers every viewport
+
+Narrow an approval to a **route** and both viewports still move together:
 
 ```bash
-PKDUMP_BASE_URL=http://localhost:8099 bash tests/visual/playwright.sh \
-    --update-snapshots --project=desktop-1440 -g collection
+bash tests/visual/run.sh --update -g collection
 ```
+
+Narrowing it to a viewport is **refused**, by
+[`approval-guard.sh`](approval-guard.sh), which every path into Playwright in
+this repo passes through. This file used to recommend the opposite, and that
+recommendation is what pd-4tce cost: pd-0o5m turned the manual-price button
+into a spacer at both widths, only the 768 pair was re-recorded, and
+`desktop-1440/card-detail-owned-vintage.png` sat stale until another branch
+went red on it days later — 128 pixels, identical across Playwright's retry,
+so not even a flake anybody could dismiss.
+
+There is nothing to buy with a viewport filter. Baselines are deterministic —
+back-to-back runs against one instance differ by zero pixels — so a full
+`--update` rewrites the unmoved PNGs with the bytes they already hold and
+`git status` shows nothing for them. The filter saves no review and no diff.
+Its only effect is the half it leaves behind.
+
+`tests/visual/approval_test.sh` is the gate (lint tier, hermetic,
+sub-second). It drives the guard in both directions, asserts that every
+scripted approval in the tree arrives through it, and — the part that reads
+the tree rather than the code — fails on any line anywhere that spells an
+approval next to a viewport filter, documentation included, because a doc
+recipe is exactly what this was. It also checks the thing nothing checked: a
+route with a baseline at one viewport and not the other, and a PNG no route in
+`routes.json` claims.
 
 ## What is covered
 

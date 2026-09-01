@@ -6,7 +6,7 @@
 	"type": "module",
 	"scripts": {
 		"test": "playwright test",
-		"approve": "playwright test --update-snapshots",
+		"approve": "bash ./playwright.sh --update-snapshots",
 		"report": "playwright show-report report",
 		"typecheck": "tsc --noEmit"
 	},

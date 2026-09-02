@@ -249,7 +249,7 @@ podman run --rm --user 0:0 -v "$D:/out" \
   -v ~/.config/pkdump/prod/aws/config:/aws/config:ro \
   --secret pkdump-prod-s3-bootstrap,type=mount,target=/aws/credentials \
   -e AWS_CONFIG_FILE=/aws/config -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials -e AWS_PROFILE=pkdump \
-  docker.io/litestream/litestream:latest \
+  "$PKDUMP_LITESTREAM_IMAGE" \
   restore -integrity-check full -timestamp 2026-06-01T12:00:00Z \
   -o /out/check.sqlite "$(tenant_replica_url "$DB")"
 sqlite3 "$D/check.sqlite" 'SELECT count(*) FROM collection;'   # looks right?

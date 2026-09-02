@@ -38,7 +38,6 @@ set -uo pipefail   # NOT -e: a failed assertion must be reported, not fatal
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-LITESTREAM_IMAGE=${LITESTREAM_IMAGE:-docker.io/litestream/litestream:latest}
 MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
 MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
 
@@ -47,6 +46,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
+# The Litestream version too, from that same file (pd-pfxf). A gate that
+# pulled `:latest` would test whatever the registry pushed last night and
+# not what any box actually runs — which is exactly how a 0.5.16 -> 0.5.17
+# retag turned three gates red on a change that touched none of them.
+LITESTREAM_IMAGE="${LITESTREAM_IMAGE:-$PKDUMP_LITESTREAM_IMAGE}"
 # For pkdump_store_stamp_unit — this gate has to record the store its instance
 # was built in, the same way setup.sh does. Sourcing does not activate anything.
 # shellcheck source=deploy/store-lib.sh
@@ -61,8 +65,6 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # which is a condition and not a duration.
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
-# shellcheck source=tests/lib/objects.sh
-. "${REPO_DIR}/tests/lib/objects.sh"
 
 # Unique per checkout, like deploy/ci.sh's: several polecats run this gate from
 # their own worktrees at the same time, and a shared name means run B's teardown
@@ -273,11 +275,7 @@ check "minio is up" "0" "$(curl -fsS -o /dev/null "http://127.0.0.1:${MINIO_PORT
 # stay distinguishable.
 mc() { podman run --rm -e "MC_HOST_s=http://${AKID}:${SECRET_KEY}@host.containers.internal:${MINIO_PORT}" "$MC_IMAGE" "$@"; }
 mc mb --ignore-existing "s/${LITESTREAM_S3_BUCKET}" >/dev/null 2>&1
-# Through the verified listing (pd-cxq4): `mc ls` with its stderr thrown away
-# reports a store it could not reach and a store with nothing in it the same
-# way, and only one of those is an answer to "does the bucket exist".
-BUCKETS="$(object_store_ls "" mc ls s/)" || BUCKETS=""
-check "the bucket exists" "1" "$(grep -c "$LITESTREAM_S3_BUCKET" <<<"$BUCKETS" || true)"
+check "the bucket exists" "1" "$(mc ls s/ 2>/dev/null | grep -c "$LITESTREAM_S3_BUCKET" || true)"
 
 podman secret rm "$SECRET_NAME" >/dev/null 2>&1
 mkdir -p "${CONF_DIR}/aws"
@@ -830,9 +828,7 @@ podman run -d --name "$DIVERGED_CTR" --entrypoint sh "$MC_IMAGE" \
 # The line has to be on stdout before the checker reads it; a container that has
 # not been scheduled yet reads as a silent sidecar.
 for _ in $(seq 20); do
-	# Counted, not -q: an early match here costs the `&& break`, so the wait loop runs to
-	# its timeout and the gate reports "never saw replica sync" on a healthy sidecar.
-	[ "$(podman logs "$DIVERGED_CTR" 2>&1 | grep -cF 'replica sync' || true)" -gt 0 ] && break
+	logs_match "$DIVERGED_CTR" -F 'replica sync' && break
 	sleep 1
 done
 DIV_CONF="${WORK}/conf-diverged"
@@ -949,7 +945,7 @@ podman run -d --name "$CATCHUP_CTR" --user 0 --entrypoint sh "$MC_IMAGE" -c \
 	 echo '${CATCHUP_STAMP} txid.replica=00000000000000ff txid.db=00000000000000ff'; \
 	 sleep infinity" >/dev/null 2>&1
 for _ in $(seq 20); do
-	[ "$(podman logs "$CATCHUP_CTR" 2>&1 | grep -cF 'replica sync' || true)" -gt 0 ] && break
+	logs_match "$CATCHUP_CTR" -F 'replica sync' && break
 	sleep 1
 done
 CATCHUP_CONF="${WORK}/conf-catchup"

@@ -469,6 +469,71 @@ like a fix while changing nothing. Move the base, move the id.
 `tests/container/base_images_test.sh` asserts all three in under a second, and
 `deploy/ci.sh` runs it before anything builds the image.
 
+**The same rule binds the OTHER image this repo runs, and its LOG LEVEL with
+it** (pd-pfxf). The Litestream sidecar was `litestream/litestream:latest` in
+eight places. On 2026-08-31 that tag moved 0.5.16 -> 0.5.17, this box pulled it,
+and the next morning three container gates failed together — the litestream
+gate's `txid.replica` advance, the drill's "checked all four tenants" (0 of 4),
+and the alarming gate's correspondence wait. Nothing in the tree had changed, so
+it read as transient S3/networking flakiness and was filed as such.
+
+What moved was one line of upstream's logging: *"fix(logging): downgrade replica
+sync messages from INFO to DEBUG"*. `deploy/backup-check.sh::sidecar_position`
+reads a tenant's two TXIDs out of exactly that message, because the 0.5 CLI
+cannot resolve a `dir:` entry — and the alternatives were measured against
+0.5.17 and all three fail: `status -json <tenant>` still answers `database: "/"`
+/ `not initialized`, `ltx <local path>` answers `database not found in config`,
+and the new control-socket `list -json` does answer in directory mode but
+carries only `last_sync_at` and no TXID pair, so it cannot judge
+**correspondence** (pd-me6h) and would be a silent regression to the freshness
+test that replaced it.
+
+So at the default level the message backup-check depends on simply stopped
+existing. **The tests were the loud half of a failure whose quiet half is
+prod's**: every tenant falls to "not judged" for the whole 1800s grace — a
+backup verifier that verifies nothing while exiting 0 — and pages for every
+tenant forever after it.
+
+Three things about the fix are decisions:
+
+- **The version lives in ONE place**, `PKDUMP_LITESTREAM_IMAGE` in
+  `deploy/litestream-lib.sh`, which every deploy script and every gate already
+  sources. `deploy/pkdump-litestream.container` carries a second literal copy
+  because a Quadlet unit cannot source a shell library; the two are held
+  together by a test rather than by memory.
+- **The log level is asked for BY NAME**, in the shipped `deploy/litestream.yml`
+  — the one file every sidecar in deploy and in every gate mounts, so there is
+  one place to change and no gate that can drift from production. Measured on
+  both versions: with that block, 0.5.16 and 0.5.17 emit the identical line.
+  It costs ~11x the log volume (~6 lines/s/database against ~0.55), which is the
+  price of the check being able to see anything at all.
+- **Pinning alone would not have been enough, and neither would the level.**
+  Pinned to a version that does not emit the line is silence; asking for debug
+  while `:latest` roams is the same bug waiting for the next retag. The gate
+  asserts the pair.
+
+Gates: `tests/litestream/image_pin_test.sh` (lint tier, hermetic, sub-second —
+no `:latest` under `deploy/` or `tests/`, every literal version agreeing with
+the one in the library, a log level that emits the message, and backup-check
+still parsing it; seen red seven ways) and `tests/litestream/run.sh` §3b, which
+is the half no grep can make: the RUNNING sidecar emits `msg="replica sync"`
+carrying both TXIDs, stated FIRST and by name so the next such change fails in
+one legible line instead of three unrelated-looking ones.
+
+**The same bead found a second, unrelated way a gate lies about a container**:
+`podman logs "$c" | grep -q PATTERN` returns **141** under `set -o pipefail`
+*when the pattern is found* — `grep -q` exits on the first match, the pipe
+closes, and `podman logs` dies of SIGPIPE. Whether it bites depends on whether
+the writer has finished, so it passes on a quiet box and fails on a loaded one,
+which is the exact signature this repo keeps reading as infrastructure
+flakiness. Four polling loops in `tests/{alarming,litestream,lake}` had it, and
+inside `wait_until` it does not fail loudly — it silently never goes true and
+the gate spends its whole budget before failing for some later reason.
+`tests/lib/wait.sh::logs_match` is the counting form every harness now uses
+(everything is passed through to grep, so `-F`/`-E` still work), and
+`tests/lib/wait_test.sh` §7 is the ratchet: one definition, no harness piping
+`podman logs` into `grep -q`, asserted over the tree.
+
 **Every unit under `~/.config/systemd/user` is ONE FILE PER BOX**, shared by
 every instance, with `{{REPO_DIR}}` baked into its `ExecStart` — the `@`
 templates included (`pkdump-refresh@.service` backs prod and every CI instance

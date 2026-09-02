@@ -70,6 +70,8 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 diag_init
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
+# shellcheck source=tests/lib/objects.sh
+. "${REPO_DIR}/tests/lib/objects.sh"
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
 # shellcheck source=deploy/image-lib.sh
@@ -288,7 +290,12 @@ minio_up() { mc ls m >/dev/null 2>&1; }
 wait_until 30 1 minio_up || die "MinIO never became reachable on ${NET}"
 mc mb "m/${BUCKET}" >/dev/null || die "could not create the bucket"
 mc mirror --quiet /fixture/raw-zone "m/${BUCKET}" >/dev/null || die "could not mirror raw/"
-echo "  MinIO up, bucket ${BUCKET} holds $(mc ls --recursive "m/${BUCKET}" | grep -c .) landed object(s)"
+# Hoisted out of the echo so it can fail (pd-cxq4): a listing that died would
+# have printed "0 landed object(s)" and carried on into a section with nothing
+# to derive from.
+LANDED="$(object_store_ls "" mc ls --recursive "m/${BUCKET}")" ||
+	die "the bucket listing could not be trusted — see above"
+echo "  MinIO up, bucket ${BUCKET} holds $(grep -c . <<<"$LANDED") landed object(s)"
 
 podman run -d --name "$NESSIE_CTR" --network "$NET" \
 	--memory=1g --memory-swap=1g \
@@ -384,10 +391,14 @@ pkdump_cli keys register "$BOB" >/dev/null || die "keys register bob failed"
 # 2, not 0: ghost is registered and has no database, and every job here says so.
 expect_rc 2 "${WORK}/emit.log" pkdump_cli outbox emit --all --all-tenants
 expect_rc 2 "${WORK}/ship.log" ship_job run --data-dir /data
-ZONE_OBJECTS=$(mc ls --recursive "m/${BUCKET}" 2>/dev/null | awk '{print $NF}' | grep -c '^tenant/' || true)
+# ONE verified listing feeding both (pd-cxq4). Two `mc` runs with their stderr
+# discarded meant either could have died and reported an empty zone instead.
+ZONE_LISTING="$(object_store_ls "" mc ls --recursive "m/${BUCKET}")" ||
+	die "the bucket listing could not be trusted — see above"
+ZONE_KEYS="$(awk '{print $NF}' <<<"$ZONE_LISTING" | grep '^tenant/' || true)"
+ZONE_OBJECTS=$(grep -c . <<<"$ZONE_KEYS" || true)
 check "the zone holds objects for both tenants" "2" \
-	"$(mc ls --recursive "m/${BUCKET}" 2>/dev/null | awk '{print $NF}' |
-		grep '^tenant/' | sed 's#.*database_id=\([^/]*\)/.*#\1#' | sort -u | grep -c .)"
+	"$(sed 's#.*database_id=\([^/]*\)/.*#\1#' <<<"$ZONE_KEYS" | sort -u | grep -c . || true)"
 echo "  ${ZONE_OBJECTS} object(s) under tenant/"
 
 expect_rc 2 "${WORK}/holdings.log" ship_job holdings --data-dir /data
@@ -523,8 +534,12 @@ check "…and recorded which catalog it read" "pinned" \
 log "9. the catalog zone is untouched by any of it"
 # Phase 3 reads the tenant zone and catalog.prices. Nothing it does may leave
 # a tenant-shaped object outside tenant/.
+# Through the verified listing (pd-cxq4): a "0" here has to come from a listing
+# that happened, since a dead one reports the same clean answer.
+STRAY_LISTING="$(object_store_ls "" mc ls --recursive "m/${BUCKET}")" ||
+	die "the bucket listing could not be trusted — see above"
 check "no tenant-keyed object outside tenant/" "0" \
-	"$(mc ls --recursive "m/${BUCKET}" 2>/dev/null | awk '{print $NF}' |
+	"$(awk '{print $NF}' <<<"$STRAY_LISTING" |
 		grep -v '^tenant/' | grep -c 'database_id=' || true)"
 
 # ---------------------------------------------------------------------------

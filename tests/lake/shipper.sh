@@ -54,6 +54,8 @@ diag_init
 . "${REPO_DIR}/tests/lib/ports.sh"
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
+# shellcheck source=tests/lib/objects.sh
+. "${REPO_DIR}/tests/lib/objects.sh"
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
 # shellcheck source=deploy/image-lib.sh
@@ -185,13 +187,32 @@ add_holdings() { # add_holdings <db> <n> <date>
 	PY
 }
 
+# The catalog-zone object §0 seeds, and the sentinel every listing below is
+# checked against: it is in this bucket from §0 until §8 asserts it is still
+# there, so a whole-bucket listing that does not carry it did not see the
+# bucket. See tests/lib/objects.sh.
+SENTINEL_KEY="raw/source=tcgcsv/dataset=groups/ingest_date=2026-08-14/run=01GATE/part-0000.json"
+
 # Listed from the BUCKET ROOT, not from `tenant/`: mc prints keys relative to
 # the prefix it was given, and a key with its own prefix chopped off is not a
 # key the shipper's decrypt path could ever be handed.
-zone_ls() {
-	mc_root ls --recursive "x/${BUCKET}" 2>/dev/null |
-		awk '{print $NF}' | grep '^tenant/' | sort
+#
+# Refreshing is a STATEMENT rather than something a `check` line does inside a
+# command substitution (pd-cxq4): a listing that cannot be trusted has to be
+# able to end the run, and an `exit` inside `$( … )` ends only the subshell. An
+# `mc` run that dies under parallel-gate load used to be indistinguishable from
+# an empty zone, which is the same shape as every count below.
+ZONE_KEYS=""
+CATALOG_KEYS=""
+zone_refresh() {
+	local listing keys
+	listing="$(object_store_ls "$SENTINEL_KEY" mc_root ls --recursive "x/${BUCKET}")" ||
+		die "the bucket listing could not be trusted — see above"
+	keys="$(awk '{print $NF}' <<<"$listing")"
+	ZONE_KEYS="$(grep '^tenant/' <<<"$keys" | sort || true)"
+	CATALOG_KEYS="$(grep -E '^(raw|lake)/' <<<"$keys" | sort || true)"
 }
+zone_ls() { printf '%s\n' "$ZONE_KEYS"; }
 zone_count() { zone_ls | grep -c . || true; }
 
 # ---------------------------------------------------------------------------
@@ -275,6 +296,7 @@ ship_job run --data-dir /data >"${WORK}/run1.log" 2>&1 ||
 		cat "${WORK}/run1.log"
 		die "the first run failed"
 	}
+zone_refresh
 check "objects in the zone" "3" "$(zone_count)"
 KEYS_WRITTEN="$(zone_ls)"
 echo "$KEYS_WRITTEN" | sed 's/^/    /'
@@ -383,6 +405,7 @@ podman run --rm --network "$NET" --pull=never \
 [[ "$KILLED_RC" -ne 0 ]] || die "the crash seam did not fire — the run exited 0"
 check "the process died rather than finishing" "yes" \
 	"$(grep -q 'CRASH_AFTER_PARTS' "${WORK}/killed.log" && echo yes || echo no)"
+zone_refresh
 AFTER_KILL="$(zone_count)"
 MID_CURSOR="$(python3 -c "
 import sqlite3,sys
@@ -397,6 +420,7 @@ ship_job run --data-dir /data --max-rows 4 >"${WORK}/resume.log" 2>&1 ||
 		die "the resumed run failed"
 	}
 # 9 + 3 + 12 events; alice's last day is 12 events at 4 to a part.
+zone_refresh
 check "the resumed run leaves the expected object count" "6" "$(zone_count)"
 FINAL_CURSOR="$(python3 -c "
 import sqlite3,sys
@@ -501,8 +525,9 @@ mv "${WORK}/tenant-master.key.away" "${KEYS}/tenant-master.key"
 
 # ---------------------------------------------------------------------------
 log "8. the catalog zone is untouched by all of it"
+zone_refresh
 check "the seeded raw/ object is still the only thing under raw/" "1" \
-	"$(mc_root ls --recursive "x/${BUCKET}/raw/" 2>/dev/null | grep -c . || true)"
+	"$(grep -c '^raw/' <<<"$CATALOG_KEYS" || true)"
 
 echo
 echo "==> tests/lake/shipper.sh: ${pass} passed, ${fail} failed"

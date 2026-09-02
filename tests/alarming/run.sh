@@ -61,6 +61,8 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # which is a condition and not a duration.
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
+# shellcheck source=tests/lib/objects.sh
+. "${REPO_DIR}/tests/lib/objects.sh"
 
 # Unique per checkout, like deploy/ci.sh's: several polecats run this gate from
 # their own worktrees at the same time, and a shared name means run B's teardown
@@ -271,7 +273,11 @@ check "minio is up" "0" "$(curl -fsS -o /dev/null "http://127.0.0.1:${MINIO_PORT
 # stay distinguishable.
 mc() { podman run --rm -e "MC_HOST_s=http://${AKID}:${SECRET_KEY}@host.containers.internal:${MINIO_PORT}" "$MC_IMAGE" "$@"; }
 mc mb --ignore-existing "s/${LITESTREAM_S3_BUCKET}" >/dev/null 2>&1
-check "the bucket exists" "1" "$(mc ls s/ 2>/dev/null | grep -c "$LITESTREAM_S3_BUCKET" || true)"
+# Through the verified listing (pd-cxq4): `mc ls` with its stderr thrown away
+# reports a store it could not reach and a store with nothing in it the same
+# way, and only one of those is an answer to "does the bucket exist".
+BUCKETS="$(object_store_ls "" mc ls s/)" || BUCKETS=""
+check "the bucket exists" "1" "$(grep -c "$LITESTREAM_S3_BUCKET" <<<"$BUCKETS" || true)"
 
 podman secret rm "$SECRET_NAME" >/dev/null 2>&1
 mkdir -p "${CONF_DIR}/aws"

@@ -176,14 +176,17 @@ cd frontend && npm test          # design-token gates (WCAG AA contrast, layer
 # install, and the transform tier's scheduling (0/2/1, ordering). Hermetic.
 bash tests/deploy/run.sh
 
-# Shell-harness self-tests — sub-second, no container. The second one also
+# Shell-harness self-tests — seconds, no container. The second one also
 # greps tests/ and deploy/ for a picked host port and fails on one. The third
+# asserts no harness may read an object listing it cannot trust — an `mc ls`
+# that died reports the same empty result a clean bucket does. The fourth
 # asserts every gate under tests/ removes the per-checkout image tag it built,
-# because nothing else on the box ever will. The fourth reads the
+# because nothing else on the box ever will. The fifth reads the
 # Containerfile: builder and runtime must name the SAME Debian release, and the
 # target cache id must name it too.
 bash tests/lib/diagnostics_test.sh
 bash tests/lib/ports_test.sh
+bash tests/lib/objects_test.sh
 bash tests/lib/images_test.sh
 bash tests/container/base_images_test.sh
 
@@ -705,6 +708,62 @@ until a disk fills up months later.
 `podman rmi -f` on a name an image shares with others only **untags** it, which
 is what makes the line safe under `PKDUMP_PREBUILT_IMAGE`: the gates running
 beside this one keep theirs, and `deploy/ci.sh`'s single build survives.
+
+### A gate may not conclude anything from a listing that failed
+
+Every gate that asks a real bucket what is in it used to write the question the
+same way:
+
+    mc_root ls --recursive "x/${BUCKET}" 2>/dev/null | ... | grep -c .
+
+which has no way to say "the listing failed". An `mc` run that dies in its
+container produces exactly what an empty bucket produces: no lines. On
+2026-08-26, in a CI run with seventeen gates going two at a time,
+`tests/lake/deletion.sh` read one such run as "the tenant zone holds 0 objects"
+and went red — three lines before the identical call listed the zone perfectly
+(pd-cxq4).
+
+**The flake is the harmless direction.** Half of what these gates assert is that
+a prefix is EMPTY — alice's partition after the drop, that nothing was put back
+under it, that nothing was replicated to the bucket root, that no tenant-keyed
+object sits outside `tenant/`. A listing that died satisfies every one of those
+silently, and the gate goes green having proved an erasure it never looked at.
+The flake and the false green are one bug; only the flake is loud. Eight such
+assertions were live across six gates.
+
+`tests/lib/objects.sh::object_store_ls` is the one way to ask now, and four
+things about it are decisions:
+
+- **It returns rather than exits**, because it is called in a command
+  substitution and an `exit` there kills only the subshell — which is the shape
+  of the bug itself. Callers assign at the TOP LEVEL and `|| die`, so the
+  refusal is fatal where fatal is what a gate can be. The lake gates therefore
+  refresh their listing as a *statement* and let the `check` lines read what it
+  found, rather than each `check` re-listing inside `$( … )`.
+- **The sentinel is the caller's own promise, not a flag.** A gate that seeds a
+  catalog-zone object before it lists anything names that key, and a listing
+  that comes back without it is refused — which catches the case no exit status
+  reports, a run that exits 0 having listed nothing or having listed some other
+  bucket. A gate where an empty store is a legitimate FINDING passes `""` and
+  gets the exit status alone: `tests/litestream/run.sh` lists a bucket whose
+  contents are the thing under test, and claiming a sentinel there would turn a
+  real failure into a misleading one.
+- **A transient failure is retried, boundedly, and then FATAL.** The same trade
+  `crates/pkdump-ingest/src/retry.rs` makes: retrying transport is not fallback
+  logic, because when the budget is spent the original error propagates rather
+  than a default. What it must never do is return successfully with nothing.
+  The bound is `wait_until`, so there is still one polling implementation.
+- **The refusal reproduces the command's stderr.** What actually went wrong on
+  2026-08-26 is unknowable, because the `2>/dev/null` threw it away.
+
+Gate: `tests/lib/objects_test.sh` (lint tier, hermetic, ~4s), and §6 is the half
+that lasts — it states the rule over the TREE, so an `mc … ls` whose output is
+read and whose stderr is discarded fails in a second. A listing whose *stdout*
+is discarded is a permission probe (`tenant_zone.sh`'s `can_list`), where a
+non-zero status is the answer being asked for, and is left alone; stripping the
+stderr redirects before asking is what keeps `2>/dev/null` from reading as an
+exemption from the rule it violates. It earned its keep on the first run,
+finding three gates beyond the one that flaked.
 
 ### A build collects what the build before it orphaned
 

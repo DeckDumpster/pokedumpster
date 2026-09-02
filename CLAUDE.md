@@ -630,6 +630,58 @@ one of the seventeen gate scripts is still queued exactly once under a real tier
 That last one is the refactor's own failure mode: a gate queued nowhere runs
 never, and a green run cannot show you that.
 
+### Nothing collects a dead agent's scratchpad, so this box does (pd-xgh6)
+
+The disk floor above says `/tmp` is full. `deploy/tmpreap.sh` is what stops it
+filling, and `pkdump-tmpreap.timer` runs it at 05:30 — ahead of the 06:00 chain,
+because reclaiming after the night has run is reclaiming for tomorrow.
+
+Every Claude Code session on this box gets
+`$TMPDIR/claude-<uid>/<cwd-slug>/<session-uuid>/` and **nothing ever collects
+it**: 42G of a 49G filesystem on 2026-08-30, 2261 session directories against a
+couple of dozen live sessions, growing ~1G/day, with `ci.sh` correctly refusing
+to start at 817M free. None of it is pokedumpster's data. It lives here anyway
+for the reason `pkdump-diskcheck` does — that unit is host-wide and not about
+this project's data either, and it is the same job one step earlier. There is no
+rig on this box that owns a reaper; re-filing it upward is how it stays unwritten.
+
+Four things about it are decisions:
+
+- **Liveness comes from the PROCESS TABLE, never from a timestamp.** A
+  long-running session can sit quiet for days. `CLAUDE_CODE_SESSION_ID` in a
+  process's environment, a uuid on its command line, or a cwd inside the
+  directory — any one keeps it. The idle window (`PKDUMP_TMPREAP_AGE_DAYS`, 3)
+  is a *second* condition and never a substitute for the first.
+- **A broken liveness signal REFUSES.** claude running and not one process
+  yielding a session id is indistinguishable from "every session is dead" by
+  looking at the answer, which is exactly why it is asked as its own question.
+  Exit 1, nothing removed, and the unit's `OnFailure=` pages — a reaper that has
+  quietly stopped reaping is a disk that fills again with nothing saying so.
+- **It removes `<root>/<slug>/<uuid>` and nothing else.** The root holds
+  unrelated caches (579M of `uv-cache-<agent>` beside the sessions here); a
+  reaper that decided what those were would be a different, worse tool. Anything
+  else is counted and left, and a path that reaches the removal outside the root
+  or off the name shape is fatal rather than skipped.
+- **It costs nobody a `--resume`.** The transcript is
+  `~/.claude/projects/<slug>/<session>.jsonl` with the persisted tool-result
+  bodies beside it under `$HOME`; `$TMPDIR` holds `scratchpad/` and
+  `tasks/*.output`, the working files of a running process. The bead assumed
+  otherwise. If that layout ever changes this script is wrong, and the process
+  table is not what saves you.
+
+`PKDUMP_TMPREAP_PROC` is *where* the process table is, never *whether* to
+consult one — there is no way to hand the script a liveness set or switch the
+check off. It is what lets `tests/deploy/run.sh` §17 (hermetic, deploy tier)
+state both halves against a fake `/proc`: the real one has this box's own live
+sessions in it, so "a live session survives" cannot be asserted against it and
+"a broken signal refuses" cannot be reached at all. Seen red four ways — the
+liveness check, the vacuity guard, the name shape and the idle window each
+deleted in turn, each firing its own assertion.
+
+Installed with the host-wide units and therefore behind pd-onyd's entitlement
+guard, so a polecat worktree running `setup.sh` cannot arm it. Installed, not
+enabled: arming a timer that deletes directories is an operator's act.
+
 ### A container gate removes the image it named
 
 Every gate builds — or, under `PKDUMP_PREBUILT_IMAGE`, re-tags — its image at a

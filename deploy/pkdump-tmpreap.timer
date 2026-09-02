@@ -1,0 +1,16 @@
+[Unit]
+Description=PokeDumpster abandoned scratchpad reaper timer
+
+[Timer]
+# BEFORE the nightly chain, not beside it. The landing starts at 06:00 (+ up to
+# RandomizedDelaySec=1800) and every gate and job below it mktemps into this
+# same filesystem — reclaiming after they have run is reclaiming for tomorrow.
+# The 07:00 disk check then reports the state the reaper left, which is the one
+# an operator should be paged about.
+OnCalendar=*-*-* 05:30:00
+# No RandomizedDelaySec: there is no upstream to be polite to, and the whole
+# point of the hour is to be finished before 06:00.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

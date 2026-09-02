@@ -23,13 +23,18 @@
 #                                    toolchain and cost real time to diagnose.
 #                                    With no paths given it checks PKDUMP_DISK_PATH.
 #                                    Each DEVICE is reported once however many
-#                                    paths name it, so a caller may hand it every
+#                                    paths name it, and a path that does not exist
+#                                    yet is measured on its nearest existing
+#                                    ancestor — so a caller may hand it every
 #                                    directory it writes to without knowing which
-#                                    of them share a filesystem. ci.sh does
-#                                    exactly that — see PKDUMP_CI_DISK_PATHS, and
-#                                    note that TMPDIR is one of them: on a box
-#                                    where /tmp is its own mount, neither $HOME
-#                                    nor the store root can see it fill (pd-20ia).
+#                                    of them share a filesystem or which are
+#                                    there yet. ci.sh does exactly that — see
+#                                    PKDUMP_CI_DISK_PATHS, and note TMPDIR and
+#                                    CARGO_TARGET_DIR among them: on this box
+#                                    /tmp is its own mount and the target dir is
+#                                    relocated to a third volume, so neither
+#                                    $HOME nor the store root can see either fill
+#                                    (pd-20ia, pd-6jyd).
 #
 # Env-driven (host-wide ~/.config/pkdump/alerts.env):
 #   PKDUMP_DISK_THRESHOLD   percent-used that triggers an alert (default 90)

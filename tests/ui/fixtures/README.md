@@ -17,8 +17,31 @@ The command does a clean rebuild: it deletes any existing `shared.sqlite` /
 `collection.sqlite`, recreates them through `pkdump_db::open_shared` /
 `connect_user` (so the schema and the shipped seeds are applied), then seeds
 deterministic rows. User data is inserted through the `pkdump-db` repository
-functions so app-layer validation runs. The output is byte-stable —
-timestamps and price observation dates are fixed constants.
+functions so app-layer validation runs.
+
+`shared.sqlite` is byte-stable: every catalog row, price and observation date
+in it is a fixed constant, so two regenerations produce identical files.
+`collection.sqlite` is not, and cannot be while the rows go in through those
+repository functions — they stamp `created_at` / `acquired_at` from the clock.
+Two regenerations differ in exactly those columns and nothing else. Anything
+that must be stable across a regeneration is pinned some other way: the visual
+suite freezes the browser's clock (`tests/visual/stabilize.ts`) and pins the
+ids it visits (`tests/visual/routes.json`).
+
+So **a regeneration moves eight visual baselines** — `sealed`, `recent`,
+`batches` and `batch-detail`, at both viewports — in the date digits and
+nowhere else. Re-record them with `bash tests/visual/run.sh --update` and
+commit the PNGs alongside the fixture, having read the diffs first. pd-nzlj is
+the work that removes this: give the fixture a narrative of pinned dates so
+those routes stop rendering the moment the file was built.
+
+Regenerate whenever `schema_shared.sql` gains a table, view or column. The
+catalog is ATTACHed **read-only** at request time, so it is the one database in
+this project that is never repaired on open — a stale one stays stale forever
+and the first query naming the new object dies with `no such table`.
+`PRAGMA user_version` will not warn you (additive change does not bump it);
+`fixture::tests::the_committed_fixture_carries_every_catalog_object_the_schema_declares`
+will, in `cargo test`.
 
 ## Files
 

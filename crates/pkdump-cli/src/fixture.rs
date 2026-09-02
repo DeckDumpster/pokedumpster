@@ -1508,3 +1508,91 @@ impl IntoSome for &str {
         Some(self.to_owned())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// The committed catalog fixture, addressed from the crate rather than
+    /// from whatever directory the test runner happens to stand in.
+    fn committed_shared() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/ui/fixtures/shared.sqlite")
+    }
+
+    /// Every catalog object a database holds, mapped to its columns.
+    /// `pragma_table_info` answers for views as well as tables, which is what
+    /// makes `latest_sealed_prices` covered by the same pass.
+    fn objects(conn: &Connection) -> rusqlite::Result<BTreeMap<String, Vec<String>>> {
+        let names: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                  WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'",
+            )?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+
+        let mut out = BTreeMap::new();
+        for name in names {
+            let columns: Vec<String> = conn
+                .prepare("SELECT name FROM pragma_table_info(?1)")?
+                .query_map([&name], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            out.insert(name, columns);
+        }
+        Ok(out)
+    }
+
+    /// The committed `shared.sqlite` must carry every table, view and column
+    /// `schema_shared.sql` declares — because it is the ONE database this
+    /// project never repairs on open. Every other file converges: the schema
+    /// is re-applied with `CREATE … IF NOT EXISTS` and `add_missing_columns`
+    /// ALTERs the rest. The catalog is ATTACHed READ-ONLY at request time, so
+    /// a fixture generated before a schema addition stays behind forever, and
+    /// the first query that names the new object dies with `no such table`.
+    ///
+    /// `PRAGMA user_version` cannot stand in for this check. Additive change
+    /// travels by idempotent re-application and deliberately does not bump the
+    /// version, so the stale fixture that produced this test reported the
+    /// CURRENT version while missing two tables (pd-7hkf).
+    ///
+    /// Only objects the schema declares and the fixture lacks are a failure.
+    /// A table the schema has since dropped, still sitting in the fixture,
+    /// breaks no read — "behind" is the direction that hurts.
+    #[test]
+    fn the_committed_fixture_carries_every_catalog_object_the_schema_declares() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        let declared = objects(&reference).unwrap();
+        // Not vacuous: a reference that declared nothing would pass whatever
+        // the fixture holds.
+        assert!(
+            !declared.is_empty(),
+            "schema_shared.sql declared no objects"
+        );
+
+        let fixture = pkdump_db::open_shared_readonly(&committed_shared()).unwrap();
+        let present = objects(&fixture).unwrap();
+
+        let mut missing = Vec::new();
+        for (name, columns) in &declared {
+            match present.get(name) {
+                None => missing.push(name.clone()),
+                Some(have) => missing.extend(
+                    columns
+                        .iter()
+                        .filter(|c| !have.contains(c))
+                        .map(|c| format!("{name}.{c}")),
+                ),
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "tests/ui/fixtures/shared.sqlite is behind schema_shared.sql \
+             and is never repaired on open (it is ATTACHed read-only). \
+             Missing: {}. Regenerate it: cargo run --bin pkdump -- seed-fixture",
+            missing.join(", "),
+        );
+    }
+}

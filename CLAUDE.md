@@ -1310,8 +1310,11 @@ and encryption-under-the-right-key over a `DirStore`, plus the seam with item
 timestamps rather than the day the backfill ran) and
 `tests/lake/shipper.sh` (container tier — the shipped image against a real
 MinIO under the real tenant policy, a real process killed mid-run and resumed,
-the catalog role's denial seen both green and red, and `deploy/ship.sh`'s four
-exit statuses).
+the catalog role's denial seen both green and red, `deploy/ship.sh`'s four
+exit statuses, and §8, pd-385w's headline proof re-stated against this zone:
+delete a tenant's partition outright, rebuild it with `pkdump outbox emit
+--all`, and the holdings it describes must be what incremental shipping
+produced).
 
 ### The deletion path
 
@@ -2047,12 +2050,26 @@ backfill that skipped sealed pass the headline proof, which is the failure
 this bead exists to prevent arriving through the test suite instead of
 through the code.
 
-**Still owed before this is armed on prod**: the proof is stated against
-`outbox::project` rather than against a tenant zone, because the shipper
-(pd-dxn3) is being built in parallel and does not exist yet. `project` is the
-contract between them — the shipper writes that reduction — so re-stating the
-headline proof against real Parquet in the zone is a container-tier gate that
-belongs with the shipper (pd-880q, filed rather than forgotten).
+**The headline proof is stated twice, at two altitudes** (pd-880q). The Rust
+one is over `outbox::project`, and that is what makes it a claim about the
+*reduction*: the zone is an abstraction there, and `project` is the contract
+between the backfill and the shipper. `tests/lake/shipper.sh` §8 states the
+same claim with the abstraction removed — a collection's history shipped a day
+at a time into a real bucket under the real tenant policy, the tenant's
+partition deleted outright, `pkdump outbox emit --all`, shipped again, and the
+holdings the zone describes read back through `pkdump-ship holdings` and
+required to be identical row for row. Parquet, AES-256-GCM under a derived key
+and an IAM boundary sit between the two sides of that one, which is four more
+places a holding can be lost, duplicated or resolved to the wrong version.
+
+**§8b is the check that makes the rest of it mean anything.** Over an emptied
+partition the read-back must materialise NOTHING — a reader that had quietly
+fallen back to the live `collection` table passes every other check in the
+file, and Phase 3 would go on reporting beautiful numbers about holdings the
+zone does not hold. The section's fixture carries both sources and gives the
+surviving sealed lot the same `row_id` as a surviving single, for the reason
+the Rust fixture does: a proof over singles alone would not notice a backfill
+that skipped sealed.
 
 **The sealed triggers have landed** (pd-4gop), so `SOURCE_TABLES` carries
 `("sealed_collection", "added_at")` and every claim above is a claim about

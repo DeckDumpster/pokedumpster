@@ -3,7 +3,7 @@
 # under the real tenant credential policy, killed for real.
 #
 # Run by deploy/ci.sh. Standalone:
-#   bash tests/lake/shipper.sh          # ~2min after the image is warm
+#   bash tests/lake/shipper.sh          # ~3min after the image is warm
 #   KEEP=1 bash tests/lake/shipper.sh   # leave MinIO + WORK up for poking
 #
 # ── WHAT THIS EXISTS TO CATCH, THAT THE RUST TIER CANNOT ────────────────────
@@ -25,12 +25,22 @@
 #   §7  the wrapper `deploy/ship.sh` maps the job's four exit statuses to the
 #       four things an operator needs to hear — including 3, the gap, which is
 #       the one nothing else in the system would ever notice.
+#   §8  pd-385w's headline proof, re-stated against THIS zone (pd-880q). That
+#       one is a claim about `outbox::project`; this one puts Parquet, a
+#       derived key, a real bucket and `pkdump-ship holdings` between the two
+#       sides of it. Ship a collection's history one day at a time, delete the
+#       tenant's partition outright, rebuild by `pkdump outbox emit --all`,
+#       ship again — and the holdings the zone describes must be identical.
+#       §8b is what makes the rest of it mean anything: over an emptied
+#       partition the read-back must materialise NOTHING, because a reader
+#       that had quietly fallen back to the live `collection` table would pass
+#       every other check in this file.
 #
 # ── NO REAL TENANT DATA ─────────────────────────────────────────────────────
 # Every holding here is an invented printing id in a throwaway collection, in a
 # throwaway bucket, on a throwaway network. The tenant zone is the SUBJECT of
 # this design, so its fixtures are treated as if they were real: nothing that
-# has ever been anybody's is written, and §8 tears the bucket down.
+# has ever been anybody's is written, and `cleanup` tears the bucket down.
 #
 # Prod-safe: its own podman network, its own MinIO, its own bucket, its own
 # image tag, its own data directory. It touches no pkdump-* unit, no
@@ -500,7 +510,262 @@ check "…naming the file and the command" "yes" \
 mv "${WORK}/tenant-master.key.away" "${KEYS}/tenant-master.key"
 
 # ---------------------------------------------------------------------------
-log "8. the catalog zone is untouched by all of it"
+log "8. THE HEADLINE PROOF, through the real zone (pd-880q)"
+# pd-385w proved this claim in Rust over `outbox::project`, with the zone as an
+# abstraction: throw every event away, rebuild by backfill, and the projection
+# equals what the triggers produced one mutation at a time. `project` is the
+# CONTRACT between the backfill and the shipper, so a proof stated over it is a
+# proof about the reduction rather than about the zone.
+#
+# This is the same claim with the abstraction removed. Between the two sides
+# now sit Parquet, AES-256-GCM under a derived key, a real bucket under the
+# real tenant policy, and `pkdump-ship holdings` reading all of it back — four
+# places a holding can be lost, duplicated or resolved to the wrong version,
+# none of which the Rust tier can reach.
+#
+# carol is her own tenant rather than a fourth act on alice: §7 leaves alice
+# carrying a deliberate sequence gap, and a gap is exactly the thing that would
+# make a rebuilt zone legitimately differ.
+#
+# SEEN RED, the same way pd-385w's Rust proof was — a backfill that covered
+# singles and silently missed sealed. Reproduce by adding one line after the
+# emit in §8c and re-running:
+#
+#   carol_exec "DELETE FROM ownership_outbox \
+#                WHERE source = 'backfill' AND source_table = 'sealed_collection'"
+#
+# §8d then fails naming the sealed row that did not come back, and §8c's counts
+# fail beside it. What must NOT happen is what a singles-only fixture would
+# give you: a green run.
+pkdump_cli tenant create carol >"${WORK}/carol.txt" || die "tenant create carol failed"
+CAROL="$(sed -n 's/.*-> database \([A-Z0-9]*\) at.*/\1/p' "${WORK}/carol.txt")"
+[[ -n "$CAROL" ]] || die "could not read carol's database id back"
+pkdump_cli keys register "$CAROL" >/dev/null || die "keys register carol failed"
+CAROL_DB="${DATA}/tenants/${CAROL}.sqlite"
+
+# One day's mutations at a time, with the outbox's own triggers doing every
+# write — the fixture needs no application code, which is the whole point of
+# pd-5m54. The shape is `a_collection_with_history` from the Rust proof: three
+# singles of which one is edited, one sold and one deleted outright, and two
+# sealed lots of which one is edited and one deleted.
+#
+# The surviving sealed lot deliberately shares row id 1 with a surviving
+# single. `collection` and `sealed_collection` number their rows independently
+# (pd-4gop), so a reduction keyed on `row_id` alone silently merges the two —
+# and a fixture of singles alone would let a backfill that skipped sealed pass
+# this whole section.
+carol_stage() { # carol_stage <date> <acquire|edit|retire>
+	python3 - "$CAROL_DB" "$1" "$2" <<-'PY'
+		import sqlite3, sys
+		db, date, stage = sys.argv[1], sys.argv[2], sys.argv[3]
+		conn = sqlite3.connect(db)
+		before = conn.execute("SELECT coalesce(max(seq),0) FROM ownership_outbox").fetchone()[0]
+		if stage == "acquire":
+		    for i in range(3):
+		        conn.execute(
+		            "INSERT INTO collection (printing_id, acquired_at, source)"
+		            " VALUES (?, ?, 'gate')",
+		            (f"carol-single-{i}", f"{date}T00:00:00Z"),
+		        )
+		    for i in range(2):
+		        conn.execute(
+		            "INSERT INTO sealed_collection (product_id, quantity, added_at, source)"
+		            " VALUES (?, 1, ?, 'gate')",
+		            (7000 + i, f"{date}T00:00:00Z"),
+		        )
+		elif stage == "edit":
+		    conn.execute("UPDATE collection SET condition = 'Lightly Played' WHERE id = 1")
+		    conn.execute("UPDATE sealed_collection SET quantity = 3 WHERE id = 1")
+		elif stage == "retire":
+		    conn.execute("UPDATE collection SET status = 'sold', sale_price = 12.5 WHERE id = 2")
+		    conn.execute("DELETE FROM collection WHERE id = 3")
+		    conn.execute("DELETE FROM sealed_collection WHERE id = 2")
+		else:
+		    raise SystemExit(f"unknown stage {stage}")
+		# The trigger stamps occurred_at from the clock and `as_of=` is derived
+		# from it, so dating each batch is what puts this history into more than
+		# one partition — exactly as three days of real use would have.
+		conn.execute(
+		    "UPDATE ownership_outbox SET occurred_at = ? || substr(occurred_at, 11) WHERE seq > ?",
+		    (date, before),
+		)
+		conn.commit()
+		conn.close()
+	PY
+}
+
+# The staged zone, both tables, in a form two runs can be compared as text.
+# EVERY column, because the failure this is looking for is a row that came back
+# at the wrong VERSION — a condition or a quantity one event stale is invisible
+# to a count.
+carol_holdings() {
+	python3 - "$CAROL_DB" <<-'PY'
+		import sqlite3, sys
+		conn = sqlite3.connect(sys.argv[1])
+		for table in ("zone_holdings", "zone_sealed_holdings"):
+		    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+		    if not cols:
+		        print(table, "ABSENT", sep="\t")
+		        continue
+		    for row in conn.execute(f"SELECT {', '.join(cols)} FROM {table} ORDER BY id"):
+		        print(table, row[0], "|".join(repr(v) for v in row), sep="\t")
+	PY
+}
+
+carol_sql() { # carol_sql <scalar query>
+	python3 - "$CAROL_DB" "$1" <<-'PY'
+		import sqlite3, sys
+		print(sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()[0])
+	PY
+}
+
+carol_exec() { # carol_exec <statement>
+	python3 - "$CAROL_DB" "$1" <<-'PY'
+		import sqlite3, sys
+		conn = sqlite3.connect(sys.argv[1])
+		conn.execute(sys.argv[2])
+		conn.commit()
+	PY
+}
+
+carol_zone_keys() { zone_ls | grep "database_id=${CAROL}/" || true; }
+rows_in() { # rows_in <snapshot> <staging table> -> how many rows it holds
+	awk -F'\t' -v t="$2" '$1 == t' <<<"$1" | wc -l
+}
+
+# One tenant, so §7's deliberate gap on alice cannot reach any of this.
+carol_ship() { # carol_ship <log name>
+	ship_job run --data-dir /data --tenant carol >"${WORK}/$1" 2>&1 ||
+		{
+			cat "${WORK}/$1"
+			die "shipping carol failed ($1)"
+		}
+}
+
+carol_stage 2026-08-20 acquire
+carol_ship carol-ship-1.log
+carol_stage 2026-08-21 edit
+carol_ship carol-ship-2.log
+carol_stage 2026-08-22 retire
+carol_ship carol-ship-3.log
+
+INCREMENTAL_KEYS="$(carol_zone_keys)"
+echo "$INCREMENTAL_KEYS" | sed 's/^/    /'
+check "three days of mutations are three parts in the zone" "3" \
+	"$(grep -c . <<<"$INCREMENTAL_KEYS" || true)"
+check "…carrying every event the triggers wrote" "10" \
+	"$(carol_sql 'SELECT count(*) FROM ownership_outbox')"
+check "…and all of it shipped" "10" \
+	"$(carol_sql 'SELECT shipped_thru FROM ownership_outbox_cursor')"
+
+ship_job holdings --data-dir /data --tenant carol >"${WORK}/carol-read-1.log" 2>&1 ||
+	{
+		cat "${WORK}/carol-read-1.log"
+		die "the first read-back failed"
+	}
+sed 's/^/  | /' "${WORK}/carol-read-1.log"
+INCREMENTAL="$(carol_holdings)"
+echo "$INCREMENTAL" | sed 's/^/    /'
+check "the zone's cards are the two singles that survived" "2" "$(rows_in "$INCREMENTAL" zone_holdings)"
+check "…and its sealed lots the one that survived" "1" "$(rows_in "$INCREMENTAL" zone_sealed_holdings)"
+check "…which is what carol's collection itself holds" "2 1" \
+	"$(carol_sql 'SELECT count(*) FROM collection') $(carol_sql 'SELECT count(*) FROM sealed_collection')"
+# The pair, in the real zone: two survivors that share a number and are not the
+# same holding. A reduction keyed on `row_id` alone brings back one of them.
+check "a surviving single and a surviving sealed lot share row id 1" "2" \
+	"$(awk -F'\t' '$2 == "1"' <<<"$INCREMENTAL" | wc -l)"
+
+# ---------------------------------------------------------------------------
+log "8b. delete carol's partition, and prove the read-back reads the BUCKET"
+# `zone_holdings` is written into carol's own database, beside `collection`.
+# Emptied of objects, the zone must materialise NOTHING: a reader that had
+# quietly fallen back to the live table looks identical to a correct one right
+# up until here, and Phase 3 would go on reporting beautiful numbers.
+mc_root rm --recursive --force "x/${BUCKET}/tenant/database_id=${CAROL}/" >/dev/null 2>&1 || true
+check "carol's partition is gone from the zone" "0" "$(carol_zone_keys | grep -c . || true)"
+check "…and nobody else's went with it" "yes" \
+	"$([[ "$(zone_ls | grep -c "database_id=${ALICE}/" || true)" -gt 0 ]] && echo yes || echo no)"
+
+ship_job holdings --data-dir /data --tenant carol >"${WORK}/carol-read-2.log" 2>&1 ||
+	{
+		cat "${WORK}/carol-read-2.log"
+		die "the read-back over an emptied zone failed"
+	}
+check "an emptied zone materialises no holdings at all" "" "$(carol_holdings)"
+check "…while the collection it is written beside is untouched" "2 1" \
+	"$(carol_sql 'SELECT count(*) FROM collection') $(carol_sql 'SELECT count(*) FROM sealed_collection')"
+
+# ---------------------------------------------------------------------------
+log "8c. throw every outbox event away and rebuild by backfill"
+# What "delete the zone" means on the inbound side: the objects went above, and
+# the events they were made of go here. The cursor deliberately STAYS — a
+# backfill is what an existing box runs against a live outbox, and its events
+# are the next sequence numbers after everything already shipped, never a
+# reset. Nothing here is a gap: every deleted row is at or below the cursor.
+carol_exec 'DELETE FROM ownership_outbox'
+check "the outbox is empty" "0" "$(carol_sql 'SELECT count(*) FROM ownership_outbox')"
+
+pkdump_cli outbox emit --all --tenant carol >"${WORK}/carol-emit.log" 2>&1 ||
+	{
+		cat "${WORK}/carol-emit.log"
+		die "the backfill failed"
+	}
+sed 's/^/  | /' "${WORK}/carol-emit.log"
+# Per source, out of the run's own output: a backfill that covered singles and
+# missed sealed is visible the night it runs rather than in a later
+# reconciliation.
+check "the backfill covers both sources" "yes" \
+	"$(grep -q 'collection 2, sealed_collection 1' "${WORK}/carol-emit.log" && echo yes || echo no)"
+check "…as three events where incremental shipping wrote ten" "3" \
+	"$(carol_sql 'SELECT count(*) FROM ownership_outbox')"
+check "…every one of them carrying its provenance" "3" \
+	"$(carol_sql "SELECT count(*) FROM ownership_outbox WHERE source = 'backfill'")"
+
+carol_ship carol-ship-4.log
+REBUILT_KEYS="$(carol_zone_keys)"
+echo "$REBUILT_KEYS" | sed 's/^/    /'
+check "the rebuilt zone is objects, not an empty prefix" "yes" \
+	"$([[ -n "$REBUILT_KEYS" ]] && echo yes || echo no)"
+# A part is named for the sequence range it carries, and the backfill's range
+# is its own — so this is a zone genuinely rebuilt rather than the old objects
+# resurfacing from somewhere.
+check "…and none of them is an object the incremental run wrote" "0" \
+	"$(comm -12 <(sort <<<"$INCREMENTAL_KEYS") <(sort <<<"$REBUILT_KEYS") | grep -c . || true)"
+
+# Rule 2 of the design, from the reader's side: the shipper CARRIES `source`
+# and does not branch on it. Carrying is what makes "did last night's backfill
+# actually reach the zone" answerable at all; branching is what would make the
+# backfill a second code path, untested until the night it is needed.
+ship_job decrypt --data-dir /data --key "$(head -1 <<<"$REBUILT_KEYS")" --json \
+	>"${WORK}/carol-backfilled.jsonl" 2>&1 ||
+	{
+		cat "${WORK}/carol-backfilled.jsonl"
+		die "decrypting the rebuilt part failed"
+	}
+check "the shipped part carries the backfill's provenance" "3" \
+	"$(grep -c '"source":"backfill"' "${WORK}/carol-backfilled.jsonl" || true)"
+
+# ---------------------------------------------------------------------------
+log "8d. THE ACCEPTANCE BAR: the rebuilt zone equals the one shipping built"
+ship_job holdings --data-dir /data --tenant carol >"${WORK}/carol-read-3.log" 2>&1 ||
+	{
+		cat "${WORK}/carol-read-3.log"
+		die "the read-back of the rebuilt zone failed"
+	}
+sed 's/^/  | /' "${WORK}/carol-read-3.log"
+REBUILT="$(carol_holdings)"
+# A comparison against nothing agrees with everything. §8 has already counted
+# these rows, and this says so once more where a reader of a green run can see
+# it — §8b deliberately drives the same snapshot to empty, and an ordering
+# mistake would leave that emptiness here.
+[[ -n "$INCREMENTAL" ]] ||
+	die "the incremental snapshot is empty — 8d would compare nothing and call it agreement"
+diff <(printf '%s\n' "$INCREMENTAL") <(printf '%s\n' "$REBUILT") >"${WORK}/carol-diff.txt" 2>&1 || true
+check "the rebuilt zone holds what incremental shipping produced, row for row" "" \
+	"$(cat "${WORK}/carol-diff.txt")"
+
+# ---------------------------------------------------------------------------
+log "9. the catalog zone is untouched by all of it"
 check "the seeded raw/ object is still the only thing under raw/" "1" \
 	"$(mc_root ls --recursive "x/${BUCKET}/raw/" 2>/dev/null | grep -c . || true)"
 

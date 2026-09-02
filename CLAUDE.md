@@ -586,20 +586,30 @@ Four things about it are decisions:
   gates running it **holds** (the gate about to tear itself down is what gives
   the space back); below the floor with nothing running it fails, naming the
   gates that never started.
-- **That list names THREE disks, once** (pd-20ia). `PKDUMP_CI_DISK_PATHS` is
-  `$HOME` (prod's default Podman store, and the toolchain caches on a box that
-  has not relocated them), `$PKDUMP_STORE_ROOT` (the non-prod store, where the
-  host moved it) and **`$TMPDIR`** — every `mktemp` under `deploy/` and
-  `tests/`, the source trees the isolation guards copy, and the per-gate output
-  `ci-parallel.sh` buffers. The pre-build check and the per-dispatch one *copy*
-  that array rather than spelling it a second time, because two spellings is how
-  one of them quietly stops covering a disk. The temp arm is not hypothetical:
-  on the deployment box `/tmp` is its own LVM volume, and the check reported
-  `/ has 40G free — ok` with 818M left on `/tmp` — below the free space that
-  produced pd-fite's bus error. `diskcheck.sh` reports each **device** once, so
-  where `/tmp` shares a filesystem the extra arm costs nothing. **Alert mode
-  still watches one filesystem** (`PKDUMP_DISK_PATH`): what pages the operator
-  is a separate decision from what blocks a build.
+- **That list names every disk a run writes to, once** (pd-20ia, pd-6jyd).
+  `PKDUMP_CI_DISK_PATHS` is `$HOME` (prod's default Podman store),
+  `$PKDUMP_STORE_ROOT` (the non-prod store, where the host moved it), `$TMPDIR`
+  (every `mktemp` under `deploy/` and `tests/`, the source trees the isolation
+  guards copy, and the per-gate output `ci-parallel.sh` buffers),
+  **`$CARGO_TARGET_DIR`** and **`$CARGO_HOME`**. The pre-build check and the
+  per-dispatch one *copy* that array rather than spelling it a second time,
+  because two spellings is how one of them quietly stops covering a disk.
+  Not one of the last three arms is hypothetical, and each names a device the
+  first two cannot see. On the deployment box `/tmp` is its own LVM volume, and
+  the check reported `/ has 40G free — ok` with 818M left on `/tmp` — below the
+  free space that produced pd-fite's bus error. **And the compile's disk was
+  the one missing longest**: `.github/workflows/ci.yml` relocates
+  `CARGO_TARGET_DIR` and `CARGO_HOME` onto `/workspaces` *deliberately*, to keep
+  the largest writes off the volume production runs from, and the toolchain
+  caches are symlinked there too — so pd-fite's bus error, which was a cargo
+  **link**, happened on a device the floor named nowhere while reporting three
+  others green. `df` follows a symlink, so `$HOME/.cargo` given as a path
+  measures wherever it points. `diskcheck.sh` reports each **device** once and
+  walks up to the nearest existing ancestor of a path that is not there yet, so
+  on a box that has relocated nothing the extra arms cost nothing — which is the
+  argument every one of them was added on. **Alert mode still watches one
+  filesystem** (`PKDUMP_DISK_PATH`): what pages the operator is a separate
+  decision from what blocks a build.
 - **A failing gate no longer stops the ones beside it.** The wave finishes,
   every gate's output is printed whole under its own name, and the run ends red
   naming all of them. One red run now reports everything that is broken instead
@@ -610,8 +620,11 @@ Four things about it are decisions:
 `tests/ci/parallel_test.sh` is the gate — hermetic, lint tier, ~4s. It asserts
 the cap is reached and never exceeded, that a failure among passes is red and
 named, that output survives concurrency, that the *real* `diskcheck.sh` trips
-against an impossible floor and measures the temp filesystem and not only
-`$HOME`, that the hold branch waits rather than aborts, that
+against an impossible floor and measures the temp filesystem and the compile's
+own — relocated, and absent-so-walked-up-to — and not only `$HOME`, that the
+whole array literal is asserted WHOLE rather than arm by arm (an arm-by-arm
+check goes on passing when an arm is dropped, which is the only way that list
+is ever wrong), that the hold branch waits rather than aborts, that
 a background job of the *caller's* is never mistaken for a gate, and that every
 one of the seventeen gate scripts is still queued exactly once under a real tier.
 That last one is the refactor's own failure mode: a gate queued nowhere runs

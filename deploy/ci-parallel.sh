@@ -84,10 +84,10 @@ declare -A PKDUMP_PAR_LIVE=()
 _PKDUMP_PAR_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The filesystems the floor is measured on. deploy/ci.sh overwrites this with
-# PKDUMP_CI_DISK_PATHS — the three disks a run writes to ($HOME, the container
-# store and TMPDIR) — so this is only ever the fallback for a caller that names
-# none. The list lives THERE and not here: a second authoritative copy is how
-# one of them stops covering a disk (pd-20ia).
+# PKDUMP_CI_DISK_PATHS — every disk a run writes to — so this is only ever the
+# fallback for a caller that names none. The list lives THERE and not here, and
+# so does the enumeration of what is on it: a second copy of either is how one
+# of them stops covering a disk (pd-20ia, pd-6jyd).
 PKDUMP_PAR_DISK_PATHS=("$HOME")
 
 # The floor gate itself, as a path to a script taking `--floor <path>...`.

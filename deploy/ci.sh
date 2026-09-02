@@ -368,13 +368,28 @@ step "Disk floor check"
 #   TMPDIR             every mktemp under deploy/ and tests/ — the gates' work
 #                      directories, the source trees the isolation guards copy,
 #                      and the per-gate output ci-parallel.sh buffers
+#   CARGO_TARGET_DIR   where the compile writes, and the disk pd-fite's bus
+#                      error actually happened on — a cargo LINK died there
+#   CARGO_HOME         the registry cache and the downloaded crate sources
 #
-# The third arm is not hypothetical. On the deployment box /tmp is its own LVM
-# volume, so a full /tmp is invisible to the other two: this check reported
-# `/ has 40G free — ok` with 818M left on /tmp, which is below the very number
-# that produced the bus error above. diskcheck.sh reports each DEVICE once, so
-# where /tmp shares a filesystem with either of the others this costs nothing.
-PKDUMP_CI_DISK_PATHS=("$HOME" "${PKDUMP_STORE_ROOT:-$HOME}" "${TMPDIR:-/tmp}")
+# The last three arms are not hypothetical, and each names a disk the first two
+# cannot see. On the deployment box /tmp is its own LVM volume, so a full /tmp
+# is invisible to $HOME: this check reported `/ has 40G free — ok` with 818M
+# left on /tmp, which is below the very number that produced the bus error
+# above. And .github/workflows/ci.yml sets CARGO_TARGET_DIR and CARGO_HOME onto
+# /workspaces DELIBERATELY, so that the compile's largest writes stay off the
+# volume production runs from — which means the shipped configuration puts the
+# link that failed on a fourth device the floor named nowhere (pd-6jyd). The
+# toolchain caches are relocated by symlink on this box for the same reason, so
+# the parenthetical on the $HOME arm above does not cover them here; df follows
+# a symlink, so naming "$HOME/.cargo" as a PATH measures wherever it points.
+#
+# diskcheck.sh reports each DEVICE once and walks up to the nearest existing
+# ancestor of a path that does not exist yet, so on a box that has relocated
+# nothing these arms cost exactly nothing — which is the argument the TMPDIR
+# arm was added on.
+PKDUMP_CI_DISK_PATHS=("$HOME" "${PKDUMP_STORE_ROOT:-$HOME}" "${TMPDIR:-/tmp}" \
+	"${CARGO_TARGET_DIR:-${REPO_DIR}/target}" "${CARGO_HOME:-$HOME/.cargo}")
 bash "$SCRIPT_DIR/diskcheck.sh" --floor "${PKDUMP_CI_DISK_PATHS[@]}"
 
 # Once here is enough while one gate runs at a time and the previous one's

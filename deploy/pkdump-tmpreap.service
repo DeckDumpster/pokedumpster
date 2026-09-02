@@ -1,0 +1,21 @@
+[Unit]
+Description=PokeDumpster abandoned scratchpad reaper
+# pd-xgh6. Host-wide — the scratchpad root is one per box and holds every
+# agent's sessions, not one instance's — so this is NOT a template.
+# {{REPO_DIR}} is sed-substituted by deploy/units-lib.sh.
+#
+# OnFailure, unlike the reap itself, is the interesting event: exit 1 means the
+# script REFUSED to act because it could not tell a live session from a dead
+# one, and a reaper that has quietly stopped reaping is a disk that fills again
+# with nothing saying so.
+OnFailure=pkdump-alert@%n.service
+
+[Service]
+Type=oneshot
+# NO PrivateTmp=, deliberately. The scratchpad root is decided from $TMPDIR, and
+# a private one would point this at an empty namespace it had just been given —
+# a run that reports "reaped 0" every night while the real /tmp goes on filling.
+ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/tmpreap.sh'
+# It stats every session directory under the root; there were 2261 of them on
+# the box this was written for, and that scan took ~50s.
+TimeoutStartSec=900

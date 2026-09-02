@@ -509,6 +509,48 @@ Note that **alert mode still watches one filesystem** (`PKDUMP_DISK_PATH`,
 default `$HOME`). Widening what pages the operator is a separate decision from
 widening what blocks a build.
 
+### Reclaiming `$TMPDIR` — the scratchpad reaper (pd-xgh6)
+
+The guard above is what tells you `/tmp` is full. `deploy/tmpreap.sh` is what
+stops it filling.
+
+```bash
+bash deploy/tmpreap.sh --dry-run   # name every directory it would remove
+bash deploy/tmpreap.sh             # remove them
+systemctl --user enable --now pkdump-tmpreap.timer   # host-wide, once, 05:30
+```
+
+Every Claude Code session on the box gets `$TMPDIR/claude-<uid>/<cwd-slug>/<session-uuid>/`
+and **nothing ever collects it**. Measured here on 2026-08-30: 42G of a 49G
+filesystem, 2261 session directories against a couple of dozen live sessions,
+growing about 1G a day — and `ci.sh` correctly refusing to start at 817M free.
+It is nobody's leak in particular, which is how it went uncollected for months.
+
+A session directory is removed only when **all three** hold:
+
+| | |
+|---|---|
+| it is a session directory | exactly `<root>/<slug>/<uuid>`, name matching the session-id shape. The root also holds unrelated caches (there was 579M of `uv-cache-<agent>` beside the sessions here) and those are counted and left |
+| nothing live holds it | read from the process table — `CLAUDE_CODE_SESSION_ID` in a process's environment, a uuid on its command line (`--resume <id>`), or a cwd inside the directory. Never from a timestamp: a long-running session can sit quiet for days |
+| nothing in it has been touched since the cutoff | `PKDUMP_TMPREAP_AGE_DAYS` (default 3) days ago. Redundant with the check above by design — it is the margin for a session that has started and not yet exported its id |
+
+**It costs nobody a `--resume`.** The transcript is
+`~/.claude/projects/<slug>/<session>.jsonl` and the persisted tool-result bodies
+sit beside it under `$HOME`; what is under `$TMPDIR` is `scratchpad/` and
+`tasks/*.output`, the working files of a process that is running.
+
+**Exit 1 is the interesting outcome**, and it is what `OnFailure=` pages on: it
+means the script refused to act because it could not tell a live session from a
+dead one — claude processes running and not one of them yielding a session id.
+That is indistinguishable from "every session is dead" by looking at the answer,
+so it is asked as its own question. A reaper that has quietly stopped reaping is
+a disk that fills again with nothing saying so.
+
+`PKDUMP_TMPREAP_PROC` says where the process table is (default `/proc`), which
+is what lets `tests/deploy/run.sh` §17 state both halves against a fake one —
+the real one has this box's own live sessions in it. There is deliberately no
+way to hand the script a liveness set or to switch the check off.
+
 ## Seed volume (one-time, speeds up future instances)
 
 Build a reusable `pkdump-seed-data` volume so `setup.sh --init` clones it in
@@ -572,6 +614,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `alarm-status.sh <inst> [--verify]` | Is alarming actually ARMED on this instance? Exit 0 = yes. `--verify` fires it for real |
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `diskcheck.sh --floor [path...]` | Gate — exit non-zero under `PKDUMP_DISK_FLOOR_GB` free; run by `ci.sh` before it builds |
+| `tmpreap.sh [--dry-run]` | Layer 4b — remove abandoned Claude session scratchpads under `$TMPDIR` (run by `pkdump-tmpreap.timer`). Exit 1 = it refused, because it could not tell a live session from a dead one |
 | `setup-lake.sh <inst> [--port N] [--remove]` | Install the offline lakehouse — the Nessie catalog's Quadlet units and the PyIceberg job image. Refuses to run without `~/.config/pkdump/lake.env`. See [Offline lakehouse](#offline-lakehouse--nessie--iceberg) |
 | `lake-lib.sh` | Sourced — the lake network as seen from outside a job (catalog URI, health URL, readiness probe), and the one place `localhost/pkdump-lake:<inst>` is named and built. Shared by `setup-lake.sh` and `deploy.sh` so a deploy cannot ship the app image and leave the job image behind (pd-rn4c) |
 | `store-lib.sh` | Sourced — resolves which Podman store an instance's image and volume live in (`PKDUMP_STORE_ROOT`) |
@@ -623,6 +666,10 @@ changed.
   failure. See [deploy/LAKE.md](LAKE.md) §7.
 - `pkdump-diskcheck` — host-wide low-disk alert (Layer 4, daily). Not
   per-instance; enable once.
+- `pkdump-tmpreap` — host-wide scratchpad reaper (Layer 4b, daily at **05:30**,
+  ahead of the 06:00 chain so the space is reclaimed before the night uses it).
+  Not per-instance; enable once. See
+  [Reclaiming `$TMPDIR`](#reclaiming-tmpdir--the-scratchpad-reaper-pd-xgh6).
 
 The `@`-templated units are `%i`-templated, so one copy serves every instance —
 the instance name is the part after `@`. Enable per-instance:
@@ -633,6 +680,7 @@ systemctl --user enable --now pkdump-refresh@prod.timer        # LANDS — refus
 systemctl --user enable --now pkdump-backup-check@prod.timer   # after arming alerts.env
 systemctl --user enable --now pkdump-value-snapshots@prod.timer # after setup-lake.sh
 systemctl --user enable --now pkdump-diskcheck.timer           # host-wide, once
+systemctl --user enable --now pkdump-tmpreap.timer             # host-wide, once
 systemctl --user list-timers 'pkdump-*'        # check schedule
 ```
 

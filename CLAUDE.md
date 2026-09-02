@@ -1865,6 +1865,19 @@ synthesized data — `import_tail` treats a set row with NULL
 that state carry `sets.discovered_from_group_id` and surface as
 `SetSummary.synthesized`, which badges the `/browse` tile.
 
+**That badge is a promise, so it is only shown where it can be kept**
+(pd-mt57). `synthesized` is `ptcgio_fetched_at IS NULL AND ptcgio_covered =
+1`, not the first half alone: a NULL fetch timestamp means "upstream is
+behind" only where upstream carries the catalog at all. `sets.ptcgio_covered`
+is what says so — 1 everywhere by default, 0 written by
+`japan::import_groups`, because pokemontcg.io has no Japanese data and never
+will. On the first half alone all 450 `jp-` tiles carried a "provisional,
+upstream will replace this" chip that could never come true. The column is
+written on the upsert's UPDATE arm too, so a catalog that grew it by
+`ADDED_COLUMNS` (where every row took the `DEFAULT 1`) converges on the next
+derive with no operator step; until it does those rows read exactly as they
+read before, which is the direction an additive default has to be wrong in.
+
 Groups the rule deliberately misses — unnumbered specials ("SV: Black
 Bolt"), energy umbrellas, promo catch-alls — still take a hand-authored
 entry in `data/overrides/tcgcsv_set_bridges.json`.
@@ -1892,6 +1905,10 @@ English catalog (category 3):
   alphabetically, not in set order.
 - Series buckets come from `data/japan_series.json` (era date ranges),
   never from a match arm.
+- **`ptcgio_covered = 0`.** Japanese sets are TCGCSV-native permanently, not
+  provisionally, and the catalog records that rather than any reader
+  inferring it from the `jp-` prefix. See the `/browse` badge under
+  "New-set discovery" above.
 
 Everything downstream is shared: JP products land in the same
 `tcgcsv_products` / `prices` tables, so `import_prices`,

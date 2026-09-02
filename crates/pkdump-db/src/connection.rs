@@ -117,12 +117,31 @@ pub fn open_shared_readonly(path: &Path) -> Result<Connection> {
 /// catalog built before the column simply grows it on the next open.
 ///
 /// Nullable, defaultless columns only — anything needing a backfill is a
-/// real migration and belongs in a one-off command.
-const ADDED_COLUMNS: &[(&str, &str, &str)] = &[(
-    "sets",
-    "discovered_from_group_id",
-    "ALTER TABLE sets ADD COLUMN discovered_from_group_id INTEGER",
-)];
+/// real migration and belongs in a one-off command. `ptcgio_covered` is the
+/// one exception and it earns it the way `USER_ADDED_COLUMNS`' do: the
+/// default is a *statement* about the rows that predate the column rather
+/// than a placeholder in them, and the catalog's own nightly import is what
+/// converges the rows it is wrong about.
+///
+/// `DEFAULT 1` says "pokemontcg.io publishes this set's catalog", which is
+/// true of every English set — i.e. of all but the 450 `jp-` rows. Those are
+/// re-upserted by `japan::import_groups` on every derive, which writes the 0,
+/// so the correction arrives with the next nightly catalog build and needs no
+/// operator step. Until it does they read exactly as they read before the
+/// column existed: badged. The gap's failure mode is today's behaviour, which
+/// is the direction an additive default has to be wrong in.
+const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    (
+        "sets",
+        "discovered_from_group_id",
+        "ALTER TABLE sets ADD COLUMN discovered_from_group_id INTEGER",
+    ),
+    (
+        "sets",
+        "ptcgio_covered",
+        "ALTER TABLE sets ADD COLUMN ptcgio_covered INTEGER NOT NULL DEFAULT 1",
+    ),
+];
 
 /// The same convergence for `schema_user.sql`. A collection created between
 /// pd-5m54 and pd-385w already carries `ownership_outbox`, so the amended
@@ -943,6 +962,48 @@ mod tests {
         drop(conn);
 
         assert_eq!(file_user_version(&path), Database::User.version() as u32);
+    }
+
+    /// pd-mt57. `CREATE TABLE IF NOT EXISTS` is a no-op against prod's
+    /// existing `sets`, so the column reaches it only through
+    /// `ADDED_COLUMNS` — and it has to arrive on open rather than as a
+    /// runbook step, or the badge fix is inert on the one catalog that
+    /// has the bug. The rows that predate it take the `DEFAULT 1`, which
+    /// is what leaves them reading exactly as they read before.
+    #[test]
+    fn a_catalog_built_before_ptcgio_covered_grows_it_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.sqlite");
+        {
+            // `sets` as it stood before the column, written out rather than
+            // dropped off the current one: SQLite's `DROP COLUMN` rewrites
+            // the stored CREATE statement and cannot reparse this schema's
+            // comments.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sets ( \
+                     set_code TEXT PRIMARY KEY, ptcgo_code TEXT, name TEXT NOT NULL, \
+                     series TEXT NOT NULL, series_sort_order INTEGER, \
+                     set_sort_order INTEGER, total INTEGER, printed_total INTEGER, \
+                     release_date TEXT, logo_url TEXT, symbol_url TEXT, \
+                     ptcgio_fetched_at TEXT, is_subset INTEGER NOT NULL DEFAULT 0, \
+                     parent_set_code TEXT REFERENCES sets(set_code), \
+                     symbol_source_url TEXT, discovered_from_group_id INTEGER); \
+                 INSERT INTO sets (set_code, name, series) \
+                   VALUES ('jp-24711', 'M5: Abyss Eye', 'Pokémon JP');",
+            )
+            .unwrap();
+        }
+
+        let conn = open_shared(&path).unwrap();
+        let covered: i64 = conn
+            .query_row(
+                "SELECT ptcgio_covered FROM sets WHERE set_code = 'jp-24711'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(covered, 1, "a pre-column row keeps today's behaviour");
     }
 
     /// The catalog sheds its copy on the one path that holds it read-write.

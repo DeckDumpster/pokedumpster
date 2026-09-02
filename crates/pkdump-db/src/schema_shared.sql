@@ -66,7 +66,21 @@ CREATE TABLE IF NOT EXISTS sets (
     -- every upstream-managed and bridge-declared set. Provenance only:
     -- once upstream publishes, `ptcgio_fetched_at` goes non-NULL and the
     -- row is upstream's, this column just records where it started.
-    discovered_from_group_id INTEGER
+    discovered_from_group_id INTEGER,
+    -- Whether pokemontcg.io publishes this set's catalog at all (pd-mt57).
+    -- Read it beside `ptcgio_fetched_at`, which is the pair that says what
+    -- a locally-built set row MEANS:
+    --   covered=1, fetched_at NULL -> upstream is BEHIND. The row is
+    --     provisional and resolves itself the refresh after upstream
+    --     publishes. Every English set is this case.
+    --   covered=0, fetched_at NULL -> upstream does not carry this catalog
+    --     and never will. The Japanese catalog (TCGCSV category 85) is the
+    --     only one so far: pokemontcg.io has no Japanese data, so those 450
+    --     sets are TCGCSV-native permanently, not provisionally.
+    -- Without the distinction `ptcgio_fetched_at IS NULL` conflates the two,
+    -- and every Japanese tile on /browse carries a "provisional" badge whose
+    -- promise never comes due.
+    ptcgio_covered INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS cards (

@@ -210,14 +210,19 @@ sqlite3 "${DATA}/shared.sqlite" \
 
 # Converge the fixture's schema, the way `pkdump setup` or the nightly derive
 # would. `open_shared` re-applies schema_shared.sql on every read-WRITE open, so
-# any of those commands heals a catalog that predates a table; the committed
-# fixture predates `catalog_price_overrides` and `raw_derivation`.
+# any of those commands heals a catalog that predates a table.
 #
 # It is here, explicitly, because the refresh used to do it as a side effect and
 # no longer can (pd-lunn): it opens the catalog READ-ONLY, which is the whole
 # point. A gate whose scaffolding depended on the thing under test healing it
 # would be measuring the wrong binary — and §8's backfill, which ATTACHes the
-# catalog read-only, fails outright on the un-converged fixture.
+# catalog read-only, fails outright on a catalog short of a table it names.
+#
+# The committed fixture is current, and the rust tier keeps it that way —
+# `the_committed_fixture_carries_every_catalog_object_the_schema_declares`
+# in crates/pkdump-cli/src/fixture.rs (pd-7hkf). This stays because this gate
+# should not be the thing measuring that: it needs a converged catalog
+# whatever shape the fixture is in.
 #
 # `apply-corrections --dry-run` is the cheapest command that opens the catalog
 # read-write: it applies the schema and the seeds, reports, and writes no row.

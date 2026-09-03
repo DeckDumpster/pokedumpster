@@ -21,9 +21,14 @@
 import type { Page } from '@playwright/test';
 
 /**
- * The instant every baseline is taken at. Arbitrary but fixed — the fixture's
- * own timestamps are fixed constants too (tests/ui/fixtures/README.md), so a
- * frozen clock makes every derived "n days ago" deterministic.
+ * The instant every baseline is taken at. Arbitrary but fixed, so anything the
+ * UI derives from "now" — a "n days ago", a relative age — is deterministic.
+ *
+ * It does NOT make the fixture's own dates deterministic. `shared.sqlite`'s are
+ * fixed constants; `collection.sqlite`'s creation timestamps are stamped from
+ * the clock when the fixture is built, so regenerating it moves the date cells
+ * on /sealed, /recent, /batches and /batches/[id] and those baselines have to
+ * be re-recorded. See tests/ui/fixtures/README.md, and pd-nzlj for the fix.
  */
 export const FROZEN_TIME = new Date('2026-01-15T12:00:00Z');
 

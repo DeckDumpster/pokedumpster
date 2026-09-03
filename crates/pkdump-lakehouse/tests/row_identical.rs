@@ -1399,3 +1399,60 @@ fn find(dir: &Path, needle: &str, suffix: &str) -> PathBuf {
         .next()
         .unwrap_or_else(|| panic!("no {suffix} under a prefix matching {needle} in {dir:?}"))
 }
+
+/// The nightly derive gives the catalog's WAL back before it exits (pd-t50h).
+///
+/// Stated against the SHIPPED BINARY over a real derivation, because the claim
+/// is about the job production runs and not about the helper it calls. A source
+/// grep for `checkpoint_truncate` would go green against a call in a branch
+/// nothing takes.
+///
+/// **The held connection is the point of the test, not scaffolding.** SQLite
+/// checkpoints and *deletes* the `-wal` when the LAST connection to a database
+/// closes — so a run measured after the derive's process exits reports a
+/// missing file, which reads exactly like "reclaimed" and is instead "nobody
+/// was left holding it". That artifact produced a false finding the first time
+/// this mechanism was measured (`deep-dives/attach-concurrency`, RESULT.md
+/// finding B), and it is why the assertion below insists the file still EXISTS
+/// as well as being empty. In production the connection this stands in for is
+/// the server's.
+#[test]
+fn a_derive_leaves_no_wal_behind_on_the_catalog_it_built() {
+    let h = Harness::start();
+    let db = h.db("served");
+
+    // A catalog to derive into. The nightly job runs against the one the box is
+    // already serving, never a blank file.
+    assert!(h.online(&db, DAY1, DAY1_CLOCK, false), "the first build");
+
+    // The stand-in for `pkdump serve`: a connection held open across the whole
+    // derivation, exactly as a running server holds one.
+    let served = rusqlite::Connection::open(&db).expect("hold the catalog open");
+    let _: i64 = served
+        .query_row("SELECT count(*) FROM cards", [], |r| r.get(0))
+        .expect("read the catalog");
+
+    h.day(2);
+    let out = h.derive(&db, DAY1, &[]);
+    assert!(
+        out.status.success(),
+        "the derive failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let wal = PathBuf::from(format!("{}-wal", db.display()));
+    assert!(
+        wal.exists(),
+        "no -wal file at all, so this test measured nothing: the connection meant to keep \
+         SQLite from deleting it on last close did not do its job"
+    );
+    let bytes = std::fs::metadata(&wal).expect("stat the -wal").len();
+    assert_eq!(
+        bytes, 0,
+        "the derive exited leaving {bytes} bytes of WAL on the data volume. Nothing else \
+         commits to this catalog, so nothing else will ever truncate it — it sits there \
+         until tomorrow night. See pd-t50h."
+    );
+
+    drop(served);
+}

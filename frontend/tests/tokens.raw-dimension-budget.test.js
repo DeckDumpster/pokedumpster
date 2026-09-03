@@ -1,18 +1,27 @@
 /**
  * Colour is not the whole token layer.
  *
- * `tokens.css` declares four more ramps — space (13 steps), type (7), radius
- * (8), elevation (5) — and until this file existed nothing made a component
- * use them. A declared ramp nobody is obliged to use is documentation, not a
- * system: a spacing change stays a find-and-replace across 400 sites, which is
- * the exact failure Intent #1 of the aesthetic-overhaul epic names.
+ * `tokens.css` declares eight more ramps — space (13 steps), size (7), weight
+ * (4), leading (3), tracking (2), family (2), radius (8), elevation (5) — and
+ * until this file existed nothing made a component use them. A declared ramp
+ * nobody is obliged to use is documentation, not a system: a spacing change
+ * stays a find-and-replace across 400 sites, which is the exact failure
+ * Intent #1 of the aesthetic-overhaul epic names.
  *
- * So: the same ratchet the colour gate runs, pointed at dimensions.
- * `src/lib/styles/raw-dimension-budget.json` records what each file still
- * holds and the count may only go DOWN. Exceed a budget and it reads as a
- * regression; drop below it and this fails too, printing the line to paste.
- * When `files` empties, every dimension in the app comes from a token and the
- * test asserts that literally.
+ * So: the same ratchet the colour gate runs, pointed at everything a ramp
+ * stands behind. `src/lib/styles/raw-dimension-budget.json` records what each
+ * file still holds and the count may only go DOWN. Exceed a budget and it
+ * reads as a regression; drop below it and this fails too, printing the line
+ * to paste. When `files` empties, every one of those decisions in the app
+ * comes from a token and the test asserts that literally.
+ *
+ * A RAMP THAT NO PROPERTY HERE SPENDS IS A RAMP THAT DRIFTS. That is the gap
+ * pd-zncd found: `--weight-*`, `--leading-*` and `--font-*` were declared and
+ * enforced by nothing, so `font-weight: 600` sat beside `--weight-semibold:
+ * 600` in the same tree, and `letter-spacing` had no ramp at all. The rule is
+ * therefore stated the other way round now and asserted below — every ramp
+ * `tokens.css` declares must be reachable from `RULES`, so declaring the
+ * next one without enforcing it fails in a second instead of never.
  *
  * This is deliberately NOT a migration. It is seeded at the counts of the day
  * it landed; later work brings them down as a side effect of touching routes.

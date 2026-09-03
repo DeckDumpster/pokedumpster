@@ -349,8 +349,18 @@
 	--weight-semibold: 600;
 	--weight-bold: 700;
 
+	/* Leading. `none` is the tightest step for a reason: a chip, a pill or an
+	   icon button wants the line box to be exactly the glyph, and 25 places
+	   said so with a literal `1` before this step existed. */
+	--leading-none: 1;
 	--leading-tight: 1.2;
 	--leading-normal: 1.5;
+
+	/* Tracking. Only the two steps the app actually spends — small-caps
+	   section labels and uppercase chips. A value that fits neither needs a
+	   step added here, not a literal at the call site. */
+	--tracking-wide: 0.04em;
+	--tracking-wider: 0.06em;
 
 	/* --- Radius ----------------------------------------------------------- */
 	--radius-xs: 3px;

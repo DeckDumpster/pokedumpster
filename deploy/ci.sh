@@ -19,6 +19,7 @@
 #                     on a tree that never existed. Hermetic and sub-second.
 #                     See tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh,
 #                     tests/lib/wait_test.sh, tests/lib/objects_test.sh,
+#                     tests/lib/litestream_test.sh,
 #                     tests/lib/images_test.sh,
 #                     tests/container/base_images_test.sh,
 #                     tests/alarming/journal_summary_test.sh,
@@ -557,6 +558,18 @@ if tier lint; then
     # nothing. §6 states the rule over the tree. See tests/lib/objects.sh.
     step "Harness object-listing self-test (tests/lib/objects_test.sh)"
     bash "$REPO_DIR/tests/lib/objects_test.sh"
+
+    # And the question those polls ask. `litestream ltx` prints a column header
+    # for a replica that holds NOTHING and prints nothing at all when it cannot
+    # reach S3, so `ltx … | grep -q .` reads an empty replica as full and an
+    # unreachable bucket as empty. The second half is pd-reyy — a gate that
+    # reported a replica gone and then restored it, healthy, three assertions
+    # later, re-run by hand every time instead of read. §5-§6 are the ratchet:
+    # pd-nt1k fixed this predicate in one harness of three, which is what a
+    # per-file fix does.
+    # Hermetic — recorded ltx output, no podman. See tests/lib/litestream.sh.
+    step "Replica state has three answers, not two (tests/lib/litestream_test.sh)"
+    bash "$REPO_DIR/tests/lib/litestream_test.sh"
 
     # Same tier, and it guards every gate below that builds the image: the
     # builder stage rode a moving tag, upstream retagged it from bookworm to

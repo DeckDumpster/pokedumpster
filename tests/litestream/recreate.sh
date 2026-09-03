@@ -80,6 +80,16 @@ SHIPPED_YML="${REPO_DIR}/deploy/litestream.yml"
 # shellcheck source=tests/lib/ports.sh
 . "${REPO_DIR}/tests/lib/ports.sh"
 
+# Poll for a condition, never for a duration; see tests/lib/wait.sh.
+# shellcheck source=tests/lib/wait.sh
+. "${REPO_DIR}/tests/lib/wait.sh"
+
+# "Does this replica hold data?" — the one definition, because the obvious
+# predicate is inverted at both ends and this gate is what pd-reyy found it
+# with. See tests/lib/litestream.sh.
+# shellcheck source=tests/lib/litestream.sh
+. "${REPO_DIR}/tests/lib/litestream.sh"
+
 # PER-CHECKOUT, for the reason deploy/ci.sh derives its container instance the
 # same way: the swarm runs several polecats per rig, each from its own worktree,
 # and every one of them runs deploy/ci.sh — which runs this. With fixed names,
@@ -241,18 +251,19 @@ ls_run() {
 [ -n "${RECREATE_REAL_S3:-}" ] || aws_cli s3 mb "s3://${LITESTREAM_S3_BUCKET}" >/dev/null 2>&1 || true
 echo "  target: ${S3_TARGET}"
 
-# replica_has_objects <url> — does anything at all live under that prefix?
-# Asked through litestream rather than through a bucket listing so it means the
-# same thing in both modes.
-replica_has_objects() { ls_run ltx -level all "$1" 2>/dev/null | grep -q .; }
+# What lives under a replica prefix, asked through litestream rather than
+# through a bucket listing so it means the same thing in both modes — and
+# answered with THREE outcomes rather than two, because the two that are not
+# `data` are opposite events. `tests/lib/litestream.sh` is why: this file used
+# to ask `ltx … | grep -q .`, which reads a prefix that has never been written
+# to as full (`ltx` prints its column header regardless) and an unreachable S3
+# as empty. The second half is pd-reyy — §4 below reported the replica gone
+# while §6, seconds later, restored it from the same URL, healthy.
+replica_prefix_state() { replica_state ls_run "$1"; }
+replica_has_data() { replica_holds_data ls_run "$1"; }
 
 wait_for_replica() { # wait_for_replica <url> [seconds]
-	local deadline=$(( SECONDS + ${2:-90} ))
-	while [ "$SECONDS" -lt "$deadline" ]; do
-		replica_has_objects "$1" && return 0
-		sleep 2
-	done
-	return 1
+	wait_until "${2:-90}" 2 replica_has_data "$1"
 }
 
 restore_to() { # restore_to <out> <url> [flags...] — never aborts the report
@@ -334,7 +345,7 @@ podman run -d --name "$LS_CTR" "${PODMAN_NET[@]}" --user 0 \
 URL_OLD="$(tenant_replica_url "$ID_OLD")"
 check "old alice reaches S3 under her own derived prefix" "yes" \
 	"$(wait_for_replica "$URL_OLD" 120 && echo yes || echo no)"
-if ! replica_has_objects "$URL_OLD"; then
+if ! replica_has_data "$URL_OLD"; then
 	echo "  --- last 20 lines from ${LS_CTR} ---"
 	podman logs "$LS_CTR" 2>&1 | tail -20 | sed 's/^/  /'
 fi
@@ -377,8 +388,17 @@ check "detach kept her database" "yes" \
 pk tenant purge "$ID_OLD" --yes >/dev/null
 check "purge destroyed the local database" "no" \
 	"$([ -f "$(tenant_file "$ID_OLD")" ] && echo yes || echo no)"
-check "and the replica outlives it — the retention window is open" "yes" \
-	"$(replica_has_objects "$URL_OLD" && echo yes || echo no)"
+# THE ASSERTION pd-reyy WAS FILED AGAINST. `data` rather than `yes`, so a
+# failed query is reported as the query failure it is instead of as the data
+# loss it is not. Under the old predicate it could not have been anything ELSE:
+# an empty prefix still prints `ltx`'s column header and so read as "yes", which
+# leaves a failed query as the only way that line could ever say "no" — and CI
+# run 32973744522 attempt 3 is that, with §6 restoring this very replica
+# complete and healthy seconds later. `empty` is still a FAIL: the claim is that
+# purge leaves the replica alone, and nothing about that claim is
+# timing-dependent.
+check "and the replica outlives it — the retention window is open" "data" \
+	"$(replica_prefix_state "$URL_OLD")"
 
 # ── 5. create alice again ───────────────────────────────────────────────────
 log "5. create alice again — a new id, therefore a new prefix"

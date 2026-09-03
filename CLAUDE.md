@@ -180,13 +180,15 @@ bash tests/deploy/run.sh
 # greps tests/ and deploy/ for a picked host port and fails on one. The third
 # asserts no harness may read an object listing it cannot trust — an `mc ls`
 # that died reports the same empty result a clean bucket does. The fourth
+# asserts a replica has THREE states and no harness asks with two. The fifth
 # asserts every gate under tests/ removes the per-checkout image tag it built,
-# because nothing else on the box ever will. The fifth reads the
+# because nothing else on the box ever will. The sixth reads the
 # Containerfile: builder and runtime must name the SAME Debian release, and the
 # target cache id must name it too.
 bash tests/lib/diagnostics_test.sh
 bash tests/lib/ports_test.sh
 bash tests/lib/objects_test.sh
+bash tests/lib/litestream_test.sh
 bash tests/lib/images_test.sh
 bash tests/container/base_images_test.sh
 
@@ -818,6 +820,57 @@ image untouched, plus both red arms) and `tests/deploy/run.sh` §11b, which hold
 the shell half: the label on every stage of every `Containerfile`, one spelling
 of it, and the ORDER — list, build, reap. Swapping the first two reads like a
 simplification and is the cache loss above.
+
+### A replica has THREE states, and asking with two is how a gate flakes
+
+`litestream ltx -level all <url>` answers three different ways, and the obvious
+predicate collapses them into two — inverted at both ends (measured, v0.5.16):
+
+    the replica holds LTX files     exit 0, a column header AND one row per file
+    the prefix was never written to exit 0, THE COLUMN HEADER ALONE
+    the query could not be made     exit 1, nothing on stdout, `Error: …` on stderr
+
+So `ltx … 2>/dev/null | grep -q .` reads an EMPTY replica as full and an
+UNREACHABLE bucket as empty. Both halves have cost a gate. pd-nt1k is the first:
+`tests/alarming/run.sh` reported "replicating" while the sidecar had exited at
+startup and nothing had ever reached the bucket, so a dead sidecar reached §3
+wearing a green §2. **pd-reyy is the second, and it is the same line in a second
+file** — `tests/litestream/recreate.sh` §4 said `the replica outlives it — the
+retention window is open (expected yes, got no)`, and §6 of that same run,
+seconds later and against the same URL, restored the card from that replica
+complete and `integrity_check = ok`. A failed query is the ONLY way that
+predicate can say "no". Every occurrence was re-run by hand rather than read —
+a suite re-run for a failure the same suite had already disproved three
+assertions later.
+
+`tests/lib/litestream.sh` is the one definition, and four things about it are
+decisions:
+
+- **The three answers are kept apart** — `data`, `empty`, `error: <litestream's
+  own line>` — because two of them call for opposite responses: empty is a fact
+  about the data, error is a fact about the network. `deploy/backup-check.sh`
+  has kept them apart on the production path since it was written; this is that
+  idea for the harnesses.
+- **The QUERY is retried; the ANSWER is not.** A failed query is re-asked three
+  times, which is what closes pd-reyy and masks nothing — an empty replica
+  answers `empty` on the first attempt and is never re-asked, and a replica that
+  is genuinely gone stays gone however many times it is listed. Retrying the
+  answer would be the same mistake one layer out.
+- **The listing is parsed by the SHAPE of a TXID** (16 hex characters, twice per
+  row, never in a header), not by column position — the column order has shifted
+  across litestream versions, and this agrees with `backup-check.sh::ltx_max_txid`
+  deliberately so a harness and the production checker cannot reach different
+  conclusions about one bucket.
+- **The quiet half was never a flake at all.** `tests/litestream/drill.sh`'s
+  "every tenant is replicating from the one sidecar" passed the instant S3
+  answered, whether or not a byte had been replicated. A vacuous green does not
+  get re-run, because nothing reports it.
+
+Gate: `tests/lib/litestream_test.sh` (lint tier, hermetic, sub-second — recorded
+`ltx` output for all three outcomes, the retry proved by counting calls, seen red
+five ways). §5-§6 are the ratchet and they are the half that matters: pd-nt1k
+fixed this predicate in one harness of three by writing the fix INTO that
+harness, which is exactly how a fix stops travelling.
 
 ### A run whose worktree moves underneath it is VOID, not red (pd-vnbc)
 

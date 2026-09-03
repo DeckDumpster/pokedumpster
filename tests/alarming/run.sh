@@ -824,7 +824,9 @@ podman run -d --name "$DIVERGED_CTR" --entrypoint sh "$MC_IMAGE" \
 # The line has to be on stdout before the checker reads it; a container that has
 # not been scheduled yet reads as a silent sidecar.
 for _ in $(seq 20); do
-	podman logs "$DIVERGED_CTR" 2>&1 | grep -qF 'replica sync' && break
+	# Counted, not -q: an early match here costs the `&& break`, so the wait loop runs to
+	# its timeout and the gate reports "never saw replica sync" on a healthy sidecar.
+	[ "$(podman logs "$DIVERGED_CTR" 2>&1 | grep -cF 'replica sync' || true)" -gt 0 ] && break
 	sleep 1
 done
 DIV_CONF="${WORK}/conf-diverged"
@@ -941,7 +943,7 @@ podman run -d --name "$CATCHUP_CTR" --user 0 --entrypoint sh "$MC_IMAGE" -c \
 	 echo '${CATCHUP_STAMP} txid.replica=00000000000000ff txid.db=00000000000000ff'; \
 	 sleep infinity" >/dev/null 2>&1
 for _ in $(seq 20); do
-	podman logs "$CATCHUP_CTR" 2>&1 | grep -qF 'replica sync' && break
+	[ "$(podman logs "$CATCHUP_CTR" 2>&1 | grep -cF 'replica sync' || true)" -gt 0 ] && break
 	sleep 1
 done
 CATCHUP_CONF="${WORK}/conf-catchup"

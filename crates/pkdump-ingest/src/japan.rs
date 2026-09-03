@@ -187,14 +187,22 @@ pub fn import_groups(conn: &mut Connection, groups: &[TcgGroup], now: &str) -> R
         let released = release_date(g.published_on.as_deref());
         let bucket = series.series_for(&g.name, released.as_deref());
         let abbreviation = g.abbreviation.as_deref().filter(|a| !a.is_empty());
+        // `ptcgio_covered = 0`: pokemontcg.io has no Japanese catalog and
+        // no plans for one, so a `jp-` row's NULL `ptcgio_fetched_at` means
+        // "upstream does not carry this", never "upstream is behind"
+        // (pd-mt57). It is written on the UPDATE arm too, so a catalog that
+        // grew the column by ALTER — where every row defaulted to 1 —
+        // converges on the next derive rather than needing a backfill.
         tx.execute(
-            "INSERT INTO sets (set_code, ptcgo_code, name, series, release_date) \
-             VALUES (?1, ?2, ?3, ?4, ?5) \
+            "INSERT INTO sets \
+               (set_code, ptcgo_code, name, series, release_date, ptcgio_covered) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 0) \
              ON CONFLICT(set_code) DO UPDATE SET \
-               ptcgo_code   = excluded.ptcgo_code, \
-               name         = excluded.name, \
-               series       = excluded.series, \
-               release_date = excluded.release_date",
+               ptcgo_code     = excluded.ptcgo_code, \
+               name           = excluded.name, \
+               series         = excluded.series, \
+               release_date   = excluded.release_date, \
+               ptcgio_covered = excluded.ptcgio_covered",
             rusqlite::params![code, abbreviation, g.name, bucket, released],
         )?;
         tx.execute(
@@ -1063,6 +1071,72 @@ mod tests {
             )
             .unwrap();
         assert_eq!(sets, 2);
+    }
+
+    #[test]
+    fn a_japanese_set_records_that_upstream_does_not_carry_it() {
+        // pd-mt57. `ptcgio_fetched_at IS NULL` is true of a `jp-` set and
+        // of an English set upstream simply hasn't published yet, and the
+        // two mean opposite things — the second resolves itself, the first
+        // never can. `ptcgio_covered` is the column that says which.
+        let (_d, mut conn) = shared_db();
+        // An English set already in the catalog, awaiting upstream: it
+        // must keep saying upstream covers it.
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series) VALUES ('mep', 'ME Promos', 'Mega')",
+            [],
+        )
+        .unwrap();
+        let groups = vec![TcgGroup {
+            group_id: 24711,
+            name: "M5: Abyss Eye".into(),
+            abbreviation: Some("M5".into()),
+            published_on: Some("2026-05-22T00:00:00".into()),
+        }];
+        import_groups(&mut conn, &groups, "2026-07-31").unwrap();
+
+        let covered = |code: &str| -> i64 {
+            conn.query_row(
+                "SELECT ptcgio_covered FROM sets WHERE set_code = ?1",
+                [code],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(covered("jp-24711"), 0, "pokemontcg.io has no JP catalog");
+        assert_eq!(covered("mep"), 1, "an English set is merely awaiting it");
+    }
+
+    #[test]
+    fn a_japanese_set_that_predates_the_column_converges_on_the_next_import() {
+        // A catalog built before `ptcgio_covered` grows it by ALTER, where
+        // every existing row — the 450 `jp-` ones included — takes the
+        // `DEFAULT 1`. Nothing backfills that: the nightly import's UPDATE
+        // arm is what corrects it, so the row has to be written on conflict
+        // and not only on insert.
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, name, series, ptcgio_covered) \
+             VALUES ('jp-24711', 'M5: Abyss Eye', 'Pokémon JP — Mega Evolution Era', 1)",
+            [],
+        )
+        .unwrap();
+        let groups = vec![TcgGroup {
+            group_id: 24711,
+            name: "M5: Abyss Eye".into(),
+            abbreviation: Some("M5".into()),
+            published_on: Some("2026-05-22T00:00:00".into()),
+        }];
+        import_groups(&mut conn, &groups, "2026-07-31").unwrap();
+
+        let covered: i64 = conn
+            .query_row(
+                "SELECT ptcgio_covered FROM sets WHERE set_code = 'jp-24711'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(covered, 0);
     }
 
     #[test]

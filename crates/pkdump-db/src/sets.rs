@@ -44,6 +44,13 @@ pub struct SetSummary {
     /// TCGCSV set discovery (pd-558b1e4f) — because pokemontcg.io hasn't
     /// published it yet. Its cards, art and totals are provisional. Goes
     /// false on its own the refresh after upstream lands the real set.
+    ///
+    /// **A set upstream does not carry at all is not synthesized in this
+    /// sense** (pd-mt57). The Japanese catalog is TCGCSV-native forever —
+    /// pokemontcg.io has no Japanese data — so its rows have nothing to
+    /// wait for and this stays false for them. `sets.ptcgio_covered` is
+    /// what tells the two apart; "provisional" is a promise, and a badge
+    /// that makes one has to be able to keep it.
     pub synthesized: bool,
 }
 
@@ -68,7 +75,7 @@ pub fn list_sets(conn: &Connection) -> Result<Vec<SetSummary>> {
                     JOIN cards cd ON p.card_id = cd.card_id \
                   WHERE cd.set_code = s.set_code \
                     AND cd.number_sortable <= s.printed_total) END, \
-                s.ptcgio_fetched_at IS NULL \
+                s.ptcgio_fetched_at IS NULL AND s.ptcgio_covered = 1 \
          FROM sets s \
          ORDER BY s.release_date DESC NULLS LAST, s.set_code",
     )?;
@@ -455,6 +462,53 @@ mod tests {
         // — UI should hide the base bar in that case.
         assert_eq!(sets[0].base_total_cards, None);
         assert_eq!(sets[0].base_owned_cards, None);
+    }
+
+    #[test]
+    fn only_a_set_upstream_is_behind_on_reports_as_synthesized() {
+        // pd-mt57. Three rows that all have a NULL `ptcgio_fetched_at` or
+        // don't, crossed with whether pokemontcg.io carries the catalog at
+        // all. `synthesized` drives a "provisional, upstream will replace
+        // this" badge, so it may only be true where upstream can.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            // Awaiting upstream: locally built, and pokemontcg.io does
+            // publish this catalog.
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, release_date, ptcgio_covered) \
+                 VALUES ('mep', 'ME Black Star Promos', 'Mega Evolution', '2025/09/26', 1)",
+                [],
+            )
+            .unwrap();
+            // TCGCSV-native: pokemontcg.io has no Japanese catalog, so
+            // there is nothing for this row to be provisional about.
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, release_date, ptcgio_covered) \
+                 VALUES ('jp-24711', 'M5: Abyss Eye', 'Pokémon JP — Mega Evolution Era', \
+                         '2026/05/22', 0)",
+                [],
+            )
+            .unwrap();
+            // Upstream-managed.
+            c.execute(
+                "INSERT INTO sets \
+                   (set_code, name, series, release_date, ptcgio_fetched_at, ptcgio_covered) \
+                 VALUES ('sv3pt5', '151', 'Scarlet & Violet', '2023/09/22', '2026-07-31', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let by_code: std::collections::HashMap<String, bool> = list_sets(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.set_code, s.synthesized))
+            .collect();
+        assert!(by_code["mep"], "upstream is behind — provisional");
+        assert!(!by_code["jp-24711"], "upstream never carries it");
+        assert!(!by_code["sv3pt5"], "upstream published it");
     }
 
     #[test]

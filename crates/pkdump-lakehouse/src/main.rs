@@ -19,12 +19,17 @@
 //! it, which is the mechanical version of the same statement.
 //!
 //! What it is **not** is a second derivation. The pipeline it runs is
-//! [`pkdump_derive::derive`], the same function `pkdump data refresh` calls,
-//! moved out of the CLI unchanged. All this binary supplies is where the bytes
-//! come from ([`replay`]) and which bytes those are ([`partition`]). That is
-//! what makes item 3's comparison meaningful: two runs of ONE derivation over
-//! two sources of the SAME bytes. Two implementations agreeing would only ever
-//! be evidence about the second implementation.
+//! [`pkdump_derive::derive`], the body `pkdump data refresh` used to run
+//! inline, moved out of the CLI unchanged. All this binary supplies is where
+//! the bytes come from ([`replay`]) and which bytes those are ([`partition`]).
+//! That is what made item 3's comparison meaningful: two runs of ONE
+//! derivation over two sources of the SAME bytes. Two implementations agreeing
+//! would only ever have been evidence about the second implementation.
+//!
+//! Since item 6 (pd-lunn) the refresh calls [`pkdump_derive::land`] — that
+//! same acquisition, no imports — and this binary is `derive`'s only caller
+//! left. So that comparison can no longer be run at all: there is no second
+//! builder to diff against, which was the point of deleting one.
 //!
 //! ## What it refuses
 //!

@@ -141,6 +141,46 @@ check "unborn path resolves to its filesystem" "0" \
 check "alert mode still exits zero" "0" \
 	"$(PKDUMP_DISK_THRESHOLD=0 PKDUMP_DISK_PATH="$WORK" bash "$DISKCHECK" >/dev/null 2>&1; echo $?)"
 
+# ...and it stays a timer on the ONE day it matters (pd-4sqi). alert.sh exits 1
+# when it could not deliver, and under `set -e` that became diskcheck's own exit
+# status — so the script exited 0 every day the disk was fine and FAILED ITS
+# UNIT the day it was not, which is the inversion of the whole point. Nothing
+# above sees that: it needs a threshold genuinely crossed AND a channel that
+# genuinely cannot deliver, which is precisely the state the box was in.
+#
+# PKDUMP_ALERTS_ENV is the documented test seam and an empty file is the whole
+# fixture: the operator's real Pushover credentials are never loaded, so no real
+# page can leave this test, and the host's own PKDUMP_DISK_THRESHOLD cannot
+# overwrite the one set here (that overwrite is pd-jv3o, and it is what makes
+# the assertion above pass vacuously on a configured box).
+: >"${WORK}/alerts.env"
+set +e
+LOW_OUT="$(PKDUMP_ALERTS_ENV="${WORK}/alerts.env" PUSHOVER_TOKEN= PUSHOVER_USER= \
+	PKDUMP_DISK_THRESHOLD=0 PKDUMP_DISK_PATH="$WORK" bash "$DISKCHECK" 2>&1)"
+LOW_RC=$?
+set -e
+check "alert mode exits zero when the disk IS low" "0" "$LOW_RC"
+# Having really tried. A "fix" that stopped calling alert.sh would satisfy the
+# exit code above and page nobody ever again; alert.sh's own refusal on stderr
+# is what proves the push was attempted and not skipped.
+check "the undeliverable push was really attempted" "1" \
+	"$(printf '%s' "$LOW_OUT" | grep -c 'alert.sh: FAILED' || true)"
+# And the drop is still loud. Swallowed silently, a broken pager looks exactly
+# like a quiet disk.
+check "the dropped alert is still reported" "1" \
+	"$(printf '%s' "$LOW_OUT" | grep -c 'ALERT NOT DELIVERED' || true)"
+
+# The other arm: under the threshold nothing is pushed at all, so a box with a
+# healthy disk never touches the channel.
+set +e
+OKD_OUT="$(PKDUMP_ALERTS_ENV="${WORK}/alerts.env" PUSHOVER_TOKEN= PUSHOVER_USER= \
+	PKDUMP_DISK_THRESHOLD=101 PKDUMP_DISK_PATH="$WORK" bash "$DISKCHECK" 2>&1)"
+OKD_RC=$?
+set -e
+check "alert mode exits zero under the threshold" "0" "$OKD_RC"
+check "nothing is pushed under the threshold" "0" \
+	"$(printf '%s' "$OKD_OUT" | grep -c 'alert.sh\|ALERT NOT DELIVERED' || true)"
+
 # ---------------------------------------------------------------------------
 log "3. Where the store root comes from: host config, never disk topology"
 # ---------------------------------------------------------------------------

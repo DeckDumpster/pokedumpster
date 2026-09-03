@@ -369,11 +369,29 @@ necessary in real use.)
 The response is an envelope, not a bare array:
 
 ```json
-{ "rows": [ /* SearchRow */ ], "total": 56635, "limit": 250, "offset": 0 }
+{ "rows": [ /* SearchRow */ ], "total": 56635, "total_value": 12345.67,
+  "limit": 250, "offset": 0 }
 ```
 
 - **`total` is the count of the unbounded query**, not of the page returned, so
   a client renders "N results" and pages without a second request.
+- **`total_value` is that same fact in money** (pd-2g84): the
+  condition-adjusted market value of every **owned** copy of every matching
+  printing, also unbounded. It is `null` — never `0` — when the result holds no
+  owned, priced copy, because "worth nothing" and "no figure to show" are the
+  same answer and `$0.00` is a claim. Two things about it are decisions:
+  - **It is the server's to compute.** A client holding one page can only sum
+    that page, which is why the collection page's figure had to be withheld
+    unless the page WAS the result. That page holds the whole result again
+    today (pd-7z4o), but a field that is page-invariant by construction cannot
+    lose the property the next time the endpoint is paged.
+  - **`status = 'owned'`, and only that.** The count line is a button that
+    opens the value-over-time chart, and `value_history` values owned copies —
+    so a client-side sum over the rows the list draws was a *second* definition
+    of what a collection is worth, disagreeing with the chart by the value of
+    every `sold` and `ordered` copy on screen. Catalog-wide mode is owned-only
+    for the same reason: summing the printings nobody owns answers what
+    completing the set would cost, which is a different (and useful) figure.
 - **`limit` defaults to `search::DEFAULT_LIMIT` (250) when absent — the default
   is bounded on purpose.** An unbounded default is how this endpoint shipped a
   44 MB body from `include_unowned=1` (56,635 rows) and crashed a Firefox tab.

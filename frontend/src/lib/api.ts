@@ -100,7 +100,10 @@ export const api = {
 	 * (with a caret `position`) when the query fails to parse.
 	 *
 	 * The response is one **page**: `total` is the size of the whole result set,
-	 * not of `rows`. Omitting `limit` does not mean "everything" — the server
+	 * not of `rows`, and `total_value` prices the owned copies in that whole
+	 * result (`null`, never `0`, when there are none — pd-2g84). Neither is a
+	 * fact about the rows served, so both survive paging.
+	 * Omitting `limit` does not mean "everything" — the server
 	 * applies a bounded default and reports it back in `page.limit`. Asking for
 	 * everything is `limit: 'all'`, and only a caller that can hold the whole
 	 * result should: catalog-wide that is 56,635 rows.

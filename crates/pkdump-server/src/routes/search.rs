@@ -6,8 +6,11 @@
 //! can place a caret. The keywords endpoint serves the registry so autocomplete
 //! and the help page render from data, not a hardcoded list.
 //!
-//! The search response is a **page**, not a bare array: `{rows, total, limit,
-//! offset}`, where `total` counts the whole result set. `limit` defaults to
+//! The search response is a **page**, not a bare array: `{rows, total,
+//! total_value, limit, offset}`, where `total` counts the whole result set and
+//! `total_value` prices the owned copies in it — both unbounded, so a client
+//! can say what the whole result is and what it is worth while holding one
+//! page of it (pd-2g84). `limit` defaults to
 //! [`search::DEFAULT_LIMIT`] when absent — bounded on purpose, because the
 //! unbounded version of this endpoint shipped a 44 MB body and crashed the tab
 //! (pd-jsby). A bad `limit`/`offset` is a 400 with `{error}` and no `position`,

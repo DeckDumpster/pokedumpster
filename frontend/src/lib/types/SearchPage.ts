@@ -8,4 +8,30 @@ export type SearchPage = { rows: Array<SearchRow>,
 /**
  * Rows the query matches in total, ignoring `limit`/`offset`.
  */
-total: number, limit: number, offset: number, };
+total: number, 
+/**
+ * [`SearchPage::total`] in money: the condition-adjusted market value of
+ * every **owned** copy of every printing the query matches, ignoring
+ * `limit`/`offset`. `None` when the result contains no owned, priced copy
+ * — a result worth nothing and a result worth an unknown amount are the
+ * same answer here, and neither is `$0.00`.
+ *
+ * It is computed here rather than by the client for two reasons, and the
+ * second is the durable one. A client holding one page can only sum that
+ * page, so under paging the figure had to be withheld unless the page WAS
+ * the result (pd-2g84) — the collection page holds the whole result today
+ * (pd-7z4o), but a field that is page-invariant by construction cannot
+ * lose that property the next time the endpoint is paged. And a sum the
+ * client computes is a *second* implementation of what a collection is
+ * worth: the number is a button that opens the value-over-time chart, and
+ * that chart's copies are `status = 'owned'` (`value_history`), so this
+ * one's are too. Owned mode also lists `ordered` copies — a card that is
+ * paid for and not here — and those are counted by `total`, drawn by the
+ * list, and deliberately not valued.
+ *
+ * Owned-only holds in catalog-wide mode as well ("All cards"), where the
+ * result is mostly printings nobody owns. Summing those would answer a
+ * different question — what completing the set would cost — which is a
+ * figure worth having and is not this one.
+ */
+total_value: number | null, limit: number, offset: number, };

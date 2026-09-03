@@ -929,6 +929,51 @@ mod tests {
         assert_eq!(past_end["offset"], 5);
     }
 
+    /// pd-2g84. The envelope prices the whole result, not the page — asserted
+    /// where it matters most, on a request that returns no rows at all. A
+    /// client holding nothing can still say what the result is worth.
+    #[tokio::test]
+    async fn search_prices_the_whole_result_and_not_the_page() {
+        let (dir, router) = test_app();
+        // Own a Near Mint copy (×1.00) and price its printing in the catalog.
+        router
+            .clone()
+            .oneshot(request("POST", "/api/collection", None, Some(ADD_CARD)))
+            .await
+            .unwrap();
+        {
+            let c = pkdump_db::open_shared(&dir.path().join("shared.sqlite")).unwrap();
+            c.execute(
+                "INSERT INTO catalog_price_overrides (printing_id, price, observed_at) \
+                 VALUES ('sv3pt5-1-normal', 12.5, '2025-01-01')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let page = |uri: &'static str| {
+            let router = router.clone();
+            async move {
+                let resp = router
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::OK);
+                serde_json::from_str::<serde_json::Value>(&body_string(resp).await).unwrap()
+            }
+        };
+
+        let whole = page("/api/collection/search?limit=all").await;
+        assert_eq!(whole["total_value"], 12.5, "the result is worth its copy");
+
+        let none = page("/api/collection/search?limit=0").await;
+        assert!(none["rows"].as_array().unwrap().is_empty());
+        assert_eq!(
+            none["total_value"], 12.5,
+            "the money describes the result, not the rows served"
+        );
+    }
+
     /// pd-7z4o. `limit=all` is the whole result set, and says so in the
     /// envelope: the echoed `limit` is the row count, which is what makes the
     /// response describe itself as unpaged rather than as a page that happened

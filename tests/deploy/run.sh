@@ -1708,6 +1708,80 @@ check "...and collects nothing" "0" \
 	"$(grep -c '^PODMAN: rmi' "$PKDUMP_TEST_PODMAN_LOG" || true)"
 unset PKDUMP_TEST_PODMAN_LOG
 
+log "11c. The builder ships the binaries its OWN sources build (pd-wjmd)"
+# ---------------------------------------------------------------------------
+#
+# The Containerfile hands cargo a target directory that OUTLIVES the build, and
+# cargo's freshness check is an mtime comparison. The cache `id=` names the
+# Debian release (pd-pejn) and the checkout PATH (pd-sjn7) — but a CI runner is
+# ONE path holding EVERY tree over time, and a COPY that hits podman's layer
+# cache restores that layer's historical mtimes. So sources can arrive OLDER
+# than rlibs another tree left in the cache, cargo compiles nothing, and `cp`
+# copies the other tree's binaries into the image.
+#
+# It happened: CI run 33683221574 built `Finished release profile in 1.92s` over
+# a crates/ with no `sets.ptcgio_covered` and shipped a pkdump-lake-derive that
+# writes that column. tests/lake/derive.sh found it three tiers away, as a
+# catalog disagreeing with the one the host built.
+#
+# tests/store/orphans.sh's sibling gate, tests/store/cargo_cache.sh, is where the
+# podman-and-cargo half is measured — two real builds, the second shipping its
+# own sources, seen red with the restamp removed. What is SHELL is here: that the
+# real Containerfile still asks for it, and that what it hashes still covers what
+# it compiles.
+
+CF="${REPO_DIR}/Containerfile"
+
+# The mechanism, line by line. Each of these is a way it could be half-removed
+# by someone tidying the RUN and leave the cache silently authoritative again.
+check "the sources are hashed into a stamp" "1" \
+	"$(grep -c 'stamp="\$(find \${PKDUMP_SOURCES}' "$CF" || true)"
+check "a cache written from other sources restamps the mtimes" "1" \
+	"$(grep -c 'find \${PKDUMP_SOURCES} -type f -exec touch {} +' "$CF" || true)"
+check "the stamp is dropped BEFORE the build" "1" \
+	"$(grep -c 'rm -f target/.pkdump-source-stamp' "$CF" || true)"
+check "...and written only AFTER it" "1" \
+	"$(grep -cE 'printf .+ > target/\.pkdump-source-stamp' "$CF" || true)"
+
+# ORDER, for the same reason §11b asserts one: the stamp must be removed before
+# cargo runs and written after it succeeds, or a build that FAILED leaves a
+# claim about a cache it only half-wrote. `&&` between them is what makes
+# "written" mean "the build succeeded".
+CF_ORDER="$(grep -oE 'rm -f target/\.pkdump-source-stamp|cargo build --release|printf .+ > target/\.pkdump-source-stamp' "$CF" | sed -E 's/^(rm -f|cargo build|printf).*/\1/' | tr '\n' ' ')"
+check "drop the stamp, build, then write it" "rm -f cargo build printf " "$CF_ORDER"
+
+# WHAT IS HASHED MUST COVER WHAT IS COMPILED, and this is the assertion that
+# survives the next change: a COPY added to the builder stage without being
+# added to PKDUMP_SOURCES puts sources into the image that the stamp cannot see,
+# which is this bug back with a smaller blast radius and no gate on it.
+#
+# The builder stage is the lines from its `FROM ... AS builder` to the next
+# `FROM`; its COPY sources are every word but the last on each COPY line.
+CF_SOURCES="$(sed -n 's/^ENV PKDUMP_SOURCES="\(.*\)"$/\1/p' "$CF")"
+check "PKDUMP_SOURCES is declared once" "1" \
+	"$(grep -c '^ENV PKDUMP_SOURCES=' "$CF" || true)"
+CF_UNCOVERED=""
+while read -r copy; do
+	# `COPY a b c ./` — every argument but the destination is a source path.
+	set -- $copy
+	shift # COPY
+	while [ "$#" -gt 1 ]; do
+		src="${1%/}"
+		case " $CF_SOURCES " in
+		*" $src "*) ;;
+		*) CF_UNCOVERED="${CF_UNCOVERED}${src} " ;;
+		esac
+		shift
+	done
+done <<EOF
+$(awk '/^FROM .* AS builder$/{b=1;next} /^FROM /{b=0} b && /^COPY /' "$CF")
+EOF
+check "every COPY into the builder is covered by PKDUMP_SOURCES" "" "$CF_UNCOVERED"
+
+# ...and the coverage check is not vacuous: it has to have READ some COPY lines.
+check "the builder stage's COPY lines were found" "yes" \
+	"$([ "$(awk '/^FROM .* AS builder$/{b=1;next} /^FROM /{b=0} b && /^COPY /' "$CF" | wc -l)" -ge 2 ] && echo yes || echo no)"
+
 log "12. Landing and deriving are TWO units, and the derive is scheduled (pd-1uem)"
 # ---------------------------------------------------------------------------
 #

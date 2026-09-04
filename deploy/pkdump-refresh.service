@@ -85,5 +85,14 @@ Type=oneshot
 # `podman exec`, which drops the caller's environment, so a drop-in reached the systemd
 # unit and never reached the refresh. That is exactly the bug pd-kncd fixed, and it is
 # why this paragraph no longer says "put it on the exec".)
+#
+# POKEMONTCG_API_KEY is set the same way, and is forwarded the same way. It
+# raises api.pokemontcg.io's ceiling from 1,000 requests a day to 20,000.
+# A landing run spends ONE request on that API — the /v2/sets page — so an
+# ordinary night needs no key at all, and this is here for the day something
+# asks that API for more than the set list (pd-2cpx). A key that reaches the
+# wrapper and not the container is indistinguishable from no key until a run
+# starts being throttled, which is why it is forwarded rather than left to be
+# discovered.
 ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/refresh.sh %i'
 TimeoutStartSec=1800

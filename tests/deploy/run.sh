@@ -2726,6 +2726,207 @@ check "the master key is mounted read-only" "1" \
 
 reset_store
 # ---------------------------------------------------------------------------
+log "14b. Arming the shipper CHECKS its preconditions (pd-0h2p)"
+# ---------------------------------------------------------------------------
+#
+# `pkdump-ship@` is installed for every instance and enabled for none, and
+# three things must be true before it is enabled. They were written down in
+# four places — units-lib.sh, setup.sh's closing summary, setup-lake.sh's own
+# output and TENANT_ZONE.md — and checked in none. units-lib.sh pointed at
+# `deploy/setup-lake.sh --arm-shipper` for a flag that did not exist, which is
+# how this was found; the flag is the fix, because a precondition that is only
+# described is a precondition an operator can skip.
+#
+# The one that matters is the backfill. A box armed before it faithfully ships
+# every change made from tonight and nothing anybody already owns (pd-whsw),
+# and NOTHING reports that afterwards: the shipper exits 0, the transform
+# values whatever the zone holds, and the chart carries a plausible number.
+# The other two announce themselves — a missing key or a missing credential is
+# a unit that pages at 07:00.
+
+ARM_HOME_OK="${WORK}/arm-ok"
+ARM_LOG="${WORK}/arm-systemctl.log"
+mkdir -p "${ARM_HOME_OK}/.config/pkdump/armtest" \
+	"${ARM_HOME_OK}/.config/systemd/user" "${WORK}/armbin"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdlake\nPKDUMP_LAKE_S3_REGION=us-west-2\nAWS_PROFILE=pkdump\nPKDUMP_TENANT_AWS_PROFILE=pkdump-tenant\nPKDUMP_LAKE_NESSIE_DATA=%s/nessie\n' \
+	"$WORK" > "${ARM_HOME_OK}/.config/pkdump/lake.env"
+: > "${ARM_HOME_OK}/.config/pkdump/armtest/tenant-master.key"
+chmod 600 "${ARM_HOME_OK}/.config/pkdump/armtest/tenant-master.key"
+# The unit template the arming enables. Installed by the app's own setup, not
+# by this script — so its absence is a refusal rather than a systemd error.
+: > "${ARM_HOME_OK}/.config/systemd/user/pkdump-ship@.timer"
+
+# The stand-ins. `podman run` here is the backfill question, and it answers
+# with an exit status: the two variables below let a case make the status and
+# the TEXT disagree, which is the whole of what §14b's last pair asserts.
+cat > "${WORK}/armbin/podman" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+"image exists") exit "${PKDUMP_TEST_NO_IMAGE:-0}" ;;
+esac
+if [ "$1" = run ]; then
+	printf 'FAKE outbox ARGV %s\n' "$*"
+	[ -n "${PKDUMP_TEST_BACKFILL_SAYS:-}" ] && printf '%s\n' "$PKDUMP_TEST_BACKFILL_SAYS"
+	exit "${PKDUMP_TEST_BACKFILL_RC:-0}"
+fi
+exit 0
+EOF
+cat > "${WORK}/armbin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'SYSTEMCTL %s\n' "$*" >> "${PKDUMP_SYSCTL_LOG:-/dev/null}"
+exit 0
+EOF
+chmod +x "${WORK}/armbin/podman" "${WORK}/armbin/systemctl"
+
+ARM_HOME="$ARM_HOME_OK"
+run_arm() { # run_arm — arms $ARM_HOME's instance, logging every systemctl call
+	: > "$ARM_LOG"
+	set +e
+	PATH="${WORK}/armbin:${ORIG_PATH}" HOME="$ARM_HOME" \
+		PKDUMP_SYSCTL_LOG="$ARM_LOG" \
+		bash "${REPO_DIR}/deploy/setup-lake.sh" armtest --arm-shipper 2>&1
+	printf 'RC=%s' "$?"
+	set -e
+}
+armed() { grep -c 'enable --now pkdump-ship@armtest.timer' "$ARM_LOG" || true; }
+
+# --- Everything in order ----------------------------------------------------
+ARM_OK="$(run_arm)"
+check "every precondition met -> exits 0" "1" \
+	"$(printf '%s' "$ARM_OK" | grep -c 'RC=0$' || true)"
+check "…and the timer is enabled" "1" "$(armed)"
+# The question is asked of every REGISTERED tenant, not of whichever collection
+# $PKDUMP_USER happens to name — pd-s5yn's lesson, which is the whole reason
+# the backfill has an --all-tenants form at all.
+check "…by asking every registered tenant" "1" \
+	"$(printf '%s' "$ARM_OK" | grep -c 'outbox status --all-tenants --require-backfill' || true)"
+check "…and it says what it could not check" "1" \
+	"$(printf '%s' "$ARM_OK" | grep -c 'is BACKED UP' || true)"
+
+# --- Each precondition, refusing, and arming NOTHING ------------------------
+
+ARM_NOLAKE="${WORK}/arm-nolake"
+cp -a "$ARM_HOME_OK" "$ARM_NOLAKE"
+rm -f "${ARM_NOLAKE}/.config/pkdump/lake.env"
+ARM_OUT="$(ARM_HOME="$ARM_NOLAKE" run_arm)"
+check "no lake.env -> refuses" "1" "$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+ARM_NOPROFILE="${WORK}/arm-noprofile"
+cp -a "$ARM_HOME_OK" "$ARM_NOPROFILE"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdlake\nAWS_PROFILE=pkdump\n' \
+	> "${ARM_NOPROFILE}/.config/pkdump/lake.env"
+ARM_OUT="$(ARM_HOME="$ARM_NOPROFILE" run_arm)"
+check "no tenant profile -> refuses" "1" "$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…naming the setting" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -q 'PKDUMP_TENANT_AWS_PROFILE' && echo 1 || echo 0)"
+check "…arming nothing" "0" "$(armed)"
+
+# One profile for both zones is not a narrow policy — it is no boundary, and
+# it looks exactly like a correct one. TenantZoneConfig refuses it at runtime,
+# which on an armed box is a unit that pages at 07:00 rather than a sentence
+# at the moment somebody chose to arm it.
+ARM_SAMEPROFILE="${WORK}/arm-sameprofile"
+cp -a "$ARM_HOME_OK" "$ARM_SAMEPROFILE"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdlake\nAWS_PROFILE=pkdump\nPKDUMP_TENANT_AWS_PROFILE=pkdump\n' \
+	> "${ARM_SAMEPROFILE}/.config/pkdump/lake.env"
+ARM_OUT="$(ARM_HOME="$ARM_SAMEPROFILE" run_arm)"
+check "one profile for both zones -> refuses" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…saying there is no boundary" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'no boundary' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+ARM_NOKEY="${WORK}/arm-nokey"
+cp -a "$ARM_HOME_OK" "$ARM_NOKEY"
+rm -f "${ARM_NOKEY}/.config/pkdump/armtest/tenant-master.key"
+ARM_OUT="$(ARM_HOME="$ARM_NOKEY" run_arm)"
+check "no master key -> refuses" "1" "$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…naming the command that mints one" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'deploy/keys.sh armtest init' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+# "The code sets 600" and "the file is 600" are different claims, and only the
+# second one protects anything — the same assertion deploy/keys.sh makes on the
+# host after an `init`.
+ARM_BADMODE="${WORK}/arm-badmode"
+cp -a "$ARM_HOME_OK" "$ARM_BADMODE"
+chmod 644 "${ARM_BADMODE}/.config/pkdump/armtest/tenant-master.key"
+ARM_OUT="$(ARM_HOME="$ARM_BADMODE" run_arm)"
+check "a world-readable master key -> refuses" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…naming the repair" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'chmod 600' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+ARM_NOUNIT="${WORK}/arm-nounit"
+cp -a "$ARM_HOME_OK" "$ARM_NOUNIT"
+rm -f "${ARM_NOUNIT}/.config/systemd/user/pkdump-ship@.timer"
+ARM_OUT="$(ARM_HOME="$ARM_NOUNIT" run_arm)"
+check "the unit template not installed -> refuses" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…naming setup.sh" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'deploy/setup.sh armtest' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+ARM_OUT="$(PKDUMP_TEST_NO_IMAGE=1 run_arm)"
+check "no image -> refuses" "1" "$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+# --- The backfill, which is the precondition with no other witness ----------
+ARM_OUT="$(PKDUMP_TEST_BACKFILL_RC=1 run_arm)"
+check "an un-backfilled tenant -> refuses" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…saying what arming now would ship" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'nothing anybody already owns' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+# The answer is the EXIT STATUS, never the text. A run that died in its
+# container prints exactly what a clean collection prints (pd-cxq4), so a
+# silent failure must refuse…
+ARM_OUT="$(PKDUMP_TEST_BACKFILL_RC=1 PKDUMP_TEST_BACKFILL_SAYS="" run_arm)"
+check "a check that failed silently still refuses" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…arming nothing" "0" "$(armed)"
+# …and a run that answered YES must arm, whatever alarming words appear in the
+# report beside the answer. Grepping the text for "never emitted" would make
+# the check disagree with the binary that owns the question.
+ARM_OUT="$(PKDUMP_TEST_BACKFILL_SAYS="  never emitted — every holding is invisible" run_arm)"
+check "the exit status decides, not the report's wording" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=0$' || true)"
+check "…and the timer is enabled" "1" "$(armed)"
+
+# --- Two opposite acts ------------------------------------------------------
+set +e
+ARM_BOTH="$(PATH="${WORK}/armbin:${ORIG_PATH}" HOME="$ARM_HOME_OK" \
+	bash "${REPO_DIR}/deploy/setup-lake.sh" armtest --remove --arm-shipper 2>&1)"
+ARM_BOTH_RC=$?
+set -e
+check "--remove with --arm-shipper -> refuses as a usage error" "2" "$ARM_BOTH_RC"
+check "…saying they are opposites" "1" \
+	"$(printf '%s' "$ARM_BOTH" | grep -c 'opposite acts' || true)"
+
+# --- The durable half: a pointer to a flag that does not exist --------------
+# pd-0h2p itself. units-lib.sh named `setup-lake.sh --arm-shipper` for a year
+# while setup-lake.sh parsed only --remove and --port, and nothing said so.
+# Stated over the TREE rather than over the one comment that was wrong: the
+# next stale pointer is the one nobody has written yet.
+ARM_UNPARSED=""
+while read -r FLAG; do
+	[ -n "$FLAG" ] || continue
+	grep -qE "^[[:space:]]*(--[a-z0-9-]+\|)*${FLAG}\)" "${REPO_DIR}/deploy/setup-lake.sh" ||
+		ARM_UNPARSED="${ARM_UNPARSED}${FLAG} "
+done < <(grep -rhoE 'setup-lake\.sh[^`")]*' "${REPO_DIR}/deploy" "${REPO_DIR}/tests" \
+	"${REPO_DIR}/CLAUDE.md" 2>/dev/null | grep -oE ' --[a-z][a-z0-9-]*' | tr -d ' ' | sort -u)
+check "every setup-lake.sh flag named anywhere is one it parses" "" "${ARM_UNPARSED% }"
+# …and the extraction is not vacuously empty — a rule over a list that has
+# stopped matching anything passes forever.
+check "the rule is looking at real flags" "1" \
+	"$(grep -rhoE 'setup-lake\.sh[^`")]*' "${REPO_DIR}/deploy" 2>/dev/null |
+		grep -c -- '--arm-shipper' >/dev/null && echo 1 || echo 0)"
+
+reset_store
+# ---------------------------------------------------------------------------
 log "15. ABSENT, FORBIDDEN and WRONG are three answers, not one (pd-2hnp)"
 # ---------------------------------------------------------------------------
 #

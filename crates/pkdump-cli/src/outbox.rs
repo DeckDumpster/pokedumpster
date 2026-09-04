@@ -7,6 +7,7 @@
 //! pkdump outbox emit --row collection:481      # redrive one holding
 //! pkdump outbox emit --row sealed_collection:12    # ...sealed is one too
 //! pkdump outbox status                         # what has been emitted, and when
+//! pkdump outbox status --all-tenants --require-backfill   # ...and REFUSE if not
 //! ```
 //!
 //! **One command over a scope, not three tools.** Backfill, redrive and DR
@@ -37,6 +38,22 @@
 //! Over ONE collection there is no partial state to be in, so a failure is
 //! just a failure and exits 1.
 //!
+//! ## `status --require-backfill` is a CHECK, not a report
+//!
+//! The sentence above — arming the shipper on prod means running this over
+//! every tenant — was for years only a sentence, in this file and in three
+//! runbooks. `--require-backfill` is the same claim as an exit status: the
+//! report prints exactly as it always did, and then the command **refuses**,
+//! naming whom, unless every collection it named has a completed full
+//! backfill behind it. That is what `deploy/setup-lake.sh --arm-shipper`
+//! asks before it enables the timer, so the precondition is enforced rather
+//! than described.
+//!
+//! A registered collection whose database is **not on this box** fails the
+//! check too. It is not a tenant that has been backfilled; it is a tenant
+//! nobody can say anything about, and absence is not permission (`pd-ulds`,
+//! from the other end).
+//!
 //! Paths come from `$PKDUMP_HOME` and `$PKDUMP_USER`, so
 //! `podman exec <ctr> pkdump outbox …` works against a running instance the
 //! way `pkdump tenant` and `pkdump keys` do.
@@ -56,7 +73,7 @@ enum OutboxCommand {
     /// Emit the current state of a scope as outbox events.
     Emit(EmitArgs),
     /// What has been emitted for a collection, and when.
-    Status(WhichArgs),
+    Status(StatusArgs),
 }
 
 /// Which collections a command works on. Absent, it is the one
@@ -72,6 +89,20 @@ pub struct WhichArgs {
     /// Every registered tenant. What arming the shipper on prod needs.
     #[arg(long)]
     all_tenants: bool,
+}
+
+/// `pkdump outbox status`.
+#[derive(clap::Args)]
+pub struct StatusArgs {
+    #[command(flatten)]
+    which: WhichArgs,
+
+    /// Exit 1, naming whom, unless every collection named here has a
+    /// completed full backfill behind it. What `deploy/setup-lake.sh
+    /// --arm-shipper` asks before it arms the nightly shipment — the
+    /// precondition `pd-whsw` describes, as something a script can check.
+    #[arg(long)]
+    require_backfill: bool,
 }
 
 #[derive(clap::Args)]
@@ -321,15 +352,25 @@ fn describe(run: &Emitted) -> String {
     }
 }
 
-fn status(which: WhichArgs) -> anyhow::Result<()> {
+fn status(args: StatusArgs) -> anyhow::Result<()> {
+    // Whom the report could NOT show a completed full backfill for, with the
+    // reason, because the two reasons call for different first moves: run the
+    // backfill, or find out why a registered database is not here.
+    let mut unready: Vec<String> = Vec::new();
+
     for Target {
         handle,
         path,
         absent,
-    } in targets(&which)?
+    } in targets(&args.which)?
     {
         if absent {
             println!("{handle}  registered, but {} is not here", path.display());
+            // Absence is not permission. A registry row whose database is not
+            // on this box is not a tenant that has been backfilled — it is a
+            // tenant nobody can say anything about, and arming on "we could
+            // not look" is the failure `--require-backfill` exists to stop.
+            unready.push(format!("{handle} (its database is not on this box)"));
             continue;
         }
         let conn = pkdump_db::open_user(&path)?;
@@ -339,6 +380,13 @@ fn status(which: WhichArgs) -> anyhow::Result<()> {
             [],
             |r| r.get(0),
         )?;
+
+        // A *full backfill*, not merely "some run happened": a collection
+        // whose ledger holds only redrives has never been described to the
+        // zone in full, and `runs.is_empty()` cannot tell those apart.
+        if outbox::last_backfill(&conn)?.is_none() {
+            unready.push(format!("{handle} (no backfill on record)"));
+        }
 
         println!("{handle}  ({pending} event(s) in the outbox)");
         if runs.is_empty() {
@@ -363,5 +411,22 @@ fn status(which: WhichArgs) -> anyhow::Result<()> {
             );
         }
     }
+
+    if !args.require_backfill {
+        return Ok(());
+    }
+    if !unready.is_empty() {
+        anyhow::bail!(
+            "NOT ready for the shipper: {}.\n\
+             The shipper ships the OUTBOX, and an existing collection's outbox starts \
+             EMPTY (pd-whsw) — armed now it would faithfully ship every change made from \
+             tonight and nothing anybody already owns, which is a tenant zone that looks \
+             populated and is not. Nothing reports that afterwards.\n\
+             Describe what is already there first: `pkdump outbox emit --all --all-tenants` \
+             (pd-385w), then run this again.",
+            unready.join(", ")
+        );
+    }
+    println!("every collection named here has a completed backfill behind it");
     Ok(())
 }

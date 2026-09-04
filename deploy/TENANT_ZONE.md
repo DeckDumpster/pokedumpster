@@ -375,22 +375,37 @@ zone, then `pkdump-ship holdings` back into each tenant's `zone_holdings`. Since
 `pd-i08u` that second half is the only input the transform has.
 
 ```bash
-systemctl --user enable --now pkdump-ship@<instance>.timer
+bash deploy/setup-lake.sh <instance> --arm-shipper
 ```
 
-Two things must exist first: a master key (`bash deploy/keys.sh <instance>
-init`, **backed up**) and `PKDUMP_TENANT_AWS_PROFILE` in `lake.env`. The
-wrapper refuses by name without either.
+That is `systemctl --user enable --now pkdump-ship@<instance>.timer` with the
+three preconditions **checked first** (`pd-0h2p`), and it refuses, naming which
+one, rather than arming:
+
+| 1 | `PKDUMP_TENANT_AWS_PROFILE` is set in `lake.env` and is **not** `AWS_PROFILE` |
+| 2 | the master key exists, at mode 600 on the host |
+| 3 | every registered tenant has a completed full backfill on record |
+
+Check 3 is the one with no other witness. It is asked of the collections
+themselves — `pkdump outbox status --all-tenants --require-backfill`, inside
+the instance's own image over its own data volume — and answered by an **exit
+status**, never by reading the report's text.
 
 **Do not arm it on a box before the backfill has run.** The shipper ships the
 OUTBOX, and an existing collection's outbox starts empty (`pd-whsw`): armed
 early it faithfully ships every change made from tonight and nothing anybody
-already owns — a zone that looks populated and is not. `pkdump outbox emit
---all --all-tenants` (`pd-385w`) is what makes the outbox describe the
-collection that is already there; arm the timer after it, per instance.
-`pkdump outbox status`, and `ownership_emit_log` in the tenant's own database,
-are how you confirm it already ran: a `backfill` row naming the range it
-covered and when it finished.
+already owns — a zone that looks populated and is not, valued nightly into a
+plausible number, with nothing reporting it. `pkdump outbox emit --all
+--all-tenants` (`pd-385w`) is what makes the outbox describe the collection
+that is already there; arm the timer after it, per instance. `pkdump outbox
+status`, and `ownership_emit_log` in the tenant's own database, are how you
+read the detail: a `backfill` row naming the range it covered and when it
+finished.
+
+**One precondition is stated and not checked, because nothing on the box can
+check it**: that the master key has been BACKED UP. A lost key is
+indistinguishable from a deleted tenant by design ([`KEYS.md`](KEYS.md) §1),
+and from the night it is armed this timer writes data only that key opens.
 
 **prod is armed** (`pd-r130`, 2026-08-26), after confirming exactly that —
 `ownership_emit_log` recording a completed `backfill` of seq 1..4814.

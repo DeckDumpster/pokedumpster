@@ -210,13 +210,16 @@ check "a warn line that does not clear the floor is refused" "1" \
 	"$(alert_run bad PKDUMP_DISK_FLOOR_GB=10 PKDUMP_DISK_WARN_GB=10)"
 check "and it pages nobody, because it never measured anything" "no" "$(paged bad)"
 
-# pd-1717: an alert that cannot be delivered is a FAILURE, not a no-op. Asserted
-# against the real alert.sh with no credentials, so this file's own claim about
-# what happens off the stub stays true.
-check "an undeliverable alert fails the run" "1" \
-	"$(PKDUMP_ALERTS_ENV="${WORK}/none.env" PKDUMP_DISK_PATH="$WORK" \
-		PKDUMP_DISK_THRESHOLD=0 PKDUMP_DISK_FLOOR_GB=0 PKDUMP_DISK_WARN_GB=1 \
-		bash "$DISKCHECK" >/dev/null 2>&1; echo $?)"
+# REMOVED: a pd-1717 assertion that an undeliverable alert must FAIL the run.
+#
+# It contradicted the check twenty lines below, which is pd-4sqi's and is what
+# master ships: both drive diskcheck over the threshold with a channel that cannot
+# deliver, one demanding exit 1 and the other exit 0. They cannot both pass, and
+# the pair arrived from branches that had never been merged together.
+#
+# pd-4sqi wins here by being the SHIPPED answer, not the better one. Which contract
+# is right is open as hq-axi0; if it goes the other way this assertion returns and
+# diskcheck.sh's trailing `|| echo ... ; exit 0` goes with it.
 
 # ...and it stays a timer on the ONE day it matters (pd-4sqi). alert.sh exits 1
 # when it could not deliver, and under `set -e` that became diskcheck's own exit
@@ -2819,7 +2822,7 @@ printf 'PKDUMP_LAKE_S3_BUCKET=pdlake\nAWS_PROFILE=pkdump\n' \
 ARM_OUT="$(ARM_HOME="$ARM_NOPROFILE" run_arm)"
 check "no tenant profile -> refuses" "1" "$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
 check "…naming the setting" "1" \
-	"$(printf '%s' "$ARM_OUT" | grep -q 'PKDUMP_TENANT_AWS_PROFILE' && echo 1 || echo 0)"
+	"$(grep -q 'PKDUMP_TENANT_AWS_PROFILE' <<<"$ARM_OUT" && echo 1 || echo 0)"
 check "…arming nothing" "0" "$(armed)"
 
 # One profile for both zones is not a narrow policy — it is no boundary, and

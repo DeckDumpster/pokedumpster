@@ -68,14 +68,14 @@ mk() { # mk <name> <age-seconds> -> a tenant file that old by mtime
 case_() { # case_ <label> <ok|stale> <output> [must-contain]
     local label="$1" want="$2" out="$3" needle="${4:-}" got=ok
     ran=$((ran + 1))
-    printf '%s' "$out" | grep -q '^STALE:' && got=stale
+    grep -q '^STALE:' <<<"$out" && got=stale
     if [ "$got" != "$want" ]; then
         printf '  FAIL  %-58s got=%s want=%s\n' "$label" "$got" "$want"
         printf '%s\n' "$out" | sed 's/^/          /'
         fails=$((fails + 1))
         return
     fi
-    if [ -n "$needle" ] && ! printf '%s' "$out" | grep -qF "$needle"; then
+    if [ -n "$needle" ] && ! grep -qF "$needle" <<<"$out"; then
         printf '  FAIL  %-58s says the wrong thing (want: %s)\n' "$label" "$needle"
         printf '%s\n' "$out" | sed 's/^/          /'
         fails=$((fails + 1))

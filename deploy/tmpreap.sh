@@ -184,7 +184,7 @@ reaped=0; kept_live=0; kept_fresh=0; skipped=0; bytes=0
 
 while IFS= read -r -d '' dir; do
     name="$(basename "$dir")"
-    if ! printf '%s' "$name" | grep -qiE "^${UUID_RE}$"; then
+    if ! grep -qiE "^${UUID_RE}$" <<<"$name"; then
         skipped=$((skipped + 1))
         continue
     fi

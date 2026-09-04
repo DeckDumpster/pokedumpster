@@ -1160,7 +1160,7 @@ OUT="$(status_run)"; RC=$?
 check "inert instance reports NOT ARMED" "1" "$RC"
 check "and says so in as many words" "1" "$(printf '%s' "$OUT" | grep -c 'NOT ARMED' || true)"
 check "it names the missing timer as the reason" "yes" \
-	"$(printf '%s' "$OUT" | grep -q "${P}-backup-check@${INSTANCE}.timer" && echo yes || echo no)"
+	"$(grep -q "${P}-backup-check@${INSTANCE}.timer" <<<"$OUT" && echo yes || echo no)"
 # Configuration is not arming: §3 proved the checker works when run by hand, and
 # the answer here is still no, because nothing is running it on a schedule.
 check "and reports the checker as never having run under systemd" "1" \

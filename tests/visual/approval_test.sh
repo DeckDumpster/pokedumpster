@@ -48,7 +48,7 @@ refuses() { # refuses <label> <args...>
 	out=$(pkdump_visual_approval_guard "$@" 2>&1)
 	if [ $? -eq 0 ]; then
 		bad "$label — guard allowed it"
-	elif ! printf '%s' "$out" | grep -q 'pd-4tce'; then
+	elif ! grep -q 'pd-4tce' <<<"$out"; then
 		bad "$label — refused without naming why" "$out"
 	else
 		ok "$label"
@@ -199,7 +199,7 @@ else
 	for p in $projects; do
 		for f in "$SCRIPT_DIR/baselines/$p/"*.png; do
 			stem=$(basename "$f" .png)
-			echo "$ids" | grep -qx "$stem" || orphans="${orphans}${orphans:+$'\n'}$p/$stem.png"
+			grep -qx "$stem" <<<"$ids" || orphans="${orphans}${orphans:+$'\n'}$p/$stem.png"
 		done
 	done
 	none "no orphaned baseline" "$orphans"

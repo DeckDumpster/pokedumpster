@@ -112,13 +112,13 @@ EVID="$(
     pkdump_treewatch_check "during cargo clippy" 2>&1
 )"
 ok "it names the step it was detected at" \
-   "$(printf '%s' "$EVID" | grep -qF 'during cargo clippy' && echo yes || echo no)" "yes"
+   "$(grep -qF 'during cargo clippy' <<<"$EVID" && echo yes || echo no)" "yes"
 ok "it prints the reflog lines, which is the evidence" \
-   "$(printf '%s' "$EVID" | grep -qF 'rebase (abort)' && echo yes || echo no)" "yes"
+   "$(grep -qF 'rebase (abort)' <<<"$EVID" && echo yes || echo no)" "yes"
 ok "it says HEAD came back, so the reader stops doubting the reflog" \
-   "$(printf '%s' "$EVID" | grep -qF 'put it back' && echo yes || echo no)" "yes"
+   "$(grep -qF 'put it back' <<<"$EVID" && echo yes || echo no)" "yes"
 ok "it cites the bead" \
-   "$(printf '%s' "$EVID" | grep -qF 'pd-vnbc' && echo yes || echo no)" "yes"
+   "$(grep -qF 'pd-vnbc' <<<"$EVID" && echo yes || echo no)" "yes"
 
 echo ""
 echo "== §5 the latch, and the verdict's two endings =="
@@ -137,9 +137,9 @@ ok "a tripped watch stays tripped for the EXIT trap" "$LATCH" "still-tripped"
 VERD_PASS="$(. "${REPO_DIR}/deploy/ci-treewatch.sh"; pkdump_treewatch_verdict 0 2>&1)"
 VERD_FAIL="$(. "${REPO_DIR}/deploy/ci-treewatch.sh"; pkdump_treewatch_verdict 1 2>&1)"
 ok "a would-be PASS is told its green proves nothing" \
-   "$(printf '%s' "$VERD_PASS" | grep -qi 'about to report PASS' && echo yes || echo no)" "yes"
+   "$(grep -qi 'about to report PASS' <<<"$VERD_PASS" && echo yes || echo no)" "yes"
 ok "a red is told it may not be its own fault" \
-   "$(printf '%s' "$VERD_FAIL" | grep -qi 'not necessarily because of your change' && echo yes || echo no)" "yes"
+   "$(grep -qi 'not necessarily because of your change' <<<"$VERD_FAIL" && echo yes || echo no)" "yes"
 ok "the void status has one spelling and it is 9" \
    "$(. "${REPO_DIR}/deploy/ci-treewatch.sh"; echo "$PKDUMP_TREEWATCH_EXIT")" "9"
 
@@ -228,7 +228,7 @@ ARMED="$(
     env -u PKDUMP_CI_CHANGED_FILES PKDUMP_CI_SELECT_ONLY=1 bash deploy/ci.sh 2>&1
 )"
 ok "a real run announces the watch before doing anything" \
-   "$(printf '%s' "$ARMED" | grep -qF 'treewatch: armed on' && echo yes || echo no)" "yes"
+   "$(grep -qF 'treewatch: armed on' <<<"$ARMED" && echo yes || echo no)" "yes"
 ok "...and it is the FIRST thing in the log, ahead of every step" \
    "$(printf '%s' "$ARMED" | grep -nE 'treewatch: armed on|^==> ' | head -1 \
       | grep -qF 'treewatch' && echo yes || echo no)" "yes"

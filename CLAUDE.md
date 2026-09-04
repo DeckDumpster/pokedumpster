@@ -1285,6 +1285,19 @@ outbox starts empty (pd-whsw), and armed early it faithfully ships every
 change made from tonight and nothing anybody already owns. `pkdump outbox emit
 --all --all-tenants` (pd-385w) is what makes the outbox describe the
 collection that is already there; arming is the step after it, per instance.
+
+**Arming is `bash deploy/setup-lake.sh <instance> --arm-shipper`, and it CHECKS
+the three preconditions rather than printing them** (pd-0h2p). They were written
+down in four places and enforced in none, which is how a box arms early. The
+tenant credential must be set and must not be the catalog's; the master key must
+exist at mode 600; and every registered tenant must have a completed full
+backfill on record — the last asked of the collections themselves through
+`pkdump outbox status --all-tenants --require-backfill`, which answers with an
+**exit status** rather than a sentence a script would have to parse (pd-cxq4).
+A registered collection whose database is not on the box fails that check too:
+it is not a tenant that has been backfilled, it is a tenant nobody can say
+anything about. The fourth precondition — that the master key is BACKED UP — is
+said out loud and not asserted, because nothing on the box can know it.
 **Prod is armed** (pd-r130, 2026-08-26), on a collection whose backfill
 `ownership_emit_log` records as complete through seq 4814.
 

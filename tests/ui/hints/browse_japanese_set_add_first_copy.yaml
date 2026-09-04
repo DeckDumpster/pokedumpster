@@ -1,0 +1,34 @@
+start_page: /browse
+involves:
+  - "series accordion on /browse: button.grouphdr, collapsed by default for a series with no owned cards"
+  - "set tile a.tile with href '/browse/jp-23723'"
+  - "binder browse page at /browse/[set] — frontend/src/routes/browse/[set]/+page.svelte"
+  - "the set name in the breadcrumb: nav.crumbs .current (this route has no h1)"
+  - "div.stats with two ProgressBars, 'Base {owned}/{total}' and 'Master {owned}/{total}', each the aria-label of its track"
+  - "span.pageno 'Page 1 of 1'"
+  - "div.grid of div.slotwrap > button.slot; .slotwrap.missing when no printing is owned; div.noart in place of an img when the card has no image"
+  - "VariantModal opens on a slot click and carries a.full 'Full card details →' to /card/[set]/[number]"
+  - "card detail ul.printings — one li per variant, each with a stepper whose + is aria-label 'Add one {variant label}' and whose span.count is the owned count"
+  - "SectionHeader 'Your copies (N)' and the \"You don't own this card yet.\" EmptyState"
+fixture_data:
+  set: "Mystery of the Fossils (set_code jp-23723), 6 catalogued cards and 12 printings. printed_total NULL, so section_of files every card as `base` — base_total is 6 (cards), master_total 12 (printings)"
+  card: "Ekans, card_id jp-23723-p575663 — TCGCSV product 575663, published with no collector number, so the catalog files it as number 'p575663'"
+  printings: "jp-23723-p575663-first_ed_normal (sub_type '1st Edition', label '1st Edition Normal') and jp-23723-p575663-unlimited_normal (sub_type 'Unlimited', label 'Unlimited Normal'), both against product id 575663"
+  no_art: "Lapras (jp-23723-p575666) has NULL image_small/image_large — TCGCSV reports imageCount 0 — so its slot renders div.noart"
+  collection: "no jp-23723 copies at rest, so the walk starts at 'Your copies (0)'"
+notes: >
+  The default binder view is 'binder' (image + pips, no name plate), so
+  address a slot through its image alt text rather than a visible label —
+  and never through the in-set search, which is debounced and would make
+  the step racy. Layout defaults to 3 columns × 3 rows = 9 per page, so all
+  six slots are on page 1.
+  1. Navigate to /browse. 2. Click the "Pokémon JP — Original Era" group
+  header to expand it. 3. Click a.tile[href="/browse/jp-23723"]. 4. Wait
+  for the binder grid; assert the breadcrumb reads "Mystery of the
+  Fossils". 5. Assert the two meters read "Base 0/6" and "Master 0/12", and
+  "Page 1 of 1". 6. Assert six .slotwrap, all of them .missing, and that
+  one div.noart is present. 7. Click the slot whose image alt is "Ekans".
+  8. In the variant modal click "Full card details →". 9. Assert the
+  breadcrumb "Ekans #p575663", "Your copies (0)", and the two vintage
+  printing rows. 10. Click the + aria-labelled "Add one 1st Edition
+  Normal". 11. After the reload assert "Your copies (1)". 12. Screenshot.

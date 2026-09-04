@@ -37,6 +37,11 @@
 			"about": "Binder page for a 1999 set — different rarity mix and pip states"
 		},
 		{
+			"id": "browse-set-japanese",
+			"path": "/browse/jp-23723",
+			"about": "Binder page for the Japanese set — the render a NULL printed_total and TCGCSV-only art produce: every card filed as base rather than as a secret rare, two print runs per slot, and one slot with no art at all (pd-zonm)"
+		},
+		{
 			"id": "browse-set-stats",
 			"path": "/browse/sv3pt5/stats",
 			"about": "Master-set completion stats — charts and progress meters"

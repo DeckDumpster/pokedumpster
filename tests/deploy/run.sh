@@ -3040,6 +3040,30 @@ check "and nothing was swept on the way to refusing" "yes" \
 rm -rf "${WORK}/reap" "$REAP_OUT"
 reset_store
 
+log "§18 — a start that must converge the catalog can outlast neither its own unit (pd-dzu5)"
+# The server's startup convergence is the only thing left that can lose the
+# catalog's write lock to the nightly `pkdump-lake-derive shared`, and its
+# patience — connection.rs::SERVING_PATIENCE — is DERIVED from what
+# pkdump.container allows the start job, not chosen. The two numbers live in a
+# Rust file and a systemd unit and cannot share a constant, so they are held
+# together here: a TimeoutStartSec dropped below the wait turns a diagnosable
+# refusal back into a SIGTERM with nothing in the journal to read.
+CONN_RS="${REPO_DIR}/crates/pkdump-db/src/connection.rs"
+UNIT_CONTAINER="${REPO_DIR}/deploy/pkdump.container"
+PATIENCE="$(sed -n 's/^\(pub(crate) \)\{0,1\}const SERVING_PATIENCE: Duration = Duration::from_secs(\([0-9]*\));/\2/p' "$CONN_RS")"
+UNIT_TIMEOUT="$(sed -n 's/^TimeoutStartSec=\([0-9]*\)$/\1/p' "$UNIT_CONTAINER")"
+check "connection.rs declares a serving patience" "1" \
+	"$([ -n "$PATIENCE" ] && echo 1 || echo 0)"
+check "pkdump.container declares a start timeout" "1" \
+	"$([ -n "$UNIT_TIMEOUT" ] && echo 1 || echo 0)"
+check "the wait fits inside the unit's own start timeout" "1" \
+	"$([ "${PATIENCE:-0}" -lt "${UNIT_TIMEOUT:-0}" ] && echo 1 || echo 0)"
+# And it is longer than the ordinary five seconds, or the fix is only half of
+# one: a start that has something to converge has to be able to wait out a
+# transaction of the derive's, not merely report a nicer error.
+check "and it is longer than an ordinary open's patience" "1" \
+	"$([ "${PATIENCE:-0}" -gt 5 ] && echo 1 || echo 0)"
+
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

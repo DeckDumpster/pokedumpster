@@ -31,7 +31,8 @@ use rusqlite::{Connection, params};
 use crate::error::Result;
 
 /// `data/overrides/catalog_prices.json` — the curated override list.
-const CATALOG_PRICES_SEED: &str = include_str!("../../../data/overrides/catalog_prices.json");
+pub(crate) const CATALOG_PRICES_SEED: &str =
+    include_str!("../../../data/overrides/catalog_prices.json");
 
 /// One curated catalog price. Mirrors the table 1:1.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

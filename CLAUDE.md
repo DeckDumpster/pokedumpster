@@ -90,7 +90,10 @@ The user runs it on a self-hosted box and reaches it over WireGuard.
 cargo build                      # build all crates
 cargo test                       # run all tests; also regenerates the TypeScript
                                  #   types in frontend/src/lib/types/ via ts-rs
-cargo test -p pkdump-db          # test a single crate
+cargo test -p pkdump-db          # test a single crate; tests/catalog_writers.rs
+                                 #   is the catalog's two kinds of writer — a
+                                 #   server start must not race the nightly
+                                 #   derive for the write lock
 cargo test -p pkdump-lake        # raw-landing key layout, manifest, config
 cargo test -p pkdump-ingest --test raw_landing
                                  # the real HTTP clients against a local
@@ -1593,6 +1596,121 @@ tenant-database dependency** — the valuation still opens each tenant's SQLite
 to read those, to read `zone_holdings`, and to write the snapshot back. Phase
 3 narrowed which table the *copies* come from and nothing else. Runbook:
 `deploy/TENANT_ZONE.md` §7.
+
+### The catalog has one BUILDER and many CONVERGERS (pd-dzu5)
+
+Two different things open `shared.sqlite` read-write, and until pd-dzu5 nothing
+told them apart.
+
+- A **builder** fills it from upstream bytes: `pkdump setup` by hand and,
+  nightly, `pkdump-lake-derive shared`, which since pd-lunn is the only thing
+  on a box that does. It runs in its own container over the same data volume,
+  writes the live catalog **in place**, and holds the write lock in
+  transactions of its own for **minutes** (`TimeoutStartSec=1800`).
+- A **converger** brings a catalog up to the shape the running binary expects:
+  `open_shared` re-applies `schema_shared.sql`, adds any column the file
+  predates (`ADDED_COLUMNS`) and re-seeds every shipped seed file. `pkdump
+  serve` is only ever this, once at startup, and that is deliberate — a binary
+  upgrade can ship a data-only migration that must be applied before the first
+  request.
+
+The bug was that the server converged **unconditionally**.
+`search_meta::reconcile` alone is a `DELETE` and a few hundred `INSERT`s, so
+*every restart took the catalog's write lock* whether or not the binary shipped
+anything new — and `deploy/deploy.sh`, a reboot or an OOM can restart the
+server at any moment, including inside the 07:00 derive. Losing that race is a
+start that fails on `database is locked` after `busy_timeout(5s)`;
+`pkdump.container` carries `Restart=on-failure`/`RestartSec=10` and **no
+`OnFailure=`**, so the container then retries every ~15s and the site is simply
+down for the rest of the build with nothing saying so. Not corruption —
+SQLite's locking is what rules that out — a silent, self-healing outage.
+
+**The fix is a fingerprint, not a lock.** `crates/pkdump-db/src/convergence.rs`
+hashes every embedded input this build would write into the catalog —
+`schema_shared.sql`, the `ADDED_COLUMNS` DDL, the shared schema version, and
+every shipped seed file — into one SHA-256, recorded in `catalog_convergence`.
+`open_shared_for_serving` asks the question **read-only** and, on a match,
+never opens the catalog read-write at all. So an ordinary restart takes no
+write lock and cannot race the derive; a binary that genuinely ships a
+data-only migration still writes, and that is now the *only* case that can
+collide.
+
+Seven things about it are decisions:
+
+- **It hashes the INPUTS, never the tables.** What a convergence would write is
+  a property of the binary; what the catalog holds is 12.5M price rows this has
+  no business reading. That is what makes the question cheap enough to ask on
+  the read-only path first.
+- **The fingerprint is written LAST**, after the seeds and after the version
+  stamp, by `connection.rs::converge` and nowhere else. Recorded before the
+  work, a convergence that died halfway would be skipped forever.
+- **Converged means the fingerprint AND the version stamp.** `converge`
+  persists two things — the seeds and schema the hash stands for, and `PRAGMA
+  user_version` — so the probe asks about both. A fingerprint-only check looks
+  obviously sufficient and is not: it reports converged a catalog this build
+  has never stamped, the stamp then never arrives, and the file goes on
+  claiming a shape it does not have. Not hypothetical — every catalog in
+  existence was `user_version` 0 before pd-ja38, and
+  `tests/schema-version/run.sh` §1 boots exactly such a volume and requires it
+  to come out stamped. **That container gate is what caught it**, on a change
+  whose hermetic tests were all green.
+- **Anything else that is not a clear YES is a NO.** No table (every existing
+  box, on the deploy that lands this), no row, a different hash, or a WAL
+  database whose `-shm` is absent — which cannot be opened read-only at all —
+  each falls through to the read-write path. Note which case that last one is: the `-shm`
+  exists exactly while another process holds the catalog open, so the read-only
+  probe works precisely on the night it matters and the fall-through is taken
+  when there is no competing writer to lose to.
+- **`search_meta::reconcile` moved INTO the convergence.** It was the one
+  shipped seed each caller reconciled for itself — setup, the derive, the
+  server, the fixture seeder — which is why it was also the one nothing could
+  account for when asking whether a catalog was converged. `search_meta::counts`
+  is what the two callers that printed its numbers use now: a second reconcile
+  for the sake of a return value rewrites a few hundred rows to print something
+  already true.
+- **The row holds the hash and nothing else.** A `converged_at` beside it was
+  the obvious second column and is deliberately absent: two derives of one
+  `raw/` partition must be row-identical — that is what `pkdump-lake-derive
+  diff` exists to check — and a clock read here would make every such
+  comparison differ in a field nobody reads. `raw_derivation` earns its
+  `derived_at` by being the operator's record of which run produced a catalog,
+  and is excluded from the comparator by name; this table is an input to a
+  decision the next process makes, and *when* it was written is no part of it.
+- **The patience is derived, and it is the second half of the fix.** On the
+  rare start that really must converge, five seconds is the wrong wait — the
+  thing it is waiting for declares 1800s. It cannot wait that long either:
+  `pkdump.container` gives the start job `TimeoutStartSec=120`, so the wait is
+  bounded by what the server's own unit permits (`SERVING_PATIENCE`), and the
+  start says in the journal that it is converging. `tests/deploy/run.sh` §18 holds
+  the two numbers together, because they live in a Rust file and a systemd unit
+  and cannot share a constant.
+
+The input list is **asserted over the tree**, not maintained:
+`convergence::every_catalog_seed_is_in_the_fingerprint` reads every
+`include_str!` in `pkdump-db` and requires each to be classified into exactly
+one of `inputs()` and `NOT_CATALOG_INPUTS`. That is the only way this can be
+wrong and it would be silent — a seed added to the convergence and forgotten
+there leaves the fingerprint matching while the new seed never reaches a
+running server.
+
+Gates: `crates/pkdump-db/tests/catalog_writers.rs` — every claim stated against
+a catalog whose write lock is genuinely held by a second connection, with the
+control beside it (a read-write open of the same catalog fails, which is what
+the server used to do on every start) and the inverse (an un-converged catalog
+**waits** for the writer and then converges, so a `for_serving` that had
+quietly stopped converging anything could not pass the file). Seen red: with
+the fingerprint check removed, the two headline tests fail and the suite takes
+92 seconds — which is the outage, measured. And
+`crates/pkdump-server/tests/no_catalog_writer.rs`, which states it over the
+serving crate's source rather than over the one call site that is right today:
+no `open_shared` outside test code, **and** the `open_shared_for_serving` call
+still present — a guard that only forbids passes just as happily on a server
+that converges nothing at all. Both halves seen red.
+
+The other read-write openers are unchanged and are all operator-run: `pkdump
+setup`, `pkdump data expand-only|apply-corrections|normalize-symbols`, and
+`pkdump seed-fixture`. `pkdump data refresh` is not among them — since pd-lunn
+it opens the catalog `open_shared_readonly` and writes no catalog table at all.
 
 ### The offline catalog derive
 

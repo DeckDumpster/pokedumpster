@@ -52,11 +52,11 @@ pub fn run(args: FixtureArgs) -> anyhow::Result<()> {
     }
 
     println!("Building shared catalog at {}", shared_path.display());
-    let mut shared = pkdump_db::open_shared(&shared_path)?;
+    let shared = pkdump_db::open_shared(&shared_path)?;
     seed_catalog(&shared)?;
-    // Seed the search query language metadata so fixture-backed search
-    // tests have the keyword registry, rarity ranks, and flag definitions.
-    pkdump_db::search_meta::reconcile(&mut shared)?;
+    // The keyword registry, rarity ranks and flag definitions fixture-backed
+    // search tests need came in with the read-write open above
+    // (connection.rs::converge).
     // Materialize latest_prices from the seeded prices (vi37) so fixture-backed
     // pages show market values without re-running a full catalog refresh.
     pkdump_db::latest_prices::refresh_latest_prices(&shared)?;

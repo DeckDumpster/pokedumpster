@@ -25,9 +25,35 @@ use rusqlite::backup::Backup;
 use crate::error::Result;
 use crate::schema_version::{self, Database};
 
-const SCHEMA_SHARED: &str = include_str!("schema_shared.sql");
+pub(crate) const SCHEMA_SHARED: &str = include_str!("schema_shared.sql");
 const SCHEMA_USER: &str = include_str!("schema_user.sql");
 const SCHEMA_REGISTRY: &str = include_str!("schema_registry.sql");
+
+/// How long a catalog open waits for another writer before giving up.
+///
+/// Five seconds is the ordinary answer, and it is the right one for a
+/// command an operator is watching: `pkdump setup` and `pkdump data
+/// expand-only` want to say "something else is writing this" quickly rather
+/// than sit there.
+const OPEN_PATIENCE: Duration = Duration::from_secs(5);
+
+/// The patience `pkdump serve` uses on the rare start that really does have
+/// to converge the catalog — see [`open_shared_for_serving`].
+///
+/// **Derived, not chosen.** The only other writer on a deployed box is the
+/// nightly `pkdump-lake-derive shared`, whose own unit allows it
+/// `TimeoutStartSec=1800`; waiting that long would be the honest number and
+/// is useless, because `deploy/pkdump.container` gives the server
+/// `TimeoutStartSec=120` and systemd kills the start job first. So the wait
+/// is bounded by what the server's own unit permits, with headroom for the
+/// rest of startup — a start that is going to fail should fail while systemd
+/// is still listening, and say why.
+///
+/// `tests/deploy/run.sh` holds this against `pkdump.container`, because the
+/// two numbers live in files that cannot share a constant and a unit whose
+/// timeout drops below this one would turn a diagnosable refusal back into a
+/// `SIGTERM` with nothing in the journal.
+const SERVING_PATIENCE: Duration = Duration::from_secs(90);
 
 /// Open the shared catalog database, creating it if absent, and apply the
 /// schema (idempotent — every CREATE is IF NOT EXISTS). Read-write — for
@@ -41,10 +67,29 @@ const SCHEMA_REGISTRY: &str = include_str!("schema_registry.sql");
 /// the table exceeds the default ~2MB cache (pokedumpster-rqr).
 ///
 /// After schema init, reconciles every shipped seed file (variants,
-/// (group, sub_type) → variant map, bundles, set-name aliases) so a
-/// freshly-opened DB is always ready for FK-referencing inserts. Cheap and
-/// idempotent on the existing prod DB. See pokedumpster-luo.
+/// (group, sub_type) → variant map, bundles, set-name aliases, the curated
+/// catalog price overrides and the search query metadata) so a freshly-opened
+/// DB is always ready for FK-referencing inserts. Cheap and idempotent on the
+/// existing prod DB. See pokedumpster-luo.
+///
+/// Cheap is not free, though, and it is never a no-op:
+/// [`crate::search_meta::reconcile`] is a `DELETE` and a few hundred
+/// `INSERT`s every time. **Anything that only needs the catalog to BE
+/// converged, rather than to converge it, wants
+/// [`open_shared_for_serving`]** — see pd-dzu5 and
+/// [`crate::convergence`].
 pub fn open_shared(path: &Path) -> Result<Connection> {
+    open_shared_with_patience(path, OPEN_PATIENCE)
+}
+
+/// [`open_shared`], waiting `patience` for another writer rather than the
+/// default five seconds.
+///
+/// The patience is the caller's because the callers are not alike: a
+/// hand-run command wants to fail fast and be told, and a server start that
+/// has landed inside the nightly catalog build wants to wait it out. It
+/// changes nothing else — same PRAGMAs, same convergence, same stamp.
+pub fn open_shared_with_patience(path: &Path, patience: Duration) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -55,25 +100,96 @@ pub fn open_shared(path: &Path) -> Result<Connection> {
          PRAGMA cache_size = -65536; \
          PRAGMA foreign_keys = ON;",
     )?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(patience)?;
     // Before a single statement of schema runs: a catalog written by a newer
     // build is refused, not migrated backwards into.
     schema_version::gate(&conn, Database::Shared)?;
-    conn.execute_batch(SCHEMA_SHARED)?;
-    add_missing_columns(&conn)?;
-    // Reconcile shipped seeds — variants must run first (sub_type_map
-    // FKs into it). All three are idempotent upserts.
-    crate::variants::reconcile(&mut conn)?;
-    crate::sub_type_map::reconcile(&mut conn)?;
-    crate::bundles::reconcile(&mut conn)?;
-    crate::set_aliases::reconcile(&mut conn)?;
-    // Last of the seeds: its rows FK into `printings`, so it writes nothing
-    // until the catalog has been ingested. `pkdump-lake-derive shared` re-opens
-    // the catalog after every derivation, which is where it lands for real.
-    crate::catalog_prices::reconcile(&mut conn)?;
-    // Stamped last: the file claims this shape only once it has it.
-    schema_version::stamp(&conn, Database::Shared)?;
+    converge(&mut conn)?;
     Ok(conn)
+}
+
+/// Everything this build writes into a catalog it opens read-write, in the
+/// one place that does it.
+///
+/// Kept as its own function because [`crate::convergence`] hashes exactly its
+/// inputs: a seed reconciled here and not named there is the one way the
+/// fingerprint can lie, and the two being adjacent is what makes the drift
+/// gate a thing somebody is likely to run into.
+fn converge(conn: &mut Connection) -> Result<()> {
+    conn.execute_batch(SCHEMA_SHARED)?;
+    add_missing_columns(conn)?;
+    // Reconcile shipped seeds — variants must run first (sub_type_map
+    // FKs into it). All are idempotent upserts.
+    crate::variants::reconcile(conn)?;
+    crate::sub_type_map::reconcile(conn)?;
+    crate::bundles::reconcile(conn)?;
+    crate::set_aliases::reconcile(conn)?;
+    // Its rows FK into `printings`, so it writes nothing until the catalog
+    // has been ingested. `pkdump-lake-derive shared` re-opens the catalog
+    // after every derivation, which is where it lands for real.
+    crate::catalog_prices::reconcile(conn)?;
+    // The search query language's metadata (keywords, rarity ranks,
+    // `is:`-flag definitions). It used to be reconciled by each caller
+    // instead — `pkdump setup`, the derive, `pkdump serve`, the fixture
+    // seeder — which made it the one shipped seed that was not part of
+    // opening the catalog, and therefore the one nothing could account for
+    // when asking whether a catalog was converged (pd-dzu5).
+    crate::search_meta::reconcile(conn)?;
+    // Stamped last but one: the file claims this shape only once it has it.
+    schema_version::stamp(conn, Database::Shared)?;
+    // And last of all, the claim that all of the above has happened. After
+    // the stamp, deliberately: a fingerprint recorded before the work would
+    // let a convergence that died halfway be skipped forever.
+    crate::convergence::record(conn)?;
+    Ok(())
+}
+
+/// Open the shared catalog for a process that must *have* it converged but is
+/// not the thing that builds it — i.e. `pkdump serve`.
+///
+/// Returns a read-only connection when the catalog already carries this
+/// build's convergence fingerprint, having taken **no write lock at all**;
+/// otherwise converges it read-write, exactly as [`open_shared`] would, and
+/// hands that connection back.
+///
+/// This is the whole of pd-dzu5's fix. The server's startup convergence is
+/// deliberate — a binary upgrade can ship a data-only migration that must be
+/// applied before the first request — but it ran unconditionally, so *every*
+/// restart competed for the catalog's write lock with the nightly
+/// `pkdump-lake-derive shared`, which holds it for minutes. Losing that race
+/// is a start that fails on `database is locked` after five seconds and a
+/// `Restart=on-failure` loop for the rest of the build, with no `OnFailure=`
+/// on `pkdump.container` to say so. Now an ordinary restart — same binary,
+/// same seeds — asks one read-only question and is done.
+///
+/// **Every answer that is not a clear yes is a no**, and the fall-through is
+/// to do the work: a catalog that does not exist yet, one from a build older
+/// than the fingerprint table, one whose row is missing, and a WAL database
+/// whose `-shm` is absent (which cannot be opened read-only at all) each land
+/// on [`open_shared_with_patience`]. Note which case that last one is: the
+/// `-shm` is present exactly while another process holds the catalog open, so
+/// the read-only probe works precisely on the night it matters and the
+/// fall-through is taken when there is no competing writer to lose to.
+///
+/// One of those swallowed outcomes deserves saying out loud: a catalog written
+/// by a NEWER build is refused by [`schema_version::gate`], and the probe
+/// discards that refusal like any other failure. It is not lost — the
+/// read-write open gates again, on the same file, and refuses with the same
+/// message. The probe is allowed exactly one verdict, "already converged", and
+/// nothing else it learns is acted on.
+pub fn open_shared_for_serving(path: &Path) -> Result<Connection> {
+    if let Ok(conn) = open_shared_readonly(path)
+        && crate::convergence::is_converged(&conn)
+    {
+        return Ok(conn);
+    }
+    println!(
+        "pkdump: the catalog at {} is not converged to this build — applying the schema and \
+         shipped seeds before serving. This is the only start that writes the catalog, and the \
+         only one that can be delayed by a `pkdump-lake-derive shared` already holding it.",
+        path.display()
+    );
+    open_shared_with_patience(path, SERVING_PATIENCE)
 }
 
 /// Open the shared catalog **read-only**.
@@ -130,7 +246,7 @@ pub fn open_shared_readonly(path: &Path) -> Result<Connection> {
 /// operator step. Until it does they read exactly as they read before the
 /// column existed: badged. The gap's failure mode is today's behaviour, which
 /// is the direction an additive default has to be wrong in.
-const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+pub(crate) const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     (
         "sets",
         "discovered_from_group_id",

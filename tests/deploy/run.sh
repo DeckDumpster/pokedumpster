@@ -2715,7 +2715,20 @@ tz_check() { # tz_check <STUB_MODE> [extra args...]; prints output then RC=<n>
 }
 
 tz_has() { # tz_has <output> <fixed string> -> 1 | 0
-	printf '%s' "$1" | grep -qF -- "$2" && echo 1 || echo 0
+	# NEVER `grep -q` ON THE READ END OF A PIPE UNDER `pipefail`.
+	#
+	# -q exits at the FIRST match. When the needle is near the start of a long haystack the
+	# writer still has most of its output to push, takes SIGPIPE, and `pipefail` then makes
+	# the pipeline report a MATCH as failure — so this returned 0 for text that was present.
+	#
+	# The proof is inside one run (2026-09-03): of the checks reading the SAME captured
+	# block, "…and says CANNOT VERIFY" — the block's FIRST line — failed with got 0, while
+	# "…and names the missing permission" and "…and quotes what aws actually said", both
+	# printed later in that same block, passed with 1. The text was there; only the early
+	# match was lost. `printf: write error: Broken pipe` is logged on the next line.
+	local n
+	n=$(printf '%s' "$1" | grep -cF -- "$2" || true)
+	[ "${n:-0}" -gt 0 ] && echo 1 || echo 0
 }
 
 TZ_OK="$(tz_check correct)"

@@ -56,6 +56,8 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # shellcheck source=tests/lib/diagnostics.sh
 . "${REPO_DIR}/tests/lib/diagnostics.sh"
+# shellcheck source=tests/lib/objects.sh
+. "${REPO_DIR}/tests/lib/objects.sh"
 diag_init
 
 die() {
@@ -210,7 +212,9 @@ mc mb "m/${BUCKET}" >/dev/null
 
 # Upload the landing zone exactly as it was landed: same keys, same bytes.
 mc mirror --quiet /fixture/raw-zone "m/${BUCKET}" >/dev/null
-RAW_OBJECTS=$(mc ls --recursive "m/${BUCKET}" | grep -c ' raw/' || true)
+RAW_LISTING="$(object_store_ls "" mc ls --recursive "m/${BUCKET}")" ||
+	die "the bucket listing could not be trusted — see above"
+RAW_OBJECTS=$(grep -c ' raw/' <<<"$RAW_LISTING" || true)
 [ "$RAW_OBJECTS" -gt 0 ] || die "nothing landed under raw/ in ${BUCKET}"
 echo "    ${RAW_OBJECTS} raw object(s) in ${BUCKET}"
 

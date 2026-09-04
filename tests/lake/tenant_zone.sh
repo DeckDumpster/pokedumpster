@@ -82,6 +82,8 @@ die() {
 . "${REPO_DIR}/tests/lib/ports.sh"
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
+# shellcheck source=tests/lib/objects.sh
+. "${REPO_DIR}/tests/lib/objects.sh"
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
 pkdump_store_load_config
@@ -537,11 +539,19 @@ echo "==> §7  The zone is EMPTY of tenant data"
 # This item builds the governance, not the data flow. Anything left under
 # tenant/ at this point is tenant-shaped data in a zone whose shipper does not
 # exist yet — and every fixture here is treated as if it were real.
-REMAINING=$(mc_root ls --recursive "x/${BUCKET}/tenant/" 2>/dev/null | wc -l)
+# From the BUCKET ROOT, once, and checked against a sentinel before it is
+# believed (pd-cxq4). "Nothing is left under tenant/" is precisely what an `mc`
+# run that died under load also reports, and it is the whole claim of this
+# section — so the listing has to be able to fail out loud instead of agreeing.
+# The raw/ object §0 seeded is in the bucket for the whole run, so a listing
+# without it did not see the bucket. See tests/lib/objects.sh.
+LISTING="$(object_store_ls "$RAW_KEY" mc_root ls --recursive "x/${BUCKET}/")" ||
+	die "the bucket listing could not be trusted — see above"
+REMAINING=$(grep -c ' tenant/' <<<"$LISTING" || true)
 [ "$REMAINING" -eq 0 ] ||
 	die "${REMAINING} object(s) remain under tenant/ — the zone is meant to be empty until the shipper exists"
 # And the catalog zone is untouched by everything above.
-CATALOG_OBJECTS=$(mc_root ls --recursive "x/${BUCKET}/" 2>/dev/null | grep -c ' raw/\| lake/' || true)
+CATALOG_OBJECTS=$(grep -c ' raw/\| lake/' <<<"$LISTING" || true)
 [ "$CATALOG_OBJECTS" -eq 2 ] ||
 	die "the catalog zone holds ${CATALOG_OBJECTS} objects, expected the 2 seeded — something wrote or deleted there"
 echo "    ok   tenant/ holds nothing; the catalog's 2 seeded objects are untouched"

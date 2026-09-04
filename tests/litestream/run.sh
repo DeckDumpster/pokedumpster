@@ -85,6 +85,8 @@ diag_init
 # waiting for; see tests/lib/wait.sh.
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
+# shellcheck source=tests/lib/objects.sh
+. "${REPO_DIR}/tests/lib/objects.sh"
 
 # Unique per checkout, exactly as deploy/ci.sh's instance name and the alarming
 # gate's are. deploy/ci.sh is deliberately parallel-safe — several polecats run
@@ -202,9 +204,19 @@ restore_rows() { # restore_rows <out> <tenant>
 # when nothing matches, which would abort the whole suite from inside a command
 # substitution — before a single RESULT line is printed. "No prefixes" is a
 # result this test must be able to REPORT, not a reason to vanish.
+#
+# It goes through bucket_keys, which RETURNS NON-ZERO when the listing itself
+# could not be trusted rather than printing nothing (pd-cxq4). An `mc` run that
+# died under load reports the same empty result a clean bucket does, and "clean"
+# is what several assertions below expect — so the callers that expect a zero
+# ask whether the listing succeeded before believing one.
+bucket_keys() {
+	local listing
+	listing="$(object_store_ls "" mc ls -r "s/$BUCKET")" || return 1
+	awk '{print $NF}' <<<"$listing"
+}
 tenant_prefixes() {
-	mc ls -r "s/$BUCKET" 2>/dev/null | awk '{print $NF}' \
-		| { grep "^${LITESTREAM_S3_PATH}/" || true; } | cut -d/ -f1-3 | sort -u
+	bucket_keys | { grep "^${LITESTREAM_S3_PATH}/" || true; } | cut -d/ -f1-3 | sort -u
 }
 
 log "1. throwaway MinIO"
@@ -372,8 +384,14 @@ check "sidecar still running with both entries" "running" \
 # and this is the assertion that keeps the two in step: get it wrong and a
 # restore reads an empty prefix and reports "no snapshots" on the one database
 # whose loss makes every other restore unattributable.
-mc ls -r "s/$BUCKET" 2>/dev/null | awk '{print $NF}' | grep "^${LITESTREAM_S3_REGISTRY_PATH}/" \
-	| head -1 >"$WORK/registry-key.txt" || true
+# ONE listing, feeding this assertion and the bucket-root one below (pd-cxq4).
+# No sentinel: the contents of this bucket ARE the thing under test, so an empty
+# replica is a finding to report rather than a listing to distrust. What is
+# checked is that the listing happened.
+BUCKET_LISTED=yes
+BUCKET_KEYS="$(bucket_keys)" || { BUCKET_KEYS=""; BUCKET_LISTED=no; }
+grep "^${LITESTREAM_S3_REGISTRY_PATH}/" <<<"$BUCKET_KEYS" |
+	head -1 >"$WORK/registry-key.txt" || true
 check "the registry wrote LTX files under its own derived prefix" "1" \
 	"$(grep -c . "$WORK/registry-key.txt" || true)"
 check "registry_replica_url is that prefix" "s3://${BUCKET}/${LITESTREAM_S3_REGISTRY_PATH}" \
@@ -384,14 +402,26 @@ check "registry_replica_url is that prefix" "s3://${BUCKET}/${LITESTREAM_S3_REGI
 # underneath it would come back as one more tenant to restore.
 check "the registry prefix is NOT under the tenants prefix" "outside" \
 	"$(case "$LITESTREAM_S3_REGISTRY_PATH" in "${LITESTREAM_S3_PATH%/}"/*) echo inside ;; *) echo outside ;; esac)"
-check "and the tenant enumeration does not see it" "0" \
-	"$(tenant_prefixes | grep -c 'registry' || true)"
+# Asked so that a listing which FAILED cannot answer "0". Every other count in
+# this gate expects a positive number and goes red on its own when the store
+# cannot be reached; these two expect a zero, which is what a dead listing
+# reports (pd-cxq4).
+if REGISTRY_HITS="$(tenant_prefixes)"; then
+	REGISTRY_HITS="$(grep -c 'registry' <<<"$REGISTRY_HITS" || true)"
+else
+	REGISTRY_HITS="the bucket listing failed — see above"
+fi
+check "and the tenant enumeration does not see it" "0" "$REGISTRY_HITS"
 # Nothing at the bucket ROOT. This is the shape the silent failure takes: an
 # empty replica prefix is accepted and scatters LTX files at the top of the
 # bucket, where they belong to no instance and no database. Every key must sit
 # under a named prefix.
-check "nothing was replicated to the bucket root" "0" \
-	"$(mc ls -r "s/$BUCKET" 2>/dev/null | awk '{print $NF}' | grep -c '^[0-9]\{4\}/' || true)"
+if [[ "$BUCKET_LISTED" == yes ]]; then
+	ROOT_KEYS="$(grep -c '^[0-9]\{4\}/' <<<"$BUCKET_KEYS" || true)"
+else
+	ROOT_KEYS="the bucket listing failed — see above"
+fi
+check "nothing was replicated to the bucket root" "0" "$ROOT_KEYS"
 
 # It restores, as itself, addressed by that URL.
 restore_registry() { # restore_registry <out> [flags...] — never aborts the report
@@ -604,7 +634,11 @@ podman run -d --name "$PROBE_CTR" --network "$NET" --user 0 \
 SNAPSHOTS=0
 second_snapshot() {
 	sq "$WORK/probe/tenants/echo.sqlite" "INSERT INTO collection (tenant) VALUES ('echo');"
-	SNAPSHOTS=$(mc ls -r "s/$BUCKET" 2>/dev/null | grep -c 'citest/probe/echo.sqlite/0009/' || true)
+	local keys
+	# A listing that failed is not a bucket with no snapshot in it (pd-cxq4);
+	# it is a poll that did not happen, so the poll goes round again.
+	keys="$(bucket_keys)" || return 1
+	SNAPSHOTS=$(grep -c 'citest/probe/echo.sqlite/0009/' <<<"$keys" || true)
 	[ "$SNAPSHOTS" -gt 1 ]
 }
 wait_until 120 1 second_snapshot || true

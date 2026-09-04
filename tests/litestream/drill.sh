@@ -102,6 +102,14 @@ pkdump_store_activate
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
 
+# "Does this replica hold data?" — the one definition. `ltx … | grep -q .` reads
+# a prefix that has never been written to as FULL, because litestream prints its
+# column header regardless; §2's `every tenant is replicating from the one
+# sidecar` therefore passed the instant S3 answered, whether or not a byte had
+# been replicated. See tests/lib/litestream.sh (pd-reyy).
+# shellcheck source=tests/lib/litestream.sh
+. "${REPO_DIR}/tests/lib/litestream.sh"
+
 # PER-CHECKOUT by default, for the reason deploy/ci.sh derives its container
 # instance the same way: the swarm runs several polecats per rig, each from its
 # own worktree, and every one of them runs deploy/ci.sh — which runs this. With a
@@ -421,17 +429,13 @@ write_phase() { # write_phase <phase>
 }
 
 wait_for_replica() { # wait_for_replica <tenant> [seconds]
-	local url deadline
+	local url
 	url="$(tenant_replica_url "$(db_id "$1")")"
-	deadline=$(( SECONDS + ${2:-60} ))
-	while [ "$SECONDS" -lt "$deadline" ]; do
-		if ls_cli ltx -level all "$url" 2>/dev/null | grep -q .; then return 0; fi
-		# One second, not two: the body is itself a `podman run` costing the
-		# better part of one, so anything longer was latency (pd-86er). The
-		# caller's bound is unchanged.
-		sleep 1
-	done
-	return 1
+	# One second, not two: the body is itself a `podman run` costing the better
+	# part of one, so anything longer was latency (pd-86er). The caller's bound is
+	# unchanged. What the body ASKS changed with pd-reyy — it waits for LTX files
+	# now, not for S3 to answer at all.
+	wait_until "${2:-60}" 1 replica_holds_data ls_cli "$url"
 }
 
 if [ ! -x "$PKDUMP_BIN" ]; then
@@ -583,7 +587,7 @@ check "every tenant is replicating from the one sidecar" "4" "$replicating"
 REG_URL="$(registry_replica_url)"
 reg_replicating=no
 registry_replicating() {
-	ls_cli ltx -level all "$REG_URL" 2>/dev/null | grep -q . || return 1
+	replica_holds_data ls_cli "$REG_URL" || return 1
 	reg_replicating=yes
 }
 wait_until 90 1 registry_replicating || true
@@ -597,9 +601,9 @@ check "the registry's prefix is NOT under the tenants prefix" "outside" \
 #
 # WAIT for the early phase to be IN the replica before taking the marker, rather
 # than sleeping and hoping (pd-86er). `wait_for_replica` above only proves the
-# prefix has objects; §5 rolls ${VICTIM} back TO this instant and expects the
-# early row to still be there, so what has to be true here is that the row
-# itself has landed.
+# replica holds LTX files at all; §5 rolls ${VICTIM} back TO this instant and
+# expects the early row to still be there, so what has to be true here is that
+# the row itself has landed.
 VICTIM_URL="$(tenant_replica_url "$(db_id "$VICTIM")")"
 early_replicated() { [ "$(restored_rows victim-early.sqlite "$VICTIM_URL")" -ge 1 ]; }
 wait_until 120 2 early_replicated || true

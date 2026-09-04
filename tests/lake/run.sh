@@ -68,6 +68,8 @@ die() {
 # Bounded condition polling, in one place for every harness (pd-86er).
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
+# shellcheck source=tests/lib/objects.sh
+. "${REPO_DIR}/tests/lib/objects.sh"
 
 # Non-prod container storage belongs on the data disk, not the disk prod runs
 # from — same resolution deploy/ci.sh uses, so running this gate standalone
@@ -223,9 +225,14 @@ print(len(t.scan().to_arrow()))
 echo "    ok   proof.roundtrip survived a catalog restart with both rows"
 
 echo "==> §5  The bytes are under the lake/ prefix"
-OBJECTS=$(mc ls --recursive "m/${BUCKET}" | wc -l)
+# ONE listing, verified, feeding both assertions (pd-cxq4). Two separate `mc`
+# runs meant the stray count could come from a listing that had died — and
+# "nothing is outside lake/" is exactly what a dead listing reports.
+LISTING="$(object_store_ls "" mc ls --recursive "m/${BUCKET}")" ||
+	die "the bucket listing could not be trusted — see above"
+OBJECTS=$(grep -c . <<<"$LISTING")
 [ "$OBJECTS" -gt 0 ] || die "nothing was written to ${BUCKET}"
-STRAY=$(mc ls --recursive "m/${BUCKET}" | grep -cv ' lake/' || true)
+STRAY=$(grep -cv ' lake/' <<<"$LISTING" || true)
 [ "$STRAY" -eq 0 ] ||
 	die "${STRAY} object(s) landed outside the lake/ prefix"
 echo "    ok   ${OBJECTS} objects, all under lake/"

@@ -18,7 +18,9 @@
 #                     is rebased underneath it goes VOID rather than reporting
 #                     on a tree that never existed. Hermetic and sub-second.
 #                     See tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh,
-#                     tests/lib/wait_test.sh, tests/lib/images_test.sh,
+#                     tests/lib/wait_test.sh, tests/lib/objects_test.sh,
+#                     tests/lib/litestream_test.sh,
+#                     tests/lib/images_test.sh,
 #                     tests/container/base_images_test.sh,
 #                     tests/visual/approval_test.sh,
 #                     tests/alarming/journal_summary_test.sh,
@@ -546,6 +548,29 @@ if tier lint; then
     # come back one reasonable-looking line at a time. See tests/lib/wait.sh.
     step "Harness condition-polling self-test (tests/lib/wait_test.sh)"
     bash "$REPO_DIR/tests/lib/wait_test.sh"
+
+    # Same tier, same shape of ratchet, and it guards what a container gate is
+    # ALLOWED TO CONCLUDE. Three gates asked a real bucket what was in it with
+    # `mc ls … 2>/dev/null`, which reports a listing that died and a store that
+    # is empty identically. That cost a red run on 2026-08-26 (pd-cxq4) — and
+    # the other direction is worse: "alice's prefix is empty after the drop"
+    # and "nothing was replicated to the bucket root" are what a dead listing
+    # also says, so a deletion could be reported PROVEN having looked at
+    # nothing. §6 states the rule over the tree. See tests/lib/objects.sh.
+    step "Harness object-listing self-test (tests/lib/objects_test.sh)"
+    bash "$REPO_DIR/tests/lib/objects_test.sh"
+
+    # And the question those polls ask. `litestream ltx` prints a column header
+    # for a replica that holds NOTHING and prints nothing at all when it cannot
+    # reach S3, so `ltx … | grep -q .` reads an empty replica as full and an
+    # unreachable bucket as empty. The second half is pd-reyy — a gate that
+    # reported a replica gone and then restored it, healthy, three assertions
+    # later, re-run by hand every time instead of read. §5-§6 are the ratchet:
+    # pd-nt1k fixed this predicate in one harness of three, which is what a
+    # per-file fix does.
+    # Hermetic — recorded ltx output, no podman. See tests/lib/litestream.sh.
+    step "Replica state has three answers, not two (tests/lib/litestream_test.sh)"
+    bash "$REPO_DIR/tests/lib/litestream_test.sh"
 
     # Same tier, and it guards every gate below that builds the image: the
     # builder stage rode a moving tag, upstream retagged it from bookworm to

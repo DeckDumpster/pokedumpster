@@ -1,0 +1,16 @@
+# Scenario: the Japanese set's /browse tile is TCGCSV-native, not provisional
+#
+# Related:
+#   intents: browse_japanese_set_add_first_copy
+#   issues: [pd-mt57, pd-zonm]
+
+description: >
+  On the "Browse sets" page the Japanese era "Pokémon JP — Original Era"
+  is listed as its own series and starts collapsed, because I own nothing
+  in it. Expanding it reveals one tile, "Mystery of the Fossils". The tile
+  has no set symbol art, so it stamps the catalogue key "JP-23723" in the
+  symbol well instead. It carries NO "TCGCSV" badge — pokemontcg.io has no
+  Japanese catalog at all, so this set is not waiting on an upstream
+  publish the way a locally-synthesized English set is — and it shows a
+  single "Master 0 / 6" completion meter with no "Base" meter beside it,
+  because the catalog knows no printed total for it.

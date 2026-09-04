@@ -47,7 +47,7 @@ will, in `cargo test`.
 
 | File | Contents |
 | --- | --- |
-| `shared.sqlite` | Immutable catalog: 3 sets, 31 cards, 45 printings, 45 prices, 4 sealed products. |
+| `shared.sqlite` | Immutable catalog: 4 sets, 37 cards, 57 printings, 57 prices, 4 sealed products. |
 | `collection.sqlite` | User data: 3 binders, 3 decks, 5 batches, 2 orders, 26 collection copies, 2 sealed entries, 3 wishlist entries, 1 saved view. |
 
 ## Catalog (`shared.sqlite`)
@@ -59,8 +59,13 @@ will, in `cargo test`.
 | `base1` | `BS` | Base Set | Base | 1999/01/09 | 102 / 102 |
 | `sv3pt5` | `MEW` | 151 | Scarlet & Violet | 2023/09/22 | 165 / 207 |
 | `sv8` | `SSP` | Surging Sparks | Scarlet & Violet | 2024/11/08 | 191 / 252 |
+| `jp-23723` | — | Mystery of the Fossils | Pokémon JP — Original Era | 1997/06/21 | 6 / — |
 
-### Cards (31)
+Sets list newest-first (`release_date DESC`), so the Japanese set is last on
+/browse — and, being the only one with no owned cards, the only series whose
+accordion section starts collapsed.
+
+### Cards (37)
 
 Card ids are `<set_code>-<number>`. Printing ids are
 `<card_id>-<variant>` (e.g. `sv3pt5-6-holo`). Every linked printing has a
@@ -90,6 +95,40 @@ Rare), Milotic ex (#89, Double Rare), Boss's Orders (#120, Uncommon,
 Trainer), Latias ex (#160, Illustration Rare), Alolan Exeggutor ex (#191,
 Illustration Rare), Pikachu ex (#238, Special Illustration Rare),
 **Iono (#252, Special Illustration Rare — secret rare, Trainer)**.
+
+**Mystery of the Fossils (`jp-23723`)** — 6 cards. The Japanese catalog is
+TCGCSV-native and its rows are shaped differently from anything
+pokemontcg.io publishes, so this set is the fixture's only cover for a
+handful of paths (pd-zonm):
+
+| Card | Number | Rarity | Printings |
+| --- | --- | --- | --- |
+| Aerodactyl | `p575661` | Rare Holo | 1st Edition Holofoil, Unlimited Holofoil |
+| Articuno | `p575662` | Rare Holo | 1st Edition Holofoil, Unlimited Holofoil |
+| Ekans | `p575663` | Common | 1st Edition Normal, Unlimited Normal |
+| Energy Search | `p575664` | Common (Trainer) | 1st Edition Normal, Unlimited Normal |
+| Omanyte | `p575665` | Common | 1st Edition Normal, Unlimited Normal |
+| Lapras | `p575666` | Rare | 1st Edition Normal, Unlimited Normal |
+
+- **`printed_total` is NULL.** TCGCSV publishes no `Number` for this group,
+  so there is no denominator to read one off. The /browse tile drops its
+  Base meter; the binder page files the whole set as one `base` section, so
+  both of its meters carry the same figure.
+- **Every collector number is the synthetic `p<product_id>` form** —
+  `japan::collector_number`'s fallback for a product with no printed number.
+- **`ptcgio_covered = 0` beside a NULL `ptcgio_fetched_at`**, so the tile
+  must NOT carry the "TCGCSV — provisional" badge (pd-mt57). Every English
+  set here is covered, so nothing else could catch that badge leaking back.
+- **No `ptcgo_code` and no `symbol_url`**, so the tile stamps `JP-23723`.
+- **One product id per card**, its print runs told apart by `sub_type_name`.
+  The English sets give every variant its own product id, so
+  `first_ed_*` / `unlimited_*` reach the variant display layer only here.
+- **No `artist`, no `national_pokedex_numbers`** — `synthesize_cards` writes
+  neither — and Lapras has no image at all (TCGCSV's `imageCount` is 0),
+  which is the binder's `.noart` slot.
+
+`fixture::tests::the_committed_fixture_carries_a_japanese_set_in_the_japanese_shape`
+holds all of that; `tests/ui/intents/browse_japanese_set_*.yaml` walk it.
 
 ### Sealed products
 
@@ -169,3 +208,10 @@ Notable copies:
 ### Saved collection views (1)
 
 - **Vintage Holos** — filters `{"set":"base1","rarity":"Rare Holo"}`.
+
+## Deliberately unowned
+
+Nothing in `collection.sqlite` references a `jp-23723` printing. That is the
+point: the Japanese set is what the "add my first copy of this" walk starts
+from, and a series with no owned cards is the only way /browse's default
+collapse rule gets exercised at all.

@@ -214,7 +214,12 @@ fn seed_catalog(conn: &Connection) -> anyhow::Result<()> {
     seed_set_cards(conn, "base1", &base_set_cards())?;
     seed_set_cards(conn, "sv3pt5", &set_151_cards())?;
     seed_set_cards(conn, "sv8", &surging_sparks_cards())?;
+    // The Japanese catalog is its own shape and its own seeder — see
+    // `seed_japanese_set`. It runs after `enrich_card_facets`, which keys
+    // its backfills by card NAME across the whole catalog and has no
+    // Japanese entries: `synthesize_cards` writes the JP facets itself.
     enrich_card_facets(conn)?;
+    seed_japanese_set(conn)?;
 
     // --- Sealed products ----------------------------------------------
     // (product_id, set_code, name, category, card_count, product_size,
@@ -973,6 +978,280 @@ fn surging_sparks_cards() -> Vec<CardEntry> {
 }
 
 // ---------------------------------------------------------------------------
+// The Japanese catalog (`jp-23723`)
+// ---------------------------------------------------------------------------
+
+/// The one Japanese set in the fixture — Mystery of the Fossils. Its group
+/// id, name and release date are the real TCGCSV ones; everything derived
+/// from them — the `set_code` and the series bucket — is derived by the
+/// SAME code the nightly Japanese import runs, so a change to
+/// `data/japan_series.json` or to the `jp-` key shape moves the fixture
+/// with it instead of leaving it quietly restating a stale rule.
+const JAPAN_GROUP: i64 = 23723;
+const JAPAN_NAME: &str = "Mystery of the Fossils";
+const JAPAN_RELEASED: &str = "1997/06/21";
+
+/// `jp-23723`, spelled the way `japan::import_groups` spells it.
+fn japan_set_code() -> String {
+    pkdump_ingest::japan::set_code(JAPAN_GROUP)
+}
+
+/// One Japanese card. `runs` is the (`sub_type_name`, variant code, market
+/// price) triple per print run, all against the card's single product id.
+struct JapanCard {
+    product_id: i64,
+    name: &'static str,
+    supertype: &'static str,
+    subtypes: &'static str,
+    rarity: &'static str,
+    hp: Option<i64>,
+    types: Option<&'static str>,
+    weakness: Option<&'static str>,
+    retreat: usize,
+    flavor: Option<&'static str>,
+    /// TCGCSV's `imageCount > 0`. False leaves both image columns NULL,
+    /// which is what a good deal of the vintage Japanese catalog looks like.
+    art: bool,
+    runs: &'static [(&'static str, &'static str, f64)],
+}
+
+/// Mystery of the Fossils — six cards, and every one of them reaches a code
+/// path the three English sets cannot (pd-zonm).
+///
+/// The Japanese catalog is TCGCSV-native: `japan.rs` synthesizes the set and
+/// its cards from category-85 products alone, so its rows are shaped
+/// differently from anything pokemontcg.io publishes. Each difference below
+/// is the reason this set is in the fixture at all:
+///
+/// * **`set_code` is `jp-<group_id>`**, and TCGCSV publishes no abbreviation
+///   for the vintage groups, so `ptcgo_code` is NULL. With no symbol art
+///   either, the /browse tile falls back to the catalogue key for its
+///   identity stamp — the only set here that does.
+/// * **`printed_total` is NULL.** TCGCSV carries no `Number` for this group
+///   at all, so `derive_printed_total` has no denominator to read off. Every
+///   `printed_total IS NULL` branch runs only here: the tile hides its Base
+///   meter, and the binder page files the whole set as one `base` section.
+/// * **Every card is numbered `p<product_id>`** — the synthetic form
+///   `japan::collector_number` falls back to for a product with no collector
+///   number. `number_sortable` lands in the 900000+ unknown-form range
+///   rather than reading as a printed number.
+/// * **`ptcgio_covered = 0` beside a NULL `ptcgio_fetched_at`.**
+///   pokemontcg.io has no Japanese catalog and never will, so this set must
+///   NOT wear the "TCGCSV — provisional" badge (pd-mt57). Every English set
+///   in this fixture is covered, so a badge that leaked back would have
+///   nothing here to catch it.
+/// * **One product id per CARD**, its print runs told apart by
+///   `sub_type_name` ("1st Edition" / "Unlimited") — which is what those
+///   runs physically are. The English sets give each variant its own product
+///   id, so `first_ed_*` / `unlimited_*` reach the variant display layer —
+///   its labels, chips and sort ranks — from here and nowhere else.
+/// * **No `artist` and no `national_pokedex_numbers`**, because
+///   `synthesize_cards` writes neither: TCGCSV's `extendedData` carries no
+///   such field.
+fn japanese_cards() -> Vec<JapanCard> {
+    vec![
+        JapanCard {
+            product_id: 575661,
+            name: "Aerodactyl",
+            supertype: "Pokémon",
+            subtypes: "[\"Basic\"]",
+            rarity: "Rare Holo",
+            hp: Some(60),
+            types: Some("Fighting"),
+            weakness: Some("Grass"),
+            retreat: 2,
+            flavor: None,
+            art: true,
+            runs: &[
+                ("1st Edition Holofoil", "first_ed_holo", 44.00),
+                ("Unlimited Holofoil", "unlimited_holo", 18.00),
+            ],
+        },
+        JapanCard {
+            product_id: 575662,
+            name: "Articuno",
+            supertype: "Pokémon",
+            subtypes: "[\"Basic\"]",
+            rarity: "Rare Holo",
+            hp: Some(70),
+            types: Some("Water"),
+            weakness: Some("Metal"),
+            retreat: 2,
+            flavor: None,
+            art: true,
+            runs: &[
+                ("1st Edition Holofoil", "first_ed_holo", 38.00),
+                ("Unlimited Holofoil", "unlimited_holo", 15.00),
+            ],
+        },
+        JapanCard {
+            product_id: 575663,
+            name: "Ekans",
+            supertype: "Pokémon",
+            subtypes: "[\"Basic\"]",
+            rarity: "Common",
+            hp: Some(40),
+            types: Some("Grass"),
+            weakness: Some("Psychic"),
+            retreat: 1,
+            flavor: None,
+            art: true,
+            runs: &[
+                ("1st Edition", "first_ed_normal", 1.20),
+                ("Unlimited", "unlimited_normal", 0.45),
+            ],
+        },
+        JapanCard {
+            product_id: 575664,
+            name: "Energy Search",
+            supertype: "Trainer",
+            subtypes: "[\"Item\"]",
+            rarity: "Common",
+            hp: None,
+            types: None,
+            weakness: None,
+            retreat: 0,
+            // A Trainer's rules text lands in `flavor_text` — that is where
+            // `synthesize_cards` puts TCGCSV's `Description`.
+            flavor: Some("Search your deck for a Basic Energy card."),
+            art: true,
+            runs: &[
+                ("1st Edition", "first_ed_normal", 0.90),
+                ("Unlimited", "unlimited_normal", 0.35),
+            ],
+        },
+        JapanCard {
+            product_id: 575665,
+            name: "Omanyte",
+            supertype: "Pokémon",
+            subtypes: "[\"Basic\"]",
+            rarity: "Common",
+            hp: Some(40),
+            types: Some("Water"),
+            weakness: Some("Grass"),
+            retreat: 1,
+            flavor: None,
+            art: true,
+            runs: &[
+                ("1st Edition", "first_ed_normal", 1.10),
+                ("Unlimited", "unlimited_normal", 0.40),
+            ],
+        },
+        // No art. TCGCSV reports `imageCount: 0` for a good deal of the
+        // vintage Japanese catalog, and the binder slot then draws its
+        // `.noart` name plate instead of an image. Nothing else here does.
+        JapanCard {
+            product_id: 575666,
+            name: "Lapras",
+            supertype: "Pokémon",
+            subtypes: "[\"Basic\"]",
+            rarity: "Rare",
+            hp: Some(80),
+            types: Some("Water"),
+            weakness: Some("Lightning"),
+            retreat: 2,
+            flavor: None,
+            art: false,
+            runs: &[
+                ("1st Edition", "first_ed_normal", 6.00),
+                ("Unlimited", "unlimited_normal", 2.50),
+            ],
+        },
+    ]
+}
+
+/// Insert the Japanese set, its cards, printings and prices.
+///
+/// Deliberately NOT routed through [`seed_set_cards`]: that helper writes
+/// the English shape — a pokemontcg.io image URL, an artist, one product id
+/// per variant — and each of those is a thing this set exists to differ
+/// from. Sharing it would mean parameterising away the whole point.
+fn seed_japanese_set(conn: &Connection) -> anyhow::Result<()> {
+    let cards = japanese_cards();
+    let code = japan_set_code();
+    // The series bucket is read out of `data/japan_series.json` through the
+    // production resolver rather than typed in here — the era boundaries are
+    // data, and a fixture that restated one would be the second place they
+    // live.
+    let series = pkdump_ingest::japan::SeriesMap::load()?;
+    let bucket = series.series_for(JAPAN_NAME, Some(JAPAN_RELEASED));
+
+    // `japan::import_groups` writes no sort orders and no set art;
+    // `synthesize_cards` fills `total` from the distinct collector numbers
+    // and leaves `printed_total` NULL when it can read none.
+    conn.execute(
+        "INSERT INTO sets \
+           (set_code, ptcgo_code, name, series, series_sort_order, \
+            set_sort_order, total, printed_total, release_date, \
+            logo_url, symbol_url, ptcgio_fetched_at, ptcgio_covered) \
+         VALUES (?1, NULL, ?2, ?3, NULL, NULL, ?4, NULL, ?5, NULL, NULL, NULL, 0)",
+        rusqlite::params![code, JAPAN_NAME, bucket, cards.len() as i64, JAPAN_RELEASED,],
+    )?;
+
+    for c in &cards {
+        // The synthetic collector number for a product TCGCSV publishes
+        // without one — `japan::collector_number`'s fallback arm.
+        let number = format!("p{}", c.product_id);
+        let card_id = format!("{code}-{number}");
+        // One URL for both sizes: `synthesize_cards` binds the same
+        // parameter twice, because TCGCSV publishes a single product image.
+        let image = c
+            .art
+            .then(|| format!("https://product-images.tcgplayer.com/{}.jpg", c.product_id));
+        conn.execute(
+            "INSERT INTO cards \
+               (card_id, set_code, number, number_sortable, name, supertype, \
+                subtypes, rarity, hp, types, weaknesses, retreat_cost, \
+                flavor_text, image_small, image_large) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+            rusqlite::params![
+                card_id,
+                code,
+                number,
+                pkdump_core::number_sortable(&number),
+                c.name,
+                c.supertype,
+                c.subtypes,
+                c.rarity,
+                c.hp,
+                c.types.map(|t| format!("[\"{t}\"]")),
+                c.weakness
+                    .map(|w| format!("[{{\"type\":\"{w}\",\"value\":\"×2\"}}]")),
+                (c.retreat > 0)
+                    .then(|| format!("[{}]", vec!["\"Colorless\""; c.retreat].join(","))),
+                c.flavor,
+                image,
+            ],
+        )?;
+
+        for (sub_type, variant, price) in c.runs {
+            conn.execute(
+                "INSERT INTO printings \
+                   (printing_id, card_id, variant, language, \
+                    tcgplayer_product_id, sub_type_name) \
+                 VALUES (?1, ?2, ?3, 'ja', ?4, ?5)",
+                rusqlite::params![
+                    format!("{card_id}-{variant}"),
+                    card_id,
+                    variant,
+                    c.product_id,
+                    sub_type,
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO prices \
+                   (tcgplayer_product_id, sub_type_name, source, \
+                    price_type, price, observed_at) \
+                 VALUES (?1, ?2, 'tcgplayer', 'market', ?3, ?4)",
+                rusqlite::params![c.product_id, sub_type, price, OBSERVED_AT],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // User data (collection.sqlite)
 // ---------------------------------------------------------------------------
 
@@ -1593,6 +1872,107 @@ mod tests {
              and is never repaired on open (it is ATTACHed read-only). \
              Missing: {}. Regenerate it: cargo run --bin pkdump -- seed-fixture",
             missing.join(", "),
+        );
+    }
+
+    /// The committed fixture must keep carrying a JAPANESE set, and keep
+    /// carrying it in the Japanese SHAPE (pd-zonm).
+    ///
+    /// Every claim here is a code path the three English sets cannot reach —
+    /// a NULL `printed_total`, synthetic `p<product_id>` collector numbers,
+    /// `ptcgio_covered = 0` so the "provisional" badge stays off (pd-mt57),
+    /// and one product id per card with its print runs told apart by
+    /// sub_type. The UI intents that walk this set assert against the
+    /// rendering; this asserts the DATA is still underneath them, because a
+    /// fixture edited to be tidier is silent about what it stopped covering.
+    #[test]
+    fn the_committed_fixture_carries_a_japanese_set_in_the_japanese_shape() {
+        let fixture = pkdump_db::open_shared_readonly(&committed_shared()).unwrap();
+        let code = japan_set_code();
+
+        // (printed_total, ptcgio_fetched_at, ptcgio_covered, ptcgo_code,
+        //  symbol_url, total)
+        type JapanSet = (
+            Option<i64>,
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        );
+        let set: JapanSet = fixture
+            .query_row(
+                "SELECT printed_total, ptcgio_fetched_at, ptcgio_covered, \
+                        ptcgo_code, symbol_url, total \
+                   FROM sets WHERE set_code = ?1",
+                [code.as_str()],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .unwrap_or_else(|e| panic!("{code} is not in the committed fixture: {e}"));
+        assert_eq!(set.0, None, "printed_total must stay NULL");
+        assert_eq!(set.1, None, "pokemontcg.io never fetched this set");
+        assert_eq!(set.2, 0, "pokemontcg.io does not carry the JP catalog");
+        assert_eq!(set.3, None, "TCGCSV publishes no abbreviation for it");
+        assert_eq!(set.4, None, "and no set symbol art");
+        assert_eq!(set.5, Some(japanese_cards().len() as i64));
+
+        // Every card is filed under the synthetic p<product_id> number, and
+        // its printings share that one product id.
+        let mut stmt = fixture
+            .prepare(
+                "SELECT c.number, c.artist, count(DISTINCT p.tcgplayer_product_id), \
+                        count(DISTINCT p.sub_type_name) \
+                   FROM cards c JOIN printings p ON p.card_id = c.card_id \
+                  WHERE c.set_code = ?1 GROUP BY c.card_id",
+            )
+            .unwrap();
+        let rows: Vec<(String, Option<String>, i64, i64)> = stmt
+            .query_map([code.as_str()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            japanese_cards().len(),
+            "every card has printings"
+        );
+        for (number, artist, product_ids, sub_types) in &rows {
+            let pid = number
+                .strip_prefix('p')
+                .unwrap_or_else(|| panic!("{number} is not a synthetic p<product_id> number"));
+            assert!(pid.parse::<i64>().is_ok(), "{number} carries no product id");
+            assert_eq!(*artist, None, "synthesize_cards writes no artist");
+            assert_eq!(*product_ids, 1, "{number}: one product id per JP card");
+            assert_eq!(*sub_types, 2, "{number}: one printing per print run");
+        }
+
+        // The 1st Edition / Unlimited variants exist in this fixture ONLY
+        // here, so the variant display layer's vintage codes are covered.
+        let vintage: i64 = fixture
+            .query_row(
+                "SELECT count(*) FROM printings p JOIN cards c USING (card_id) \
+                  WHERE c.set_code <> ?1 \
+                    AND p.variant IN ('first_ed_normal', 'first_ed_holo', \
+                                      'unlimited_normal', 'unlimited_holo')",
+                [code.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            vintage, 0,
+            "if an English set grows these variants, say so here rather than \
+             letting this test claim coverage it no longer uniquely provides"
         );
     }
 }

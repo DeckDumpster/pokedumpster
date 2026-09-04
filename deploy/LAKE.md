@@ -109,25 +109,125 @@ fetch without landing, on purpose.
 **`raw/` is kept indefinitely, and the absence of a lifecycle rule on it is a
 decision, not an oversight.**
 
-It is measured rather than assumed. The first figures here were an estimate
-over the price payloads alone; these are what one real refresh actually landed
-(`pd-fet2`, 2026-08-11, English + Japanese):
+It is measured rather than assumed, and it has now been measured twice three
+weeks apart. These are the objects one real refresh left in the bucket
+(`ingest_date=2026-08-31`, the last night the tail completed; the uncompressed
+column is `total_bytes` out of each `_manifest.json`, the bucket column is what
+`s3 ls --summarize` reports for the prefix, manifest included):
 
 | dataset | parts | uncompressed | in the bucket |
 | --- | ---: | ---: | ---: |
-| `tcgcsv/products` | 671 | 73.9 MB | **6.12 MB** |
-| `tcgcsv/prices` | 671 | 11.2 MB | **1.26 MB** |
+| `tcgcsv/products` | 675 | 74.0 MB | **6.13 MB** |
+| `tcgcsv/prices` | 675 | 11.2 MB | **1.27 MB** |
 | `tcgcsv/groups` | 2 | 135 kB | 21 kB |
-| `pokemontcgio/sets` | 1 | 58.8 kB | 6.6 kB |
-| **one night** | **1,345** | **85.3 MB** | **7.40 MB** |
+| `pokemontcgio/sets` | 1 | 58.8 kB | 6.7 kB |
+| `pokemontcgio/cards` | — | — | — |
+| **one night** | **1,353** | **85.4 MB** | **7.42 MB** |
+
+`pd-fet2` measured 2026-08-11 at 1,345 parts / 85.3 MB / 7.40 MB. Three weeks
+of new TCGCSV groups moved it by 0.3%, so this is a stable figure rather than
+one night's weather.
 
 **~7.4 MB/night, ~2.7 GB/year, ~27 GB over ten years** — still roughly
 $0.03/month in year one, so the decision is unchanged, but note two things the
-estimate got wrong. `products` is landed every night and is **five times the
-size of `prices`**, so "prices only; cards and sets are near-static" was the
+first estimate got wrong. `products` is landed every night and is **five times
+the size of `prices`**, so "prices only; cards and sets are near-static" was the
 wrong simplification: a group's product list is re-fetched whole each run
-whether or not it moved. And the bill is not really storage — 1,349 objects a
-night is ~492k PUTs/year, about $2.46, which is more than the bytes cost.
+whether or not it moved. And the bill is not really storage — 1,357 objects a
+night is ~495k PUTs/year, about $2.48, which is more than the bytes cost.
+
+### The empty row: `pokemontcgio/cards` has never landed
+
+That dash is not a quiet night. **`raw/source=pokemontcgio/dataset=cards/`
+does not exist in the bucket, on any date** — the whole listing under
+`source=pokemontcgio/` is `dataset=sets/`, measured 2026-09-04.
+
+It follows from what the refresh asks for rather than from anything failing.
+`land_tail` lands the cards of `missing_sets()` — the sets the catalog does not
+already hold — so cards reach `raw/` only on a night a new set is published,
+and a night that publishes none lands none. `Dataset::Cards` is
+`Need::Optional` for exactly that reason (`partition::requirement`), and the
+nightly derive is green because it is INCREMENTAL: it updates the catalog it is
+given, which already holds every set, so it asks for no cards and misses none.
+
+What that costs is one thing and it is the thing the lake was bought for: a
+derive into an EMPTY catalog cannot be replayed from any partition here.
+`missing_sets` would return all 174 sets, the tail would ask for
+`/v2/cards?q=set.id:…`, and `RawReplay::missing` is fatal with no fallback
+(`pd-6yql` removed the fallback deliberately). The lake can keep this catalog
+current and cannot rebuild one. Closing that is `pd-432m`; `pd-v1ca` was filed
+to close it, and its commit never reached `master`.
+
+#### What the sweep would cost, measured
+
+Not estimated. On 2026-09-04 every request `land_tail` would make for a
+whole-catalog sweep was made for real against `api.pokemontcg.io`, mirroring
+`PokemonTcgClient::fetch_cards_for_set` exactly — `/v2/cards?q=set.id:<id>
+&page=N&pageSize=250`, another page whenever one comes back full, the client's
+100ms floor between requests — and each response body was sized as landed and
+compressed with the sink's own `zstd -10`:
+
+| | measured | the `pd-v1ca` estimate |
+| --- | ---: | ---: |
+| sets swept | 174 | ~170 |
+| parts (requests) | **184** | ~170 |
+| cards | 20,479 | ~20k |
+| uncompressed | **38.1 MB** | ~60 MB |
+| in the bucket | **3.53 MB** | ~5 MB |
+
+184 rather than 174 because ten sets hold 250 cards or more and take a second
+page. The compression ratio is **10.8x**, close to `tcgcsv/products`' 12x and
+nothing like the 8x `sink.rs` assumes in general.
+
+So a night that swept the cards would be:
+
+| | today | with the sweep |
+| --- | ---: | ---: |
+| parts | 1,353 | **1,537** |
+| objects | 1,357 | **1,542** |
+| uncompressed | 85.4 MB | **123.6 MB** |
+| in the bucket | **7.42 MB** | **10.95 MB** |
+
+**~11 MB/night, ~4.0 GB/year, ~40 GB over ten years**, and ~563k PUTs/year at
+about **$2.81** — the same shape of answer §2 already gives, half again as
+large, and still not a reason to write a lifecycle rule. `pd-v1ca` put the
+night at 12.4 MB, high because it guessed 3 kB a card; a card is **1.86 kB**.
+
+The cost that is NOT cheap is time. The median request took **4.5s** and the
+184 of them summed to **14m19s** — against an acquisition phase that today
+takes 3m38s in total. A sweep roughly quintuples the wall clock of a landing
+run, which matters because `TimeoutStartSec=1800` is what bounds it. That
+figure was taken on a degraded day (below), so read it as the bad end of the
+range rather than the typical one; the bytes above are not weather-dependent.
+
+### The rate limit, since the sweep would be the first thing to approach it
+
+`api.pokemontcg.io` allows **1,000 requests/day** without a key and 20,000 with
+one. Today's landing spends **one** — the single `/v2/sets` page — so the
+ceiling is nowhere near, and prod has no key configured.
+
+A sweep would spend **185**: the set list plus the 184 measured above. Still
+comfortably under the keyless ceiling on a good day — and 2026-09-04 was not
+one. Getting those 184 responses took **535 HTTP requests**, because roughly a
+third of them answered 500 or 502 and were retried; the API had been bad enough
+for four days running that `pkdump-refresh@prod` landed `pokemontcgio/sets`
+INCOMPLETE every night from 2026-09-01 and the wrapper was paging about it. Half
+the keyless ceiling, spent on retries, is the real shape of the risk here rather
+than the request count.
+
+The retries are the smaller half of that risk. `retry.rs`'s budget is four
+attempts and then the error propagates, and the tail is one loop over every set
+— so on that weather a sweep does not degrade, it **ends**, at whichever set
+exhausts its budget first. That is a decision for whoever re-lands the sweep
+(`pd-432m`) and it is not the decision the one-request tail has today.
+
+`POKEMONTCG_API_KEY` is what raises it. `PokemonTcgClient::new` reads it from
+the environment, `pkdump-refresh@<instance>.service` documents it as a drop-in
+`Environment=`, and `deploy/refresh.sh` forwards it into the container — that
+last leg is not decoration: a drop-in sets the variable in the WRAPPER's
+environment, and a wrapper that does not forward it leaves a key that reads as
+set and does nothing until a run starts being throttled (the pd-vk22 shape,
+which is why the retry budget is forwarded on the same line).
 
 If you are here because you found an unmanaged prefix and were about to tidy
 it up: **this is the one that is meant to be unmanaged.**
@@ -1226,7 +1326,8 @@ upstream most likely to be down. Tracked as `pd-nons`.
 
 ### What one night is
 
-1,349 objects, 7.40 MB in the bucket, 85.3 MB uncompressed — the table in §2.
+1,349 objects, 7.40 MB in the bucket, 85.3 MB uncompressed, on the night this
+section is about. §2 carries the same shape re-measured three weeks later.
 The acquisition phase took **3m38s** (1,345 fetches, each landed before it was
 parsed); the whole `pkdump data refresh --land-raw`, derivation included, took
 **5m5s** on the deployment box. Landing costs about a PUT per fetch and does

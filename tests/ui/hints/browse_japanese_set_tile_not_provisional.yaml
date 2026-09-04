@@ -1,0 +1,24 @@
+start_page: /browse
+involves:
+  - "series accordion: button.grouphdr per series, aria-expanded, ▸/▾ caret"
+  - "a series with no owned cards defaults to COLLAPSED, so its tiles are not in the DOM — frontend/src/routes/browse/+page.svelte, the onMount `collapsed` computation"
+  - "set tile a.tile with href '/browse/jp-23723'"
+  - "span.symbol > span.code — the shortCode fallback, (ptcgo_code ?? set_code).toUpperCase(), used when symbol_url is null"
+  - "div.tags with the 'TCGCSV' Badge — rendered only when SetSummary.synthesized is true"
+  - "the tile's ProgressBar meters: 'Base …' only when base_total_cards is non-null, 'Master …' always"
+fixture_data:
+  set: "Mystery of the Fossils (set_code jp-23723), TCGCSV group 23723, released 1997/06/21, 6 catalogued cards, printed_total NULL, ptcgo_code NULL, symbol_url NULL, ptcgio_covered 0"
+  series: "Pokémon JP — Original Era — the only series in the fixture with no owned cards, so the only one that starts collapsed"
+  collection: "no copies of any jp-23723 printing, so owned_cards = 0 and the Master meter reads 0 / 6"
+notes: >
+  `synthesized` is `ptcgio_fetched_at IS NULL AND ptcgio_covered = 1`. A
+  Japanese set has a NULL fetch timestamp like a provisional English one,
+  and the second half is the only thing that tells them apart — so the
+  absent badge is the whole point of this intent, not decoration.
+  1. Navigate to /browse. 2. Wait for the tile grid. 3. Assert the
+  "Pokémon JP — Original Era" group header is present and that
+  a.tile[href="/browse/jp-23723"] is NOT in the DOM (the series is
+  collapsed). 4. Click that group header. 5. Assert the tile is now
+  visible. 6. Assert its span.code reads "JP-23723". 7. Assert the tile
+  carries no div.tags (no "TCGCSV" badge). 8. Assert the tile shows
+  "Master 0 / 6" and no "Base" meter. 9. Screenshot.

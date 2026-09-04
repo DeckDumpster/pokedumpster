@@ -1,0 +1,23 @@
+# Scenario: browse a Japanese set to its binder page, open a card, add a copy
+#
+# Related:
+#   intents: browse_japanese_set_tile_not_provisional, card_detail_add_copy
+#   issues: [pd-zonm]
+
+description: >
+  Starting from "Browse sets" I expand the "Pokémon JP — Original Era"
+  series and open its one set, "Mystery of the Fossils". The binder page
+  loads at /browse/jp-23723 with the set name in the breadcrumb, a single
+  page of six slots, and every slot dimmed because I own none of it. The
+  catalog knows no printed total for this set, so nothing is filed as a
+  secret rare: the Base meter reads 0/6, every catalogued card, and the
+  Master meter reads 0/12, every printing — two print runs apiece. One
+  slot has no art at all and draws the card's name in place of an image.
+  I open the Ekans
+  slot and follow "Full card details →" to the card page, where the
+  breadcrumb reads "Ekans #p575663" — the card is filed under the
+  synthetic p<product_id> collector number — and the Printings list shows
+  the two vintage print runs, "1st Edition Normal" and "Unlimited Normal",
+  rather than the Normal / Reverse Holofoil pair an English set carries.
+  I click "+" on the 1st Edition Normal row; "Your copies" goes from 0 to
+  1 and that row's owned count reads 1.

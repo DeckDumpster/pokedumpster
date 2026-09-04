@@ -90,7 +90,14 @@ The user runs it on a self-hosted box and reaches it over WireGuard.
 cargo build                      # build all crates
 cargo test                       # run all tests; also regenerates the TypeScript
                                  #   types in frontend/src/lib/types/ via ts-rs
+cargo test -p pkdump-db          # test a single crate; tests/catalog_writers.rs
+                                 #   is the catalog's two kinds of writer — a
+                                 #   server start must not race the nightly
+                                 #   derive for the write lock
 cargo test -p pkdump-db          # test a single crate
+cargo test -p pkdump-cli         # the CLI, incl. `outbox status
+                                 #   --require-backfill` — the check
+                                 #   `setup-lake.sh --arm-shipper` arms on
 cargo test -p pkdump-lake        # raw-landing key layout, manifest, config
 cargo test -p pkdump-ingest --test raw_landing
                                  # the real HTTP clients against a local
@@ -184,18 +191,22 @@ bash tests/deploy/run.sh
 # asserts every gate under tests/ removes the per-checkout image tag it built,
 # because nothing else on the box ever will. The sixth reads the
 # Containerfile: builder and runtime must name the SAME Debian release, and the
-# target cache id must name it too.
+# target cache id must name it too. The fifth refuses a baseline approval
+# narrowed to one viewport, and checks both baseline directories against
+# routes.json.
 bash tests/lib/diagnostics_test.sh
 bash tests/lib/ports_test.sh
 bash tests/lib/objects_test.sh
 bash tests/lib/litestream_test.sh
 bash tests/lib/images_test.sh
 bash tests/container/base_images_test.sh
+bash tests/visual/approval_test.sh
 
 # Browser tier — every route screenshotted at 1440 and 768 against a
 # throwaway container instance, plus the DOM assertions a screenshot cannot
 # make (/collection renders a viewport-sized WINDOW of a 56k-row result). A
-# pixel diff fails; approving one is explicit.
+# pixel diff fails; approving one is explicit — and covers every viewport,
+# never one (pd-tf4h).
 bash tests/visual/run.sh         # check
 bash tests/visual/run.sh --update  # approve — see tests/visual/README.md
 
@@ -513,6 +524,53 @@ and runs nothing.
 so a docs-only PR still runs it). A tier renamed in one file and not the other
 fails it in a second, and a guard on a name that is not a tier is fatal rather
 than a silent skip.
+
+### A baseline approval covers every viewport
+
+`tests/visual/approval-guard.sh` refuses an approval narrowed to a single
+`--project`, and every path this repo has into Playwright asks it: `run.sh`
+before it stands a container up, `playwright.sh` before it installs anything,
+`npm run approve` through `playwright.sh`.
+
+A rendering change reaches both widths — a button that becomes a spacer is a
+spacer at 1440 and at 768 — so a one-viewport approval is not a smaller
+approval, it is a **stale baseline**, and the branch that makes it stays green
+because the run that would have failed is the one it filtered out. The next
+branch to run the browser tier wears it. That is pd-4tce: pd-0o5m re-recorded
+the mobile-768 pair only, `desktop-1440/card-detail-owned-vintage.png` sat
+stale for days, and the epic branch went red on 128 pixels that survived
+Playwright's retry — not a flake anybody could dismiss.
+
+The bypass was not a mistake in a script. **It was a recipe in
+`tests/visual/README.md`**, offered as the way to approve a subset. There was
+never anything to buy with it: baselines are deterministic — back-to-back runs
+against one instance differ by zero pixels — so a full `--update` rewrites the
+unmoved PNGs with the bytes they already hold and `git status` shows nothing
+for them. Narrowing to a **route** (`-g collection`) is a different thing and
+stays allowed, because it moves both viewports together.
+
+The criterion this came from used to read "baselines re-recorded **in the same
+commit**", and that phrasing could not survive the tooling: `gt`'s safety net
+commits work automatically at arbitrary points, so several of the changes the
+rule exists for landed in a `WIP: checkpoint (auto)` and could not have
+carried their baselines whatever anybody intended (pd-tf4h). It is stated
+against the **branch** now — the pixels and the code that moved them are
+reviewed together, and the commit recording the pixels says which change moved
+which. That works: all ten baselines re-recorded in `e37e2da` were attributed
+three weeks later from its commit message alone (eight fixture-date drifts,
+pd-w1dq; two real `/collection` changes), with nothing unexplained riding
+along.
+
+`tests/visual/approval_test.sh` is the gate (lint tier, hermetic,
+sub-second). It drives the guard both ways — the refusals, and the ordinary
+approvals that must still go through, since a guard whose first contact with
+real work is a false positive is one that gets routed around. It asserts every
+scripted approval arrives through the guard and does so *before* the run
+spends anything. And it fails on any **line** anywhere — documentation
+included — that spells an approval next to a viewport filter, because a line
+carrying both is the copy-pasteable form, which is exactly what this was.
+Its last section checks what nothing checked: a route with a baseline at one
+viewport and not the other, and a PNG no route in `routes.json` claims.
 
 ### CI triggers on the PR's BASE branch — master and `integration/**`
 
@@ -1285,6 +1343,19 @@ outbox starts empty (pd-whsw), and armed early it faithfully ships every
 change made from tonight and nothing anybody already owns. `pkdump outbox emit
 --all --all-tenants` (pd-385w) is what makes the outbox describe the
 collection that is already there; arming is the step after it, per instance.
+
+**Arming is `bash deploy/setup-lake.sh <instance> --arm-shipper`, and it CHECKS
+the three preconditions rather than printing them** (pd-0h2p). They were written
+down in four places and enforced in none, which is how a box arms early. The
+tenant credential must be set and must not be the catalog's; the master key must
+exist at mode 600; and every registered tenant must have a completed full
+backfill on record — the last asked of the collections themselves through
+`pkdump outbox status --all-tenants --require-backfill`, which answers with an
+**exit status** rather than a sentence a script would have to parse (pd-cxq4).
+A registered collection whose database is not on the box fails that check too:
+it is not a tenant that has been backfilled, it is a tenant nobody can say
+anything about. The fourth precondition — that the master key is BACKED UP — is
+said out loud and not asserted, because nothing on the box can know it.
 **Prod is armed** (pd-r130, 2026-08-26), on a collection whose backfill
 `ownership_emit_log` records as complete through seq 4814.
 
@@ -1310,8 +1381,11 @@ and encryption-under-the-right-key over a `DirStore`, plus the seam with item
 timestamps rather than the day the backfill ran) and
 `tests/lake/shipper.sh` (container tier — the shipped image against a real
 MinIO under the real tenant policy, a real process killed mid-run and resumed,
-the catalog role's denial seen both green and red, and `deploy/ship.sh`'s four
-exit statuses).
+the catalog role's denial seen both green and red, `deploy/ship.sh`'s four
+exit statuses, and §8, pd-385w's headline proof re-stated against this zone:
+delete a tenant's partition outright, rebuild it with `pkdump outbox emit
+--all`, and the holdings it describes must be what incremental shipping
+produced).
 
 ### The deletion path
 
@@ -1593,6 +1667,121 @@ tenant-database dependency** — the valuation still opens each tenant's SQLite
 to read those, to read `zone_holdings`, and to write the snapshot back. Phase
 3 narrowed which table the *copies* come from and nothing else. Runbook:
 `deploy/TENANT_ZONE.md` §7.
+
+### The catalog has one BUILDER and many CONVERGERS (pd-dzu5)
+
+Two different things open `shared.sqlite` read-write, and until pd-dzu5 nothing
+told them apart.
+
+- A **builder** fills it from upstream bytes: `pkdump setup` by hand and,
+  nightly, `pkdump-lake-derive shared`, which since pd-lunn is the only thing
+  on a box that does. It runs in its own container over the same data volume,
+  writes the live catalog **in place**, and holds the write lock in
+  transactions of its own for **minutes** (`TimeoutStartSec=1800`).
+- A **converger** brings a catalog up to the shape the running binary expects:
+  `open_shared` re-applies `schema_shared.sql`, adds any column the file
+  predates (`ADDED_COLUMNS`) and re-seeds every shipped seed file. `pkdump
+  serve` is only ever this, once at startup, and that is deliberate — a binary
+  upgrade can ship a data-only migration that must be applied before the first
+  request.
+
+The bug was that the server converged **unconditionally**.
+`search_meta::reconcile` alone is a `DELETE` and a few hundred `INSERT`s, so
+*every restart took the catalog's write lock* whether or not the binary shipped
+anything new — and `deploy/deploy.sh`, a reboot or an OOM can restart the
+server at any moment, including inside the 07:00 derive. Losing that race is a
+start that fails on `database is locked` after `busy_timeout(5s)`;
+`pkdump.container` carries `Restart=on-failure`/`RestartSec=10` and **no
+`OnFailure=`**, so the container then retries every ~15s and the site is simply
+down for the rest of the build with nothing saying so. Not corruption —
+SQLite's locking is what rules that out — a silent, self-healing outage.
+
+**The fix is a fingerprint, not a lock.** `crates/pkdump-db/src/convergence.rs`
+hashes every embedded input this build would write into the catalog —
+`schema_shared.sql`, the `ADDED_COLUMNS` DDL, the shared schema version, and
+every shipped seed file — into one SHA-256, recorded in `catalog_convergence`.
+`open_shared_for_serving` asks the question **read-only** and, on a match,
+never opens the catalog read-write at all. So an ordinary restart takes no
+write lock and cannot race the derive; a binary that genuinely ships a
+data-only migration still writes, and that is now the *only* case that can
+collide.
+
+Seven things about it are decisions:
+
+- **It hashes the INPUTS, never the tables.** What a convergence would write is
+  a property of the binary; what the catalog holds is 12.5M price rows this has
+  no business reading. That is what makes the question cheap enough to ask on
+  the read-only path first.
+- **The fingerprint is written LAST**, after the seeds and after the version
+  stamp, by `connection.rs::converge` and nowhere else. Recorded before the
+  work, a convergence that died halfway would be skipped forever.
+- **Converged means the fingerprint AND the version stamp.** `converge`
+  persists two things — the seeds and schema the hash stands for, and `PRAGMA
+  user_version` — so the probe asks about both. A fingerprint-only check looks
+  obviously sufficient and is not: it reports converged a catalog this build
+  has never stamped, the stamp then never arrives, and the file goes on
+  claiming a shape it does not have. Not hypothetical — every catalog in
+  existence was `user_version` 0 before pd-ja38, and
+  `tests/schema-version/run.sh` §1 boots exactly such a volume and requires it
+  to come out stamped. **That container gate is what caught it**, on a change
+  whose hermetic tests were all green.
+- **Anything else that is not a clear YES is a NO.** No table (every existing
+  box, on the deploy that lands this), no row, a different hash, or a WAL
+  database whose `-shm` is absent — which cannot be opened read-only at all —
+  each falls through to the read-write path. Note which case that last one is: the `-shm`
+  exists exactly while another process holds the catalog open, so the read-only
+  probe works precisely on the night it matters and the fall-through is taken
+  when there is no competing writer to lose to.
+- **`search_meta::reconcile` moved INTO the convergence.** It was the one
+  shipped seed each caller reconciled for itself — setup, the derive, the
+  server, the fixture seeder — which is why it was also the one nothing could
+  account for when asking whether a catalog was converged. `search_meta::counts`
+  is what the two callers that printed its numbers use now: a second reconcile
+  for the sake of a return value rewrites a few hundred rows to print something
+  already true.
+- **The row holds the hash and nothing else.** A `converged_at` beside it was
+  the obvious second column and is deliberately absent: two derives of one
+  `raw/` partition must be row-identical — that is what `pkdump-lake-derive
+  diff` exists to check — and a clock read here would make every such
+  comparison differ in a field nobody reads. `raw_derivation` earns its
+  `derived_at` by being the operator's record of which run produced a catalog,
+  and is excluded from the comparator by name; this table is an input to a
+  decision the next process makes, and *when* it was written is no part of it.
+- **The patience is derived, and it is the second half of the fix.** On the
+  rare start that really must converge, five seconds is the wrong wait — the
+  thing it is waiting for declares 1800s. It cannot wait that long either:
+  `pkdump.container` gives the start job `TimeoutStartSec=120`, so the wait is
+  bounded by what the server's own unit permits (`SERVING_PATIENCE`), and the
+  start says in the journal that it is converging. `tests/deploy/run.sh` §18 holds
+  the two numbers together, because they live in a Rust file and a systemd unit
+  and cannot share a constant.
+
+The input list is **asserted over the tree**, not maintained:
+`convergence::every_catalog_seed_is_in_the_fingerprint` reads every
+`include_str!` in `pkdump-db` and requires each to be classified into exactly
+one of `inputs()` and `NOT_CATALOG_INPUTS`. That is the only way this can be
+wrong and it would be silent — a seed added to the convergence and forgotten
+there leaves the fingerprint matching while the new seed never reaches a
+running server.
+
+Gates: `crates/pkdump-db/tests/catalog_writers.rs` — every claim stated against
+a catalog whose write lock is genuinely held by a second connection, with the
+control beside it (a read-write open of the same catalog fails, which is what
+the server used to do on every start) and the inverse (an un-converged catalog
+**waits** for the writer and then converges, so a `for_serving` that had
+quietly stopped converging anything could not pass the file). Seen red: with
+the fingerprint check removed, the two headline tests fail and the suite takes
+92 seconds — which is the outage, measured. And
+`crates/pkdump-server/tests/no_catalog_writer.rs`, which states it over the
+serving crate's source rather than over the one call site that is right today:
+no `open_shared` outside test code, **and** the `open_shared_for_serving` call
+still present — a guard that only forbids passes just as happily on a server
+that converges nothing at all. Both halves seen red.
+
+The other read-write openers are unchanged and are all operator-run: `pkdump
+setup`, `pkdump data expand-only|apply-corrections|normalize-symbols`, and
+`pkdump seed-fixture`. `pkdump data refresh` is not among them — since pd-lunn
+it opens the catalog `open_shared_readonly` and writes no catalog table at all.
 
 ### The offline catalog derive
 
@@ -2047,12 +2236,26 @@ backfill that skipped sealed pass the headline proof, which is the failure
 this bead exists to prevent arriving through the test suite instead of
 through the code.
 
-**Still owed before this is armed on prod**: the proof is stated against
-`outbox::project` rather than against a tenant zone, because the shipper
-(pd-dxn3) is being built in parallel and does not exist yet. `project` is the
-contract between them — the shipper writes that reduction — so re-stating the
-headline proof against real Parquet in the zone is a container-tier gate that
-belongs with the shipper (pd-880q, filed rather than forgotten).
+**The headline proof is stated twice, at two altitudes** (pd-880q). The Rust
+one is over `outbox::project`, and that is what makes it a claim about the
+*reduction*: the zone is an abstraction there, and `project` is the contract
+between the backfill and the shipper. `tests/lake/shipper.sh` §8 states the
+same claim with the abstraction removed — a collection's history shipped a day
+at a time into a real bucket under the real tenant policy, the tenant's
+partition deleted outright, `pkdump outbox emit --all`, shipped again, and the
+holdings the zone describes read back through `pkdump-ship holdings` and
+required to be identical row for row. Parquet, AES-256-GCM under a derived key
+and an IAM boundary sit between the two sides of that one, which is four more
+places a holding can be lost, duplicated or resolved to the wrong version.
+
+**§8b is the check that makes the rest of it mean anything.** Over an emptied
+partition the read-back must materialise NOTHING — a reader that had quietly
+fallen back to the live `collection` table passes every other check in the
+file, and Phase 3 would go on reporting beautiful numbers about holdings the
+zone does not hold. The section's fixture carries both sources and gives the
+surviving sealed lot the same `row_id` as a surviving single, for the reason
+the Rust fixture does: a proof over singles alone would not notice a backfill
+that skipped sealed.
 
 **The sealed triggers have landed** (pd-4gop), so `SOURCE_TABLES` carries
 `("sealed_collection", "added_at")` and every claim above is a claim about

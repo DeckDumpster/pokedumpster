@@ -129,9 +129,14 @@ if [ ! -f "$ALERTS_ENV" ]; then
 # Create an app at https://pushover.net/apps/build for the token.
 PUSHOVER_TOKEN=CHANGE_ME
 PUSHOVER_USER=CHANGE_ME
-# Low-disk alert (Layer 4): percent-used trigger + filesystem to watch.
-PKDUMP_DISK_THRESHOLD=90
+# Low-disk alert (Layer 4): filesystem to watch, and the two arms that page.
+# The free-space arm is what buys lead time — deploy/ci.sh refuses to build under
+# PKDUMP_DISK_FLOOR_GB (10) free, and a percentage cannot say how close that is.
+# Blank PKDUMP_DISK_WARN_GB means twice the floor; it MUST clear the floor, and
+# a value that does not is refused rather than clamped (pd-smcp).
 PKDUMP_DISK_PATH=
+PKDUMP_DISK_WARN_GB=
+PKDUMP_DISK_THRESHOLD=90
 EOF
     chmod 600 "$ALERTS_ENV"
     echo "    Wrote ${ALERTS_ENV} (fill PUSHOVER_TOKEN/USER)."
@@ -400,10 +405,11 @@ echo "                       systemctl --user enable --now pkdump-refresh@${INST
 echo "    Nightly lake chain: needs the lakehouse first (bash deploy/setup-lake.sh ${INSTANCE}), then"
 echo "                       land -> derive -> prices -> ship -> transform, each ordered after the last:"
 echo "                       systemctl --user enable --now pkdump-prices@${INSTANCE}.timer"
-echo "                       systemctl --user enable --now pkdump-ship@${INSTANCE}.timer"
+echo "                       bash deploy/setup-lake.sh ${INSTANCE} --arm-shipper"
 echo "                       systemctl --user enable --now pkdump-value-snapshots@${INSTANCE}.timer"
-echo "                       (ship needs a master key + PKDUMP_TENANT_AWS_PROFILE, and the"
-echo "                        backfill run first — deploy/TENANT_ZONE.md. The transform values"
+echo "                       (--arm-shipper enables pkdump-ship@${INSTANCE}.timer only once its three"
+echo "                        preconditions hold: a master key, PKDUMP_TENANT_AWS_PROFILE, and the"
+echo "                        backfill run — deploy/TENANT_ZONE.md. The transform values"
 echo "                        what ship reads back, so arming it alone snapshots nobody.)"
 echo "    Uptime (L0):       edit ~/.config/pkdump/${INSTANCE}/alerts.env (PKDUMP_UPTIME_PING_URL,"
 echo "                       PKDUMP_HEARTBEAT_URL — a SEPARATE check from the backup one), then:"

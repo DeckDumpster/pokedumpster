@@ -1136,6 +1136,26 @@ fetch fails, is counted, and the affected sets keep their upstream symbol URL
 (which still renders). The derive says so out loud rather than leaving it to be
 discovered from a row count. Filed as **pd-5w4n**.
 
+### It holds the catalog's write lock, and a deploy no longer loses to it
+
+This job writes the live `shared.sqlite` **in place**, in transactions of its
+own, for minutes. `pkdump serve` opens the same file read-write at startup — a
+binary upgrade can ship a data-only migration that has to be applied before the
+first request — so a `deploy/deploy.sh`, a reboot or an OOM landing inside the
+07:00 derive used to fail the server's start on `database is locked` after five
+seconds. `pkdump.container` has `Restart=on-failure`/`RestartSec=10` and no
+`OnFailure=`, so the container then retried every ~15s and the site was down
+for the rest of the build with nothing saying so (**pd-dzu5**).
+
+That start now asks read-only whether it has anything to converge — a
+fingerprint over this build's schema and shipped seeds, in
+`catalog_convergence` — and on a match it takes no write lock at all. **An
+ordinary restart during the derive is a non-event.** The exception is the first
+start after a deploy that changed the schema or a seed: that one genuinely has
+work to do, waits up to 90s for the derive to let go, and says so in the
+journal. If it ever fails there, the answer is to redeploy after the derive has
+finished; there is nothing to repair.
+
 ---
 
 ## 9. Where the code is

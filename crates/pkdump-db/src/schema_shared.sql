@@ -420,3 +420,36 @@ CREATE TABLE IF NOT EXISTS raw_derivation (
     derived_at   TEXT    NOT NULL,           -- when this derive ran, RFC 3339
     PRIMARY KEY (ingest_date, source, dataset)
 );
+
+-- ── The convergence fingerprint (pd-dzu5) ──────────────────────────────────
+-- One row, holding a SHA-256 over every embedded input the build that last
+-- opened this catalog read-write would write into it: schema_shared.sql, the
+-- ALTER TABLEs in connection.rs::ADDED_COLUMNS, the shared schema version,
+-- and all six shipped seed files. See crates/pkdump-db/src/convergence.rs.
+--
+-- It exists so `pkdump serve` can ask, READ-ONLY, whether there is anything
+-- for it to converge. Before it, every server start took the catalog's write
+-- lock unconditionally — search_meta::reconcile alone is a DELETE and a few
+-- hundred INSERTs — and a restart landing inside the nightly
+-- `pkdump-lake-derive shared` failed on "database is locked" after five
+-- seconds, then retried every fifteen until the build was over.
+--
+-- Written LAST by open_shared, once the convergence has really happened. A
+-- catalog with no such table, or no row, or a different hash, is simply not
+-- converged, which is the direction being wrong is cheap in.
+--
+-- The hash and nothing else. A `converged_at` beside it was the obvious second
+-- column and it is deliberately absent: two derives of one raw/ partition must
+-- be row-identical, that is what `pkdump-lake-derive diff` exists to check, and
+-- a clock read here would make every such comparison differ in a field nobody
+-- reads. `raw_derivation` earns its `derived_at` by being the operator's record
+-- of which run produced this catalog and is excluded by name; this table is an
+-- input to a decision the next process makes, and *when* it was written is not
+-- part of that decision. The journal has the time.
+--
+-- No `user_version` bump: additive CREATE ... IF NOT EXISTS, and a build that
+-- predates this table reads nothing from it.
+CREATE TABLE IF NOT EXISTS catalog_convergence (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    fingerprint  TEXT NOT NULL            -- hex SHA-256, convergence::fingerprint
+);

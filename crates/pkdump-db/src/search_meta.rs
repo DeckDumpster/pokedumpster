@@ -18,13 +18,13 @@ use rusqlite::{Connection, params};
 
 use crate::error::Result;
 
-const KEYWORDS_SEED: &str = include_str!("../../../data/search_keywords.json");
+pub(crate) const KEYWORDS_SEED: &str = include_str!("../../../data/search_keywords.json");
 // `rarities.json` ranks both catalogs. The Japanese tiers TCGCSV ships
 // (Holo Rare, Art Rare, Special Art Rare, Character Rare, …) are ranked
 // against their nearest English equivalent so `r>=` / `r<` span English
 // and Japanese cards alike.
-const RARITIES_SEED: &str = include_str!("../../../data/rarities.json");
-const FLAGS_SEED: &str = include_str!("../../../data/search_flags.json");
+pub(crate) const RARITIES_SEED: &str = include_str!("../../../data/rarities.json");
+pub(crate) const FLAGS_SEED: &str = include_str!("../../../data/search_flags.json");
 
 /// One row of the `rarities` rank table.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -58,6 +58,24 @@ pub struct SearchMetaCounts {
     pub keywords: usize,
     pub rarities: usize,
     pub flags: usize,
+}
+
+/// What the three search-metadata tables currently hold.
+///
+/// The counts [`reconcile`] would report, read back rather than produced by
+/// re-running it. Opening the catalog read-write already reconciles these
+/// (`connection.rs::converge`), so a caller that wants to *say* how many
+/// there are asks — a second reconcile for the sake of its return value is a
+/// few hundred rows rewritten to print a number that was already true.
+pub fn counts(conn: &Connection) -> Result<SearchMetaCounts> {
+    let one = |sql: &str| -> Result<usize> {
+        Ok(conn.query_row(sql, [], |r| r.get::<_, i64>(0))? as usize)
+    };
+    Ok(SearchMetaCounts {
+        keywords: one("SELECT COUNT(*) FROM search_keywords")?,
+        rarities: one("SELECT COUNT(*) FROM rarities")?,
+        flags: one("SELECT COUNT(*) FROM search_flags")?,
+    })
 }
 
 /// Re-seed the three search-metadata tables from their JSON sources. These

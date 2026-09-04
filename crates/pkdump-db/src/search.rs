@@ -28,6 +28,39 @@ use crate::search_meta::SearchFlag;
 // Scalar subqueries reused across the SELECT list and predicates.
 const OWNED_COUNT_SUBQ: &str =
     "SELECT COUNT(*) FROM collection c WHERE c.printing_id = p.printing_id";
+// What this printing's OWNED copies are worth: its market price times the sum
+// of its owned copies' condition multipliers. The per-row half of
+// `SearchPage::total_value`; see that field for why `status = 'owned'` and not
+// the wider set owned mode lists.
+//
+// The price is drawn ONCE rather than per copy inside the aggregate. A
+// printing's market price depends only on `p` (that is what pd-m4gw's rule
+// bought), so price x SUM(multiplier) is the same number as SUM(price x
+// multiplier), and the three-arm COALESCE is then evaluated once per printing
+// instead of once per owned copy.
+//
+// Every arm of it is nullable, and that is load-bearing: a printing nobody
+// prices, or one with no owned copy at all, answers NULL, which the outer
+// `SUM` ignores. That is what makes a result with nothing owned and priced in
+// it `None` rather than `$0.00`.
+//
+// The `CASE` is not decoration. Catalog-wide mode matches one row per printing
+// in the catalog (56k on the real one) and owns a couple of thousand of them,
+// so without it the three-arm price lookup runs ~54,000 times to be multiplied
+// by NULL. `CASE` short-circuits in SQLite, so the price is drawn only for a
+// printing something is actually owned of, and every other row costs one index
+// probe.
+const OWNED_VALUE_SUBQ: &str = concat!(
+    "CASE WHEN EXISTS (SELECT 1 FROM collection c \
+                        WHERE c.printing_id = p.printing_id AND c.status = 'owned') \
+          THEN (",
+    crate::market_price_expr!(),
+    ") * (SELECT SUM(COALESCE(cond.multiplier, 1.0)) \
+            FROM collection c \
+            LEFT JOIN conditions cond ON cond.name = c.condition \
+           WHERE c.printing_id = p.printing_id AND c.status = 'owned') \
+     END"
+);
 // One rule for "what is this printing worth", defined in `crate::prices` and
 // spent by every surface that draws or orders by a price. For a catalog
 // printing it resolves entirely inside `shared`, which is what lets
@@ -120,6 +153,30 @@ pub struct SearchPage {
     /// Rows the query matches in total, ignoring `limit`/`offset`.
     #[ts(type = "number")]
     pub total: i64,
+    /// [`SearchPage::total`] in money: the condition-adjusted market value of
+    /// every **owned** copy of every printing the query matches, ignoring
+    /// `limit`/`offset`. `None` when the result contains no owned, priced copy
+    /// — a result worth nothing and a result worth an unknown amount are the
+    /// same answer here, and neither is `$0.00`.
+    ///
+    /// It is computed here rather than by the client for two reasons, and the
+    /// second is the durable one. A client holding one page can only sum that
+    /// page, so under paging the figure had to be withheld unless the page WAS
+    /// the result (pd-2g84) — the collection page holds the whole result today
+    /// (pd-7z4o), but a field that is page-invariant by construction cannot
+    /// lose that property the next time the endpoint is paged. And a sum the
+    /// client computes is a *second* implementation of what a collection is
+    /// worth: the number is a button that opens the value-over-time chart, and
+    /// that chart's copies are `status = 'owned'` (`value_history`), so this
+    /// one's are too. Owned mode also lists `ordered` copies — a card that is
+    /// paid for and not here — and those are counted by `total`, drawn by the
+    /// list, and deliberately not valued.
+    ///
+    /// Owned-only holds in catalog-wide mode as well ("All cards"), where the
+    /// result is mostly printings nobody owns. Summing those would answer a
+    /// different question — what completing the set would cost — which is a
+    /// figure worth having and is not this one.
+    pub total_value: Option<f64>,
     #[ts(type = "number")]
     pub limit: u32,
     #[ts(type = "number")]
@@ -280,7 +337,7 @@ pub fn search_page(
     compiled: &CompiledSearch,
     slice: Slice,
 ) -> Result<SearchPage> {
-    let total = count(conn, compiled)?;
+    let (total, total_value) = totals(conn, compiled)?;
     let page = match slice {
         Slice::Page { limit, offset } => Some((limit, offset)),
         Slice::All => None,
@@ -293,19 +350,28 @@ pub fn search_page(
     Ok(SearchPage {
         rows,
         total,
+        total_value,
         limit,
         offset,
     })
 }
 
-/// Count every row the compiled query matches, ignoring any paging.
-pub fn count(conn: &Connection, compiled: &CompiledSearch) -> Result<i64> {
+/// Everything the compiled query matches, ignoring any paging: how many rows,
+/// and what the owned copies among them are worth
+/// ([`SearchPage::total`] and [`SearchPage::total_value`]).
+///
+/// One statement, because the two are the same fact counted in different units
+/// and a second statement would be a second execution of the same WHERE clause
+/// — and, worse, of a WHERE clause that could drift from this one.
+pub fn totals(conn: &Connection, compiled: &CompiledSearch) -> Result<(i64, Option<f64>)> {
     let sql = format!(
-        "SELECT COUNT(*) {FROM_CLAUSE} WHERE {}",
+        "SELECT COUNT(*), SUM(({OWNED_VALUE_SUBQ})) {FROM_CLAUSE} WHERE {}",
         where_clause(compiled)
     );
-    let n = conn.query_row(&sql, params_from_iter(compiled.params.iter()), |r| r.get(0))?;
-    Ok(n)
+    let row = conn.query_row(&sql, params_from_iter(compiled.params.iter()), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(row)
 }
 
 /// Run the row query, optionally bounded to one `(limit, offset)` page.
@@ -1683,6 +1749,132 @@ mod tests {
         assert_eq!(page.rows.len(), all);
         assert_eq!(page.total, all as i64);
         assert_eq!((page.limit as usize, page.offset), (all, 0));
+    }
+
+    // --- the result set's value (pd-2g84) ----------------------------------
+
+    /// The headline claim: the money beside the count is the same fact as the
+    /// count, so it is the same *shape* of fact — about the whole result set,
+    /// whatever slice of it the caller asked for. A client holding one page
+    /// can only sum that page, which is why this cannot be its job.
+    ///
+    /// Fails if `total_value` is computed over the returned rows: the fixture
+    /// owns copies of two different printings, and a page of one holds only
+    /// one of them.
+    #[test]
+    fn total_value_is_the_whole_result_whatever_slice_was_asked_for() {
+        let f = fixture();
+        // Two owned Charizards (Near Mint ×1.00 and Lightly Played ×0.85) and
+        // one Near Mint Pikachu.
+        f.set_catalog_price("base1-4-holo", 100.0);
+        f.set_catalog_price("sv3pt5-25-normal", 10.0);
+        let expected = 100.0 * 1.00 + 100.0 * 0.85 + 10.0 * 1.00;
+
+        let c = all_printings();
+        let all = search(&f.conn, &c).unwrap().len();
+        assert!(all > 2, "fixture needs more printings than the pages below");
+
+        for slice in [
+            Slice::All,
+            Slice::Page {
+                limit: 1,
+                offset: 0,
+            },
+            Slice::Page {
+                limit: 0,
+                offset: 0,
+            },
+            Slice::Page {
+                limit: 10,
+                offset: 999,
+            },
+        ] {
+            let page = search_page(&f.conn, &all_printings(), slice).unwrap();
+            let got = page.total_value.expect("the fixture owns priced copies");
+            assert!(
+                (got - expected).abs() < 1e-9,
+                "{slice:?}: total_value is the whole result's value \
+                 (expected {expected}, got {got})"
+            );
+        }
+    }
+
+    /// The number is a button that opens the value-over-time chart, and that
+    /// chart values `status = 'owned'` copies. So this does too — an `ordered`
+    /// copy is listed by owned mode and counted by `total`, and is not money
+    /// the collection holds; a `sold` one is neither.
+    #[test]
+    fn total_value_counts_owned_copies_and_not_the_others() {
+        let f = fixture();
+        f.set_catalog_price("base1-2-holo", 50.0);
+        // Blastoise is unowned in the fixture. Give it one copy per status
+        // owned mode is willing to list, plus a sold one.
+        f.conn
+            .execute(
+                "INSERT INTO collection (printing_id,condition,language,acquired_at,source,status)
+                 VALUES
+                 ('base1-2-holo','Near Mint','English','2024-03-01','manual_id','owned'),
+                 ('base1-2-holo','Near Mint','English','2024-03-02','manual_id','ordered'),
+                 ('base1-2-holo','Near Mint','English','2024-03-03','manual_id','sold')",
+                [],
+            )
+            .unwrap();
+
+        let c = f.compile("blastoise");
+        let page = search_page(&f.conn, &c, Slice::All).unwrap();
+        assert_eq!(page.total, 1, "one printing matches, whatever its copies");
+        assert_eq!(
+            page.rows[0].copies.len(),
+            3,
+            "all three copies are drawn — this is about what is VALUED"
+        );
+        let got = page.total_value.unwrap();
+        assert!(
+            (got - 50.0).abs() < 1e-9,
+            "only the owned copy is money the collection holds, got {got}"
+        );
+    }
+
+    /// A result with no owned, priced copy answers `None`, not `Some(0.0)`.
+    /// "Worth nothing" and "no figure to show" are the same answer here, and
+    /// `$0.00` beside a page of cards nobody has priced is a claim.
+    #[test]
+    fn a_result_with_nothing_owned_or_nothing_priced_has_no_value() {
+        let f = fixture();
+        // Nothing is priced yet, though three copies are owned.
+        let priced_nothing = search_page(&f.conn, &all_printings(), Slice::All).unwrap();
+        assert!(priced_nothing.total > 0, "rows matched");
+        assert_eq!(
+            priced_nothing.total_value, None,
+            "owned copies nobody prices are not worth $0.00"
+        );
+
+        // Price everything; now ask for a result that matches only printings
+        // nobody owns.
+        f.set_catalog_price("base1-4-holo", 100.0);
+        f.set_catalog_price("base1-2-holo", 50.0);
+        let unowned = search_page(&f.conn, &f.compile("is:missing"), Slice::All).unwrap();
+        assert!(unowned.total > 0, "catalog-wide rows matched");
+        assert_eq!(
+            unowned.total_value, None,
+            "a result of printings nobody owns is worth nothing to this owner"
+        );
+    }
+
+    /// An owned copy the catalog does not price contributes nothing — it does
+    /// not zero the printing it shares with a priced copy, and it does not
+    /// zero the result.
+    #[test]
+    fn an_unpriced_copy_costs_the_sum_nothing_rather_than_emptying_it() {
+        let f = fixture();
+        // Only the Charizard is priced; the owned Pikachu is not.
+        f.set_catalog_price("base1-4-holo", 100.0);
+        let page = search_page(&f.conn, &all_printings(), Slice::All).unwrap();
+        let got = page.total_value.unwrap();
+        assert!(
+            (got - (100.0 + 85.0)).abs() < 1e-9,
+            "the unpriced Pikachu drops out of the sum, got {got}"
+        );
     }
 
     #[test]

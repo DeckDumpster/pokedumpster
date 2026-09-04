@@ -98,7 +98,7 @@ while IFS= read -r f; do
 	while IFS= read -r var; do
 		[[ -z "$var" ]] && continue
 		created_total=$((created_total + 1))
-		if ! printf '%s\n' "$removed" | grep -qx "$var"; then
+		if ! grep -qx "$var" <<<"$removed"; then
 			leaks+="${rel}: creates \$${var} and never \`podman rmi\`s it"$'\n'
 		fi
 	done <<<"$created"

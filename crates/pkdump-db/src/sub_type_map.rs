@@ -25,7 +25,8 @@ use serde::Deserialize;
 
 use crate::error::Result;
 
-const SUB_TYPE_VARIANTS_SEED: &str = include_str!("../../../data/tcgcsv_sub_type_variants.json");
+pub(crate) const SUB_TYPE_VARIANTS_SEED: &str =
+    include_str!("../../../data/tcgcsv_sub_type_variants.json");
 
 /// Sentinel group id used to register a row in the global default map.
 /// Real TCGCSV group ids start at 1, so this can never collide.

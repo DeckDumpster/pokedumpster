@@ -115,12 +115,13 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let n_bundles = pkdump_db::bundles::reconcile(&mut conn)?;
     println!("  {n_bundles} bundles registered");
 
-    // 4d. Reconcile the search query language metadata (keywords, rarity
-    //     ranks, is:-flag definitions) from data/search_*.json. Local +
-    //     idempotent; powers the collection search bar's parser/compiler
-    //     and autocomplete (decision D1/D2).
-    println!("Reconciling search query metadata...");
-    let sm = pkdump_db::search_meta::reconcile(&mut conn)?;
+    // 4d. Report the search query language metadata (keywords, rarity ranks,
+    //     is:-flag definitions) seeded from data/search_*.json — it powers the
+    //     collection search bar's parser/compiler and autocomplete (decision
+    //     D1/D2). The read-write open at the top of this function reconciled
+    //     it (connection.rs::converge), so this reads the result back rather
+    //     than rewriting a few hundred rows to print a number (pd-dzu5).
+    let sm = pkdump_db::search_meta::counts(&conn)?;
     println!(
         "  {} keywords, {} rarities, {} flags",
         sm.keywords, sm.rarities, sm.flags

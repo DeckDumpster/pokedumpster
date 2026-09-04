@@ -13,7 +13,7 @@ use rusqlite::{Connection, params};
 
 use crate::error::Result;
 
-const VARIANTS_SEED: &str = include_str!("../../../data/variants.json");
+pub(crate) const VARIANTS_SEED: &str = include_str!("../../../data/variants.json");
 
 /// One row of the variants table. Mirrors the schema 1:1.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, ts_rs::TS)]

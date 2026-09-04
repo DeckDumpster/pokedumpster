@@ -136,10 +136,90 @@ check "same filesystem checked once" "1" \
 check "unborn path resolves to its filesystem" "0" \
 	"$(PKDUMP_DISK_FLOOR_GB=0 bash "$DISKCHECK" --floor "${WORK}/not/created/yet" >/dev/null 2>&1; echo $?)"
 
-# Alert mode must stay a timer, not a gate: it reports and exits 0 even when the
-# threshold is crossed (the push is alert.sh's job, and it no-ops unconfigured).
+# --- alert mode -------------------------------------------------------------
+#
+# Run the REAL script from a copy, beside a stub alert.sh. diskcheck resolves its
+# sibling out of its own $0, so the copy exercises the shipped decision logic
+# while nothing leaves the box.
+#
+# The stub is not a convenience. This block used to invoke deploy/diskcheck.sh in
+# place with PKDUMP_DISK_THRESHOLD=0 and no PKDUMP_ALERTS_ENV, which read the
+# operator's REAL ~/.config/pkdump/alerts.env — so on the self-hosted runner every
+# CI run pushed a genuine LOW DISK page to Ryan's phone, with a title carrying the
+# day's percentage so pd-hqdt's suppression could not collapse them. And its
+# comment ("the push is alert.sh's job, and it no-ops unconfigured") stopped being
+# true the day after it landed: pd-1717 made an undeliverable alert exit 1, which
+# is asserted below rather than assumed.
+ALERT_DIR="${WORK}/alertmode"
+mkdir -p "$ALERT_DIR"
+: >"${WORK}/none.env"
+cp "$DISKCHECK" "${ALERT_DIR}/diskcheck.sh"
+cat >"${ALERT_DIR}/alert.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >>"${STUB_LOG}.title"
+printf '%s\n' "$2" >>"${STUB_LOG}.body"
+STUB
+chmod +x "${ALERT_DIR}/alert.sh"
+
+# alert_run <log-name> <env assignments...> -> prints the exit status
+alert_run() {
+	local name="$1"; shift
+	rm -f "${WORK}/${name}.title" "${WORK}/${name}.body"
+	env STUB_LOG="${WORK}/${name}" PKDUMP_ALERTS_ENV="${WORK}/none.env" \
+		PKDUMP_DISK_PATH="$WORK" "$@" \
+		bash "${ALERT_DIR}/diskcheck.sh" >/dev/null 2>&1
+	echo $?
+}
+paged()  { [ -s "${WORK}/$1.title" ] && echo yes || echo no; }
+title()  { cat "${WORK}/$1.title" 2>/dev/null; }
+
+# Alert mode is a timer, not a gate: over the line it pages and still exits 0.
 check "alert mode still exits zero" "0" \
-	"$(PKDUMP_DISK_THRESHOLD=0 PKDUMP_DISK_PATH="$WORK" bash "$DISKCHECK" >/dev/null 2>&1; echo $?)"
+	"$(alert_run pct PKDUMP_DISK_THRESHOLD=0 PKDUMP_DISK_FLOOR_GB=0 PKDUMP_DISK_WARN_GB=1)"
+check "the percent arm pages, naming the configured threshold" \
+	"PokeDumpster LOW DISK — over 0% used on $(df --output=target "$WORK" | tail -n1)" "$(title pct)"
+
+# Under both arms it says nothing at all. A guard that pages on a healthy disk is
+# a guard whose pages get ignored.
+check "a healthy disk pages nobody" "no" \
+	"$(alert_run quiet PKDUMP_DISK_THRESHOLD=101 PKDUMP_DISK_FLOOR_GB=0 PKDUMP_DISK_WARN_GB=1 >/dev/null; paged quiet)"
+
+# THE POINT OF pd-smcp. The gate refuses in gigabytes and the alert used to fire
+# in percent, so on the 98G root the 10G floor (89.8% used) sat BELOW the 90%
+# threshold: the page could not arrive before the block it warns about. The
+# free-space arm is stated in the floor's own currency, so it fires first — here
+# with a warn line the filesystem cannot meet and a percent threshold it can.
+check "the free-space arm pages while the percent arm is silent" "yes" \
+	"$(alert_run warn PKDUMP_DISK_THRESHOLD=101 PKDUMP_DISK_FLOOR_GB=1 PKDUMP_DISK_WARN_GB=999999999 >/dev/null; paged warn)"
+check "and its title names the warn line, not today's percentage" "1" \
+	"$(title warn | grep -c 'LOW DISK — under 999999999G free' || true)"
+check "and its body carries the reclaim steps" "1" \
+	"$(grep -c 'deploy/teardown.sh' "${WORK}/warn.body" 2>/dev/null || true)"
+
+# Below the floor is a DIFFERENT page, and the difference is what makes the
+# escalation survive pd-hqdt's repeat suppression: a title carrying a moving
+# percentage pages every day and trains the channel off, so these titles carry
+# the CONFIGURED limit — a disk sitting still pages once, a disk still falling
+# crosses into this title and pages again immediately.
+check "under the floor it escalates to its own title" "1" \
+	"$(alert_run floor PKDUMP_DISK_THRESHOLD=101 PKDUMP_DISK_FLOOR_GB=999999999 PKDUMP_DISK_WARN_GB=1999999998 >/dev/null; title floor | grep -c 'DISK BELOW FLOOR' || true)"
+
+# A warn line at or under the floor cannot fire before the gate refuses, which
+# makes Layer 4 decorative. Refused, not clamped — the unit's OnFailure= pages.
+check "a warn line that does not clear the floor is refused" "1" \
+	"$(alert_run bad PKDUMP_DISK_FLOOR_GB=10 PKDUMP_DISK_WARN_GB=10)"
+check "and it pages nobody, because it never measured anything" "no" "$(paged bad)"
+
+# REMOVED: a pd-1717 assertion that an undeliverable alert must FAIL the run.
+#
+# It contradicted the check twenty lines below, which is pd-4sqi's and is what
+# master ships: both drive diskcheck over the threshold with a channel that cannot
+# deliver, one demanding exit 1 and the other exit 0. They cannot both pass, and
+# the pair arrived from branches that had never been merged together.
+#
+# pd-4sqi wins here by being the SHIPPED answer, not the better one. Which contract
+# is right is open as hq-axi0; if it goes the other way this assertion returns and
+# diskcheck.sh's trailing `|| echo ... ; exit 0` goes with it.
 
 # ...and it stays a timer on the ONE day it matters (pd-4sqi). alert.sh exits 1
 # when it could not deliver, and under `set -e` that became diskcheck's own exit
@@ -2649,6 +2729,207 @@ check "the master key is mounted read-only" "1" \
 
 reset_store
 # ---------------------------------------------------------------------------
+log "14b. Arming the shipper CHECKS its preconditions (pd-0h2p)"
+# ---------------------------------------------------------------------------
+#
+# `pkdump-ship@` is installed for every instance and enabled for none, and
+# three things must be true before it is enabled. They were written down in
+# four places — units-lib.sh, setup.sh's closing summary, setup-lake.sh's own
+# output and TENANT_ZONE.md — and checked in none. units-lib.sh pointed at
+# `deploy/setup-lake.sh --arm-shipper` for a flag that did not exist, which is
+# how this was found; the flag is the fix, because a precondition that is only
+# described is a precondition an operator can skip.
+#
+# The one that matters is the backfill. A box armed before it faithfully ships
+# every change made from tonight and nothing anybody already owns (pd-whsw),
+# and NOTHING reports that afterwards: the shipper exits 0, the transform
+# values whatever the zone holds, and the chart carries a plausible number.
+# The other two announce themselves — a missing key or a missing credential is
+# a unit that pages at 07:00.
+
+ARM_HOME_OK="${WORK}/arm-ok"
+ARM_LOG="${WORK}/arm-systemctl.log"
+mkdir -p "${ARM_HOME_OK}/.config/pkdump/armtest" \
+	"${ARM_HOME_OK}/.config/systemd/user" "${WORK}/armbin"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdlake\nPKDUMP_LAKE_S3_REGION=us-west-2\nAWS_PROFILE=pkdump\nPKDUMP_TENANT_AWS_PROFILE=pkdump-tenant\nPKDUMP_LAKE_NESSIE_DATA=%s/nessie\n' \
+	"$WORK" > "${ARM_HOME_OK}/.config/pkdump/lake.env"
+: > "${ARM_HOME_OK}/.config/pkdump/armtest/tenant-master.key"
+chmod 600 "${ARM_HOME_OK}/.config/pkdump/armtest/tenant-master.key"
+# The unit template the arming enables. Installed by the app's own setup, not
+# by this script — so its absence is a refusal rather than a systemd error.
+: > "${ARM_HOME_OK}/.config/systemd/user/pkdump-ship@.timer"
+
+# The stand-ins. `podman run` here is the backfill question, and it answers
+# with an exit status: the two variables below let a case make the status and
+# the TEXT disagree, which is the whole of what §14b's last pair asserts.
+cat > "${WORK}/armbin/podman" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+"image exists") exit "${PKDUMP_TEST_NO_IMAGE:-0}" ;;
+esac
+if [ "$1" = run ]; then
+	printf 'FAKE outbox ARGV %s\n' "$*"
+	[ -n "${PKDUMP_TEST_BACKFILL_SAYS:-}" ] && printf '%s\n' "$PKDUMP_TEST_BACKFILL_SAYS"
+	exit "${PKDUMP_TEST_BACKFILL_RC:-0}"
+fi
+exit 0
+EOF
+cat > "${WORK}/armbin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'SYSTEMCTL %s\n' "$*" >> "${PKDUMP_SYSCTL_LOG:-/dev/null}"
+exit 0
+EOF
+chmod +x "${WORK}/armbin/podman" "${WORK}/armbin/systemctl"
+
+ARM_HOME="$ARM_HOME_OK"
+run_arm() { # run_arm — arms $ARM_HOME's instance, logging every systemctl call
+	: > "$ARM_LOG"
+	set +e
+	PATH="${WORK}/armbin:${ORIG_PATH}" HOME="$ARM_HOME" \
+		PKDUMP_SYSCTL_LOG="$ARM_LOG" \
+		bash "${REPO_DIR}/deploy/setup-lake.sh" armtest --arm-shipper 2>&1
+	printf 'RC=%s' "$?"
+	set -e
+}
+armed() { grep -c 'enable --now pkdump-ship@armtest.timer' "$ARM_LOG" || true; }
+
+# --- Everything in order ----------------------------------------------------
+ARM_OK="$(run_arm)"
+check "every precondition met -> exits 0" "1" \
+	"$(printf '%s' "$ARM_OK" | grep -c 'RC=0$' || true)"
+check "…and the timer is enabled" "1" "$(armed)"
+# The question is asked of every REGISTERED tenant, not of whichever collection
+# $PKDUMP_USER happens to name — pd-s5yn's lesson, which is the whole reason
+# the backfill has an --all-tenants form at all.
+check "…by asking every registered tenant" "1" \
+	"$(printf '%s' "$ARM_OK" | grep -c 'outbox status --all-tenants --require-backfill' || true)"
+check "…and it says what it could not check" "1" \
+	"$(printf '%s' "$ARM_OK" | grep -c 'is BACKED UP' || true)"
+
+# --- Each precondition, refusing, and arming NOTHING ------------------------
+
+ARM_NOLAKE="${WORK}/arm-nolake"
+cp -a "$ARM_HOME_OK" "$ARM_NOLAKE"
+rm -f "${ARM_NOLAKE}/.config/pkdump/lake.env"
+ARM_OUT="$(ARM_HOME="$ARM_NOLAKE" run_arm)"
+check "no lake.env -> refuses" "1" "$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+ARM_NOPROFILE="${WORK}/arm-noprofile"
+cp -a "$ARM_HOME_OK" "$ARM_NOPROFILE"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdlake\nAWS_PROFILE=pkdump\n' \
+	> "${ARM_NOPROFILE}/.config/pkdump/lake.env"
+ARM_OUT="$(ARM_HOME="$ARM_NOPROFILE" run_arm)"
+check "no tenant profile -> refuses" "1" "$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…naming the setting" "1" \
+	"$(grep -q 'PKDUMP_TENANT_AWS_PROFILE' <<<"$ARM_OUT" && echo 1 || echo 0)"
+check "…arming nothing" "0" "$(armed)"
+
+# One profile for both zones is not a narrow policy — it is no boundary, and
+# it looks exactly like a correct one. TenantZoneConfig refuses it at runtime,
+# which on an armed box is a unit that pages at 07:00 rather than a sentence
+# at the moment somebody chose to arm it.
+ARM_SAMEPROFILE="${WORK}/arm-sameprofile"
+cp -a "$ARM_HOME_OK" "$ARM_SAMEPROFILE"
+printf 'PKDUMP_LAKE_S3_BUCKET=pdlake\nAWS_PROFILE=pkdump\nPKDUMP_TENANT_AWS_PROFILE=pkdump\n' \
+	> "${ARM_SAMEPROFILE}/.config/pkdump/lake.env"
+ARM_OUT="$(ARM_HOME="$ARM_SAMEPROFILE" run_arm)"
+check "one profile for both zones -> refuses" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…saying there is no boundary" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'no boundary' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+ARM_NOKEY="${WORK}/arm-nokey"
+cp -a "$ARM_HOME_OK" "$ARM_NOKEY"
+rm -f "${ARM_NOKEY}/.config/pkdump/armtest/tenant-master.key"
+ARM_OUT="$(ARM_HOME="$ARM_NOKEY" run_arm)"
+check "no master key -> refuses" "1" "$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…naming the command that mints one" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'deploy/keys.sh armtest init' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+# "The code sets 600" and "the file is 600" are different claims, and only the
+# second one protects anything — the same assertion deploy/keys.sh makes on the
+# host after an `init`.
+ARM_BADMODE="${WORK}/arm-badmode"
+cp -a "$ARM_HOME_OK" "$ARM_BADMODE"
+chmod 644 "${ARM_BADMODE}/.config/pkdump/armtest/tenant-master.key"
+ARM_OUT="$(ARM_HOME="$ARM_BADMODE" run_arm)"
+check "a world-readable master key -> refuses" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…naming the repair" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'chmod 600' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+ARM_NOUNIT="${WORK}/arm-nounit"
+cp -a "$ARM_HOME_OK" "$ARM_NOUNIT"
+rm -f "${ARM_NOUNIT}/.config/systemd/user/pkdump-ship@.timer"
+ARM_OUT="$(ARM_HOME="$ARM_NOUNIT" run_arm)"
+check "the unit template not installed -> refuses" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…naming setup.sh" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'deploy/setup.sh armtest' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+ARM_OUT="$(PKDUMP_TEST_NO_IMAGE=1 run_arm)"
+check "no image -> refuses" "1" "$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+# --- The backfill, which is the precondition with no other witness ----------
+ARM_OUT="$(PKDUMP_TEST_BACKFILL_RC=1 run_arm)"
+check "an un-backfilled tenant -> refuses" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…saying what arming now would ship" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'nothing anybody already owns' || true)"
+check "…arming nothing" "0" "$(armed)"
+
+# The answer is the EXIT STATUS, never the text. A run that died in its
+# container prints exactly what a clean collection prints (pd-cxq4), so a
+# silent failure must refuse…
+ARM_OUT="$(PKDUMP_TEST_BACKFILL_RC=1 PKDUMP_TEST_BACKFILL_SAYS="" run_arm)"
+check "a check that failed silently still refuses" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=1$' || true)"
+check "…arming nothing" "0" "$(armed)"
+# …and a run that answered YES must arm, whatever alarming words appear in the
+# report beside the answer. Grepping the text for "never emitted" would make
+# the check disagree with the binary that owns the question.
+ARM_OUT="$(PKDUMP_TEST_BACKFILL_SAYS="  never emitted — every holding is invisible" run_arm)"
+check "the exit status decides, not the report's wording" "1" \
+	"$(printf '%s' "$ARM_OUT" | grep -c 'RC=0$' || true)"
+check "…and the timer is enabled" "1" "$(armed)"
+
+# --- Two opposite acts ------------------------------------------------------
+set +e
+ARM_BOTH="$(PATH="${WORK}/armbin:${ORIG_PATH}" HOME="$ARM_HOME_OK" \
+	bash "${REPO_DIR}/deploy/setup-lake.sh" armtest --remove --arm-shipper 2>&1)"
+ARM_BOTH_RC=$?
+set -e
+check "--remove with --arm-shipper -> refuses as a usage error" "2" "$ARM_BOTH_RC"
+check "…saying they are opposites" "1" \
+	"$(printf '%s' "$ARM_BOTH" | grep -c 'opposite acts' || true)"
+
+# --- The durable half: a pointer to a flag that does not exist --------------
+# pd-0h2p itself. units-lib.sh named `setup-lake.sh --arm-shipper` for a year
+# while setup-lake.sh parsed only --remove and --port, and nothing said so.
+# Stated over the TREE rather than over the one comment that was wrong: the
+# next stale pointer is the one nobody has written yet.
+ARM_UNPARSED=""
+while read -r FLAG; do
+	[ -n "$FLAG" ] || continue
+	grep -qE "^[[:space:]]*(--[a-z0-9-]+\|)*${FLAG}\)" "${REPO_DIR}/deploy/setup-lake.sh" ||
+		ARM_UNPARSED="${ARM_UNPARSED}${FLAG} "
+done < <(grep -rhoE 'setup-lake\.sh[^`")]*' "${REPO_DIR}/deploy" "${REPO_DIR}/tests" \
+	"${REPO_DIR}/CLAUDE.md" 2>/dev/null | grep -oE ' --[a-z][a-z0-9-]*' | tr -d ' ' | sort -u)
+check "every setup-lake.sh flag named anywhere is one it parses" "" "${ARM_UNPARSED% }"
+# …and the extraction is not vacuously empty — a rule over a list that has
+# stopped matching anything passes forever.
+check "the rule is looking at real flags" "1" \
+	"$(grep -rhoE 'setup-lake\.sh[^`")]*' "${REPO_DIR}/deploy" 2>/dev/null |
+		grep -c -- '--arm-shipper' >/dev/null && echo 1 || echo 0)"
+
+reset_store
+# ---------------------------------------------------------------------------
 log "15. ABSENT, FORBIDDEN and WRONG are three answers, not one (pd-2hnp)"
 # ---------------------------------------------------------------------------
 #
@@ -3090,6 +3371,30 @@ check "and nothing was swept on the way to refusing" "yes" \
 
 rm -rf "${WORK}/reap" "$REAP_OUT"
 reset_store
+
+log "§18 — a start that must converge the catalog can outlast neither its own unit (pd-dzu5)"
+# The server's startup convergence is the only thing left that can lose the
+# catalog's write lock to the nightly `pkdump-lake-derive shared`, and its
+# patience — connection.rs::SERVING_PATIENCE — is DERIVED from what
+# pkdump.container allows the start job, not chosen. The two numbers live in a
+# Rust file and a systemd unit and cannot share a constant, so they are held
+# together here: a TimeoutStartSec dropped below the wait turns a diagnosable
+# refusal back into a SIGTERM with nothing in the journal to read.
+CONN_RS="${REPO_DIR}/crates/pkdump-db/src/connection.rs"
+UNIT_CONTAINER="${REPO_DIR}/deploy/pkdump.container"
+PATIENCE="$(sed -n 's/^\(pub(crate) \)\{0,1\}const SERVING_PATIENCE: Duration = Duration::from_secs(\([0-9]*\));/\2/p' "$CONN_RS")"
+UNIT_TIMEOUT="$(sed -n 's/^TimeoutStartSec=\([0-9]*\)$/\1/p' "$UNIT_CONTAINER")"
+check "connection.rs declares a serving patience" "1" \
+	"$([ -n "$PATIENCE" ] && echo 1 || echo 0)"
+check "pkdump.container declares a start timeout" "1" \
+	"$([ -n "$UNIT_TIMEOUT" ] && echo 1 || echo 0)"
+check "the wait fits inside the unit's own start timeout" "1" \
+	"$([ "${PATIENCE:-0}" -lt "${UNIT_TIMEOUT:-0}" ] && echo 1 || echo 0)"
+# And it is longer than the ordinary five seconds, or the fix is only half of
+# one: a start that has something to converge has to be able to wait out a
+# transaction of the derive's, not merely report a nicer error.
+check "and it is longer than an ordinary open's patience" "1" \
+	"$([ "${PATIENCE:-0}" -gt 5 ] && echo 1 || echo 0)"
 
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"

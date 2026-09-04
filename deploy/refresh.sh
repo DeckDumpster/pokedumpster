@@ -337,7 +337,7 @@ fi
 # not survive the trip into the container — a wiring regression, and it must not
 # be reported as a successful run. It is unconditional now: there is no longer a
 # shape of this job that legitimately lands nothing.
-if ! printf '%s\n' "$OUT" | grep -q '^Landing raw upstream responses in '; then
+if ! grep -q '^Landing raw upstream responses in ' <<<"$OUT"; then
     echo "refresh: the run never opened a landing zone (${INSTANCE})" >&2
     echo "  The lake settings did not reach the process. Nothing is in raw/, so there is" >&2
     echo "  nothing for tonight's derive to build a catalog from." >&2

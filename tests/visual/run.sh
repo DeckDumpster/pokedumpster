@@ -16,7 +16,9 @@
 #   bash tests/visual/run.sh
 #   (cd tests/visual && npm run report)          # side-by-side actual/diff
 # and then, once the change is intended and reviewed, `--update` and commit
-# the new PNGs in the same commit as the CSS that moved them.
+# the new PNGs with the CSS that moved them, in a commit that says which
+# change moved which baselines. An approval covers every viewport; narrowing
+# one to a single `--project` is refused — see approval-guard.sh.
 #
 # Already have an instance? Skip this script:
 #   PKDUMP_BASE_URL=http://localhost:8099 npx playwright test
@@ -40,6 +42,15 @@ while [ $# -gt 0 ]; do
         *)          PW_ARGS+=("$1"); shift ;;
     esac
 done
+
+# An approval covers every viewport (pd-tf4h, pd-4tce). playwright.sh refuses it
+# too — it is the one place any harness here executes Playwright — but that is
+# three minutes and a container image downstream of here, and a refusal an
+# operator waits for a build to receive is one they learn to route around.
+# Same rule, one implementation, asked at the earliest point on this path.
+# shellcheck source=tests/visual/approval-guard.sh
+. "$SCRIPT_DIR/approval-guard.sh"
+pkdump_visual_approval_guard ${PW_ARGS[@]+"${PW_ARGS[@]}"}
 
 # PokeDumpster prod runs on this box. Instances are isolated by name, so the
 # only way to hurt it is to name one 'prod'.

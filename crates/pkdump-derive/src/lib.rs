@@ -168,10 +168,11 @@ pub fn derive(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<Re
     let n_bundles = pkdump_db::bundles::reconcile(conn)?;
     println!("  {n_bundles} bundles registered");
 
-    // 1d. Reconcile the search query language metadata from
-    //     data/search_*.json (local + idempotent).
-    println!("Reconciling search query metadata...");
-    let sm = pkdump_db::search_meta::reconcile(conn)?;
+    // 1d. Report the search query language metadata seeded from
+    //     data/search_*.json. The read-write open this connection came from
+    //     reconciled it (connection.rs::converge), so it is read back rather
+    //     than re-run (pd-dzu5).
+    let sm = pkdump_db::search_meta::counts(conn)?;
     println!(
         "  {} keywords, {} rarities, {} flags",
         sm.keywords, sm.rarities, sm.flags

@@ -13,7 +13,7 @@ use rusqlite::{Connection, params};
 use crate::error::Result;
 
 /// `data/set_aliases.json` — the canonical alias registry.
-const SET_ALIASES_SEED: &str = include_str!("../../../data/set_aliases.json");
+pub(crate) const SET_ALIASES_SEED: &str = include_str!("../../../data/set_aliases.json");
 
 /// One alias row. `note` is authoring documentation only — not stored.
 #[derive(Debug, Clone, serde::Deserialize)]

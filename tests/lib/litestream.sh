@@ -117,7 +117,7 @@ replica_state() {
 		return 0
 	fi
 	rm -f "$err"
-	if printf '%s\n' "$out" | grep -qE '\b[0-9a-fA-F]{16}\b'; then
+	if grep -qE '\b[0-9a-fA-F]{16}\b' <<<"$out"; then
 		echo data
 	else
 		echo empty

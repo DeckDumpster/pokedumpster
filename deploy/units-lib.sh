@@ -241,8 +241,11 @@ _pkdump_units_install_host_wide() {
     # --- The ownership shipment (pd-dxn3) -----------------------------------
     # The outbox into the tenant zone, ordered after the transform above
     # because both open every tenant's database. Installed for every instance
-    # and enabled for none — see deploy/setup-lake.sh --arm-shipper, which is
-    # the one place arming it is a deliberate act rather than a side effect.
+    # and enabled for none — `bash deploy/setup-lake.sh <instance>
+    # --arm-shipper` is the one place arming it is a deliberate act rather
+    # than a side effect, and it CHECKS the three preconditions (the tenant
+    # credential, the master key, and a completed backfill) rather than
+    # printing them.
     for ext in service timer; do
         _pkdump_units_render "${systemd_user_dir}/pkdump-ship@.${ext}" nostamp \
             "$repo_dir/deploy/pkdump-ship.${ext}" \

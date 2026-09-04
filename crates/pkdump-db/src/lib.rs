@@ -43,12 +43,14 @@ pub mod variants;
 pub mod wishlist;
 
 mod connection;
+mod convergence;
 mod error;
 mod paths;
 
 pub use connection::{
     attach_shared_readonly, connect_user, init_user_schema, open_registry, open_shared,
-    open_shared_readonly, open_user, restore_db, snapshot_db,
+    open_shared_for_serving, open_shared_readonly, open_shared_with_patience, open_user,
+    restore_db, snapshot_db,
 };
 pub use error::{DbError, Result};
 pub use paths::{

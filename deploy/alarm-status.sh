@@ -277,7 +277,20 @@ gate $? "disk timer enabled" "systemctl --user enable --now ${P}-diskcheck.timer
 gate $? "disk timer running" "systemctl --user start ${P}-diskcheck.timer"
 
 DISK_PATH="${PKDUMP_DISK_PATH:-$HOME}"
-info "watching ${DISK_PATH} — $(df --output=pcent "$DISK_PATH" 2>/dev/null | tail -n1 | tr -d ' ' || echo '?') used, alerts at ${PKDUMP_DISK_THRESHOLD:-90}%"
+DISK_FLOOR_GB="${PKDUMP_DISK_FLOOR_GB:-10}"
+DISK_WARN_GB="${PKDUMP_DISK_WARN_GB:-$((DISK_FLOOR_GB * 2))}"
+
+# The question this layer exists to answer is "will I hear about it while I can
+# still do something", and until pd-smcp the answer here was no: the percent
+# threshold is size-independent and the gate that blocks builds is denominated in
+# gigabytes, so on the 98G root the 90% alert sat BELOW the 10G floor and could
+# only ever page after CI was already refusing to build. A warn line that does
+# not clear the floor is a Layer 4 that reports itself healthy and warns nobody.
+[ "$DISK_WARN_GB" -gt "$DISK_FLOOR_GB" ]
+gate $? "disk warn line (${DISK_WARN_GB}G free) clears the build floor (${DISK_FLOOR_GB}G)" \
+    "\$EDITOR ${ALERTS_ENV}   # raise PKDUMP_DISK_WARN_GB above PKDUMP_DISK_FLOOR_GB"
+
+info "watching ${DISK_PATH} — $(df --output=pcent "$DISK_PATH" 2>/dev/null | tail -n1 | tr -d ' ' || echo '?') used, $(df -BG --output=avail "$DISK_PATH" 2>/dev/null | tail -n1 | tr -dc '0-9' || echo '?')G free; pages under ${DISK_WARN_GB}G free or at ${PKDUMP_DISK_THRESHOLD:-90}% used"
 
 # ── Layer 3 — in-app banner (passive, never gates) ──────────────────────────
 # Deliberately not a gate: the banner pages nobody, so its absence cannot make

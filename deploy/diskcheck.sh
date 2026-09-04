@@ -7,9 +7,12 @@
 #                                    Pushes a Pushover alert when the watched
 #                                    filesystem is at or over PKDUMP_DISK_THRESHOLD
 #                                    percent. Always exits 0 — it is a timer, not
-#                                    a gate. The host hit 94% during the Jun 2026
-#                                    backup work; a full disk silently breaks
-#                                    backups, image builds, and the DB.
+#                                    a gate, and an alert that could NOT be
+#                                    delivered is still not a gate (pd-4sqi): the
+#                                    drop is reported on stderr and the exit
+#                                    status stays 0. The host hit 94% during the
+#                                    Jun 2026 backup work; a full disk silently
+#                                    breaks backups, image builds, and the DB.
 #
 #   diskcheck.sh --floor [path...]   GATE mode (pd-fite). Exits NON-ZERO when any
 #                                    named path's filesystem has less than
@@ -95,7 +98,23 @@ fi
 USE="$(df --output=pcent "$DISK_PATH" | tail -n1 | tr -dc '0-9')"
 echo "diskcheck: ${DISK_PATH} at ${USE}% (threshold ${THRESHOLD}%)"
 
+# The push must not be able to fail this script (pd-4sqi). alert.sh exits 1 when
+# it could not deliver — an unconfigured or still-CHANGE_ME Pushover channel, a
+# curl that failed — and under `set -e` that became diskcheck's own exit status.
+# So the ONE run that matters, the day the disk is actually full, was the only
+# run that failed its unit: exit 0 every day the disk is fine, non-zero the day
+# it is not, with `systemctl status pkdump-diskcheck` reporting the inversion.
+# The OnFailure= that fires from it buys nothing either — it pages through
+# alert.sh, the same channel that just proved it cannot deliver.
+#
+# The delivery failure is NOT swallowed: alert.sh's own diagnosis is already on
+# stderr and in the journal, and the line below adds what only this caller knows
+# — that the disk really is over the threshold and nobody was told.
 if [ "$USE" -ge "$THRESHOLD" ]; then
     "${SCRIPT_DIR}/alert.sh" "PokeDumpster LOW DISK (${USE}%)" \
-        "$(df -h "$DISK_PATH" | tail -n1) on $(hostname) — over ${THRESHOLD}% threshold"
+        "$(df -h "$DISK_PATH" | tail -n1) on $(hostname) — over ${THRESHOLD}% threshold" ||
+        echo "diskcheck: ALERT NOT DELIVERED — ${DISK_PATH} is at ${USE}% (threshold ${THRESHOLD}%) and the page above reached nobody; this check still exits 0 (pd-4sqi)" >&2
 fi
+
+# Explicit, so a line added below cannot quietly make this a gate again.
+exit 0

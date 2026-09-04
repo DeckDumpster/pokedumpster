@@ -91,6 +91,9 @@ cargo build                      # build all crates
 cargo test                       # run all tests; also regenerates the TypeScript
                                  #   types in frontend/src/lib/types/ via ts-rs
 cargo test -p pkdump-db          # test a single crate
+cargo test -p pkdump-cli         # the CLI, incl. `outbox status
+                                 #   --require-backfill` — the check
+                                 #   `setup-lake.sh --arm-shipper` arms on
 cargo test -p pkdump-lake        # raw-landing key layout, manifest, config
 cargo test -p pkdump-ingest --test raw_landing
                                  # the real HTTP clients against a local

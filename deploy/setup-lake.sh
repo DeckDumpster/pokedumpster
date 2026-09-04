@@ -163,6 +163,10 @@ fi
 # loop below is the installer's, not this mode's.
 
 if [ -n "$ARM_SHIPPER" ]; then
+    # Resolved exactly as deploy/ship.sh resolves them, seams included: this
+    # mode's whole job is to decide whether THAT script may run nightly, and
+    # two spellings of "which key file" is how an arming check ends up
+    # inspecting a different file from the one the shipper opens.
     CONF_DIR="${PKDUMP_KEYS_CONF_DIR:-${HOME}/.config/pkdump/${INSTANCE}}"
     KEY_FILE="${CONF_DIR}/tenant-master.key"
     IMAGE="${PKDUMP_SHIP_IMAGE:-localhost/pkdump:${INSTANCE}}"

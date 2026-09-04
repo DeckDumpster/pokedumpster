@@ -32,5 +32,12 @@ kind: string,
  * TCGCSV set discovery (pd-558b1e4f) — because pokemontcg.io hasn't
  * published it yet. Its cards, art and totals are provisional. Goes
  * false on its own the refresh after upstream lands the real set.
+ *
+ * **A set upstream does not carry at all is not synthesized in this
+ * sense** (pd-mt57). The Japanese catalog is TCGCSV-native forever —
+ * pokemontcg.io has no Japanese data — so its rows have nothing to
+ * wait for and this stays false for them. `sets.ptcgio_covered` is
+ * what tells the two apart; "provisional" is a promise, and a badge
+ * that makes one has to be able to keep it.
  */
 synthesized: boolean, };

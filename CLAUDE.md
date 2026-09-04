@@ -589,20 +589,30 @@ Four things about it are decisions:
   gates running it **holds** (the gate about to tear itself down is what gives
   the space back); below the floor with nothing running it fails, naming the
   gates that never started.
-- **That list names THREE disks, once** (pd-20ia). `PKDUMP_CI_DISK_PATHS` is
-  `$HOME` (prod's default Podman store, and the toolchain caches on a box that
-  has not relocated them), `$PKDUMP_STORE_ROOT` (the non-prod store, where the
-  host moved it) and **`$TMPDIR`** — every `mktemp` under `deploy/` and
-  `tests/`, the source trees the isolation guards copy, and the per-gate output
-  `ci-parallel.sh` buffers. The pre-build check and the per-dispatch one *copy*
-  that array rather than spelling it a second time, because two spellings is how
-  one of them quietly stops covering a disk. The temp arm is not hypothetical:
-  on the deployment box `/tmp` is its own LVM volume, and the check reported
-  `/ has 40G free — ok` with 818M left on `/tmp` — below the free space that
-  produced pd-fite's bus error. `diskcheck.sh` reports each **device** once, so
-  where `/tmp` shares a filesystem the extra arm costs nothing. **Alert mode
-  still watches one filesystem** (`PKDUMP_DISK_PATH`): what pages the operator
-  is a separate decision from what blocks a build.
+- **That list names every disk a run writes to, once** (pd-20ia, pd-6jyd).
+  `PKDUMP_CI_DISK_PATHS` is `$HOME` (prod's default Podman store),
+  `$PKDUMP_STORE_ROOT` (the non-prod store, where the host moved it), `$TMPDIR`
+  (every `mktemp` under `deploy/` and `tests/`, the source trees the isolation
+  guards copy, and the per-gate output `ci-parallel.sh` buffers),
+  **`$CARGO_TARGET_DIR`** and **`$CARGO_HOME`**. The pre-build check and the
+  per-dispatch one *copy* that array rather than spelling it a second time,
+  because two spellings is how one of them quietly stops covering a disk.
+  Not one of the last three arms is hypothetical, and each names a device the
+  first two cannot see. On the deployment box `/tmp` is its own LVM volume, and
+  the check reported `/ has 40G free — ok` with 818M left on `/tmp` — below the
+  free space that produced pd-fite's bus error. **And the compile's disk was
+  the one missing longest**: `.github/workflows/ci.yml` relocates
+  `CARGO_TARGET_DIR` and `CARGO_HOME` onto `/workspaces` *deliberately*, to keep
+  the largest writes off the volume production runs from, and the toolchain
+  caches are symlinked there too — so pd-fite's bus error, which was a cargo
+  **link**, happened on a device the floor named nowhere while reporting three
+  others green. `df` follows a symlink, so `$HOME/.cargo` given as a path
+  measures wherever it points. `diskcheck.sh` reports each **device** once and
+  walks up to the nearest existing ancestor of a path that is not there yet, so
+  on a box that has relocated nothing the extra arms cost nothing — which is the
+  argument every one of them was added on. **Alert mode still watches one
+  filesystem** (`PKDUMP_DISK_PATH`): what pages the operator is a separate
+  decision from what blocks a build.
 - **A failing gate no longer stops the ones beside it.** The wave finishes,
   every gate's output is printed whole under its own name, and the run ends red
   naming all of them. One red run now reports everything that is broken instead
@@ -613,12 +623,67 @@ Four things about it are decisions:
 `tests/ci/parallel_test.sh` is the gate — hermetic, lint tier, ~4s. It asserts
 the cap is reached and never exceeded, that a failure among passes is red and
 named, that output survives concurrency, that the *real* `diskcheck.sh` trips
-against an impossible floor and measures the temp filesystem and not only
-`$HOME`, that the hold branch waits rather than aborts, that
+against an impossible floor and measures the temp filesystem and the compile's
+own — relocated, and absent-so-walked-up-to — and not only `$HOME`, that the
+whole array literal is asserted WHOLE rather than arm by arm (an arm-by-arm
+check goes on passing when an arm is dropped, which is the only way that list
+is ever wrong), that the hold branch waits rather than aborts, that
 a background job of the *caller's* is never mistaken for a gate, and that every
 one of the seventeen gate scripts is still queued exactly once under a real tier.
 That last one is the refactor's own failure mode: a gate queued nowhere runs
 never, and a green run cannot show you that.
+
+### Nothing collects a dead agent's scratchpad, so this box does (pd-xgh6)
+
+The disk floor above says `/tmp` is full. `deploy/tmpreap.sh` is what stops it
+filling, and `pkdump-tmpreap.timer` runs it at 05:30 — ahead of the 06:00 chain,
+because reclaiming after the night has run is reclaiming for tomorrow.
+
+Every Claude Code session on this box gets
+`$TMPDIR/claude-<uid>/<cwd-slug>/<session-uuid>/` and **nothing ever collects
+it**: 42G of a 49G filesystem on 2026-08-30, 2261 session directories against a
+couple of dozen live sessions, growing ~1G/day, with `ci.sh` correctly refusing
+to start at 817M free. None of it is pokedumpster's data. It lives here anyway
+for the reason `pkdump-diskcheck` does — that unit is host-wide and not about
+this project's data either, and it is the same job one step earlier. There is no
+rig on this box that owns a reaper; re-filing it upward is how it stays unwritten.
+
+Four things about it are decisions:
+
+- **Liveness comes from the PROCESS TABLE, never from a timestamp.** A
+  long-running session can sit quiet for days. `CLAUDE_CODE_SESSION_ID` in a
+  process's environment, a uuid on its command line, or a cwd inside the
+  directory — any one keeps it. The idle window (`PKDUMP_TMPREAP_AGE_DAYS`, 3)
+  is a *second* condition and never a substitute for the first.
+- **A broken liveness signal REFUSES.** claude running and not one process
+  yielding a session id is indistinguishable from "every session is dead" by
+  looking at the answer, which is exactly why it is asked as its own question.
+  Exit 1, nothing removed, and the unit's `OnFailure=` pages — a reaper that has
+  quietly stopped reaping is a disk that fills again with nothing saying so.
+- **It removes `<root>/<slug>/<uuid>` and nothing else.** The root holds
+  unrelated caches (579M of `uv-cache-<agent>` beside the sessions here); a
+  reaper that decided what those were would be a different, worse tool. Anything
+  else is counted and left, and a path that reaches the removal outside the root
+  or off the name shape is fatal rather than skipped.
+- **It costs nobody a `--resume`.** The transcript is
+  `~/.claude/projects/<slug>/<session>.jsonl` with the persisted tool-result
+  bodies beside it under `$HOME`; `$TMPDIR` holds `scratchpad/` and
+  `tasks/*.output`, the working files of a running process. The bead assumed
+  otherwise. If that layout ever changes this script is wrong, and the process
+  table is not what saves you.
+
+`PKDUMP_TMPREAP_PROC` is *where* the process table is, never *whether* to
+consult one — there is no way to hand the script a liveness set or switch the
+check off. It is what lets `tests/deploy/run.sh` §17 (hermetic, deploy tier)
+state both halves against a fake `/proc`: the real one has this box's own live
+sessions in it, so "a live session survives" cannot be asserted against it and
+"a broken signal refuses" cannot be reached at all. Seen red four ways — the
+liveness check, the vacuity guard, the name shape and the idle window each
+deleted in turn, each firing its own assertion.
+
+Installed with the host-wide units and therefore behind pd-onyd's entitlement
+guard, so a polecat worktree running `setup.sh` cannot arm it. Installed, not
+enabled: arming a timer that deletes directories is an operator's act.
 
 ### A container gate removes the image it named
 
@@ -753,6 +818,67 @@ image untouched, plus both red arms) and `tests/deploy/run.sh` §11b, which hold
 the shell half: the label on every stage of every `Containerfile`, one spelling
 of it, and the ORDER — list, build, reap. Swapping the first two reads like a
 simplification and is the cache loss above.
+
+### A run whose worktree moves underneath it is VOID, not red (pd-vnbc)
+
+`deploy/ci.sh` watches its own checkout and aborts with **exit 9** the moment
+anything moves HEAD while the suite is running. Nine is a third answer: not
+pass, not fail, but *this run describes no state this code was ever in*.
+
+The bug it answers looked like a compiler phantom. A polecat's suite died at
+`cargo clippy` with seven errors naming symbols that exist in **no commit** —
+two lines out of master's `data.rs`, a third carrying a call signature from
+before the landing zone. `cargo test` had passed on that tree minutes earlier
+and clippy passes on it now. The reflog, timestamped inside the CI window, had
+it: something outside the polecat rebased its **live worktree** onto
+`origin/master`, replayed eleven commits, conflicted, and aborted — all inside
+about one second, while clippy was reading the files. The abort put everything
+back, which is why nothing was left to find.
+
+Four things about the guard are decisions:
+
+- **It watches the REFLOG, not HEAD.** That rebase aborted, so HEAD ended
+  byte-identical to where it started; the obvious implementation of this guard
+  — snapshot HEAD, compare HEAD — passes the real case green. The reflog is
+  append-only, so an operation that undoes itself still leaves its lines
+  behind. `tests/ci/treewatch_test.sh` §3 runs a real rebase-and-abort and, in
+  the assertion beside it, measures the same rebase the naive way and requires
+  that to see nothing.
+- **It is a `wc -c` on the per-worktree `logs/HEAD`**, so it is affordable
+  inside `step()` — which is where it lives, because a new step is added by
+  writing `step "..."` and nobody adding one will remember a guard. Per
+  worktree matters: every polecat checkout is a linked worktree, and a
+  neighbour's rebase must not void this run. Both directions are asserted.
+- **Working-tree dirt is reported, never judged.** A CI run legitimately writes
+  to its own checkout — `cargo test` regenerates the ts-rs bindings, npm fills
+  `node_modules`. Failing on `git status` hands the guard a false positive on
+  its first contact with real work, which is how a guard earns an exemption
+  list and then earns being ignored.
+- **It aborts rather than warning, and it overrides a PASS.** Once HEAD has
+  moved, the gates that ALREADY RAN are the ones whose verdicts are void, and
+  thirty more minutes cannot recover them. A green from a mutated tree is worse
+  than a red from one. This composes with the tree-hash cache for free:
+  `ci.yml` writes an entry only `if: success()`, so a void run can never
+  certify a tree it did not really test.
+
+What it does not see, said out loud: a bare `git checkout -- <path>` or `git
+restore`, which rewrite files without touching HEAD. Everything that moves HEAD
+— rebase, checkout, reset, merge, and `git stash push`, which resets internally
+and is therefore the shared-stash hazard caught for free — appends there.
+
+**No step of this suite moves this checkout's HEAD** — the two gates that drive
+git (`ci-cache.sh --self-test`, `treewatch_test.sh`) do it inside throwaway
+repos under `mktemp` — so an observed movement is always an outside process. The
+actor is the surrounding agent machinery and the real fix is not ours to make.
+A worktree an agent owns must not be rebased under it — if a branch needs
+keeping current, do it at `gt done` time or in a scratch clone. Until that
+holds, this guard is what keeps the cost at one loud line instead of a
+forty-minute red and an afternoon spent believing the compiler.
+
+Gate: `tests/ci/treewatch_test.sh` (lint tier, hermetic, sub-second), seen red
+five ways — the naive HEAD comparison, an unwired `step()`, a guard that also
+judges dirt, one that watches the shared reflog instead of this worktree's, and
+a `ci.sh` that never arms it.
 
 ## Conventions & Patterns
 
@@ -1924,6 +2050,19 @@ synthesized data — `import_tail` treats a set row with NULL
 that state carry `sets.discovered_from_group_id` and surface as
 `SetSummary.synthesized`, which badges the `/browse` tile.
 
+**That badge is a promise, so it is only shown where it can be kept**
+(pd-mt57). `synthesized` is `ptcgio_fetched_at IS NULL AND ptcgio_covered =
+1`, not the first half alone: a NULL fetch timestamp means "upstream is
+behind" only where upstream carries the catalog at all. `sets.ptcgio_covered`
+is what says so — 1 everywhere by default, 0 written by
+`japan::import_groups`, because pokemontcg.io has no Japanese data and never
+will. On the first half alone all 450 `jp-` tiles carried a "provisional,
+upstream will replace this" chip that could never come true. The column is
+written on the upsert's UPDATE arm too, so a catalog that grew it by
+`ADDED_COLUMNS` (where every row took the `DEFAULT 1`) converges on the next
+derive with no operator step; until it does those rows read exactly as they
+read before, which is the direction an additive default has to be wrong in.
+
 Groups the rule deliberately misses — unnumbered specials ("SV: Black
 Bolt"), energy umbrellas, promo catch-alls — still take a hand-authored
 entry in `data/overrides/tcgcsv_set_bridges.json`.
@@ -1951,6 +2090,10 @@ English catalog (category 3):
   alphabetically, not in set order.
 - Series buckets come from `data/japan_series.json` (era date ranges),
   never from a match arm.
+- **`ptcgio_covered = 0`.** Japanese sets are TCGCSV-native permanently, not
+  provisionally, and the catalog records that rather than any reader
+  inferring it from the `jp-` prefix. See the `/browse` badge under
+  "New-set discovery" above.
 
 Everything downstream is shared: JP products land in the same
 `tcgcsv_products` / `prices` tables, so `import_prices`,

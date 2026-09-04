@@ -280,6 +280,51 @@ check "paths sharing a device are reported once, not once each" "1" \
 	"$(printf '%s\n' "$out" | grep -c '^diskcheck: ')"
 
 # ---------------------------------------------------------------------------
+log "4c. ...and the disk the COMPILE writes to, relocated or not"
+
+# pd-6jyd. pd-fite — the incident the whole floor exists to prevent — was a
+# cargo LINK dying with `ld terminated with signal 7 [Bus error]`, and a cargo
+# link writes into CARGO_TARGET_DIR. .github/workflows/ci.yml relocates that
+# directory (and CARGO_HOME) onto a different volume DELIBERATELY, to keep the
+# compile's largest writes off the one production runs from — so the shipped
+# configuration is precisely the one the first three arms cannot see.
+#
+# Two claims, and both are deterministic on any box:
+#
+#   1. A relocated target dir is measured on ITS OWN device, not on $HOME's.
+#      The relocation is real here rather than mocked: the fixture directory is
+#      made under TMPDIR, so where /tmp is its own mount this is the ci.yml
+#      shape exactly, and where it is not the arm still proves the path is
+#      measured rather than skipped.
+#   2. A target dir that does not exist YET is still measured, via the nearest
+#      existing ancestor. That is what makes the arm free on a box that has
+#      relocated nothing — the same argument the TMPDIR arm was added on — and
+#      it is not free if the check silently drops an absent path instead.
+TARGET_FIXTURE="${WORK}/relocated-cargo-target"
+mkdir -p "$TARGET_FIXTURE"
+TARGET_MOUNT="$(df --output=target "$TARGET_FIXTURE" | tail -n1)"
+
+out="$(PKDUMP_DISK_FLOOR_GB=0 bash "$FLOOR" --floor "$HOME" "$TARGET_FIXTURE" 2>&1)"
+check "a relocated cargo target dir is measured and named" "1" \
+	"$(printf '%s\n' "$out" | grep -cF "diskcheck: ${TARGET_MOUNT} has")"
+
+out="$(PKDUMP_DISK_FLOOR_GB=999999999 bash "$FLOOR" --floor "$HOME" "$TARGET_FIXTURE" 2>&1)"
+check "below the floor, the refusal names it" "1" \
+	"$(printf '%s\n' "$out" | grep -cF "free on ${TARGET_MOUNT} (floor")"
+
+# The unset case: "${CARGO_TARGET_DIR:-${REPO_DIR}/target}" on a checkout that
+# has never been built names a directory that is not there. It must still
+# measure the checkout's filesystem — a developer or a polecat running
+# deploy/ci.sh from a worktree compiles onto exactly that disk.
+ABSENT_TARGET="${WORK}/never-built-checkout/target"
+REPO_MOUNT="$(df --output=target "${WORK}" | tail -n1)"
+check "the fixture for the absent case really is absent" "no" \
+	"$([ -e "$ABSENT_TARGET" ] && echo yes || echo no)"
+out="$(PKDUMP_DISK_FLOOR_GB=0 bash "$FLOOR" --floor "$ABSENT_TARGET" 2>&1)"
+check "a target dir that does not exist yet is measured, not skipped" "1" \
+	"$(printf '%s\n' "$out" | grep -cF "diskcheck: ${REPO_MOUNT} has")"
+
+# ---------------------------------------------------------------------------
 log "5. Below the floor with a gate running, it HOLDS instead of aborting"
 
 # A real disk cannot be made to cross a threshold on cue, and the branch worth
@@ -413,8 +458,20 @@ check "ci.sh sources the runner" "1" \
 # assertion is that the second is a COPY of the first and not a second spelling
 # of it — a re-spelled list passes a "both mention $HOME" test and still drops
 # an arm from one of them.
+#
+# The literal is asserted whole rather than arm by arm: an arm-by-arm test goes
+# on passing when an arm is DROPPED, which is the only way this list is ever
+# wrong. It spans continuation lines, so the source is joined first — the guard
+# is about what the array says, not about where it wraps.
+CI_SH_JOINED="$(awk '
+	{ line = $0
+	  while (line ~ /\\$/ && (getline nxt) > 0) {
+		sub(/\\$/, "", line); sub(/^[[:space:]]+/, "", nxt); line = line nxt
+	  }
+	  print line }
+' "$CI_SH")"
 check "the disks are named once, in one array" "1" \
-	"$(grep -c 'PKDUMP_CI_DISK_PATHS=("\$HOME" "\${PKDUMP_STORE_ROOT:-\$HOME}" "\${TMPDIR:-/tmp}")' "$CI_SH")"
+	"$(printf '%s\n' "$CI_SH_JOINED" | grep -c 'PKDUMP_CI_DISK_PATHS=("\$HOME" "\${PKDUMP_STORE_ROOT:-\$HOME}" "\${TMPDIR:-/tmp}" "\${CARGO_TARGET_DIR:-\${REPO_DIR}/target}" "\${CARGO_HOME:-\$HOME/.cargo}")')"
 check "the pre-build floor check spends that array" "1" \
 	"$(grep -c 'diskcheck.sh" --floor "\${PKDUMP_CI_DISK_PATHS\[@\]}"' "$CI_SH")"
 check "the wave's per-dispatch check COPIES it, never re-spells it" "1" \

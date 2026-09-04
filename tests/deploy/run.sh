@@ -2675,7 +2675,20 @@ tz_check() { # tz_check <STUB_MODE> [extra args...]; prints output then RC=<n>
 }
 
 tz_has() { # tz_has <output> <fixed string> -> 1 | 0
-	printf '%s' "$1" | grep -qF -- "$2" && echo 1 || echo 0
+	# NEVER `grep -q` ON THE READ END OF A PIPE UNDER `pipefail`.
+	#
+	# -q exits at the FIRST match. When the needle is near the start of a long haystack the
+	# writer still has most of its output to push, takes SIGPIPE, and `pipefail` then makes
+	# the pipeline report a MATCH as failure — so this returned 0 for text that was present.
+	#
+	# The proof is inside one run (2026-09-03): of the checks reading the SAME captured
+	# block, "…and says CANNOT VERIFY" — the block's FIRST line — failed with got 0, while
+	# "…and names the missing permission" and "…and quotes what aws actually said", both
+	# printed later in that same block, passed with 1. The text was there; only the early
+	# match was lost. `printf: write error: Broken pipe` is logged on the next line.
+	local n
+	n=$(printf '%s' "$1" | grep -cF -- "$2" || true)
+	[ "${n:-0}" -gt 0 ] && echo 1 || echo 0
 }
 
 TZ_OK="$(tz_check correct)"
@@ -2851,6 +2864,180 @@ check "no marker file is kept beside the units" "0" \
 	"$(find "$HOSTHOME" -name '*owner*' -o -name '*.host-units*' | wc -l)"
 
 rm -rf "$HOSTHOME" "$OTHER"
+reset_store
+
+# ---------------------------------------------------------------------------
+log "17. The scratchpad reaper only removes abandoned sessions (pd-xgh6)"
+# ---------------------------------------------------------------------------
+#
+# deploy/tmpreap.sh removes directories belonging to OTHER AGENTS on this box,
+# which is the whole of its risk. Both halves are stated here, and both need a
+# process table this file controls: the real one has this box's own live
+# sessions in it, so "a live session survives" cannot be asserted against it and
+# "a broken liveness signal refuses" cannot be reached at all.
+#
+# PKDUMP_TMPREAP_PROC is therefore where the process table IS. There is
+# deliberately no way to hand the script a liveness set or to switch the check
+# off — an env var that did would be the bug this section exists to prevent.
+
+reset_store
+
+TMPREAP="${REPO_DIR}/deploy/tmpreap.sh"
+REAP_ROOT="${WORK}/reap/root"
+REAP_PROC="${WORK}/reap/proc"
+
+LIVE_ID=aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+DEAD_OLD=bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb
+DEAD_FRESH=cccccccc-3333-4333-8333-cccccccccccc
+BY_CMDLINE=dddddddd-4444-4444-8444-dddddddddddd
+BY_CWD=eeeeeeee-5555-4555-8555-eeeeeeeeeeee
+EMPTY_SLUG_ID=11111111-6666-4666-8666-111111111111
+
+# A session directory shaped like the real thing: scratchpad/ + tasks/*.output.
+mk_session() { # mk_session <slug> <name> <touch -d spec | now>
+	local d="${REAP_ROOT}/$1/$2"
+	mkdir -p "${d}/scratchpad" "${d}/tasks"
+	echo payload > "${d}/scratchpad/notes.md"
+	echo payload > "${d}/tasks/babc123.output"
+	# -depth so the contents are aged before the directory that holds them;
+	# touching a file bumps its parent's mtime.
+	[ "$3" = now ] || find "$d" -depth -exec touch -h -d "$3" {} +
+}
+# A process, as the script reads one: argv[0], the environment, and a cwd link.
+mk_proc() { # mk_proc <pid> <argv0> [SESSION_ID] [cwd target] [extra argv]
+	local d="${REAP_PROC}/$1"
+	mkdir -p "$d"
+	printf '%s\0%s\0' "$2" "${5:---dangerously-skip-permissions}" > "${d}/cmdline"
+	if [ -n "${3:-}" ]; then
+		printf 'PATH=/usr/bin\0CLAUDE_CODE_SESSION_ID=%s\0' "$3" > "${d}/environ"
+	else
+		printf 'PATH=/usr/bin\0' > "${d}/environ"
+	fi
+	[ -z "${4:-}" ] || ln -sfn "$4" "${d}/cwd"
+}
+build_fixture() {
+	rm -rf "${WORK}/reap"; mkdir -p "$REAP_ROOT" "$REAP_PROC"
+	mk_session slug-a "$LIVE_ID"    '10 days ago'
+	mk_session slug-a "$DEAD_OLD"   '10 days ago'
+	mk_session slug-a "$DEAD_FRESH" '2 days ago'
+	mk_session slug-b "$BY_CMDLINE" '10 days ago'
+	mk_session slug-b "$BY_CWD"     '10 days ago'
+	# Not a session directory. The root holds unrelated caches — there was 579M
+	# of uv-cache-<agent> beside the sessions on the box this was written for —
+	# and a reaper that decided what those were would be a different tool.
+	mkdir -p "${REAP_ROOT}/slug-b/uv-cache-someagent"
+	echo cache > "${REAP_ROOT}/slug-b/uv-cache-someagent/blob"
+	find "${REAP_ROOT}/slug-b/uv-cache-someagent" -depth -exec touch -h -d '10 days ago' {} +
+	# A slug whose every session is dead and old: it should end up gone too.
+	mk_session slug-empty "$EMPTY_SLUG_ID" '10 days ago'
+	mkdir -p "${WORK}/reap/bystander"; echo keep > "${WORK}/reap/bystander/file"
+}
+# Run it in the current shell so REAP_RC survives, with the output on a file so
+# capturing it costs no subshell either. Overrides are per-call and do not stick.
+REAP_OUT="${WORK}/reap.out"
+reap() { # reap [VAR=VAL ...] [-- args...]
+	local envs=() ; while [ $# -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done
+	[ $# -eq 0 ] || shift
+	REAP_RC=0
+	env PKDUMP_TMPREAP_ROOT="$REAP_ROOT" PKDUMP_TMPREAP_PROC="$REAP_PROC" \
+	    PKDUMP_ALERTS_ENV=/nonexistent ${envs[@]+"${envs[@]}"} \
+	    bash "$TMPREAP" "$@" > "$REAP_OUT" 2>&1 || REAP_RC=$?
+}
+said() { grep -c "$1" "$REAP_OUT" || true; }
+there() { [ -e "$1" ] && echo yes || echo no; }
+
+# --- The sweep, with a working liveness signal --------------------------------
+build_fixture
+mk_proc 101 claude "$LIVE_ID"
+mk_proc 102 /usr/local/bin/claude "" "" "$BY_CMDLINE"      # `claude --resume <id>`
+mk_proc 103 bash "" "${REAP_ROOT}/slug-b/${BY_CWD}/scratchpad"
+# tmux and `sh -c` START sessions and are not ones; counting them would make the
+# guard below fire on a box where no session is running at all.
+mk_proc 104 tmux
+mk_proc 105 sh
+
+reap
+check "the reaper runs clean" "0" "$REAP_RC"
+check "a live session is kept, however old" "yes" "$(there "${REAP_ROOT}/slug-a/${LIVE_ID}")"
+check "a session named on a command line is kept" "yes" "$(there "${REAP_ROOT}/slug-b/${BY_CMDLINE}")"
+check "a session some process is sitting in is kept" "yes" "$(there "${REAP_ROOT}/slug-b/${BY_CWD}")"
+check "a dead session used inside the grace window is kept" "yes" "$(there "${REAP_ROOT}/slug-a/${DEAD_FRESH}")"
+check "a dead, idle session is reaped" "no" "$(there "${REAP_ROOT}/slug-a/${DEAD_OLD}")"
+check "a directory that is not a session is untouched" "yes" \
+	"$(there "${REAP_ROOT}/slug-b/uv-cache-someagent/blob")"
+check "a slug with nothing left in it goes too" "no" "$(there "${REAP_ROOT}/slug-empty")"
+check "a slug that still holds something stays" "yes" "$(there "${REAP_ROOT}/slug-a")"
+check "a sibling of the root is untouched" "yes" "$(there "${WORK}/reap/bystander/file")"
+# The tally is how an operator reads the journal; a run that removed two of
+# seven must not report seven.
+check "it reports what it did" "1" "$(said 'reaped 2 session(s)')"
+check "and how much it kept, and why" "1" "$(said 'kept 3 live, 1 recently used, 1 not a session dir')"
+
+# --- The grace window is a window, and it never overrides the process table ---
+# Widened past every fixture, nothing is idle enough to go. Narrowed under the
+# two-day-old one, that one goes and the LIVE one still does not — age is a
+# second condition, never a substitute for the first.
+build_fixture
+mk_proc 101 claude "$LIVE_ID"
+reap PKDUMP_TMPREAP_AGE_DAYS=30
+check "a window wider than every session reaps nothing" "1" "$(said 'reaped 0 session(s)')"
+check "including the ten-day-old dead one" "yes" "$(there "${REAP_ROOT}/slug-a/${DEAD_OLD}")"
+
+build_fixture
+mk_proc 101 claude "$LIVE_ID"
+reap PKDUMP_TMPREAP_AGE_DAYS=1
+check "narrowing it reaches the two-day-old one" "no" "$(there "${REAP_ROOT}/slug-a/${DEAD_FRESH}")"
+check "...and still cannot reach the live one" "yes" "$(there "${REAP_ROOT}/slug-a/${LIVE_ID}")"
+
+# --- --dry-run removes nothing ------------------------------------------------
+build_fixture
+mk_proc 101 claude "$LIVE_ID"
+reap -- --dry-run
+check "a dry run is clean" "0" "$REAP_RC"
+check "a dry run removes nothing" "yes" "$(there "${REAP_ROOT}/slug-a/${DEAD_OLD}")"
+check "a dry run names what it would remove" "1" "$(said "would reap slug-a/${DEAD_OLD}")"
+
+# --- THE VACUITY GUARD --------------------------------------------------------
+# claude is running and NOT ONE process yielded a session id. That is what a
+# broken liveness signal looks like, and it is indistinguishable from "every
+# session is dead" by looking at the answer — which is why it has to be asked as
+# its own question. Removing nothing is the only safe reading.
+build_fixture
+mk_proc 101 claude
+mk_proc 102 claude
+reap
+check "a broken liveness signal refuses" "1" "$REAP_RC"
+check "and removes nothing at all" "yes" "$(there "${REAP_ROOT}/slug-a/${DEAD_OLD}")"
+check "and says why" "1" "$(said 'NOT ONE')"
+
+# The same fixture with no claude process is NOT the guard's case: an idle box
+# has no live sessions and there is nothing wrong with it.
+build_fixture
+mk_proc 101 tmux
+reap
+check "an idle box is not a broken signal" "0" "$REAP_RC"
+check "and it reaps normally" "no" "$(there "${REAP_ROOT}/slug-a/${DEAD_OLD}")"
+
+# An unreadable process table is the same refusal, one step earlier.
+build_fixture
+mk_proc 101 claude "$LIVE_ID"
+reap PKDUMP_TMPREAP_PROC="${WORK}/reap/not-a-proc"
+check "no process table at all refuses" "1" "$REAP_RC"
+check "and removes nothing" "yes" "$(there "${REAP_ROOT}/slug-a/${DEAD_OLD}")"
+
+# --- A root that is not there, and an argument that is not ours ---------------
+build_fixture
+mk_proc 101 claude "$LIVE_ID"
+reap PKDUMP_TMPREAP_ROOT="${WORK}/reap/no-such-root"
+check "a root that does not exist is a clean no-op" "0" "$REAP_RC"
+check "and says so" "1" "$(said 'nothing to do')"
+
+reap -- --wipe-everything
+check "an unknown argument is refused" "1" "$REAP_RC"
+check "and nothing was swept on the way to refusing" "yes" \
+	"$(there "${REAP_ROOT}/slug-a/${DEAD_OLD}")"
+
+rm -rf "${WORK}/reap" "$REAP_OUT"
 reset_store
 
 # ---------------------------------------------------------------------------

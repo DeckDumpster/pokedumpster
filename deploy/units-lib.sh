@@ -100,6 +100,7 @@ PKDUMP_HOST_WIDE_UNIT_FILES=(
     pkdump-backup-check@.service     pkdump-backup-check@.timer
     pkdump-alert@.service
     pkdump-diskcheck.service         pkdump-diskcheck.timer
+    pkdump-tmpreap.service           pkdump-tmpreap.timer
     pkdump-heartbeat@.service        pkdump-heartbeat@.timer
 )
 
@@ -263,6 +264,20 @@ _pkdump_units_install_host_wide() {
     for ext in service timer; do
         _pkdump_units_render "${systemd_user_dir}/pkdump-diskcheck.${ext}" nostamp \
             "$repo_dir/deploy/pkdump-diskcheck.${ext}" \
+            -e "s|{{REPO_DIR}}|${repo_dir}|g"
+    done
+
+    # Layer 4b: the step before the low-disk check (pd-xgh6). diskcheck says the
+    # disk is filling; this is what stops it filling. Host-wide for the same
+    # reason and not per-instance either — what it collects is every agent's
+    # abandoned session scratchpads under $TMPDIR, which is the filesystem
+    # pd-20ia taught deploy/ci.sh to measure and which blocked CI here at 99%
+    # full while / had 40G free. Installed, not enabled: arming a timer that
+    # deletes directories is an operator's act, and only a checkout entitled to
+    # the host-wide units gets this far at all.
+    for ext in service timer; do
+        _pkdump_units_render "${systemd_user_dir}/pkdump-tmpreap.${ext}" nostamp \
+            "$repo_dir/deploy/pkdump-tmpreap.${ext}" \
             -e "s|{{REPO_DIR}}|${repo_dir}|g"
     done
 

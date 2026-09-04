@@ -26,7 +26,7 @@ use crate::search_meta::RarityLookup;
 use crate::sets::{self, CardCopyCount, SetAnalytics, SetSummary};
 
 /// `data/bundles.json` — the canonical bundle registry.
-const BUNDLES_SEED: &str = include_str!("../../../data/bundles.json");
+pub(crate) const BUNDLES_SEED: &str = include_str!("../../../data/bundles.json");
 
 /// One registry row, mirrors the `bundles` table 1:1.
 #[derive(Debug, Clone, serde::Deserialize)]

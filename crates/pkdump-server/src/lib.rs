@@ -284,26 +284,28 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
     // Before anything is opened or bound: an unauthenticated resolver must
     // not become reachable from off-box.
     check_bind(cfg.multi_tenant, cfg.host, cfg.allow_insecure_bind)?;
-    // Idempotent shared-catalog migration on startup. `pkdump setup` and the
-    // nightly `pkdump-lake-derive shared` normally own shared schema — the
-    // refresh used to be on that list and is not since pd-lunn, because it
-    // opens the catalog read-only now — but a binary upgrade can ship a
+    // Idempotent shared-catalog convergence on startup. `pkdump setup` and
+    // the nightly `pkdump-lake-derive shared` normally own shared schema —
+    // the refresh used to be on that list and is not since pd-lunn, because
+    // it opens the catalog read-only now — but a binary upgrade can ship a
     // data-only migration (e.g. seeding a new variant) that must be applied
-    // before the server starts serving requests. open_shared runs pending
-    // migrations and is a no-op when nothing is pending.
+    // before the server starts serving requests.
+    //
+    // `open_shared_for_serving`, not `open_shared`: it asks READ-ONLY whether
+    // this catalog already carries this build's convergence fingerprint and,
+    // on a match, never takes the write lock at all (pd-dzu5). It used to,
+    // unconditionally and on every start — the search-metadata reconcile it
+    // used to make here was a DELETE and a few hundred INSERTs each time —
+    // which put a restart in a race with the nightly derive it can only lose.
+    // That reconcile is now part of the convergence itself, so it happens on
+    // exactly the starts that have something to converge.
     //
     // The search registry is read off the catalog here too: it is catalog
     // data, the same for every tenant, so it is loaded once from the one
     // shared database rather than through whichever collection happens to
     // be open.
     let (registry, flags) = {
-        let mut shared = pkdump_db::open_shared(&cfg.shared_db)?;
-        // Seed the search query metadata (keywords, rarity ranks, is:-flags)
-        // on every startup. Unlike the upstream catalog, these are pure
-        // embedded data (include_str!), so reconciling here — not just at
-        // `pkdump setup`/`data refresh` — means a fresh deploy never serves an
-        // empty keyword registry (which would reject every keyword query).
-        pkdump_db::search_meta::reconcile(&mut shared)?;
+        let shared = pkdump_db::open_shared_for_serving(&cfg.shared_db)?;
         (
             Arc::new(pkdump_db::search_meta::load_registry(&shared)?),
             Arc::new(pkdump_db::search_meta::load_flags(&shared)?),

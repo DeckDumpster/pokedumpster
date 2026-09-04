@@ -270,12 +270,22 @@ pub fn derive(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<Re
     report.latest_prices = pkdump_db::latest_prices::refresh_latest_prices(conn)?;
     println!("  {} latest-price rows materialized", report.latest_prices);
 
-    //    Curated prices for catalog printings the feed does not price. Its
-    //    rows FK into `printings`, so it runs after variant expansion; and it
-    //    must land before anything values a collection from this catalog,
-    //    which reads the same effective-price rule (pd-m4gw).
-    let n_override = pkdump_db::catalog_prices::reconcile(conn)?;
-    println!("  {n_override} curated catalog price overrides reconciled");
+    // 7. The seeds whose rows FK into rows this run just created — curated
+    //    catalog prices (into `printings`) and set-name aliases (into `sets`).
+    //    `open_shared` reconciled them on the way in, when neither target
+    //    existed for anything this run was about to ingest, so it wrote
+    //    nothing for them; run here they land in the SAME run that created
+    //    their targets, which is what makes one derive a fixed point rather
+    //    than the first of two (pd-zg7o).
+    //
+    //    The curated prices must also land before anything values a collection
+    //    from this catalog, which reads the same effective-price rule
+    //    (pd-m4gw).
+    let seeds = pkdump_db::reconcile_ingest_dependent_seeds(conn)?;
+    println!(
+        "  {} curated catalog price overrides, {} set aliases reconciled",
+        seeds.catalog_prices, seeds.set_aliases
+    );
 
     // And that is the end of it. The derivation touches the SHARED catalog and
     // nothing else — no tenant database is opened, let alone written.

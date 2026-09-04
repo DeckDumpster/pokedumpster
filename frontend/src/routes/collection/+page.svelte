@@ -52,6 +52,19 @@
 	// kept as its own field because it is the endpoint that says so.
 	let searchTotal = $state(0);
 
+	// The header figure beside the count. It comes from the endpoint, like the
+	// count does (pd-2g84): it is the condition-adjusted value of every OWNED
+	// copy the query matches, whether or not this client is holding them all.
+	//
+	// Summing it here is what it used to do, and that could only ever be right
+	// while the page held the whole result — under paging the figure had to be
+	// withheld unless the page WAS the result. It also made the page a second
+	// implementation of what a collection is worth, and the two disagreed: the
+	// chart this number opens values `status = 'owned'` copies, and a reduce
+	// over `filtered` counts the sold and ordered ones the list draws beside
+	// them. `null` is "no figure", never $0.00 — see `SearchPage.total_value`.
+	let searchTotalValue = $state<number | null>(null);
+
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	// A query-language parse error, shown under the search box with a caret.
@@ -292,11 +305,13 @@
 			const res = await api.collectionSearch(query, sortKey, sortDir, allCards, 'all');
 			searchRows = res.rows;
 			searchTotal = res.total;
+			searchTotalValue = res.total_value;
 		} catch (e) {
 			if (e instanceof SearchQueryError) {
 				searchError = { message: e.message, position: e.position };
 				searchRows = [];
 				searchTotal = 0;
+				searchTotalValue = null;
 			} else {
 				error = e instanceof Error ? e.message : String(e);
 			}
@@ -439,16 +454,6 @@
 	// The server applies the query now; `filtered` is just the owned copies it
 	// returned (kept as a name so the rest of the page is unchanged).
 	const filtered = $derived(rows);
-	// Header total is the sum of *condition-adjusted* market values across
-	// the filtered rows — the same multiplier the Adj. column applies, summed
-	// over every copy instead of drawn per group.
-	//
-	// It sums the whole result, because the whole result is what this client
-	// holds now (pd-7z4o). Under paging it could only sum the page, which is
-	// why the figure used to be withheld unless the page WAS the result.
-	const totalValue = $derived(
-		filtered.reduce((s, r) => s + (r.market_price ?? 0) * conditionMultiplier(r.condition), 0)
-	);
 
 	function toggleSelectMode() {
 		selectMode = !selectMode;
@@ -468,8 +473,8 @@
 		/** Per-copy condition-adjusted market price (nm_unit × the copy's
 		    condition multiplier) — the Adj. column. There is no per-group total
 		    beside it any more: the Value column left with its sort (pd-tjym),
-		    and the collection's total still comes from `totalValue` above,
-		    which sums the whole result rather than a group. */
+		    and the result set's total is `searchTotalValue`, which the server
+		    computes over the whole result rather than over a group. */
 		market_unit: number | null;
 		printing_id: string;
 		card_id: string;
@@ -1245,11 +1250,11 @@
 			</div>
 		{/if}
 		<!-- The count speaks for the whole result set, and so does the money
-		     beside it: the client holds every matching row now, so summing
-		     them is arithmetic rather than a guess about the rest (pd-7z4o).
-		     Under paging the figure had to be withheld unless the page WAS the
-		     result, because "2,661 cards, $412" where the $412 was 250
-		     arbitrary cards is worse than no figure at all. -->
+		     beside it, because the endpoint answers both (pd-2g84). The money
+		     is the value of the OWNED copies among those rows — the same
+		     copies the chart it opens values — so it is a figure this line and
+		     that chart can both defend, and it stays true of the whole result
+		     no matter how much of it the client is holding. -->
 		<button
 			type="button"
 			class="countline muted"
@@ -1258,7 +1263,7 @@
 			title="Collection value over time"
 		>
 			{count(searchTotal)}
-			cards{#if totalValue > 0}, {money(totalValue)}{/if}
+			cards{#if searchTotalValue !== null}, {money(searchTotalValue)}{/if}
 		</button>
 	</Toolbar>
 	{#if searchError}

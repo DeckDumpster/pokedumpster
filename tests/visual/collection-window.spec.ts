@@ -34,6 +34,13 @@ import { stabilize } from './stabilize';
 /** Far more than any browser will render, and not a round number. */
 const TOTAL = 56_635;
 
+/** What the whole result is worth, per the endpoint. Deliberately NOT
+    `rows x market_price` for any number of rows the stub serves: the point of
+    `total_value` is that it is a fact about the result set, so a client that
+    reconstructed it from the rows it holds would print a different number
+    (pd-2g84). */
+const TOTAL_VALUE = 84_952.5;
+
 /** One synthetic owned printing. Distinct name/number per index so a tile is
     traceable back to its position, and every field the list draws is present. */
 function row(i: number) {
@@ -92,6 +99,7 @@ async function serveHugeResult(page: Page, rows = 4_000, make = row): Promise<As
 			json: {
 				rows: Array.from({ length: rows }, (_, i) => make(i)),
 				total: TOTAL,
+				total_value: TOTAL_VALUE,
 				limit: TOTAL,
 				offset: 0
 			}
@@ -194,10 +202,13 @@ test('the client asks for the whole result, not a page of it', async ({ page }) 
 		expect(a.limit, 'the collection asks for every matching row').toBe('all');
 		expect(a.offset, 'there is no paging left to do').toBeNull();
 	}
-	// And it says so: the count line speaks for the whole result, and can now
-	// price it too, because it holds every row it is pricing.
-	await expect(page.locator('[data-testid="collection-count"]')).toContainText('56,635 cards');
-	await expect(page.locator('[data-testid="collection-count"]')).toContainText('$');
+	// And it says so: the count line speaks for the whole result, and prices it
+	// too. Both numbers come off the envelope (pd-2g84), which is what this
+	// stub proves — the page is holding 4,000 rows worth $6,000 and printing
+	// $84,952.50, a figure it could not have added up itself.
+	const line = page.locator('[data-testid="collection-count"]');
+	await expect(line).toContainText('56,635 cards');
+	await expect(line).toContainText('$84,952.50');
 });
 
 test('the grid renders a window, not the result set', async ({ page }) => {

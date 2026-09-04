@@ -509,6 +509,17 @@ Note that **alert mode still watches one filesystem** (`PKDUMP_DISK_PATH`,
 default `$HOME`). Widening what pages the operator is a separate decision from
 widening what blocks a build.
 
+**Alert mode exits 0 even when the push could not be delivered** (pd-4sqi).
+`alert.sh` exits 1 when it reached nobody — an unconfigured or still-`CHANGE_ME`
+channel, a failed `curl` — and under `set -e` that used to become diskcheck's
+own status, so the script exited 0 every day the disk was fine and *failed its
+unit* the day it was not. `systemctl status pkdump-diskcheck` then reported the
+inversion of what happened, and the `OnFailure=` it fired escalated through
+`alert.sh` — the same channel that had just proved it could not deliver. The
+drop is still loud, on stderr and in the journal (`ALERT NOT DELIVERED`, on top
+of `alert.sh`'s own diagnosis); it is `deploy/alarm-status.sh` that answers "is
+the channel armed", not the exit code of a timer.
+
 ### Reclaiming `$TMPDIR` — the scratchpad reaper (pd-xgh6)
 
 The guard above is what tells you `/tmp` is full. `deploy/tmpreap.sh` is what

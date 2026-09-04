@@ -78,6 +78,8 @@ diag_init
 # Bounded condition polling, in one place for every harness (pd-86er).
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
+# shellcheck source=tests/lib/objects.sh
+. "${REPO_DIR}/tests/lib/objects.sh"
 
 die() {
 	diag "!! $*"
@@ -562,7 +564,12 @@ print(' '.join(sorted(
 	die "the lake holds '${TABLES}' — tenant data NEVER enters the lake, and neither does anything else this bead adds"
 echo "    ok   ${TABLES}"
 
-STRAY=$(mc ls --recursive "m/${BUCKET}" 2>/dev/null | awk '{print $NF}' |
+# Through the verified listing (pd-cxq4). "No tenant-keyed object outside
+# tenant/" is exactly what an `mc` run that died under load also reports, and
+# the die below would never fire on it.
+STRAY_LISTING="$(object_store_ls "" mc ls --recursive "m/${BUCKET}")" ||
+	die "the bucket listing could not be trusted — see above"
+STRAY=$(awk '{print $NF}' <<<"$STRAY_LISTING" |
 	grep -v '^tenant/' | grep -c 'database_id=' || true)
 [ "$STRAY" = "0" ] ||
 	die "${STRAY} tenant-keyed object(s) outside tenant/ — the catalog zone must hold nothing keyed by tenant"

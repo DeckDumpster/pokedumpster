@@ -56,6 +56,8 @@ diag_init
 . "${REPO_DIR}/tests/lib/ports.sh"
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
+# shellcheck source=tests/lib/objects.sh
+. "${REPO_DIR}/tests/lib/objects.sh"
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
 # shellcheck source=deploy/image-lib.sh
@@ -189,14 +191,35 @@ add_holdings() { # add_holdings <db> <n> <date>
 	PY
 }
 
+# The catalog-zone object §0 seeds, and the sentinel every listing below is
+# checked against: it is in this bucket from §0 until §8 asserts it is still
+# there, so a whole-bucket listing that does not carry it did not see the
+# bucket. See tests/lib/objects.sh.
+SENTINEL_KEY="raw/source=tcgcsv/dataset=groups/ingest_date=2026-08-14/run=01GATE/part-0000.json"
+
 # Listed from the BUCKET ROOT as root, so what is asserted is what is THERE and
 # not what a particular credential can see. A deletion that only hid the
 # objects from the role that deleted them would pass any check made from
 # inside.
-zone_ls() {
-	mc_root ls --recursive "x/${BUCKET}" 2>/dev/null |
-		awk '{print $NF}' | grep '^tenant/' | sort
+#
+# Refreshing is a STATEMENT rather than something a `check` line does inside a
+# command substitution, and that is pd-cxq4's fix rather than a style choice: a
+# listing that cannot be trusted has to be able to end the run, and an `exit`
+# inside `$( … )` ends only the subshell. So the listing happens here, at the
+# top level, and the checks below read what it found. Half of them expect ZERO
+# — alice's prefix after the drop, nothing put back under it — which is exactly
+# what a listing that quietly died would also produce.
+ZONE_KEYS=""
+CATALOG_KEYS=""
+zone_refresh() {
+	local listing keys
+	listing="$(object_store_ls "$SENTINEL_KEY" mc_root ls --recursive "x/${BUCKET}")" ||
+		die "the bucket listing could not be trusted — see above"
+	keys="$(awk '{print $NF}' <<<"$listing")"
+	ZONE_KEYS="$(grep '^tenant/' <<<"$keys" | sort || true)"
+	CATALOG_KEYS="$(grep -E '^(raw|lake)/' <<<"$keys" | sort || true)"
 }
+zone_ls() { printf '%s\n' "$ZONE_KEYS"; }
 
 # ---------------------------------------------------------------------------
 log "0. MinIO, a VERSIONED bucket, and the two identities from the REAL policies"
@@ -280,6 +303,7 @@ ship_job run --data-dir /data >"${WORK}/ship.log" 2>&1 ||
 		cat "${WORK}/ship.log"
 		die "the shipper failed"
 	}
+zone_refresh
 check "objects in the zone before any deletion" "3" "$(zone_ls | grep -c . || true)"
 ALICE_KEYS="$(zone_ls | grep "database_id=${ALICE}/" || true)"
 check "…two of them alice's" "2" "$(grep -c . <<<"$ALICE_KEYS")"
@@ -312,6 +336,7 @@ check "…the partition is OPEN" "1" \
 	"$(grep -c '^ *OPEN  *partition' "${WORK}/before.log" || true)"
 check "…and the stray copy actually OPENED rather than being inferred" "yes" \
 	"$(grep -q 'OPENED' "${WORK}/before.log" && echo yes || echo no)"
+zone_refresh
 check "…nothing was deleted by asking" "2" \
 	"$(zone_ls | grep -c "database_id=${ALICE}/" || true)"
 
@@ -333,6 +358,7 @@ check "…having removed both of alice's objects" "1" \
 
 # Seen from the BUCKET ROOT, which is the assertion that matters: the objects
 # are gone, not merely invisible to the credential that deleted them.
+zone_refresh
 check "alice's prefix is empty as seen by root" "0" \
 	"$(zone_ls | grep -c "database_id=${ALICE}/" || true)"
 check "bob's data is untouched" "1" \
@@ -367,7 +393,9 @@ log "6. the VERSION that survived the drop is ciphertext nobody holds a key for"
 # `v<N>` ordinal and PUT/DELETEMARKER in a human layout that is not a contract;
 # picking a field out of it by position is how a gate starts silently matching
 # the wrong thing.
-mc_root ls --versions --recursive --json "x/${BUCKET}" >"${WORK}/versions.json" 2>/dev/null || true
+object_store_ls "$SENTINEL_KEY" \
+	mc_root ls --versions --recursive --json "x/${BUCKET}" >"${WORK}/versions.json" ||
+	die "the versioned listing could not be trusted — see above"
 
 # The surviving (non-delete-marker) version of the exact object §3 copied.
 surviving_version_of() { # surviving_version_of <key>
@@ -434,6 +462,7 @@ RC=0
 ship_job run --data-dir /data >"${WORK}/ship2.log" 2>&1 || RC=$?
 check "the shipper calls alice revoked rather than shipping her" "1" \
 	"$(grep -c "revoked — not shipped, by design" "${WORK}/ship2.log" || true)"
+zone_refresh
 check "…and put nothing back under the dropped prefix" "0" \
 	"$(zone_ls | grep -c "database_id=${ALICE}/" || true)"
 
@@ -484,6 +513,7 @@ check "…naming which paths are open" "yes" \
 RC=0
 wrapper delete --tenant "$BOB" || RC=$?
 check "delete without --yes -> 1" "1" "$RC"
+zone_refresh
 check "…and bob's data is still there" "1" \
 	"$(zone_ls | grep -c "database_id=${BOB}/" || true)"
 
@@ -504,8 +534,9 @@ mv "${WORK}/tenant-master.key.away" "${KEYS}/tenant-master.key"
 
 # ---------------------------------------------------------------------------
 log "8. the catalog zone is untouched by all of it"
+zone_refresh
 check "the seeded raw/ object is still the only thing under raw/" "1" \
-	"$(mc_root ls --recursive "x/${BUCKET}/raw/" 2>/dev/null | grep -c . || true)"
+	"$(grep -c '^raw/' <<<"$CATALOG_KEYS" || true)"
 check "bob's collection database is still on disk" "yes" \
 	"$([[ -f "${DATA}/tenants/${BOB}.sqlite" ]] && echo yes || echo no)"
 # The offline half only: the deletion is not what removes a collection.

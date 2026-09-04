@@ -194,9 +194,20 @@ ENV_ARGS=(-e PKDUMP_HOME=/data)
 # environment, which is exactly the trip that pd-vk22 showed does not happen by
 # itself. A knob a unit documents and a wrapper drops is the same silent no-op
 # with a different variable name on it.
+#
+# POKEMONTCG_API_KEY is in it for the same reason one layer down.
+# `PokemonTcgClient::new` reads it from the environment and it is the only
+# thing that lifts api.pokemontcg.io's daily ceiling from 1,000 requests to
+# 20,000 — so a box that ever needs the key needs it HERE, in the container,
+# not in the wrapper that starts one. Today's landing spends a single request
+# on that API per night and the ceiling is nowhere in sight (pd-2cpx measured
+# it); a night that swept every set's cards would spend ~180, still under the
+# keyless ceiling, and a rebuild of the whole corpus is what gets near it.
+# Forwarding it now costs a line and means the knob works the first time
+# somebody reaches for it, rather than reading as set and doing nothing.
 for VAR in PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION PKDUMP_LAKE_S3_PREFIX \
     PKDUMP_LAKE_S3_ENDPOINT PKDUMP_LAKE_DIR AWS_PROFILE \
-    PKDUMP_HTTP_RETRY_ATTEMPTS PKDUMP_HTTP_RETRY_BASE_MS; do
+    PKDUMP_HTTP_RETRY_ATTEMPTS PKDUMP_HTTP_RETRY_BASE_MS POKEMONTCG_API_KEY; do
     [ -n "${!VAR:-}" ] && ENV_ARGS+=(-e "${VAR}=${!VAR}")
 done
 

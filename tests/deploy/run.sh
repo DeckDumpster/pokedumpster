@@ -2052,6 +2052,17 @@ check "…and so does its base delay" "1" \
 check "unset is not forwarded as empty" "0" \
 	"$(printf '%s' "$RF_ENV" | grep -c -- '-e PKDUMP_HTTP_RETRY_ATTEMPTS' || true)"
 
+# The pokemontcg.io key, on the same trip and for the same reason (pd-2cpx).
+# It is the only thing that lifts that API's daily ceiling off 1,000 requests,
+# `PokemonTcgClient::new` reads it from the environment, and a key that stops
+# at the wrapper looks exactly like a key that is set — until a run is
+# throttled, which is the wrong moment to find out.
+check "the pokemontcg.io api key reaches the container" "1" \
+	"$(printf '%s' "$(POKEMONTCG_API_KEY=k-rftest run_refresh)" |
+		grep -c -- '-e POKEMONTCG_API_KEY=k-rftest' || true)"
+check "…and unset is not forwarded as empty" "0" \
+	"$(printf '%s' "$RF_ENV" | grep -c -- '-e POKEMONTCG_API_KEY' || true)"
+
 # Credentials are the other half of pd-8gjd, and the assume-role path is the
 # project's standing decision: a role profile as a file, the bootstrap key as a
 # podman secret, never a long-lived static key on the command line.

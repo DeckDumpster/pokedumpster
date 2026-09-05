@@ -2620,6 +2620,77 @@ compiles `.svelte` on import (`npm test` wires it in with `--import`).
   PRAGMA tuning above is what makes them cheap.
 - Bulk-ensure FK targets at function entry; don't do a SELECT-per-row
   check inside the hot loop.
+### The catalog's WAL, and what gives it back
+
+A checkpoint can copy frames out of a WAL while readers are active but cannot
+**reset** it — restart at frame 0 — until a moment arrives with nobody reading.
+So a writer with any reader in flight appends for its whole write window, and
+the `-wal` then keeps its high-water mark until something truncates it.
+Measured on the catalog (`deep-dives/attach-concurrency`, RESULT.md finding B,
+pd-t50h): the same writer for the same ten seconds left **4.0 MiB** with no
+readers and **914 MiB** with one. Binary, not proportional.
+
+Nothing repaired it on its own, and that is the half that hurt. An
+autocheckpoint runs on a *commit*; `pkdump-lake-derive shared` is the only
+thing that commits to the catalog, and it exits when it is done — so the file
+it left sat on prod's data volume until the next night's run happened to reset.
+
+Two checkpoints, and the difference between them is the whole design:
+
+- **Opportunistic, inside the write loop** (`pkdump_db::WalReclaim`, driven from
+  `expand_all_printings`' per-card loop — the longest write window anything
+  opens on `shared.sqlite`). Every 5s, waiting **100ms**. The short wait is the
+  point: this checkpoint is speculative, another is along shortly, so blocking
+  on it buys nothing and costs the write window directly. Measured over ten
+  seconds against one continuously-reading connection — none: 60,068 commits,
+  peak 208.8 MiB; every 1s waiting 5s: 39,740 commits, 26.8 MiB; every 1s
+  waiting 100ms: **61,036 commits, 42.0 MiB**. The long wait buys a slightly
+  smaller file for a third of the writer's throughput.
+- **Final, at the end of the window** — `pkdump_db::reclaim_catalog_wal`, one
+  function called by every *process* that writes the catalog and exits, after
+  its own last write: `pkdump-lake-derive shared` (both exit paths) and `pkdump
+  setup`. Waiting **30s**. Deliberately not at the end of
+  `pkdump_derive::derive`, which is a claim about a function rather than about
+  a write window — the derive binary records `raw_derivation` after that
+  function returns, and a checkpoint there left the provenance row's frames
+  behind in a file nothing would ever truncate. The gate below is what found
+  the ordering. The opposite trade, because the writing is over and
+  there is no throughput left to protect. This is the one that returns the disk
+  rather than merely bounding it.
+
+**A blocked checkpoint is reported, never raised.** Raising would let a
+browsing session fail the nightly catalog build, which is a worse bug than the
+one being fixed.
+
+**`PRAGMA journal_size_limit` is deliberately NOT set**, and it is the first
+mitigation the bead proposed. It truncates the WAL when a checkpoint *resets*
+it, which is exactly what a reader prevents — measured at 4.02 KiB/commit with
+and without, and a 12-second window reaching 289 MiB with the limit set. A
+setting that does nothing for the workload it was added for is worse than no
+setting, because the next reader takes it for the fix and stops looking.
+
+**What is not fixed, said out loud:** a reader holding ONE read transaction
+across the whole window pins a snapshot and nothing can reset under it. That is
+SQLite, not this code, and it is asserted as a test
+(`a_reader_holding_one_transaction_blocks_the_reset_and_that_is_reported`)
+rather than left to be discovered. It is not the shape this deployment has —
+`pkdump-server` opens a connection per request and every query is short. The
+mitigation that *would* cover it — derive to a copy and swap — is a documented
+option and is deliberately not built: it needs 2x the catalog on the data
+volume, and it would change what the server serves for the minutes a derivation
+takes. Neither is a trade worth making for a reader shape this deployment does
+not have.
+
+Gates: `crates/pkdump-db/tests/wal_reclaim.rs` (the mechanism reproduced as the
+baseline the fix is measured *against*, because a suite that only asserted the
+fix would go green against a harness in which the bug never reproduced) and
+`row_identical.rs::a_derive_leaves_no_wal_behind_on_the_catalog_it_built` — the
+**shipped binary** over a real derivation. That one holds a connection open
+across the subprocess and asserts the `-wal` EXISTS and is 0 bytes: SQLite
+deletes the file when the last connection closes, so a run measured after the
+derive exits reports a missing file that reads exactly like success. That
+artifact produced this bead's own first false finding.
+
 - **Responses are compressed** — one `CompressionLayer` on the outermost
   router (`compression()` in `crates/pkdump-server/src/lib.rs`), so it
   covers `/api`, the SPA shell and the SvelteKit bundle alike. br or gzip,

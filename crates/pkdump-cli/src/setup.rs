@@ -194,6 +194,12 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let n_override = pkdump_db::catalog_prices::reconcile(&mut conn)?;
     println!("  {n_override} curated catalog price overrides reconciled");
 
+    // Same reason as the derivation's own last act (pd-t50h): `setup` writes
+    // the whole catalog and then exits, and nothing that runs afterwards will
+    // ever checkpoint what it left behind. Cheap here — a cold build has no
+    // readers — and the point is that it does not depend on that being true.
+    pkdump_db::reclaim_catalog_wal(&conn)?;
+
     println!("Setup complete: {}", db_path.display());
     Ok(())
 }

@@ -13,6 +13,7 @@ pub mod bundles;
 pub mod cards;
 pub mod catalog;
 pub mod catalog_prices;
+pub mod clock;
 pub mod collection;
 pub mod collectr_export;
 pub mod conditions;

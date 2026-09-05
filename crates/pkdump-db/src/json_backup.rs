@@ -140,7 +140,7 @@ pub fn export_value(conn: &Connection) -> Result<Value> {
     envelope.insert(KEY_VERSION.to_string(), Value::from(VERSION));
     envelope.insert(
         KEY_EXPORTED_AT.to_string(),
-        Value::String(chrono::Utc::now().to_rfc3339()),
+        Value::String(crate::clock::now_rfc3339()),
     );
 
     for table in envelope_tables(conn)? {

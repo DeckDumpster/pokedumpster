@@ -162,7 +162,7 @@ pub fn insert(conn: &Connection, handle: &str) -> Result<User> {
     let user = User {
         database_id: mint_database_id(),
         handle: handle.to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: crate::clock::now_rfc3339(),
         state: UserState::Active,
         retired_at: None,
     };
@@ -221,7 +221,7 @@ pub fn rename(conn: &Connection, from: &str, to: &str) -> Result<User> {
 /// is the test that holds it.
 pub fn detach(conn: &Connection, handle: &str) -> Result<User> {
     let user = require(conn, handle)?;
-    let retired_at = chrono::Utc::now().to_rfc3339();
+    let retired_at = crate::clock::now_rfc3339();
     conn.execute(
         "UPDATE user SET state = ?2, retired_at = ?3 WHERE database_id = ?1",
         params![user.database_id, UserState::Detached.as_str(), retired_at],

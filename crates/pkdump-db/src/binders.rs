@@ -70,7 +70,7 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<Binder> {
 
 /// Create a binder; returns its id.
 pub fn create(conn: &Connection, new: &NewBinder) -> Result<i64> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = crate::clock::now_rfc3339();
     conn.execute(
         "INSERT INTO binders \
            (name, description, color, binder_type, pocket_size, \
@@ -124,7 +124,7 @@ pub fn update(conn: &Connection, id: i64, edit: &BinderEdit) -> Result<bool> {
             edit.binder_type,
             edit.pocket_size,
             edit.storage_location,
-            chrono::Utc::now().to_rfc3339(),
+            crate::clock::now_rfc3339(),
         ],
     )?;
     Ok(n > 0)

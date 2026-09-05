@@ -102,7 +102,7 @@ pub fn create(conn: &mut Connection, order: &NewOrder, lines: &[OrderLine]) -> R
         }
     }
 
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = crate::clock::now_rfc3339();
     let tx = conn.transaction()?;
     tx.execute(
         "INSERT INTO orders \

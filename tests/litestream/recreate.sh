@@ -62,7 +62,6 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 # contention is the scenario, not an edge case. Same 5s as everywhere else.
 sq() { sqlite3 -cmd '.timeout 5000' "$@"; }
 
-LITESTREAM_IMAGE=${LITESTREAM_IMAGE:-docker.io/litestream/litestream:latest}
 MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
 AWSCLI_IMAGE=${AWSCLI_IMAGE:-docker.io/amazon/aws-cli:latest}
 
@@ -74,6 +73,11 @@ SHIPPED_YML="${REPO_DIR}/deploy/litestream.yml"
 # they source.
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
+# The Litestream version too, from that same file (pd-pfxf). A gate that
+# pulled `:latest` would test whatever the registry pushed last night and
+# not what any box actually runs — which is exactly how a 0.5.16 -> 0.5.17
+# retag turned three gates red on a change that touched none of them.
+LITESTREAM_IMAGE="${LITESTREAM_IMAGE:-$PKDUMP_LITESTREAM_IMAGE}"
 
 # Host ports, from the kernel rather than picked (pd-r0ri). One definition for
 # every harness; see tests/lib/ports.sh for what a picked one costs.

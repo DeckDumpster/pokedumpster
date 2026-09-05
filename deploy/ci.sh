@@ -19,6 +19,7 @@
 #                     on a tree that never existed. Hermetic and sub-second.
 #                     See tests/lib/diagnostics_test.sh, tests/lib/ports_test.sh,
 #                     tests/lib/wait_test.sh, tests/lib/objects_test.sh,
+#                     tests/lib/netrun_test.sh,
 #                     tests/lib/litestream_test.sh,
 #                     tests/lib/images_test.sh,
 #                     tests/container/base_images_test.sh,
@@ -560,6 +561,22 @@ if tier lint; then
     # nothing. §6 states the rule over the tree. See tests/lib/objects.sh.
     step "Harness object-listing self-test (tests/lib/objects_test.sh)"
     bash "$REPO_DIR/tests/lib/objects_test.sh"
+
+    # Same tier, same class one layer down: what a container gate may conclude
+    # when the container could not RESOLVE the peer it was launched to talk to.
+    # Seventeen gates run two at a time, each churning containers on its own
+    # user-defined network, and rootless podman serves every one of those names
+    # from a single aardvark-dns that is reconfigured on every container
+    # appearing or disappearing. A job that lands in that window gets EAI_AGAIN
+    # — no answer, as distinct from the NXDOMAIN a name that is really gone
+    # gives — and tests/lake/value_snapshots.sh reported it as "the 2026-08-09
+    # build failed" on 2026-09-05 (run 33994136151), three minutes after its own
+    # readiness probe had resolved the same name and 54 minutes after the same
+    # commit went green. The retry is narrow on purpose: these gates ASSERT that
+    # a partial run exits 2, so anything but the resolution signature is the
+    # job's own answer and is returned unretried. See tests/lib/netrun.sh.
+    step "A container that never resolved its peer (tests/lib/netrun_test.sh)"
+    bash "$REPO_DIR/tests/lib/netrun_test.sh"
 
     # And the question those polls ask. `litestream ltx` prints a column header
     # for a replica that holds NOTHING and prints nothing at all when it cannot

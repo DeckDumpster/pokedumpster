@@ -186,17 +186,21 @@ bash tests/deploy/run.sh
 # Shell-harness self-tests — seconds, no container. The second one also
 # greps tests/ and deploy/ for a picked host port and fails on one. The third
 # asserts no harness may read an object listing it cannot trust — an `mc ls`
-# that died reports the same empty result a clean bucket does. The fourth
-# asserts a replica has THREE states and no harness asks with two. The fifth
-# asserts every gate under tests/ removes the per-checkout image tag it built,
-# because nothing else on the box ever will. The sixth reads the
-# Containerfile: builder and runtime must name the SAME Debian release, and the
-# target cache id must name it too. The fifth refuses a baseline approval
-# narrowed to one viewport, and checks both baseline directories against
-# routes.json.
+# that died reports the same empty result a clean bucket does. The fourth is
+# the same class one layer down: a job container that could not RESOLVE its
+# peer did not run, and is the ONLY failure asked again — a gate that retried
+# any failure would re-run the deliberate partial runs whose exit 2 it
+# asserts. The fifth asserts a replica has THREE states and no harness asks
+# with two. The sixth asserts every gate under tests/ removes the
+# per-checkout image tag it built, because nothing else on the box ever will.
+# The seventh reads the Containerfile: builder and runtime must name the SAME
+# Debian release, and the target cache id must name it too. The last refuses a
+# baseline approval narrowed to one viewport, and checks both baseline
+# directories against routes.json.
 bash tests/lib/diagnostics_test.sh
 bash tests/lib/ports_test.sh
 bash tests/lib/objects_test.sh
+bash tests/lib/netrun_test.sh
 bash tests/lib/litestream_test.sh
 bash tests/lib/images_test.sh
 bash tests/container/base_images_test.sh
@@ -943,6 +947,65 @@ image untouched, plus both red arms) and `tests/deploy/run.sh` §11b, which hold
 the shell half: the label on every stage of every `Containerfile`, one spelling
 of it, and the ORDER — list, build, reap. Swapping the first two reads like a
 simplification and is the cache loss above.
+
+### A container that never RESOLVED its peer did not run
+
+The lake gates stand a MinIO and a Nessie up on a user-defined podman network
+and launch job containers that reach them **by name**. Seventeen gates run two
+at a time, each churning containers on its own network, and rootless podman
+serves every one of those names from a single per-user aardvark-dns that is
+reconfigured and signalled every time a container appears or disappears. A job
+launched inside that reload window gets no answer at all.
+
+On 2026-09-05 (run 33994136151) `tests/lake/value_snapshots.sh` reported
+
+    §3  Nessie up, warehouse s3://pdvalue-961d5c/lake        <- probe answered
+    §4  socket.gaierror: [Errno -3] Temporary failure in name resolution
+        !! the 2026-08-09 build failed
+
+§3's readiness probe is a container ON that network resolving that same name,
+and it had just succeeded. The box was not wedged — the `derive` gate stood up
+its own network and passed five seconds later — and the identical commit had
+gone green 54 minutes earlier in the same slot beside the same `prices` gate.
+
+**`EAI_AGAIN` is not `NXDOMAIN`, and the difference is the whole argument.**
+`-3 / Temporary failure in name resolution` means the resolver got NO ANSWER.
+A name that has genuinely gone away — Nessie dead, the wrong network, a typo —
+answers `-2 / Name or service not known`. So the signature says something
+specific and checkable: the container never reached the catalog, which means
+it did no work and may be run again.
+
+`tests/lib/netrun.sh` is the one definition, and three things about it are
+decisions:
+
+- **It retries ONLY that signature.** Every other failure is the job's own
+  answer, returned on the first attempt, unretried. That matters more than it
+  looks: these gates **assert non-zero statuses** — a transform that skipped a
+  tenant must exit 2, and §5, §7 and §8 check exactly that. A wrapper that
+  retried "a failure" would re-run those deliberate partial runs. It is the
+  first thing the red arms check.
+- **It never returns 0 having done nothing.** When the budget is spent the
+  ORIGINAL status and the command's own output propagate, so an existing
+  `|| die` still fires and still says what it always said — the same trade
+  `crates/pkdump-ingest/src/retry.rs` and `tests/lib/objects.sh` make. And it
+  is LOUD: a retry that happened is printed, because a network really failing
+  must not be quietly absorbed into a passing run.
+- **stdout and stderr are kept apart.** Callers capture stdout
+  (`TABLES=$(run_job python -c …)`) and some merge the streams themselves at
+  the call site (`OUT=$(snapshot … 2>&1)`); a wrapper that merged them for
+  everybody would put diagnostics inside a value the gate goes on to compare.
+
+Wired into `tests/lake/value_snapshots.sh`, where it was observed. The other
+lake gates launch job containers the same way and have the same exposure;
+adopting it there is a change with its own blast radius and is deliberately not
+made with it.
+
+Gate: `tests/lib/netrun_test.sh` (lint tier, hermetic, ~1s, no podman — a
+stub driven call-by-call). Seen red four ways: retrying any failure (which
+takes the asserted exit 2 with it), never retrying, absorbing a spent budget
+into a 0, and merging the two streams. §7 is the ratchet — one definition,
+every caller sources it, and the gate it was written for really launches
+through it, because a library wired into nothing is a fix that runs never.
 
 ### A replica has THREE states, and asking with two is how a gate flakes
 

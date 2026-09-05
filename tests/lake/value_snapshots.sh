@@ -80,6 +80,10 @@ diag_init
 . "${REPO_DIR}/tests/lib/wait.sh"
 # shellcheck source=tests/lib/objects.sh
 . "${REPO_DIR}/tests/lib/objects.sh"
+# A job container that never resolved Nessie's name did not run, and is asked
+# again (sp-pd-ci-green). Nothing else about a job's outcome is retried.
+# shellcheck source=tests/lib/netrun.sh
+. "${REPO_DIR}/tests/lib/netrun.sh"
 
 die() {
 	diag "!! $*"
@@ -146,7 +150,7 @@ mc() { podman run --rm --network "$NET" -e MC_HOST_m="http://${AKID}:${SECRET}@$
 # thing this gate is here to observe. Not `:ro` for the catalog either — these
 # are WAL databases and SQLite cannot open one through a read-only mount.
 run_job() {
-	podman run --rm --network "$NET" \
+	netrun podman run --rm --network "$NET" \
 		-v "$FIXTURE:/fixture:Z" \
 		-e PKDUMP_LAKE_NESSIE_URI="http://${NESSIE_CTR}:19120/iceberg/" \
 		-e PKDUMP_LAKE_S3_BUCKET="$BUCKET" \

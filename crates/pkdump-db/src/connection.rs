@@ -17,13 +17,18 @@
 //! outcomes and why the refusal is what makes rollback safe (pd-ja38).
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use rusqlite::backup::Backup;
 
 use crate::error::Result;
 use crate::schema_version::{self, Database};
+
+/// How long an open in this crate waits for a lock before giving up. Every
+/// `open_*` sets it, and [`checkpoint_truncate`] restores it after borrowing
+/// the connection's busy handler for its own, shorter wait.
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) const SCHEMA_SHARED: &str = include_str!("schema_shared.sql");
 const SCHEMA_USER: &str = include_str!("schema_user.sql");
@@ -215,7 +220,7 @@ pub fn open_shared_readonly(path: &Path) -> Result<Connection> {
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     // The same refusal `open_shared` makes, in the same place: a catalog
     // written by a newer build is not one this build may read rows out of and
     // act on. Reading is what this handle is for, so the gate is the whole of
@@ -384,7 +389,7 @@ pub fn open_user(user_path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(user_path)?;
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     schema_version::gate(&conn, Database::User)?;
     conn.execute_batch(SCHEMA_USER)?;
     add_missing_user_columns(&conn)?;
@@ -414,7 +419,7 @@ pub fn open_registry(path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     schema_version::gate(&conn, Database::Registry)?;
     conn.execute_batch(SCHEMA_REGISTRY)?;
     schema_version::stamp(&conn, Database::Registry)?;
@@ -441,6 +446,196 @@ pub fn init_user_schema(conn: &Connection) -> Result<()> {
     crate::conditions::seed_defaults(conn)?;
     schema_version::stamp(conn, Database::User)?;
     Ok(())
+}
+
+/// What one truncating WAL checkpoint achieved.
+///
+/// `reset` is the only field that matters to a caller deciding whether the
+/// disk came back. A checkpoint that could not reset still did useful work —
+/// it copies frames into the database either way — but the `-wal` file keeps
+/// every byte it had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalCheckpoint {
+    /// The WAL was restarted from frame 0 and the file truncated to nothing.
+    /// False means a reader was in flight for the whole wait: the frames were
+    /// copied out, but the file is the size it was.
+    pub reset: bool,
+    /// Frames in the WAL when the checkpoint ran. `-1` if the database is not
+    /// in WAL mode at all, in which case there was never anything to reclaim.
+    pub wal_frames: i64,
+    /// Frames copied into the database file.
+    pub checkpointed: i64,
+}
+
+/// Run `PRAGMA wal_checkpoint(TRUNCATE)` and report what it managed, waiting
+/// at most `wait` for readers to get out of the way.
+///
+/// **This is the only thing that gives the catalog's WAL back** (pd-t50h). In
+/// WAL mode a checkpoint can copy frames into the database while readers are
+/// active, but it cannot *reset* the WAL — restart it at frame 0 — until a
+/// moment arrives with nobody reading. Until then the writer appends, so the
+/// file grows for the whole write window and then stays at its high-water mark
+/// until something truncates it. Nothing does, on its own: an autocheckpoint
+/// runs on a commit, and once the derive exits there is no writer left to
+/// commit anything, so the file sits there until the next night.
+///
+/// A blocked checkpoint is **not an error**. It is a fact about who was
+/// reading, it is reported rather than raised, and the caller decides whether
+/// it is worth saying out loud. Raising would make a browsing session able to
+/// fail the nightly catalog build, which is the wrong trade by a long way.
+///
+/// `wait` borrows the connection's busy handler and [`BUSY_TIMEOUT`] is
+/// restored afterwards, so the value is scoped to the checkpoint rather than
+/// to the connection.
+pub fn checkpoint_truncate(conn: &Connection, wait: Duration) -> Result<WalCheckpoint> {
+    conn.busy_timeout(wait)?;
+    let out = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        Ok(WalCheckpoint {
+            reset: r.get::<_, i64>(0)? == 0,
+            wal_frames: r.get(1)?,
+            checkpointed: r.get(2)?,
+        })
+    });
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    Ok(out?)
+}
+
+/// How often a long write window stops to try to give the WAL back.
+///
+/// Five seconds. The cost of an attempt is bounded by [`RECLAIM_WAIT`], so a
+/// ten-minute derive pays at most a few seconds in total for it; the benefit
+/// is that the WAL is bounded by what one five-second slice of writing
+/// produces instead of by the whole window.
+const RECLAIM_EVERY: Duration = Duration::from_secs(5);
+
+/// How long an *opportunistic* reclaim waits for readers.
+///
+/// A tenth of a second, and the shortness is the design. This checkpoint is
+/// speculative — there will be another one along in [`RECLAIM_EVERY`] — so
+/// blocking on it buys nothing and costs the write window directly. Measured
+/// on the mechanism in pd-t50h (a writer committing against one continuously
+/// reading connection, ten-second window):
+///
+/// | reclaim | checkpoint wait | writer commits | peak WAL |
+/// |---|---|---|---|
+/// | none    | —      | 60,068 | 208.8 MiB |
+/// | every 1s | 5s    | 39,740 |  26.8 MiB |
+/// | every 1s | 100ms | 61,036 |  42.0 MiB |
+///
+/// The five-second wait buys a slightly smaller file for a third of the
+/// writer's throughput. The short wait keeps the throughput and still takes a
+/// factor of five off the file, because a reader that queries in a loop is
+/// between transactions often enough for a checkpoint to slip through.
+const RECLAIM_WAIT: Duration = Duration::from_millis(100);
+
+/// How long the checkpoint that ENDS a write window waits for readers.
+///
+/// Thirty seconds, against the hundred milliseconds [`RECLAIM_WAIT`] spends.
+/// The trade is the opposite one at this point: the writing is over, so there
+/// is no throughput left to protect, and every second spent here is a second
+/// that might save the file sitting on the data volume until tomorrow.
+const FINAL_RECLAIM_WAIT: Duration = Duration::from_secs(30);
+
+/// Give the catalog's WAL back, at the end of the write window that built it.
+///
+/// The counterpart to [`WalReclaim`], which bounds the file *during* a long
+/// pass; this is what returns it afterwards. Nothing else on the box ever
+/// will: an autocheckpoint runs on a commit, and once the process that built
+/// the catalog has exited there is no writer left to commit anything, so a
+/// `-wal` left at its high-water mark stays there until the next night.
+///
+/// Called by every **process** that writes `shared.sqlite` and exits, after
+/// its own last write: `pkdump-lake-derive shared` and `pkdump setup`. A
+/// process rather than a function, and the distinction earned itself — put at
+/// the end of `pkdump_derive::derive` it ran before the derive binary wrote
+/// `raw_derivation`, and left the provenance row's frames in a file nothing
+/// would ever truncate.
+///
+/// One function rather than the same six lines at each call site, because the
+/// wait and the sentence an operator reads are the decision — a second
+/// spelling of either is how the two writers start answering the same night
+/// differently.
+///
+/// Blocked is reported and returned, never raised: a reader that held a
+/// transaction across this moment has cost some disk until the next run, and
+/// failing a catalog build over it would let a browsing session break the
+/// nightly job.
+pub fn reclaim_catalog_wal(conn: &Connection) -> Result<WalCheckpoint> {
+    let out = checkpoint_truncate(conn, FINAL_RECLAIM_WAIT)?;
+    if out.reset {
+        println!("  catalog WAL reclaimed ({} frames)", out.checkpointed);
+    } else {
+        eprintln!(
+            "!! catalog WAL NOT reclaimed: a reader was in flight for the whole {}s wait, so \
+             {} frames were copied out but the -wal file keeps its size until something \
+             checkpoints it again. Disk only — the catalog itself is complete.",
+            FINAL_RECLAIM_WAIT.as_secs(),
+            out.checkpointed,
+        );
+    }
+    Ok(out)
+}
+
+/// Drives [`checkpoint_truncate`] from inside a long write loop, at most once
+/// every [`RECLAIM_EVERY`].
+///
+/// Held by the phase doing the writing rather than by the connection, because
+/// the period is about *this* write window: a caller that makes one commit and
+/// stops has nothing to reclaim and should not be paying for a checkpoint.
+///
+/// Time-based rather than counted, because the same loop runs at 5,000 cards a
+/// second on a warm catalog and at a small fraction of that on a cold one — a
+/// count that is right for one is wrong for the other by two orders of
+/// magnitude.
+pub struct WalReclaim {
+    period: Duration,
+    last: Instant,
+}
+
+impl Default for WalReclaim {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WalReclaim {
+    /// Start the clock at the production period, [`RECLAIM_EVERY`]. The first
+    /// reclaim is that far away, so a short loop never checkpoints at all.
+    pub fn new() -> Self {
+        Self::every(RECLAIM_EVERY)
+    }
+
+    /// As [`WalReclaim::new`], with the period named.
+    ///
+    /// Exists for tests, and it takes the period rather than a "check every
+    /// time" flag deliberately: a test that switched the periodicity OFF would
+    /// be exercising a code path production never takes. Every caller in the
+    /// binary uses [`WalReclaim::new`].
+    pub fn every(period: Duration) -> Self {
+        Self {
+            period,
+            last: Instant::now(),
+        }
+    }
+
+    /// Checkpoint if the period has elapsed, otherwise do nothing.
+    ///
+    /// `Ok(None)` means "not yet". An error from the checkpoint itself is
+    /// returned; a checkpoint a reader blocked is `Ok(Some(..))` with
+    /// [`WalCheckpoint::reset`] false, because that is a normal outcome and
+    /// not a failure of this run.
+    pub fn maybe(&mut self, conn: &Connection) -> Result<Option<WalCheckpoint>> {
+        if self.last.elapsed() < self.period {
+            return Ok(None);
+        }
+        let out = checkpoint_truncate(conn, RECLAIM_WAIT)?;
+        // Reset from *after* the checkpoint, not from the deadline it passed:
+        // a blocked attempt costs RECLAIM_WAIT, and dating the next one from
+        // the deadline would make a long stall spend its whole budget again
+        // immediately.
+        self.last = Instant::now();
+        Ok(Some(out))
+    }
 }
 
 /// Snapshot a live SQLite database to `dest`, overwriting it.

@@ -301,6 +301,20 @@ pub fn derive(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<Re
     if let Some(e) = &report.tail_error {
         eprintln!("!! PARTIAL DERIVATION: the pokemontcg.io tail did not complete: {e}");
     }
+
+    // NOTE: the WAL this run produced is given back by the CALLER, once its own
+    // last write has landed — `pkdump_db::reclaim_catalog_wal` (pd-t50h). Not
+    // here, and the difference is not cosmetic: `pkdump-lake-derive shared`
+    // writes `raw_derivation` after this function returns, so a reclaim on this
+    // line would leave the provenance row's frames behind and the file
+    // non-empty. The rule is "the process that wrote the catalog gives it back
+    // before exiting", which is a claim about a write window rather than about
+    // a function, and `row_identical.rs::a_derive_leaves_no_wal_behind_on_the_
+    // catalog_it_built` is what holds the shipped binary to it.
+    //
+    // The opportunistic reclaims INSIDE variant expansion are a different job
+    // and do live in the library: they bound how big the file gets during the
+    // pass, which is nobody else's business.
     Ok(report)
 }
 

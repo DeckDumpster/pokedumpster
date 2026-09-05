@@ -75,6 +75,10 @@ echo "  builder base (read from the real Containerfile): ${BUILDER_FROM}"
 WORK="$(mktemp -d)"
 SUFFIX="$(printf '%s-%s' "$REPO_DIR" "$$" | sha1sum | cut -c1-12)"
 CACHE_ID="pkdump-cargocache-test-${SUFFIX}"
+# Held separately because §4 reassigns CACHE_ID, and the cleanup trap reads whatever
+# it holds AT EXIT — so sweeping "${CACHE_ID}-naive" from the trap would look for
+# ...-naive-naive and leave the real one behind.
+BASE_CACHE_ID="$CACHE_ID"
 IMAGE="localhost/pkdump-cargocache-test:${SUFFIX}"
 CTX="${WORK}/ctx"
 mkdir -p "${CTX}/src"
@@ -84,7 +88,10 @@ cleanup() {
 	# The cache mount is NOT inside the container store — buildah keeps it at
 	# /var/tmp/buildah-cache-<uid>/<id>. Nothing else collects it, and this gate
 	# creates one per run, so removing it here is the whole of its cleanup.
-	rm -rf "/var/tmp/buildah-cache-$(id -u)/${CACHE_ID}"
+	# Best-effort: this path is correct on the dev box and may not be elsewhere, which is
+	# exactly why nothing above depends on it. Both ids are per-run, so a missed sweep
+	# leaks a cache nothing will ever read again rather than corrupting the next run.
+	rm -rf "/var/tmp/buildah-cache-$(id -u)/${BASE_CACHE_ID}" "/var/tmp/buildah-cache-$(id -u)/${BASE_CACHE_ID}-naive"
 	rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -213,7 +220,14 @@ log "4. SEEN RED: without the restamp, the second tree ships the FIRST one's"
 #
 # Without this section §2 proves nothing: a fixture in which the hazard does not
 # reproduce would pass it with the guard doing no work at all.
-rm -rf "/var/tmp/buildah-cache-$(id -u)/${CACHE_ID}"
+# A FRESH cache id, rather than deleting a directory. The path a cache mount lives
+# under is podman's business and not the same everywhere: on this box it is
+# /var/tmp/buildah-cache-$(id -u), on the CI runner it is somewhere else, so the
+# `rm -rf` that used to stand here removed nothing there. §4's first build then ran
+# against §3's WARM cache and shipped §3's binary, and the section reported that the
+# hazard "did not reproduce" — the one arm whose whole job is to prove the fixture can
+# still produce it. A cache id nothing has used is empty wherever podman keeps it.
+CACHE_ID="${CACHE_ID}-naive"
 podman rmi -f "$IMAGE" >/dev/null 2>&1
 write_containerfile naive
 write_tree ALPHA

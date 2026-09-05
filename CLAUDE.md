@@ -930,6 +930,74 @@ five ways). §5-§6 are the ratchet and they are the half that matters: pd-nt1k
 fixed this predicate in one harness of three by writing the fix INTO that
 harness, which is exactly how a fix stops travelling.
 
+### The image ships the binaries its OWN sources build (pd-wjmd)
+
+The complement of the two rules above, one layer in. Those are about the images
+a build leaves behind; this is about whether the image a build produces
+corresponds to the source it copied.
+
+The builder stage hands cargo a `--mount=type=cache` target directory that
+**outlives the build**, scoped by `id=` on the builder's Debian release
+(pd-pejn) and the checkout PATH (pd-sjn7). Cargo's freshness check for a path
+dependency is an **mtime comparison** — and a CI runner is ONE checkout path
+holding EVERY tree over time, a different PR merge ref on every run. Worse, a
+`COPY` that HITS podman's layer cache restores that layer's historical mtimes
+rather than the build context's. So the sources can arrive OLDER than rlibs
+another tree left in the cache, cargo compiles nothing, and `cp` copies the
+other tree's binaries straight into the image.
+
+It is not hypothetical, and it is invisible where it happens. On CI run
+33683221574 the builder reported
+
+    Finished `release` profile [optimized] target(s) in 1.92s
+
+over a `crates/` with no `sets.ptcgio_covered` in it, and shipped a
+`pkdump-lake-derive` that writes that column. What noticed was
+`tests/lake/derive.sh`, three tiers away, as a catalog disagreeing with the one
+the host built — read at first as a master regression in the change that added
+the column, which was fine. **A stale rlib that still exports everything
+referenced links cleanly and ships old behaviour**, so the ordinary outcome of
+this is a green gate over code nobody wrote; pd-sjn7 says exactly that about the
+cross-checkout case and closed only that half.
+
+The answer is a **third axis, carried inside the cache rather than in its id**:
+the cache records a stamp of the sources it was compiled from, and a build
+handed a cache written from anything else touches the workspace sources before
+compiling — the one thing that makes cargo's mtime comparison tell the truth
+again. Four things about it are decisions:
+
+- **A content-scoped `id=` was the obvious fix and is the wrong one.** It is
+  correct, but it gives every tree its own cold cache: a full 7m27s compile for
+  a one-line change, and a `/var/tmp/buildah-cache-<uid>/` entry per tree on a
+  box whose disk floor already stops CI (pd-h3wy, pd-20ia). The stamp keeps one
+  warm cache and pays only when the tree under it actually changed.
+- **It touches, rather than clearing the cache.** Touching invalidates the
+  workspace crates and leaves the ~350 registry dependencies — a different
+  cache mount, with their own untouched mtimes — alone. Clearing `target/`
+  would rebuild those too, which is the 7m27s a content-scoped id costs.
+- **The stamp is removed BEFORE the build and written AFTER it**, so a build
+  that FAILED leaves no claim about what the cache holds and the next one
+  restamps. `&&` between the steps is what makes "written" mean "succeeded".
+- **`PKDUMP_SOURCES` is one spelling of "what this stage compiles from"** — it
+  is both what is hashed and what is touched, and `tests/deploy/run.sh` §11c
+  requires every `COPY` into the builder stage to appear in it. A source added
+  to the image that the stamp cannot see is this bug back with a smaller blast
+  radius and no gate on it.
+
+Gates: `tests/store/cargo_cache.sh` (deploy tier, ~1min, NOT hermetic — that
+podman's COPY preserves the context's mtimes and that cargo then calls an old
+source fresh against a newer artifact are facts about podman and cargo. Two
+real builds of a hello-world crate on the builder base the real Containerfile
+names, so it pulls nothing the container tier does not already need, with a
+cache id unique to the run and removed on the way out. §2 is the claim, §3 is
+that an unchanged tree still costs nothing — the regression a fix for §2 arrives
+disguised as — and **§4 is the red arm**: with the restamp taken out, the same
+two builds ship the first tree's binary, because a fixture in which the hazard
+does not reproduce would pass §2 with the guard doing no work at all) and
+`tests/deploy/run.sh` §11c, which holds the shell half — the mechanism line by
+line, its ORDER, and the `COPY`-coverage rule stated over the file rather than
+over the three paths it copies today.
+
 ### A run whose worktree moves underneath it is VOID, not red (pd-vnbc)
 
 `deploy/ci.sh` watches its own checkout and aborts with **exit 9** the moment

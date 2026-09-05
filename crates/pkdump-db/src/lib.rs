@@ -48,9 +48,9 @@ mod error;
 mod paths;
 
 pub use connection::{
-    IngestSeeds, attach_shared_readonly, connect_user, init_user_schema, open_registry, open_shared,
-    open_shared_for_serving, open_shared_readonly, open_shared_with_patience, open_user,
-    reconcile_ingest_dependent_seeds, restore_db, snapshot_db,
+    IngestSeeds, attach_shared_readonly, connect_user, init_user_schema, open_registry,
+    open_shared, open_shared_for_serving, open_shared_readonly, open_shared_with_patience,
+    open_user, reconcile_ingest_dependent_seeds, restore_db, snapshot_db,
 };
 pub use error::{DbError, Result};
 pub use paths::{

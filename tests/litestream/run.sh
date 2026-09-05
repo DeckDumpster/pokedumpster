@@ -91,6 +91,8 @@ diag_init
 . "${REPO_DIR}/tests/lib/wait.sh"
 # shellcheck source=tests/lib/objects.sh
 . "${REPO_DIR}/tests/lib/objects.sh"
+# shellcheck source=tests/lib/litestream.sh
+. "${REPO_DIR}/tests/lib/litestream.sh"
 
 # Unique per checkout, exactly as deploy/ci.sh's instance name and the alarming
 # gate's are. deploy/ci.sh is deliberately parallel-safe — several polecats run
@@ -321,29 +323,13 @@ check "the pinned image is the one under test" "$PKDUMP_LITESTREAM_IMAGE" "$LITE
 
 # A marker between two write phases, for the point-in-time restore in §4.
 #
-# TRUNCATION CUTS BOTH WAYS, and only one side of it was handled (pd-5m54 CI,
-# 2026-08-14). `date -u +…%SZ` truncates DOWN to the start of the second it was
-# taken in, so a marker taken at 00:49:54.9 IS 00:49:54.000 — up to a second
-# EARLIER than the instant it was meant to name. If the early phase only became
-# restorable at 00:49:54.3, that marker sits BEFORE the oldest instant the
-# replica covers, and Litestream refuses it outright:
-#
-#     Error: timestamp does not exist
-#
-# which surfaces as `expected 1, got <no restored db>` — the same symptom as the
-# late-side race below, from the opposite cause, and equally immune to retrying.
-# It is reachable exactly when replication is FAST, because that is when the
-# marker lands in the same second the early phase arrived. In the run that found
-# it, §4b's registry PITR passed in the same gate: its marker is taken much later,
-# against a long-established replica, so it was never near the edge.
-#
-# So: leave the second in which the early phase became restorable before naming
-# a marker. With E the instant early_replicated went true and M the moment the
-# marker is taken, waiting for M >= E + 1s gives floor(M) >= M - 1s >= E — the
-# marker provably sits at or after the oldest covered instant, whatever the
-# truncation does.
-sleep 1
-MARKER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# `pitr_marker` is what leaves the second in which the early phase became
+# restorable before naming an instant inside it — the truncation hazard and its
+# derivation live there (pd-5m54 CI, 2026-08-14). It is called HERE, after
+# early_replicated went true, because the rule is "only once the thing you will
+# restore to is already in the replica"; calling it before that wait would name
+# an instant no replica covers, which is the failure it exists to prevent.
+MARKER=$(pitr_marker)
 # The other side of the same truncation, and the reason this sleep stays: the
 # marker names the whole second it was taken in, so the late writes have to land
 # in a LATER one or a restore at the marker may legitimately include them. There
@@ -495,7 +481,17 @@ check "the registry restores and still holds its mapping" "alpha 01k2c7hq8n00000
 # block". The registry is where a bad `tenant rename` or a wrong detach lands,
 # and recovering from one means asking for a moment before it — so the window
 # has to actually work on THIS prefix, not just on the tenant prefixes.
-REG_MARKER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+#
+# The marker is named through `pitr_marker` for the reason §3 is, and this
+# section is why that rule is a function rather than a comment in §3: the wait
+# added above (for the registry's LTX files to reach S3) moved this marker from
+# "much later, against a long-established replica" onto the exact instant the
+# replica became restorable — the edge §3 documents. Both assertions below then
+# failed in CI with `<no restored db>`, which is Litestream's `timestamp does
+# not exist`, while a local run of the same commit passed 61/0: the race is
+# reachable only when replication is fast enough that the marker truncates back
+# past the first covered instant.
+REG_MARKER=$(pitr_marker)
 sleep 2 # second-resolution marker, as in §3 — not a wait for replication
 sq "$WORK/data/registry.sqlite" \
 	"INSERT INTO user VALUES ('bravo','01k2c7hq8n0000000000bravo',datetime('now'),'active');" >/dev/null

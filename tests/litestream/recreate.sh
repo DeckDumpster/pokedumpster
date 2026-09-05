@@ -361,8 +361,7 @@ check "her card is in the replica, restorable" "1" \
 
 # The moment the old failure reached for: inside the retention window, with old
 # alice's card live. Every point-in-time restore below asks for this instant.
-sleep 2
-T_OLD=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+T_OLD=$(pitr_marker 2)
 sleep 2
 # One more write, so T_OLD is strictly inside old alice's replicated range and
 # not merely "the end of it" — see the note on LATE_CARD.
@@ -427,8 +426,7 @@ wait_for_card new-live.sqlite "$URL_NEW" "$NEW_CARD" || true
 # §6 restores at this instant as well as at T_OLD: a PITR that fails for want of
 # a moment is a weaker statement than a PITR that succeeds, hands back her
 # collection as it stood, and still contains nothing of her predecessor's.
-sleep 2
-T_NEW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+T_NEW=$(pitr_marker 2)
 sleep 2
 add_card "$(tenant_file "$ID_NEW")" "$LATE_CARD" 'new alice, later'
 wait_for_card new-late.sqlite "$URL_NEW" "$LATE_CARD" || true
@@ -514,8 +512,7 @@ wait_for_replica "$URL_LEG_BEFORE" 120 || true
 wait_for_card legacy-live.sqlite "$URL_LEG_BEFORE" "$LEG_MARKER" || true
 check "the first legacy user's card reached her handle-derived prefix" "1" \
 	"$(restored_card_count legacy-live.sqlite "$LEG_MARKER")"
-sleep 2
-T_LEG=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+T_LEG=$(pitr_marker 2)
 sleep 2
 add_card "$LEGACY_DB" "$LATE_CARD" 'old legacy, later'
 wait_for_card legacy-late.sqlite "$URL_LEG_BEFORE" "$LATE_CARD" || true

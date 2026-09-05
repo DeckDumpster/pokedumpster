@@ -130,3 +130,51 @@ replica_state() {
 # either, so a poll goes on polling; a caller that has to tell `empty` from
 # `error` asks `replica_state` and prints the answer.
 replica_holds_data() { [ "$(replica_state "$1" "$2")" = data ]; }
+
+# pitr_marker [lead_seconds] — name an instant a point-in-time restore can
+# actually resolve. Echoes the timestamp; sleeps first, deliberately.
+#
+# ── WHY THE SLEEP IS PART OF NAMING A MARKER ────────────────────────────────
+# `date -u +…%SZ` truncates DOWN to the start of the second it was taken in, so
+# a marker taken at 00:49:54.9 IS 00:49:54.000 — up to a second EARLIER than the
+# instant it was meant to name. If the replica only became restorable at
+# 00:49:54.3, that marker sits BEFORE the oldest instant the replica covers, and
+# Litestream refuses it outright:
+#
+#     Error: timestamp does not exist
+#
+# which surfaces in a harness as `expected 1, got <no restored db>` — a restore
+# that produced no file at all, and one that is immune to retrying because the
+# marker is a constant.
+#
+# It is reachable exactly when replication is FAST, because that is when the
+# marker lands in the same second the data arrived. With E the instant the
+# replica became restorable and M the moment the marker is taken, waiting for
+# M >= E + 1s gives floor(M) >= M - 1s >= E — the marker provably sits at or
+# after the oldest covered instant, whatever the truncation does. So: CALL THIS
+# ONLY ONCE THE THING YOU WILL RESTORE TO IS ALREADY IN THE REPLICA, and leave
+# the second it arrived in before naming an instant inside it.
+#
+# The caller still has to wait on the OTHER side: the marker names the whole
+# second it was taken in, so a write meant to fall after it has to land in a
+# later one, or a restore at the marker may legitimately include it. There is no
+# condition to poll for that — it is the clock's resolution — so it stays a
+# `sleep 2` at the call site, where it reads next to the write it is separating.
+#
+# ── WHY IT IS A FUNCTION AND NOT A NOTE ─────────────────────────────────────
+# It was a note. tests/litestream/run.sh §3 carried the derivation above in a
+# 20-line comment and the `sleep 1` that follows from it, and §4b — a registry
+# PITR in the SAME FILE — took its marker with a bare `date`. That was safe only
+# because §4b's marker was taken late, against a long-established replica; §3's
+# comment said so in as many words. Then the fix for an unrelated race put a
+# `wait_until`-poll for `registry_replicated` immediately before it, which
+# moved that marker onto the exact edge the comment describes, and the
+# registry's two PITR assertions went red in CI while a local run passed 61/0.
+#
+# A rule that lives in a comment protects the section the comment is in. This is
+# that rule as the only way to name a marker; litestream_test.sh §7 is the
+# ratchet that keeps a sixth call site from spelling it by hand.
+pitr_marker() {
+	sleep "${1:-1}"
+	date -u +%Y-%m-%dT%H:%M:%SZ
+}

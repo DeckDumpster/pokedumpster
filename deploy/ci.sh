@@ -23,6 +23,7 @@
 #                     tests/lib/images_test.sh,
 #                     tests/container/base_images_test.sh,
 #                     tests/visual/approval_test.sh,
+#                     tests/litestream/image_pin_test.sh,
 #                     tests/alarming/journal_summary_test.sh,
 #                     tests/alarming/alert_suppress_test.sh and
 #                     tests/ci/treewatch_test.sh.
@@ -580,6 +581,16 @@ if tier lint; then
     # tests/container/base_images_test.sh.
     step "Container base-image pins (tests/container/base_images_test.sh)"
     bash "$REPO_DIR/tests/container/base_images_test.sh"
+
+    # Same rule, the OTHER image this repo runs. `litestream:latest` moved
+    # 0.5.16 -> 0.5.17 under this box, 0.5.17 downgraded the one log message
+    # deploy/backup-check.sh judges every tenant from to DEBUG, and the litestream,
+    # drill and alarming gates went red together on a change that touched none of
+    # them (pd-pfxf). Twenty-five minutes of container tier to learn that a tag
+    # moved. This says it in under a second, and holds the log level the checker
+    # depends on beside the version. See tests/litestream/image_pin_test.sh.
+    step "Litestream image pin + log level (tests/litestream/image_pin_test.sh)"
+    bash "$REPO_DIR/tests/litestream/image_pin_test.sh"
 
     # Same tier, same shape of ratchet, one layer over from the pins: a gate
     # that builds an image at a per-checkout tag and never removes it. The tag

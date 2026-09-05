@@ -438,12 +438,15 @@ two:
 
   ```bash
   set -a; . ~/.config/pkdump/prod/litestream.env; set +a
+  # PKDUMP_LITESTREAM_IMAGE — the pinned version, from the one place it lives.
+  # Never `:latest`: a retag once deleted the log line backup-check reads (pd-pfxf).
+  . deploy/litestream-lib.sh
   D=$(mktemp -d); chmod 777 "$D"
   podman run --rm --user 0 -v "$D:/out" \
       -v ~/.config/pkdump/prod/aws/config:/aws/config:ro \
       --secret pkdump-prod-s3-bootstrap,type=mount,target=/aws/credentials \
       -e AWS_CONFIG_FILE=/aws/config -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
-      -e AWS_PROFILE=pkdump docker.io/litestream/litestream:latest \
+      -e AWS_PROFILE=pkdump "$PKDUMP_LITESTREAM_IMAGE" \
       restore -integrity-check full -timestamp 2026-07-01T00:00:00Z -o /out/old.sqlite \
       "s3://${LITESTREAM_S3_BUCKET}/prod/collection?region=${LITESTREAM_S3_REGION}"
   sqlite3 "$D/old.sqlite" 'SELECT count(*) FROM collection;'

@@ -73,7 +73,6 @@ set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-LITESTREAM_IMAGE=${LITESTREAM_IMAGE:-docker.io/litestream/litestream:latest}
 MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
 AWSCLI_IMAGE=${AWSCLI_IMAGE:-docker.io/amazon/aws-cli:latest}
 
@@ -83,6 +82,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # The addressing under test is the deploy scripts' own.
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
+# The Litestream version too, from that same file (pd-pfxf). A gate that
+# pulled `:latest` would test whatever the registry pushed last night and
+# not what any box actually runs — which is exactly how a 0.5.16 -> 0.5.17
+# retag turned three gates red on a change that touched none of them.
+LITESTREAM_IMAGE="${LITESTREAM_IMAGE:-$PKDUMP_LITESTREAM_IMAGE}"
 # ...and so is the container store. Already active when deploy/ci.sh ran this,
 # in which case activation is a no-op; standalone it honours PKDUMP_STORE_ROOT
 # the same way setup.sh does. Without it the drill's sidecar unit would look for
@@ -268,9 +272,18 @@ sidecar_stop() {
 # all: the thing worth waiting for is the replicator opening the databases, and
 # it says so in its own log. A sidecar that is not running gets no wait — the
 # caller's own check is what should report that, not a stall here.
+#
+# READY MEANS "HAS REPORTED A REPLICA POSITION", not "has named a file" (pd-pfxf).
+# Every caller restarts this sidecar in order to ask deploy/backup-check.sh
+# something, and that script's only source of a tenant's position is the
+# `msg="replica sync"` line — which arrives seconds AFTER the `initialized db`
+# line that a bare `.sqlite` match was satisfied by. §6 therefore ran against a
+# sidecar that had been up one second, every tenant came back "not judged", and
+# the drill reported 0 of 4 checked. Waiting for the condition the caller
+# actually depends on removes the race rather than winning it on a fast box.
 sidecar_ready() {
 	sidecar_running || return 0
-	podman logs "$SIDECAR_CTR" 2>&1 | grep -q '\.sqlite'
+	logs_match "$SIDECAR_CTR" 'msg="replica sync"'
 }
 sidecar_start() {
 	systemctl --user reset-failed "${SIDECAR}.service" 2>/dev/null || true

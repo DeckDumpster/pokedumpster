@@ -522,7 +522,7 @@ time.sleep(120)
 # and then slept 3s on top — and the whole of §8 is vacuous if the lock is not
 # actually held when the job asks for it, so this is a condition worth being
 # certain of rather than one worth guessing at. The locker says when it has it.
-locker_ready() { podman logs "$LOCK_CTR" 2>/dev/null | grep -q 'LOCK HELD'; }
+locker_ready() { logs_match "$LOCK_CTR" 'LOCK HELD'; }
 wait_until 60 0.25 locker_ready ||
 	die "the locker never took an EXCLUSIVE lock on ${BOB} — §8 would prove nothing"
 

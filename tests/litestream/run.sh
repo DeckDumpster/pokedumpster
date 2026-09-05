@@ -52,7 +52,6 @@ set -euo pipefail
 # Only this harness was missing it, so a correct product looked flaky.
 sq() { sqlite3 -cmd '.timeout 5000' "$@"; }
 
-LITESTREAM_IMAGE=${LITESTREAM_IMAGE:-docker.io/litestream/litestream:latest}
 MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
 MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
 
@@ -65,6 +64,11 @@ SHIPPED_YML="${REPO_DIR}/deploy/litestream.yml"
 # agree with a broken restore-litestream.sh.
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
+# The Litestream version too, from that same file (pd-pfxf). A gate that
+# pulled `:latest` would test whatever the registry pushed last night and
+# not what any box actually runs — which is exactly how a 0.5.16 -> 0.5.17
+# retag turned three gates red on a change that touched none of them.
+LITESTREAM_IMAGE="${LITESTREAM_IMAGE:-$PKDUMP_LITESTREAM_IMAGE}"
 
 # Failure diagnostics (pd-8gjs): an ERR trap that names the failing file, line,
 # command and status before the EXIT trap's teardown chatter, and `diag_run`,
@@ -282,6 +286,39 @@ wait_until 120 1 early_replicated || true
 check "the early writes reached ${VICTIM}'s replica, so the marker has something behind it" "yes" \
 	"$(early_replicated && echo yes || echo no)"
 
+# ── 3b. THE LINE deploy/backup-check.sh JUDGES EVERY TENANT FROM ────────────
+# Stated here, first and by name, because it is a CONTRACT with the image and
+# not an incidental property of it (pd-pfxf). backup-check has no other source
+# for a tenant's two TXIDs — the 0.5 CLI cannot resolve a `dir:` entry — so if
+# this message stops being emitted, backup-check silently stops verifying every
+# tenant for the whole 1800s grace and then pages forever.
+#
+# That is not hypothetical. `litestream:latest` moved 0.5.16 -> 0.5.17 on
+# 2026-08-31, 0.5.17 downgraded this message from INFO to DEBUG, and the failure
+# arrived as three unrelated-looking container gates going red at once — a
+# missing txid advance here, "checked 0 of 4 tenants" in the drill, and a
+# correspondence wait timing out in the alarming gate. None of them said what was
+# actually wrong. This one does, in one line, before any of them run.
+#
+# The remedy has two halves and this asserts the pair: the version is pinned
+# (deploy/litestream-lib.sh) and the level is asked for by name
+# (deploy/litestream.yml's `logging:` block). Either alone is not enough.
+log "3b. the sidecar emits the message deploy/backup-check.sh parses (pd-pfxf)"
+sync_line_emitted() { logs_match "$LS_CTR" 'msg="replica sync"'; }
+wait_until 60 1 sync_line_emitted || true
+check "the running sidecar logs msg=\"replica sync\" at the configured level" "yes" \
+	"$(sync_line_emitted && echo yes || echo no)"
+# ...carrying BOTH txids, in the shape sidecar_position seds them out of. A line
+# that survived a rename of either field would satisfy the grep above and leave
+# backup-check parsing empty strings, which it reads as "no position" — the same
+# silence, one field further in.
+check "and it carries txid.replica and txid.db, the pair correspondence is judged on" "yes" \
+	"$(logs_match "$LS_CTR" -E 'msg="replica sync".*txid\.replica=[0-9a-f]{16}.*txid\.db=[0-9a-f]{16}' \
+		&& echo yes || echo no)"
+# And it is THIS image, not whatever `:latest` points at today. A gate that
+# pulled a moving tag would go red on a morning nobody changed anything.
+check "the pinned image is the one under test" "$PKDUMP_LITESTREAM_IMAGE" "$LITESTREAM_IMAGE"
+
 # A marker between two write phases, for the point-in-time restore in §4.
 #
 # TRUNCATION CUTS BOTH WAYS, and only one side of it was handled (pd-5m54 CI,
@@ -388,8 +425,28 @@ check "sidecar still running with both entries" "running" \
 # No sentinel: the contents of this bucket ARE the thing under test, so an empty
 # replica is a finding to report rather than a listing to distrust. What is
 # checked is that the listing happened.
+# WAIT FOR WHAT IS ASSERTED, not for a signal that merely precedes it. The poll above
+# waits for `db=registry.sqlite` in the sidecar log, which says the registry was OPENED
+# — the sidecar has the entry and has initialised it. The assertion below is about
+# something later and separate: that LTX files have reached S3 under its prefix.
+#
+# Between those two events sits a sync, and how long that takes is the image's business.
+# It was fast enough to hide the gap until the sidecar was pinned (pd-pfxf): on 0.5.17
+# the listing ran first and the check reported the registry replica as EMPTY, which reads
+# as a broken derived prefix rather than as "not yet". Three gates went red on a change
+# that touched none of their logic.
+#
+# One listing still feeds both assertions; it is just taken once the thing being asserted
+# is true, or after the budget is spent — in which case an empty replica is reported, as
+# before, because the contents of this bucket ARE the thing under test.
 BUCKET_LISTED=yes
-BUCKET_KEYS="$(bucket_keys)" || { BUCKET_KEYS=""; BUCKET_LISTED=no; }
+BUCKET_KEYS=""
+registry_replicated() {
+	BUCKET_KEYS="$(bucket_keys)" || { BUCKET_KEYS=""; BUCKET_LISTED=no; return 1; }
+	BUCKET_LISTED=yes
+	grep -q "^${LITESTREAM_S3_REGISTRY_PATH}/" <<<"$BUCKET_KEYS"
+}
+wait_until 90 1 registry_replicated || true
 grep "^${LITESTREAM_S3_REGISTRY_PATH}/" <<<"$BUCKET_KEYS" |
 	head -1 >"$WORK/registry-key.txt" || true
 check "the registry wrote LTX files under its own derived prefix" "1" \

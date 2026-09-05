@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Unit test for tests/lib/wait.sh (pd-86er).
 #
-# Two halves, and the second is the point of the bead.
+# Three parts, and the ratchets are the point.
 #
 #   §1-§4 the library does what it claims — it asks before it sleeps, it returns
 #         the moment the condition holds, and it GIVES UP. The third is the one
@@ -15,6 +15,10 @@
 #         sleep longer than SLEEP_CEILING seconds in a single call, and
 #         wait_until may exist in exactly one place. A relapse fails HERE, in
 #         under a second, instead of costing eight seconds a run forever.
+#   §7    THE SAME RATCHET, ONE TRAP OVER (pd-pfxf). `podman logs | grep -q`
+#         returns 141 under pipefail when the pattern IS found, so a poll built
+#         on it never goes true on a box busy enough to still be writing. Four
+#         loops had it. `logs_match` counts instead, and no harness may go back.
 #
 # Deliberately hermetic — no podman, no network — so deploy/ci.sh can run it
 # early beside tests/lib/ports_test.sh.
@@ -170,6 +174,53 @@ DEFAULTED="$(
 			}'
 )"
 none "no sleep takes its duration from a long default" "$DEFAULTED"
+
+log "7. logs_match answers, and nothing pipes podman logs into grep -q (pd-pfxf)"
+# THE TRAP. `podman logs "$c" | grep -q PATTERN` under `set -o pipefail` returns
+# 141 when the pattern IS found: grep -q exits on the first match, the pipe
+# closes, and podman dies of SIGPIPE. So the condition reads as false exactly
+# when it is true — and only once the log is long enough that the writer has not
+# already finished, which is to say only on a busy box. Four polling loops in
+# tests/{alarming,litestream,lake} had this form; inside `wait_until` it does not
+# fail loudly, it silently never goes true and the gate burns its whole budget.
+#
+# §7a is the behaviour, over a real pipeline of the same shape rather than over a
+# container (this file is hermetic): counting to EOF is immune, -q is not.
+log "7a. the two forms, under pipefail, on a stream long enough to matter"
+noisy() { seq 1 200000; echo MARKER; seq 1 200000; }
+Q_RC=0
+( set -o pipefail; noisy | grep -q MARKER ) || Q_RC=$?
+C_RC=0
+( set -o pipefail; [ "$(noisy | grep -c MARKER || true)" -gt 0 ] ) || C_RC=$?
+# Not asserted as "-q returns 141": whether the writer is still writing is a
+# race, and a test that demanded the bug reproduce would itself be flaky. What
+# IS asserted is the half that must never be racy.
+check "counting finds the marker, always" "0" "$C_RC"
+check "…and logs_match is the counting form" "yes" \
+	"$(grep -q 'grep -c' "${SCRIPT_DIR}/wait.sh" && echo yes || echo no)"
+if [[ "$Q_RC" != 0 ]]; then
+	echo "  note  the -q form returned ${Q_RC} on this run — the trap, reproduced"
+fi
+
+log "7b. the ratchet: one definition, and no harness rolls its own"
+DEFS="$(harnesses | xargs grep -ln '^logs_match() {' /dev/null)"
+check "one definition" "${REPO_DIR}/tests/lib/wait.sh" "$DEFS"
+# And every caller sources it, for the reason §5 checks the same thing about
+# wait_until: an undefined function is 127, `wait_until` reads 127 as "condition
+# not met yet", and the gate spins to its deadline instead of saying
+# "logs_match: command not found". Unsourced is silent here, not loud.
+LM_CALLERS="$(harnesses | xargs grep -l 'logs_match ' /dev/null | grep -v '/tests/lib/wait.sh$')"
+LM_UNSOURCED=""
+while IFS= read -r f; do
+	[[ -z "$f" ]] && continue
+	grep -q 'tests/lib/wait.sh"' "$f" || LM_UNSOURCED+="${f}"$'\n'
+done <<<"$LM_CALLERS"
+none "every logs_match caller sources tests/lib/wait.sh" "${LM_UNSOURCED%$'\n'}"
+# Stated over the TREE, like §5 and §6, because the way this comes back is a new
+# harness copying a neighbour that predates the helper.
+RAW="$(harnesses | xargs grep -nE 'podman logs .*\|.*grep .*-[a-zA-Z]*q' /dev/null |
+	grep -vE '^[^:]*:[0-9]+:[[:space:]]*#')"
+none "no harness pipes podman logs into grep -q" "$RAW"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"

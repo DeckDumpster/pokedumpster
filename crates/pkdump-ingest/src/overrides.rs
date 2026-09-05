@@ -466,6 +466,15 @@ pub fn expand_all_printings(
     let total = cards.len();
     let start = std::time::Instant::now();
     use std::io::Write;
+    // Give the catalog's WAL back as we go (pd-t50h). This loop is the longest
+    // write window anything opens on `shared.sqlite` — ~50k per-card
+    // transactions, minutes of them — and the server is reading the same file
+    // throughout. A checkpoint cannot RESET the WAL while a reader is in
+    // flight, so left alone the file only appends for the whole pass: measured
+    // at ~4 KiB per commit, with one reader taking a harness WAL from 4 MiB to
+    // 900 MiB. Stopping every few seconds to try turns "the whole window" into
+    // "one slice of it". The wait is deliberately short — see `WalReclaim`.
+    let mut reclaim = pkdump_db::WalReclaim::new();
     for (i, c) in cards.iter().enumerate() {
         let mut tcgcsv_variants = variants_from_tcgcsv(conn, c, &sub_type_map)?;
         // Cross-group MCAP products: stamps and non-stamp overlays
@@ -576,6 +585,11 @@ pub fn expand_all_printings(
             );
             let _ = std::io::stdout().flush();
         }
+
+        // Between cards, never inside one: the per-card transaction has just
+        // committed, so there is no write to interrupt and the frames this
+        // card produced are checkpointable.
+        reclaim.maybe(conn)?;
     }
     Ok(printings)
 }

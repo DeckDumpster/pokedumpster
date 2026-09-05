@@ -203,6 +203,60 @@ while IFS= read -r f; do
 done <<<"$CALLERS"
 none "every caller sources tests/lib/litestream.sh" "${UNSOURCED%$'\n'}"
 
+log "7. a point-in-time marker is named through pitr_marker, never by hand"
+# THE BUG: tests/litestream/run.sh §4b took its registry marker with a bare
+# `date -u`, two lines after a wait that had just moved it onto the instant the
+# replica became restorable. `date` truncates DOWN to the start of its second,
+# so the marker landed BEFORE the oldest instant covered and Litestream answered
+# `timestamp does not exist` — surfacing as `expected 1, got <no restored db>`.
+# Immune to retrying, and reachable only when replication is fast, so a local
+# run passed 61/0 and CI went red on the same commit.
+#
+# §3 of that same file had the derivation, and the `sleep 1` that follows from
+# it, in a 20-line comment — which protected §3 and nothing else. This is that
+# rule as the only way to spell a marker.
+
+# The behaviour, before the tree assertion: it must LEAD, or it is decorative.
+T_BEFORE=$(date -u +%s)
+STAMP="$(pitr_marker 1)"
+T_AFTER=$(date -u +%s)
+check "pitr_marker leaves at least a second before naming an instant" "yes" \
+	"$([ "$((T_AFTER - T_BEFORE))" -ge 1 ] && echo yes || echo no)"
+check "and emits one RFC3339 second-resolution UTC timestamp" "yes" \
+	"$(grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' <<<"$STAMP" \
+		&& echo yes || echo no)"
+# The lead is a parameter, because recreate.sh's markers use 2s and run.sh's
+# use 1s, and a helper that forced one of them would have to be worked around.
+T_BEFORE=$(date -u +%s)
+pitr_marker 2 >/dev/null
+check "the lead is the caller's to choose" "yes" \
+	"$([ "$(($(date -u +%s) - T_BEFORE))" -ge 2 ] && echo yes || echo no)"
+
+# THE TREE. Any harness that does a `-timestamp` restore must name that instant
+# through the helper. Comment lines are excluded, as in §5.
+PITR_FILES="$(harnesses | xargs grep -lE '[-]timestamp' /dev/null || true)"
+BYHAND=""
+while IFS= read -r f; do
+	[[ -z "$f" ]] && continue
+	hits="$(grep -nE '=\$\(date -u \+%Y-%m-%dT%H:%M:%SZ\)' "$f" \
+		| grep -vE '^[0-9]+:[[:space:]]*#' || true)"
+	[[ -n "$hits" ]] && BYHAND+="${f}:${hits}"$'\n'
+done <<<"$PITR_FILES"
+none "no PITR harness names a marker with a bare date" "${BYHAND%$'\n'}"
+
+# And the same "defined once, every caller sources it" ratchet §6 makes, because
+# a second copy of pitr_marker is how this fix stops travelling.
+DEFS="$(harnesses | xargs grep -ln '^pitr_marker() {' /dev/null; \
+	grep -ln '^pitr_marker() {' "${REPO_DIR}/tests/lib/litestream.sh")"
+check "one definition of pitr_marker" "${REPO_DIR}/tests/lib/litestream.sh" "$DEFS"
+CALLERS="$(harnesses | xargs grep -lE 'pitr_marker' /dev/null || true)"
+UNSOURCED=""
+while IFS= read -r f; do
+	[[ -z "$f" ]] && continue
+	grep -q 'tests/lib/litestream.sh"' "$f" || UNSOURCED+="${f}"$'\n'
+done <<<"$CALLERS"
+none "every pitr_marker caller sources tests/lib/litestream.sh" "${UNSOURCED%$'\n'}"
+
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"
 [[ $fail -eq 0 ]] || exit 1

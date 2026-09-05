@@ -270,12 +270,22 @@ pub fn derive(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<Re
     report.latest_prices = pkdump_db::latest_prices::refresh_latest_prices(conn)?;
     println!("  {} latest-price rows materialized", report.latest_prices);
 
-    //    Curated prices for catalog printings the feed does not price. Its
-    //    rows FK into `printings`, so it runs after variant expansion; and it
-    //    must land before anything values a collection from this catalog,
-    //    which reads the same effective-price rule (pd-m4gw).
-    let n_override = pkdump_db::catalog_prices::reconcile(conn)?;
-    println!("  {n_override} curated catalog price overrides reconciled");
+    // 7. The seeds whose rows FK into rows this run just created — curated
+    //    catalog prices (into `printings`) and set-name aliases (into `sets`).
+    //    `open_shared` reconciled them on the way in, when neither target
+    //    existed for anything this run was about to ingest, so it wrote
+    //    nothing for them; run here they land in the SAME run that created
+    //    their targets, which is what makes one derive a fixed point rather
+    //    than the first of two (pd-zg7o).
+    //
+    //    The curated prices must also land before anything values a collection
+    //    from this catalog, which reads the same effective-price rule
+    //    (pd-m4gw).
+    let seeds = pkdump_db::reconcile_ingest_dependent_seeds(conn)?;
+    println!(
+        "  {} curated catalog price overrides, {} set aliases reconciled",
+        seeds.catalog_prices, seeds.set_aliases
+    );
 
     // And that is the end of it. The derivation touches the SHARED catalog and
     // nothing else — no tenant database is opened, let alone written.
@@ -301,6 +311,20 @@ pub fn derive(conn: &mut Connection, options: &Options<'_>) -> anyhow::Result<Re
     if let Some(e) = &report.tail_error {
         eprintln!("!! PARTIAL DERIVATION: the pokemontcg.io tail did not complete: {e}");
     }
+
+    // NOTE: the WAL this run produced is given back by the CALLER, once its own
+    // last write has landed — `pkdump_db::reclaim_catalog_wal` (pd-t50h). Not
+    // here, and the difference is not cosmetic: `pkdump-lake-derive shared`
+    // writes `raw_derivation` after this function returns, so a reclaim on this
+    // line would leave the provenance row's frames behind and the file
+    // non-empty. The rule is "the process that wrote the catalog gives it back
+    // before exiting", which is a claim about a write window rather than about
+    // a function, and `row_identical.rs::a_derive_leaves_no_wal_behind_on_the_
+    // catalog_it_built` is what holds the shipped binary to it.
+    //
+    // The opportunistic reclaims INSIDE variant expansion are a different job
+    // and do live in the library: they bound how big the file gets during the
+    // pass, which is nobody else's business.
     Ok(report)
 }
 

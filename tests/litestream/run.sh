@@ -52,7 +52,6 @@ set -euo pipefail
 # Only this harness was missing it, so a correct product looked flaky.
 sq() { sqlite3 -cmd '.timeout 5000' "$@"; }
 
-LITESTREAM_IMAGE=${LITESTREAM_IMAGE:-docker.io/litestream/litestream:latest}
 MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
 MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
 
@@ -65,6 +64,11 @@ SHIPPED_YML="${REPO_DIR}/deploy/litestream.yml"
 # agree with a broken restore-litestream.sh.
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
+# The Litestream version too, from that same file (pd-pfxf). A gate that
+# pulled `:latest` would test whatever the registry pushed last night and
+# not what any box actually runs — which is exactly how a 0.5.16 -> 0.5.17
+# retag turned three gates red on a change that touched none of them.
+LITESTREAM_IMAGE="${LITESTREAM_IMAGE:-$PKDUMP_LITESTREAM_IMAGE}"
 
 # Failure diagnostics (pd-8gjs): an ERR trap that names the failing file, line,
 # command and status before the EXIT trap's teardown chatter, and `diag_run`,
@@ -87,6 +91,8 @@ diag_init
 . "${REPO_DIR}/tests/lib/wait.sh"
 # shellcheck source=tests/lib/objects.sh
 . "${REPO_DIR}/tests/lib/objects.sh"
+# shellcheck source=tests/lib/litestream.sh
+. "${REPO_DIR}/tests/lib/litestream.sh"
 
 # Unique per checkout, exactly as deploy/ci.sh's instance name and the alarming
 # gate's are. deploy/ci.sh is deliberately parallel-safe — several polecats run
@@ -282,31 +288,48 @@ wait_until 120 1 early_replicated || true
 check "the early writes reached ${VICTIM}'s replica, so the marker has something behind it" "yes" \
 	"$(early_replicated && echo yes || echo no)"
 
+# ── 3b. THE LINE deploy/backup-check.sh JUDGES EVERY TENANT FROM ────────────
+# Stated here, first and by name, because it is a CONTRACT with the image and
+# not an incidental property of it (pd-pfxf). backup-check has no other source
+# for a tenant's two TXIDs — the 0.5 CLI cannot resolve a `dir:` entry — so if
+# this message stops being emitted, backup-check silently stops verifying every
+# tenant for the whole 1800s grace and then pages forever.
+#
+# That is not hypothetical. `litestream:latest` moved 0.5.16 -> 0.5.17 on
+# 2026-08-31, 0.5.17 downgraded this message from INFO to DEBUG, and the failure
+# arrived as three unrelated-looking container gates going red at once — a
+# missing txid advance here, "checked 0 of 4 tenants" in the drill, and a
+# correspondence wait timing out in the alarming gate. None of them said what was
+# actually wrong. This one does, in one line, before any of them run.
+#
+# The remedy has two halves and this asserts the pair: the version is pinned
+# (deploy/litestream-lib.sh) and the level is asked for by name
+# (deploy/litestream.yml's `logging:` block). Either alone is not enough.
+log "3b. the sidecar emits the message deploy/backup-check.sh parses (pd-pfxf)"
+sync_line_emitted() { logs_match "$LS_CTR" 'msg="replica sync"'; }
+wait_until 60 1 sync_line_emitted || true
+check "the running sidecar logs msg=\"replica sync\" at the configured level" "yes" \
+	"$(sync_line_emitted && echo yes || echo no)"
+# ...carrying BOTH txids, in the shape sidecar_position seds them out of. A line
+# that survived a rename of either field would satisfy the grep above and leave
+# backup-check parsing empty strings, which it reads as "no position" — the same
+# silence, one field further in.
+check "and it carries txid.replica and txid.db, the pair correspondence is judged on" "yes" \
+	"$(logs_match "$LS_CTR" -E 'msg="replica sync".*txid\.replica=[0-9a-f]{16}.*txid\.db=[0-9a-f]{16}' \
+		&& echo yes || echo no)"
+# And it is THIS image, not whatever `:latest` points at today. A gate that
+# pulled a moving tag would go red on a morning nobody changed anything.
+check "the pinned image is the one under test" "$PKDUMP_LITESTREAM_IMAGE" "$LITESTREAM_IMAGE"
+
 # A marker between two write phases, for the point-in-time restore in §4.
 #
-# TRUNCATION CUTS BOTH WAYS, and only one side of it was handled (pd-5m54 CI,
-# 2026-08-14). `date -u +…%SZ` truncates DOWN to the start of the second it was
-# taken in, so a marker taken at 00:49:54.9 IS 00:49:54.000 — up to a second
-# EARLIER than the instant it was meant to name. If the early phase only became
-# restorable at 00:49:54.3, that marker sits BEFORE the oldest instant the
-# replica covers, and Litestream refuses it outright:
-#
-#     Error: timestamp does not exist
-#
-# which surfaces as `expected 1, got <no restored db>` — the same symptom as the
-# late-side race below, from the opposite cause, and equally immune to retrying.
-# It is reachable exactly when replication is FAST, because that is when the
-# marker lands in the same second the early phase arrived. In the run that found
-# it, §4b's registry PITR passed in the same gate: its marker is taken much later,
-# against a long-established replica, so it was never near the edge.
-#
-# So: leave the second in which the early phase became restorable before naming
-# a marker. With E the instant early_replicated went true and M the moment the
-# marker is taken, waiting for M >= E + 1s gives floor(M) >= M - 1s >= E — the
-# marker provably sits at or after the oldest covered instant, whatever the
-# truncation does.
-sleep 1
-MARKER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# `pitr_marker` is what leaves the second in which the early phase became
+# restorable before naming an instant inside it — the truncation hazard and its
+# derivation live there (pd-5m54 CI, 2026-08-14). It is called HERE, after
+# early_replicated went true, because the rule is "only once the thing you will
+# restore to is already in the replica"; calling it before that wait would name
+# an instant no replica covers, which is the failure it exists to prevent.
+MARKER=$(pitr_marker)
 # The other side of the same truncation, and the reason this sleep stays: the
 # marker names the whole second it was taken in, so the late writes have to land
 # in a LATER one or a restore at the marker may legitimately include them. There
@@ -388,8 +411,28 @@ check "sidecar still running with both entries" "running" \
 # No sentinel: the contents of this bucket ARE the thing under test, so an empty
 # replica is a finding to report rather than a listing to distrust. What is
 # checked is that the listing happened.
+# WAIT FOR WHAT IS ASSERTED, not for a signal that merely precedes it. The poll above
+# waits for `db=registry.sqlite` in the sidecar log, which says the registry was OPENED
+# — the sidecar has the entry and has initialised it. The assertion below is about
+# something later and separate: that LTX files have reached S3 under its prefix.
+#
+# Between those two events sits a sync, and how long that takes is the image's business.
+# It was fast enough to hide the gap until the sidecar was pinned (pd-pfxf): on 0.5.17
+# the listing ran first and the check reported the registry replica as EMPTY, which reads
+# as a broken derived prefix rather than as "not yet". Three gates went red on a change
+# that touched none of their logic.
+#
+# One listing still feeds both assertions; it is just taken once the thing being asserted
+# is true, or after the budget is spent — in which case an empty replica is reported, as
+# before, because the contents of this bucket ARE the thing under test.
 BUCKET_LISTED=yes
-BUCKET_KEYS="$(bucket_keys)" || { BUCKET_KEYS=""; BUCKET_LISTED=no; }
+BUCKET_KEYS=""
+registry_replicated() {
+	BUCKET_KEYS="$(bucket_keys)" || { BUCKET_KEYS=""; BUCKET_LISTED=no; return 1; }
+	BUCKET_LISTED=yes
+	grep -q "^${LITESTREAM_S3_REGISTRY_PATH}/" <<<"$BUCKET_KEYS"
+}
+wait_until 90 1 registry_replicated || true
 grep "^${LITESTREAM_S3_REGISTRY_PATH}/" <<<"$BUCKET_KEYS" |
 	head -1 >"$WORK/registry-key.txt" || true
 check "the registry wrote LTX files under its own derived prefix" "1" \
@@ -438,7 +481,17 @@ check "the registry restores and still holds its mapping" "alpha 01k2c7hq8n00000
 # block". The registry is where a bad `tenant rename` or a wrong detach lands,
 # and recovering from one means asking for a moment before it — so the window
 # has to actually work on THIS prefix, not just on the tenant prefixes.
-REG_MARKER=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+#
+# The marker is named through `pitr_marker` for the reason §3 is, and this
+# section is why that rule is a function rather than a comment in §3: the wait
+# added above (for the registry's LTX files to reach S3) moved this marker from
+# "much later, against a long-established replica" onto the exact instant the
+# replica became restorable — the edge §3 documents. Both assertions below then
+# failed in CI with `<no restored db>`, which is Litestream's `timestamp does
+# not exist`, while a local run of the same commit passed 61/0: the race is
+# reachable only when replication is fast enough that the marker truncates back
+# past the first covered instant.
+REG_MARKER=$(pitr_marker)
 sleep 2 # second-resolution marker, as in §3 — not a wait for replication
 sq "$WORK/data/registry.sqlite" \
 	"INSERT INTO user VALUES ('bravo','01k2c7hq8n0000000000bravo',datetime('now'),'active');" >/dev/null
@@ -451,6 +504,19 @@ wait_until 60 1 registry_has_both || true
 check "a later registry write reaches the replica" "2" \
 	"$(sq_registry registry-latest.sqlite 'SELECT count(*) FROM user;')"
 restore_registry registry-pit.sqlite -timestamp "$REG_MARKER"
+# If that produced nothing, say WHY, in Litestream's own words. §6's tenant
+# restore has done this since it was written ("a genuine failure still takes
+# Litestream's own words into the log rather than leaving `<no restored db>` as
+# the clue"); the registry helper sent stderr to /dev/null, so the two
+# assertions below could only ever report `<no restored db>` — which reads as a
+# DATA mismatch and cost a full CI cycle to tell apart from one. The re-run is
+# for the message only; its result is deliberately not used, because a restore
+# that succeeds on a second attempt would otherwise turn a real red into a pass.
+if [ ! -s "$WORK/restore/registry-pit.sqlite" ]; then
+	diag_run "restore registry-pit.sqlite -timestamp $REG_MARKER" \
+		ls_run restore -integrity-check full -timestamp "$REG_MARKER" \
+		-o /restore/registry-pit-diag.sqlite "$(registry_replica_url || true)" >/dev/null || true
+fi
 check "point-in-time restore rolls the registry back to the marker" "1" \
 	"$(sq_registry registry-pit.sqlite 'SELECT count(*) FROM user;')"
 check "and the row it keeps is the one that existed then" "alpha" \
@@ -765,8 +831,17 @@ check "and it is still charlie's data under its new name" "charlie" \
 # it caught exactly that first line (2026-08-08).
 ADVANCED=no
 replica_advanced() {
-	if podman logs "$LS_CTR" 2>&1 | grep "db=${MIGRATED_ID}.sqlite" \
-		| grep -qE 'txid\.replica=0*[1-9a-f]'; then
+	# `logs_match`, not `grep -q`: this is the pd-pfxf trap, and it survived the
+	# ratchet that exists to catch it only because the pipeline is split over
+	# two lines. Under DEBUG the sidecar's log is now big enough that grep -q
+	# closes the pipe well before `podman logs` is done writing — SIGPIPE, 141,
+	# pipefail, and a match reported as no-match, on the busy box and not on the
+	# quiet one. It also has to name the MESSAGE: at this level most lines
+	# carrying `db=<id>.sqlite` are `msg="s3 request"`, so matching the two
+	# fields anywhere in the stream could pair a TXID from one line with the
+	# database name from another.
+	if logs_match "$LS_CTR" -E \
+		"msg=\"replica sync\".*db=${MIGRATED_ID}\.sqlite.*txid\.replica=0*[1-9a-f]"; then
 		ADVANCED=yes
 		return 0
 	fi
@@ -780,7 +855,11 @@ wait_until 90 1 replica_advanced || true
 check "txid.replica advances on the new prefix, rather than sticking at 0" "yes" "$ADVANCED"
 if [ "$ADVANCED" != yes ]; then
 	echo "  --- replica sync lines for ${MIGRATED_ID}.sqlite ---"
-	podman logs "$LS_CTR" 2>&1 | grep "db=${MIGRATED_ID}.sqlite" | tail -10 | sed 's/^/  /'
+	# The sync lines, not every line naming the database: at DEBUG the latter is
+	# a wall of `msg="s3 request"` and the ten this prints would carry nothing
+	# anybody could diagnose the failure from.
+	podman logs "$LS_CTR" 2>&1 | grep -F 'msg="replica sync"' |
+		grep -F "db=${MIGRATED_ID}.sqlite" | tail -10 | sed 's/^/  /'
 fi
 
 # The pre-cutover half of the recovery window: the old prefix stops advancing

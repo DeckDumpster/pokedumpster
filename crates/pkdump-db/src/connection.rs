@@ -17,13 +17,18 @@
 //! outcomes and why the refusal is what makes rollback safe (pd-ja38).
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use rusqlite::backup::Backup;
 
 use crate::error::Result;
 use crate::schema_version::{self, Database};
+
+/// How long an open in this crate waits for a lock before giving up. Every
+/// `open_*` sets it, and [`checkpoint_truncate`] restores it after borrowing
+/// the connection's busy handler for its own, shorter wait.
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) const SCHEMA_SHARED: &str = include_str!("schema_shared.sql");
 const SCHEMA_USER: &str = include_str!("schema_user.sql");
@@ -123,11 +128,11 @@ fn converge(conn: &mut Connection) -> Result<()> {
     crate::variants::reconcile(conn)?;
     crate::sub_type_map::reconcile(conn)?;
     crate::bundles::reconcile(conn)?;
-    crate::set_aliases::reconcile(conn)?;
-    // Its rows FK into `printings`, so it writes nothing until the catalog
-    // has been ingested. `pkdump-lake-derive shared` re-opens the catalog
-    // after every derivation, which is where it lands for real.
-    crate::catalog_prices::reconcile(conn)?;
+    // The two seeds whose rows FK into rows the INGEST creates, grouped so a catalog
+    // builder can run exactly this set again at the END of its run and be a fixed point
+    // (pd-zg7o). They write nothing on an open that predates the catalog, which is why
+    // an open-time reconcile alone left a first-run set unseeded until the NEXT open.
+    reconcile_ingest_dependent_seeds(conn)?;
     // The search query language's metadata (keywords, rarity ranks,
     // `is:`-flag definitions). It used to be reconciled by each caller
     // instead — `pkdump setup`, the derive, `pkdump serve`, the fixture
@@ -192,6 +197,51 @@ pub fn open_shared_for_serving(path: &Path) -> Result<Connection> {
     open_shared_with_patience(path, SERVING_PATIENCE)
 }
 
+/// How many rows each ingest-dependent seed wrote. Counts only — the callers
+/// print them, because a derivation is minutes of progress lines and a seed
+/// that quietly wrote nothing is the thing this type exists to make visible.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct IngestSeeds {
+    /// Rows written to `set_aliases` (FK: `sets`).
+    pub set_aliases: usize,
+    /// Rows written to `catalog_price_overrides` (FK: `printings`).
+    pub catalog_prices: usize,
+}
+
+/// Reconcile the shipped seeds whose rows **FK into rows the ingest creates**.
+///
+/// The rest of the seed layer is self-contained — `variants`, the
+/// `(group, sub_type)` map and `bundles` reference nothing an upstream
+/// produces, so an open reconciles them completely whatever state the catalog
+/// is in. These two do not: `set_aliases` points at `sets` and
+/// `catalog_price_overrides` at `printings`, and both skip a row whose target
+/// this catalog does not carry rather than tripping the FK.
+///
+/// So on the run that first creates a set, an open-time reconcile writes
+/// nothing for it and the seed lands on the NEXT open — which made a first
+/// derive of a brand-new set differ from the second one, in `set_aliases` and
+/// no other table (pd-zg7o). One step of convergence is not wrong, but it is a
+/// thing every reader of the catalog has to know, and "the alias for the set
+/// that listed today resolves tomorrow" is a real answer to a real import.
+///
+/// The fix is not to make the skip cleverer — a seed row whose target is
+/// genuinely absent must still be skipped, which is what lets a minimal test
+/// catalog carry neither `svp` nor most of the real sets. It is to run this
+/// group **again at the end of a build**, once the ingest has created
+/// everything it is going to. `pkdump_derive::derive` and `pkdump setup` both
+/// end with it, so a single run reaches the fixed point.
+///
+/// Grouping them is the durable half. A third FK-dependent seed added beside
+/// these two joins one function and reaches both builders; added as its own
+/// call in `open_shared` it would silently reintroduce the whole bug, and
+/// nothing about a catalog in that state looks broken.
+pub fn reconcile_ingest_dependent_seeds(conn: &mut Connection) -> Result<IngestSeeds> {
+    Ok(IngestSeeds {
+        set_aliases: crate::set_aliases::reconcile(conn)?,
+        catalog_prices: crate::catalog_prices::reconcile(conn)?,
+    })
+}
+
 /// Open the shared catalog **read-only**.
 ///
 /// No schema application, no seed reconciliation, no version stamp — and no
@@ -215,7 +265,7 @@ pub fn open_shared_readonly(path: &Path) -> Result<Connection> {
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     // The same refusal `open_shared` makes, in the same place: a catalog
     // written by a newer build is not one this build may read rows out of and
     // act on. Reading is what this handle is for, so the gate is the whole of
@@ -384,7 +434,7 @@ pub fn open_user(user_path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(user_path)?;
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     schema_version::gate(&conn, Database::User)?;
     conn.execute_batch(SCHEMA_USER)?;
     add_missing_user_columns(&conn)?;
@@ -414,7 +464,7 @@ pub fn open_registry(path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
-    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     schema_version::gate(&conn, Database::Registry)?;
     conn.execute_batch(SCHEMA_REGISTRY)?;
     schema_version::stamp(&conn, Database::Registry)?;
@@ -441,6 +491,196 @@ pub fn init_user_schema(conn: &Connection) -> Result<()> {
     crate::conditions::seed_defaults(conn)?;
     schema_version::stamp(conn, Database::User)?;
     Ok(())
+}
+
+/// What one truncating WAL checkpoint achieved.
+///
+/// `reset` is the only field that matters to a caller deciding whether the
+/// disk came back. A checkpoint that could not reset still did useful work —
+/// it copies frames into the database either way — but the `-wal` file keeps
+/// every byte it had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalCheckpoint {
+    /// The WAL was restarted from frame 0 and the file truncated to nothing.
+    /// False means a reader was in flight for the whole wait: the frames were
+    /// copied out, but the file is the size it was.
+    pub reset: bool,
+    /// Frames in the WAL when the checkpoint ran. `-1` if the database is not
+    /// in WAL mode at all, in which case there was never anything to reclaim.
+    pub wal_frames: i64,
+    /// Frames copied into the database file.
+    pub checkpointed: i64,
+}
+
+/// Run `PRAGMA wal_checkpoint(TRUNCATE)` and report what it managed, waiting
+/// at most `wait` for readers to get out of the way.
+///
+/// **This is the only thing that gives the catalog's WAL back** (pd-t50h). In
+/// WAL mode a checkpoint can copy frames into the database while readers are
+/// active, but it cannot *reset* the WAL — restart it at frame 0 — until a
+/// moment arrives with nobody reading. Until then the writer appends, so the
+/// file grows for the whole write window and then stays at its high-water mark
+/// until something truncates it. Nothing does, on its own: an autocheckpoint
+/// runs on a commit, and once the derive exits there is no writer left to
+/// commit anything, so the file sits there until the next night.
+///
+/// A blocked checkpoint is **not an error**. It is a fact about who was
+/// reading, it is reported rather than raised, and the caller decides whether
+/// it is worth saying out loud. Raising would make a browsing session able to
+/// fail the nightly catalog build, which is the wrong trade by a long way.
+///
+/// `wait` borrows the connection's busy handler and [`BUSY_TIMEOUT`] is
+/// restored afterwards, so the value is scoped to the checkpoint rather than
+/// to the connection.
+pub fn checkpoint_truncate(conn: &Connection, wait: Duration) -> Result<WalCheckpoint> {
+    conn.busy_timeout(wait)?;
+    let out = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        Ok(WalCheckpoint {
+            reset: r.get::<_, i64>(0)? == 0,
+            wal_frames: r.get(1)?,
+            checkpointed: r.get(2)?,
+        })
+    });
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    Ok(out?)
+}
+
+/// How often a long write window stops to try to give the WAL back.
+///
+/// Five seconds. The cost of an attempt is bounded by [`RECLAIM_WAIT`], so a
+/// ten-minute derive pays at most a few seconds in total for it; the benefit
+/// is that the WAL is bounded by what one five-second slice of writing
+/// produces instead of by the whole window.
+const RECLAIM_EVERY: Duration = Duration::from_secs(5);
+
+/// How long an *opportunistic* reclaim waits for readers.
+///
+/// A tenth of a second, and the shortness is the design. This checkpoint is
+/// speculative — there will be another one along in [`RECLAIM_EVERY`] — so
+/// blocking on it buys nothing and costs the write window directly. Measured
+/// on the mechanism in pd-t50h (a writer committing against one continuously
+/// reading connection, ten-second window):
+///
+/// | reclaim | checkpoint wait | writer commits | peak WAL |
+/// |---|---|---|---|
+/// | none    | —      | 60,068 | 208.8 MiB |
+/// | every 1s | 5s    | 39,740 |  26.8 MiB |
+/// | every 1s | 100ms | 61,036 |  42.0 MiB |
+///
+/// The five-second wait buys a slightly smaller file for a third of the
+/// writer's throughput. The short wait keeps the throughput and still takes a
+/// factor of five off the file, because a reader that queries in a loop is
+/// between transactions often enough for a checkpoint to slip through.
+const RECLAIM_WAIT: Duration = Duration::from_millis(100);
+
+/// How long the checkpoint that ENDS a write window waits for readers.
+///
+/// Thirty seconds, against the hundred milliseconds [`RECLAIM_WAIT`] spends.
+/// The trade is the opposite one at this point: the writing is over, so there
+/// is no throughput left to protect, and every second spent here is a second
+/// that might save the file sitting on the data volume until tomorrow.
+const FINAL_RECLAIM_WAIT: Duration = Duration::from_secs(30);
+
+/// Give the catalog's WAL back, at the end of the write window that built it.
+///
+/// The counterpart to [`WalReclaim`], which bounds the file *during* a long
+/// pass; this is what returns it afterwards. Nothing else on the box ever
+/// will: an autocheckpoint runs on a commit, and once the process that built
+/// the catalog has exited there is no writer left to commit anything, so a
+/// `-wal` left at its high-water mark stays there until the next night.
+///
+/// Called by every **process** that writes `shared.sqlite` and exits, after
+/// its own last write: `pkdump-lake-derive shared` and `pkdump setup`. A
+/// process rather than a function, and the distinction earned itself — put at
+/// the end of `pkdump_derive::derive` it ran before the derive binary wrote
+/// `raw_derivation`, and left the provenance row's frames in a file nothing
+/// would ever truncate.
+///
+/// One function rather than the same six lines at each call site, because the
+/// wait and the sentence an operator reads are the decision — a second
+/// spelling of either is how the two writers start answering the same night
+/// differently.
+///
+/// Blocked is reported and returned, never raised: a reader that held a
+/// transaction across this moment has cost some disk until the next run, and
+/// failing a catalog build over it would let a browsing session break the
+/// nightly job.
+pub fn reclaim_catalog_wal(conn: &Connection) -> Result<WalCheckpoint> {
+    let out = checkpoint_truncate(conn, FINAL_RECLAIM_WAIT)?;
+    if out.reset {
+        println!("  catalog WAL reclaimed ({} frames)", out.checkpointed);
+    } else {
+        eprintln!(
+            "!! catalog WAL NOT reclaimed: a reader was in flight for the whole {}s wait, so \
+             {} frames were copied out but the -wal file keeps its size until something \
+             checkpoints it again. Disk only — the catalog itself is complete.",
+            FINAL_RECLAIM_WAIT.as_secs(),
+            out.checkpointed,
+        );
+    }
+    Ok(out)
+}
+
+/// Drives [`checkpoint_truncate`] from inside a long write loop, at most once
+/// every [`RECLAIM_EVERY`].
+///
+/// Held by the phase doing the writing rather than by the connection, because
+/// the period is about *this* write window: a caller that makes one commit and
+/// stops has nothing to reclaim and should not be paying for a checkpoint.
+///
+/// Time-based rather than counted, because the same loop runs at 5,000 cards a
+/// second on a warm catalog and at a small fraction of that on a cold one — a
+/// count that is right for one is wrong for the other by two orders of
+/// magnitude.
+pub struct WalReclaim {
+    period: Duration,
+    last: Instant,
+}
+
+impl Default for WalReclaim {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WalReclaim {
+    /// Start the clock at the production period, [`RECLAIM_EVERY`]. The first
+    /// reclaim is that far away, so a short loop never checkpoints at all.
+    pub fn new() -> Self {
+        Self::every(RECLAIM_EVERY)
+    }
+
+    /// As [`WalReclaim::new`], with the period named.
+    ///
+    /// Exists for tests, and it takes the period rather than a "check every
+    /// time" flag deliberately: a test that switched the periodicity OFF would
+    /// be exercising a code path production never takes. Every caller in the
+    /// binary uses [`WalReclaim::new`].
+    pub fn every(period: Duration) -> Self {
+        Self {
+            period,
+            last: Instant::now(),
+        }
+    }
+
+    /// Checkpoint if the period has elapsed, otherwise do nothing.
+    ///
+    /// `Ok(None)` means "not yet". An error from the checkpoint itself is
+    /// returned; a checkpoint a reader blocked is `Ok(Some(..))` with
+    /// [`WalCheckpoint::reset`] false, because that is a normal outcome and
+    /// not a failure of this run.
+    pub fn maybe(&mut self, conn: &Connection) -> Result<Option<WalCheckpoint>> {
+        if self.last.elapsed() < self.period {
+            return Ok(None);
+        }
+        let out = checkpoint_truncate(conn, RECLAIM_WAIT)?;
+        // Reset from *after* the checkpoint, not from the deadline it passed:
+        // a blocked attempt costs RECLAIM_WAIT, and dating the next one from
+        // the deadline would make a long stall spend its whole budget again
+        // immediately.
+        self.last = Instant::now();
+        Ok(Some(out))
+    }
 }
 
 /// Snapshot a live SQLite database to `dest`, overwriting it.
@@ -492,6 +732,59 @@ fn remove_db_files(path: &Path) {
 mod tests {
     use super::*;
     use crate::catalog;
+
+    /// The seeds that FK into ingested rows must land in the run that CREATES
+    /// those rows, not on the next open (pd-zg7o).
+    ///
+    /// Stated over the group rather than over either seed: what goes wrong is
+    /// a seed reconciled only at open time, and the group is the one place a
+    /// builder calls. Both halves are here because they fail independently —
+    /// `set_aliases` was the one that was missing, and asserting only it would
+    /// let a future edit drop `catalog_prices` out of the group unnoticed.
+    #[test]
+    fn the_ingest_dependent_seeds_land_in_the_run_that_creates_their_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_shared(&dir.path().join("shared.sqlite")).unwrap();
+
+        // An open against a catalog with no ingest in it writes neither: every
+        // seed row's FK target is absent, and skipping is correct there.
+        assert_eq!(
+            count(&conn, "set_aliases") + count(&conn, "catalog_price_overrides"),
+            0,
+            "a catalog with no sets and no printings carries no FK-dependent seed"
+        );
+
+        // Now ingest the rows the seeds point at — what a derivation does
+        // between `open_shared` and its own last phase.
+        conn.execute_batch(
+            "INSERT INTO sets (set_code, name, series) \
+               VALUES ('svp', 'Scarlet & Violet Black Star Promos', 'SV'), \
+                      ('basep', 'Wizards Black Star Promos', 'Base'); \
+             INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+               VALUES ('basep-10', 'basep', '10', 10, 'Meowth'); \
+             INSERT INTO printings (printing_id, card_id, variant) \
+               VALUES ('basep-10-normal', 'basep-10', 'normal');",
+        )
+        .unwrap();
+
+        let seeds = reconcile_ingest_dependent_seeds(&mut conn).unwrap();
+        assert_eq!(seeds.set_aliases, 1, "the alias for the set just created");
+        assert_eq!(seeds.catalog_prices, 1, "the override for the printing");
+        assert_eq!(count(&conn, "set_aliases"), 1);
+        assert_eq!(count(&conn, "catalog_price_overrides"), 1);
+
+        // …and the same group run again moves nothing: this is the end of a
+        // build, so it has to be a fixed point rather than the first of two.
+        let again = reconcile_ingest_dependent_seeds(&mut conn).unwrap();
+        assert_eq!(count(&conn, "set_aliases"), 1);
+        assert_eq!(count(&conn, "catalog_price_overrides"), 1);
+        assert_eq!(again, seeds, "an idempotent upsert rewrites the same rows");
+    }
+
+    fn count(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
 
     fn seed_shared(path: &Path) {
         let conn = open_shared(path).unwrap();

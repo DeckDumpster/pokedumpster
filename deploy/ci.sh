@@ -23,6 +23,7 @@
 #                     tests/lib/images_test.sh,
 #                     tests/container/base_images_test.sh,
 #                     tests/visual/approval_test.sh,
+#                     tests/litestream/image_pin_test.sh,
 #                     tests/alarming/journal_summary_test.sh,
 #                     tests/alarming/alert_suppress_test.sh and
 #                     tests/ci/treewatch_test.sh.
@@ -581,6 +582,16 @@ if tier lint; then
     step "Container base-image pins (tests/container/base_images_test.sh)"
     bash "$REPO_DIR/tests/container/base_images_test.sh"
 
+    # Same rule, the OTHER image this repo runs. `litestream:latest` moved
+    # 0.5.16 -> 0.5.17 under this box, 0.5.17 downgraded the one log message
+    # deploy/backup-check.sh judges every tenant from to DEBUG, and the litestream,
+    # drill and alarming gates went red together on a change that touched none of
+    # them (pd-pfxf). Twenty-five minutes of container tier to learn that a tag
+    # moved. This says it in under a second, and holds the log level the checker
+    # depends on beside the version. See tests/litestream/image_pin_test.sh.
+    step "Litestream image pin + log level (tests/litestream/image_pin_test.sh)"
+    bash "$REPO_DIR/tests/litestream/image_pin_test.sh"
+
     # Same tier, same shape of ratchet, one layer over from the pins: a gate
     # that builds an image at a per-checkout tag and never removes it. The tag
     # outlives the worktree that made it and nothing collects it, so the cost
@@ -716,6 +727,20 @@ if tier deploy; then
     # store it tears down.
     step "Container store: a build collects what the build before it orphaned"
     bash "$REPO_DIR/tests/store/orphans.sh"
+
+    # The third non-hermetic build gate, and non-hermetic for the third time for
+    # the same reason: that podman's COPY preserves the context's mtimes and that
+    # cargo then calls an old source fresh against a newer artifact are facts
+    # about podman and cargo. The cargo target cache mount outlives the build and
+    # its `id=` names the checkout PATH — but a CI runner is one path holding
+    # every tree over time, so a build was handed another tree's rlibs, compiled
+    # nothing, and shipped that tree's binaries (pd-wjmd). tests/deploy/run.sh
+    # §11c holds the shell half; this is the two real builds. Its fixture is a
+    # hello-world crate on the builder base the real Containerfile names, so it
+    # pulls nothing the container tier does not already need, and its cache id is
+    # unique to the run and removed on the way out.
+    step "Container store: the image ships the binaries its own sources build"
+    bash "$REPO_DIR/tests/store/cargo_cache.sh"
 fi
 
 # --- 3. Frontend gate -------------------------------------------------------

@@ -469,6 +469,71 @@ like a fix while changing nothing. Move the base, move the id.
 `tests/container/base_images_test.sh` asserts all three in under a second, and
 `deploy/ci.sh` runs it before anything builds the image.
 
+**The same rule binds the OTHER image this repo runs, and its LOG LEVEL with
+it** (pd-pfxf). The Litestream sidecar was `litestream/litestream:latest` in
+eight places. On 2026-08-31 that tag moved 0.5.16 -> 0.5.17, this box pulled it,
+and the next morning three container gates failed together — the litestream
+gate's `txid.replica` advance, the drill's "checked all four tenants" (0 of 4),
+and the alarming gate's correspondence wait. Nothing in the tree had changed, so
+it read as transient S3/networking flakiness and was filed as such.
+
+What moved was one line of upstream's logging: *"fix(logging): downgrade replica
+sync messages from INFO to DEBUG"*. `deploy/backup-check.sh::sidecar_position`
+reads a tenant's two TXIDs out of exactly that message, because the 0.5 CLI
+cannot resolve a `dir:` entry — and the alternatives were measured against
+0.5.17 and all three fail: `status -json <tenant>` still answers `database: "/"`
+/ `not initialized`, `ltx <local path>` answers `database not found in config`,
+and the new control-socket `list -json` does answer in directory mode but
+carries only `last_sync_at` and no TXID pair, so it cannot judge
+**correspondence** (pd-me6h) and would be a silent regression to the freshness
+test that replaced it.
+
+So at the default level the message backup-check depends on simply stopped
+existing. **The tests were the loud half of a failure whose quiet half is
+prod's**: every tenant falls to "not judged" for the whole 1800s grace — a
+backup verifier that verifies nothing while exiting 0 — and pages for every
+tenant forever after it.
+
+Three things about the fix are decisions:
+
+- **The version lives in ONE place**, `PKDUMP_LITESTREAM_IMAGE` in
+  `deploy/litestream-lib.sh`, which every deploy script and every gate already
+  sources. `deploy/pkdump-litestream.container` carries a second literal copy
+  because a Quadlet unit cannot source a shell library; the two are held
+  together by a test rather than by memory.
+- **The log level is asked for BY NAME**, in the shipped `deploy/litestream.yml`
+  — the one file every sidecar in deploy and in every gate mounts, so there is
+  one place to change and no gate that can drift from production. Measured on
+  both versions: with that block, 0.5.16 and 0.5.17 emit the identical line.
+  It costs ~11x the log volume (~6 lines/s/database against ~0.55), which is the
+  price of the check being able to see anything at all.
+- **Pinning alone would not have been enough, and neither would the level.**
+  Pinned to a version that does not emit the line is silence; asking for debug
+  while `:latest` roams is the same bug waiting for the next retag. The gate
+  asserts the pair.
+
+Gates: `tests/litestream/image_pin_test.sh` (lint tier, hermetic, sub-second —
+no `:latest` under `deploy/` or `tests/`, every literal version agreeing with
+the one in the library, a log level that emits the message, and backup-check
+still parsing it; seen red seven ways) and `tests/litestream/run.sh` §3b, which
+is the half no grep can make: the RUNNING sidecar emits `msg="replica sync"`
+carrying both TXIDs, stated FIRST and by name so the next such change fails in
+one legible line instead of three unrelated-looking ones.
+
+**The same bead found a second, unrelated way a gate lies about a container**:
+`podman logs "$c" | grep -q PATTERN` returns **141** under `set -o pipefail`
+*when the pattern is found* — `grep -q` exits on the first match, the pipe
+closes, and `podman logs` dies of SIGPIPE. Whether it bites depends on whether
+the writer has finished, so it passes on a quiet box and fails on a loaded one,
+which is the exact signature this repo keeps reading as infrastructure
+flakiness. Four polling loops in `tests/{alarming,litestream,lake}` had it, and
+inside `wait_until` it does not fail loudly — it silently never goes true and
+the gate spends its whole budget before failing for some later reason.
+`tests/lib/wait.sh::logs_match` is the counting form every harness now uses
+(everything is passed through to grep, so `-F`/`-E` still work), and
+`tests/lib/wait_test.sh` §7 is the ratchet: one definition, no harness piping
+`podman logs` into `grep -q`, asserted over the tree.
+
 **Every unit under `~/.config/systemd/user` is ONE FILE PER BOX**, shared by
 every instance, with `{{REPO_DIR}}` baked into its `ExecStart` — the `@`
 templates included (`pkdump-refresh@.service` backs prod and every CI instance
@@ -929,6 +994,74 @@ Gate: `tests/lib/litestream_test.sh` (lint tier, hermetic, sub-second — record
 five ways). §5-§6 are the ratchet and they are the half that matters: pd-nt1k
 fixed this predicate in one harness of three by writing the fix INTO that
 harness, which is exactly how a fix stops travelling.
+
+### The image ships the binaries its OWN sources build (pd-wjmd)
+
+The complement of the two rules above, one layer in. Those are about the images
+a build leaves behind; this is about whether the image a build produces
+corresponds to the source it copied.
+
+The builder stage hands cargo a `--mount=type=cache` target directory that
+**outlives the build**, scoped by `id=` on the builder's Debian release
+(pd-pejn) and the checkout PATH (pd-sjn7). Cargo's freshness check for a path
+dependency is an **mtime comparison** — and a CI runner is ONE checkout path
+holding EVERY tree over time, a different PR merge ref on every run. Worse, a
+`COPY` that HITS podman's layer cache restores that layer's historical mtimes
+rather than the build context's. So the sources can arrive OLDER than rlibs
+another tree left in the cache, cargo compiles nothing, and `cp` copies the
+other tree's binaries straight into the image.
+
+It is not hypothetical, and it is invisible where it happens. On CI run
+33683221574 the builder reported
+
+    Finished `release` profile [optimized] target(s) in 1.92s
+
+over a `crates/` with no `sets.ptcgio_covered` in it, and shipped a
+`pkdump-lake-derive` that writes that column. What noticed was
+`tests/lake/derive.sh`, three tiers away, as a catalog disagreeing with the one
+the host built — read at first as a master regression in the change that added
+the column, which was fine. **A stale rlib that still exports everything
+referenced links cleanly and ships old behaviour**, so the ordinary outcome of
+this is a green gate over code nobody wrote; pd-sjn7 says exactly that about the
+cross-checkout case and closed only that half.
+
+The answer is a **third axis, carried inside the cache rather than in its id**:
+the cache records a stamp of the sources it was compiled from, and a build
+handed a cache written from anything else touches the workspace sources before
+compiling — the one thing that makes cargo's mtime comparison tell the truth
+again. Four things about it are decisions:
+
+- **A content-scoped `id=` was the obvious fix and is the wrong one.** It is
+  correct, but it gives every tree its own cold cache: a full 7m27s compile for
+  a one-line change, and a `/var/tmp/buildah-cache-<uid>/` entry per tree on a
+  box whose disk floor already stops CI (pd-h3wy, pd-20ia). The stamp keeps one
+  warm cache and pays only when the tree under it actually changed.
+- **It touches, rather than clearing the cache.** Touching invalidates the
+  workspace crates and leaves the ~350 registry dependencies — a different
+  cache mount, with their own untouched mtimes — alone. Clearing `target/`
+  would rebuild those too, which is the 7m27s a content-scoped id costs.
+- **The stamp is removed BEFORE the build and written AFTER it**, so a build
+  that FAILED leaves no claim about what the cache holds and the next one
+  restamps. `&&` between the steps is what makes "written" mean "succeeded".
+- **`PKDUMP_SOURCES` is one spelling of "what this stage compiles from"** — it
+  is both what is hashed and what is touched, and `tests/deploy/run.sh` §11c
+  requires every `COPY` into the builder stage to appear in it. A source added
+  to the image that the stamp cannot see is this bug back with a smaller blast
+  radius and no gate on it.
+
+Gates: `tests/store/cargo_cache.sh` (deploy tier, ~1min, NOT hermetic — that
+podman's COPY preserves the context's mtimes and that cargo then calls an old
+source fresh against a newer artifact are facts about podman and cargo. Two
+real builds of a hello-world crate on the builder base the real Containerfile
+names, so it pulls nothing the container tier does not already need, with a
+cache id unique to the run and removed on the way out. §2 is the claim, §3 is
+that an unchanged tree still costs nothing — the regression a fix for §2 arrives
+disguised as — and **§4 is the red arm**: with the restamp taken out, the same
+two builds ship the first tree's binary, because a fixture in which the hazard
+does not reproduce would pass §2 with the guard doing no work at all) and
+`tests/deploy/run.sh` §11c, which holds the shell half — the mechanism line by
+line, its ORDER, and the `COPY`-coverage rule stated over the file rather than
+over the three paths it copies today.
 
 ### A run whose worktree moves underneath it is VOID, not red (pd-vnbc)
 
@@ -2487,6 +2620,77 @@ compiles `.svelte` on import (`npm test` wires it in with `--import`).
   PRAGMA tuning above is what makes them cheap.
 - Bulk-ensure FK targets at function entry; don't do a SELECT-per-row
   check inside the hot loop.
+### The catalog's WAL, and what gives it back
+
+A checkpoint can copy frames out of a WAL while readers are active but cannot
+**reset** it — restart at frame 0 — until a moment arrives with nobody reading.
+So a writer with any reader in flight appends for its whole write window, and
+the `-wal` then keeps its high-water mark until something truncates it.
+Measured on the catalog (`deep-dives/attach-concurrency`, RESULT.md finding B,
+pd-t50h): the same writer for the same ten seconds left **4.0 MiB** with no
+readers and **914 MiB** with one. Binary, not proportional.
+
+Nothing repaired it on its own, and that is the half that hurt. An
+autocheckpoint runs on a *commit*; `pkdump-lake-derive shared` is the only
+thing that commits to the catalog, and it exits when it is done — so the file
+it left sat on prod's data volume until the next night's run happened to reset.
+
+Two checkpoints, and the difference between them is the whole design:
+
+- **Opportunistic, inside the write loop** (`pkdump_db::WalReclaim`, driven from
+  `expand_all_printings`' per-card loop — the longest write window anything
+  opens on `shared.sqlite`). Every 5s, waiting **100ms**. The short wait is the
+  point: this checkpoint is speculative, another is along shortly, so blocking
+  on it buys nothing and costs the write window directly. Measured over ten
+  seconds against one continuously-reading connection — none: 60,068 commits,
+  peak 208.8 MiB; every 1s waiting 5s: 39,740 commits, 26.8 MiB; every 1s
+  waiting 100ms: **61,036 commits, 42.0 MiB**. The long wait buys a slightly
+  smaller file for a third of the writer's throughput.
+- **Final, at the end of the window** — `pkdump_db::reclaim_catalog_wal`, one
+  function called by every *process* that writes the catalog and exits, after
+  its own last write: `pkdump-lake-derive shared` (both exit paths) and `pkdump
+  setup`. Waiting **30s**. Deliberately not at the end of
+  `pkdump_derive::derive`, which is a claim about a function rather than about
+  a write window — the derive binary records `raw_derivation` after that
+  function returns, and a checkpoint there left the provenance row's frames
+  behind in a file nothing would ever truncate. The gate below is what found
+  the ordering. The opposite trade, because the writing is over and
+  there is no throughput left to protect. This is the one that returns the disk
+  rather than merely bounding it.
+
+**A blocked checkpoint is reported, never raised.** Raising would let a
+browsing session fail the nightly catalog build, which is a worse bug than the
+one being fixed.
+
+**`PRAGMA journal_size_limit` is deliberately NOT set**, and it is the first
+mitigation the bead proposed. It truncates the WAL when a checkpoint *resets*
+it, which is exactly what a reader prevents — measured at 4.02 KiB/commit with
+and without, and a 12-second window reaching 289 MiB with the limit set. A
+setting that does nothing for the workload it was added for is worse than no
+setting, because the next reader takes it for the fix and stops looking.
+
+**What is not fixed, said out loud:** a reader holding ONE read transaction
+across the whole window pins a snapshot and nothing can reset under it. That is
+SQLite, not this code, and it is asserted as a test
+(`a_reader_holding_one_transaction_blocks_the_reset_and_that_is_reported`)
+rather than left to be discovered. It is not the shape this deployment has —
+`pkdump-server` opens a connection per request and every query is short. The
+mitigation that *would* cover it — derive to a copy and swap — is a documented
+option and is deliberately not built: it needs 2x the catalog on the data
+volume, and it would change what the server serves for the minutes a derivation
+takes. Neither is a trade worth making for a reader shape this deployment does
+not have.
+
+Gates: `crates/pkdump-db/tests/wal_reclaim.rs` (the mechanism reproduced as the
+baseline the fix is measured *against*, because a suite that only asserted the
+fix would go green against a harness in which the bug never reproduced) and
+`row_identical.rs::a_derive_leaves_no_wal_behind_on_the_catalog_it_built` — the
+**shipped binary** over a real derivation. That one holds a connection open
+across the subprocess and asserts the `-wal` EXISTS and is 0 bytes: SQLite
+deletes the file when the last connection closes, so a run measured after the
+derive exits reports a missing file that reads exactly like success. That
+artifact produced this bead's own first false finding.
+
 - **Responses are compressed** — one `CompressionLayer` on the outermost
   router (`compression()` in `crates/pkdump-server/src/lib.rs`), so it
   covers `/api`, the SPA shell and the SvelteKit bundle alike. br or gzip,

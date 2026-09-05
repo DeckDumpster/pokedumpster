@@ -739,26 +739,29 @@ fn the_second_day_is_row_identical_too_deprecations_included() {
 
 /// Twice equals once, and the rerun is still identifiable.
 ///
-/// Three things are asserted, and the first two pull in opposite directions on
-/// purpose. Every table the app reads must be untouched by a second derive of
-/// the same date — that is idempotence. `raw_derivation` must show that the
-/// derive happened again, with the same run ids and no extra rows — that is
+/// Two things are asserted, and they pull in opposite directions on purpose.
+/// Every table the app reads must be untouched by a second derive of the same
+/// date — that is idempotence. `raw_derivation` must show that the derive
+/// happened again, with the same run ids and no extra rows — that is
 /// provenance. A design that got only the first would be indistinguishable
 /// from one where the second derive silently did nothing.
 ///
-/// The third is `set_aliases`, and it is the one exclusion here that is not
-/// about this change at all. `open_shared` reconciles a layer of seed files on
-/// every open, and the ones that FK into ingested rows write nothing until the
-/// rows exist — the behaviour `catalog_prices` documents in
-/// `pkdump-db/src/connection.rs`. So the seed lands on the *next* open, which
-/// makes the first derive of a brand-new set differ from the second in that
-/// table and no other. It is a property of opening the catalog rather than of
-/// deriving it, it is identical on the online path, and it is filed rather than
-/// fixed here (pd-zg7o).
+/// **Only the provenance table is excluded, and that is load-bearing.** It used
+/// to exclude `set_aliases` as well: `open_shared` reconciles a layer of seed
+/// files on every open, and the two that FK into ingested rows write nothing
+/// until those rows exist, so the seed landed on the *next* open and the FIRST
+/// derive of a brand-new set differed from the second in that table and no
+/// other (pd-zg7o). This fixture reaches it because `tcgcsv::import_groups`
+/// synthesizes `mep` from the compiled-in bridge overlay, and
+/// `data/set_aliases.json` carries an alias pointing at it.
 ///
-/// It is also bounded, and the last assertion is what bounds it: a THIRD derive
-/// matches the second with **nothing excluded but the provenance table**. One
-/// step of convergence, then a fixed point.
+/// The fix runs that group again at the END of the derivation
+/// (`pkdump_db::reconcile_ingest_dependent_seeds`), so the seeds land in the
+/// run that created their targets. What makes this the gate rather than a
+/// test of that one seed is the shape of the claim: a first derive is a fixed
+/// point, full stop. A third FK-dependent seed added and reconciled only at
+/// open time fails here, in the same way, without anybody having to think of
+/// it — and nothing about a catalog in that state looks broken.
 #[test]
 fn deriving_the_same_date_twice_changes_nothing_but_says_it_happened() {
     let h = Harness::start();
@@ -777,7 +780,16 @@ fn deriving_the_same_date_twice_changes_nothing_but_says_it_happened() {
 
     assert!(h.derive(&twice, DAY1, &[]).status.success());
 
-    let diff = h.diff_excluding(&once, &twice, &[PROVENANCE, "set_aliases"]);
+    // Not vacuous: the fixture's `mep` alias is the row that used to arrive one
+    // open late, so a run in which the seed wrote nothing at all would prove
+    // nothing here.
+    assert_eq!(
+        scalar::<i64>(&once, "SELECT COUNT(*) FROM set_aliases"),
+        1,
+        "the ONE derive must already carry the alias for the set it created"
+    );
+
+    let diff = h.diff_excluding(&once, &twice, &[PROVENANCE]);
     assert!(
         diff.status.success(),
         "a second derive of the same date changed the catalog:\n{}",
@@ -801,7 +813,9 @@ fn deriving_the_same_date_twice_changes_nothing_but_says_it_happened() {
         "the observation day comes from the run's clock"
     );
 
-    // The fixed point: from the second derive on, nothing moves at all.
+    // A third derive over the second's catalog, kept because it is a different
+    // claim from the one above: that one says the SECOND derive changes
+    // nothing, this says nothing further changes on any run after it.
     let thrice = h.db("thrice");
     std::fs::copy(&twice, &thrice).expect("snapshot the catalog");
     assert!(h.derive(&thrice, DAY1, &[]).status.success());
@@ -1398,4 +1412,61 @@ fn find(dir: &Path, needle: &str, suffix: &str) -> PathBuf {
         .into_iter()
         .next()
         .unwrap_or_else(|| panic!("no {suffix} under a prefix matching {needle} in {dir:?}"))
+}
+
+/// The nightly derive gives the catalog's WAL back before it exits (pd-t50h).
+///
+/// Stated against the SHIPPED BINARY over a real derivation, because the claim
+/// is about the job production runs and not about the helper it calls. A source
+/// grep for `checkpoint_truncate` would go green against a call in a branch
+/// nothing takes.
+///
+/// **The held connection is the point of the test, not scaffolding.** SQLite
+/// checkpoints and *deletes* the `-wal` when the LAST connection to a database
+/// closes — so a run measured after the derive's process exits reports a
+/// missing file, which reads exactly like "reclaimed" and is instead "nobody
+/// was left holding it". That artifact produced a false finding the first time
+/// this mechanism was measured (`deep-dives/attach-concurrency`, RESULT.md
+/// finding B), and it is why the assertion below insists the file still EXISTS
+/// as well as being empty. In production the connection this stands in for is
+/// the server's.
+#[test]
+fn a_derive_leaves_no_wal_behind_on_the_catalog_it_built() {
+    let h = Harness::start();
+    let db = h.db("served");
+
+    // A catalog to derive into. The nightly job runs against the one the box is
+    // already serving, never a blank file.
+    assert!(h.online(&db, DAY1, DAY1_CLOCK, false), "the first build");
+
+    // The stand-in for `pkdump serve`: a connection held open across the whole
+    // derivation, exactly as a running server holds one.
+    let served = rusqlite::Connection::open(&db).expect("hold the catalog open");
+    let _: i64 = served
+        .query_row("SELECT count(*) FROM cards", [], |r| r.get(0))
+        .expect("read the catalog");
+
+    h.day(2);
+    let out = h.derive(&db, DAY1, &[]);
+    assert!(
+        out.status.success(),
+        "the derive failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let wal = PathBuf::from(format!("{}-wal", db.display()));
+    assert!(
+        wal.exists(),
+        "no -wal file at all, so this test measured nothing: the connection meant to keep \
+         SQLite from deleting it on last close did not do its job"
+    );
+    let bytes = std::fs::metadata(&wal).expect("stat the -wal").len();
+    assert_eq!(
+        bytes, 0,
+        "the derive exited leaving {bytes} bytes of WAL on the data volume. Nothing else \
+         commits to this catalog, so nothing else will ever truncate it — it sits there \
+         until tomorrow night. See pd-t50h."
+    );
+
+    drop(served);
 }

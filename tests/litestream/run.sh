@@ -425,8 +425,28 @@ check "sidecar still running with both entries" "running" \
 # No sentinel: the contents of this bucket ARE the thing under test, so an empty
 # replica is a finding to report rather than a listing to distrust. What is
 # checked is that the listing happened.
+# WAIT FOR WHAT IS ASSERTED, not for a signal that merely precedes it. The poll above
+# waits for `db=registry.sqlite` in the sidecar log, which says the registry was OPENED
+# — the sidecar has the entry and has initialised it. The assertion below is about
+# something later and separate: that LTX files have reached S3 under its prefix.
+#
+# Between those two events sits a sync, and how long that takes is the image's business.
+# It was fast enough to hide the gap until the sidecar was pinned (pd-pfxf): on 0.5.17
+# the listing ran first and the check reported the registry replica as EMPTY, which reads
+# as a broken derived prefix rather than as "not yet". Three gates went red on a change
+# that touched none of their logic.
+#
+# One listing still feeds both assertions; it is just taken once the thing being asserted
+# is true, or after the budget is spent — in which case an empty replica is reported, as
+# before, because the contents of this bucket ARE the thing under test.
 BUCKET_LISTED=yes
-BUCKET_KEYS="$(bucket_keys)" || { BUCKET_KEYS=""; BUCKET_LISTED=no; }
+BUCKET_KEYS=""
+registry_replicated() {
+	BUCKET_KEYS="$(bucket_keys)" || { BUCKET_KEYS=""; BUCKET_LISTED=no; return 1; }
+	BUCKET_LISTED=yes
+	grep -q "^${LITESTREAM_S3_REGISTRY_PATH}/" <<<"$BUCKET_KEYS"
+}
+wait_until 90 1 registry_replicated || true
 grep "^${LITESTREAM_S3_REGISTRY_PATH}/" <<<"$BUCKET_KEYS" |
 	head -1 >"$WORK/registry-key.txt" || true
 check "the registry wrote LTX files under its own derived prefix" "1" \

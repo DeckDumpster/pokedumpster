@@ -218,9 +218,35 @@ done <<<"$LM_CALLERS"
 none "every logs_match caller sources tests/lib/wait.sh" "${LM_UNSOURCED%$'\n'}"
 # Stated over the TREE, like §5 and §6, because the way this comes back is a new
 # harness copying a neighbour that predates the helper.
-RAW="$(harnesses | xargs grep -nE 'podman logs .*\|.*grep .*-[a-zA-Z]*q' /dev/null |
+#
+# Over LOGICAL lines, not physical ones. A `grep -n` reads one line at a time,
+# and the trap survives a backslash continuation perfectly well — which is not a
+# hypothetical evasion, it is how the last one got through: tests/litestream/
+# run.sh had `podman logs … | grep db=… \` on one line and `| grep -qE …` on the
+# next, so this ratchet passed the day it was written while the offending
+# pipeline sat two files away. Continuations are joined first, and the reported
+# line number is where the logical line STARTS, which is where a reader has to
+# go to fix it.
+logical_lines() { # <file> -> "<file>:<first-lineno>:<line, continuations joined>"
+	awk '{
+		if (buf == "") { start = NR; buf = $0 } else { buf = buf " " $0 }
+		if (buf ~ /\\$/) { sub(/\\$/, "", buf); next }
+		print FILENAME ":" start ":" buf; buf = ""
+	} END { if (buf != "") print FILENAME ":" start ":" buf }' "$1"
+}
+RAW="$(harnesses | while IFS= read -r f; do logical_lines "$f"; done |
+	grep -E 'podman logs .*\|.*grep .*-[a-zA-Z]*q' |
 	grep -vE '^[^:]*:[0-9]+:[[:space:]]*#')"
 none "no harness pipes podman logs into grep -q" "$RAW"
+# And the ratchet has been seen catching the two-line form, so it cannot quietly
+# go back to reading physical lines: a fixture spelling the trap across a
+# continuation must be found.
+SPLIT_FIXTURE="$(mktemp)"
+printf '%s\n' 'if podman logs "$c" 2>&1 | grep "db=x" \' '  | grep -qE "txid"; then :; fi' \
+	>"$SPLIT_FIXTURE"
+check "the two-line spelling of the trap is caught" "1" \
+	"$(logical_lines "$SPLIT_FIXTURE" | grep -cE 'podman logs .*\|.*grep .*-[a-zA-Z]*q' || true)"
+rm -f "$SPLIT_FIXTURE"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"

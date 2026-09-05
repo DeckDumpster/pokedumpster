@@ -822,8 +822,17 @@ check "and it is still charlie's data under its new name" "charlie" \
 # it caught exactly that first line (2026-08-08).
 ADVANCED=no
 replica_advanced() {
-	if podman logs "$LS_CTR" 2>&1 | grep "db=${MIGRATED_ID}.sqlite" \
-		| grep -qE 'txid\.replica=0*[1-9a-f]'; then
+	# `logs_match`, not `grep -q`: this is the pd-pfxf trap, and it survived the
+	# ratchet that exists to catch it only because the pipeline is split over
+	# two lines. Under DEBUG the sidecar's log is now big enough that grep -q
+	# closes the pipe well before `podman logs` is done writing — SIGPIPE, 141,
+	# pipefail, and a match reported as no-match, on the busy box and not on the
+	# quiet one. It also has to name the MESSAGE: at this level most lines
+	# carrying `db=<id>.sqlite` are `msg="s3 request"`, so matching the two
+	# fields anywhere in the stream could pair a TXID from one line with the
+	# database name from another.
+	if logs_match "$LS_CTR" -E \
+		"msg=\"replica sync\".*db=${MIGRATED_ID}\.sqlite.*txid\.replica=0*[1-9a-f]"; then
 		ADVANCED=yes
 		return 0
 	fi
@@ -837,7 +846,11 @@ wait_until 90 1 replica_advanced || true
 check "txid.replica advances on the new prefix, rather than sticking at 0" "yes" "$ADVANCED"
 if [ "$ADVANCED" != yes ]; then
 	echo "  --- replica sync lines for ${MIGRATED_ID}.sqlite ---"
-	podman logs "$LS_CTR" 2>&1 | grep "db=${MIGRATED_ID}.sqlite" | tail -10 | sed 's/^/  /'
+	# The sync lines, not every line naming the database: at DEBUG the latter is
+	# a wall of `msg="s3 request"` and the ten this prints would carry nothing
+	# anybody could diagnose the failure from.
+	podman logs "$LS_CTR" 2>&1 | grep -F 'msg="replica sync"' |
+		grep -F "db=${MIGRATED_ID}.sqlite" | tail -10 | sed 's/^/  /'
 fi
 
 # The pre-cutover half of the recovery window: the old prefix stops advancing

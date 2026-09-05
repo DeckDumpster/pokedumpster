@@ -129,7 +129,15 @@ fn a_killed_writer_never_leaves_the_holdings_and_the_outbox_disagreeing() {
         // no rows in or out — only the sold tally moves, and a kill inside one
         // would otherwise look like a batch that never started.
         if let Ok(target) = std::fs::read_to_string(&marker) {
-            let (rows, sold) = target.trim().split_once(':').expect("<rows>:<sold>");
+            // A marker that exists is a marker the child renamed into place,
+            // so it is whole. Reaching this panic means the write stopped
+            // being atomic, not that the child was killed at a bad moment.
+            let (rows, sold) = target.trim().split_once(':').unwrap_or_else(|| {
+                panic!(
+                    "the in-flight marker is not whole ({target:?}) — it is \
+                     published by rename, so a partial one cannot be observed"
+                )
+            });
             let rows: usize = rows.parse().unwrap();
             let sold: usize = sold.parse().unwrap();
             if live.len() != rows || live_sold(&live) != sold {
@@ -451,7 +459,20 @@ fn the_child_that_gets_killed() {
         // The tables move in lockstep, so the totals the batch reaches are
         // one table's counts times the number of sources.
         let n = sources().len();
-        std::fs::write(&marker, format!("{}:{}", rows * n, sold * n)).unwrap();
+        // The marker has to appear WHOLE or not at all, because the thing
+        // this test does to the writer is SIGKILL it. `std::fs::write`
+        // truncates and then writes, so a kill landing between those two
+        // syscalls leaves an EMPTY file — which the parent reads
+        // successfully and then splits on a colon that is not there. That is
+        // a gate dying on its own bookkeeping rather than on anything it
+        // asserts, and it is what failed PR #98's run 33943973938 at
+        // `<rows>:<sold>`. Stage it beside the marker and rename, which is
+        // atomic within a directory: the parent sees either no marker at all
+        // — true at that instant, since the previous batch committed and
+        // this one has not begun — or a complete one.
+        let staged = marker.with_extension("staging");
+        std::fs::write(&staged, format!("{}:{}", rows * n, sold * n)).unwrap();
+        std::fs::rename(&staged, &marker).unwrap();
 
         let tx = conn.transaction().unwrap();
         for table in sources() {

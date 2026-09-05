@@ -607,9 +607,27 @@ sqlite3 -cmd '.timeout 5000' "${MP}/tenants/${LAG_TENANT}.sqlite" \
 # Wait for the sidecar to publish a DIVERGED pair rather than sleeping a guess:
 # the two txids compared in the shell, because grep -E has no back-reference
 # negation and a regex that looked like it did would quietly always match.
-tenant_pair() { # -> "<replica> <db>" from the sidecar's newest line for this tenant
-	podman logs --since 120s "$LS_CTR" 2>&1 | grep -F "db=${LAG_TENANT}.sqlite" | tail -n1 |
-		sed -n 's/.*txid\.replica=\([0-9a-f]\{16\}\).*txid\.db=\([0-9a-f]\{16\}\).*/\1 \2/p'
+#
+# SELECT THE MESSAGE, NOT THE DATABASE. `db=<id>.sqlite` is on many of this
+# process's lines, and at the DEBUG level deploy/litestream.yml now asks for by
+# name (pd-pfxf) it is on most of them: with the object store stopped the
+# sidecar retries, and `msg="s3 request"` arrives several times a second while
+# `msg="replica sync"` does not. Taking the newest `db=` line therefore lands on
+# a request line that carries no TXIDs at all, and this reports
+# `caught-up(?/?)` — the two positions unreadable, rendered as agreement — on a
+# replica that really is behind. That is what failed run 33989216830 in this
+# very section, on a change that only turned the log level up.
+#
+# So: filter to the message first, exactly as deploy/backup-check.sh's
+# `sidecar_position` does, and `tail` the lines the pair was EXTRACTED from
+# rather than the ones that merely mention the database. The gate and the
+# production checker must not be able to reach different conclusions about one
+# sidecar.
+tenant_pair() { # -> "<replica> <db>" from the sidecar's newest replica-sync line
+	podman logs --since 120s "$LS_CTR" 2>&1 |
+		grep -F 'msg="replica sync"' | grep -F "db=${LAG_TENANT}.sqlite" |
+		sed -n 's/.*txid\.replica=\([0-9a-f]\{16\}\).*txid\.db=\([0-9a-f]\{16\}\).*/\1 \2/p' |
+		tail -n1
 }
 for _ in $(seq 40); do
 	read -r _r _d <<<"$(tenant_pair)"

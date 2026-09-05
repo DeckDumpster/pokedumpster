@@ -314,7 +314,7 @@ STRAY_KEY="$(head -1 <<<"$ALICE_KEYS")"
 mc_root cat "x/${BUCKET}/${STRAY_KEY}" >"${WORK}/stray.enc" 2>/dev/null ||
 	die "could not take a copy of ${STRAY_KEY}"
 check "the copy is a sealed object, not plaintext Parquet" "sealed" \
-	"$(head -c 4 "${WORK}/stray.enc" | grep -q PAR1 && echo plaintext || echo sealed)"
+	"$(grep -q PAR1 <(head -c 4 "${WORK}/stray.enc") && echo plaintext || echo sealed)"
 check "…and no invented printing id is readable in it" "opaque" \
 	"$(grep -qa 'invented-2026-08-13' "${WORK}/stray.enc" && echo readable || echo opaque)"
 

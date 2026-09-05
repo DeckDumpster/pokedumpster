@@ -506,7 +506,7 @@ if [ "$DELTA_LOGGED" -eq 0 ]; then
 	echo "  --- container state: $(podman inspect -f '{{.State.Status}}' "$LS_CTR" 2>&1) ---"
 fi
 # Replication of that pickup is a second, slower step; give it its own window.
-delta_has_prefix() { tenant_prefixes | grep -qx "${LITESTREAM_S3_PATH}/delta.sqlite"; }
+delta_has_prefix() { grep -qx "${LITESTREAM_S3_PATH}/delta.sqlite" <<<"$(tenant_prefixes)"; }
 wait_until 60 1 delta_has_prefix || true
 tenant_prefixes >"$WORK/prefixes.txt"
 check "delta has its own derived prefix" "1" \
@@ -765,8 +765,8 @@ check "and it is still charlie's data under its new name" "charlie" \
 # it caught exactly that first line (2026-08-08).
 ADVANCED=no
 replica_advanced() {
-	if podman logs "$LS_CTR" 2>&1 | grep "db=${MIGRATED_ID}.sqlite" \
-		| grep -qE 'txid\.replica=0*[1-9a-f]'; then
+	if grep -qE 'txid\.replica=0*[1-9a-f]' \
+		<<<"$(podman logs "$LS_CTR" 2>&1 | grep "db=${MIGRATED_ID}.sqlite")"; then
 		ADVANCED=yes
 		return 0
 	fi

@@ -86,7 +86,7 @@ fi
 pkdump_store_adopt_instance "$INSTANCE"
 pkdump_store_activate
 
-if ! loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q "Linger=yes"; then
+if ! grep -q "Linger=yes" <<<"$(loginctl show-user "$USER" -p Linger 2>/dev/null)"; then
     echo "WARNING: linger not enabled — services stop when you log out."
     echo "  Fix: loginctl enable-linger $USER"
 fi

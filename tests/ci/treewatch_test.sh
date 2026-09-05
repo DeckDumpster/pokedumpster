@@ -196,9 +196,9 @@ ok "ci.sh arms the watch" \
 # The check has to be INSIDE step(), not sprinkled at call sites: a new step is
 # added by writing `step "..."`, and nobody adding one will remember a guard.
 ok "the check lives inside step(), so every step boundary is covered" \
-   "$(awk '/^step\(\)/,/^}/' "$CI" | grep -qE 'pkdump_treewatch_check' && echo yes || echo no)" "yes"
+   "$(grep -qE 'pkdump_treewatch_check' <<<"$(awk '/^step\(\)/,/^}/' "$CI")" && echo yes || echo no)" "yes"
 ok "the EXIT trap asks too, so the LAST step is covered as well" \
-   "$(awk '/^cleanup\(\)/,/^}/' "$CI" | grep -qE 'pkdump_treewatch_(check|verdict)' && echo yes || echo no)" "yes"
+   "$(grep -qE 'pkdump_treewatch_(check|verdict)' <<<"$(awk '/^cleanup\(\)/,/^}/' "$CI")" && echo yes || echo no)" "yes"
 ok "ci.sh exits the void status rather than a literal of its own" \
    "$(grep -qE 'exit "\$?\{?PKDUMP_TREEWATCH_EXIT' "$CI" && echo yes || echo no)" "yes"
 
@@ -229,9 +229,16 @@ ARMED="$(
 )"
 ok "a real run announces the watch before doing anything" \
    "$(grep -qF 'treewatch: armed on' <<<"$ARMED" && echo yes || echo no)" "yes"
+# NOT `… | head -1 | grep -qF …`. $ARMED is the whole of a real ci.sh run, and
+# under `pipefail` a `grep -q` that exits on its first match SIGPIPEs the writer
+# behind it — so the pipeline reports 141 precisely when the assertion HOLDS.
+# It passed on master and failed on a branch carrying seven merges, because the
+# only thing that changed was that the log outgrew a pipe buffer. Take the first
+# line with a bash expansion and match it with a herestring: no pipe, nothing to
+# SIGPIPE, no exit status borrowed from a writer that was killed for succeeding.
+LANDMARKS="$(grep -nE 'treewatch: armed on|^==> ' <<<"$ARMED")"
 ok "...and it is the FIRST thing in the log, ahead of every step" \
-   "$(printf '%s' "$ARMED" | grep -nE 'treewatch: armed on|^==> ' | head -1 \
-      | grep -qF 'treewatch' && echo yes || echo no)" "yes"
+   "$(grep -qF 'treewatch' <<<"${LANDMARKS%%$'\n'*}" && echo yes || echo no)" "yes"
 
 echo ""
 echo "== §10 the banner's own claim, made mechanical =="

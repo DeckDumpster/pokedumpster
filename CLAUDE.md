@@ -991,6 +991,51 @@ five ways — the naive HEAD comparison, an unwired `step()`, a guard that also
 judges dirt, one that watches the shared reflog instead of this worktree's, and
 a `ci.sh` that never arms it.
 
+### Never pipe into `grep -q` — it inverts under `pipefail` (pd/sp-pd-grepq)
+
+`grep -q` exits the instant it matches. That closes the read end of the pipe,
+the writer behind it takes SIGPIPE, and `set -o pipefail` reports the writer's
+141 as the pipeline's status — so **a successful match takes the failure
+branch**:
+
+```bash
+$ ( set -o pipefail; seq 1 10     | grep -q '^1$' ); echo $?   # 0
+$ ( set -o pipefail; seq 1 200000 | grep -q '^1$' ); echo $?   # 141
+```
+
+Same pipeline, same match, and the only difference is that the second payload
+outgrew a pipe buffer. That is the whole reason this idiom survives review: it
+is correct until it silently is not, and the day it flips is a day nobody
+touched it. `tests/ci/treewatch_test.sh` §9 passed on master and went red on a
+branch carrying seven merges — the assertion was fine, `deploy/ci.sh` had simply
+grown enough output to fill 64KB. Seventeen sites carried the idiom, across the
+alarming, lake, litestream and deploy suites, most of them poll predicates where
+the inversion reads as "the sidecar never came up" rather than as a bug.
+
+Capture and match with a herestring, which is not a pipeline and so has nothing
+for `pipefail` to inherit:
+
+```bash
+grep -q PAT <<<"$(cmd)"          # the default
+grep -q PAT <(cmd)               # when the bytes must not go through $( ),
+                                 # which strips NULs — tests/lake/shipper.sh
+                                 # reads the first four bytes of ciphertext
+```
+
+The rewrite discards the writer's exit status. At every site converted that was
+already the intent — a writer that fails prints nothing and the match fails on
+its own — but check it rather than assume it.
+
+The rule is whole-repo and not per-file, because `pipefail` belongs to the shell
+that ends up running the code rather than to the file it sits in: everything in
+`tests/lib/` is sourced by suites that set it.
+
+Gate: `tests/ci/grepq_test.sh` (lint tier, hermetic, sub-second). §1 is a SEEN
+RED arm that runs the broken pipeline in a live shell and asserts the 141, so
+the rule cannot decay into folklore about a bash version nobody rechecked; §2
+proves the scanner finds the idiom and not the cure or the comments explaining
+it; §3 scans the tree.
+
 ## Conventions & Patterns
 
 ### The data model IS the product

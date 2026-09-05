@@ -309,7 +309,13 @@ echo "    ok   both tables built from run(s) ${CARD_RUNS}"
 # English rule to category 85 files 450 groups of Japanese SINGLES as sealed
 # product, which is a wrong number nothing else here would notice. So the pure
 # functions are driven directly, in the shipped job image, in both directions.
-run_job python -c "
+#
+# CAPTURED, not piped into `grep -q`. Under `pipefail` a `grep -q` that exits on
+# its first match SIGPIPEs the job behind it, so the pipeline reports 141 exactly
+# when the classifier PASSED — a false red that only appears once the job talks
+# enough to fill a pipe buffer. stderr is deliberately left on the console, so a
+# traceback is still read where it happens.
+CLASSIFIER_OUT="$(run_job python -c "
 from pkdump_lake.prices import CATEGORY_POKEMON_JAPAN, category_of, is_sealed
 
 def card(**kw): return {'extendedData': [{'name': k, 'value': v} for k, v in kw.items()]}
@@ -342,7 +348,8 @@ for bad in ('https://tcgcsv.com/tcgplayer/3/1/prices', 'https://x/products', 'ht
         continue
     raise AssertionError(f'{bad!r} was accepted as a products URL')
 print('CLASSIFIER OK')
-" | grep -q 'CLASSIFIER OK' ||
+")" || true
+grep -q 'CLASSIFIER OK' <<<"$CLASSIFIER_OUT" ||
 	die "the sealed classifier does not follow the two Rust importers — see pkdump_lake.prices.is_sealed"
 echo "    ok   the classifier matches is_single_card (cat 3) and japan::is_card (cat 85)"
 

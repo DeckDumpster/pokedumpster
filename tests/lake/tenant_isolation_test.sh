@@ -805,7 +805,7 @@ check "the Rust comment stripper produced output" "yes" \
 	"$([[ -n "$(rust_code "${LAKE_CRATE}/src/keys.rs")" ]] && echo yes || echo no)"
 KEPT="$(rust_code "${LAKE_CRATE}/src/tenant.rs" keep-strings)"
 check "the Rust stripper keeps strings when asked" "yes" \
-	"$(grep -cE '"tenant/"' <<<"$KEPT" | grep -qv '^0$' && echo yes || echo no)"
+	"$([ "$(grep -cE '"tenant/"' <<<"$KEPT" || true)" != 0 ] && echo yes || echo no)"
 check "the zone roots were found to compare" "yes" \
 	"$([[ "$ROOT_OVERLAP" == ok || "$ROOT_OVERLAP" == *contains* ]] && echo yes || echo no)"
 check "the Python tokenizer produced output" "yes" \

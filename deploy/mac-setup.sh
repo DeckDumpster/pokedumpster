@@ -61,7 +61,7 @@ if ! command -v podman >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! podman machine inspect --format '{{.State}}' 2>/dev/null | grep -q "running"; then
+if ! grep -q "running" <<<"$(podman machine inspect --format '{{.State}}' 2>/dev/null)"; then
     echo "ERROR: Podman machine is not running."
     echo "  Start it:    podman machine start"
     echo "  First time:  podman machine init --memory 4096 --cpus 4 && podman machine start"

@@ -624,6 +624,16 @@ if tier lint; then
     step "Worktree watch: a run whose tree moves is void (tests/ci/treewatch_test.sh)"
     bash "$REPO_DIR/tests/ci/treewatch_test.sh"
 
+    # And the idiom that made the gate above lie. `cmd | grep -q PAT` under
+    # `pipefail` reports the writer's SIGPIPE, so a SUCCESSFUL match takes the
+    # failure branch — but only once the writer outgrows a pipe buffer, which is
+    # why treewatch_test.sh passed on master and went red on a branch carrying
+    # seven merges with no change of its own. Seventeen sites carried it. §1
+    # demonstrates the inversion in a live shell rather than asserting a
+    # document, so this cannot rot into folklore. Hermetic, sub-second.
+    step "No pipeline into grep -q, which inverts under pipefail (tests/ci/grepq_test.sh)"
+    bash "$REPO_DIR/tests/ci/grepq_test.sh"
+
     # Same tier again, and the same shape of bug: a layer that fires and says
     # nothing. §6 of the alarming gate proves Layer 2 PUSHES; this proves what
     # it pushes is readable — the causal line first, no OCI metadata, no

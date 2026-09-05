@@ -270,7 +270,7 @@ sidecar_stop() {
 # caller's own check is what should report that, not a stall here.
 sidecar_ready() {
 	sidecar_running || return 0
-	podman logs "$SIDECAR_CTR" 2>&1 | grep -q '\.sqlite'
+	grep -q '\.sqlite' <<<"$(podman logs "$SIDECAR_CTR" 2>&1)"
 }
 sidecar_start() {
 	systemctl --user reset-failed "${SIDECAR}.service" 2>/dev/null || true

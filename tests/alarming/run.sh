@@ -376,7 +376,7 @@ sqlite3 -cmd '.timeout 5000' "${MP}/registry.sqlite" \
 	 CREATE TABLE users (handle TEXT PRIMARY KEY, database_id TEXT NOT NULL);
 	 INSERT INTO users (handle, database_id) VALUES ('alpha', 'alpha'), ('bravo', 'bravo');" >/dev/null
 check "and a user registry beside them, not among them" "yes" \
-	"$([ -e "${MP}/registry.sqlite" ] && ! tenants_on_volume "$MP" | grep -qx registry && echo yes || echo no)"
+	"$([ -e "${MP}/registry.sqlite" ] && ! grep -qx registry <<<"$(tenants_on_volume "$MP")" && echo yes || echo no)"
 
 # The SHIPPED sidecar config, replicating for real, so the freshness query the
 # checker runs is a real S3 query against real replica data.
@@ -400,7 +400,8 @@ podman run -d --name "$LS_CTR" --user 0 \
 awaiting_replica() { # awaiting_replica <replica-url>
 	local url="$1" deadline=$(( SECONDS + 90 ))
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		if ltx_all "$url" | grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z'
+		if grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z' \
+			<<<"$(ltx_all "$url")"
 		then return 0; fi
 		# One second, not three: the body of this loop is itself a `podman run`
 		# that takes the better part of a second, so a three-second interval was

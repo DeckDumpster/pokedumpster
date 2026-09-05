@@ -32,7 +32,7 @@ mk()  { : > "$TMP/$1"; touch -d "@$(( NOW - $2 ))" "$TMP/$1"; }
 iso() { date -d "@$(( NOW - $1 ))" -Is; }
 case_() { # case_ <label> <ok|stale> <output>
     local got=ok
-    printf '%s' "$3" | grep -q '^STALE:' && got=stale
+    grep -q '^STALE:' <<<"$3" && got=stale
     if [ "$got" = "$2" ]; then printf '  ok    %-56s %s\n' "$1" "$got"
     else printf '  FAIL  %-56s got=%s want=%s\n' "$1" "$got" "$2"; fails=$((fails+1)); fi
 }

@@ -504,6 +504,19 @@ wait_until 60 1 registry_has_both || true
 check "a later registry write reaches the replica" "2" \
 	"$(sq_registry registry-latest.sqlite 'SELECT count(*) FROM user;')"
 restore_registry registry-pit.sqlite -timestamp "$REG_MARKER"
+# If that produced nothing, say WHY, in Litestream's own words. §6's tenant
+# restore has done this since it was written ("a genuine failure still takes
+# Litestream's own words into the log rather than leaving `<no restored db>` as
+# the clue"); the registry helper sent stderr to /dev/null, so the two
+# assertions below could only ever report `<no restored db>` — which reads as a
+# DATA mismatch and cost a full CI cycle to tell apart from one. The re-run is
+# for the message only; its result is deliberately not used, because a restore
+# that succeeds on a second attempt would otherwise turn a real red into a pass.
+if [ ! -s "$WORK/restore/registry-pit.sqlite" ]; then
+	diag_run "restore registry-pit.sqlite -timestamp $REG_MARKER" \
+		ls_run restore -integrity-check full -timestamp "$REG_MARKER" \
+		-o /restore/registry-pit-diag.sqlite "$(registry_replica_url || true)" >/dev/null || true
+fi
 check "point-in-time restore rolls the registry back to the marker" "1" \
 	"$(sq_registry registry-pit.sqlite 'SELECT count(*) FROM user;')"
 check "and the row it keeps is the one that existed then" "alpha" \

@@ -57,6 +57,30 @@ COPY data/ data/
 # The default is deliberately not a hash: a bare `podman build` cannot compute
 # one, so it says so instead of silently claiming a scope it does not have.
 #
+# THOSE TWO AXES ARE NOT ENOUGH ON THEIR OWN, and the third is the SOURCE TREE
+# (pd-wjmd). A CI runner is ONE checkout path holding EVERY tree over time — a
+# different PR merge ref on every run — so the id is constant while the sources
+# under it are not. Worse, a COPY that HITS the layer cache restores that
+# layer's historical mtimes rather than the build context's, so the sources can
+# arrive OLDER than rlibs a later run compiled from a different tree. Cargo's
+# freshness check is an mtime comparison; it then calls them fresh, compiles
+# nothing, and `cp` copies the OTHER tree's binaries straight into the image.
+#
+# Measured, on run 33683221574: a build whose crates/ had no `sets.ptcgio_covered`
+# reported `Finished release profile in 1.92s` and shipped a pkdump-lake-derive
+# that writes that column. The container gate below it caught it only by
+# accident, as a catalog disagreeing with the one the host built.
+#
+# So the cache carries a STAMP of the sources it was compiled from. A build
+# handed a cache written from anything else touches the workspace sources first,
+# which is the one thing that makes cargo's mtime comparison tell the truth
+# again. When the stamp matches, nothing is touched and the warm cache is worth
+# exactly what it was worth before. The stamp is removed before the build and
+# written after it, so a build that FAILED leaves no claim about what the cache
+# holds. `PKDUMP_SOURCES` is the one spelling of "what this stage compiles from"
+# — it is both what is hashed and what is touched, and tests/deploy/run.sh
+# requires every COPY into this stage to appear in it.
+#
 # FOUR binaries, built in one invocation so they share the compile:
 #
 #   pkdump             the app. `serve` is the entrypoint; `data refresh` is
@@ -82,10 +106,19 @@ COPY data/ data/
 # online server disagreeing about the shape of a database; splitting the images
 # is a deployment change to make when the machines actually split, not before.
 ARG CARGO_TARGET_CACHE_SCOPE=unscoped
+ENV PKDUMP_SOURCES="Cargo.toml Cargo.lock rust-toolchain.toml crates data"
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target,sharing=locked,id=pkdump-target-bookworm-${CARGO_TARGET_CACHE_SCOPE} \
-    cargo build --release --locked --bin pkdump --bin pkdump-lake-derive \
+    stamp="$(find ${PKDUMP_SOURCES} -type f -exec sha256sum {} + \
+             | LC_ALL=C sort | sha256sum | cut -d' ' -f1)" \
+ && if [ "$(cat target/.pkdump-source-stamp 2>/dev/null)" != "$stamp" ]; then \
+        echo "==> the cargo target cache was written from other sources — restamping mtimes"; \
+        find ${PKDUMP_SOURCES} -type f -exec touch {} +; \
+    fi \
+ && rm -f target/.pkdump-source-stamp \
+ && cargo build --release --locked --bin pkdump --bin pkdump-lake-derive \
         --bin pkdump-ship --bin pkdump-erase \
+ && printf '%s\n' "$stamp" > target/.pkdump-source-stamp \
  && mkdir -p /out \
  && cp target/release/pkdump /out/pkdump \
  && cp target/release/pkdump-lake-derive /out/pkdump-lake-derive \

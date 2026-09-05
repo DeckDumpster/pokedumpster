@@ -716,6 +716,20 @@ if tier deploy; then
     # store it tears down.
     step "Container store: a build collects what the build before it orphaned"
     bash "$REPO_DIR/tests/store/orphans.sh"
+
+    # The third non-hermetic build gate, and non-hermetic for the third time for
+    # the same reason: that podman's COPY preserves the context's mtimes and that
+    # cargo then calls an old source fresh against a newer artifact are facts
+    # about podman and cargo. The cargo target cache mount outlives the build and
+    # its `id=` names the checkout PATH — but a CI runner is one path holding
+    # every tree over time, so a build was handed another tree's rlibs, compiled
+    # nothing, and shipped that tree's binaries (pd-wjmd). tests/deploy/run.sh
+    # §11c holds the shell half; this is the two real builds. Its fixture is a
+    # hello-world crate on the builder base the real Containerfile names, so it
+    # pulls nothing the container tier does not already need, and its cache id is
+    # unique to the run and removed on the way out.
+    step "Container store: the image ships the binaries its own sources build"
+    bash "$REPO_DIR/tests/store/cargo_cache.sh"
 fi
 
 # --- 3. Frontend gate -------------------------------------------------------

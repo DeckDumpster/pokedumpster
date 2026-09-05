@@ -156,7 +156,11 @@ impl HeldReader {
         while reads.load(Ordering::Relaxed) == 0 {
             std::thread::sleep(Duration::from_millis(1));
         }
-        Self { stop, reads, handle: Some(handle) }
+        Self {
+            stop,
+            reads,
+            handle: Some(handle),
+        }
     }
 
     fn stop(mut self) -> u64 {

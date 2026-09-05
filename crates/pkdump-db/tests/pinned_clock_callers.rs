@@ -57,7 +57,11 @@ fn only_the_fixture_seeder_pins_the_clock() {
 
     let mut callers = Vec::new();
     for path in &sources {
-        let rel = path.strip_prefix(&root).unwrap().to_string_lossy().to_string();
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         if rel == ALLOWED || EXEMPT.contains(&rel.as_str()) {
             continue;
         }

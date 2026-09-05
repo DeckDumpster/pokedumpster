@@ -93,7 +93,7 @@ pub fn add(conn: &Connection, new: &NewWish) -> Result<i64> {
             new.max_price,
             new.priority.unwrap_or(0),
             new.notes,
-            chrono::Utc::now().to_rfc3339(),
+            crate::clock::now_rfc3339(),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -132,7 +132,7 @@ pub fn update(conn: &Connection, id: i64, edit: &WishEdit) -> Result<bool> {
 
 /// Mark a wish fulfilled (or clear it). Returns whether a row changed.
 pub fn set_fulfilled(conn: &Connection, id: i64, fulfilled: bool) -> Result<bool> {
-    let stamp = fulfilled.then(|| chrono::Utc::now().to_rfc3339());
+    let stamp = fulfilled.then(crate::clock::now_rfc3339);
     let n = conn.execute(
         "UPDATE wishlist SET fulfilled_at = ?2 WHERE id = ?1",
         params![id, stamp],

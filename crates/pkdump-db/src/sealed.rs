@@ -183,7 +183,7 @@ pub fn add(conn: &Connection, new: &NewSealed) -> Result<i64> {
             new.source,
             new.seller_name,
             new.notes,
-            chrono::Utc::now().to_rfc3339(),
+            crate::clock::now_rfc3339(),
         ],
     )?;
     Ok(conn.last_insert_rowid())

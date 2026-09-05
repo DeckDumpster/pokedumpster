@@ -52,7 +52,7 @@ pub struct UnresolvedRow {
 }
 
 fn now() -> String {
-    chrono::Utc::now().to_rfc3339()
+    crate::clock::now_rfc3339()
 }
 
 /// Park one unresolved import row. `raw` is the JSON serialization of the

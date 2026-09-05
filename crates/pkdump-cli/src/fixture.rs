@@ -37,8 +37,61 @@ pub struct FixtureArgs {
     out: PathBuf,
 }
 
+/// The instant the fixture's own story starts, and the step the seeding clock
+/// takes between one stamped row and the next.
+///
+/// Every timestamp in the fixture that is not a hand-written constant is
+/// `SEEDED_AT + n * SEEDING_STEP`, so two regenerations of an unchanged seeder
+/// produce the same bytes — see [`run`].
+///
+/// The date is chosen, not arbitrary. It is the fixture's own `OBSERVED_AT`,
+/// the day its prices were quoted; it sits after the last order date the
+/// fixture invents (2024-01-14) and after the acquisition constant on the
+/// manually-entered copies (2024-01-10), so the collection reads as one that
+/// was assembled and then priced. It also sits well before the instant
+/// `tests/visual/stabilize.ts` freezes the browser at (2026-01-15), which the
+/// build timestamps it replaces did not — those were EIGHT MONTHS in the
+/// future, so anything rendering an age against the frozen clock rendered a
+/// negative one.
+///
+/// A minute per step, rather than a second, because `/recent` and `/batches`
+/// render `created_at.slice(0, 16)` — to the minute. A finer step is stable in
+/// the file and identical on the screen, and a baseline showing five batches
+/// all stamped `09:00` demonstrates nothing about the ordering those two
+/// routes exist to show.
+const SEEDED_AT: &str = "2024-01-15T09:00:00Z";
+const SEEDING_STEP: chrono::TimeDelta = chrono::TimeDelta::minutes(1);
+
 /// Execute `pkdump seed-fixture`.
+///
+/// The output is BYTE-STABLE: seeding twice produces two identical pairs of
+/// files, and `tests::two_seed_runs_are_byte_identical` is the gate that says
+/// so. That is what the pinned clock below is for. The fixture is a committed
+/// binary artefact, so a regeneration that rewrites it with a new afternoon in
+/// it is a diff nobody can review, and the visual baselines of the four routes
+/// that render these columns — `/recent`, `/batches`, `/batches/[id]`,
+/// `/sealed` — move with it at both viewports. The cost is not the churn: it
+/// is that a real regression arrives inside the churn and gets waved through
+/// with it (pd-nzlj).
 pub fn run(args: FixtureArgs) -> anyhow::Result<()> {
+    // The rows go in through the repository functions on purpose, so the
+    // app-layer validation runs — and those functions stamp their timestamp
+    // columns from the clock. Pin it for the length of the build: a timeline
+    // that starts at a constant and advances one step per read, so the rows
+    // come out in the order they always did, at instants that are the same
+    // every time. Advancing rather than frozen because `/recent` and
+    // `/batches` ORDER BY these columns, and one constant would leave their
+    // order a tie broken by rowid.
+    pkdump_db::clock::pin(
+        SEEDED_AT.parse::<chrono::DateTime<chrono::Utc>>()?,
+        SEEDING_STEP,
+    );
+    let out = seed(args);
+    pkdump_db::clock::unpin();
+    out
+}
+
+fn seed(args: FixtureArgs) -> anyhow::Result<()> {
     std::fs::create_dir_all(&args.out)?;
     let shared_path = args.out.join("shared.sqlite");
     let user_path = args.out.join("collection.sqlite");
@@ -75,8 +128,53 @@ pub fn run(args: FixtureArgs) -> anyhow::Result<()> {
     let snaps = pkdump_db::value_history::backfill(&mut user)?;
     println!("  {snaps} value-history snapshot rows");
 
+    let events = date_the_outbox(&user)?;
+    println!("  {events} ownership-outbox events dated from their payloads");
+
+    // VACUUM last, and it is part of the determinism rather than tidiness: a
+    // page freed during the build keeps its old contents until something
+    // reuses it, so two runs whose every row was identical still differed in
+    // the bytes of the pre-dating outbox rows left lying in the file. A
+    // vacuumed database is written from its own content and nothing else.
+    user.execute_batch("VACUUM")?;
+
     println!("Fixture ready: {}", args.out.display());
     Ok(())
+}
+
+/// Put the ownership outbox on the fixture's own timeline.
+///
+/// The pinned clock cannot reach these rows: the outbox is written by the
+/// triggers in `schema_user.sql`, inside the statement's own transaction, and
+/// they read SQLite's clock rather than this process's. That is the property
+/// the outbox is built on — a trigger fires where no call site can forget it —
+/// and it is not one to weaken for a fixture.
+///
+/// So each event is dated afterwards from the holding it describes, which is
+/// the honest answer anyway: `payload` is the whole row as JSON, so the row's
+/// own `acquired_at` / `added_at` is in there for every event, including a
+/// delete whose row is already gone. `seq` breaks the ties in milliseconds and
+/// stays the ordering authority, exactly as the schema says it is.
+///
+/// Nothing renders the outbox; this is for byte-stability, and for a fixture
+/// whose transport log agrees with its own story rather than claiming every
+/// holding was shipped at 22:03 on the afternoon somebody rebuilt it. Updating
+/// this table fires no trigger — the three per source are on `collection` and
+/// `sealed_collection` — so dating it appends no events of its own.
+fn date_the_outbox(conn: &Connection) -> anyhow::Result<usize> {
+    let n = conn.execute(
+        "UPDATE ownership_outbox SET occurred_at = strftime( \
+             '%Y-%m-%dT%H:%M:%fZ', \
+             COALESCE(json_extract(payload, '$.acquired_at'), \
+                      json_extract(payload, '$.added_at')), \
+             '+' || (seq / 1000.0) || ' seconds')",
+        [],
+    )?;
+    // A source whose payload carried neither column would leave a NULL and
+    // fail the NOT NULL rather than pass quietly — but an outbox that is
+    // EMPTY would satisfy the statement whatever it does.
+    assert!(n > 0, "the fixture seeded no ownership-outbox events");
+    Ok(n)
 }
 
 fn catalog_counts(conn: &Connection) -> anyhow::Result<(i64, i64, i64, i64)> {
@@ -1792,11 +1890,173 @@ impl IntoSome for &str {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::path::Path;
 
     /// The committed catalog fixture, addressed from the crate rather than
     /// from whatever directory the test runner happens to stand in.
     fn committed_shared() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/ui/fixtures/shared.sqlite")
+    }
+
+    /// The committed collection fixture, addressed the same way.
+    fn committed_user() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/ui/fixtures/collection.sqlite")
+    }
+
+    /// The instant `tests/visual/stabilize.ts` freezes the browser at. It
+    /// lives in a TypeScript file and in this Rust one, and the two cannot
+    /// share a constant, so it is written down twice on purpose — see
+    /// `no_fixture_row_is_dated_after_the_frozen_browser_clock`.
+    const FROZEN_BROWSER_CLOCK: &str = "2026-01-15";
+
+    /// Seed a complete fixture into a fresh directory and return both files.
+    fn seed_into(dir: &Path) -> (Vec<u8>, Vec<u8>) {
+        run(FixtureArgs {
+            out: dir.to_path_buf(),
+        })
+        .expect("seed-fixture");
+        (
+            std::fs::read(dir.join("shared.sqlite")).unwrap(),
+            std::fs::read(dir.join("collection.sqlite")).unwrap(),
+        )
+    }
+
+    /// **Two regenerations of an unchanged seeder produce identical files.**
+    ///
+    /// The fixture is a committed BINARY artefact, so anything it records
+    /// about the moment it was built is a permanent diff generator. Before
+    /// this, `collection.sqlite` carried the seeding instant in eleven columns
+    /// and four visual baselines — `/recent`, `/batches`, `/batches/[id]`,
+    /// `/sealed`, at both viewports — had to be re-recorded every time anybody
+    /// regenerated it, in the date digits and nowhere else. The cost is not
+    /// the churn; it is that a real regression arrives inside the churn.
+    ///
+    /// Byte-identity rather than "the columns we know about", because the
+    /// failure mode is a table nobody has added yet and the artefact under
+    /// review is bytes. It is portable because `rusqlite` is built `bundled`,
+    /// so the SQLite writing these pages is pinned by `Cargo.lock` rather than
+    /// by whatever the box has installed.
+    #[test]
+    fn two_seed_runs_are_byte_identical() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+
+        let (shared_a, user_a) = seed_into(a.path());
+        // Not vacuous: two empty files compare equal.
+        assert!(shared_a.len() > 100_000 && user_a.len() > 100_000);
+        let (shared_b, user_b) = seed_into(b.path());
+
+        assert!(
+            shared_a == shared_b,
+            "two seed-fixture runs produced different shared.sqlite \
+             ({} vs {} bytes)",
+            shared_a.len(),
+            shared_b.len(),
+        );
+        assert!(
+            user_a == user_b,
+            "two seed-fixture runs produced different collection.sqlite \
+             ({} vs {} bytes). Something on the seeding path is reading the \
+             wall clock outside pkdump_db::clock — regenerating the fixture \
+             is then a diff nobody can review, and the visual baselines of \
+             /recent, /batches, /batches/[id] and /sealed move with it.",
+            user_a.len(),
+            user_b.len(),
+        );
+    }
+
+    /// Every ISO date anywhere in the committed collection — in a column or
+    /// inside an outbox payload — sits before the instant the visual suite
+    /// freezes the browser at.
+    ///
+    /// The same bug from the reader's side, and what says the COMMITTED file
+    /// is the deterministic one rather than a survivor of the old behaviour: a
+    /// build timestamp is always in the recent past, and the recent past is
+    /// the FUTURE as far as a suite pinned to 2026-01-15 is concerned. The
+    /// fixture that produced this test was dated 2026-09-04 — eight months
+    /// ahead of the clock every baseline is taken under.
+    ///
+    /// Stated over every text cell of every table rather than over the eleven
+    /// columns that were wrong: a new table with a `created_at` is exactly
+    /// what nobody would think to add here.
+    #[test]
+    fn no_fixture_row_is_dated_after_the_frozen_browser_clock() {
+        // READ-ONLY: a test that opens a committed artefact read-write is one
+        // that can leave it modified, and this one is asserting about bytes.
+        let conn = Connection::open_with_flags(
+            committed_user(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let tables: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master \
+                  WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(!tables.is_empty(), "the committed fixture holds no tables");
+
+        let mut seen = 0;
+        let mut future = Vec::new();
+        for table in &tables {
+            let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+            let width = stmt.column_count();
+            let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+            let mut rows = stmt.query([]).unwrap();
+            while let Some(row) = rows.next().unwrap() {
+                for (i, column) in names.iter().enumerate().take(width) {
+                    let Ok(text) = row.get::<_, String>(i) else {
+                        continue;
+                    };
+                    for date in iso_dates(&text) {
+                        seen += 1;
+                        if date.as_str() >= FROZEN_BROWSER_CLOCK {
+                            future.push(format!("{table}.{column}: {text}"));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Not vacuous: a scan that found no dates would pass whatever the
+        // fixture holds.
+        assert!(
+            seen > 100,
+            "found only {seen} dates in the committed fixture"
+        );
+        future.sort();
+        future.dedup();
+        assert!(
+            future.is_empty(),
+            "the committed fixture is dated after {FROZEN_BROWSER_CLOCK}, the \
+             instant tests/visual/stabilize.ts freezes the browser at — which \
+             is what a build timestamp looks like. Regenerate it: \
+             cargo run --bin pkdump -- seed-fixture\n  {}",
+            future.join("\n  "),
+        );
+    }
+
+    /// Every `YYYY-MM-DD` in `text`, wherever it sits — a bare column value,
+    /// an RFC-3339 stamp, or one embedded in an outbox payload's JSON.
+    fn iso_dates(text: &str) -> Vec<String> {
+        let b = text.as_bytes();
+        let digit = |i: usize| b[i].is_ascii_digit();
+        (0..b.len().saturating_sub(9))
+            .filter(|&i| {
+                (0..4).all(|k| digit(i + k))
+                    && b[i + 4] == b'-'
+                    && digit(i + 5)
+                    && digit(i + 6)
+                    && b[i + 7] == b'-'
+                    && digit(i + 8)
+                    && digit(i + 9)
+            })
+            .map(|i| text[i..i + 10].to_string())
+            .collect()
     }
 
     /// Every catalog object a database holds, mapped to its columns.

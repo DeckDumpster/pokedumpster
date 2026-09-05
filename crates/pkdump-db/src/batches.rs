@@ -73,7 +73,7 @@ pub fn create(conn: &Connection, new: &NewBatch) -> Result<i64> {
             new.notes,
             new.order_id,
             new.binder_id,
-            chrono::Utc::now().to_rfc3339(),
+            crate::clock::now_rfc3339(),
         ],
     )?;
     Ok(conn.last_insert_rowid())

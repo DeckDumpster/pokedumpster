@@ -77,7 +77,7 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<Deck> {
 
 /// Create a deck; returns its id.
 pub fn create(conn: &Connection, new: &NewDeck) -> Result<i64> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = crate::clock::now_rfc3339();
     conn.execute(
         "INSERT INTO decks \
            (name, description, format, owner, state, sleeve_color, \
@@ -137,7 +137,7 @@ pub fn update(conn: &Connection, id: i64, edit: &DeckEdit) -> Result<bool> {
             edit.sleeve_color,
             edit.storage_location,
             edit.notes,
-            chrono::Utc::now().to_rfc3339(),
+            crate::clock::now_rfc3339(),
         ],
     )?;
     Ok(n > 0)

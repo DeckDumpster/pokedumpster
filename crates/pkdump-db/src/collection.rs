@@ -108,7 +108,7 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionEntry> {
 }
 
 fn now() -> String {
-    chrono::Utc::now().to_rfc3339()
+    crate::clock::now_rfc3339()
 }
 
 /// Add a copy to the collection. Validates the printing against the catalog,

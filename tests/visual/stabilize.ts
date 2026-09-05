@@ -24,11 +24,12 @@ import type { Page } from '@playwright/test';
  * The instant every baseline is taken at. Arbitrary but fixed, so anything the
  * UI derives from "now" — a "n days ago", a relative age — is deterministic.
  *
- * It does NOT make the fixture's own dates deterministic. `shared.sqlite`'s are
- * fixed constants; `collection.sqlite`'s creation timestamps are stamped from
- * the clock when the fixture is built, so regenerating it moves the date cells
- * on /sealed, /recent, /batches and /batches/[id] and those baselines have to
- * be re-recorded. See tests/ui/fixtures/README.md, and pd-nzlj for the fix.
+ * The fixture's own dates are deterministic too, and they are deliberately
+ * BEFORE this instant: `seed-fixture` pins the clock to a timeline starting
+ * 2024-01-15T09:00Z, so /sealed, /recent, /batches and /batches/[id] render
+ * the same cells however many times the fixture is rebuilt, and every age the
+ * UI derives against this clock is a positive one. See
+ * tests/ui/fixtures/README.md.
  */
 export const FROZEN_TIME = new Date('2026-01-15T12:00:00Z');
 

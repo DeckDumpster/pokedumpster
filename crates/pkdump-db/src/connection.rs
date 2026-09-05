@@ -123,11 +123,11 @@ fn converge(conn: &mut Connection) -> Result<()> {
     crate::variants::reconcile(conn)?;
     crate::sub_type_map::reconcile(conn)?;
     crate::bundles::reconcile(conn)?;
-    crate::set_aliases::reconcile(conn)?;
-    // Its rows FK into `printings`, so it writes nothing until the catalog
-    // has been ingested. `pkdump-lake-derive shared` re-opens the catalog
-    // after every derivation, which is where it lands for real.
-    crate::catalog_prices::reconcile(conn)?;
+    // The two seeds whose rows FK into rows the INGEST creates, grouped so a catalog
+    // builder can run exactly this set again at the END of its run and be a fixed point
+    // (pd-zg7o). They write nothing on an open that predates the catalog, which is why
+    // an open-time reconcile alone left a first-run set unseeded until the NEXT open.
+    reconcile_ingest_dependent_seeds(conn)?;
     // The search query language's metadata (keywords, rarity ranks,
     // `is:`-flag definitions). It used to be reconciled by each caller
     // instead — `pkdump setup`, the derive, `pkdump serve`, the fixture
@@ -190,6 +190,51 @@ pub fn open_shared_for_serving(path: &Path) -> Result<Connection> {
         path.display()
     );
     open_shared_with_patience(path, SERVING_PATIENCE)
+}
+
+/// How many rows each ingest-dependent seed wrote. Counts only — the callers
+/// print them, because a derivation is minutes of progress lines and a seed
+/// that quietly wrote nothing is the thing this type exists to make visible.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct IngestSeeds {
+    /// Rows written to `set_aliases` (FK: `sets`).
+    pub set_aliases: usize,
+    /// Rows written to `catalog_price_overrides` (FK: `printings`).
+    pub catalog_prices: usize,
+}
+
+/// Reconcile the shipped seeds whose rows **FK into rows the ingest creates**.
+///
+/// The rest of the seed layer is self-contained — `variants`, the
+/// `(group, sub_type)` map and `bundles` reference nothing an upstream
+/// produces, so an open reconciles them completely whatever state the catalog
+/// is in. These two do not: `set_aliases` points at `sets` and
+/// `catalog_price_overrides` at `printings`, and both skip a row whose target
+/// this catalog does not carry rather than tripping the FK.
+///
+/// So on the run that first creates a set, an open-time reconcile writes
+/// nothing for it and the seed lands on the NEXT open — which made a first
+/// derive of a brand-new set differ from the second one, in `set_aliases` and
+/// no other table (pd-zg7o). One step of convergence is not wrong, but it is a
+/// thing every reader of the catalog has to know, and "the alias for the set
+/// that listed today resolves tomorrow" is a real answer to a real import.
+///
+/// The fix is not to make the skip cleverer — a seed row whose target is
+/// genuinely absent must still be skipped, which is what lets a minimal test
+/// catalog carry neither `svp` nor most of the real sets. It is to run this
+/// group **again at the end of a build**, once the ingest has created
+/// everything it is going to. `pkdump_derive::derive` and `pkdump setup` both
+/// end with it, so a single run reaches the fixed point.
+///
+/// Grouping them is the durable half. A third FK-dependent seed added beside
+/// these two joins one function and reaches both builders; added as its own
+/// call in `open_shared` it would silently reintroduce the whole bug, and
+/// nothing about a catalog in that state looks broken.
+pub fn reconcile_ingest_dependent_seeds(conn: &mut Connection) -> Result<IngestSeeds> {
+    Ok(IngestSeeds {
+        set_aliases: crate::set_aliases::reconcile(conn)?,
+        catalog_prices: crate::catalog_prices::reconcile(conn)?,
+    })
 }
 
 /// Open the shared catalog **read-only**.
@@ -492,6 +537,59 @@ fn remove_db_files(path: &Path) {
 mod tests {
     use super::*;
     use crate::catalog;
+
+    /// The seeds that FK into ingested rows must land in the run that CREATES
+    /// those rows, not on the next open (pd-zg7o).
+    ///
+    /// Stated over the group rather than over either seed: what goes wrong is
+    /// a seed reconciled only at open time, and the group is the one place a
+    /// builder calls. Both halves are here because they fail independently —
+    /// `set_aliases` was the one that was missing, and asserting only it would
+    /// let a future edit drop `catalog_prices` out of the group unnoticed.
+    #[test]
+    fn the_ingest_dependent_seeds_land_in_the_run_that_creates_their_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_shared(&dir.path().join("shared.sqlite")).unwrap();
+
+        // An open against a catalog with no ingest in it writes neither: every
+        // seed row's FK target is absent, and skipping is correct there.
+        assert_eq!(
+            count(&conn, "set_aliases") + count(&conn, "catalog_price_overrides"),
+            0,
+            "a catalog with no sets and no printings carries no FK-dependent seed"
+        );
+
+        // Now ingest the rows the seeds point at — what a derivation does
+        // between `open_shared` and its own last phase.
+        conn.execute_batch(
+            "INSERT INTO sets (set_code, name, series) \
+               VALUES ('svp', 'Scarlet & Violet Black Star Promos', 'SV'), \
+                      ('basep', 'Wizards Black Star Promos', 'Base'); \
+             INSERT INTO cards (card_id, set_code, number, number_sortable, name) \
+               VALUES ('basep-10', 'basep', '10', 10, 'Meowth'); \
+             INSERT INTO printings (printing_id, card_id, variant) \
+               VALUES ('basep-10-normal', 'basep-10', 'normal');",
+        )
+        .unwrap();
+
+        let seeds = reconcile_ingest_dependent_seeds(&mut conn).unwrap();
+        assert_eq!(seeds.set_aliases, 1, "the alias for the set just created");
+        assert_eq!(seeds.catalog_prices, 1, "the override for the printing");
+        assert_eq!(count(&conn, "set_aliases"), 1);
+        assert_eq!(count(&conn, "catalog_price_overrides"), 1);
+
+        // …and the same group run again moves nothing: this is the end of a
+        // build, so it has to be a fixed point rather than the first of two.
+        let again = reconcile_ingest_dependent_seeds(&mut conn).unwrap();
+        assert_eq!(count(&conn, "set_aliases"), 1);
+        assert_eq!(count(&conn, "catalog_price_overrides"), 1);
+        assert_eq!(again, seeds, "an idempotent upsert rewrites the same rows");
+    }
+
+    fn count(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
 
     fn seed_shared(path: &Path) {
         let conn = open_shared(path).unwrap();

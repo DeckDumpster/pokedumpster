@@ -102,7 +102,7 @@ pub fn insert(conn: &Connection, new: &NewManualPrice) -> Result<i64> {
     let observed_at = new
         .observed_at
         .clone()
-        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        .unwrap_or_else(crate::clock::now_rfc3339);
 
     conn.execute(
         "INSERT INTO manual_prices (printing_id, price, observed_at, note) \
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(rows[0].price, 200.0);
         // Default observed_at should be a recent timestamp — within
         // the last minute.
-        let now = chrono::Utc::now();
+        let now = crate::clock::now();
         let parsed = chrono::DateTime::parse_from_rfc3339(&rows[0].observed_at).unwrap();
         let delta = (now - parsed.with_timezone(&chrono::Utc))
             .num_seconds()

@@ -19,21 +19,53 @@ The command does a clean rebuild: it deletes any existing `shared.sqlite` /
 deterministic rows. User data is inserted through the `pkdump-db` repository
 functions so app-layer validation runs.
 
-`shared.sqlite` is byte-stable: every catalog row, price and observation date
-in it is a fixed constant, so two regenerations produce identical files.
-`collection.sqlite` is not, and cannot be while the rows go in through those
-repository functions — they stamp `created_at` / `acquired_at` from the clock.
-Two regenerations differ in exactly those columns and nothing else. Anything
-that must be stable across a regeneration is pinned some other way: the visual
-suite freezes the browser's clock (`tests/visual/stabilize.ts`) and pins the
-ids it visits (`tests/visual/routes.json`).
+**Both files are byte-stable.** Two regenerations of an unchanged seeder
+produce two identical pairs, so `git status` after a regeneration is silent
+unless something really moved — and a regeneration that does move something
+is a diff worth reading rather than noise to scroll past.
+`fixture::tests::two_seed_runs_are_byte_identical` is the gate, on the bytes
+rather than on the columns anybody thought to list, because the failure mode
+is a table nobody has added yet.
 
-So **a regeneration moves eight visual baselines** — `sealed`, `recent`,
-`batches` and `batch-detail`, at both viewports — in the date digits and
-nowhere else. Re-record them with `bash tests/visual/run.sh --update` and
-commit the PNGs alongside the fixture, having read the diffs first. pd-nzlj is
-the work that removes this: give the fixture a narrative of pinned dates so
-those routes stop rendering the moment the file was built.
+Every catalog row, price and observation date in `shared.sqlite` is a fixed
+constant. `collection.sqlite` goes in through the repository functions, which
+stamp their timestamp columns from the clock, so `seed-fixture` **pins the
+clock** for the length of the build: a timeline starting at 2024-01-15T09:00Z
+that advances one minute per read. Advancing rather than frozen, because
+`/recent` and `/batches` `ORDER BY` those stamps — one constant would leave
+their order a tie broken by rowid, which is stable pixels and a route that has
+stopped demonstrating the ordering it exists to show. A minute per step,
+because those two routes render `created_at.slice(0, 16)`: the five batches
+are five distinct times on screen, not five copies of one.
+
+The dates are chosen. 2024-01-15 is the fixture's own `OBSERVED_AT`, the day
+its prices were quoted; it falls after the last order date the fixture invents
+(2024-01-14) and after the acquisition constant on its manually-entered copies
+(2024-01-10), so the collection reads as one that was assembled and then
+priced. It also falls before the 2026-01-15 that `tests/visual/stabilize.ts`
+freezes the browser at, which is asserted:
+`fixture::tests::no_fixture_row_is_dated_after_the_frozen_browser_clock` reads
+every text cell of every table — outbox payloads included — and fails on a
+date in the suite's future. A build timestamp is always in the recent past,
+and the recent past IS the future to a clock pinned at 2026-01-15.
+
+Two things the pinned clock cannot reach, both handled at the end of the seed:
+
+* **The ownership outbox** is written by the triggers in `schema_user.sql`,
+  which read SQLite's clock rather than the process's. That is the property
+  that makes the outbox correct — a trigger fires where no call site can
+  forget it — so the events are dated afterwards from the holding each one
+  describes: `payload` is the whole row as JSON, so the row's own
+  `acquired_at` / `added_at` is in there even for a delete, and `seq` breaks
+  the ties in milliseconds and stays the ordering authority.
+* **A freed page keeps its old contents** until something reuses it, so two
+  runs whose every row was identical still differed in the bytes of the
+  pre-dating outbox rows left lying in the file. The seed ends with `VACUUM`.
+
+So a regeneration moves a visual baseline only when the fixture's own DATA
+moved. When it does, re-record with `bash tests/visual/run.sh --update` —
+every viewport, never one (`tests/visual/README.md`) — and commit the PNGs on
+the branch alongside the fixture, having read the diffs first.
 
 Regenerate whenever `schema_shared.sql` gains a table, view or column. The
 catalog is ATTACHed **read-only** at request time, so it is the one database in

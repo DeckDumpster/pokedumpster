@@ -641,6 +641,57 @@ carrying both is the copy-pasteable form, which is exactly what this was.
 Its last section checks what nothing checked: a route with a baseline at one
 viewport and not the other, and a PNG no route in `routes.json` claims.
 
+### The UI fixture is byte-stable, so a regeneration is a real diff
+
+`tests/ui/fixtures/{shared,collection}.sqlite` are committed binary artefacts
+and `pkdump seed-fixture` reproduces them exactly: two runs of an unchanged
+seeder write two identical pairs. Until pd-nzlj `collection.sqlite` did not,
+because its rows go in through the `pkdump-db` repository functions — on
+purpose, so the app-layer validation runs — and those stamped eleven columns
+from the wall clock. Regenerating therefore rewrote the file with a new
+afternoon in it and repainted eight baselines (`/recent`, `/batches`,
+`/batches/[id]`, `/sealed`, at both viewports) in the date digits and nowhere
+else. The cost was never the churn: a real regression arrives inside it, and a
+guard whose remedy repaints four routes is one people route around — which
+mattered the moment pd-7hkf added a guard that FORCES a regeneration whenever
+`schema_shared.sql` gains an object.
+
+Four things about the fix are decisions:
+
+- **`pkdump_db::clock` is the one place the crate reads the wall clock**, and
+  `seed-fixture` pins it. `clock::tests::the_wall_clock_is_read_in_one_place`
+  states that over the tree, because the failure mode is a repository function
+  nobody has written yet; `crates/pkdump-db/tests/pinned_clock_callers.rs`
+  holds the other end — only the seeder may pin, and it must still BE a pinner,
+  since a guard that only forbids passes just as happily on a seeder that has
+  stopped pinning anything. The pin is **thread-local**: a process-wide one
+  leaks out of whichever test set it into every test running beside it.
+- **The pinned clock ADVANCES**, a minute per read, from 2024-01-15T09:00Z.
+  `/recent` and `/batches` `ORDER BY` those stamps and render them to the
+  minute, so a single constant would be stable pixels and a route that has
+  stopped demonstrating the ordering it exists to show.
+- **The outbox is dated from its own payloads, not from the clock.** Those
+  rows are written by triggers, which read SQLite's clock — the property that
+  makes the outbox correct, and not one to weaken for a fixture. `payload` is
+  the whole row, so each event takes the `acquired_at`/`added_at` of the
+  holding it describes even when that row is already deleted, with `seq`
+  breaking ties in milliseconds and staying the ordering authority.
+- **The seed ends with `VACUUM`**, and that is determinism rather than
+  tidiness: a page freed during the build keeps its old contents until
+  something reuses it, so two runs whose every row was identical still differed
+  in the bytes of the superseded outbox rows lying in the file.
+
+Gates (`cargo test -p pkdump-cli`, hermetic, under a second):
+`two_seed_runs_are_byte_identical` — on bytes rather than on the columns
+anybody thought to list, portable because `rusqlite` is built `bundled` — and
+`no_fixture_row_is_dated_after_the_frozen_browser_clock`, the same bug from the
+reader's side, which is what says the COMMITTED file is the deterministic one.
+It reads every text cell of every table, outbox payloads included: a build
+timestamp is always in the recent past, and the recent past is the FUTURE to
+the 2026-01-15 clock `tests/visual/stabilize.ts` freezes the browser at. The
+fixture it replaced was dated eight months after that instant, so every age
+rendered under it was negative.
+
 ### CI triggers on the PR's BASE branch — master and `integration/**`
 
 `ci.yml` is `on: pull_request: branches: [master, 'integration/**']`, and that

@@ -321,7 +321,7 @@ FIRST_KEY="$(grep "database_id=${ALICE}/" <<<"$KEYS_WRITTEN" | head -1)"
 mc_root cat "x/${BUCKET}/${FIRST_KEY}" >"${WORK}/object.bin" 2>/dev/null ||
 	die "could not read ${FIRST_KEY} back"
 check "the object is not a bare Parquet file" "sealed" \
-	"$(head -c 4 "${WORK}/object.bin" | grep -q PAR1 && echo plaintext || echo sealed)"
+	"$(grep -q PAR1 <(head -c 4 "${WORK}/object.bin") && echo plaintext || echo sealed)"
 check "no printing id is readable in it" "opaque" \
 	"$(grep -qa 'fixture-2026-08-13' "${WORK}/object.bin" && echo readable || echo opaque)"
 

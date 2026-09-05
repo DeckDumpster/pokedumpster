@@ -210,16 +210,21 @@ check "a warn line that does not clear the floor is refused" "1" \
 	"$(alert_run bad PKDUMP_DISK_FLOOR_GB=10 PKDUMP_DISK_WARN_GB=10)"
 check "and it pages nobody, because it never measured anything" "no" "$(paged bad)"
 
-# REMOVED: a pd-1717 assertion that an undeliverable alert must FAIL the run.
+# An undeliverable alert does NOT fail this run, and must never be made to.
 #
-# It contradicted the check twenty lines below, which is pd-4sqi's and is what
-# master ships: both drive diskcheck over the threshold with a channel that cannot
-# deliver, one demanding exit 1 and the other exit 0. They cannot both pass, and
-# the pair arrived from branches that had never been merged together.
+# diskcheck is a timer about the DISK. Its exit status answers "could I measure and
+# report", not "did the page arrive" — so a broken Pushover channel leaves it at 0,
+# with the drop named on stderr. Failing instead inverts the whole point: the script
+# then exits 0 every day the disk is fine and FAILS ITS UNIT the one day it is not,
+# and the OnFailure= that fires buys nothing because it pages through the same
+# channel that just proved it cannot deliver.
 #
-# pd-4sqi wins here by being the SHIPPED answer, not the better one. Which contract
-# is right is open as hq-axi0; if it goes the other way this assertion returns and
-# diskcheck.sh's trailing `|| echo ... ; exit 0` goes with it.
+# An assertion demanding exit 1 here once sat twenty lines above the check below
+# that demands exit 0; both drive diskcheck over the threshold with a dead channel,
+# and no implementation could satisfy both.
+#
+# The real gap this leaves — a box over the threshold, alerting into nothing, and
+# green — is answered by checking that the CHANNEL works, not by failing the timer.
 
 # ...and it stays a timer on the ONE day it matters (pd-4sqi). alert.sh exits 1
 # when it could not deliver, and under `set -e` that became diskcheck's own exit

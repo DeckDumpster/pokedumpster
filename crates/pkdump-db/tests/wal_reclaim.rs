@@ -115,6 +115,57 @@ fn wal_bytes(path: &Path) -> u64 {
 /// time that depends entirely on how much CPU it gets; these sleeps dominate,
 /// so the fraction is a property of the harness. CI runs three container gates
 /// beside this one on a four-core box.
+/// A reader that holds ONE snapshot for the whole run, used only by the SEEN-RED arm.
+///
+/// [`DutyCycledReader`] models how the server actually reads — a snapshot held ~20ms,
+/// released, taken again — and that is the right instrument for testing the FIX. It is the
+/// wrong one for proving the hazard exists, because its duty cycle depends on getting the
+/// CPU back promptly after each gap. Under a loaded box the gaps stretch while the held
+/// windows do not, the snapshot is absent for most of the run, SQLite checkpoints freely,
+/// and the WAL stays small.
+///
+/// That is measurement, not behaviour: the same code measured 12x on an idle machine and
+/// 2.3x inside CI's parallel suite, below a 5x floor, so the arm asserting the bug
+/// REPRODUCES reported that it could not. One snapshot held for the duration cannot be
+/// descheduled out of existence -- the WAL cannot be checkpointed past it whatever the
+/// scheduler does.
+struct HeldReader {
+    stop: Arc<AtomicBool>,
+    reads: Arc<AtomicU64>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+impl HeldReader {
+    fn start(path: &Path) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicU64::new(0));
+        let p = path.to_path_buf();
+        let (s, r) = (Arc::clone(&stop), Arc::clone(&reads));
+        let handle = std::thread::spawn(move || {
+            let conn = Connection::open(&p).unwrap();
+            conn.busy_timeout(Duration::from_secs(30)).unwrap();
+            conn.execute_batch("BEGIN").unwrap();
+            let _: i64 = conn
+                .query_row("SELECT count(*) FROM t", [], |row| row.get(0))
+                .unwrap();
+            r.fetch_add(1, Ordering::Relaxed);
+            while !s.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            conn.execute_batch("COMMIT").unwrap();
+        });
+        while reads.load(Ordering::Relaxed) == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Self { stop, reads, handle: Some(handle) }
+    }
+
+    fn stop(mut self) -> u64 {
+        self.stop.store(true, Ordering::Relaxed);
+        self.handle.take().unwrap().join().unwrap();
+        self.reads.load(Ordering::Relaxed)
+    }
+}
+
 struct DutyCycledReader {
     stop: Arc<AtomicBool>,
     reads: Arc<AtomicU64>,
@@ -217,7 +268,9 @@ fn a_reader_in_flight_unbounds_a_wal_that_would_otherwise_stay_small() {
 
     let reader_path = dir.path().join("reader.sqlite");
     let writer = seeded(&reader_path);
-    let reader = DutyCycledReader::start(&reader_path);
+    // Held, not duty-cycled: see HeldReader. A duty cycle makes this arm a
+    // measurement of the scheduler.
+    let reader = HeldReader::start(&reader_path);
     let (_, reader_wal) = commit_n(&writer, &reader_path, COMMITS, None);
     let reads = reader.stop();
 
@@ -225,10 +278,13 @@ fn a_reader_in_flight_unbounds_a_wal_that_would_otherwise_stay_small() {
         reads > 0,
         "the reader never ran — the arms are the same arm"
     );
-    // Measured on this workload: 3.93 MiB with no reader (the autocheckpoint
-    // bound, identical to the byte across runs) against ~47 MiB with one, over
-    // the same 12,000 commits. Five is a floor with an order of magnitude of
-    // room, not a threshold tuned to a run.
+    // Measured on this workload: 3.93 MiB with no reader (the autocheckpoint bound,
+    // identical to the byte across runs) against ~47 MiB with one, over the same 12,000
+    // commits. Five is a floor with an order of magnitude of room.
+    //
+    // That room is only real because the snapshot is HELD. With a duty-cycled reader the
+    // same assertion measured 2.3x inside CI's parallel suite -- the reader starved, not
+    // the bug absent.
     assert!(
         reader_wal > control_wal * 5,
         "the bug did not reproduce: {control_wal} bytes of WAL with no readers vs \

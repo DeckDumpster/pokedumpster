@@ -535,8 +535,11 @@ inside `wait_until` it does not fail loudly — it silently never goes true and
 the gate spends its whole budget before failing for some later reason.
 `tests/lib/wait.sh::logs_match` is the counting form every harness now uses
 (everything is passed through to grep, so `-F`/`-E` still work), and
-`tests/lib/wait_test.sh` §7 is the ratchet: one definition, no harness piping
-`podman logs` into `grep -q`, asserted over the tree.
+`tests/lib/wait_test.sh` §7 is the ratchet for *that* helper: it counts to EOF,
+there is one definition, and every caller sources it. The rule about `grep -q`
+itself is not restated there — see "Never pipe into `grep -q`" below, which
+holds it over the whole repo and every writer rather than over the harnesses
+and `podman logs`.
 
 **Every unit under `~/.config/systemd/user` is ONE FILE PER BOX**, shared by
 every instance, with `{{REPO_DIR}}` baked into its `ExecStart` — the `@`
@@ -1237,6 +1240,69 @@ Gate: `tests/ci/treewatch_test.sh` (lint tier, hermetic, sub-second), seen red
 five ways — the naive HEAD comparison, an unwired `step()`, a guard that also
 judges dirt, one that watches the shared reflog instead of this worktree's, and
 a `ci.sh` that never arms it.
+
+### Never pipe into `grep -q` — it inverts under `pipefail` (pd/sp-pd-grepq)
+
+`grep -q` exits the instant it matches. That closes the read end of the pipe,
+the writer behind it takes SIGPIPE, and `set -o pipefail` reports the writer's
+141 as the pipeline's status — so **a successful match takes the failure
+branch**:
+
+```bash
+$ ( set -o pipefail; seq 1 10     | grep -q '^1$' ); echo $?   # 0
+$ ( set -o pipefail; seq 1 200000 | grep -q '^1$' ); echo $?   # 141
+```
+
+Same pipeline, same match, and the only difference is that the second payload
+outgrew a pipe buffer. That is the whole reason this idiom survives review: it
+is correct until it silently is not, and the day it flips is a day nobody
+touched it. `tests/ci/treewatch_test.sh` §9 passed on master and went red on a
+branch carrying seven merges — the assertion was fine, `deploy/ci.sh` had simply
+grown enough output to fill 64KB. Seventeen sites carried the idiom, across the
+alarming, lake, litestream and deploy suites, most of them poll predicates where
+the inversion reads as "the sidecar never came up" rather than as a bug.
+
+Capture and match with a herestring, which is not a pipeline and so has nothing
+for `pipefail` to inherit:
+
+```bash
+grep -q PAT <<<"$(cmd)"          # the default
+grep -q PAT <(cmd)               # when the bytes must not go through $( ),
+                                 # which strips NULs — tests/lake/shipper.sh
+                                 # reads the first four bytes of ciphertext
+```
+
+The rewrite discards the writer's exit status. At every site converted that was
+already the intent — a writer that fails prints nothing and the match fails on
+its own — but check it rather than assume it.
+
+The rule is whole-repo and not per-file, because `pipefail` belongs to the shell
+that ends up running the code rather than to the file it sits in: everything in
+`tests/lib/` is sourced by suites that set it.
+
+Gate: `tests/ci/grepq_test.sh` (lint tier, hermetic, sub-second). §1 is a SEEN
+RED arm that runs the broken pipeline in a live shell and asserts the 141, so
+the rule cannot decay into folklore about a bash version nobody rechecked; §2
+proves the scanner finds the idiom and not the cure or the comments explaining
+it; §3 scans the tree.
+
+**The scan reads LOGICAL lines, not physical ones.** A backslash continuation
+splits the idiom across two lines and it goes on working perfectly, so a
+one-line-at-a-time scanner cannot see it — and that is not a hypothetical
+evasion, it is how the last one got through (pd-pfxf): `tests/litestream/run.sh`
+spelled `podman logs … | grep db=… \` on one line and `| grep -qE …` on the
+next, and the ratchet written to catch it passed on the day it was written while
+the offending pipeline sat two files away. Continuations are joined first and the
+number reported is where the logical line STARTS. §2 carries its own two-line
+fixture, so the joining cannot be dropped later as an over-complication.
+
+**This file is the one exclusion, and keeping that set at one is the point.**
+§1 and §2 must spell the broken idiom to demonstrate it, so the gate for a rule
+is always exempt from it — which makes "how many files are exempt" the number
+worth watching. `tests/lib/wait_test.sh` §7 used to carry a narrower copy of the
+same tree scan and needed the same exemption for the same reason; it was retired
+into this gate rather than exempted beside it, because two ratchets for one rule
+is how one of them stops travelling.
 
 ## Conventions & Patterns
 

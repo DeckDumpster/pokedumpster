@@ -20,7 +20,7 @@ IMAGE="localhost/pkdump:${INSTANCE}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-if ! podman machine inspect --format '{{.State}}' 2>/dev/null | grep -q "running"; then
+if ! grep -q "running" <<<"$(podman machine inspect --format '{{.State}}' 2>/dev/null)"; then
     echo "ERROR: Podman machine is not running. Start it: podman machine start"
     exit 1
 fi

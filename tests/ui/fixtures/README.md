@@ -79,7 +79,7 @@ will, in `cargo test`.
 
 | File | Contents |
 | --- | --- |
-| `shared.sqlite` | Immutable catalog: 4 sets, 37 cards, 57 printings, 57 prices, 4 sealed products. |
+| `shared.sqlite` | Immutable catalog: 4 sets, 37 cards, 57 printings, 57 prices, 4 sealed products, 2 sealed prices. |
 | `collection.sqlite` | User data: 3 binders, 3 decks, 5 batches, 2 orders, 26 collection copies, 2 sealed entries, 3 wishlist entries, 1 saved view. |
 
 ## Catalog (`shared.sqlite`)
@@ -164,12 +164,25 @@ holds all of that; `tests/ui/intents/browse_japanese_set_*.yaml` walk it.
 
 ### Sealed products
 
-| `product_id` | Name | Category | Set |
-| --- | --- | --- | --- |
-| 900001 | Base Set Booster Box | `booster_box` | `base1` |
-| 900002 | 151 Elite Trainer Box | `etb` | `sv3pt5` |
-| 900003 | 151 Booster Bundle | `bundle` | `sv3pt5` |
-| 900004 | Surging Sparks Booster Pack | `booster_pack` | `sv8` |
+| `product_id` | Name | Category | Set | Quoted |
+| --- | --- | --- | --- | --- |
+| 900001 | Base Set Booster Box | `booster_box` | `base1` | — |
+| 900002 | 151 Elite Trainer Box | `etb` | `sv3pt5` | market $59.42 |
+| 900003 | 151 Booster Bundle | `bundle` | `sv3pt5` | — |
+| 900004 | Surging Sparks Booster Pack | `booster_pack` | `sv8` | mid $5.24, no market |
+
+The two the collection HOLDS are quoted one way each, so a screenshot goes
+through both halves of `sealed_market_price_expr_from!` —
+`COALESCE(market_price, mid_price)` — rather than one (sp-ysb). 900001 and
+900003 stay unquoted: neither is held, so neither moves a number, and a sealed
+product TCGCSV prices nowhere is a shape the catalog really carries.
+
+`fixture::tests::the_committed_fixture_values_its_sealed_holdings` holds it.
+Before it, `sealed_prices` was EMPTY, so both lots fell to pd-bbv7's unquoted
+arm — skipped by the sum, counted in the units, correctly — and that was the
+only arm any baseline could take: `/` read `sealed $0.00`, `/sealed` showed an
+em dash wherever a market value goes, and the `dimension='sealed'` series had
+no non-zero point on it.
 
 ## User data (`collection.sqlite`)
 
@@ -224,10 +237,15 @@ Notable copies:
 
 ### Sealed collection (2)
 
-| Product | Qty | Source |
-| --- | --- | --- |
-| 151 Elite Trainer Box (900002) | 1 | pokemoncenter |
-| Surging Sparks Booster Pack (900004) | 6 | lgs |
+| Product | Qty | Paid (each) | Market (each) | Source |
+| --- | --- | --- | --- | --- |
+| 151 Elite Trainer Box (900002) | 1 | $49.99 | $59.42 (market) | pokemoncenter |
+| Surging Sparks Booster Pack (900004) | 6 | $4.49 | $5.24 (mid) | lgs |
+
+7 units, $76.93 paid, $90.86 market — the `dimension='sealed'` point on the
+value chart and the `sealed $90.86` half of the home page's headline. `/`
+renders the two halves separately and sums them at read time; there is no
+stored combined total (pd-bbv7).
 
 ### Wishlist (3)
 

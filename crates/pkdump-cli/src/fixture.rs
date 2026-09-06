@@ -244,6 +244,15 @@ type SealedRow = (
     &'static str,
 );
 
+/// A sealed-price row: product_id, low, mid, high, market, direct_low.
+///
+/// `market` is `Option` because TCGCSV genuinely quotes many sealed products a
+/// mid and no market, and `sealed_market_price_expr_from!` exists to pick
+/// between the two off ONE observation. A fixture that filled `market` on
+/// every row would leave that `COALESCE` unexercised by anything a screenshot
+/// can see.
+type SealedPriceRow = (i64, f64, f64, f64, Option<f64>, Option<f64>);
+
 fn seed_catalog(conn: &Connection) -> anyhow::Result<()> {
     // --- Sets ----------------------------------------------------------
     // (set_code, ptcgo_code, name, series, series_sort, set_sort,
@@ -378,6 +387,49 @@ fn seed_catalog(conn: &Connection) -> anyhow::Result<()> {
                 format!("https://www.tcgplayer.com/product/{pid}"),
                 FETCHED_AT,
             ],
+        )?;
+    }
+
+    // --- Sealed prices -------------------------------------------------
+    //
+    // The two products the collection actually HOLDS, quoted one way each, so
+    // the rendered sealed value goes through the whole rule rather than one
+    // arm of it (pd-bbv7, sp-ysb):
+    //
+    //   900002  a full quote, `market_price` set — the ordinary arm
+    //   900004  `market_price` NULL, mid alone — the `COALESCE` fallback
+    //
+    // Before this the fixture seeded four sealed PRODUCTS and zero prices, so
+    // every sealed lot fell to "catalogued and never quoted": `/sealed`
+    // rendered an em dash in Market and Value, `/` read `sealed $0.00`, and
+    // the `dimension='sealed'` series on the value chart had nothing on it.
+    // That arm is real and is held by
+    // `value_history::tests::an_unpriced_sealed_lot_is_skipped_and_still_counted`
+    // — but it was the only arm anything reaching a screenshot could take, so
+    // the join through `sealed_products` by `product_id` and both halves of
+    // `sealed_market_price_expr_from!` were covered nowhere in the UI tier.
+    //
+    // 900001 and 900003 stay unquoted deliberately. Neither is held, so
+    // neither moves a number, and leaving them keeps the catalog carrying the
+    // shape TCGCSV really produces: a sealed product with no price row at all.
+    //
+    // Fixed constants at `OBSERVED_AT`, like every other price here. The two
+    // owned lots then value at 59.42 + 6 x 5.24 = 90.86 against the 76.93 they
+    // cost, so the sealed series reads as a small gain rather than as a round
+    // number nobody would notice was wrong.
+    //
+    // (product_id, low, mid, high, market, direct_low)
+    let sealed_prices: [SealedPriceRow; 2] = [
+        (900002, 52.00, 58.75, 79.99, Some(59.42), Some(55.10)),
+        (900004, 4.10, 5.24, 8.99, None, None),
+    ];
+    for (pid, low, mid, high, market, direct_low) in sealed_prices {
+        conn.execute(
+            "INSERT INTO sealed_prices \
+               (tcgplayer_product_id, low_price, mid_price, high_price, \
+                market_price, direct_low_price, observed_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![pid, low, mid, high, market, direct_low, OBSERVED_AT],
         )?;
     }
 
@@ -1889,6 +1941,7 @@ impl IntoSome for &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
     use std::collections::BTreeMap;
     use std::path::Path;
 
@@ -2132,6 +2185,128 @@ mod tests {
              and is never repaired on open (it is ATTACHed read-only). \
              Missing: {}. Regenerate it: cargo run --bin pkdump -- seed-fixture",
             missing.join(", "),
+        );
+    }
+
+    /// The committed fixture must PRICE the sealed product it holds, and
+    /// price it BOTH ways (sp-ysb).
+    ///
+    /// The fixture seeded four rows in `sealed_products` and none in
+    /// `sealed_prices`, so both sealed lots fell to pd-bbv7's unquoted arm —
+    /// skipped by the sum, counted in the units, correctly. Correct and
+    /// exclusive: `/` rendered `sealed $0.00`, `/sealed` showed an em dash
+    /// wherever a market value goes, and the `dimension='sealed'` series had
+    /// no non-zero point on it, so no screenshot and no intent covered the
+    /// join through `sealed_products` by `product_id` or either half of
+    /// `sealed_market_price_expr_from!`.
+    ///
+    /// Stated against the COMMITTED artefact rather than against a fresh
+    /// seed, because that is the file the browser tier serves: a seeder
+    /// changed and a fixture not regenerated is exactly the state this bead
+    /// found. It asserts the two `COALESCE` arms separately — a fixture where
+    /// every quote carried a `market_price` would render identically and
+    /// exercise the fallback nowhere.
+    #[test]
+    fn the_committed_fixture_values_its_sealed_holdings() {
+        // READ-ONLY on both halves: these are committed bytes under review.
+        let catalog = pkdump_db::open_shared_readonly(&committed_shared()).unwrap();
+        let user = Connection::open_with_flags(
+            committed_user(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+
+        // The lots the collection holds, and the units they add up to.
+        let held: Vec<(i64, i64)> = user
+            .prepare(
+                "SELECT product_id, quantity FROM sealed_collection \
+                  WHERE status = 'owned' ORDER BY product_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        // Not vacuous: a fixture holding no sealed product would satisfy every
+        // per-lot claim below without quoting anything.
+        assert!(
+            held.len() >= 2,
+            "the committed fixture holds {} sealed lot(s) — this test says \
+             nothing without at least two, one quoted each way",
+            held.len(),
+        );
+
+        // Every held product is quoted, and each quote resolves to a price
+        // through the same rule the app spends.
+        let mut with_market = 0;
+        let mut by_mid_alone = 0;
+        for (product_id, _) in &held {
+            let quote: Option<(Option<f64>, Option<f64>)> = catalog
+                .query_row(
+                    "SELECT market_price, mid_price FROM latest_sealed_prices \
+                      WHERE tcgplayer_product_id = ?1",
+                    [product_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .unwrap();
+            let (market, mid) = quote.unwrap_or_else(|| {
+                panic!(
+                    "sealed product {product_id} is held and has no row in \
+                     sealed_prices, so it values at nothing. Seed one in \
+                     seed_catalog and regenerate: \
+                     cargo run --bin pkdump -- seed-fixture"
+                )
+            });
+            assert!(
+                market.or(mid).is_some_and(|p| p > 0.0),
+                "sealed product {product_id} is quoted a row that \
+                 COALESCE(market, mid) resolves to nothing"
+            );
+            match market {
+                Some(_) => with_market += 1,
+                None => by_mid_alone += 1,
+            }
+        }
+        assert!(
+            with_market > 0,
+            "no held sealed lot carries a market_price — the ordinary arm of \
+             sealed_market_price_expr_from! is unexercised"
+        );
+        assert!(
+            by_mid_alone > 0,
+            "every held sealed lot carries a market_price — the COALESCE \
+             fallback to mid_price is unexercised, and TCGCSV quotes plenty \
+             of sealed product a mid and no market"
+        );
+
+        // And the value chart has a real sealed point on it. `card_count` is
+        // UNITS on this row, not lots (pd-bbv7).
+        let sealed: Option<(f64, f64, i64)> = user
+            .query_row(
+                "SELECT market_value, cost_basis, card_count \
+                   FROM collection_value_snapshot \
+                  WHERE dimension = 'sealed' ORDER BY date DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .unwrap();
+        let (market_value, cost_basis, units) = sealed.expect(
+            "the committed fixture has no dimension='sealed' value-history \
+             row, so the sealed series on / and on the value chart is empty",
+        );
+        assert!(
+            market_value > 0.0,
+            "the sealed series is valued at {market_value} — that is the \
+             unquoted arm again"
+        );
+        assert!(cost_basis > 0.0, "the sealed lots record what they cost");
+        assert_eq!(
+            units,
+            held.iter().map(|(_, q)| q).sum::<i64>(),
+            "card_count on the sealed row is UNITS across the held lots, \
+             never the number of lots"
         );
     }
 

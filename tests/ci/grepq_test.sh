@@ -79,7 +79,14 @@ check "a pipeline into grep -q reports success while the payload is small" "0" "
 rc_big=$?
 check "…and reports FAILURE on the same successful match once it is large" "1" \
 	"$([ "$rc_big" -ne 0 ] && echo 1 || echo 0)"
-check "…with the writer's SIGPIPE status, not grep's" "141" "$rc_big"
+# THE STATUS IS NOT ASSERTED, AND DELIBERATELY SO. This line demanded exactly 141 — 128+SIGPIPE
+# — and CI returns 1. Whether the writer is still writing when grep exits, and so whether it dies
+# of SIGPIPE at all, depends on scheduling and pipe-buffer size; `seq` may simply finish first.
+# The rule this gate exists to enforce is that a SUCCESSFUL match reports FAILURE, which the
+# check above asserts on the value that matters. Pinning the exact signal on top of it asserted
+# an implementation detail of the host, and a gate that fails depending on where it runs is worse
+# than no gate — this one spent three attempts and a poisoning failing on its own demonstration
+# rather than on any code in this repository.
 
 # The cure. Same payload, same match, no pipeline.
 ( set -o pipefail; grep -q '^1$' <<<"$(seq 1 200000)" ) >/dev/null 2>&1

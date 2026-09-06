@@ -66,6 +66,41 @@
 # not available from one sidecar, and nothing here should be designed as if it
 # were. tests/litestream/run.sh asserts both the placement and that Litestream
 # honours it.
+
+# ── THE LOG LEVEL IS PART OF THE CONTRACT (pd-pfxf) ─────────────────────────
+# deploy/backup-check.sh judges every tenant by parsing ONE message out of this
+# process's journal:
+#
+#   msg="replica sync" db=<id>.sqlite replica=s3 txid.replica=… txid.db=…
+#
+# That is not a convenience. The 0.5 CLI cannot answer the question for a `dir:`
+# entry — `status -json <tenant>` returns `database: "/"`, `"not initialized"`;
+# `ltx <local path>` returns "database not found in config"; and 0.5.17's new
+# control-socket `list -json` does answer in directory mode but carries only
+# `last_sync_at`, no TXID pair, so it cannot judge CORRESPONDENCE (pd-me6h) and
+# would be a silent regression to the freshness test that replaced it. All three
+# measured against 0.5.17 on 2026-09-02.
+#
+# Litestream 0.5.17 moved that message from INFO to DEBUG ("fix(logging):
+# downgrade replica sync messages from INFO to DEBUG"). Nothing here changed and
+# the message simply stopped existing: every tenant fell to "not judged" inside
+# the 1800s grace and would have gone permanently STALE after it — a backup
+# verifier that verifies nothing, then pages forever. Three container gates went
+# red together and read as networking flakiness.
+#
+# So the level this depends on is ASKED FOR BY NAME rather than inherited from
+# upstream's default. Measured on both versions: with this block, 0.5.16 and
+# 0.5.17 emit the identical line, same fields, same order. It costs roughly 11x
+# the log volume of 0.5.16's INFO — ~6 lines/s/database against ~0.55 — which is
+# the price of the check being able to see anything at all; `podman logs
+# --since 6h` over that is tens of MB and still a sub-second grep.
+#
+# If you bump the image in deploy/litestream-lib.sh, re-read this. The version
+# and this block are one contract, and tests/litestream/run.sh §3b is the gate
+# that the running sidecar really does emit the line backup-check reads.
+logging:
+  level: debug
+
 snapshot:
   interval: 24h
   retention: 4320h

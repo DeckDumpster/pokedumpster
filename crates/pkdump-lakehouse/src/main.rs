@@ -288,6 +288,7 @@ fn shared(args: SharedArgs) -> anyhow::Result<()> {
         // status a run that produced NO catalog carries. This one produced a
         // catalog, and said what is missing from it. Same shape, same reason,
         // as `pkdump data refresh` (crates/pkdump-cli/src/data.rs).
+        reclaim(&conn);
         drop(conn);
         std::process::exit(2);
     }
@@ -300,7 +301,35 @@ fn shared(args: SharedArgs) -> anyhow::Result<()> {
         report.printings,
         report.latest_prices
     );
+    reclaim(&conn);
     Ok(())
+}
+
+/// Give the catalog's WAL back, after this job's LAST write and before it exits
+/// (pd-t50h).
+///
+/// Both exit paths call it, and the placement is the whole of the claim. A
+/// checkpoint at the end of `pkdump_derive::derive` would run before
+/// `raw_derivation::record`, leaving the provenance row's frames in a file
+/// nothing will ever truncate — an autocheckpoint runs on a commit, this
+/// process is the only thing that commits to the catalog, and it is about to
+/// exit. So the `-wal` a night leaves behind sits on the data volume until the
+/// next night's run. `row_identical.rs::a_derive_leaves_no_wal_behind_on_the_
+/// catalog_it_built` asserts the file is empty against the shipped binary, and
+/// that assertion is what found the ordering.
+///
+/// Not fallible from here. `reclaim_catalog_wal` already reports a checkpoint a
+/// reader blocked rather than raising — the catalog is complete either way, and
+/// a browsing session must not be able to fail the nightly build — so the only
+/// thing left to swallow is a checkpoint that could not run at all, which
+/// changes nothing about the catalog this run just wrote and must not turn a
+/// good derivation into exit 1.
+fn reclaim(conn: &rusqlite::Connection) {
+    if let Err(e) = pkdump_db::reclaim_catalog_wal(conn) {
+        eprintln!(
+            "!! could not checkpoint the catalog's WAL: {e}. Disk only — the catalog is complete."
+        );
+    }
 }
 
 /// Compare two catalogs row by row.

@@ -71,11 +71,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # storage lives under it, so the script loses the data volume and every check
 # reports "volume not found" — which reads as a fault and is really a broken test.
 CONF_DIR="${PKDUMP_CONF_DIR:-${HOME}/.config/pkdump/${INSTANCE}}"
-LS_IMG="docker.io/litestream/litestream:latest"
 VOLUME="pkdump-${INSTANCE}-data"
 
 # shellcheck source=deploy/litestream-lib.sh
 . "${SCRIPT_DIR}/litestream-lib.sh"
+# PINNED there, never `:latest` — this script's whole judgement is parsed out of
+# one Litestream log message, and a moving tag is what silently deleted it
+# (pd-pfxf). See the note on PKDUMP_LITESTREAM_IMAGE.
+LS_IMG="${LITESTREAM_IMAGE:-$PKDUMP_LITESTREAM_IMAGE}"
 
 # Host-wide Pushover creds, then per-instance ping URL / threshold / S3 target.
 # PKDUMP_ALERTS_ENV names the host-wide file; production never sets it. Only

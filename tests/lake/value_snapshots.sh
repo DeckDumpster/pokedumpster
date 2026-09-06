@@ -80,6 +80,10 @@ diag_init
 . "${REPO_DIR}/tests/lib/wait.sh"
 # shellcheck source=tests/lib/objects.sh
 . "${REPO_DIR}/tests/lib/objects.sh"
+# A job container that never resolved Nessie's name did not run, and is asked
+# again (sp-pd-ci-green). Nothing else about a job's outcome is retried.
+# shellcheck source=tests/lib/netrun.sh
+. "${REPO_DIR}/tests/lib/netrun.sh"
 
 die() {
 	diag "!! $*"
@@ -146,7 +150,7 @@ mc() { podman run --rm --network "$NET" -e MC_HOST_m="http://${AKID}:${SECRET}@$
 # thing this gate is here to observe. Not `:ro` for the catalog either — these
 # are WAL databases and SQLite cannot open one through a read-only mount.
 run_job() {
-	podman run --rm --network "$NET" \
+	netrun podman run --rm --network "$NET" \
 		-v "$FIXTURE:/fixture:Z" \
 		-e PKDUMP_LAKE_NESSIE_URI="http://${NESSIE_CTR}:19120/iceberg/" \
 		-e PKDUMP_LAKE_S3_BUCKET="$BUCKET" \
@@ -522,7 +526,7 @@ time.sleep(120)
 # and then slept 3s on top — and the whole of §8 is vacuous if the lock is not
 # actually held when the job asks for it, so this is a condition worth being
 # certain of rather than one worth guessing at. The locker says when it has it.
-locker_ready() { podman logs "$LOCK_CTR" 2>/dev/null | grep -q 'LOCK HELD'; }
+locker_ready() { logs_match "$LOCK_CTR" 'LOCK HELD'; }
 wait_until 60 0.25 locker_ready ||
 	die "the locker never took an EXCLUSIVE lock on ${BOB} — §8 would prove nothing"
 

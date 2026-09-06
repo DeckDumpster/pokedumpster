@@ -188,11 +188,24 @@ pub fn run(args: SetupArgs) -> anyhow::Result<()> {
     let n_latest = pkdump_db::latest_prices::refresh_latest_prices(&conn)?;
     println!("  {n_latest} latest-price rows materialized");
 
-    // Curated prices for catalog printings the feed does not price. Runs
-    // last because its rows FK into `printings`, which only exist after
-    // variant expansion above (pd-m4gw).
-    let n_override = pkdump_db::catalog_prices::reconcile(&mut conn)?;
-    println!("  {n_override} curated catalog price overrides reconciled");
+    // The seeds whose rows FK into rows this run created: curated prices
+    // (into `printings`, which only exist after variant expansion above —
+    // pd-m4gw) and set-name aliases (into `sets`). `open_shared` reconciled
+    // them against an empty catalog on the way in and so wrote nothing; run
+    // here they land in the same run that created their targets, which is
+    // what makes one setup a fixed point rather than the first of two
+    // (pd-zg7o).
+    let seeds = pkdump_db::reconcile_ingest_dependent_seeds(&mut conn)?;
+    println!(
+        "  {} curated catalog price overrides, {} set aliases reconciled",
+        seeds.catalog_prices, seeds.set_aliases
+    );
+
+    // Same reason as the derivation's own last act (pd-t50h): `setup` writes
+    // the whole catalog and then exits, and nothing that runs afterwards will
+    // ever checkpoint what it left behind. Cheap here — a cold build has no
+    // readers — and the point is that it does not depend on that being true.
+    pkdump_db::reclaim_catalog_wal(&conn)?;
 
     println!("Setup complete: {}", db_path.display());
     Ok(())

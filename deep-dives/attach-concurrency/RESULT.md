@@ -138,6 +138,17 @@ to hedge about p95.
 
 ### B. The catalog WAL grows without bound during a refresh — `pd-t50h`
 
+> **FIXED 2026-09-03 (pd-t50h).** The measurement below stands; what it
+> describes no longer happens. Two truncating checkpoints — an opportunistic
+> one every 5s from inside variant expansion (100ms wait), and one with a 30s
+> wait at the end of the write window — bound the file during a derivation and
+> return it afterwards. `journal_size_limit`, the first mitigation this section
+> proposed, was measured and does **not** work: it truncates only when a
+> checkpoint resets, which is the thing a reader prevents. The writer also
+> moved — since pd-lunn `pkdump data refresh` writes no catalog table at all,
+> and the nightly writer is `pkdump-lake-derive shared`. See CLAUDE.md, "The
+> catalog's WAL, and what gives it back".
+
 `pkdump data refresh` writes to the catalog while the server serves reads
 (`deploy/pkdump-refresh.service` runs `podman exec` into the *running*
 container). With any reader in flight, the WAL only appends. Same writer,

@@ -53,3 +53,30 @@ wait_until() {
 		sleep "$interval"
 	done
 }
+
+# logs_match <container> <grep args...> — does this container's log carry a line
+# matching <pattern>? 0 if it does, 1 if it does not. The natural spelling of
+# this is a one-liner, and the natural spelling is WRONG (pd-pfxf):
+#
+#     podman logs "$ctr" 2>&1 | grep -q 'msg="replica sync"'   # returns 141
+#
+# `grep -q` exits the instant it matches, which closes the pipe; `podman logs`
+# is then killed by SIGPIPE and exits 141; and every harness here runs under
+# `set -o pipefail`, so the PIPELINE reports 141 — a failure — precisely when the
+# pattern was FOUND. Measured 2026-09-02 against a real sidecar whose log held 96
+# matching lines. It is not deterministic either: with few enough lines the
+# writer finishes before grep exits and the same code returns 0, so it passes on
+# a quiet box and fails on a busy one, which is the signature this repo keeps
+# mistaking for infrastructure flakiness.
+#
+# Counting reads the stream to EOF, so nothing is ever killed and the status is
+# grep's alone. Four polling loops in tests/{alarming,litestream,lake} had the
+# -q form; inside `wait_until` it does not fail loudly, it just never goes true,
+# and the gate spends its whole budget before failing for some later reason.
+#
+# Everything is passed through to grep, so -F/-E/-i work as usual.
+logs_match() {
+	local ctr="$1"
+	shift
+	[ "$(podman logs "$ctr" 2>&1 | grep -c "$@" || true)" -gt 0 ]
+}

@@ -38,7 +38,6 @@ set -uo pipefail   # NOT -e: a failed assertion must be reported, not fatal
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-LITESTREAM_IMAGE=${LITESTREAM_IMAGE:-docker.io/litestream/litestream:latest}
 MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
 MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
 
@@ -47,6 +46,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # shellcheck source=deploy/litestream-lib.sh
 . "${REPO_DIR}/deploy/litestream-lib.sh"
+# The Litestream version too, from that same file (pd-pfxf). A gate that
+# pulled `:latest` would test whatever the registry pushed last night and
+# not what any box actually runs — which is exactly how a 0.5.16 -> 0.5.17
+# retag turned three gates red on a change that touched none of them.
+LITESTREAM_IMAGE="${LITESTREAM_IMAGE:-$PKDUMP_LITESTREAM_IMAGE}"
 # For pkdump_store_stamp_unit — this gate has to record the store its instance
 # was built in, the same way setup.sh does. Sourcing does not activate anything.
 # shellcheck source=deploy/store-lib.sh
@@ -603,9 +607,27 @@ sqlite3 -cmd '.timeout 5000' "${MP}/tenants/${LAG_TENANT}.sqlite" \
 # Wait for the sidecar to publish a DIVERGED pair rather than sleeping a guess:
 # the two txids compared in the shell, because grep -E has no back-reference
 # negation and a regex that looked like it did would quietly always match.
-tenant_pair() { # -> "<replica> <db>" from the sidecar's newest line for this tenant
-	podman logs --since 120s "$LS_CTR" 2>&1 | grep -F "db=${LAG_TENANT}.sqlite" | tail -n1 |
-		sed -n 's/.*txid\.replica=\([0-9a-f]\{16\}\).*txid\.db=\([0-9a-f]\{16\}\).*/\1 \2/p'
+#
+# SELECT THE MESSAGE, NOT THE DATABASE. `db=<id>.sqlite` is on many of this
+# process's lines, and at the DEBUG level deploy/litestream.yml now asks for by
+# name (pd-pfxf) it is on most of them: with the object store stopped the
+# sidecar retries, and `msg="s3 request"` arrives several times a second while
+# `msg="replica sync"` does not. Taking the newest `db=` line therefore lands on
+# a request line that carries no TXIDs at all, and this reports
+# `caught-up(?/?)` — the two positions unreadable, rendered as agreement — on a
+# replica that really is behind. That is what failed run 33989216830 in this
+# very section, on a change that only turned the log level up.
+#
+# So: filter to the message first, exactly as deploy/backup-check.sh's
+# `sidecar_position` does, and `tail` the lines the pair was EXTRACTED from
+# rather than the ones that merely mention the database. The gate and the
+# production checker must not be able to reach different conclusions about one
+# sidecar.
+tenant_pair() { # -> "<replica> <db>" from the sidecar's newest replica-sync line
+	podman logs --since 120s "$LS_CTR" 2>&1 |
+		grep -F 'msg="replica sync"' | grep -F "db=${LAG_TENANT}.sqlite" |
+		sed -n 's/.*txid\.replica=\([0-9a-f]\{16\}\).*txid\.db=\([0-9a-f]\{16\}\).*/\1 \2/p' |
+		tail -n1
 }
 for _ in $(seq 40); do
 	read -r _r _d <<<"$(tenant_pair)"
@@ -830,9 +852,7 @@ podman run -d --name "$DIVERGED_CTR" --entrypoint sh "$MC_IMAGE" \
 # The line has to be on stdout before the checker reads it; a container that has
 # not been scheduled yet reads as a silent sidecar.
 for _ in $(seq 20); do
-	# Counted, not -q: an early match here costs the `&& break`, so the wait loop runs to
-	# its timeout and the gate reports "never saw replica sync" on a healthy sidecar.
-	[ "$(podman logs "$DIVERGED_CTR" 2>&1 | grep -cF 'replica sync' || true)" -gt 0 ] && break
+	logs_match "$DIVERGED_CTR" -F 'replica sync' && break
 	sleep 1
 done
 DIV_CONF="${WORK}/conf-diverged"
@@ -949,7 +969,7 @@ podman run -d --name "$CATCHUP_CTR" --user 0 --entrypoint sh "$MC_IMAGE" -c \
 	 echo '${CATCHUP_STAMP} txid.replica=00000000000000ff txid.db=00000000000000ff'; \
 	 sleep infinity" >/dev/null 2>&1
 for _ in $(seq 20); do
-	[ "$(podman logs "$CATCHUP_CTR" 2>&1 | grep -cF 'replica sync' || true)" -gt 0 ] && break
+	logs_match "$CATCHUP_CTR" -F 'replica sync' && break
 	sleep 1
 done
 CATCHUP_CONF="${WORK}/conf-catchup"

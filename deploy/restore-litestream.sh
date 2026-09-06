@@ -131,10 +131,13 @@ SIDECAR="pkdump-litestream-${INSTANCE}"
 VOLUME="pkdump-${INSTANCE}-data"
 CONF_DIR="${HOME}/.config/pkdump/${INSTANCE}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LS_IMG="docker.io/litestream/litestream:latest"
 
 # shellcheck source=deploy/litestream-lib.sh
 . "${SCRIPT_DIR}/litestream-lib.sh"
+# PINNED there, never `:latest` (pd-pfxf). A restore is the one operation with
+# no second chance, so the version that reads the replica back is a decision
+# rather than whatever the registry last pushed.
+LS_IMG="${LITESTREAM_IMAGE:-$PKDUMP_LITESTREAM_IMAGE}"
 
 echo "==> PokeDumpster Litestream restore"
 if [ "$REGISTRY" = true ]; then

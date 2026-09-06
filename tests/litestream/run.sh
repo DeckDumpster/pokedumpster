@@ -572,7 +572,7 @@ if [ "$DELTA_LOGGED" -eq 0 ]; then
 	echo "  --- container state: $(podman inspect -f '{{.State.Status}}' "$LS_CTR" 2>&1) ---"
 fi
 # Replication of that pickup is a second, slower step; give it its own window.
-delta_has_prefix() { tenant_prefixes | grep -qx "${LITESTREAM_S3_PATH}/delta.sqlite"; }
+delta_has_prefix() { grep -qx "${LITESTREAM_S3_PATH}/delta.sqlite" <<<"$(tenant_prefixes)"; }
 wait_until 60 1 delta_has_prefix || true
 tenant_prefixes >"$WORK/prefixes.txt"
 check "delta has its own derived prefix" "1" \

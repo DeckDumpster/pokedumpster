@@ -106,12 +106,30 @@ log "§2 the scanner finds it, and does not fire on the cure"
 # permanently red at itself. What that costs is that a genuine offender written
 # into this file is not caught by §3 — which is exactly why §2 proves the
 # scanner on fixtures it does not exclude, rather than on itself.
+#
+# OVER LOGICAL LINES, NOT PHYSICAL ONES. A backslash continuation splits the
+# idiom across two lines and it goes on working perfectly, so a scanner that
+# reads one line at a time cannot see it. That is not a hypothetical evasion —
+# it is how the last one got through (pd-pfxf): tests/litestream/run.sh spelled
+# `podman logs … | grep db=… \` on one line and `| grep -qE …` on the next, and
+# the ratchet written to catch it passed on the day it was written while the
+# offending pipeline sat two files away. Continuations are joined first, and the
+# number reported is where the logical line STARTS, which is where a reader has
+# to go to fix it.
+logical_lines() { # <file> -> "<file>:<first-lineno>:<line, continuations joined>"
+	awk '{
+		if (buf == "") { start = NR; buf = $0 } else { buf = buf " " $0 }
+		if (buf ~ /\\$/) { sub(/\\$/, "", buf); next }
+		print FILENAME ":" start ":" buf; buf = ""
+	} END { if (buf != "") print FILENAME ":" start ":" buf }' "$1"
+}
 scan() {
-	grep -rnI --binary-files=without-match \
-		--include='*.sh' --include='*.bash' --exclude=grepq_test.sh \
-		--exclude-dir=node_modules --exclude-dir=target --exclude-dir=.git \
-		--exclude-dir=.svelte-kit --exclude-dir=build --exclude-dir=dist \
-		-E '\|[[:space:]]*grep[[:space:]]+-[a-zA-Z]*q' "$1" \
+	find "$1" -type f \( -name '*.sh' -o -name '*.bash' \) \
+		! -name grepq_test.sh \
+		! -path '*/node_modules/*' ! -path '*/target/*' ! -path '*/.git/*' \
+		! -path '*/.svelte-kit/*' ! -path '*/build/*' ! -path '*/dist/*' \
+		| sort | while IFS= read -r f; do logical_lines "$f"; done \
+		| grep -E '\|[[:space:]]*grep[[:space:]]+-[a-zA-Z]*q' \
 		| grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' \
 		| cut -d: -f1,2
 }
@@ -134,15 +152,26 @@ cat > "$TMP/fixture/explained.sh" <<'FIX'
 	# and not this either: foo | grep -qE bar
 set -euo pipefail
 FIX
+# The two-line spelling, which is the one that got away last time. A scanner
+# reading physical lines finds nothing here, so this fixture is what keeps the
+# joining above from being quietly removed as an over-complication.
+cat > "$TMP/fixture/split.sh" <<'FIX'
+#!/usr/bin/env bash
+set -euo pipefail
+if podman logs "$c" 2>&1 | grep "db=x" \
+	| grep -qE 'txid'; then :; fi
+FIX
 
 FOUND="$(scan "$TMP/fixture")"
 check "the scanner flags a real pipeline into grep -q" "yes" \
 	"$(grep -qF 'offender.sh:3' <<<"$FOUND" && echo yes || echo no)"
+check "…and the two-line spelling, reported at the line it STARTS on" "yes" \
+	"$(grep -qF 'split.sh:3' <<<"$FOUND" && echo yes || echo no)"
 check "…and does not flag the herestring cure" "no" \
 	"$(grep -qF 'cured.sh' <<<"$FOUND" && echo yes || echo no)"
 check "…and does not flag a comment explaining the rule" "no" \
 	"$(grep -qF 'explained.sh' <<<"$FOUND" && echo yes || echo no)"
-check "exactly one offending line in the fixture" "1" "$(grep -c . <<<"$FOUND")"
+check "exactly two offending lines in the fixture" "2" "$(grep -c . <<<"$FOUND")"
 
 # ---------------------------------------------------------------------------
 log "§3 the real tree is clean"

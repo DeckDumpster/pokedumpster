@@ -175,7 +175,7 @@ DEFAULTED="$(
 )"
 none "no sleep takes its duration from a long default" "$DEFAULTED"
 
-log "7. logs_match answers, and nothing pipes podman logs into grep -q (pd-pfxf)"
+log "7. logs_match answers, and it is the counting form (pd-pfxf)"
 # THE TRAP. `podman logs "$c" | grep -q PATTERN` under `set -o pipefail` returns
 # 141 when the pattern IS found: grep -q exits on the first match, the pipe
 # closes, and podman dies of SIGPIPE. So the condition reads as false exactly
@@ -184,23 +184,19 @@ log "7. logs_match answers, and nothing pipes podman logs into grep -q (pd-pfxf)
 # tests/{alarming,litestream,lake} had this form; inside `wait_until` it does not
 # fail loudly, it silently never goes true and the gate burns its whole budget.
 #
-# §7a is the behaviour, over a real pipeline of the same shape rather than over a
-# container (this file is hermetic): counting to EOF is immune, -q is not.
-log "7a. the two forms, under pipefail, on a stream long enough to matter"
+# THE INVERSION ITSELF IS NOT DEMONSTRATED HERE. tests/ci/grepq_test.sh §1 runs
+# both payload sizes in a live shell and ASSERTS the flip; this file used to run
+# the -q form beside the counting one and could only print a note about what it
+# got, because "did the writer finish first" is a race and a test demanding the
+# bug reproduce would itself be flaky. What belongs here is the half that must
+# never be racy, and the claim it licenses about wait.sh.
+log "7a. counting to EOF is immune, which is why logs_match counts"
 noisy() { seq 1 200000; echo MARKER; seq 1 200000; }
-Q_RC=0
-( set -o pipefail; noisy | grep -q MARKER ) || Q_RC=$?
 C_RC=0
 ( set -o pipefail; [ "$(noisy | grep -c MARKER || true)" -gt 0 ] ) || C_RC=$?
-# Not asserted as "-q returns 141": whether the writer is still writing is a
-# race, and a test that demanded the bug reproduce would itself be flaky. What
-# IS asserted is the half that must never be racy.
 check "counting finds the marker, always" "0" "$C_RC"
 check "…and logs_match is the counting form" "yes" \
 	"$(grep -q 'grep -c' "${SCRIPT_DIR}/wait.sh" && echo yes || echo no)"
-if [[ "$Q_RC" != 0 ]]; then
-	echo "  note  the -q form returned ${Q_RC} on this run — the trap, reproduced"
-fi
 
 log "7b. the ratchet: one definition, and no harness rolls its own"
 DEFS="$(harnesses | xargs grep -ln '^logs_match() {' /dev/null)"
@@ -216,37 +212,12 @@ while IFS= read -r f; do
 	grep -q 'tests/lib/wait.sh"' "$f" || LM_UNSOURCED+="${f}"$'\n'
 done <<<"$LM_CALLERS"
 none "every logs_match caller sources tests/lib/wait.sh" "${LM_UNSOURCED%$'\n'}"
-# Stated over the TREE, like §5 and §6, because the way this comes back is a new
-# harness copying a neighbour that predates the helper.
-#
-# Over LOGICAL lines, not physical ones. A `grep -n` reads one line at a time,
-# and the trap survives a backslash continuation perfectly well — which is not a
-# hypothetical evasion, it is how the last one got through: tests/litestream/
-# run.sh had `podman logs … | grep db=… \` on one line and `| grep -qE …` on the
-# next, so this ratchet passed the day it was written while the offending
-# pipeline sat two files away. Continuations are joined first, and the reported
-# line number is where the logical line STARTS, which is where a reader has to
-# go to fix it.
-logical_lines() { # <file> -> "<file>:<first-lineno>:<line, continuations joined>"
-	awk '{
-		if (buf == "") { start = NR; buf = $0 } else { buf = buf " " $0 }
-		if (buf ~ /\\$/) { sub(/\\$/, "", buf); next }
-		print FILENAME ":" start ":" buf; buf = ""
-	} END { if (buf != "") print FILENAME ":" start ":" buf }' "$1"
-}
-RAW="$(harnesses | while IFS= read -r f; do logical_lines "$f"; done |
-	grep -E 'podman logs .*\|.*grep .*-[a-zA-Z]*q' |
-	grep -vE '^[^:]*:[0-9]+:[[:space:]]*#')"
-none "no harness pipes podman logs into grep -q" "$RAW"
-# And the ratchet has been seen catching the two-line form, so it cannot quietly
-# go back to reading physical lines: a fixture spelling the trap across a
-# continuation must be found.
-SPLIT_FIXTURE="$(mktemp)"
-printf '%s\n' 'if podman logs "$c" 2>&1 | grep "db=x" \' '  | grep -qE "txid"; then :; fi' \
-	>"$SPLIT_FIXTURE"
-check "the two-line spelling of the trap is caught" "1" \
-	"$(logical_lines "$SPLIT_FIXTURE" | grep -cE 'podman logs .*\|.*grep .*-[a-zA-Z]*q' || true)"
-rm -f "$SPLIT_FIXTURE"
+# THE TREE SCAN IS tests/ci/grepq_test.sh §3, and it is deliberately not
+# restated here. That gate reads every shell script in the repo rather than the
+# harnesses, and any writer rather than `podman logs`, so it strictly contains
+# what this section used to assert — including the backslash-continuation form,
+# which is the spelling that got through last time and which it carries its own
+# fixture for. Two ratchets for one rule is how one of them stops travelling.
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"

@@ -124,10 +124,14 @@ PODMAN_MIN_MINOR=4
 
 check_podman() {
     command -v podman >/dev/null 2>&1 || { lack podman "deploy/ci.sh builds the image and starts a --test instance"; return 1; }
-    local v major minor
-    v="$(podman --version 2>/dev/null | awk '{print $3}')"
+    local raw v major minor
+    # Keep stderr: when this fails to parse, an empty string says nothing about
+    # why, and "cannot parse podman version []" was the entire record of it on
+    # the first cold VM. Whatever podman said about itself is the answer.
+    raw="$(podman --version 2>&1)"
+    v="$(printf '%s\n' "$raw" | awk '{print $3}')"
     major="${v%%.*}"; minor="${v#*.}"; minor="${minor%%.*}"
-    case "${major:-x}${minor:-x}" in *[!0-9]*) note "cannot parse podman version [$v] -- not enforcing the floor"; return 0 ;; esac
+    case "${major:-x}${minor:-x}" in *[!0-9]*) note "cannot parse podman version from [$raw] -- not enforcing the floor"; return 0 ;; esac
     if [ "$major" -lt "$PODMAN_MIN_MAJOR" ] || { [ "$major" -eq "$PODMAN_MIN_MAJOR" ] && [ "$minor" -lt "$PODMAN_MIN_MINOR" ]; }; then
         # Not a missing binary -- a silently wrong one. Quadlet .container
         # support arrived in 4.4; older podman IGNORES .container files, so

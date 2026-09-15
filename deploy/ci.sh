@@ -234,6 +234,36 @@ set -euo pipefail
 # non-interactive shells often lack it.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
+# TMPDIR MUST NOT BE A RAM DISK.
+#
+# On a systemd distribution /tmp is a tmpfs sized at half of RAM. This suite
+# writes gigabytes through it — cargo's link staging, podman's build context,
+# every harness fixture — and the disk floor below runs against whatever
+# directory it was handed, so on a 8G VM the whole run died at:
+#
+#     ERROR: only 4G free on /tmp (floor 10G).
+#     tmpfs  3.7G  400K  3.7G  1% /tmp
+#
+# which is not a disk problem with the machine: / had 79G free at the time.
+#
+# It never fired on the old runner because that box had a disk-backed /tmp.
+# Nothing in the repository said so, which is the whole shape of this class of
+# bug: a property of one machine that the suite silently depended on.
+# deckdumpster hit exactly this on its first ephemeral VM (de-323) and fixed it
+# the same way. The durable fix is the Proxmox template giving its clones a
+# disk-backed /tmp; this holds regardless, and also covers a developer's laptop.
+#
+# Set here, before PKDUMP_CI_DISK_PATHS is built, so the floor measures the
+# directory the run will actually write to.
+case "$(stat -f -c %T "${TMPDIR:-/tmp}" 2>/dev/null)" in
+    tmpfs|ramfs)
+        TMPDIR="${HOME}/.cache/pkdump-tmp"
+        mkdir -p "$TMPDIR"
+        export TMPDIR
+        echo "==> TMPDIR moved to $TMPDIR (/tmp is a RAM disk)"
+        ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 

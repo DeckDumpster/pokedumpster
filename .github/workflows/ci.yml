@@ -221,43 +221,6 @@ jobs:
       # the step above set it. Unset means every tier; ci.sh prints the plan it
       # is running either way, so a PR log always states which tiers were
       # skipped and why.
-      # TEMPORARY (podman 5.x port). store-lib.sh's rootless-netns split was
-      # measured against podman 4.9.3 and the VM runs 5.7.0; this captures the
-      # four facts the mechanism rests on, on the real target, in one pass.
-      # Removed once the port lands.
-      - name: PROBE podman 5.x rootless-netns facts
-        continue-on-error: true
-        run: |
-          set +e
-          echo "=== podman version ==="; podman --version
-          echo; echo "=== default store: graphRoot / runRoot / tmpDir (Engine.TmpDir) ==="
-          podman info --format '{{.Store.GraphRoot}} | {{.Store.RunRoot}}' 2>&1
-          podman info --format '{{json .Store}}' 2>&1 | tr ',' '\n' | grep -i 'tmp\|graph\|run' | head
-          echo; echo "=== does [engine] tmp_dir still move Engine.TmpDir on 5.x? ==="
-          PROBE="${RUNNER_TEMP}/probe"; mkdir -p "$PROBE/storage" "$PROBE/runroot" "$PROBE/tmp"
-          CONF="$PROBE/containers.conf"
-          printf '[engine]\ntmp_dir = "%s"\n' "$PROBE/tmp" > "$CONF"
-          echo "--- without override ---"
-          podman --root "$PROBE/storage" --runroot "$PROBE/runroot" \
-            info --format '{{json .Store}}' 2>&1 | tr ',' '\n' | grep -i tmp | head -5
-          echo "--- with CONTAINERS_CONF_OVERRIDE ---"
-          CONTAINERS_CONF_OVERRIDE="$CONF" podman --root "$PROBE/storage" --runroot "$PROBE/runroot" \
-            info --format '{{json .Store}}' 2>&1 | tr ',' '\n' | grep -i tmp | head -5
-          echo; echo "=== rootless netns bring-up, debug ==="
-          CONTAINERS_CONF_OVERRIDE="$CONF" podman --root "$PROBE/storage" --runroot "$PROBE/runroot" \
-            --log-level=debug unshare --rootless-netns true 2>&1 | grep -iE 'netns|tmp dir|pasta|slirp|kill|permission|error' | head -40
-          echo; echo "=== what exists afterwards ==="
-          echo "--- XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR ---"
-          ls -la "${XDG_RUNTIME_DIR}/netns" 2>&1 | head
-          ls -la "${XDG_RUNTIME_DIR}/libpod/tmp" 2>&1 | head
-          echo "--- probe tmp ---"; find "$PROBE/tmp" -maxdepth 3 2>&1 | head -20
-          echo "--- probe runroot ---"; find "$PROBE/runroot" -maxdepth 3 -name '*netns*' 2>&1 | head
-          echo; echo "=== expected 4.9.3-scheme name for this graph root ==="
-          printf 'rootless-netns-%s\n' "$(printf '%s' "$PROBE/storage/libpod" | sha256sum | cut -c1-20)"
-          echo; echo "=== who owns the network process ==="
-          ps -eo pid,user,args | grep -iE 'pasta|slirp4netns' | grep -v grep | head
-          exit 0
-
       - name: deploy/ci.sh
         run: bash deploy/ci.sh
 

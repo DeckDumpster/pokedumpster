@@ -179,6 +179,33 @@ check_podman() {
     fi
     note "rootless network backend: $(command -v pasta || command -v slirp4netns)"
 
+    # PASTA IS PRESENT AND UNUSABLE ON THIS PLATFORM, SO A BACKEND BEING
+    # INSTALLED IS NOT THE QUESTION.
+    #
+    # Ubuntu confines pasta with /etc/apparmor.d/usr.bin.pasta, which declares no
+    # `signal` rules at all. podman launches pasta, cannot signal the process it
+    # just launched, and every rootless container on a USER-DEFINED network dies
+    # in cleanup with
+    #
+    #     rootless netns: kill network process: permission denied
+    #
+    # Measured on podman 5.7.0 + passt 0.0~git20260120, Ubuntu 26.04: this
+    # affects the DEFAULT store too, not only the alternate stores store-lib.sh
+    # creates, so it is a property of the box rather than of any one store.
+    # (Under $HOME it fails a step earlier: the profile grants `owner @{HOME}/** w`
+    # — write only — and pasta_open_ns() needs READ, so it cannot open the netns
+    # file podman hands it at all.)
+    #
+    # The drop-in below selects slirp4netns, which carries no such profile. It is
+    # what the deploy layer will need on this image too; CI is simply the first
+    # thing to run here.
+    local dropin="${HOME}/.config/containers/containers.conf.d/10-rootless-network.conf"
+    if ! grep -qs 'default_rootless_network_cmd' "$dropin" 2>/dev/null; then
+        lack "rootless network backend selection" \
+             "podman defaults to pasta, which Ubuntu's AppArmor profile makes unusable; write $dropin"
+        return 1
+    fi
+
     # UNPRIVILEGED USER NAMESPACES MUST NOT BE APPARMOR-CONFINED.
     #
     # Ubuntu 24.04 turned on kernel.apparmor_restrict_unprivileged_userns, which
@@ -374,6 +401,30 @@ if [ -w "$AA" ] || [ -n "$SUDO" ]; then
         $SUDO sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null \
             || note "WARNING: could not clear kernel.apparmor_restrict_unprivileged_userns"
     fi
+fi
+
+# See check_podman for the measurement. Box-level rather than per-store, because
+# the default store is affected too. A drop-in, not containers.conf itself, so
+# nothing a person or another tool put there is overwritten.
+DROPIN="${HOME}/.config/containers/containers.conf.d/10-rootless-network.conf"
+if ! grep -qs 'default_rootless_network_cmd' "$DROPIN" 2>/dev/null; then
+    note "selecting slirp4netns as the rootless network backend"
+    mkdir -p "$(dirname "$DROPIN")"
+    cat > "$DROPIN" <<'DROP'
+# Written by deploy/runner-deps.sh.
+#
+# podman 5.x defaults to pasta. Ubuntu confines pasta with
+# /etc/apparmor.d/usr.bin.pasta, which declares no `signal` rules, so podman
+# cannot kill the process it starts and every container on a user-defined
+# network fails cleanup with "rootless netns: kill network process: permission
+# denied". Under $HOME it fails earlier still: the profile grants write-only
+# access there and pasta_open_ns() needs read.
+#
+# slirp4netns carries no such profile. Remove this file if the profile is ever
+# fixed upstream.
+[network]
+default_rootless_network_cmd = "slirp4netns"
+DROP
 fi
 
 RUNUSER="$(id -un)"

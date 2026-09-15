@@ -14,8 +14,12 @@
 set -euo pipefail
 
 LITESTREAM_IMAGE=${LITESTREAM_IMAGE:-docker.io/litestream/litestream:latest}
-MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
-MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
+# quay.io, not Docker Hub: minio/minio and minio/mc there began refusing
+# anonymous pulls for every tag on 2026-09-15. Kept literal rather than sourced
+# from tests/lib/minio.sh — a deep-dive is a self-contained record of a run, not
+# a gate that moves with the tree.
+MINIO_IMAGE=${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}
+MC_IMAGE=${MC_IMAGE:-quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z}
 
 NET=lsmdb-net
 MINIO_CTR=lsmdb-minio

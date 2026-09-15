@@ -65,11 +65,15 @@
 set -euo pipefail
 
 NESSIE_IMAGE=${NESSIE_IMAGE:-ghcr.io/projectnessie/nessie:0.104.3}
-MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
-MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# The MinIO images, pinned and off Docker Hub, from the one definition.
+# shellcheck source=tests/lib/minio.sh
+. "${REPO_DIR}/tests/lib/minio.sh"
+MINIO_IMAGE=${MINIO_IMAGE:-$PKDUMP_MINIO_IMAGE}
+MC_IMAGE=${MC_IMAGE:-$PKDUMP_MC_IMAGE}
 
 # shellcheck source=tests/lib/diagnostics.sh
 . "${REPO_DIR}/tests/lib/diagnostics.sh"
@@ -477,7 +481,6 @@ snapshot --date "$DATE_NEW" --tenant alice >/dev/null || die "the re-run failed"
 diff <(dump "$ALICE" "$DATE_NEW") "$FIXTURE/expected-alice-${DATE_NEW}.tsv" ||
 	die "re-reading the zone did not restore alice's rows"
 echo "    ok   ${SEALED_ROW} is back, from the zone"
-
 
 # And bob, who owns no sealed product at all, has no sealed row — which is the
 # rule "a bucket exists when something is in it", not a special case.

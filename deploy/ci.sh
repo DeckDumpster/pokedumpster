@@ -377,6 +377,27 @@ if [ -n "${PKDUMP_CI_SELECT_ONLY:-}" ]; then
     exit 0
 fi
 
+# --- 0a. Are the tools this script calls actually here? -----------------------
+#
+# cargo, node, podman and sqlite3 are called below and installed by neither this
+# script nor the repository. That held for as long as CI only ever ran on one
+# box where somebody had installed them by hand — the workflow carried a step
+# that prepended ~/.cargo/bin and ~/.local/bin to PATH, added because the very
+# first run of that workflow died with `cargo: command not found`, and that PATH
+# fixup was the only place the dependency was ever written down. On a per-run VM
+# there is no such box, and this names what is missing before any gate runs
+# rather than three gates in, on a machine that is about to be destroyed.
+#
+# AFTER the SELECT_ONLY exit, deliberately. That mode promises to print the plan
+# and touch nothing, and tests/ci/select_test.sh §4 asks for the plan on
+# whatever box it runs on — a dependency check ahead of it turns "what would you
+# run" into "I cannot run", which is a different question.
+#
+# It checks; it does not install. Installing needs sudo, and a test script that
+# quietly apt-installs on someone's laptop is worse than the gap it closes.
+echo "==> Runner dependencies"
+bash "$SCRIPT_DIR/runner-deps.sh" --check
+
 # --- 0b. Container store + disk floor ----------------------------------------
 
 # shellcheck source=deploy/store-lib.sh

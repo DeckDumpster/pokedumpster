@@ -284,10 +284,13 @@ log "4c. ...and the disk the COMPILE writes to, relocated or not"
 
 # pd-6jyd. pd-fite — the incident the whole floor exists to prevent — was a
 # cargo LINK dying with `ld terminated with signal 7 [Bus error]`, and a cargo
-# link writes into CARGO_TARGET_DIR. .github/workflows/ci.yml relocates that
-# directory (and CARGO_HOME) onto a different volume DELIBERATELY, to keep the
-# compile's largest writes off the one production runs from — so the shipped
-# configuration is precisely the one the first three arms cannot see.
+# link writes into CARGO_TARGET_DIR. A relocated target dir is precisely the
+# configuration the first three arms cannot see, so it gets its own arm.
+#
+# CI no longer relocates it: each run gets its own VM, so there is no prod
+# volume on the box to keep the compile's writes off. The property still
+# matters — a developer relocating theirs, and a future template that bakes a
+# warm target dir somewhere other than $HOME, both land here.
 #
 # Two claims, and both are deterministic on any box:
 #

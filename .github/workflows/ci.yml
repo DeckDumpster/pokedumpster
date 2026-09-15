@@ -5,8 +5,35 @@ name: CI
 # CI — the suite existed, but only ever as something a human or a polecat ran by
 # hand. This is that gate.
 #
-# Modelled on deckdumpster's .github/workflows/ci.yml, same box, same runner
-# label, so the two repos work the same way.
+# EACH RUN GETS ITS OWN MACHINE. The suite runs on a Proxmox VM cloned for this
+# run and destroyed after it. The VM lifecycle is DeckDumpster/ephemeral-ci, the
+# same two composite actions deckdumpster uses; what lives here is what runs ON
+# the VM — deploy/runner-deps.sh and deploy/ci.sh.
+#
+# WHAT THAT CHANGED, because three comments in this file used to depend on the
+# opposite. CI ran on one long-lived box, and that box being the only runner was
+# load-bearing for a warm CARGO_TARGET_DIR, for a tree-hash cache on a host path,
+# and for the serialisation that made a shared target directory safe at all. All
+# three are gone with it:
+#
+#   - CARGO_TARGET_DIR / CARGO_HOME pointed at /workspaces on the old box. That
+#     path does not exist here and every run compiles cold. The warning attached
+#     to them — "two runs writing one target directory corrupts builds in ways
+#     that present as flaky tests; BEFORE ADDING A SECOND RUNNER, move to sccache
+#     or per-runner target dirs" — is now satisfied by construction rather than
+#     by there happening to be one runner. Runs are isolated because they are on
+#     different machines.
+#
+#   - The tree-hash cache keyed on /workspaces/ci-tree-cache. On a VM that has
+#     never run anything, every lookup misses and every store evaporates, so the
+#     steps were removed rather than left to log a miss they can never avoid.
+#     deploy/ci-cache.sh stays for local use. If the cold build cost justifies it,
+#     the warm caches belong baked into the Proxmox template, where each clone
+#     gets a copy-on-write copy — isolated, unlike the shared directory they
+#     replace.
+#
+#   - Runs no longer queue behind each other. Several PRs pushed together now get
+#     several VMs.
 
 on:
   pull_request:
@@ -28,7 +55,7 @@ on:
       - 'integration/**'
   workflow_dispatch:
 
-# NO `concurrency:` BLOCK — deliberately. See below.
+# NO `concurrency:` BLOCK — deliberately, and now for a second reason.
 #
 # There was one (`group: pokedumpster-ci`, `cancel-in-progress: false`), and it was
 # actively harmful. `cancel-in-progress: false` keeps the RUNNING job alive, but GitHub
@@ -40,16 +67,40 @@ on:
 # (pd-up36, pd-nons, pd-aer9, pd-kncd). Not failures — cancellations, which look identical
 # to "not started yet" in the UI. Someone had to push a "Retrigger CI" commit by hand.
 #
-# The group was written when only PRs into master triggered CI and runs arrived one at a
-# time. Adding `integration/**` to the trigger turned a rare condition into the normal one.
-#
-# It was also redundant: THERE IS EXACTLY ONE SELF-HOSTED RUNNER, and one runner already
-# serialises jobs FIFO — which is the property the group was there to provide. Removing it
-# means runs queue on the runner instead of evicting each other.
+# It was also redundant when there was exactly one runner, which serialised jobs FIFO.
+# There is no longer one runner: each run provisions its own VM, so runs are genuinely
+# concurrent and a group here would start evicting them again.
+
+permissions:
+  contents: read
 
 jobs:
+  provision:
+    runs-on: ubuntu-latest
+    outputs:
+      vmid: ${{ steps.vm.outputs.vmid }}
+      label: ${{ steps.vm.outputs.label }}
+    steps:
+      - uses: DeckDumpster/ephemeral-ci/provision@v1
+        id: vm
+        with:
+          ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts-oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
+          runner-reg-pat:     ${{ secrets.RUNNER_REG_PAT }}
+          pve-token-id:       ${{ secrets.PVE_TOKEN_ID }}
+          pve-token-secret:   ${{ secrets.PVE_TOKEN_SECRET }}
+          pve-api-host:       ${{ vars.PVE_API_HOST }}
+          pve-node:           ${{ vars.PVE_NODE }}
+          template-vmid:      ${{ vars.TEMPLATE_VMID }}
+
+  # NAMED `test` BECAUSE THAT NAME IS A CONTRACT. The `pr-required` ruleset on
+  # master requires a status check called `test`, and the commit status posted at
+  # the end of this job uses `test` as its context for the same reason. A required
+  # check that never reports does not fail the pull request — it blocks the merge
+  # indefinitely while every job in the run is green.
   test:
-    runs-on: [self-hosted, rgantt]
+    needs: provision
+    runs-on: [self-hosted, "${{ needs.provision.outputs.label }}"]
     # statuses:write for the final step, which posts this run's result as a COMMIT
     # STATUS. The repo default is read-only (default_workflow_permissions=read), so
     # without this the POST 403s and the belt-and-braces below silently does
@@ -59,40 +110,36 @@ jobs:
       statuses: write
     # The suite builds a container, drives Playwright over every route at two
     # viewports, and executes two DR drills against a throwaway MinIO. It is not
-    # a two-minute job; the default 360m is just too loose to catch a hang.
-    timeout-minutes: 60
+    # a two-minute job, and it now also compiles Rust from cold.
+    timeout-minutes: 90
     env:
       # Rootless podman and `systemctl --user` need this; a non-login runner
       # process does not get it for free.
       XDG_RUNTIME_DIR: /run/user/1000
-      # -- Warm Rust build cache -------------------------------------------
-      # Measured 2026-08-12: one run compiled 352 crates FOUR times -- cargo test
-      # (test profile, 5m18s), cargo clippy (dev profile, 2m11s), and again inside
-      # the container image -- while the tests themselves finish in seconds.
-      # Nothing was cached, on a runner that persists between runs.
-      #
-      # !! SAFE ONLY BECAUSE THERE IS EXACTLY ONE RUNNER AND THE `concurrency`
-      #    GROUP ABOVE SERIALISES EVERY JOB. Two runs writing one target directory
-      #    corrupts builds in ways that present as flaky tests. BEFORE ADDING A
-      #    SECOND RUNNER, move to sccache or per-runner target dirs.
-      #
-      # !! THAT WARNING NOW CARRIES A SECOND OBLIGATION. Serialisation comes from there
-      #    being one runner, not from a `concurrency:` block — the block was removed
-      #    because it cancelled queued runs rather than queueing them. A second runner
-      #    would therefore allow two CI runs to share this target dir AND the rootless
-      #    podman store at once. Adding one means solving both, not just the cache.
-      #
-      # On /workspaces deliberately: / is the 98 G volume production runs from.
-      CARGO_TARGET_DIR: /workspaces/ci-cargo-target
-      CARGO_HOME: /workspaces/ci-cargo-home
     steps:
-      # fetch-depth: 0 so the PR's base commit is present locally and the
-      # changed-path list below can be computed without a second network round
-      # trip. The runner is self-hosted and reuses its checkout, so after the
-      # first run this is an incremental fetch.
       - uses: actions/checkout@v4
         with:
+          # fetch-depth: 0 so the PR's base commit is present locally and the
+          # changed-path list below can be computed without a second network
+          # round trip. On a fresh VM this is a full clone every time; it is
+          # still cheaper than fetching the base separately and then failing
+          # open to the whole suite when it is unavailable.
           fetch-depth: 0
+
+      - name: Confirm the job landed on the ephemeral VM
+        run: test "$RUNNER_NAME" = "${{ needs.provision.outputs.label }}"
+
+      # THE TOOLCHAIN IS INSTALLED, NOT ASSUMED. This replaces two steps that
+      # only ever worked on one box: one that prepended ~/.cargo/bin and
+      # ~/.local/bin to PATH (added because the very first run of this workflow
+      # died with `cargo: command not found`), and one that checked a list of
+      # commands were reachable. Both encoded the dependency list somewhere
+      # nothing else could read. deploy/runner-deps.sh is that list, executable,
+      # and it re-checks itself after installing — so a partial install fails
+      # here rather than three gates into ci.sh on a machine that is about to
+      # stop existing.
+      - name: Install runner dependencies
+        run: bash deploy/runner-deps.sh
 
       # Tier selection (pd-s2mj). Which tiers ci.sh runs is decided from the
       # paths this PR touched — docs-only runs the lint tier, a change confined
@@ -105,11 +152,6 @@ jobs:
       # workflow_dispatch, a developer, a polecat and any future push-triggered
       # run all leave PKDUMP_CI_CHANGED_FILES unset, and ci.sh with no list runs
       # every tier. Nothing has to remember to ask for the full suite.
-      #
-      # (CI does not currently run on a push to master at all — master is
-      # protected by a bypass-free ruleset, so every commit on it arrived
-      # through a green PR. If a push trigger is ever added, this step's
-      # condition is already the thing that keeps master unselectable.)
       #
       # Fail closed on every way this can go wrong: a base commit that is not
       # available, a diff that errors, an empty result. Each one leaves the
@@ -147,31 +189,6 @@ jobs:
           sed 's/^/  /' "$list"
           echo "PKDUMP_CI_CHANGED_FILES=${list}" >> "$GITHUB_ENV"
 
-      # The runner service is not a login shell, so nothing has sourced
-      # ~/.cargo/env or the profile that adds ~/.local/bin. Both toolchains are
-      # installed per-user on this box — cargo/rustc under ~/.cargo/bin, node/npm
-      # under ~/.local/bin — so without this the very first gate dies with
-      # `cargo: command not found`. (It did: the first run of this workflow.)
-      #
-      # $HOME-relative and via $GITHUB_PATH rather than a literal path in `env:`.
-      # A hardcoded /home/<user> would put this one box's layout back into the
-      # repo, which is the thing pd-rf7c took out.
-      - name: Put the per-user toolchains on PATH
-        run: |
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      # Fail with a list of what is missing, rather than partway through gate 3
-      # with whichever one happened to be reached first.
-      - name: Check the toolchain is reachable
-        run: |
-          missing=""
-          for t in cargo rustc node npm python3 podman sqlite3 curl; do
-            command -v "$t" >/dev/null || missing="$missing $t"
-          done
-          [ -z "$missing" ] || { echo "not on PATH:$missing"; exit 1; }
-          echo "toolchain OK: $(cargo --version), $(node --version), $(podman --version)"
-
       # ONE step, calling the same script a developer and a polecat run.
       #
       # Deliberately not decomposed into per-gate steps. Every drift bug this
@@ -186,63 +203,16 @@ jobs:
       # derives a per-checkout instance name and tears down via an EXIT trap, so
       # no cleanup step is needed here.
       #
-      # PKDUMP_STORE_ROOT is deliberately NOT set: the runner executes as the same
-      # user whose ~/.config/pkdump/store.env already points non-prod container
-      # storage at the big disk, and ci.sh reads that file itself. Setting it here
-      # would put the box's disk layout back into the repo, which is the thing
-      # pd-rf7c removed.
+      # PKDUMP_STORE_ROOT is deliberately NOT set: ci.sh reads
+      # ~/.config/pkdump/store.env itself where one exists, and on a VM with a
+      # single disk there is no non-prod store to separate anything from.
       #
       # PKDUMP_CI_CHANGED_FILES arrives from $GITHUB_ENV when — and only when —
       # the step above set it. Unset means every tier; ci.sh prints the plan it
       # is running either way, so a PR log always states which tiers were
       # skipped and why.
-      # TREE-HASH CACHE (read). The runner is serialised box-wide and the suite is
-      # ~17 minutes, so re-proving a tree that already passed is the most expensive
-      # no-op here: a rebase that changes nothing, a docs commit on a tested branch,
-      # two PRs converging on the same content.
-      #
-      # The key is (epoch, tree, TIER SET). The tier set is not decoration — a
-      # docs-only PR runs `lint` alone, and keying on the tree alone would let that
-      # pass later certify a run that needed eleven container gates which never
-      # executed. deploy/ci-cache.sh --self-test asserts that in both directions.
-      #
-      # On pull_request, actions/checkout leaves HEAD at the MERGE commit, so the
-      # tree hashed is exactly the tree tested.
-      - name: Tree-hash cache — has this exact tree already passed these tiers?
-        id: treecache
-        run: |
-          if [ -n "${PKDUMP_CI_CHANGED_FILES:-}" ]; then
-            tiers="$(bash deploy/ci-select.sh < "$PKDUMP_CI_CHANGED_FILES")"
-          else
-            tiers="$(bash deploy/ci-select.sh --all-tiers)"
-          fi
-          echo "tier plan: $(echo $tiers | tr '\n' ' ')"
-          if ! key="$(bash deploy/ci-cache.sh key $tiers)"; then
-            echo "could not key this tree — running the suite"; exit 0
-          fi
-          echo "key=${key}" >> "$GITHUB_OUTPUT"
-          if bash deploy/ci-cache.sh lookup "$key"; then
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-            echo "CACHE HIT — this tree already passed these tiers; skipping the suite"
-          else
-            echo "cache miss — running the suite"
-          fi
-
       - name: deploy/ci.sh
-        if: steps.treecache.outputs.hit != 'true'
         run: bash deploy/ci.sh
-
-      # TREE-HASH CACHE (write). Successes only, and only because this step is
-      # reached only when nothing above failed — a cached RED would be a tree that
-      # can never go green again without a human clearing it, and flakiness is what
-      # motivated the cache in the first place. Skipped on a hit: rewriting the
-      # entry would refresh its mtime and let one result live past its TTL forever.
-      - name: Tree-hash cache — record the pass
-        if: success() && steps.treecache.outputs.hit != 'true' && steps.treecache.outputs.key != ''
-        run: |
-          bash deploy/ci-cache.sh store "${{ steps.treecache.outputs.key }}" \
-            "${{ github.event_name }} ${{ github.run_id }}"
-          bash deploy/ci-cache.sh prune
 
       # BELT AND BRACES: report this run as a commit status, whatever triggered it.
       #
@@ -279,3 +249,23 @@ jobs:
             -f target_url="${RUN_URL}" \
             -f description="deploy/ci.sh (${{ github.event_name }})" >/dev/null
           echo "posted commit status ${STATE} for ${SHA} (context: test)"
+
+  # if: always() is load-bearing. A cancelled or failed run otherwise leaves the
+  # VM running, and the hourly reaper in DeckDumpster/ephemeral-ci becomes the
+  # only thing that cleans up — which is a backstop, not a plan.
+  teardown:
+    needs: [provision, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: DeckDumpster/ephemeral-ci/teardown@v1
+        with:
+          vmid:  ${{ needs.provision.outputs.vmid }}
+          label: ${{ needs.provision.outputs.label }}
+          runner-reg-pat:     ${{ secrets.RUNNER_REG_PAT }}
+          ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts-oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
+          pve-token-id:       ${{ secrets.PVE_TOKEN_ID }}
+          pve-token-secret:   ${{ secrets.PVE_TOKEN_SECRET }}
+          pve-api-host:       ${{ vars.PVE_API_HOST }}
+          pve-node:           ${{ vars.PVE_NODE }}

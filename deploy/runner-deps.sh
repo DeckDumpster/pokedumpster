@@ -332,12 +332,81 @@ check_chromium_libs() {
     return 1
 }
 
+# ---------------------------------------------------------------------------
+# The fonts the visual baselines were recorded against.
+#
+# Separate from CHROMIUM_LIBS because it is a different failure mode: a missing
+# library stops the browser from launching and says so, while a missing font
+# launches fine and renders the page in a substitute -- so the suite fails as a
+# diff against the baselines, which reads as a CSS regression and is not one.
+# That is how this arrived: the first ephemeral run put 34 of 82 visual tests
+# red with the page chrome around the changed pixels byte-identical.
+#
+# Two independent gaps, two packages:
+#
+#   fonts-liberation       The app's own text is not affected -- its stack
+#                          starts at `system-ui`, which fontconfig answers with
+#                          DejaVu either way. Form controls are. Blink does not
+#                          style `<input>`, `<select>` and `<button>` from the
+#                          page's font stack; it resolves them through the Arial
+#                          alias, and with no metric-compatible Arial installed
+#                          fontconfig substitutes the wider DejaVu Sans. Every
+#                          route in routes.json carrying a control then differs
+#                          from its baseline and the seven carrying none do not
+#                          -- which was exactly the split. Installing it moves
+#                          nothing else: `fc-match sans-serif` still answers
+#                          DejaVu, so only the controls change.
+#
+#   fonts-noto-color-emoji The emoji in the app's own copy -- the cart on
+#                          "Buy missing", the popper on the empty unresolved
+#                          queue. No font on a base Ubuntu covers U+1F6D2 or
+#                          U+1F389, so they render as tofu boxes. Four routes,
+#                          and the only ones left once Liberation was in.
+#
+# The shared box this suite used to run on had both, because an earlier
+# `playwright install-deps` pulled them in. Nothing recorded that, which is why
+# neither came along with the move to a per-run VM.
+# ---------------------------------------------------------------------------
+# fontconfig for fc-match/fc-list themselves: the base cloud image carries
+# libfontconfig1 but not the binaries, so without it check_fonts cannot run the
+# measurement it exists to make.
+FONT_PKGS=(fontconfig fonts-liberation fonts-noto-color-emoji)
+
+# Codepoints the app actually renders, not a package list: a box that covers
+# them some other way is not made to install ours.
+FONT_GLYPHS=(1f6d2 1f389)   # shopping cart, party popper
+
+check_fonts() {
+    command -v fc-match >/dev/null 2>&1 || {
+        lack "fontconfig (fc-match, fc-list)" \
+             "the visual baselines depend on which faces fontconfig picks"
+        return 1
+    }
+
+    local rc=0 cp
+    case "$(fc-match -f '%{family}' Arial 2>/dev/null)" in
+        *Liberation*|*Arimo*|*Arial*) ;;
+        *)  lack "a metric-compatible Arial (fonts-liberation)" \
+                 "without it Blink draws every form control in DejaVu and the visual tier fails as a diff"
+            rc=1 ;;
+    esac
+
+    for cp in "${FONT_GLYPHS[@]}"; do
+        [ -n "$(fc-list ":charset=${cp}" family 2>/dev/null)" ] && continue
+        lack "an emoji face covering U+${cp^^} (fonts-noto-color-emoji)" \
+             "the app renders that character and it comes out as a tofu box"
+        rc=1
+    done
+    return $rc
+}
+
 run_checks() {
     MISSING=()
     check_base;   check_podman
     check_subid;  check_linger
     check_rust;   check_node
     check_chromium_libs
+    check_fonts
 }
 
 if [ "$MODE" = check ]; then
@@ -360,6 +429,9 @@ command -v podman >/dev/null 2>&1 || apt_install podman uidmap fuse-overlayfs
 # lack pasta, and a bridge network is the only thing that notices.
 apt_install passt slirp4netns
 apt_install "${CHROMIUM_LIBS[@]}"
+# See check_fonts: not cosmetic. Without these the visual tier goes red on a
+# third of its routes and reads as a CSS regression.
+apt_install "${FONT_PKGS[@]}"
 
 # rustup, not the distro toolchain -- see check_rust. --no-modify-path because
 # this script puts ~/.cargo/bin on PATH itself and a profile edit would only

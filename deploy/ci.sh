@@ -425,6 +425,32 @@ fi
 #
 # It checks; it does not install. Installing needs sudo, and a test script that
 # quietly apt-installs on someone's laptop is worse than the gap it closes.
+# THE PER-USER TOOLCHAINS GO ON PATH HERE, NOT IN runner-deps.sh.
+#
+# rustup installs cargo under ~/.cargo/bin and several tools land in
+# ~/.local/bin, and a runner service is not a login shell, so nothing has
+# sourced the profile that adds either. runner-deps.sh does export them — but
+# only into ITSELF, and a child process cannot export to its parent. So
+# runner-deps.sh found cargo, reported every dependency present, and `cargo fmt
+# --check` two hundred lines later died with status 127.
+#
+# The old workflow did this with `echo "$HOME/.cargo/bin" >> $GITHUB_PATH`,
+# which worked and was reachable only from CI. Doing it here means a developer,
+# a polecat and CI all get the same answer from `command -v cargo`, and there is
+# no second copy of the list to drift.
+#
+# $HOME-relative, never a literal /home/<user>: a hardcoded path would put one
+# box's layout back into the repo, which is the thing pd-rf7c took out.
+case ":${PATH}:" in
+    *":${HOME}/.cargo/bin:"*) ;;
+    *) PATH="${HOME}/.cargo/bin:${PATH}" ;;
+esac
+case ":${PATH}:" in
+    *":${HOME}/.local/bin:"*) ;;
+    *) PATH="${HOME}/.local/bin:${PATH}" ;;
+esac
+export PATH
+
 echo "==> Runner dependencies"
 bash "$SCRIPT_DIR/runner-deps.sh" --check
 

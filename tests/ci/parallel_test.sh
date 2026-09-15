@@ -98,14 +98,38 @@ log "1. The cap is real: six gates, three at a time, and they overlap"
 # Milliseconds, not nanoseconds: `sort -n` and awk carry ~19 significant
 # digits, which is exactly where a nanosecond epoch sits, and an overlap count
 # computed from silently-rounded keys would be a test that lies.
+#
+# AND THAT IS NOT WHAT `date +%s%3N` GIVES YOU EVERYWHERE. GNU coreutils
+# honours the `%3N` width modifier; uutils coreutils — the Rust
+# reimplementation Ubuntu now ships — IGNORES it and emits all nine nanosecond
+# digits. So this file asked for milliseconds, silently got a 19-digit
+# nanosecond epoch, and became exactly the test its own comment warned about:
+#
+#     s1.start  1789492777279655533
+#     s3.end      17894927785822126     <- rounded through a double
+#
+# A rounded `end` sorts to the front of the event stream, the running count
+# goes negative, and the maximum overlap reads 0 for a run in which three gates
+# demonstrably executed. On the old runner GNU date made `%3N` work and this
+# never fired; on the ephemeral VM's image it fires perhaps a third of the time
+# and reports a different wrong number each way (0, 2, 4).
+#
+# Integer division in the shell instead, which is exact on any date: bash
+# arithmetic is 64-bit and a nanosecond epoch is ~1.8e18, comfortably inside it.
+#
+# THE RUNNER ITSELF WAS NEVER AT FAULT. Probed separately with atomic mkdir
+# slots and no clock at all, peak concurrency is exactly 1 at cap 1 and exactly
+# 3 at cap 3 over 15 iterations each. Only the measurement was broken.
+now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 STAMPS="${WORK}/stamps"
 # A gate: stamp, wait until three gates have started, hold for a beat, stamp.
 # The hold is what makes the overlap measurable — without it a gate can be gone
 # before the next is dispatched, and six uncapped gates would look like three.
 # The barrier is what makes it deterministic rather than a race with `sleep`.
 cat >"${WORK}/gate.sh" <<EOF
+now_ms() { echo \$(( \$(date +%s%N) / 1000000 )); }
 L="\$1"
-date +%s%3N > "${STAMPS}/\$L.start"
+now_ms > "${STAMPS}/\$L.start"
 n=0
 for _ in \$(seq 1 60); do
 	n=\$(find "${STAMPS}" -name "*.start" | wc -l)
@@ -114,7 +138,7 @@ for _ in \$(seq 1 60); do
 done
 [ "\$n" -ge 3 ] || { echo "barrier never reached (\$n started)"; exit 1; }
 sleep 0.4
-date +%s%3N > "${STAMPS}/\$L.end"
+now_ms > "${STAMPS}/\$L.end"
 EOF
 
 # Max overlap across every recorded interval.
@@ -150,7 +174,7 @@ rm -rf "$STAMPS"
 mkdir -p "$STAMPS"
 body=""
 for g in s1 s2 s3; do
-	body+="pkdump_par_add ${g} bash -c 'date +%s%3N > ${STAMPS}/${g}.start; sleep 0.2; date +%s%3N > ${STAMPS}/${g}.end'"$'\n'
+	body+="pkdump_par_add ${g} bash -c 'echo \$(( \$(date +%s%N) / 1000000 )) > ${STAMPS}/${g}.start; sleep 0.2; echo \$(( \$(date +%s%N) / 1000000 )) > ${STAMPS}/${g}.end'"$'\n'
 done
 out="$(PKDUMP_CI_JOBS=1 drive "$body")"
 check "at cap 1 every gate still runs" "0" "$(rc_of "$out")"
@@ -284,10 +308,13 @@ log "4c. ...and the disk the COMPILE writes to, relocated or not"
 
 # pd-6jyd. pd-fite — the incident the whole floor exists to prevent — was a
 # cargo LINK dying with `ld terminated with signal 7 [Bus error]`, and a cargo
-# link writes into CARGO_TARGET_DIR. .github/workflows/ci.yml relocates that
-# directory (and CARGO_HOME) onto a different volume DELIBERATELY, to keep the
-# compile's largest writes off the one production runs from — so the shipped
-# configuration is precisely the one the first three arms cannot see.
+# link writes into CARGO_TARGET_DIR. A relocated target dir is precisely the
+# configuration the first three arms cannot see, so it gets its own arm.
+#
+# CI no longer relocates it: each run gets its own VM, so there is no prod
+# volume on the box to keep the compile's writes off. The property still
+# matters — a developer relocating theirs, and a future template that bakes a
+# warm target dir somewhere other than $HOME, both land here.
 #
 # Two claims, and both are deterministic on any box:
 #
@@ -490,6 +517,66 @@ for g in $GATES; do
 	check "${g} names its resources per-checkout" "yes" \
 		"$(grep -qE 'sha1sum' "${REPO_DIR}/${g}" && echo yes || echo no)"
 done
+
+# ---------------------------------------------------------------------------
+log "8. A gate that HANGS is stopped, and the wave still reports"
+
+# WHY. A gate's output is buffered to its own log and printed only when it
+# finishes, and the dispatch loop blocks in `wait -n`. So a gate that stops
+# making progress is silent AND stops the wave — on 2026-09-15 one did exactly
+# that and took the GitHub job to its 90-minute cap, which cancelled the run and
+# reported nothing about any tier, including the sixteen gates that had already
+# passed. The bound is what turns that into one TIMEOUT line beside real
+# results, so this asserts both halves: the hung gate is stopped, and its
+# neighbours are still reported.
+# The hung gate LOOPS rather than sleeping once: a `sleep 600` would be a truer
+# one-liner but tests/lib/wait_test.sh §6 forbids a sleep past its ceiling
+# tree-wide, and rightly — it cannot tell a simulated hang from the fixed waits
+# that rule exists to remove. A loop that never ends is a better stand-in
+# anyway: the gate does not finish late, it does not finish.
+OUT="$(PKDUMP_CI_GATE_TIMEOUT=2 drive '
+pkdump_par_add quick bash -c "echo quick-ran; exit 0"
+pkdump_par_add hung  bash -c "echo hung-started; while :; do sleep 1; done"
+pkdump_par_add after bash -c "echo after-ran; exit 0"
+')"
+check "the wave is red when a gate times out" "1" "$(rc_of "$OUT")"
+check "the hung gate is named as failed" "1" \
+	"$(printf '%s\n' "$(failed_of "$OUT")" | grep -c hung)"
+check "it is reported as TIME, not as an ordinary FAIL" "1" \
+	"$(printf '%s\n' "$OUT" | grep -cE '^ *TIME +hung')"
+check "and it says what that means" "1" \
+	"$(printf '%s\n' "$OUT" | grep -c 'was still running after 2s')"
+# The half that matters as much: a hang must not cost the other gates' results.
+check "a gate queued before it still reported" "1" \
+	"$(printf '%s\n' "$OUT" | grep -c 'quick-ran')"
+check "a gate queued after it still ran" "1" \
+	"$(printf '%s\n' "$OUT" | grep -c 'after-ran')"
+# And the wave actually ENDS, rather than the bound merely being printed.
+check "the run finished rather than hanging itself" "1" \
+	"$(printf '%s\n' "$OUT" | grep -c 'DRIVE_RC=')"
+
+# A gate inside the bound is untouched — the bound must not become the thing
+# that fails healthy runs.
+OUT="$(PKDUMP_CI_GATE_TIMEOUT=60 drive '
+pkdump_par_add slowish bash -c "sleep 2; echo slowish-done; exit 0"
+')"
+check "a gate well inside the bound passes" "0" "$(rc_of "$OUT")"
+check "…and ran to completion" "1" \
+	"$(printf '%s\n' "$OUT" | grep -c 'slowish-done')"
+
+# The bound is validated like the cap beside it, and for the same reason: a
+# typo'd override must be a refusal, not an unbounded run.
+for bad in 0 abc 12x -5; do
+	OUT="$(PKDUMP_CI_GATE_TIMEOUT="$bad" drive 'pkdump_par_add g true')"
+	check "PKDUMP_CI_GATE_TIMEOUT='${bad}' is refused" "1" "$(rc_of "$OUT")"
+done
+# EMPTY is not a typo, it is "unset" — ${VAR:-default} cannot tell them apart,
+# so the default applies. Asserted rather than left to be discovered, because
+# the `''` arm of the validating case is unreachable for exactly this reason and
+# reads as though it were live. PKDUMP_CI_JOBS beside it behaves identically;
+# this is the contract of both, not an accident of one.
+OUT="$(PKDUMP_CI_GATE_TIMEOUT="" drive 'pkdump_par_add g true')"
+check "an EMPTY bound means unset, and the default applies" "0" "$(rc_of "$OUT")"
 
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"

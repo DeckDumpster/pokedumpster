@@ -24,11 +24,21 @@
 # someone else's program is exactly the kind that stops being true quietly. So
 # this file asks podman:
 #
+# RE-MEASURED ON PODMAN 5.7.0 (Ubuntu 26.04), and the answers changed. podman
+# now builds the namespace under the store's OWN runroot —
+# <runroot>/networks/rootless-netns/ — so the split this repo hand-built with
+# `[engine] tmp_dir` is something podman does by itself, the sha256 naming
+# scheme is gone, and the pd-3zjt wedge cannot be constructed at all. §5 asserts
+# that inversion rather than dropping, so it fails again if it ever comes back.
+# What has NOT changed is why this file exists: that all of it is a fact about
+# someone else's program, and facts like that stop being true quietly.
+#
 #   §1 an activated store's rootless netns is built under ITS OWN runroot
 #   §2 the shared directory is not created by that, and not touched if it exists
 #   §3 pkdump_store_netns_name derives the name podman really used
 #   §4 a caller with none of our environment gets the split anyway
-#   §5 a store wedged FOR REAL is repaired, and the first start after it works
+#   §5 the pd-3zjt wedge can no longer be constructed, and the guard the lake
+#      jobs call is still a safe no-op
 #
 # NOT hermetic — it runs real podman. It needs no image, no container, no
 # network and no registry: `podman unshare --rootless-netns true` runs the same
@@ -109,6 +119,24 @@ GRAPH="${STORE_ROOT}/storage"
 check "podman resolves to the throwaway store" "$GRAPH" \
 	"$(podman info --format '{{.Store.GraphRoot}}' 2>/dev/null)"
 
+# WHERE DOES PODMAN SAY IT IS BUILDING THE NAMESPACE?
+#
+# podman 4.9 left the scaffolding on disk after the probe exited, so the test
+# could look for a directory. podman 5.x tears the namespace down when its last
+# user goes away, so nothing survives the probe to inspect — "absent" afterwards
+# is correct behaviour, not a failure.
+#
+# So ask podman directly. It states the path as it creates it:
+#
+#   msg="Creating rootless network namespace at \"<runroot>/networks/rootless-netns/rootless-netns\""
+#
+# which is the property itself rather than a side effect of it, and it is
+# readable whether or not the namespace outlives the command.
+netns_create_path() { # netns_create_path [env-stripping prefix...]
+	"$@" podman --log-level=debug unshare --rootless-netns true 2>&1 |
+		sed -n 's/.*Creating rootless network namespace at \\"\([^\\]*\)\\".*/\1/p' | tail -1
+}
+
 # The probe. Same code path a `podman run --network <user-defined>` takes to set
 # the namespace up, and the same error when it cannot.
 PROBE_OUT="$(podman unshare --rootless-netns true 2>&1)"
@@ -119,8 +147,9 @@ check "the rootless netns comes up" "0" "$PROBE_RC"
 # THE MEASUREMENT. Not "a directory exists" — the scaffolding is the bind mount
 # tree podman mounts the namespace's /run into, so the store's own runroot has to
 # be where that tree ends up.
-check "its scaffolding is inside this store's runroot" "present" \
-	"$([ -d "${RUNROOT}/libpod-tmp/rootless-netns/run/user/${UID_N}" ] && echo present || echo absent)"
+NETNS_PATH="$(netns_create_path)"
+check "the namespace is built inside this store's runroot" "inside" \
+	"$(case "${NETNS_PATH:-}" in "${RUNROOT}"/*) echo inside ;; "") echo "<podman said nothing>" ;; *) echo "${NETNS_PATH}" ;; esac)"
 # podman's own marker that it used this tmp dir, and what
 # pkdump_store_netns_repair keys on to know a store is post-split. If podman ever
 # stops writing it, the repair silently starts reading the wrong directory.
@@ -137,8 +166,11 @@ log "2. The shared directory is left exactly as it was found"
 
 check "unchanged by a non-prod store coming up" "$SHARED_BEFORE" \
 	"$([ -d "$SHARED" ] && echo present || echo absent)"
+# Compared against the path podman ACTUALLY used, not against a path this file
+# predicts. Predicting it is what went stale when podman moved the namespace out
+# of Engine.TmpDir and under the runroot.
 check "and it is not where this store was sent" "different" \
-	"$([ "${RUNROOT}/libpod-tmp/rootless-netns" = "$SHARED" ] && echo same || echo different)"
+	"$([ "${NETNS_PATH:-}" = "$SHARED" ] && echo same || echo different)"
 
 # ---------------------------------------------------------------------------
 log "3. The name podman gives it is the name the repair derives"
@@ -151,9 +183,20 @@ log "3. The name podman gives it is the name the repair derives"
 # loudly instead of becoming a repair that never fires and a teardown that
 # leaves its namespace behind.
 
-DERIVED="$(pkdump_store_netns_name "$GRAPH")"
-check "the derived name is the file podman created" "present" \
-	"$([ -e "${RUNDIR}/netns/${DERIVED}" ] && echo present || echo absent)"
+# podman 5.x does not use this scheme. It puts ONE namespace per store at a
+# fixed path under that store's runroot — <runroot>/networks/rootless-netns/ —
+# with no hash and nothing in $XDG_RUNTIME_DIR/netns at all, so there is no
+# derived name left to agree about.
+#
+# pkdump_store_netns_name and pkdump_store_netns_repair are kept for stores
+# CREATED under 4.9, whose libpod database still pins the shared tmp dir. What
+# is asserted here is the thing that replaced them: the path is the store's own
+# runroot, so it can only ever be derived from something this store owns, and
+# prod's is never computed.
+check "the namespace path is derived from this store's runroot" "yes" \
+	"$(case "${NETNS_PATH:-}" in "${RUNROOT}"/networks/*) echo yes ;; *) echo "no (${NETNS_PATH:-<none>})" ;; esac)"
+check "and nothing was put in the shared netns directory" "absent" \
+	"$([ -e "${RUNDIR}/netns/$(pkdump_store_netns_name "$GRAPH")" ] && echo present || echo absent)"
 
 # ---------------------------------------------------------------------------
 log "4. A caller that never sets the override gets the split anyway"
@@ -189,13 +232,14 @@ check "podman reads the store's tmp dir out of its own database" "${RUNROOT}/lib
 env -u CONTAINERS_CONF_OVERRIDE podman unshare --rootless-netns true >/dev/null 2>&1
 QUADLET_RC=$?
 check "and a bridge container it starts comes up" "0" "$QUADLET_RC"
-check "still under this store's runroot" "present" \
-	"$([ -d "${RUNROOT}/libpod-tmp/rootless-netns/run/user/${UID_N}" ] && echo present || echo absent)"
+QUADLET_NETNS="$(netns_create_path env -u CONTAINERS_CONF_OVERRIDE)"
+check "still under this store's runroot" "inside" \
+	"$(case "${QUADLET_NETNS:-}" in "${RUNROOT}"/*) echo inside ;; "") echo "<podman said nothing>" ;; *) echo "${QUADLET_NETNS}" ;; esac)"
 check "with the shared directory still as it was found" "$SHARED_BEFORE" \
 	"$([ -d "$SHARED" ] && echo present || echo absent)"
 
 # ---------------------------------------------------------------------------
-log "5. Wedged for real, repaired for real, and the FIRST start after it works"
+log "5. The wedge cannot be constructed, and the guard is still safe to call"
 # ---------------------------------------------------------------------------
 #
 # Everything above is about the split that PREVENTS the wedge. This is the other
@@ -215,16 +259,28 @@ log "5. Wedged for real, repaired for real, and the FIRST start after it works"
 # prod's store — which never opts in — is a different directory that §2 asserts
 # is untouched throughout.
 
-WEDGE_SCAFFOLD="${RUNROOT}/libpod-tmp/rootless-netns"
+# THE WEDGE NO LONGER REPRODUCES, AND THAT IS THE RESULT.
+#
+# This section used to remove the scaffolding and assert that the next start
+# FAILED — the exact state pd-3zjt left prod in, a netns file that still looks
+# valid mounted into a directory that is gone. On podman 5.x that state cannot
+# be constructed: the namespace is per-runroot and rebuilt on demand, so
+# removing the scaffolding, or the whole networks directory, is followed by a
+# clean start.
+#
+# A test whose premise has stopped being true must say so, not be quietly
+# deleted and not be re-pointed at something easier. The assertion is inverted
+# on purpose: it now FAILS if the wedge ever becomes reproducible again, which
+# is precisely when this repo would need its repair machinery back.
+WEDGE_SCAFFOLD="${RUNROOT}/networks/rootless-netns"
 rm -rf "$WEDGE_SCAFFOLD"
-
-# The wedge has to be real before the repair means anything. This is the exact
-# state pd-3zjt left prod in: a netns file that still looks valid, mounted into
-# a directory that is gone.
 podman unshare --rootless-netns true >/dev/null 2>&1
 WEDGED_RC=$?
-check "removing the scaffolding wedges the store" "1" \
-	"$([ $WEDGED_RC -eq 0 ] && echo 0 || echo 1)"
+check "removing the scaffolding no longer wedges the store" "0" "$WEDGED_RC"
+
+rm -rf "${RUNROOT}/networks"
+podman unshare --rootless-netns true >/dev/null 2>&1
+check "nor does removing the whole networks directory" "0" "$?"
 
 # A readiness command that would FAIL if it were ever run. Nothing is running in
 # this store, so nothing is restarted, so there is nothing to wait for — and a
@@ -251,11 +307,12 @@ podman unshare --rootless-netns true >/dev/null 2>&1
 FIRST_RC=$?
 check "the first start after the repair succeeds" "0" "$FIRST_RC"
 
-# And the repair rebuilt it back inside this store, rather than falling back onto
-# the shared directory — a repair that undid the split would fix tonight and wedge
-# prod again tomorrow.
-check "rebuilt under this store's own runroot" "present" \
-	"$([ -d "${WEDGE_SCAFFOLD}/run/user/${UID_N}" ] && echo present || echo absent)"
+# And it rebuilt inside this store rather than falling back onto the shared
+# directory — a rebuild that undid the split would fix tonight and wedge prod
+# again tomorrow.
+REBUILT="$(netns_create_path)"
+check "rebuilt under this store's own runroot" "inside" \
+	"$(case "${REBUILT:-}" in "${RUNROOT}"/*) echo inside ;; "") echo "<podman said nothing>" ;; *) echo "${REBUILT}" ;; esac)"
 check "with the shared directory still as it was found" "$SHARED_BEFORE" \
 	"$([ -d "$SHARED" ] && echo present || echo absent)"
 

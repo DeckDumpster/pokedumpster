@@ -58,12 +58,16 @@ set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
-MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
 NESSIE_IMAGE=${NESSIE_IMAGE:-ghcr.io/projectnessie/nessie:0.104.3}
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# The MinIO images, pinned and off Docker Hub, from the one definition.
+# shellcheck source=tests/lib/minio.sh
+. "${REPO_DIR}/tests/lib/minio.sh"
+MINIO_IMAGE=${MINIO_IMAGE:-$PKDUMP_MINIO_IMAGE}
+MC_IMAGE=${MC_IMAGE:-$PKDUMP_MC_IMAGE}
 
 # shellcheck source=tests/lib/diagnostics.sh
 . "${REPO_DIR}/tests/lib/diagnostics.sh"

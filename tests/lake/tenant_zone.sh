@@ -62,12 +62,16 @@
 # it writes under `tenant/` is a literal governance probe, and §7 removes it.
 set -euo pipefail
 
-MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
-MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
 AWSCLI_IMAGE=${AWSCLI_IMAGE:-docker.io/amazon/aws-cli:latest}
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# The MinIO images, pinned and off Docker Hub, from the one definition.
+# shellcheck source=tests/lib/minio.sh
+. "${REPO_DIR}/tests/lib/minio.sh"
+MINIO_IMAGE=${MINIO_IMAGE:-$PKDUMP_MINIO_IMAGE}
+MC_IMAGE=${MC_IMAGE:-$PKDUMP_MC_IMAGE}
 
 # shellcheck source=tests/lib/diagnostics.sh
 . "${REPO_DIR}/tests/lib/diagnostics.sh"

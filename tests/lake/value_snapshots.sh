@@ -65,11 +65,15 @@
 set -euo pipefail
 
 NESSIE_IMAGE=${NESSIE_IMAGE:-ghcr.io/projectnessie/nessie:0.104.3}
-MINIO_IMAGE=${MINIO_IMAGE:-docker.io/minio/minio:latest}
-MC_IMAGE=${MC_IMAGE:-docker.io/minio/mc:latest}
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# The MinIO images, pinned and off Docker Hub, from the one definition.
+# shellcheck source=tests/lib/minio.sh
+. "${REPO_DIR}/tests/lib/minio.sh"
+MINIO_IMAGE=${MINIO_IMAGE:-$PKDUMP_MINIO_IMAGE}
+MC_IMAGE=${MC_IMAGE:-$PKDUMP_MC_IMAGE}
 
 # shellcheck source=tests/lib/diagnostics.sh
 . "${REPO_DIR}/tests/lib/diagnostics.sh"
@@ -478,7 +482,6 @@ diff <(dump "$ALICE" "$DATE_NEW") "$FIXTURE/expected-alice-${DATE_NEW}.tsv" ||
 	die "re-reading the zone did not restore alice's rows"
 echo "    ok   ${SEALED_ROW} is back, from the zone"
 
-
 # And bob, who owns no sealed product at all, has no sealed row — which is the
 # rule "a bucket exists when something is in it", not a special case.
 BOB_SEALED=$(tenant_query "$BOB" \
@@ -614,8 +617,31 @@ PKDUMP_LAKE_S3_SECRET_ACCESS_KEY=${SECRET}
 PKDUMP_LAKE_S3_PATH_STYLE=1
 EOF
 
+# Podman's rootless image store lives under $HOME, so overriding HOME to give the
+# wrapper a throwaway config also hands it an EMPTY store — and `podman image
+# exists` in deploy/value-snapshots.sh then reports the lakehouse is not
+# installed for an instance whose image this gate built four hundred lines ago:
+#
+#     value-snapshots: no lake job image pkdump-lake:value-2a3005.
+#       The lakehouse is not installed for 'pdvalue-2a3005': bash deploy/setup-lake.sh …
+#
+# An ALTERNATE store hides this completely: pkdump_store_stamp_unit then writes
+# a GlobalArgs line naming the store explicitly, so podman never consults $HOME.
+# Which is why this survived — the box this suite grew up on had one configured,
+# and the comment above says the unstamped path is "prod's shape" precisely
+# because nobody had run it. The first machine without an alternate store was the
+# ephemeral CI VM, and it went red here on a change that touched none of this.
+#
+# XDG_DATA_HOME is the narrow fix: podman resolves its graphroot through it
+# before falling back to $HOME, so the wrapper keeps the throwaway config this
+# section needs and still sees the store the rest of the gate has been using.
+# Captured BEFORE the override, because the expansion would otherwise pick up
+# the fake HOME being set on the same command line.
+VS_REAL_XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+
 wrapper() {
 	HOME="$VS_HOME" \
+		XDG_DATA_HOME="$VS_REAL_XDG_DATA_HOME" \
 		PKDUMP_ALERTS_ENV="$VS_HOME/.config/pkdump/no-alerts.env" \
 		PKDUMP_LAKE_NETWORK="$NET" \
 		PKDUMP_LAKE_JOB_IMAGE="$JOB_IMAGE" \

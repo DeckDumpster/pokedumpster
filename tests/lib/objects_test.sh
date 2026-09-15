@@ -246,6 +246,42 @@ done <<<"$CALLERS"
 none "every caller sources tests/lib/objects.sh" "${UNSOURCED%$'\n'}"
 
 # ---------------------------------------------------------------------------
+log "7. the MinIO images come from the one pin, and ride no moving tag"
+# THE SECOND RATCHET, same shape as §6 and the same reason. Eleven harnesses
+# named `docker.io/minio/minio:latest` as their own literal; on 2026-09-15
+# Docker Hub began refusing anonymous pulls of that repository for every tag and
+# all eleven broke at once. The way it comes back is a twelfth harness copying an
+# eleventh, so the rule is stated over the tree rather than over the files that
+# were wrong. tests/lib/minio.sh carries the pin and the reasoning; this is what
+# keeps a second copy from appearing beside it.
+#
+# Two properties, because they fail independently: the registry (a gate that
+# cannot pull is a gate that cannot run) and the tag (a gate on `:latest` tests
+# whatever upstream pushed last night, which is what pd-pfxf cost for
+# Litestream).
+PIN_FILE="${REPO_DIR}/tests/lib/minio.sh"
+check "the pin exists" "yes" "$([[ -f "$PIN_FILE" ]] && echo yes || echo no)"
+check "…and names no moving tag" "" \
+	"$(grep -oE 'PKDUMP_M(INIO|C)_IMAGE="[^"]*:latest"' "$PIN_FILE")"
+
+# Every harness but the pin itself. Comments are excluded: the pin file and this
+# one both spell the offending string out in prose on purpose.
+MINIO_HARDCODED="$(harnesses | grep -v '/tests/lib/minio.sh$' |
+	xargs grep -nE '(docker\.io/)?minio/(minio|mc):' /dev/null |
+	grep -vE '^[^:]*:[0-9]+:[[:space:]]*#')"
+none "no harness hardcodes a MinIO image" "${MINIO_HARDCODED%$'\n'}"
+
+# And every harness that uses one got it from the pin.
+MINIO_USERS="$(harnesses | xargs grep -l 'MINIO_IMAGE\|MC_IMAGE' /dev/null |
+	grep -v '/tests/lib/minio.sh$')"
+UNPINNED=""
+while IFS= read -r f; do
+	[[ -z "$f" ]] && continue
+	grep -q 'tests/lib/minio.sh"' "$f" || UNPINNED+="${f}"$'\n'
+done <<<"$MINIO_USERS"
+none "every harness that runs MinIO sources the pin" "${UNPINNED%$'\n'}"
+
+# ---------------------------------------------------------------------------
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"
 [[ $fail -eq 0 ]] || exit 1

@@ -171,13 +171,28 @@ _pkdump_par_finish() { # _pkdump_par_finish <pid> <exit status>
 	unset "PKDUMP_PAR_LIVE[$pid]"
 	running=$((running - 1))
 	if [ "$frc" -ne 0 ]; then
-		status=FAIL
+		# 124 is timeout(1) saying it fired; 137 is the -k SIGKILL that follows
+		# when the gate ignored TERM. Distinguished from a plain FAIL because
+		# they call for opposite reading: a FAIL means the gate ran and its
+		# assertions did not hold, a TIMEOUT means the gate never reached them
+		# and its log ends mid-sentence. Reading the second as the first is how
+		# a hang gets triaged as a flaky assertion.
+		case "$frc" in
+		124 | 137) status=TIME ;;
+		*) status=FAIL ;;
+		esac
 		failed+=("$label")
 	fi
 
 	echo ""
 	echo "──────── ${label}: ${status} (${secs}s, exit ${frc}) ────────"
 	cat "${logdir}/${label}.log" 2>/dev/null || true
+	if [ "$status" = TIME ]; then
+		echo "    !! ${label} was still running after ${gate_timeout}s and was stopped."
+		echo "       Its log above ends where it stopped making progress — that is"
+		echo "       the last thing it did, not the thing it failed on."
+		echo "       Raise the bound for this run with PKDUMP_CI_GATE_TIMEOUT=<secs>."
+	fi
 	echo "──────── end ${label} ────────"
 	results+=("$(printf '%-4s  %-16s %5ss' "$status" "$label" "$secs")")
 }
@@ -235,6 +250,24 @@ pkdump_par_run() {
 		cap="$PKDUMP_PAR_JOBS_CEILING"
 	fi
 
+	# Per-gate wall-clock ceiling. Generous on purpose: the longest real gate
+	# measured here is well under ten minutes, so 30 exists to catch a gate that
+	# has STOPPED rather than one that is merely slow. A bound this loose costs
+	# nothing on a healthy run and cannot false-fail a slow box, which is the
+	# only way a timeout earns its place — one that trips on load teaches
+	# everyone to re-run rather than to read it.
+	local gate_timeout="${PKDUMP_CI_GATE_TIMEOUT:-1800}"
+	case "$gate_timeout" in
+	'' | *[!0-9]*)
+		echo "ERROR: PKDUMP_CI_GATE_TIMEOUT='${gate_timeout}' is not a positive integer." >&2
+		return 1
+		;;
+	esac
+	[ "$gate_timeout" -ge 1 ] || {
+		echo "ERROR: PKDUMP_CI_GATE_TIMEOUT must be at least 1." >&2
+		return 1
+	}
+
 	local logdir
 	logdir="$(mktemp -d "${TMPDIR:-/tmp}/pkdump-par.XXXXXX")"
 
@@ -272,7 +305,26 @@ pkdump_par_run() {
 			echo "    [start] ${label}"
 			# </dev/null: a gate must never inherit the run's stdin and
 			# block on it.
-			(eval "${PKDUMP_PAR_CMDS[$next]}") >"${logdir}/${label}.log" 2>&1 </dev/null &
+			#
+			# timeout: a gate must never run unbounded either. A gate's output
+			# is buffered to its own log and printed only when it finishes, so
+			# one that hangs is not merely slow, it is SILENT — and because
+			# this loop blocks in wait -n, the whole wave stops with it. That
+			# is not hypothetical: on 2026-09-15 tests/alarming/run.sh lost its
+			# object store, waited, and took the GitHub job to its 90-minute
+			# cap, so the run was cancelled and reported nothing about ANY
+			# tier, including the sixteen gates that had already finished.
+			# Bounding each gate turns that into one TIMEOUT line beside
+			# fifteen real results.
+			#
+			# TERM then KILL, the same escalation pkdump_par_kill_all uses and
+			# for the same reason: each gate's EXIT trap is what removes its
+			# containers, volumes and units, and a SIGKILLed gate leaks all
+			# three. GNU timeout signals the child's whole process group, so a
+			# gate blocked inside podman goes down with its helpers.
+			timeout -s TERM -k 30 "$gate_timeout" \
+				bash -c 'eval "$1"' _ "${PKDUMP_PAR_CMDS[$next]}" \
+				>"${logdir}/${label}.log" 2>&1 </dev/null &
 			local pid=$!
 			_PAR_LABEL_OF[$pid]="$label"
 			_PAR_START_OF[$pid]="$(date +%s)"

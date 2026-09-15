@@ -234,6 +234,51 @@ set -euo pipefail
 # non-interactive shells often lack it.
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
+# TMPDIR MUST NOT BE A RAM DISK.
+#
+# On a systemd distribution /tmp is a tmpfs sized at half of RAM. This suite
+# writes gigabytes through it — cargo's link staging, podman's build context,
+# every harness fixture — and the disk floor below runs against whatever
+# directory it was handed, so on a 8G VM the whole run died at:
+#
+#     ERROR: only 4G free on /tmp (floor 10G).
+#     tmpfs  3.7G  400K  3.7G  1% /tmp
+#
+# which is not a disk problem with the machine: / had 79G free at the time.
+#
+# It never fired on the old runner because that box had a disk-backed /tmp.
+# Nothing in the repository said so, which is the whole shape of this class of
+# bug: a property of one machine that the suite silently depended on.
+# deckdumpster hit exactly this on its first ephemeral VM (de-323) and fixed it
+# the same way. The durable fix is the Proxmox template giving its clones a
+# disk-backed /tmp; this holds regardless, and also covers a developer's laptop.
+#
+# Set here, before PKDUMP_CI_DISK_PATHS is built, so the floor measures the
+# directory the run will actually write to.
+#
+# AHEAD OF THE TREE WATCH, and it has to be: diag_init below mktemps its error
+# capture under $TMPDIR, and the watch's own failure path calls diag, so the
+# order TMPDIR -> diagnostics -> treewatch is a real dependency chain rather
+# than an accident of layout.
+#
+# Which is why the notice below is NOT a `==> ` step line. tests/ci/treewatch_test.sh
+# §9 asserts the watch is announced ahead of every step, by executing a real run
+# and taking the first of `treewatch: armed on|^==> `, and this would be first —
+# so it is indented like the watch's own banner, because that is what it is:
+# setup that must precede the watch, not a step running unwatched. The
+# distinction is load-bearing and it is not cosmetic, so do not restore the
+# arrow. It only ever showed up on a box whose /tmp is a tmpfs; the CI VM's is
+# disk-backed, so the gate went red on a developer's machine and green on the
+# runner — which is the wrong way round for a guard about unwatched work.
+case "$(stat -f -c %T "${TMPDIR:-/tmp}" 2>/dev/null)" in
+    tmpfs|ramfs)
+        TMPDIR="${HOME}/.cache/pkdump-tmp"
+        mkdir -p "$TMPDIR"
+        export TMPDIR
+        echo "    TMPDIR moved to $TMPDIR (/tmp is a RAM disk)"
+        ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -376,6 +421,53 @@ if [ -n "${PKDUMP_CI_SELECT_ONLY:-}" ]; then
     echo "==> PKDUMP_CI_SELECT_ONLY set — plan printed, nothing run."
     exit 0
 fi
+
+# --- 0a. Are the tools this script calls actually here? -----------------------
+#
+# cargo, node, podman and sqlite3 are called below and installed by neither this
+# script nor the repository. That held for as long as CI only ever ran on one
+# box where somebody had installed them by hand — the workflow carried a step
+# that prepended ~/.cargo/bin and ~/.local/bin to PATH, added because the very
+# first run of that workflow died with `cargo: command not found`, and that PATH
+# fixup was the only place the dependency was ever written down. On a per-run VM
+# there is no such box, and this names what is missing before any gate runs
+# rather than three gates in, on a machine that is about to be destroyed.
+#
+# AFTER the SELECT_ONLY exit, deliberately. That mode promises to print the plan
+# and touch nothing, and tests/ci/select_test.sh §4 asks for the plan on
+# whatever box it runs on — a dependency check ahead of it turns "what would you
+# run" into "I cannot run", which is a different question.
+#
+# It checks; it does not install. Installing needs sudo, and a test script that
+# quietly apt-installs on someone's laptop is worse than the gap it closes.
+# THE PER-USER TOOLCHAINS GO ON PATH HERE, NOT IN runner-deps.sh.
+#
+# rustup installs cargo under ~/.cargo/bin and several tools land in
+# ~/.local/bin, and a runner service is not a login shell, so nothing has
+# sourced the profile that adds either. runner-deps.sh does export them — but
+# only into ITSELF, and a child process cannot export to its parent. So
+# runner-deps.sh found cargo, reported every dependency present, and `cargo fmt
+# --check` two hundred lines later died with status 127.
+#
+# The old workflow did this with `echo "$HOME/.cargo/bin" >> $GITHUB_PATH`,
+# which worked and was reachable only from CI. Doing it here means a developer,
+# a polecat and CI all get the same answer from `command -v cargo`, and there is
+# no second copy of the list to drift.
+#
+# $HOME-relative, never a literal /home/<user>: a hardcoded path would put one
+# box's layout back into the repo, which is the thing pd-rf7c took out.
+case ":${PATH}:" in
+    *":${HOME}/.cargo/bin:"*) ;;
+    *) PATH="${HOME}/.cargo/bin:${PATH}" ;;
+esac
+case ":${PATH}:" in
+    *":${HOME}/.local/bin:"*) ;;
+    *) PATH="${HOME}/.local/bin:${PATH}" ;;
+esac
+export PATH
+
+echo "==> Runner dependencies"
+bash "$SCRIPT_DIR/runner-deps.sh" --check
 
 # --- 0b. Container store + disk floor ----------------------------------------
 

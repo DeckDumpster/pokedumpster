@@ -98,14 +98,38 @@ log "1. The cap is real: six gates, three at a time, and they overlap"
 # Milliseconds, not nanoseconds: `sort -n` and awk carry ~19 significant
 # digits, which is exactly where a nanosecond epoch sits, and an overlap count
 # computed from silently-rounded keys would be a test that lies.
+#
+# AND THAT IS NOT WHAT `date +%s%3N` GIVES YOU EVERYWHERE. GNU coreutils
+# honours the `%3N` width modifier; uutils coreutils — the Rust
+# reimplementation Ubuntu now ships — IGNORES it and emits all nine nanosecond
+# digits. So this file asked for milliseconds, silently got a 19-digit
+# nanosecond epoch, and became exactly the test its own comment warned about:
+#
+#     s1.start  1789492777279655533
+#     s3.end      17894927785822126     <- rounded through a double
+#
+# A rounded `end` sorts to the front of the event stream, the running count
+# goes negative, and the maximum overlap reads 0 for a run in which three gates
+# demonstrably executed. On the old runner GNU date made `%3N` work and this
+# never fired; on the ephemeral VM's image it fires perhaps a third of the time
+# and reports a different wrong number each way (0, 2, 4).
+#
+# Integer division in the shell instead, which is exact on any date: bash
+# arithmetic is 64-bit and a nanosecond epoch is ~1.8e18, comfortably inside it.
+#
+# THE RUNNER ITSELF WAS NEVER AT FAULT. Probed separately with atomic mkdir
+# slots and no clock at all, peak concurrency is exactly 1 at cap 1 and exactly
+# 3 at cap 3 over 15 iterations each. Only the measurement was broken.
+now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 STAMPS="${WORK}/stamps"
 # A gate: stamp, wait until three gates have started, hold for a beat, stamp.
 # The hold is what makes the overlap measurable — without it a gate can be gone
 # before the next is dispatched, and six uncapped gates would look like three.
 # The barrier is what makes it deterministic rather than a race with `sleep`.
 cat >"${WORK}/gate.sh" <<EOF
+now_ms() { echo \$(( \$(date +%s%N) / 1000000 )); }
 L="\$1"
-date +%s%3N > "${STAMPS}/\$L.start"
+now_ms > "${STAMPS}/\$L.start"
 n=0
 for _ in \$(seq 1 60); do
 	n=\$(find "${STAMPS}" -name "*.start" | wc -l)
@@ -114,7 +138,7 @@ for _ in \$(seq 1 60); do
 done
 [ "\$n" -ge 3 ] || { echo "barrier never reached (\$n started)"; exit 1; }
 sleep 0.4
-date +%s%3N > "${STAMPS}/\$L.end"
+now_ms > "${STAMPS}/\$L.end"
 EOF
 
 # Max overlap across every recorded interval.
@@ -150,7 +174,7 @@ rm -rf "$STAMPS"
 mkdir -p "$STAMPS"
 body=""
 for g in s1 s2 s3; do
-	body+="pkdump_par_add ${g} bash -c 'date +%s%3N > ${STAMPS}/${g}.start; sleep 0.2; date +%s%3N > ${STAMPS}/${g}.end'"$'\n'
+	body+="pkdump_par_add ${g} bash -c 'echo \$(( \$(date +%s%N) / 1000000 )) > ${STAMPS}/${g}.start; sleep 0.2; echo \$(( \$(date +%s%N) / 1000000 )) > ${STAMPS}/${g}.end'"$'\n'
 done
 out="$(PKDUMP_CI_JOBS=1 drive "$body")"
 check "at cap 1 every gate still runs" "0" "$(rc_of "$out")"

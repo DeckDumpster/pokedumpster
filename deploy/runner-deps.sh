@@ -130,7 +130,19 @@ check_base() {
 #
 # uidmap          newuidmap/newgidmap; without it `podman run` fails with
 #                 "newuidmap not found".
-# slirp4netns     rootless networking. Podman 4.x prefers pasta when present.
+# passt           provides `pasta`, which podman 5.x uses as its rootless
+#                 network backend AND runs inside the rootless network
+#                 namespace that user-defined (bridge) networks require.
+#                 Without it a container on the default network still works --
+#                 which is why this went unnoticed -- but anything on a bridge
+#                 fails at namespace setup with
+#
+#                     Error: rootless netns: cleanup: 1 error occurred:
+#                       * rootless netns: kill network process: permission denied
+#
+#                 naming neither pasta nor a missing package.
+# slirp4netns     the older rootless network backend, kept as the fallback
+#                 podman uses when pasta is absent or refuses.
 # fuse-overlayfs  rootless overlay storage. Without it podman falls back to
 #                 vfs, where the builder stage takes minutes instead of seconds.
 # ---------------------------------------------------------------------------
@@ -157,6 +169,15 @@ check_podman() {
         return 1
     fi
     note "container engine $v"
+
+    # A rootless network backend must exist, and `podman --version` says nothing
+    # about whether one does. pasta is podman 5.x's default and the one the
+    # rootless netns needs; slirp4netns is the fallback. Either satisfies this.
+    if ! command -v pasta >/dev/null 2>&1 && ! command -v slirp4netns >/dev/null 2>&1; then
+        lack "pasta or slirp4netns" "rootless podman has no network backend; bridge networks fail at namespace setup"
+        return 1
+    fi
+    note "rootless network backend: $(command -v pasta || command -v slirp4netns)"
 }
 
 check_subid() {
@@ -277,7 +298,10 @@ fi
 note "installing dependencies for $(id -un) on $(hostname)"
 
 apt_install "${BASE_PKGS[@]}"
-command -v podman >/dev/null 2>&1 || apt_install podman uidmap slirp4netns fuse-overlayfs
+command -v podman >/dev/null 2>&1 || apt_install podman uidmap fuse-overlayfs
+# Separately from podman's own presence: a box that already had podman may still
+# lack pasta, and a bridge network is the only thing that notices.
+apt_install passt slirp4netns
 apt_install "${CHROMIUM_LIBS[@]}"
 
 # rustup, not the distro toolchain -- see check_rust. --no-modify-path because

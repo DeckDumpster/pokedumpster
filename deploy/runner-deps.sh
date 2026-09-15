@@ -178,6 +178,30 @@ check_podman() {
         return 1
     fi
     note "rootless network backend: $(command -v pasta || command -v slirp4netns)"
+
+    # UNPRIVILEGED USER NAMESPACES MUST NOT BE APPARMOR-CONFINED.
+    #
+    # Ubuntu 24.04 turned on kernel.apparmor_restrict_unprivileged_userns, which
+    # drops a process that creates an unprivileged userns into a restricted
+    # AppArmor domain. podman starts pasta inside the rootless network namespace
+    # that user-defined (bridge) networks need, pasta lands in that domain, and
+    # podman -- in a different one -- can no longer signal it:
+    #
+    #     Error: rootless netns: cleanup: 1 error occurred:
+    #       * rootless netns: kill network process: permission denied
+    #
+    # which names neither AppArmor nor a namespace, and reproduces with pasta
+    # correctly installed. Port publishing on the DEFAULT network is unaffected,
+    # which is why a suite that only does that never sees it.
+    #
+    # Reported with its evidence, because the next person to read this will
+    # otherwise be looking at the same nameless EPERM.
+    local aa="/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+    if [ -r "$aa" ] && [ "$(cat "$aa" 2>/dev/null)" = "1" ]; then
+        lack "unconfined unprivileged userns" \
+             "kernel.apparmor_restrict_unprivileged_userns=1; podman cannot signal pasta inside a rootless netns, and bridge networks fail with 'kill network process: permission denied'"
+        return 1
+    fi
 }
 
 check_subid() {
@@ -337,6 +361,18 @@ if ! check_node >/dev/null 2>&1; then
             || note "NodeSource setup failed"
     else
         note "need root to install node"
+    fi
+fi
+
+# See check_podman for why. A machine property, so it is set here rather than
+# worked around in the suite; the durable home is the Proxmox template, and this
+# keeps a hand-built box and a developer's Ubuntu working too.
+AA="/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+if [ -w "$AA" ] || [ -n "$SUDO" ]; then
+    if [ -r "$AA" ] && [ "$(cat "$AA" 2>/dev/null)" = "1" ]; then
+        note "allowing unconfined unprivileged user namespaces (rootless bridge networks)"
+        $SUDO sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null \
+            || note "WARNING: could not clear kernel.apparmor_restrict_unprivileged_userns"
     fi
 fi
 

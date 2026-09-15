@@ -519,5 +519,60 @@ for g in $GATES; do
 done
 
 # ---------------------------------------------------------------------------
+log "8. A gate that HANGS is stopped, and the wave still reports"
+
+# WHY. A gate's output is buffered to its own log and printed only when it
+# finishes, and the dispatch loop blocks in `wait -n`. So a gate that stops
+# making progress is silent AND stops the wave — on 2026-09-15 one did exactly
+# that and took the GitHub job to its 90-minute cap, which cancelled the run and
+# reported nothing about any tier, including the sixteen gates that had already
+# passed. The bound is what turns that into one TIMEOUT line beside real
+# results, so this asserts both halves: the hung gate is stopped, and its
+# neighbours are still reported.
+OUT="$(PKDUMP_CI_GATE_TIMEOUT=2 drive '
+pkdump_par_add quick bash -c "echo quick-ran; exit 0"
+pkdump_par_add hung  bash -c "echo hung-started; sleep 600"
+pkdump_par_add after bash -c "echo after-ran; exit 0"
+')"
+check "the wave is red when a gate times out" "1" "$(rc_of "$OUT")"
+check "the hung gate is named as failed" "yes" \
+	"$(printf '%s' "$(failed_of "$OUT")" | grep -q hung && echo yes || echo no)"
+check "it is reported as TIME, not as an ordinary FAIL" "yes" \
+	"$(printf '%s\n' "$OUT" | grep -qE '^ *TIME +hung' && echo yes || echo no)"
+check "and it says what that means" "yes" \
+	"$(printf '%s\n' "$OUT" | grep -q 'was still running after 2s' && echo yes || echo no)"
+# The half that matters as much: a hang must not cost the other gates' results.
+check "a gate queued before it still reported" "yes" \
+	"$(printf '%s\n' "$OUT" | grep -q 'quick-ran' && echo yes || echo no)"
+check "a gate queued after it still ran" "yes" \
+	"$(printf '%s\n' "$OUT" | grep -q 'after-ran' && echo yes || echo no)"
+# And the wave actually ENDS, rather than the bound merely being printed.
+check "the run finished rather than hanging itself" "yes" \
+	"$(printf '%s\n' "$OUT" | grep -q 'DRIVE_RC=' && echo yes || echo no)"
+
+# A gate inside the bound is untouched — the bound must not become the thing
+# that fails healthy runs.
+OUT="$(PKDUMP_CI_GATE_TIMEOUT=60 drive '
+pkdump_par_add slowish bash -c "sleep 2; echo slowish-done; exit 0"
+')"
+check "a gate well inside the bound passes" "0" "$(rc_of "$OUT")"
+check "…and ran to completion" "yes" \
+	"$(printf '%s\n' "$OUT" | grep -q 'slowish-done' && echo yes || echo no)"
+
+# The bound is validated like the cap beside it, and for the same reason: a
+# typo'd override must be a refusal, not an unbounded run.
+for bad in 0 abc 12x -5; do
+	OUT="$(PKDUMP_CI_GATE_TIMEOUT="$bad" drive 'pkdump_par_add g true')"
+	check "PKDUMP_CI_GATE_TIMEOUT='${bad}' is refused" "1" "$(rc_of "$OUT")"
+done
+# EMPTY is not a typo, it is "unset" — ${VAR:-default} cannot tell them apart,
+# so the default applies. Asserted rather than left to be discovered, because
+# the `''` arm of the validating case is unreachable for exactly this reason and
+# reads as though it were live. PKDUMP_CI_JOBS beside it behaves identically;
+# this is the contract of both, not an accident of one.
+OUT="$(PKDUMP_CI_GATE_TIMEOUT="" drive 'pkdump_par_add g true')"
+check "an EMPTY bound means unset, and the default applies" "0" "$(rc_of "$OUT")"
+
+# ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

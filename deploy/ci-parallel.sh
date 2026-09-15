@@ -22,12 +22,25 @@
 #
 # ── THE CAP IS A RESOURCE DECISION, NOT A TUNING KNOB ───────────────────────
 #
-# Three at a time by default, four at the very most. This is a 15G box with
-# four cores that also runs prod, and each of these gates stands up two or three
-# containers — a MinIO, sometimes a JVM (Nessie), sometimes a whole pkdump
-# instance with a Litestream sidecar. Above four the failures stop looking like
-# resource exhaustion and start looking like flaky gates, which is the worst
-# possible outcome for a suite whose job is to be believed.
+# Three at a time by default, four at the very most. Each of these gates stands
+# up two or three containers — a MinIO, sometimes a JVM (Nessie), sometimes a
+# whole pkdump instance with a Litestream sidecar. Above four the failures stop
+# looking like resource exhaustion and start looking like flaky gates, which is
+# the worst possible outcome for a suite whose job is to be believed.
+#
+# ── THE BOX THESE NUMBERS CAME FROM IS NOT THE BOX CI RUNS ON ──────────────
+#
+# Both constants below were measured on the shared runner: a 15G box with four
+# cores that ALSO ran prod and every other CI run, serialised behind one runner.
+# Since #118 each run gets its own ephemeral VM — 8 GiB and four cores, with
+# nothing else on it. Same cores, about half the RAM, none of the neighbours.
+#
+# That is a different experiment, and neither number has been re-run against it.
+# The cap could be too conservative now (the contention that forced it down to
+# two was partly prod's) or still exactly right (half the RAM, and these gates
+# are memory-bound, not CPU-bound). Re-measure before trusting it either way;
+# runner-deps.sh reports the machine on every run so the comparison is possible
+# at all, which it was not when these numbers were written.
 #
 # PKDUMP_CI_JOBS lowers it — 1 is a serial run, which is the first thing to try
 # when a parallel run misbehaves. A value above the ceiling is clamped out loud
@@ -227,13 +240,18 @@ pkdump_par_run() {
 		return 0
 	fi
 
-	# TWO, not three (2026-08-13). Three concurrent container gates each stand up a
-	# 1 GB nessie JVM, a MinIO, the app and a litestream sidecar; measured during CI
-	# this box sits at 0 free of 16 GB with swap 100% consumed. No kernel OOM kills,
-	# so it is contention rather than a hard limit — but it is enough to make
-	# replication lag by seconds, and two litestream gates were failing on that lag
-	# rather than on anything they assert. Red CI costs more than the ~13 min the
+	# TWO, not three (2026-08-13), measured on the SHARED runner — see the header:
+	# that box is no longer what CI runs on. Three concurrent container gates each
+	# stand up a 1 GB nessie JVM, a MinIO, the app and a litestream sidecar; measured
+	# during CI that box sat at 0 free of 16 GB with swap 100% consumed. No kernel
+	# OOM kills, so it is contention rather than a hard limit — but it is enough to
+	# make replication lag by seconds, and two litestream gates were failing on that
+	# lag rather than on anything they assert. Red CI costs more than the ~13 min the
 	# third slot bought (pd-2nl9 measured 1982s -> 1175s at three).
+	#
+	# On the ephemeral VM the same gates ran 17 in 964s at two (2026-09-15). Whether
+	# three fits in 8 GiB without prod beside it is unmeasured; the ~13 min is why
+	# it is worth measuring rather than assuming.
 	local cap="${PKDUMP_CI_JOBS:-2}"
 	case "$cap" in
 	'' | *[!0-9]*)

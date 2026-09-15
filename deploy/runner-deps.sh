@@ -430,6 +430,55 @@ check_fonts() {
     return $rc
 }
 
+# ── THE MACHINE IS A DEPENDENCY, and nothing here used to say what it was ────
+#
+# Every timing constant in this suite was measured on one specific box, and
+# some record it in prose: ci-parallel.sh's gate cap says "a 15G box with four
+# cores that also runs prod". CI now runs on a per-run ephemeral VM with its
+# own size, and no run logged what it got -- so a release build that
+# Containerfile:24 documents as a cold "3-4 minute" rebuild measured 8m21s on
+# 2026-09-15 and nothing flagged it, because there was nothing to compare it
+# against. A run that does not say what it ran on cannot be compared with one
+# that did.
+#
+# nproc, not getconf: nproc reports the CPUs available to THIS process, which
+# is the number cargo will actually use if anything has narrowed the affinity.
+#
+# Deliberately no disk figure here. deploy/diskcheck.sh owns the disk and
+# ci-parallel.sh warns in its own header that a second enumeration is how one
+# of them stops covering a path (pd-20ia, pd-6jyd). One owner per resource.
+#
+# The floor is what the suite is KNOWN to pass on, not what it deserves. CI was
+# green on 8 GiB / 4 cores on 2026-09-15; raising the floor above that is a
+# decision to make against a measurement, because a floor that fails a box CI
+# is currently green on is an outage rather than a finding. 7, not 8: a VM
+# given 8 GiB reports ~7.6 to /proc/meminfo, and the kernel never hands back
+# all of it.
+MACHINE_MIN_CORES=4
+MACHINE_MIN_MEM_GIB=7
+
+check_machine() {
+    local cores mem_kib mem_gib mem_disp rc=0
+    cores="$(nproc 2>/dev/null || echo 0)"
+    mem_kib="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null)"
+    case "${cores}${mem_kib:-}" in *[!0-9]*|'') cores=0; mem_kib=0 ;; esac
+    : "${mem_kib:=0}"
+    mem_gib=$(( mem_kib / 1048576 ))
+    mem_disp="$(awk -v k="$mem_kib" 'BEGIN{printf "%.1f", k/1048576}')"
+    note "machine $(uname -m): ${cores} cores, ${mem_disp} GiB RAM"
+    if [ "$cores" -lt "$MACHINE_MIN_CORES" ]; then
+        lack "${MACHINE_MIN_CORES} cores" \
+             "found ${cores}; every timing in this suite, and the gate cap, assume at least that many"
+        rc=1
+    fi
+    if [ "$mem_gib" -lt "$MACHINE_MIN_MEM_GIB" ]; then
+        lack "${MACHINE_MIN_MEM_GIB} GiB RAM" \
+             "found ${mem_disp}; each container gate stands up a MinIO, sometimes a 1 GB JVM and a whole pkdump instance, and below this they fail on contention rather than on what they assert"
+        rc=1
+    fi
+    return $rc
+}
+
 run_checks() {
     MISSING=()
     check_base;   check_podman
@@ -437,6 +486,7 @@ run_checks() {
     check_rust;   check_node
     check_chromium_libs
     check_fonts
+    check_machine
 }
 
 if [ "$MODE" = check ]; then

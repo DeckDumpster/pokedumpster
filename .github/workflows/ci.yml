@@ -112,10 +112,20 @@ jobs:
     # viewports, and executes two DR drills against a throwaway MinIO. It is not
     # a two-minute job, and it now also compiles Rust from cold.
     timeout-minutes: 90
-    env:
-      # Rootless podman and `systemctl --user` need this; a non-login runner
-      # process does not get it for free.
-      XDG_RUNTIME_DIR: /run/user/1000
+    # NO `XDG_RUNTIME_DIR` HERE, DELIBERATELY.
+    #
+    # It used to be pinned to /run/user/1000, which was true of the one box CI
+    # ran on and is a fact about that box, not about this repository. On the
+    # ephemeral VM the runner user is not uid 1000, so podman answered every
+    # call with
+    #
+    #     Failed to obtain podman configuration:
+    #     lstat /run/user/1000: no such file or directory
+    #
+    # and six assertions in the container-store gate failed as though the store
+    # split were broken. A job-level `env:` OVERRIDES the script, so ci.sh's own
+    # `${XDG_RUNTIME_DIR:-/run/user/$(id -u)}` default — which is correct on any
+    # box — never got a chance to apply. Leaving it unset is what lets it.
     steps:
       - uses: actions/checkout@v4
         with:

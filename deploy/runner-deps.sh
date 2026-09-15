@@ -166,15 +166,24 @@ check_subid() {
     return 1
 }
 
+# LINGER IS THE FIX; THE RUNTIME DIRECTORY IS THE PROPERTY.
+#
+# `loginctl show-user -p Linger` reports a SETTING. What podman and
+# `systemctl --user` actually need is /run/user/<uid> to exist, which is what a
+# running user manager creates. Those are not the same claim: a box can report
+# Linger=yes with no runtime directory, and the failure then arrives as
+#
+#     Failed to obtain podman configuration:
+#     lstat /run/user/1000: no such file or directory
+#
+# from six assertions about a container store, naming neither linger nor
+# systemd. Check the directory; enable linger to get it.
 check_linger() {
-    command -v loginctl >/dev/null 2>&1 || return 0
-    local u; u="$(id -un)"
-    [ "$(loginctl show-user "$u" -p Linger --value 2>/dev/null)" = "yes" ] && return 0
-    # The deploy scripts write Quadlet units under ~/.config/containers/systemd,
-    # which systemd only reads inside a live user session. Without lingering the
-    # failure surfaces as a systemctl --user error that says nothing about
-    # lingering.
-    lack "linger for ${u}" "systemctl --user has no user manager to talk to; Quadlet units are never generated"
+    local u uid rt
+    u="$(id -un)"; uid="$(id -u)"
+    rt="${XDG_RUNTIME_DIR:-/run/user/${uid}}"
+    [ -d "$rt" ] && return 0
+    lack "XDG_RUNTIME_DIR (${rt})" "podman and systemctl --user need a live user manager; enable linger for ${u}"
     return 1
 }
 
@@ -313,10 +322,20 @@ if ! grep -q "^${RUNUSER}:" /etc/subuid 2>/dev/null || ! grep -q "^${RUNUSER}:" 
     $SUDO usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$RUNUSER" || true
 fi
 
-if command -v loginctl >/dev/null 2>&1 \
-   && [ "$(loginctl show-user "$RUNUSER" -p Linger --value 2>/dev/null)" != "yes" ]; then
+# Enabling linger starts the user manager, which is what CREATES
+# /run/user/<uid>. That is not instantaneous, and the re-check below runs
+# immediately, so wait for the directory rather than for the setting — the
+# directory is the thing every later caller needs.
+if command -v loginctl >/dev/null 2>&1 && [ ! -d "/run/user/$(id -u)" ]; then
     note "enabling linger for ${RUNUSER}"
     $SUDO loginctl enable-linger "$RUNUSER" || true
+    for _ in $(seq 1 20); do
+        [ -d "/run/user/$(id -u)" ] && break
+        sleep 0.5
+    done
+    [ -d "/run/user/$(id -u)" ] \
+        && note "user manager up; /run/user/$(id -u) exists" \
+        || note "WARNING: /run/user/$(id -u) still absent after enabling linger"
 fi
 
 # Re-check and report. A partial install is a failure HERE rather than a

@@ -72,6 +72,33 @@ installable() {
 }
 
 APT_UPDATED=0
+# WAIT FOR THE DPKG LOCK RATHER THAN FAILING ON IT.
+#
+# A per-run VM boots, systemd starts unattended-upgrades, and this script starts
+# installing — in that order, within seconds of each other. Whoever reaches
+# /var/lib/dpkg/lock-frontend second gets "Could not get lock ... held by
+# process N (unattended-upgr)" and, without this, simply gives up:
+#
+#   runner-deps: could not install sqlite3
+#   runner-deps: could not install podman
+#   ...
+#   runner-deps: still missing after install: base tools podman chromium libraries
+#
+# and the job dies before deploy/ci.sh is ever reached. It is a RACE, so it
+# fails perhaps one run in several and looks like a broken dependency list
+# rather than a timing bug — the same list had installed cleanly on the runs
+# either side of it.
+#
+# apt has had a lock timeout since 1.9.11; this is the whole fix, and it is
+# better than a retry loop because it waits on the lock itself rather than
+# sleeping and racing again. Unquoted on purpose: it must expand to two words
+# or to nothing on an apt too old to know the option.
+#
+# The durable fix is the image — a VM that lives thirty minutes and is then
+# destroyed has nothing to gain from unattended-upgrades — but this holds on any
+# box, including a developer laptop that happens to be mid-upgrade.
+APT_LOCK_WAIT="-o DPkg::Lock::Timeout=600"
+
 apt_install() {
     local want=() p
     for p in "$@"; do
@@ -88,16 +115,19 @@ apt_install() {
     [ ${#want[@]} -gt 0 ] || return 0
     [ -n "$SUDO" ] || { printf 'runner-deps: need root to install: %s\n' "${want[*]}" >&2; return 1; }
     if [ "$APT_UPDATED" = 0 ]; then
-        $SUDO apt-get update -qq || true
+        $SUDO apt-get update -qq $APT_LOCK_WAIT || true
         APT_UPDATED=1
     fi
     note "installing ${want[*]}"
-    if DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq "${want[@]}"; then
+    if DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq $APT_LOCK_WAIT "${want[@]}"; then
         return 0
     fi
+    # Individually, because ONE uninstallable package must not cost the other
+    # nine. Note this cannot rescue a lock failure — the retry would race the
+    # same holder — which is what APT_LOCK_WAIT above is for.
     note "batch install failed -- retrying individually"
     for p in "${want[@]}"; do
-        DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq "$p" \
+        DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq $APT_LOCK_WAIT "$p" \
             || note "could not install $p"
     done
 }

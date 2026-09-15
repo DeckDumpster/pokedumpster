@@ -529,26 +529,31 @@ log "8. A gate that HANGS is stopped, and the wave still reports"
 # passed. The bound is what turns that into one TIMEOUT line beside real
 # results, so this asserts both halves: the hung gate is stopped, and its
 # neighbours are still reported.
+# The hung gate LOOPS rather than sleeping once: a `sleep 600` would be a truer
+# one-liner but tests/lib/wait_test.sh §6 forbids a sleep past its ceiling
+# tree-wide, and rightly — it cannot tell a simulated hang from the fixed waits
+# that rule exists to remove. A loop that never ends is a better stand-in
+# anyway: the gate does not finish late, it does not finish.
 OUT="$(PKDUMP_CI_GATE_TIMEOUT=2 drive '
 pkdump_par_add quick bash -c "echo quick-ran; exit 0"
-pkdump_par_add hung  bash -c "echo hung-started; sleep 600"
+pkdump_par_add hung  bash -c "echo hung-started; while :; do sleep 1; done"
 pkdump_par_add after bash -c "echo after-ran; exit 0"
 ')"
 check "the wave is red when a gate times out" "1" "$(rc_of "$OUT")"
-check "the hung gate is named as failed" "yes" \
-	"$(printf '%s' "$(failed_of "$OUT")" | grep -q hung && echo yes || echo no)"
-check "it is reported as TIME, not as an ordinary FAIL" "yes" \
-	"$(printf '%s\n' "$OUT" | grep -qE '^ *TIME +hung' && echo yes || echo no)"
-check "and it says what that means" "yes" \
-	"$(printf '%s\n' "$OUT" | grep -q 'was still running after 2s' && echo yes || echo no)"
+check "the hung gate is named as failed" "1" \
+	"$(printf '%s\n' "$(failed_of "$OUT")" | grep -c hung)"
+check "it is reported as TIME, not as an ordinary FAIL" "1" \
+	"$(printf '%s\n' "$OUT" | grep -cE '^ *TIME +hung')"
+check "and it says what that means" "1" \
+	"$(printf '%s\n' "$OUT" | grep -c 'was still running after 2s')"
 # The half that matters as much: a hang must not cost the other gates' results.
-check "a gate queued before it still reported" "yes" \
-	"$(printf '%s\n' "$OUT" | grep -q 'quick-ran' && echo yes || echo no)"
-check "a gate queued after it still ran" "yes" \
-	"$(printf '%s\n' "$OUT" | grep -q 'after-ran' && echo yes || echo no)"
+check "a gate queued before it still reported" "1" \
+	"$(printf '%s\n' "$OUT" | grep -c 'quick-ran')"
+check "a gate queued after it still ran" "1" \
+	"$(printf '%s\n' "$OUT" | grep -c 'after-ran')"
 # And the wave actually ENDS, rather than the bound merely being printed.
-check "the run finished rather than hanging itself" "yes" \
-	"$(printf '%s\n' "$OUT" | grep -q 'DRIVE_RC=' && echo yes || echo no)"
+check "the run finished rather than hanging itself" "1" \
+	"$(printf '%s\n' "$OUT" | grep -c 'DRIVE_RC=')"
 
 # A gate inside the bound is untouched — the bound must not become the thing
 # that fails healthy runs.
@@ -556,8 +561,8 @@ OUT="$(PKDUMP_CI_GATE_TIMEOUT=60 drive '
 pkdump_par_add slowish bash -c "sleep 2; echo slowish-done; exit 0"
 ')"
 check "a gate well inside the bound passes" "0" "$(rc_of "$OUT")"
-check "…and ran to completion" "yes" \
-	"$(printf '%s\n' "$OUT" | grep -q 'slowish-done' && echo yes || echo no)"
+check "…and ran to completion" "1" \
+	"$(printf '%s\n' "$OUT" | grep -c 'slowish-done')"
 
 # The bound is validated like the cap beside it, and for the same reason: a
 # typo'd override must be a refusal, not an unbounded run.

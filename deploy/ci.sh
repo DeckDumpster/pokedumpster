@@ -255,12 +255,27 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 #
 # Set here, before PKDUMP_CI_DISK_PATHS is built, so the floor measures the
 # directory the run will actually write to.
+#
+# AHEAD OF THE TREE WATCH, and it has to be: diag_init below mktemps its error
+# capture under $TMPDIR, and the watch's own failure path calls diag, so the
+# order TMPDIR -> diagnostics -> treewatch is a real dependency chain rather
+# than an accident of layout.
+#
+# Which is why the notice below is NOT a `==> ` step line. tests/ci/treewatch_test.sh
+# §9 asserts the watch is announced ahead of every step, by executing a real run
+# and taking the first of `treewatch: armed on|^==> `, and this would be first —
+# so it is indented like the watch's own banner, because that is what it is:
+# setup that must precede the watch, not a step running unwatched. The
+# distinction is load-bearing and it is not cosmetic, so do not restore the
+# arrow. It only ever showed up on a box whose /tmp is a tmpfs; the CI VM's is
+# disk-backed, so the gate went red on a developer's machine and green on the
+# runner — which is the wrong way round for a guard about unwatched work.
 case "$(stat -f -c %T "${TMPDIR:-/tmp}" 2>/dev/null)" in
     tmpfs|ramfs)
         TMPDIR="${HOME}/.cache/pkdump-tmp"
         mkdir -p "$TMPDIR"
         export TMPDIR
-        echo "==> TMPDIR moved to $TMPDIR (/tmp is a RAM disk)"
+        echo "    TMPDIR moved to $TMPDIR (/tmp is a RAM disk)"
         ;;
 esac
 

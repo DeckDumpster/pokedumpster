@@ -273,7 +273,26 @@ for _ in $(seq 60); do
 	curl -fsS "http://127.0.0.1:${MINIO_PORT}/minio/health/live" >/dev/null 2>&1 && break
 	sleep 1
 done
-check "minio is up" "0" "$(curl -fsS -o /dev/null "http://127.0.0.1:${MINIO_PORT}/minio/health/live"; echo $?)"
+MINIO_UP="$(curl -fsS -o /dev/null "http://127.0.0.1:${MINIO_PORT}/minio/health/live"; echo $?)"
+check "minio is up" "0" "$MINIO_UP"
+# ...and if it is not, STOP. This file runs without `-e` so that a failed
+# assertion is reported rather than fatal, which is right for an assertion and
+# wrong for a missing prerequisite: every section below needs an object store,
+# and without one they do not fail, they wait. On 2026-09-15 the MinIO pull
+# began returning 401 (see tests/lib/minio.sh) and this gate ran on for
+# 57 minutes on a CI VM and took the whole job to its 90-minute cap — so the run
+# ended with no verdict at all, on any tier, rather than with one red gate. A
+# gate that cannot get its dependency must say so in seconds; the object store
+# is the one prerequisite this gate cannot substitute for.
+if [[ "$MINIO_UP" != "0" ]]; then
+	echo "  the object store never came up — every section below needs it." >&2
+	echo "  image: ${MINIO_IMAGE}" >&2
+	podman logs "$MINIO_CTR" 2>&1 | tail -5 | sed 's/^/    /' >&2
+	echo
+	echo "=== RESULT ==="
+	echo "  ${pass} passed, $((fail)) failed — ABORTED before the object store was ready"
+	exit 1
+fi
 # Litestream does not create buckets, and a missing one surfaces as NoSuchBucket
 # from the freshness query — which reads identically to the broken-creds failure
 # the gate deliberately provokes in §4b. Create it up front so the two cases

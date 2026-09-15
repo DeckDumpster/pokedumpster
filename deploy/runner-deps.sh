@@ -99,14 +99,29 @@ apt_install() {
 # ---------------------------------------------------------------------------
 # Plain command-line tools ci.sh and the deploy scripts shell out to.
 # ---------------------------------------------------------------------------
-BASE_PKGS=(git curl jq sqlite3 xz-utils ca-certificates)
-BASE_CMDS=(git curl jq sqlite3 python3)
+# build-essential is NOT optional and NOT a guess. Rust shells out to `cc` to
+# LINK, so without a C compiler every cargo invocation dies at
+#
+#     error: linker `cc` not found
+#     error: could not compile `proc-macro2` (build script)
+#
+# which reads as a broken Rust toolchain and is a missing Debian package. It was
+# on the old runner because somebody had put it there; nothing said so. The
+# Containerfile's builder stage is `rust:1.94-slim-bookworm`, whose only build
+# tooling is gcc and libc6-dev — so that set is provably sufficient for
+# everything the release build compiles, and build-essential is a superset.
+#
+# pkg-config is for the dev-dependencies the image never builds: `cargo test`
+# compiles a strictly larger graph than `cargo build --release` does, so the
+# container is a lower bound on what CI needs, not an upper one.
+BASE_PKGS=(git curl jq sqlite3 xz-utils ca-certificates build-essential pkg-config)
+BASE_CMDS=(git curl jq sqlite3 python3 cc make)
 
 check_base() {
     local c missing=()
     for c in "${BASE_CMDS[@]}"; do command -v "$c" >/dev/null 2>&1 || missing+=("$c"); done
     [ ${#missing[@]} -eq 0 ] && return 0
-    lack "base tools (${missing[*]})" "deploy/ci.sh and the deploy scripts call these directly"
+    lack "base tools (${missing[*]})" "deploy/ci.sh and the deploy scripts call these directly; cargo needs cc to LINK"
     return 1
 }
 

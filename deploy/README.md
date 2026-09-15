@@ -13,8 +13,32 @@ later** — see [Expanding to GitHub](#expanding-to-github-later).
 ### Linux (one-time, needs sudo)
 
 ```bash
-sudo apt install podman sqlite3
-loginctl enable-linger "$USER"     # keeps --user services alive after logout
+sudo bash deploy/runner-deps.sh    # everything deploy/ci.sh needs
+bash deploy/runner-deps.sh --check # says what is still missing, and why
+```
+
+**`deploy/runner-deps.sh` is the dependency list, and it is the only one.** It
+is not a CI-only file despite the name: a developer, a polecat and CI all run
+`deploy/ci.sh`, so they all need the same things, and `ci.sh` refuses to start
+until `--check` passes.
+
+This section used to say `sudo apt install podman sqlite3` and stop. That was a
+second, shorter copy of the list, and it went stale exactly the way second
+copies do — by the time the first ephemeral CI runner was built it was missing a
+C toolchain, Node, rustup, Chromium's shared libraries, a rootless network
+backend and two machine settings. The runner failed with `exit code 127` on a
+machine that no longer existed. Add a tool to `ci.sh`, add it to
+`runner-deps.sh`; do not add it here.
+
+What it covers, and why each one is not obvious, is documented in the script
+itself: podman ≥ 4.4 (below that Quadlet units are silently ignored), rustup
+rather than the distro `rustc` (only rustup honours `rust-toolchain.toml`),
+Node ≥ 20 (`frontend/` is on vite 8; the distro package is *below* the floor),
+`build-essential` (cargo shells out to `cc` to link), Chromium's libraries, and
+`subuid`/`subgid` plus a live user manager for rootless podman.
+
+```bash
+loginctl enable-linger "$USER"     # runner-deps.sh does this too
 ```
 
 ### macOS (one-time)

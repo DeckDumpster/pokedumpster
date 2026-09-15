@@ -3,6 +3,12 @@
 # The system dependencies deploy/ci.sh needs, as a script rather than a
 # paragraph.
 #
+# THIS IS THE DEVELOPMENT DEPENDENCY LIST, not a CI-only file. The name says
+# "runner" because an ephemeral CI runner is what forced it to exist, but a
+# developer, a polecat and CI all run deploy/ci.sh and therefore all need
+# exactly these things. deploy/README.md's "Prerequisites" points here rather
+# than restating a subset -- it used to restate one, and that copy went stale.
+#
 #   bash deploy/runner-deps.sh            install anything missing (idempotent)
 #   bash deploy/runner-deps.sh --check    report what is missing; exit 1 if any
 #

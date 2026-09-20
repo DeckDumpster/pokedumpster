@@ -1552,14 +1552,18 @@ fn a_bulk_corpus_enables_cold_derive_and_lag_window_is_tail_only() {
         "cold derive must have populated cards"
     );
 
-    // After bulk import the sets have ptcgio_fetched_at set, so the tail
-    // wrote 0 pokemontcg.io tail sets. The sets came from the bulk corpus.
-    let tail_sets: i64 = scalar(
+    // After the bulk import the two pokemontcg.io fixture sets have
+    // ptcgio_fetched_at set, so missing_sets() found 0 sets to fetch from
+    // the tail.  That is the acceptance criterion: "after the bulk import,
+    // missing_sets returns only the lag window, not the whole catalog."
+    // TCGCSV sets are legitimately NULL here — they are never covered by
+    // pokemontcg.io — so we only assert the pokemontcg.io sets are covered.
+    let bulk_sets: i64 = scalar(
         &cold,
         "SELECT COUNT(*) FROM sets WHERE ptcgio_fetched_at IS NOT NULL",
     );
     assert!(
-        tail_sets >= 2,
+        bulk_sets >= 2,
         "both fixture sets must be in the catalog after a cold derive"
     );
 

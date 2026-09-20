@@ -1682,7 +1682,8 @@ fn cold_rebuild_from_raw_is_row_identical_to_warm_and_no_pokemontcgio_cards_need
     // new requests means "everything was in `raw/`".
     let requests_after = h.upstream.requests().len();
     assert_eq!(
-        requests_after, requests_before,
+        requests_after,
+        requests_before,
         "cold derive must make no new requests to the fixture upstream — \
          every URL must be replayed from raw/ (the card pages bulk made unnecessary \
          are not there). New requests: {:?}",

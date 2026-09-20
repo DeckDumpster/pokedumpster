@@ -47,6 +47,7 @@ static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Serve both upstreams from one origin. TCGCSV lives under `/<category>/…`
 /// and pokemontcg.io under `/sets` and `/cards`, so the paths never collide.
+/// The pokemon-tcg-data tarball lands under its own path.
 fn route(target: &str, tail: fn(&str) -> Reply) -> Reply {
     match target.split('?').next().unwrap_or(target) {
         "/3/groups" => Reply::ok(
@@ -69,6 +70,9 @@ fn route(target: &str, tail: fn(&str) -> Reply) -> Reply {
                             "lowPrice":100.0,"midPrice":250.0,"highPrice":900.0,
                             "marketPrice":312.5,"directLowPrice":275.0}]}"#,
         ),
+        // The bulk corpus. Any bytes land cleanly; content is not unpacked by
+        // `land_bulk`, only stored.
+        "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master" => Reply::ok("{}"),
         other => tail(other),
     }
 }
@@ -322,6 +326,7 @@ fn land_against(
     unsafe {
         std::env::set_var("PKDUMP_TCGCSV_BASE_URL", upstream.base_url());
         std::env::set_var("PKDUMP_POKEMONTCG_BASE_URL", upstream.base_url());
+        std::env::set_var("PKDUMP_POKEMON_TCG_DATA_BASE_URL", upstream.base_url());
         std::env::set_var("PKDUMP_HTTP_RETRY_ATTEMPTS", attempts);
         std::env::set_var("PKDUMP_HTTP_RETRY_BASE_MS", "1");
     }
@@ -353,6 +358,7 @@ fn land_against(
     unsafe {
         std::env::remove_var("PKDUMP_TCGCSV_BASE_URL");
         std::env::remove_var("PKDUMP_POKEMONTCG_BASE_URL");
+        std::env::remove_var("PKDUMP_POKEMON_TCG_DATA_BASE_URL");
         std::env::remove_var("PKDUMP_HTTP_RETRY_ATTEMPTS");
         std::env::remove_var("PKDUMP_HTTP_RETRY_BASE_MS");
     }

@@ -494,6 +494,64 @@ fn the_deletion_touches_no_collection_database_and_no_user_row() {
     );
 }
 
+/// Identity rows are personal data. A deletion must remove them — "derived
+/// artifacts inherit the obligation" applies here too.
+///
+/// SEEN RED: add the identity binding but skip the assertion, or run
+/// pkdump_erase::delete without the identity_delete_all call.
+#[test]
+fn a_deletion_removes_identity_bindings() {
+    let world = World::new();
+    let alice = world.tenant("alice", ALICE);
+    world.tenant("bob", BOB);
+    world.add_holdings(&alice, 3);
+    world.ship();
+
+    // Bind an identity to alice before the deletion.
+    pkdump_db::registry::identity_add(
+        &world.registry(),
+        ALICE,
+        "alice@example.com",
+        Some("sub-alice-123"),
+        Some("https://accounts.example.com"),
+    )
+    .unwrap();
+    assert_eq!(
+        pkdump_db::registry::identity_list(&world.registry(), ALICE)
+            .unwrap()
+            .len(),
+        1,
+        "fixture: alice must have one identity binding before the deletion"
+    );
+
+    pkdump_erase::delete(
+        &world.zone,
+        &world.config,
+        &world.registry(),
+        ALICE,
+        Some("account closed"),
+        None,
+    )
+    .unwrap();
+
+    // After the deletion: no identity rows remain for alice.
+    assert!(
+        pkdump_db::registry::identity_list(&world.registry(), ALICE)
+            .unwrap()
+            .is_empty(),
+        "identity bindings must be removed by the deletion"
+    );
+    // Bob's identity is untouched.
+    pkdump_db::registry::identity_add(
+        &world.registry(),
+        BOB,
+        "bob@example.com",
+        None,
+        None,
+    )
+    .expect("bob's identity binding must be unaffected by alice's deletion");
+}
+
 /// A tenant who never shipped anything is deleted successfully, and proven.
 /// Deletion must not depend on the tenant having had data.
 #[test]

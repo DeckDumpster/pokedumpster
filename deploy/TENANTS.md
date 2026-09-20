@@ -3,11 +3,11 @@
 Every tenant gets its own collection database. The card catalog stays a single
 shared copy, `ATTACH`ed read-only per connection exactly as it always was.
 
-> **Status: integration branch only.** Provisioning and request-path
-> *resolution* both exist; there is **no authentication at all** (a separate
-> epic). Resolution is off by default — `pkdump serve` opens the one
-> collection `$PKDUMP_USER` names, exactly as it always did. Do not deploy a
-> multi-tenant instance to the internet.
+> **Status: multi-tenant with Cloudflare Access authentication.** Resolution
+> is off by default — `pkdump serve` opens the one collection `$PKDUMP_USER`
+> names, exactly as it always did. Enabling `--multi-tenant` requires
+> Cloudflare Access to be configured; every request must carry a valid JWT,
+> and the verified email must be bound to a tenant.
 
 ## Layout
 
@@ -50,7 +50,7 @@ doing every job. Which one you are looking at decides what you can do with it.
 |---|---|---|
 | What it is | the user's name — `alice`, `collection` | an opaque ULID — `01K2C7HQ8N3Q4E9YB5R7MDX0VT` |
 | Who chooses it | a person, at `pkdump tenant create` | the registry, and nothing else |
-| Where it appears | the `x-pkdump-tenant` header, `$PKDUMP_USER`, `pkdump tenant` arguments | the filename, the S3 replica prefix, `pkdump tenant purge` |
+| Where it appears | `$PKDUMP_USER`, `pkdump tenant` arguments | the filename, the S3 replica prefix, `pkdump tenant purge` |
 | On disk | **nowhere** | `tenants/<database_id>.sqlite` |
 | Can it change? | yes — `pkdump tenant rename`, one `UPDATE`, nothing moves | never, for the life of the database |
 | In the table | a mutable label; unique among **active** users only | the **PRIMARY KEY** |
@@ -245,77 +245,58 @@ what production runs, and with it a tenant header is not read at all — send on
 and nothing happens.
 
 Passing `--multi-tenant` (or `PKDUMP_MULTITENANT=1`) switches on per-request
-resolution instead: every `/api` request must name its tenant in an
-`x-pkdump-tenant` header, and is served that tenant's database.
+resolution instead: the Cloudflare Access JWT in each `/api` request is
+validated, the verified email is looked up in the user registry, and the
+matching tenant's database is served.
 
 ```bash
 pkdump serve --multi-tenant
-curl -H 'x-pkdump-tenant: alice' localhost:8080/api/collection
+# The browser carries the CF_Authorization cookie set by the Access gateway.
 ```
 
 ### Read this before you turn it on
 
-**Nothing authenticates that header.** A caller who sends
-`x-pkdump-tenant: alice` *is* Alice as far as the server is concerned. There is
-no login, no session, no token — identity is a separate epic that has not been
-built. An instance running with this flag on and reachable by anyone but you
-hands every collection to whoever asks for it.
+**Cloudflare Access is required.** With the flag on, every request must carry a
+valid RS256 JWT signed by your Access team's key. The email in the verified JWT
+is looked up in the user registry; only an email bound to an active tenant
+reaches any database. An unbound email is a **403**, not a 404 that creates
+anything.
 
 Which is why:
 
-- **The server refuses to start** with the flag on and a bind address that is
-  not loopback. Not a warning — a refusal; see below.
+- **The server refuses to start** with the flag on and Access not configured
+  (`PKDUMP_ACCESS_TEAM_DOMAIN` and `PKDUMP_ACCESS_AUD` unset). Not a warning —
+  a refusal; see below.
 - The flag is off unless explicitly set, and `PKDUMP_MULTITENANT` only counts
   `1`, `true` or `yes` as on — `PKDUMP_MULTITENANT=0` does not switch it on by
   the mere fact of being set.
-- The server prints a warning line at startup when it is on.
-- The mechanism is a **header**, not a hostname or a URL prefix. A browser does
-  not send it on its own, so a multi-tenant instance cannot be driven by
-  pointing a browser at it — the frontend is unchanged and remains
-  single-tenant. Browser-reachable multi-tenancy waits on the identity epic.
-- **Production stays single-tenant.** This work lives on the integration
-  branch; `deploy/pkdump.container` does not set the variable and must not.
+- The server prints a message at startup when it is on.
+- **Production stays single-tenant** until Access is wired to this instance's
+  domain. `deploy/pkdump.container` does not set the variable.
 
 ### The refusal
 
-Everything above except the first bullet is a convention plus a printed line.
 The refusal is the mechanism:
 
 ```
-$ pkdump serve --multi-tenant --host 0.0.0.0
-Error: refusing to start: multi-tenant resolution is on and --host 0.0.0.0 is
-not loopback.
+$ pkdump serve --multi-tenant
+Error: refusing to start: multi-tenant resolution is on but Cloudflare Access
+is not configured.
 ...
 ```
 
-Loopback (`127.0.0.1`, `::1`) still starts — that is the mode's intended shape:
-a developer, a demo, or an SSH/WireGuard tunnel that does the reaching.
+Set the three Access env vars (`PKDUMP_ACCESS_TEAM_DOMAIN`, `PKDUMP_ACCESS_AUD`,
+optionally `PKDUMP_ACCESS_JWKS_URL`) and the server will start.
 
-If you genuinely mean to expose it — behind a reverse proxy that authenticates
-*for* it, once that exists — say so a second time:
-
-```bash
-PKDUMP_MULTITENANT=1 PKDUMP_MULTITENANT_INSECURE_BIND=1 pkdump serve --host 0.0.0.0
-```
-
-That second variable is parsed by the same strict helper as the first: only
-`1`, `true` or `yes`; `PKDUMP_MULTITENANT_INSECURE_BIND=0` does not open it.
-There is no `--allow-insecure-bind` flag — this should not be one
-tab-completion away.
-
-**Single-tenant mode is unaffected at any address.** Its tenant is fixed at
-startup and no request can change it, which is why the container entrypoint's
-`--host 0.0.0.0` is fine and stays. The refusal only ever fires on the
-combination that has no defence. Note the consequence for containers: an image
-binds `0.0.0.0`, so *any* containerised multi-tenant instance needs the second
-opt-in — a container publishing a port is off-box reachable, and that is
-precisely the case being caught.
+**Single-tenant mode is unaffected** — its tenant is fixed at startup and no
+request can change it. The container entrypoint's `--host 0.0.0.0` is fine
+and stays.
 
 ### What isolation rests on
 
 A tenant's requests reach a connection opened against that tenant's own
 database file, so another tenant's rows are not in scope for any query — there
-is no `WHERE tenant_id = ?` that a route could forget. Three things hold that
+is no `WHERE tenant_id = ?` that a route could forget. Four things hold that
 up, all in `crates/pkdump-server/src/tenant.rs`:
 
 - The application state holds **no connection**. The only way to a database is
@@ -325,62 +306,45 @@ up, all in `crates/pkdump-server/src/tenant.rs`:
   Handlers do not pass it, so they cannot pass the wrong one.
 - Opening a tenant connection asserts `pragma_database_list` holds exactly
   `main` = that tenant's file and `shared` = the catalog, and fails otherwise.
+- A request **cannot reach a database without a `VerifiedIdentity`**, because
+  `access::layer` runs before `tenant::layer` (outermost `route_layer` runs
+  first) and `VerifiedIdentity`'s constructor is private to `access` — only a
+  verified Cloudflare Access JWT produces one.
 
-**The header is a lookup key, not a filename.** What a request names is a
-*handle*; what it is served from is `tenants/<database_id>.sqlite`, and the two
-are joined by a row in the user registry (`registry.sqlite`, see
+**The email is a lookup key, not a filename.** What the identity carries is an
+*email address*; what a request is served from is `tenants/<database_id>.sqlite`,
+and the two are joined by a row in the user registry (`registry.sqlite`, see
 `crates/pkdump-db/src/registry.rs`) rather than by string equality. Resolution
-is a `SELECT` with the header as a bound parameter, and the only string that
+is a `SELECT` with the email as a bound parameter, and the only string that
 reaches a path constructor is the `database_id` that lookup returned — which
 only the registry mints, and which `pkdump_db::tenant_db_file` re-checks is a
-ULID before it becomes a path. A handle that is not registered, and one whose
-registration was detached, are the same 404; neither creates anything. Nothing
-an unauthenticated caller sends is concatenated into a filename.
+ULID before it becomes a path. An email that is not bound, and one bound to a
+detached tenant, both return **403**; neither creates anything. Nothing off the
+wire is concatenated into a filename.
 
-**The header is validated all the same, and gets a 400.** Not to protect the
-path — see above, no path is built from it — but because a boundary that
-accepts anything answers wrongly. `pkdump tenant create` holds a handle to
-`[a-z0-9][a-z0-9_-]{0,31}` and `schema_registry.sql` stores it under a `CHECK`
-of the same rule, so a header outside that rule names something no row could
-ever have held. Replying "404 no such tenant" would state that a well-formed
-name is unused, which is false, and would leave the caller nothing to fix.
-So resolution answers in three:
+Resolution answers in two:
 
-| what was sent | answer |
+| what the JWT carried | answer |
 | --- | --- |
-| not a handle (`Alice`, `../shared`, `a b`, empty, non-ASCII) | **400**, quoting the rule and not the value |
-| a handle nobody actively holds (never registered, or detached) | **404** |
-| an active user's handle | their `database_id`'s database |
-
-The rule is written once, in `pkdump_db::HANDLE_RULE` beside
-`validate_tenant_name`, and its two enforcers — that function and the SQL
-`CHECK` — are held to one shared corpus (`paths::HANDLE_CASES`) by a test on
-each side, so they cannot drift into disagreeing about what a handle is.
-`pd-4g7c`; `pd-rqgv` is why the 404 half is safe without any of it.
-
-Validation is necessary and nowhere near sufficient: the header is still
-*asserted* identity, which is what the warning above is about. The auth epic
-replaces it with a verified principal, with any header demoted to a selector
-checked against that principal's entitlements.
+| an email bound to an active tenant | their `database_id`'s database |
+| any other email (unbound, detached) | **403**, naming `pkdump tenant identity add` |
 
 > A database still sitting at `tenants/<handle>.sqlite` names nobody in the
-> registry, so its handle is a 404 to the resolver until `pkdump tenant
-> migrate` puts it on an id — see "Migrating onto opaque database ids" below.
-> Single-tenant serving is unaffected either way: it does not resolve.
+> registry, so its email is a 403 to the resolver until `pkdump tenant
+> migrate` puts it on an id and an identity is bound — see "Migrating onto
+> opaque database ids" below. Single-tenant serving is unaffected: it does
+> not resolve.
 
 The load-bearing test is
 `one_tenant_cannot_reach_another_tenants_collection` in
-`crates/pkdump-server/src/lib.rs`. It asserts the negative — Bob cannot read,
-and cannot delete, Alice's card — and it has been shown to fail when the
+`crates/pkdump-server/src/lib.rs`. It asserts the negative — Bob's JWT cannot
+read, and cannot delete, Alice's card — and it has been shown to fail when the
 resolver is bypassed (see `pd-5emg`).
 
 `tests/tenants/handles.sh` is the container-tier half: the shipped image with
-resolution on, and curl reading the status line for each row of the table
-above. The distinction is a status code, so a 400 the middleware flattened into
-a 404 on the way out would pass every unit test in the crate and fail every
-caller. It also asserts the case production actually runs — with the flag off,
-the header is not read, so a malformed one is served exactly like any other
-request.
+resolution on, asserting the 403 for an unbound email and successful resolution
+for a bound one. It also asserts the case production actually runs — with the
+flag off, identity-to-tenant mapping is not consulted.
 
 That gate necessarily opens the second opt-in above: it publishes a port, so
 the shipped entrypoint binds `0.0.0.0`, which is the combination the refusal
@@ -713,12 +677,8 @@ first half means something. It runs in `deploy/ci.sh`.
 
 ## What is not here yet
 
-- **Authentication** — Cloudflare Access JWT validation is in place
-  (`crates/pkdump-server/src/access.rs`). Every request to `/api/*` must
-  carry a valid RS256 JWT from Cloudflare Access, either in the
-  `Cf-Access-Jwt-Assertion` header or the `CF_Authorization` cookie. Three
-  env vars are required at startup: `PKDUMP_ACCESS_TEAM_DOMAIN`,
-  `PKDUMP_ACCESS_AUD`, and `PKDUMP_ACCESS_JWKS_URL`. A JWKS fetch failure
-  at startup is a failed startup. The `--multi-tenant` resolver still
-  believes whatever `x-pkdump-tenant` carries (identity → authorization is
-  a follow-on epic), so single-tenant is still the production shape.
+- **Identity → tenant binding in the frontend** — the Access JWT is validated
+  and the email looked up on every `/api` request. The frontend does not yet
+  carry Access metadata; a browser session's collection is still the single
+  tenant the server started with (`$PKDUMP_USER`) unless `--multi-tenant` is
+  on and the Access gateway is wiring the JWT cookie.

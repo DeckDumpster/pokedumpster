@@ -493,6 +493,32 @@ pub fn identity_delete_all(conn: &Connection, database_id: &str) -> Result<usize
     )?)
 }
 
+/// The **active** tenant whose identity is bound to `email`, if any.
+///
+/// Returns the `User` row for the tenant whose `user_identity` row matches
+/// this email with `user_state = 'active'`. The email is normalised before
+/// the query.
+///
+/// Returns `None` when no active binding exists for this email — either
+/// nobody registered it or the tenant was detached.
+pub fn lookup_by_email(conn: &Connection, email: &str) -> Result<Option<User>> {
+    let normalised = match normalise_email(email) {
+        Some(e) => e,
+        None => return Ok(None),
+    };
+    let row = conn
+        .query_row(
+            "SELECT u.database_id, u.handle, u.created_at, u.state, u.retired_at \
+             FROM user u \
+             JOIN user_identity ui ON ui.database_id = u.database_id \
+             WHERE ui.email = ?1 AND ui.user_state = 'active'",
+            params![normalised],
+            from_row,
+        )
+        .optional()?;
+    row.map(into_user).transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

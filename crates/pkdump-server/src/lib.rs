@@ -245,9 +245,6 @@ pub struct ServeConfig {
     /// There is no authentication in front of it, so an instance with this
     /// on lets any caller name any tenant — see `deploy/TENANTS.md`.
     pub multi_tenant: bool,
-    /// The second opt-in that lets `multi_tenant` bind somewhere other than
-    /// loopback. Off unless explicitly set; see `check_bind`.
-    pub allow_insecure_bind: bool,
     /// Cloudflare Access: full team URL, e.g.
     /// `https://myteam.cloudflareaccess.com`. Required.
     pub access_team_domain: String,
@@ -258,38 +255,31 @@ pub struct ServeConfig {
     pub access_jwks_url: String,
 }
 
-/// Refuse the one combination that has no defence: per-request tenant
-/// resolution, reachable from off-box.
+/// Refuse multi-tenant mode when Cloudflare Access is not configured.
 ///
-/// `multi_tenant` takes the tenant from a header nothing authenticates, so on
-/// a non-loopback bind every collection belongs to whoever can reach the
-/// port. Every other guardrail around that flag — a default of off, an env
-/// parse that rejects `0`, a `deploy/` that never sets it — is a convention
-/// plus a printed warning. This is the mechanism: the process does not start.
+/// Multi-tenant resolution now requires Cloudflare Access: every request must
+/// carry a valid JWT and the verified email must be bound to a tenant in the
+/// registry. Without an Access configuration the JWT layer accepts nothing, so
+/// multi-tenant mode would refuse every request rather than serving any tenant.
 ///
-/// Whoever genuinely wants that combination later (behind a reverse proxy
-/// that does authenticate, say) says so a second time, explicitly, with
-/// `PKDUMP_MULTITENANT_INSECURE_BIND`.
-///
-/// Single-tenant mode is not touched at any address — the tenant is fixed at
-/// startup, no request can change it, and the container deployment binds
-/// `0.0.0.0`.
-fn check_bind(multi_tenant: bool, host: IpAddr, allow_insecure_bind: bool) -> anyhow::Result<()> {
-    if !multi_tenant || host.is_loopback() || allow_insecure_bind {
+/// Single-tenant mode is unaffected — the tenant is fixed at startup and no
+/// JWT is required.
+fn check_multitenant_access(multi_tenant: bool, access_configured: bool) -> anyhow::Result<()> {
+    if !multi_tenant || access_configured {
         return Ok(());
     }
     anyhow::bail!(
-        "refusing to start: multi-tenant resolution is on and --host {host} is not loopback.\n\
+        "refusing to start: multi-tenant resolution is on but Cloudflare Access is not \
+         configured.\n\
          \n\
-         In multi-tenant mode the tenant is whatever the request's `{}` header claims, and \
-         nothing authenticates that claim — there is no login, no session, no token. Bound \
-         anywhere but loopback, this process hands every tenant's collection to anyone who can \
-         reach the port and name a tenant.\n\
+         In multi-tenant mode every request must carry a valid Cloudflare Access JWT; the \
+         verified email in the JWT determines which tenant's collection is served. Without \
+         Access configured the JWT layer will reject every request.\n\
          \n\
-         Bind 127.0.0.1 (or ::1), or drop --multi-tenant / PKDUMP_MULTITENANT. If you really do \
-         mean to expose it — behind something that authenticates for it — say so a second time \
-         with PKDUMP_MULTITENANT_INSECURE_BIND=1.",
-        tenant::TENANT_HEADER
+         Set {} and {} (and optionally {}), or drop --multi-tenant / PKDUMP_MULTITENANT.",
+        access::TEAM_DOMAIN_ENV,
+        access::AUD_ENV,
+        access::JWKS_URL_ENV,
     )
 }
 
@@ -297,9 +287,9 @@ fn check_bind(multi_tenant: bool, host: IpAddr, allow_insecure_bind: bool) -> an
 /// opened up front — so a missing catalog (`pkdump setup` not run) fails at
 /// startup rather than on the first request.
 pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
-    // Before anything is opened or bound: an unauthenticated resolver must
-    // not become reachable from off-box.
-    check_bind(cfg.multi_tenant, cfg.host, cfg.allow_insecure_bind)?;
+    // Access config must be present when multi-tenant is on.
+    let access_configured = !cfg.access_team_domain.is_empty() && !cfg.access_aud.is_empty();
+    check_multitenant_access(cfg.multi_tenant, access_configured)?;
     // Idempotent shared-catalog convergence on startup. `pkdump setup` and
     // the nightly `pkdump-lake-derive shared` normally own shared schema —
     // the refresh used to be on that list and is not since pd-lunn, because
@@ -337,20 +327,9 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
     .await?;
     let tenants = if cfg.multi_tenant {
         println!(
-            "pkdump: MULTI-TENANT resolution is ON — every request names its tenant in \
-             `{}`, and nothing authenticates that claim. Do not expose this instance.",
-            tenant::TENANT_HEADER
+            "pkdump: MULTI-TENANT resolution is ON — every request must carry a valid \
+             Cloudflare Access JWT and the verified email must be bound to a tenant."
         );
-        if !cfg.host.is_loopback() {
-            // Reachable only via the second opt-in — `check_bind` above
-            // refused otherwise.
-            println!(
-                "pkdump: PKDUMP_MULTITENANT_INSECURE_BIND is set and this instance is bound to \
-                 {} — every tenant's collection is readable and writable by anyone who can \
-                 reach this port.",
-                cfg.host
-            );
-        }
         Tenants::multi(cfg.tenants_dir, cfg.shared_db, &cfg.registry_db)?
     } else {
         Tenants::single(&cfg.tenant, cfg.user_db, cfg.shared_db)?
@@ -452,7 +431,8 @@ mod tests {
         (dir, router, fx)
     }
 
-    /// A multi-tenant test router with `handles` provisioned.
+    /// A multi-tenant test router with `handles` provisioned, each with an
+    /// email binding `<handle>@example.com`.
     async fn multi_tenant_app(
         handles: &[&str],
     ) -> (tempfile::TempDir, Router, PathBuf, TestAccessFixture) {
@@ -469,6 +449,14 @@ mod tests {
                 &pkdump_db::tenant_db_file(&tenants_dir, &user.database_id).unwrap(),
             )
             .unwrap();
+            pkdump_db::registry::identity_add(
+                &registry,
+                &user.database_id,
+                &format!("{handle}@example.com"),
+                None,
+                None,
+            )
+            .unwrap();
         }
         let router = router_for(
             dir.path(),
@@ -479,20 +467,16 @@ mod tests {
         (dir, router, tenants_dir, fx)
     }
 
-    /// Build a request, optionally injecting a JWT and/or a tenant header.
+    /// Build a request, optionally injecting a JWT and a body.
     fn request(
         method: &str,
         uri: &str,
         token: Option<&str>,
-        tenant: Option<&str>,
         body: Option<&str>,
     ) -> Request<Body> {
         let mut b = Request::builder().method(method).uri(uri);
         if let Some(t) = token {
             b = b.header(access::JWT_HEADER, t);
-        }
-        if let Some(t) = tenant {
-            b = b.header(tenant::TENANT_HEADER, t);
         }
         match body {
             Some(json) => b
@@ -551,7 +535,7 @@ mod tests {
         let (_d, router, fx) = test_app().await;
         let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(request("GET", "/api/backup-status", Some(&tok), None, None))
+            .oneshot(request("GET", "/api/backup-status", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -571,7 +555,7 @@ mod tests {
         std::fs::write(dir.path().join(".backup-last-ok"), old.to_string()).unwrap();
         let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(request("GET", "/api/backup-status", Some(&tok), None, None))
+            .oneshot(request("GET", "/api/backup-status", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -739,7 +723,6 @@ mod tests {
                 "POST",
                 "/api/collection",
                 Some(&tok),
-                None,
                 Some(r#"{"printing_id":"sv3pt5-1-normal","source":"manual_id"}"#),
             ))
             .await
@@ -748,7 +731,7 @@ mod tests {
 
         let listed = router
             .clone()
-            .oneshot(request("GET", "/api/collection", Some(&tok), None, None))
+            .oneshot(request("GET", "/api/collection", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(listed.status(), StatusCode::OK);
@@ -760,7 +743,6 @@ mod tests {
                 "POST",
                 "/api/collection",
                 Some(&tok),
-                None,
                 Some(r#"{"printing_id":"sv3pt5-1-nope","source":"manual_id"}"#),
             ))
             .await
@@ -772,7 +754,6 @@ mod tests {
                 "DELETE",
                 "/api/collection/1",
                 Some(&tok),
-                None,
                 None,
             ))
             .await
@@ -791,7 +772,6 @@ mod tests {
                 "POST",
                 "/api/manual-prices",
                 Some(&tok),
-                None,
                 Some(r#"{"printing_id":"sv3pt5-1-normal","price":29.0}"#),
             ))
             .await
@@ -808,7 +788,6 @@ mod tests {
                 "POST",
                 "/api/manual-prices",
                 Some(&tok),
-                None,
                 Some(r#"{"printing_id":"nope-0-normal","price":1.0}"#),
             ))
             .await
@@ -823,7 +802,7 @@ mod tests {
 
         let found = router
             .clone()
-            .oneshot(request("GET", "/api/card/sv3pt5/1", Some(&tok), None, None))
+            .oneshot(request("GET", "/api/card/sv3pt5/1", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(found.status(), StatusCode::OK);
@@ -834,7 +813,6 @@ mod tests {
                 "GET",
                 "/api/card/sv3pt5/999",
                 Some(&tok),
-                None,
                 None,
             ))
             .await
@@ -853,7 +831,6 @@ mod tests {
                 "POST",
                 "/api/collection",
                 Some(&tok),
-                None,
                 Some(r#"{"printing_id":"sv3pt5-1-normal","source":"manual_id"}"#),
             ))
             .await
@@ -865,7 +842,6 @@ mod tests {
                 "GET",
                 "/api/collection/search",
                 Some(&tok),
-                None,
                 None,
             ))
             .await
@@ -881,7 +857,6 @@ mod tests {
                 "GET",
                 "/api/collection/search?q=t:fire",
                 Some(&tok),
-                None,
                 None,
             ))
             .await
@@ -901,7 +876,6 @@ mod tests {
                 "GET",
                 "/api/collection/search?include_unowned=1",
                 Some(&tok),
-                None,
                 None,
             ))
             .await
@@ -923,7 +897,7 @@ mod tests {
             let tok = tok.clone();
             async move {
                 let resp = router
-                    .oneshot(request("GET", &uri, Some(&tok), None, None))
+                    .oneshot(request("GET", &uri, Some(&tok), None))
                     .await
                     .unwrap();
                 assert_eq!(resp.status(), StatusCode::OK);
@@ -954,7 +928,6 @@ mod tests {
                 "POST",
                 "/api/collection",
                 Some(&tok),
-                None,
                 Some(ADD_CARD),
             ))
             .await
@@ -974,7 +947,7 @@ mod tests {
             let tok = tok.clone();
             async move {
                 let resp = router
-                    .oneshot(request("GET", &uri, Some(&tok), None, None))
+                    .oneshot(request("GET", &uri, Some(&tok), None))
                     .await
                     .unwrap();
                 assert_eq!(resp.status(), StatusCode::OK);
@@ -1000,7 +973,6 @@ mod tests {
                 "/api/collection/search?include_unowned=1&limit=all",
                 Some(&tok),
                 None,
-                None,
             ))
             .await
             .unwrap();
@@ -1021,7 +993,6 @@ mod tests {
                 "GET",
                 "/api/collection/search?limit=all&offset=10",
                 Some(&tok),
-                None,
                 None,
             ))
             .await
@@ -1048,7 +1019,7 @@ mod tests {
         ] {
             let resp = router
                 .clone()
-                .oneshot(request("GET", &uri, Some(&tok), None, None))
+                .oneshot(request("GET", &uri, Some(&tok), None))
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
@@ -1066,7 +1037,7 @@ mod tests {
             let uri = format!("/api/collection/search?sort={key}");
             let resp = router
                 .clone()
-                .oneshot(request("GET", &uri, Some(&tok), None, None))
+                .oneshot(request("GET", &uri, Some(&tok), None))
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
@@ -1087,7 +1058,7 @@ mod tests {
             let uri = format!("/api/collection/search?sort={key}&include_unowned=1");
             let resp = router
                 .clone()
-                .oneshot(request("GET", &uri, Some(&tok), None, None))
+                .oneshot(request("GET", &uri, Some(&tok), None))
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::OK, "{uri}");
@@ -1104,7 +1075,6 @@ mod tests {
                 "/api/collection/search?q=xyz:1",
                 Some(&tok),
                 None,
-                None,
             ))
             .await
             .unwrap();
@@ -1119,7 +1089,7 @@ mod tests {
         let (_d, router, fx) = test_app().await;
         let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(request("GET", "/api/search/keywords", Some(&tok), None, None))
+            .oneshot(request("GET", "/api/search/keywords", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1133,7 +1103,7 @@ mod tests {
         let (_d, router, fx) = test_app().await;
         let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(request("GET", "/api/export/json", Some(&tok), None, None))
+            .oneshot(request("GET", "/api/export/json", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1154,27 +1124,23 @@ mod tests {
 
     // ---- tenant resolution and isolation ------------------------------------
 
+    /// Each tenant's JWT email resolves to their own database only.
     #[tokio::test]
     async fn one_tenant_cannot_reach_another_tenants_collection() {
         let (_d, router, _dir, fx) = multi_tenant_app(&["alice", "bob"]).await;
-        let tok = fx.valid_token("u@example.com");
+        let alice_tok = fx.valid_token("alice@example.com");
+        let bob_tok = fx.valid_token("bob@example.com");
 
         let created = router
             .clone()
-            .oneshot(request(
-                "POST",
-                "/api/collection",
-                Some(&tok),
-                Some("alice"),
-                Some(ADD_CARD),
-            ))
+            .oneshot(request("POST", "/api/collection", Some(&alice_tok), Some(ADD_CARD)))
             .await
             .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
 
         let bobs = router
             .clone()
-            .oneshot(request("GET", "/api/collection", Some(&tok), Some("bob"), None))
+            .oneshot(request("GET", "/api/collection", Some(&bob_tok), None))
             .await
             .unwrap();
         assert_eq!(bobs.status(), StatusCode::OK);
@@ -1187,13 +1153,7 @@ mod tests {
 
         let stolen = router
             .clone()
-            .oneshot(request(
-                "DELETE",
-                "/api/collection/1",
-                Some(&tok),
-                Some("bob"),
-                None,
-            ))
+            .oneshot(request("DELETE", "/api/collection/1", Some(&bob_tok), None))
             .await
             .unwrap();
         assert_eq!(
@@ -1203,232 +1163,69 @@ mod tests {
         );
 
         let alices = router
-            .oneshot(request(
-                "GET",
-                "/api/collection",
-                Some(&tok),
-                Some("alice"),
-                None,
-            ))
+            .oneshot(request("GET", "/api/collection", Some(&alice_tok), None))
             .await
             .unwrap();
         assert!(body_string(alices).await.contains("sv3pt5-1-normal"));
     }
 
+    /// An unbound email is a 403 and does not create a database.
     #[tokio::test]
-    async fn a_request_that_names_no_tenant_is_refused() {
-        let (_d, router, _dir, fx) = multi_tenant_app(&["alice"]).await;
-        let tok = fx.valid_token("u@example.com");
-        router
-            .clone()
-            .oneshot(request(
-                "POST",
-                "/api/collection",
-                Some(&tok),
-                Some("alice"),
-                Some(ADD_CARD),
-            ))
-            .await
-            .unwrap();
-
-        let anon = router
-            .oneshot(request("GET", "/api/collection", Some(&tok), None, None))
-            .await
-            .unwrap();
-        assert_eq!(anon.status(), StatusCode::BAD_REQUEST);
-        let body = body_string(anon).await;
-        assert!(
-            !body.contains("sv3pt5-1-normal"),
-            "an unresolved request was served a collection: {body}"
-        );
-    }
-
-    #[tokio::test]
-    async fn an_unknown_tenant_is_a_404_and_creates_nothing() {
+    async fn an_unbound_email_is_a_403_and_creates_nothing() {
         let (_d, router, tenants_dir, fx) = multi_tenant_app(&["alice"]).await;
-        let tok = fx.valid_token("u@example.com");
+        let tok = fx.valid_token("mallory@example.com");
         let before = std::fs::read_dir(&tenants_dir).unwrap().count();
         let resp = router
-            .oneshot(request(
-                "GET",
-                "/api/collection",
-                Some(&tok),
-                Some("mallory"),
-                None,
-            ))
+            .oneshot(request("GET", "/api/collection", Some(&tok), None))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         assert_eq!(std::fs::read_dir(&tenants_dir).unwrap().count(), before);
     }
 
+    /// In single-tenant mode, any authenticated caller reaches the one
+    /// collection — the JWT is validated but its email is not looked up.
     #[tokio::test]
-    async fn a_handle_that_names_a_file_resolves_to_nothing() {
-        let (_d, router, tenants_dir, fx) = multi_tenant_app(&["alice"]).await;
-        let tok = fx.valid_token("u@example.com");
-
-        let ghost = tenants_dir.join("ghost.sqlite");
-        pkdump_db::open_user(&ghost).unwrap();
-
-        let resp = router
-            .clone()
-            .oneshot(request(
-                "GET",
-                "/api/collection",
-                Some(&tok),
-                Some("ghost"),
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-
-        for handle in ["../shared", "../../etc/passwd", "alice/../ghost"] {
-            let resp = router
-                .clone()
-                .oneshot(request(
-                    "GET",
-                    "/api/collection",
-                    Some(&tok),
-                    Some(handle),
-                    None,
-                ))
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{handle:?}");
-        }
-    }
-
-    #[tokio::test]
-    async fn a_malformed_handle_is_a_400_and_an_unknown_one_a_404() {
-        let (d, router, _dir, fx) = multi_tenant_app(&["alice"]).await;
-        let tok = fx.valid_token("u@example.com");
-
-        for malformed in ["Alice", "-flag", "a/b", "alice.sqlite", "has space"] {
-            let resp = router
-                .clone()
-                .oneshot(request(
-                    "GET",
-                    "/api/collection",
-                    Some(&tok),
-                    Some(malformed),
-                    None,
-                ))
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{malformed:?}");
-            let body = body_string(resp).await;
-            assert!(
-                body.contains(pkdump_db::HANDLE_RULE),
-                "the 400 must say what a handle may be: {body}"
-            );
-            assert!(
-                !body.contains(malformed),
-                "the 400 echoed the header back: {body}"
-            );
-        }
-
-        let registry = pkdump_db::open_registry(&d.path().join("registry.sqlite")).unwrap();
-        pkdump_db::registry::detach(&registry, "alice").unwrap();
-        for known_shaped in ["mallory", "alice"] {
-            let resp = router
-                .clone()
-                .oneshot(request(
-                    "GET",
-                    "/api/collection",
-                    Some(&tok),
-                    Some(known_shaped),
-                    None,
-                ))
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{known_shaped:?}");
-        }
-    }
-
-    #[tokio::test]
-    async fn a_database_id_is_not_a_handle() {
-        let (d, router, _dir, fx) = multi_tenant_app(&["alice"]).await;
-        let tok = fx.valid_token("u@example.com");
-        let registry = pkdump_db::open_registry(&d.path().join("registry.sqlite")).unwrap();
-        let alice = pkdump_db::registry::lookup(&registry, "alice")
-            .unwrap()
-            .unwrap();
-
-        let resp = router
-            .oneshot(request(
-                "GET",
-                "/api/collection",
-                Some(&tok),
-                Some(&alice.database_id),
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn with_the_flag_off_the_header_does_nothing() {
+    async fn with_the_flag_off_any_identity_reaches_the_single_tenant() {
         let (_d, router, fx) = test_app().await;
         let tok = fx.valid_token("u@example.com");
 
         let created = router
             .clone()
-            .oneshot(request(
-                "POST",
-                "/api/collection",
-                Some(&tok),
-                None,
-                Some(ADD_CARD),
-            ))
+            .oneshot(request("POST", "/api/collection", Some(&tok), Some(ADD_CARD)))
             .await
             .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
 
+        // A different email — still resolves to the single collection.
+        let other_tok = fx.valid_token("someone-else@example.com");
         let claimed = router
-            .oneshot(request("GET", "/api/collection", Some(&tok), Some("bob"), None))
+            .oneshot(request("GET", "/api/collection", Some(&other_tok), None))
             .await
             .unwrap();
         assert_eq!(claimed.status(), StatusCode::OK);
         assert!(body_string(claimed).await.contains("sv3pt5-1-normal"));
     }
 
-    // ---- check_bind (sync, no HTTP) ----------------------------------------
+    // ---- check_multitenant_access (sync, no HTTP) ----------------------------------------
 
     #[test]
-    fn multi_tenant_refuses_a_non_loopback_bind() {
-        for host in ["0.0.0.0", "::", "192.168.1.10", "10.0.0.2"] {
-            let err = match check_bind(true, host.parse().unwrap(), false) {
-                Ok(()) => panic!("{host} must not serve an unauthenticated resolver"),
-                Err(e) => e,
-            };
-            let msg = err.to_string();
-            assert!(msg.contains(host), "the error names the address: {msg}");
-            assert!(msg.contains("nothing authenticates"), "{msg}");
-            assert!(msg.contains("PKDUMP_MULTITENANT_INSECURE_BIND"), "{msg}");
-        }
+    fn multi_tenant_without_access_refuses() {
+        let err = check_multitenant_access(true, false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(access::TEAM_DOMAIN_ENV), "{msg}");
+        assert!(msg.contains(access::AUD_ENV), "{msg}");
     }
 
     #[test]
-    fn multi_tenant_on_loopback_still_starts() {
-        for host in ["127.0.0.1", "::1", "127.0.0.5"] {
-            check_bind(true, host.parse().unwrap(), false)
-                .unwrap_or_else(|e| panic!("{host} is loopback and must serve: {e}"));
-        }
+    fn multi_tenant_with_access_configured_starts() {
+        check_multitenant_access(true, true).unwrap();
     }
 
     #[test]
-    fn the_explicit_opt_in_allows_the_insecure_bind() {
-        check_bind(true, "0.0.0.0".parse().unwrap(), true).unwrap();
-    }
-
-    #[test]
-    fn single_tenant_is_unaffected_at_any_host() {
-        for host in ["0.0.0.0", "::", "127.0.0.1", "192.168.1.10"] {
-            check_bind(false, host.parse().unwrap(), false)
-                .unwrap_or_else(|e| panic!("single-tenant on {host} must serve: {e}"));
-        }
+    fn single_tenant_is_unaffected_by_access_config() {
+        check_multitenant_access(false, false).unwrap();
+        check_multitenant_access(false, true).unwrap();
     }
 
     #[tokio::test]

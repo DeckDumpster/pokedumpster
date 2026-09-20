@@ -502,8 +502,12 @@ fn acquire(
     //     causing the replay to fail with a fatal missing-URL error (pd-m1sd).
     //     Idempotent upsert: on a warm catalog this overwrites identical rows.
     println!("Importing the pokemon-tcg-data bulk corpus...");
-    let bulk = pokemon_tcg_data::download_and_import(conn, &options.wire(), options.clock.fetched_at())?;
-    println!("  {} sets, {} cards from bulk corpus", bulk.sets, bulk.cards);
+    let bulk =
+        pokemon_tcg_data::download_and_import(conn, &options.wire(), options.clock.fetched_at())?;
+    println!(
+        "  {} sets, {} cards from bulk corpus",
+        bulk.sets, bulk.cards
+    );
 
     // 2. pokemontcg.io tail — pick up sets released since the last refresh.
     //    The one step here allowed to fail without ending the run; see the fn

@@ -164,8 +164,8 @@ fn cards_json(set: &str) -> String {
 /// carries an `"images"` block with the same symbol URL the `/sets` response
 /// uses, so the two upstreams stay in sync across the cold-derive test.
 fn bulk_tarball_bytes(symbols: Option<&str>) -> Vec<u8> {
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
 
     let images = |set: &str| match symbols {
         Some(origin) => format!(r#","images":{{"symbol":"{origin}/symbol/{set}.png"}}"#),
@@ -185,15 +185,28 @@ fn bulk_tarball_bytes(symbols: Option<&str>) -> Vec<u8> {
         hdr.set_size(data.len() as u64);
         hdr.set_mode(0o644);
         hdr.set_cksum();
-        ar.append_data(&mut hdr, path, data).expect("append tar entry");
+        ar.append_data(&mut hdr, path, data)
+            .expect("append tar entry");
     }
 
     let buf = Vec::new();
     let enc = GzEncoder::new(buf, Compression::default());
     let mut ar = tar::Builder::new(enc);
-    append(&mut ar, "pokemon-tcg-data-master/sets/en.json", sets_json.as_bytes());
-    append(&mut ar, "pokemon-tcg-data-master/cards/en/fk1.json", cards_fk1.as_bytes());
-    append(&mut ar, "pokemon-tcg-data-master/cards/en/fk2.json", cards_fk2.as_bytes());
+    append(
+        &mut ar,
+        "pokemon-tcg-data-master/sets/en.json",
+        sets_json.as_bytes(),
+    );
+    append(
+        &mut ar,
+        "pokemon-tcg-data-master/cards/en/fk1.json",
+        cards_fk1.as_bytes(),
+    );
+    append(
+        &mut ar,
+        "pokemon-tcg-data-master/cards/en/fk2.json",
+        cards_fk2.as_bytes(),
+    );
 
     ar.into_inner()
         .expect("finish tar")
@@ -1517,7 +1530,10 @@ fn a_bulk_corpus_enables_cold_derive_and_lag_window_is_tail_only() {
     // Both sets are missing from the empty catalog → the land fetches their
     // cards. If this is 0 the fixture is broken (the tail landed nothing,
     // so there are no cards in `raw/` to prove the derive skips them).
-    assert_eq!(report.sets_added, 2, "land must see both sets as new to the empty catalog");
+    assert_eq!(
+        report.sets_added, 2,
+        "land must see both sets as new to the empty catalog"
+    );
 
     let cold = h.db("cold");
     let out = h.derive(&cold, DAY1, &[]);
@@ -1662,7 +1678,8 @@ fn cold_rebuild_from_raw_is_row_identical_to_warm_and_no_pokemontcgio_cards_need
     // new requests means "everything was in `raw/`".
     let requests_after = h.upstream.requests().len();
     assert_eq!(
-        requests_after, requests_before,
+        requests_after,
+        requests_before,
         "cold derive must make no new requests to the fixture upstream — \
          every URL must be replayed from raw/ (the card pages bulk made unnecessary \
          are not there). New requests: {:?}",

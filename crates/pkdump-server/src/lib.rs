@@ -537,7 +537,7 @@ mod tests {
     async fn backup_status_requires_no_token() {
         let (_d, router, _fx) = test_app().await;
         let resp = router
-            .oneshot(request("GET", "/api/backup-status", None, None, None))
+            .oneshot(request("GET", "/api/backup-status", None, None))
             .await
             .unwrap();
         assert_eq!(
@@ -567,7 +567,7 @@ mod tests {
             let (method, uri) = route.split_once(' ').unwrap();
             let resp = router
                 .clone()
-                .oneshot(request(method, uri, None, None, None))
+                .oneshot(request(method, uri, None, None))
                 .await
                 .unwrap();
             assert_eq!(

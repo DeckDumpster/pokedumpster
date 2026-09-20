@@ -18,6 +18,7 @@ use serde_json::Value;
 use crate::error::{IngestError, Result};
 use crate::landing::{self, Wire};
 use crate::pokemontcg::{PokemonTcgCard, PokemonTcgSet, cards_from_values};
+use crate::upstream;
 
 const UPSTREAM_CARD_CORRECTIONS: &str =
     include_str!("../../../data/overrides/upstream_card_corrections.json");
@@ -131,8 +132,15 @@ pub fn apply_corrections_to_db(conn: &Connection) -> Result<Vec<PendingCorrectio
     Ok(pending)
 }
 
-const REPO_TARBALL: &str =
-    "https://codeload.github.com/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master";
+const REPO_TARBALL_PATH: &str = "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master";
+
+fn tarball_url() -> String {
+    let base = upstream::base_url(
+        upstream::ENV_POKEMON_TCG_DATA_BASE_URL,
+        "https://codeload.github.com",
+    );
+    format!("{base}{REPO_TARBALL_PATH}")
+}
 
 /// Counts produced by an import run.
 #[derive(Debug, Default, Clone, Copy)]
@@ -178,6 +186,30 @@ pub fn import_from_dir(conn: &mut Connection, dir: &Path) -> Result<ImportStats>
     Ok(stats)
 }
 
+/// Fetch the repo tarball and land it in the raw zone, without unpacking or
+/// importing it.
+///
+/// This is the acquisition half — `wire` records the bytes under
+/// `source=pokemon-tcg-data/dataset=bulk/`. A later derive call with a
+/// replaying wire will unpack and import them. `acquire` in `pkdump-derive`
+/// calls `download_and_import` (bead 2), which replays what this function
+/// lands.
+pub fn land_bulk(wire: &Wire) -> Result<()> {
+    let http = reqwest::blocking::Client::builder()
+        .user_agent("pokedumpster/0.1 (+cache-population)")
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    landing::fetch_bytes(
+        &http,
+        http.get(tarball_url()),
+        wire,
+        Source::PokemonTcgData,
+        Dataset::Bulk,
+        PartFormat::TarGz,
+    )?;
+    Ok(())
+}
+
 /// Download the repo tarball and import it into the shared catalog.
 ///
 /// `wire` lands the tarball exactly as fetched before a byte of it is
@@ -191,7 +223,7 @@ pub fn download_and_import(conn: &mut Connection, wire: &Wire) -> Result<ImportS
         .build()?;
     let bytes = landing::fetch_bytes(
         &http,
-        http.get(REPO_TARBALL),
+        http.get(tarball_url()),
         wire,
         Source::PokemonTcgData,
         Dataset::Bulk,

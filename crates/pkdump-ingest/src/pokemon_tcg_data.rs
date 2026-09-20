@@ -153,14 +153,17 @@ pub struct ImportStats {
 /// Import sets and cards from a local checkout of the pokemon-tcg-data repo.
 /// `dir` must contain `sets/en.json` and `cards/en/<setid>.json`. Idempotent —
 /// re-running upserts in place.
-pub fn import_from_dir(conn: &mut Connection, dir: &Path) -> Result<ImportStats> {
+///
+/// `now` is the fetch timestamp written to `ptcgio_fetched_at`. Pass
+/// `options.clock.fetched_at()` on the derive path so the column carries the
+/// same instant in online and offline runs and the two catalogs remain
+/// row-identical.
+pub fn import_from_dir(conn: &mut Connection, dir: &Path, now: &str) -> Result<ImportStats> {
     let sets_path = dir.join("sets").join("en.json");
     let sets_text = std::fs::read_to_string(&sets_path)
         .map_err(|e| IngestError::BadResponse(format!("{}: {e}", sets_path.display())))?;
     // The repo stores bare JSON arrays — there is no API-style `data` envelope.
     let sets: Vec<PokemonTcgSet> = serde_json::from_str(&sets_text)?;
-
-    let now = chrono::Utc::now().to_rfc3339();
     let mut stats = ImportStats::default();
     let tx = conn.transaction()?;
     for set in &sets {
@@ -217,7 +220,10 @@ pub fn land_bulk(wire: &Wire) -> Result<()> {
 /// unpacked — or replays the one a previous run landed. The corpus is one
 /// archive carrying both sets and cards, so it lands under `dataset=bulk`
 /// rather than pretending to be either.
-pub fn download_and_import(conn: &mut Connection, wire: &Wire) -> Result<ImportStats> {
+///
+/// `now` is passed to [`import_from_dir`] and written to `ptcgio_fetched_at`
+/// on each set row. Pass `options.clock.fetched_at()` on the derive path.
+pub fn download_and_import(conn: &mut Connection, wire: &Wire, now: &str) -> Result<ImportStats> {
     let http = reqwest::blocking::Client::builder()
         .user_agent("pokedumpster/0.1 (+cache-population)")
         .timeout(std::time::Duration::from_secs(120))
@@ -242,7 +248,7 @@ pub fn download_and_import(conn: &mut Connection, wire: &Wire) -> Result<ImportS
         .find(|p| p.is_dir())
         .ok_or_else(|| IngestError::BadResponse("tarball had no directory".into()))?;
 
-    import_from_dir(conn, &root)
+    import_from_dir(conn, &root, now)
 }
 
 /// Upsert a single set into the catalog. Shared by the file importer and
@@ -405,7 +411,7 @@ mod tests {
         let dbdir = tempfile::tempdir().unwrap();
         let mut conn = pkdump_db::open_shared(&dbdir.path().join("shared.sqlite")).unwrap();
 
-        let stats = import_from_dir(&mut conn, repo.path()).unwrap();
+        let stats = import_from_dir(&mut conn, repo.path(), "2024-01-01T00:00:00Z").unwrap();
         assert_eq!(stats.sets, 1);
         assert_eq!(stats.cards, 2);
 
@@ -615,8 +621,8 @@ mod tests {
         let dbdir = tempfile::tempdir().unwrap();
         let mut conn = pkdump_db::open_shared(&dbdir.path().join("shared.sqlite")).unwrap();
 
-        import_from_dir(&mut conn, repo.path()).unwrap();
-        import_from_dir(&mut conn, repo.path()).unwrap();
+        import_from_dir(&mut conn, repo.path(), "2024-01-01T00:00:00Z").unwrap();
+        import_from_dir(&mut conn, repo.path(), "2024-01-01T00:00:00Z").unwrap();
 
         let cards: i64 = conn
             .query_row("SELECT count(*) FROM cards", [], |r| r.get(0))

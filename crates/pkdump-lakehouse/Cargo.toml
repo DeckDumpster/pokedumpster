@@ -25,3 +25,5 @@ image.workspace = true
 zstd.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true
+tar.workspace = true
+flate2.workspace = true

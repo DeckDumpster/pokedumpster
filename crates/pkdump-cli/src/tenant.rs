@@ -271,8 +271,7 @@ fn identity(args: IdentityArgs) -> anyhow::Result<()> {
             let conn = registry::open()?;
             let user = registry::lookup(&conn, &a.handle)?
                 .ok_or_else(|| anyhow::anyhow!("no active tenant with handle {:?}", a.handle))?;
-            let removed =
-                registry::identity_remove(&conn, &user.database_id, &a.email)?;
+            let removed = registry::identity_remove(&conn, &user.database_id, &a.email)?;
             println!(
                 "Removed {} from tenant {} (database {})",
                 removed.email, a.handle, removed.database_id
@@ -312,8 +311,18 @@ fn identity_list_cmd(args: IdentityListArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let handle_w = bindings.iter().map(|(h, _)| h.len()).max().unwrap_or(0).max(6);
-    let email_w = bindings.iter().map(|(_, b)| b.email.len()).max().unwrap_or(0).max(5);
+    let handle_w = bindings
+        .iter()
+        .map(|(h, _)| h.len())
+        .max()
+        .unwrap_or(0)
+        .max(6);
+    let email_w = bindings
+        .iter()
+        .map(|(_, b)| b.email.len())
+        .max()
+        .unwrap_or(0)
+        .max(5);
     println!(
         "{:<handle_w$}  {:<email_w$}  DATABASE ID                 ADDED",
         "HANDLE", "EMAIL"
@@ -547,7 +556,9 @@ mod tests {
 
     #[test]
     fn identity_subcommands_parse() {
-        let TenantCommand::Identity(ref i) = parse(&["identity", "add", "alice", "--email", "alice@example.com"]) else {
+        let TenantCommand::Identity(ref i) =
+            parse(&["identity", "add", "alice", "--email", "alice@example.com"])
+        else {
             panic!("`tenant identity add` must parse");
         };
         let IdentityCommand::Add(ref a) = i.command else {
@@ -560,31 +571,52 @@ mod tests {
 
         // with optional flags
         let TenantCommand::Identity(ref i2) = parse(&[
-            "identity", "add", "bob", "--email", "bob@example.com",
-            "--sub", "sub-123", "--issuer", "https://issuer.example",
+            "identity",
+            "add",
+            "bob",
+            "--email",
+            "bob@example.com",
+            "--sub",
+            "sub-123",
+            "--issuer",
+            "https://issuer.example",
         ]) else {
             panic!("`tenant identity add` with sub/issuer must parse");
         };
-        let IdentityCommand::Add(ref b) = i2.command else { panic!() };
+        let IdentityCommand::Add(ref b) = i2.command else {
+            panic!()
+        };
         assert_eq!(b.sub.as_deref(), Some("sub-123"));
         assert_eq!(b.issuer.as_deref(), Some("https://issuer.example"));
 
         let TenantCommand::Identity(ref i3) = parse(&["identity", "list"]) else {
             panic!("`tenant identity list` must parse");
         };
-        let IdentityCommand::List(ref l) = i3.command else { panic!() };
+        let IdentityCommand::List(ref l) = i3.command else {
+            panic!()
+        };
         assert!(l.handle.is_none());
 
         let TenantCommand::Identity(ref i4) = parse(&["identity", "list", "alice"]) else {
             panic!("`tenant identity list alice` must parse");
         };
-        let IdentityCommand::List(ref l2) = i4.command else { panic!() };
+        let IdentityCommand::List(ref l2) = i4.command else {
+            panic!()
+        };
         assert_eq!(l2.handle.as_deref(), Some("alice"));
 
-        let TenantCommand::Identity(ref i5) = parse(&["identity", "remove", "alice", "--email", "alice@example.com"]) else {
+        let TenantCommand::Identity(ref i5) = parse(&[
+            "identity",
+            "remove",
+            "alice",
+            "--email",
+            "alice@example.com",
+        ]) else {
             panic!("`tenant identity remove` must parse");
         };
-        let IdentityCommand::Remove(ref r) = i5.command else { panic!() };
+        let IdentityCommand::Remove(ref r) = i5.command else {
+            panic!()
+        };
         assert_eq!(r.handle, "alice");
         assert_eq!(r.email, "alice@example.com");
     }

@@ -542,14 +542,8 @@ fn a_deletion_removes_identity_bindings() {
         "identity bindings must be removed by the deletion"
     );
     // Bob's identity is untouched.
-    pkdump_db::registry::identity_add(
-        &world.registry(),
-        BOB,
-        "bob@example.com",
-        None,
-        None,
-    )
-    .expect("bob's identity binding must be unaffected by alice's deletion");
+    pkdump_db::registry::identity_add(&world.registry(), BOB, "bob@example.com", None, None)
+        .expect("bob's identity binding must be unaffected by alice's deletion");
 }
 
 /// A tenant who never shipped anything is deleted successfully, and proven.

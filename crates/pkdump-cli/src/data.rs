@@ -258,12 +258,12 @@ fn normalize_symbols(args: RefreshArgs) -> anyhow::Result<()> {
 #[cfg(test)]
 mod raw_coverage {
     use std::path::Path;
-    use std::sync::{Mutex, MutexGuard};
     use std::sync::Arc;
+    use std::sync::{Mutex, MutexGuard};
 
     use pkdump_ingest::test_upstream::{FakeUpstream, Reply};
     use pkdump_ingest::upstream::{
-        ENV_POKEMONTCG_BASE_URL, ENV_TCGCSV_BASE_URL, ENV_POKEMON_TCG_DATA_BASE_URL,
+        ENV_POKEMON_TCG_DATA_BASE_URL, ENV_POKEMONTCG_BASE_URL, ENV_TCGCSV_BASE_URL,
     };
     use pkdump_lake::{Dataset, DirStore, Manifest, RawLanding};
 
@@ -389,8 +389,8 @@ mod raw_coverage {
     /// One landing-enabled derivation (fills the catalog and lands bytes).
     /// Night one: populate the catalog so an ordinary night can run.
     fn derive_landing(db: &Path, dir: &Path) {
-        let clock = pkdump_derive::DeriveClock::from_manifest(CLOCK_AT, "test clock")
-            .expect("parse clock");
+        let clock =
+            pkdump_derive::DeriveClock::from_manifest(CLOCK_AT, "test clock").expect("parse clock");
         let landing = Arc::new(RawLanding::new(
             Box::new(DirStore::new(dir)),
             INGEST_DATE,
@@ -414,8 +414,8 @@ mod raw_coverage {
     /// One landing-enabled land run (read-only catalog, lands bytes only).
     /// Night two: the ordinary night where everything is already in the catalog.
     fn land_night(db: &Path, dir: &Path) -> Vec<Manifest> {
-        let clock = pkdump_derive::DeriveClock::from_manifest(CLOCK_AT, "test clock")
-            .expect("parse clock");
+        let clock =
+            pkdump_derive::DeriveClock::from_manifest(CLOCK_AT, "test clock").expect("parse clock");
         let landing = Arc::new(RawLanding::new(
             Box::new(DirStore::new(dir)),
             INGEST_DATE,

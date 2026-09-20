@@ -344,15 +344,15 @@ plan_tiers() {
 		sed -n 's/^    RUN   //p' | tr '\n' ' ' | sed 's/ $//'
 }
 
-# An explicit list runs those tiers plus the always-on tiers.
-check "PKDUMP_CI_TIERS=rust -> lint and rust run" "lint rust" "$(plan_tiers rust)"
+# An explicit list is LITERAL — exactly what was named, no floor added.
+check "PKDUMP_CI_TIERS=rust -> exactly rust, not lint rust" "rust" "$(plan_tiers rust)"
 
-# An explicit list that omits lint still gets lint (it is always-on).
-check "PKDUMP_CI_TIERS=rust omits lint but lint still runs" "yes" \
+# The always-on floor does NOT apply to an explicit list: stated intent is literal.
+check "PKDUMP_CI_TIERS=rust omits lint and lint does not run" "no" \
 	"$(plan_tiers rust | tr ' ' '\n' | grep -cx lint | { read -r n; [ "$n" -eq 1 ] && echo yes || echo no; })"
 
 # Multiple tiers are accepted.
-check "PKDUMP_CI_TIERS='rust deploy' -> lint rust deploy" "lint rust deploy" \
+check "PKDUMP_CI_TIERS='rust deploy' -> exactly rust deploy" "rust deploy" \
 	"$(plan_tiers "rust deploy")"
 
 # The plan log must say what source was used (read full output, not just RUN lines).

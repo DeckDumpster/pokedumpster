@@ -249,12 +249,11 @@ fn commit_n(
         )
         .unwrap();
         peak = peak.max(wal_bytes(path));
-        if let Some(r) = r.as_mut() {
-            if let Some(ckpt) = r.maybe(conn).unwrap() {
-                if ckpt.reset {
-                    resets += 1;
-                }
-            }
+        if let Some(r) = r.as_mut()
+            && let Some(ckpt) = r.maybe(conn).unwrap()
+            && ckpt.reset
+        {
+            resets += 1;
         }
     }
     (peak, wal_bytes(path), resets)

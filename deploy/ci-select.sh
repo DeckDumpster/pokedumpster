@@ -53,6 +53,21 @@
 # changed paths. A developer, a polecat, `workflow_dispatch`, and any future
 # push-triggered run therefore get the full suite by construction: skipping
 # something takes an affirmative act, and the act is auditable in the log.
+#
+# ── WHY THE TWO SELECTION PATHS KEEP DIFFERENT RULES ────────────────────────
+#
+# PKDUMP_CI_CHANGED_FILES — derived intent. The input is a diff and the caller
+# has stated no intent. Every rule on this path may only ADD tiers, so the
+# always-on floor (PKDUMP_CI_ALWAYS_TIERS) is what keeps a docs-only PR from
+# arriving at an empty selection. Unrecognised input is "we do not know what
+# changed", which runs everything. UNCHANGED by PKDUMP_CI_TIERS logic.
+#
+# PKDUMP_CI_TIERS — stated intent. The caller has named exactly what it wants.
+# This path is LITERAL: no floor is added, and an unknown name is a hard error
+# rather than a silent fallback. A floor under a stated intent is not a safety
+# net — it is the function quietly not doing what it was asked. This is the
+# part a future reader will otherwise "fix" back, because removing a safety
+# floor looks like a bug until you know which path it was protecting.
 
 # The canonical tier list, in the order deploy/ci.sh executes them. This is the
 # single source of truth for the names; ci.sh is asserted against it by

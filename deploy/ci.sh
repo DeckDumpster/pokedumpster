@@ -380,9 +380,14 @@ elif [ -n "${PKDUMP_CI_TIERS:-}" ]; then
     # Explicit tier list from a caller (e.g. Spira's per-branch gate). Each name
     # is validated against the canonical list — an unknown name is a hard error,
     # not a silent fallback to the full suite, which would hide a typo forever.
-    # The always-on tiers (lint) are always included regardless of what the
-    # caller lists.
-    PKDUMP_CI_SELECTED="${PKDUMP_CI_ALWAYS_TIERS} "
+    #
+    # LITERAL, NO FLOOR. PKDUMP_CI_ALWAYS_TIERS is a floor under path-based
+    # selection (PKDUMP_CI_CHANGED_FILES), where the input is a diff and the
+    # caller has stated no intent. An explicit tier list is the opposite: the
+    # caller has named exactly what it wants. A floor under a stated intent is
+    # not a safety net — it is the function quietly not doing what it was asked.
+    # See the comment in ci-select.sh for the full distinction.
+    PKDUMP_CI_SELECTED=""
     for _tier in ${PKDUMP_CI_TIERS}; do
         case " ${PKDUMP_CI_ALL_TIERS} " in
             *" ${_tier} "*) PKDUMP_CI_SELECTED="${PKDUMP_CI_SELECTED}${_tier} " ;;

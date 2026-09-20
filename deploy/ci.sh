@@ -343,11 +343,20 @@ step() {
 
 # --- 0. Tier selection -------------------------------------------------------
 #
-# EVERY TIER RUNS unless a caller hands over an explicit list of changed paths.
-# A developer, a polecat, `workflow_dispatch`, and any push-triggered run
-# therefore get the full suite by construction — skipping a tier takes an
-# affirmative act by the caller, and the act is printed in the log below.
+# EVERY TIER RUNS unless a caller hands over an explicit list of changed paths
+# or an explicit list of tier names. A developer, a polecat, `workflow_dispatch`,
+# and any push-triggered run therefore get the full suite by construction —
+# skipping a tier takes an affirmative act by the caller, and the act is
+# printed in the log below.
 #
+#   PKDUMP_CI_TIERS=<names>          space-separated list of tier names to run,
+#                                    unioned with the always-on tiers (lint).
+#                                    Spira's per-branch gate sets this. An
+#                                    unknown name is a hard error — never a
+#                                    silent fallback to the full suite, because
+#                                    this variable SUBTRACTS and a typo that
+#                                    ran everything would hide itself forever.
+#                                    Cannot be set alongside PKDUMP_CI_CHANGED_FILES.
 #   PKDUMP_CI_CHANGED_FILES=<file>   one changed path per line; the tiers those
 #                                    paths require are run and the rest are
 #                                    reported as skipped. .github/workflows/
@@ -364,7 +373,27 @@ step() {
 # shellcheck source=deploy/ci-select.sh
 . "$SCRIPT_DIR/ci-select.sh"
 
-if [ -n "${PKDUMP_CI_CHANGED_FILES:-}" ]; then
+if [ -n "${PKDUMP_CI_TIERS:-}" ] && [ -n "${PKDUMP_CI_CHANGED_FILES:-}" ]; then
+    echo "ERROR: PKDUMP_CI_TIERS and PKDUMP_CI_CHANGED_FILES are both set — a caller that sets one must not set the other." >&2
+    exit 1
+elif [ -n "${PKDUMP_CI_TIERS:-}" ]; then
+    # Explicit tier list from a caller (e.g. Spira's per-branch gate). Each name
+    # is validated against the canonical list — an unknown name is a hard error,
+    # not a silent fallback to the full suite, which would hide a typo forever.
+    # The always-on tiers (lint) are always included regardless of what the
+    # caller lists.
+    PKDUMP_CI_SELECTED="${PKDUMP_CI_ALWAYS_TIERS} "
+    for _tier in ${PKDUMP_CI_TIERS}; do
+        case " ${PKDUMP_CI_ALL_TIERS} " in
+            *" ${_tier} "*) PKDUMP_CI_SELECTED="${PKDUMP_CI_SELECTED}${_tier} " ;;
+            *)
+                echo "ERROR: PKDUMP_CI_TIERS contains '${_tier}', which is not one of: ${PKDUMP_CI_ALL_TIERS}" >&2
+                exit 1
+                ;;
+        esac
+    done
+    SELECTION_SOURCE="explicit tier list (PKDUMP_CI_TIERS): ${PKDUMP_CI_TIERS}"
+elif [ -n "${PKDUMP_CI_CHANGED_FILES:-}" ]; then
     # Named but unreadable is a refusal, not a fallback. A caller that meant to
     # select and instead typo'd a path would otherwise get a silent full run,
     # which is the safe direction but hides a broken workflow indefinitely.

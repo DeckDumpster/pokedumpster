@@ -204,10 +204,10 @@ log "4. deploy/ci.sh runs everything unless told otherwise"
 plan() { # plan [changed-files path] -> the tiers ci.sh says it will RUN
 	local list="${1:-}"
 	if [ -n "$list" ]; then
-		env -u PKDUMP_CI_SELECTED PKDUMP_CI_SELECT_ONLY=1 \
+		env -u PKDUMP_CI_SELECTED -u PKDUMP_CI_TIERS PKDUMP_CI_SELECT_ONLY=1 \
 			PKDUMP_CI_CHANGED_FILES="$list" bash "$CI_SH" 2>&1
 	else
-		env -u PKDUMP_CI_SELECTED -u PKDUMP_CI_CHANGED_FILES \
+		env -u PKDUMP_CI_SELECTED -u PKDUMP_CI_CHANGED_FILES -u PKDUMP_CI_TIERS \
 			PKDUMP_CI_SELECT_ONLY=1 bash "$CI_SH" 2>&1
 	fi | sed -n 's/^    RUN   //p' | tr '\n' ' ' | sed 's/ $//'
 }
@@ -295,7 +295,7 @@ check "a name that is not a tier answers 2, not 1" "2" "$?"
 
 # And ci.sh acts on it. `tier` is defined inside that script, so this asserts on
 # the shape of the guard it installs rather than re-deriving one here.
-check "ci.sh exits on the not-a-tier answer" "1" \
+check "ci.sh exits on the not-a-tier answer" "2" \
 	"$(grep -c 'which is not one of' "$CI_SH")"
 
 # ---------------------------------------------------------------------------
@@ -333,6 +333,45 @@ for consumer in tests/tenants/upgrade.sh tests/tenants/handles.sh \
 	check "the image consumer ${consumer} runs in a tier the build covers" "yes" \
 		"$([[ " ${IMAGE_TIERS} " == *" ${t} "* ]] && echo yes || echo "no (tier '${t}' not in '${IMAGE_TIERS}')")"
 done
+
+# ---------------------------------------------------------------------------
+log "8. PKDUMP_CI_TIERS lets a caller name the exact set of tiers to run"
+
+# Helper: plan via PKDUMP_CI_TIERS, not PKDUMP_CI_CHANGED_FILES.
+plan_tiers() {
+	env -u PKDUMP_CI_SELECTED -u PKDUMP_CI_CHANGED_FILES \
+		PKDUMP_CI_SELECT_ONLY=1 PKDUMP_CI_TIERS="$1" bash "$CI_SH" 2>&1 |
+		sed -n 's/^    RUN   //p' | tr '\n' ' ' | sed 's/ $//'
+}
+
+# An explicit list runs those tiers plus the always-on tiers.
+check "PKDUMP_CI_TIERS=rust -> lint and rust run" "lint rust" "$(plan_tiers rust)"
+
+# An explicit list that omits lint still gets lint (it is always-on).
+check "PKDUMP_CI_TIERS=rust omits lint but lint still runs" "yes" \
+	"$(plan_tiers rust | tr ' ' '\n' | grep -cx lint | { read -r n; [ "$n" -eq 1 ] && echo yes || echo no; })"
+
+# Multiple tiers are accepted.
+check "PKDUMP_CI_TIERS='rust deploy' -> lint rust deploy" "lint rust deploy" \
+	"$(plan_tiers "rust deploy")"
+
+# The plan log must say what source was used (read full output, not just RUN lines).
+check "selection source names PKDUMP_CI_TIERS" "1" \
+	"$(env -u PKDUMP_CI_SELECTED -u PKDUMP_CI_CHANGED_FILES \
+		PKDUMP_CI_SELECT_ONLY=1 PKDUMP_CI_TIERS=rust bash "$CI_SH" 2>&1 | \
+		grep -c 'PKDUMP_CI_TIERS')"
+
+# An unknown tier name must be a hard error, not a silent fallback to everything.
+env -u PKDUMP_CI_SELECTED -u PKDUMP_CI_CHANGED_FILES \
+	PKDUMP_CI_SELECT_ONLY=1 PKDUMP_CI_TIERS="nosuchtier" bash "$CI_SH" >/dev/null 2>&1
+check "PKDUMP_CI_TIERS with an unknown tier name -> exit 1" "1" "$?"
+
+# Both variables set at once is a caller that does not know what it wants.
+printf 'crates/x.rs\n' > "${WORK}/tiers-cf.txt"
+env -u PKDUMP_CI_SELECTED PKDUMP_CI_SELECT_ONLY=1 \
+	PKDUMP_CI_CHANGED_FILES="${WORK}/tiers-cf.txt" PKDUMP_CI_TIERS="rust" \
+	bash "$CI_SH" >/dev/null 2>&1
+check "PKDUMP_CI_TIERS and PKDUMP_CI_CHANGED_FILES both set -> exit 1" "1" "$?"
 
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"

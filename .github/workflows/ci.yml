@@ -93,13 +93,17 @@ jobs:
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
 
-  # NAMED `test` BECAUSE THAT NAME IS A CONTRACT. The `pr-required` ruleset on
-  # master requires a status check called `test`, and the commit status posted at
-  # the end of this job uses `test` as its context for the same reason. A required
-  # check that never reports does not fail the pull request — it blocks the merge
-  # indefinitely while every job in the run is green.
-  test:
-    needs: provision
+  # NAMED `gate` BECAUSE THAT NAME IS A CONTRACT WITH SPIRA. Spira's merge queue
+  # reads the status-check rollup for an entry whose name is exactly `gate`; the
+  # check-run name follows the job name, which is the half Spira reads.
+  #
+  # The commit status step below posts BOTH `gate` and `test`. `test` stays for
+  # the duration of the transition to queue mode: the `pr-required` ruleset on
+  # master requires a status check called `test`, and dropping it before the
+  # ruleset is updated would block every PR indefinitely — a required check that
+  # never reports does not fail the PR, it prevents the merge box from going green.
+  gate:
+    needs: [provision]
     runs-on: [self-hosted, "${{ needs.provision.outputs.label }}"]
     # statuses:write for the final step, which posts this run's result as a COMMIT
     # STATUS. The repo default is read-only (default_workflow_permissions=read), so
@@ -224,7 +228,7 @@ jobs:
       - name: deploy/ci.sh
         run: bash deploy/ci.sh
 
-      # BELT AND BRACES: report this run as a commit status, whatever triggered it.
+      # BELT AND BRACES: report this run as commit statuses, whatever triggered it.
       #
       # GitHub creates one check suite per (commit, app). A `workflow_dispatch` run
       # creates that suite, so opening a PR on the same SHA afterwards produces no
@@ -233,10 +237,15 @@ jobs:
       # five of six open PRs were in that state and two had actually FAILED.
       #
       # A commit status has no such coupling: it attaches to the SHA and shows in the
-      # merge box whatever triggered the run. Context is `test`, matching the check
-      # run's name and the ruleset's required context, and it is posted with
-      # GITHUB_TOKEN so it is attributed to the same github-actions app
-      # (integration_id 15368) the ruleset names.
+      # merge box whatever triggered the run. Two contexts are posted:
+      #
+      #   gate  — Spira's merge queue reads this. The check-run name (`gate`, from
+      #           the job name) is one signal; the commit status is what survives a
+      #           workflow_dispatch that precedes a PR.
+      #   test  — the `pr-required` ruleset on master requires this context during
+      #           the transition to queue mode. Drop it before the ruleset is updated
+      #           and every PR blocks indefinitely: a required check that never
+      #           reports does not FAIL the PR, it prevents the merge box going green.
       #
       # `if: always()` because a FAILING run must post `failure`. A step that ran
       # only on success would leave a red run looking untested — worse than no
@@ -245,7 +254,7 @@ jobs:
       # The SHA must be the PR HEAD, not github.sha: on a pull_request event
       # github.sha is the ephemeral merge commit, and a status there is invisible to
       # the merge box.
-      - name: Report result as a commit status
+      - name: Report result as commit statuses (gate and test)
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -253,7 +262,7 @@ jobs:
           STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         # curl, not `gh`. The GitHub CLI is not installed on the ephemeral VM and
-        # is not worth installing for one POST: this step died with
+        # is not worth installing for two POSTs: this step died with
         # `gh: command not found` (exit 127) on the first cold run, AFTER the
         # suite had already produced its verdict — so the run that was supposed
         # to be reported was the one whose reporting failed. curl is already a
@@ -264,20 +273,22 @@ jobs:
         # print a JSON error and exit 0, which is precisely the failure mode
         # this whole step exists to prevent.
         run: |
-          curl --fail-with-body -sS -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "${GITHUB_API_URL}/repos/${{ github.repository }}/statuses/${SHA}" \
-            -d "$(printf '{"state":"%s","context":"test","target_url":"%s","description":"deploy/ci.sh (%s)"}' \
-                  "$STATE" "$RUN_URL" "${{ github.event_name }}")" >/dev/null
-          echo "posted commit status ${STATE} for ${SHA} (context: test)"
+          for context in gate test; do
+            curl --fail-with-body -sS -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${GITHUB_API_URL}/repos/${{ github.repository }}/statuses/${SHA}" \
+              -d "$(printf '{"state":"%s","context":"%s","target_url":"%s","description":"deploy/ci.sh (%s)"}' \
+                    "$STATE" "$context" "$RUN_URL" "${{ github.event_name }}")" >/dev/null
+            echo "posted commit status ${STATE} for ${SHA} (context: ${context})"
+          done
 
   # if: always() is load-bearing. A cancelled or failed run otherwise leaves the
   # VM running, and the hourly reaper in DeckDumpster/ephemeral-ci becomes the
   # only thing that cleans up — which is a backstop, not a plan.
   teardown:
-    needs: [provision, test]
+    needs: [provision, gate]
     if: always()
     runs-on: ubuntu-latest
     steps:

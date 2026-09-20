@@ -60,4 +60,3 @@ pub fn authenticated_api_router() -> Router<AppState> {
 pub fn public_api_router() -> Router<AppState> {
     Router::new().merge(backup::routes())
 }
-

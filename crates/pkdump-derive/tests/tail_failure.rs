@@ -41,6 +41,30 @@ use std::sync::Arc;
 use pkdump_lake::{Dataset, DirStore, RawLanding, RawZone, Source};
 use support::{FakeUpstream, Reply};
 
+/// A valid `.tar.gz` containing `pokemon-tcg-data-master/sets/en.json` with an
+/// empty sets array `[]`.  `download_and_import` unpacks and imports this
+/// successfully, importing 0 sets — so the pokemontcg.io tail is still what
+/// adds sets in these tests.
+fn empty_bulk_tarball() -> Vec<u8> {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+
+    let buf = Vec::new();
+    let enc = GzEncoder::new(buf, Compression::default());
+    let mut ar = tar::Builder::new(enc);
+    let data = b"[]";
+    let mut hdr = tar::Header::new_gnu();
+    hdr.set_size(data.len() as u64);
+    hdr.set_mode(0o644);
+    hdr.set_cksum();
+    ar.append_data(&mut hdr, "pokemon-tcg-data-master/sets/en.json", data.as_ref())
+        .expect("append tar entry");
+    ar.into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gz")
+}
+
 /// `derive` reads the origin and the retry budget from the environment,
 /// which is process-wide. These tests set both, so they take turns.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -70,9 +94,17 @@ fn route(target: &str, tail: fn(&str) -> Reply) -> Reply {
                             "lowPrice":100.0,"midPrice":250.0,"highPrice":900.0,
                             "marketPrice":312.5,"directLowPrice":275.0}]}"#,
         ),
-        // The bulk corpus. Any bytes land cleanly; content is not unpacked by
-        // `land_bulk`, only stored.
-        "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master" => Reply::ok("{}"),
+        // The bulk corpus: a valid .tar.gz with an empty sets/en.json.
+        // `download_and_import` (called by `acquire`) unpacks and imports it;
+        // an invalid response would abort the whole derivation.  The empty sets
+        // array means the bulk import contributes nothing to the catalog, so the
+        // pokemontcg.io tail is still what adds sets — which is what these tests
+        // are checking.
+        "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master" => Reply {
+            status: 200,
+            body: empty_bulk_tarball(),
+            content_type: "application/gzip",
+        },
         other => tail(other),
     }
 }
@@ -95,6 +127,7 @@ fn derive_landing(
     unsafe {
         std::env::set_var("PKDUMP_TCGCSV_BASE_URL", upstream.base_url());
         std::env::set_var("PKDUMP_POKEMONTCG_BASE_URL", upstream.base_url());
+        std::env::set_var("PKDUMP_POKEMON_TCG_DATA_BASE_URL", upstream.base_url());
         std::env::set_var("PKDUMP_HTTP_RETRY_ATTEMPTS", attempts);
         std::env::set_var("PKDUMP_HTTP_RETRY_BASE_MS", "1");
     }
@@ -114,6 +147,7 @@ fn derive_landing(
     unsafe {
         std::env::remove_var("PKDUMP_TCGCSV_BASE_URL");
         std::env::remove_var("PKDUMP_POKEMONTCG_BASE_URL");
+        std::env::remove_var("PKDUMP_POKEMON_TCG_DATA_BASE_URL");
         std::env::remove_var("PKDUMP_HTTP_RETRY_ATTEMPTS");
         std::env::remove_var("PKDUMP_HTTP_RETRY_BASE_MS");
     }

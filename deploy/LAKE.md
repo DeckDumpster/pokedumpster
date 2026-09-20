@@ -159,8 +159,39 @@ derive replays it instead of sweeping the pokemontcg.io API. The pokemontcg.io
 tail's remaining job is the 2–3 month lag window: sets published too recently
 to appear in the bulk repo are still fetched set-by-set and landed under
 `pokemontcgio/cards` the night they appear. Bead `db-m1sd` wires the derive to
-read from the bulk partition instead of the API; until it lands the bytes
-accumulate and the replay path is unused.
+read from the bulk partition instead of the API; `db-5tgs` proves it.
+
+#### The cold-rebuild proof (`db-5tgs`)
+
+`row_identical.rs::cold_rebuild_from_raw_is_row_identical_to_warm_and_no_pokemontcgio_cards_needed`
+is the acceptance gate. The key property it establishes: the warm `online()` run
+imports the bulk corpus FIRST so `missing_sets` returns 0, meaning
+pokemontcg.io card URLs are **never fetched and never land in `raw/`**. The cold
+derive — starting from an empty catalog, zero rows in `cards` or `sets`, verified
+before the derive runs — must then rebuild from bulk + TCGCSV alone. If the bulk
+import were broken the derive would call `missing_sets`, get back the full set
+list, and try to replay their card URLs; those URLs are not in `raw/`, the gap
+is fatal, and the process exits non-zero. There is no way to reach the diff
+assertion on a broken bulk path.
+
+The gate also checks that the fixture upstream receives zero new requests during
+the cold derive: every URL the derive needs is replayed from `raw/` or is
+irrelevant, and any request that arrived would be for a URL the replay could
+not supply — which would already have killed the derive before this check.
+
+Over the fixture (2 sets, 3 cards, 5 prices):
+
+| side | `cards` | `sets` | `prices` | wall clock |
+| --- | ---: | ---: | ---: | ---: |
+| warm (online) | 3 | 2 | 5 | — |
+| cold (derive from raw) | 3 | 2 | 5 | **0.79 s** |
+
+Row-identical: `h.diff()` exits 0, `raw_derivation` excluded and named.
+
+The fixture is smaller than prod (3 cards vs 47,671; 2 sets vs 630), but the
+proof does not rest on scale — it rests on the card URLs being absent from
+`raw/`. At fixture scale, as at prod scale, the bulk corpus is the only source
+of card data in the partition.
 
 #### What the sweep would cost, measured
 

@@ -1564,6 +1564,135 @@ fn a_bulk_corpus_enables_cold_derive_and_lag_window_is_tail_only() {
     );
 }
 
+/// Cold-rebuild acceptance gate (db-5tgs).
+///
+/// This is the proving test for the raw-coverage epic: the lake can REBUILD a
+/// catalog from scratch, not merely advance one.
+///
+/// **Positive-control property.** The warm `online()` run lands the bulk
+/// corpus, TCGCSV, and the `/sets` page — but, because `acquire` imports the
+/// bulk corpus FIRST, `missing_sets` returns 0 and pokemontcg.io card URLs are
+/// NEVER fetched or landed. That is the distinguishing property: the partition
+/// under test contains NO pokemontcg.io card URLs. If the bulk import were
+/// broken the cold derive would call `missing_sets`, get back 2 (fk1 and fk2),
+/// and try to replay their card URLs — not in `raw/`, fatal gap, exit non-zero.
+/// There is no way to reach the diff assertion with a broken bulk path.
+///
+/// The previous test
+/// (`a_bulk_corpus_enables_cold_derive_and_lag_window_is_tail_only`) uses
+/// `land()` on an EMPTY catalog, which puts pokemontcg.io cards INTO `raw/`.
+/// That means a broken bulk path could still be rescued by replaying those
+/// cards. This test closes that loophole by using `online()` instead.
+///
+/// The fixture covers the full fixture corpus (2 sets, 3 cards). CI cannot
+/// reach the real raw/ bucket; the fixture is used instead. This is noted in
+/// the commit message.
+///
+/// Emptiness is asserted, not trusted: the cold catalog is verified to be
+/// empty (0 cards, 0 sets) before the derive runs.
+///
+/// No pokemontcg.io card requests are asserted via the `FakeUpstream` request
+/// log: after the warm run the fixture must receive zero new requests from the
+/// cold derive, because every URL is either in `raw/` (replayed) or skipped
+/// (the bulk path makes card pages unnecessary).
+#[test]
+fn cold_rebuild_from_raw_is_row_identical_to_warm_and_no_pokemontcgio_cards_needed() {
+    let h = Harness::start();
+    h.day(1);
+
+    // --- Warm build -----------------------------------------------------------
+    // `online()` lands + derives in one pass. Because `acquire` imports the
+    // bulk corpus FIRST, `missing_sets` returns 0 after bulk — pokemontcg.io
+    // card URLs are NOT fetched and are NOT in `raw/`.
+    let warm = h.db("warm");
+    assert!(
+        h.online(&warm, DAY1, DAY1_CLOCK, false),
+        "warm build must succeed"
+    );
+
+    // Every card and set must be present on the warm side.
+    let warm_cards: i64 = scalar(&warm, "SELECT COUNT(*) FROM cards");
+    let warm_sets: i64 = scalar(&warm, "SELECT COUNT(*) FROM sets");
+    assert!(warm_cards >= 3, "warm catalog must have cards");
+    assert!(warm_sets >= 2, "warm catalog must have sets");
+
+    // --- Cold catalog EMPTY assertion -----------------------------------------
+    // The cold catalog must be provably empty before the derive. We create it
+    // (open_shared initialises the schema) and immediately assert it holds
+    // nothing — this is stated, not assumed.
+    let cold = h.db("cold");
+    drop(pkdump_db::open_shared(&cold).expect("create the cold catalog"));
+    assert_eq!(
+        scalar::<i64>(&cold, "SELECT COUNT(*) FROM cards"),
+        0,
+        "cold catalog must have zero cards before the derive"
+    );
+    assert_eq!(
+        scalar::<i64>(&cold, "SELECT COUNT(*) FROM sets"),
+        0,
+        "cold catalog must have zero sets before the derive"
+    );
+
+    // --- No-network assertion baseline ----------------------------------------
+    // Record how many fixture requests have been made so far. After the cold
+    // derive, there must be no new ones: every URL the derive needs is in
+    // `raw/` (replayed) or irrelevant (card pages, which bulk made unneeded).
+    let requests_before = h.upstream.requests().len();
+
+    // --- Cold derive ----------------------------------------------------------
+    // From the partition landed above, which has NO pokemontcg.io card URLs.
+    // If the bulk import fails to provide the cards, the derive calls
+    // `missing_sets`, gets fk1+fk2, tries to replay their card URLs, finds
+    // none in `raw/`, and exits non-zero — caught here.
+    let out = h.derive(&cold, DAY1, &[]);
+    assert!(
+        out.status.success(),
+        "cold derive must succeed from bulk corpus + TCGCSV alone:\n{}",
+        text(&out)
+    );
+    assert!(
+        text(&out).contains("raw coverage: complete"),
+        "cold derive must report complete coverage, not a gap:\n{}",
+        text(&out)
+    );
+
+    // --- No-network assertion -------------------------------------------------
+    // The cold derive subprocess has PKDUMP_POKEMONTCG_BASE_URL set to the
+    // fixture; any URL it could not replay from `raw/` would land here. Zero
+    // new requests means "everything was in `raw/`".
+    let requests_after = h.upstream.requests().len();
+    assert_eq!(
+        requests_after, requests_before,
+        "cold derive must make no new requests to the fixture upstream — \
+         every URL must be replayed from raw/ (the card pages bulk made unnecessary \
+         are not there). New requests: {:?}",
+        &h.upstream.requests()[requests_before..]
+    );
+
+    // --- Row counts match warm -----------------------------------------------
+    let cold_cards: i64 = scalar(&cold, "SELECT COUNT(*) FROM cards");
+    let cold_sets: i64 = scalar(&cold, "SELECT COUNT(*) FROM sets");
+    assert_eq!(
+        cold_cards, warm_cards,
+        "cold catalog must have the same card count as warm"
+    );
+    assert_eq!(
+        cold_sets, warm_sets,
+        "cold catalog must have the same set count as warm"
+    );
+
+    // --- Row-identical diff ---------------------------------------------------
+    // The diff excludes only `raw_derivation`, which the online path never
+    // writes (the offline binary is the only thing that records which run
+    // produced a catalog).
+    let diff = h.diff(&warm, &cold);
+    assert!(
+        diff.status.success(),
+        "cold rebuild is not row-identical to warm:\n{}",
+        text(&diff)
+    );
+}
+
 /// The nightly derive gives the catalog's WAL back before it exits (pd-t50h).
 ///
 /// Stated against the SHIPPED BINARY over a real derivation, because the claim

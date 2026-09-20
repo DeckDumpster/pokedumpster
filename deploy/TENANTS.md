@@ -716,10 +716,131 @@ same script replicates a handle-named database beside it and shows the old
 addressing handing the deleted user's card straight back, so the absence in the
 first half means something. It runs in `deploy/ci.sh`.
 
+## Onboarding someone
+
+Five steps. Steps 1, 2, 4 and 5 can be done from the box; step 3 requires
+the Cloudflare Access dashboard and is a Ryan-only handoff.
+
+**Step 1 — create the tenant**
+
+```bash
+pkdump tenant create <handle>
+pkdump tenant list          # verify the new row appears as 'active'
+```
+
+This allocates a new opaque `database_id`, creates `tenants/<id>.sqlite`, and
+registers the handle. No data is in the collection yet; the user will populate
+it themselves.
+
+**Step 2 — bind their email**
+
+```bash
+pkdump tenant identity add <handle> --email <their-cloudflare-login-email>
+```
+
+This is what connects a Cloudflare Access identity to a tenant. The email
+must match exactly what Cloudflare uses in the JWT `email` claim — typically
+the address on their Cloudflare account. If they have multiple addresses, bind
+each one separately; any bound email opens their collection.
+
+```bash
+pkdump tenant identity list <handle>   # confirm the binding is there
+```
+
+**Step 3 — add to Cloudflare Access [Ryan hands this off]**
+
+In the Cloudflare Zero Trust dashboard, add the new user's email to the Access
+policy protecting the app (or to the relevant include rule). Until this is done
+the user cannot obtain a valid JWT and will get a 403 from the gateway before
+the request even reaches the server. This step cannot be scripted from the box.
+
+**Step 4 — confirm Litestream replication**
+
+Wait one full Litestream cycle (~5-10s) then check that the new database_id
+appears in S3:
+
+```bash
+database_id=$(sqlite3 "$PKDUMP_HOME/registry.sqlite" \
+    "SELECT database_id FROM user WHERE handle='<handle>'")
+pkdump tenant list     # also shows the database path
+# Then confirm the S3 replica exists:
+aws --profile pkdump-litestream s3 ls \
+    "s3://<bucket>/${database_id}/"
+```
+
+The Litestream sidecar replicates every tenant database under its own id
+prefix, so isolation is structural: only the owner's `database_id` is the
+prefix, and a restore with the wrong prefix finds nothing.
+
+**Step 5 — confirm access**
+
+Ask the user to visit the app and confirm they can reach `/collection`. Their
+browser will obtain a Cloudflare Access JWT automatically via the Access login
+flow. If they see a 403, check that step 2 used the correct email and that
+step 3 was completed.
+
+---
+
+**Edge cases**
+
+*They log in before step 2 is done* — the JWT is valid (Cloudflare accepted
+them) but the email is unbound in the registry. The server answers 403 and
+names the fix (`pkdump tenant identity add`). Run step 2 and the next request
+succeeds with no restart.
+
+*Their email address changes* — remove the old binding and add the new one:
+
+```bash
+pkdump tenant identity remove <handle> --email <old-email>
+pkdump tenant identity add    <handle> --email <new-email>
+```
+
+No server restart needed. The registry lookup is per-request.
+
+*They want out* — detach the handle so it can be reused, then remove them from
+Cloudflare Access (Ryan), then purge the database if they want hard deletion:
+
+```bash
+pkdump tenant detach <handle> --yes
+# Ryan: remove from Cloudflare Access policy
+pkdump tenant purge <database-id> --yes   # irreversible; keeps S3 until retention expires
+```
+
+`detach` releases the handle for reuse but keeps the database and its S3
+replica; `purge` drops the local database. S3 objects age out under the 90-day
+lifecycle rule. See `deploy/DELETION.md` for the full tenant-zone erasure.
+
+---
+
+**Isolation proof (run on the real deployment)**
+
+After onboarding a second user, these four properties must hold before the
+setup can be called complete. Run them from the box against the live instance:
+
+1. **Alice's JWT opens Alice's collection** — `curl` with Alice's JWT from the
+   `/api/collection` route returns 200 and the response body contains Alice's
+   cards only.
+
+2. **Alice's JWT cannot open Bob's collection** — there is no route parameter
+   that lets Alice address Bob's endpoint; every `/api` route resolves the
+   tenant from the verified email in the JWT, and Alice's email maps to Alice's
+   `database_id`. If Bob's collection were somehow served to Alice, the cards
+   themselves would look wrong (different inventory).
+
+3. **An expired or tampered JWT is rejected** — modify the last character of
+   Alice's JWT and `curl` the same route; the server answers 401.
+
+4. **No ambient identity** — `curl` the same route with no JWT header and no
+   `CF_Authorization` cookie; the server answers 401.
+
+Properties 3 and 4 are also what `tests/tenants/handles.sh` §7-§8 assert
+against the shipped image on every CI run. The container-tier gate is the
+repeatable record; the above is the human-readable procedure for the first
+time a real second account is live.
+
 ## What is not here yet
 
-- **Identity → tenant binding in the frontend** — the Access JWT is validated
-  and the verified email looked up on every `/api` request. The frontend does
-  not yet carry Access metadata; a browser session's collection is still the
-  single tenant the server started with (`$PKDUMP_USER`) unless `--multi-tenant`
-  is on and the Access gateway is wiring the JWT cookie.
+- **Per-user UI chrome** — the frontend does not yet show which account is
+  active (name, avatar, logout link). The Access JWT is validated on every
+  `/api` request and the correct collection is served; the display layer above
+  that is deferred.

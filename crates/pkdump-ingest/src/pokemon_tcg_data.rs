@@ -132,8 +132,7 @@ pub fn apply_corrections_to_db(conn: &Connection) -> Result<Vec<PendingCorrectio
     Ok(pending)
 }
 
-const REPO_TARBALL_PATH: &str =
-    "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master";
+const REPO_TARBALL_PATH: &str = "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master";
 
 fn tarball_url() -> String {
     let base = upstream::base_url(

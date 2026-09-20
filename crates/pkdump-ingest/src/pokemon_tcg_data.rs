@@ -166,7 +166,7 @@ pub fn import_from_dir(conn: &mut Connection, dir: &Path, now: &str) -> Result<I
     let mut stats = ImportStats::default();
     let tx = conn.transaction()?;
     for set in &sets {
-        upsert_set(&tx, set, &now)?;
+        upsert_set(&tx, set, now)?;
         stats.sets += 1;
 
         let card_path = dir

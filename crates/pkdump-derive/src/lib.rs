@@ -420,6 +420,10 @@ fn land_acquisition(
     let jp = japan::land_all(options.wire())?;
     println!("  {jp} group(s) walked");
 
+    println!("Landing the pokemon-tcg-data bulk corpus...");
+    pokemon_tcg_data::land_bulk(&options.wire())?;
+    println!("  bulk tarball landed");
+
     Ok(())
 }
 

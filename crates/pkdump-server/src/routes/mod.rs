@@ -22,9 +22,10 @@ use axum::Router;
 
 use crate::AppState;
 
-/// The full `/api` router: collection CRUD, card lookups, set catalog,
-/// binders, decks, sealed products, orders, wishlist, batches.
-pub fn api_router() -> Router<AppState> {
+/// `/api` routes that require a Cloudflare Access JWT.
+///
+/// Every route is here unless it appears in [`public_api_router`].
+pub fn authenticated_api_router() -> Router<AppState> {
     Router::new()
         .nest(
             "/collection",
@@ -45,5 +46,18 @@ pub fn api_router() -> Router<AppState> {
         .merge(user_printings::routes())
         .merge(import::routes())
         .merge(export::routes())
-        .merge(backup::routes())
 }
+
+/// `/api` routes that are exempt from authentication.
+///
+/// Qualifies for this list: an endpoint that exposes no tenant data and no
+/// information useful to an attacker. Every route here must be explicitly
+/// reviewed before being added; this is not a dumping ground.
+///
+/// Current members:
+///   - `/backup-status` — backup freshness timestamps only; no tenant data;
+///     read by `alarm-status.sh` from plain localhost without a credential.
+pub fn public_api_router() -> Router<AppState> {
+    Router::new().merge(backup::routes())
+}
+

@@ -301,11 +301,17 @@ APP_PORT="$(podman port "systemd-${P}-${INSTANCE}" 8080/tcp 2>/dev/null | head -
 if [ -z "$APP_PORT" ]; then
     info "app container not running — banner state not queried"
 else
-    BODY="$(curl -fsS -m 5 "http://localhost:${APP_PORT}/api/backup-status" 2>/dev/null)"
-    if [ -z "$BODY" ]; then
-        info "app is up but /api/backup-status did not answer"
+    _STATUS_FILE="$(mktemp)"
+    _HTTP_STATUS="$(curl -s -m 5 -o "$_STATUS_FILE" -w "%{http_code}" \
+        "http://localhost:${APP_PORT}/api/backup-status" 2>/dev/null)"
+    _BODY="$(cat "$_STATUS_FILE")"
+    rm -f "$_STATUS_FILE"
+    if [ "$_HTTP_STATUS" = "200" ]; then
+        info "app reports: ${_BODY}"
+    elif [ -z "$_HTTP_STATUS" ]; then
+        info "could not read /api/backup-status — connection refused or timed out"
     else
-        info "app reports: ${BODY}"
+        info "could not read /api/backup-status — HTTP ${_HTTP_STATUS}"
     fi
 fi
 

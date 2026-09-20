@@ -37,7 +37,7 @@ env:
 
 jobs:
   deploy:
-    runs-on: self-hosted
+    runs-on: [self-hosted, deploy]
     steps:
       - name: Pull latest code
         run: git -C "$CHECKOUT" pull --ff-only origin ${{ github.ref_name }}

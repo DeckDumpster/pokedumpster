@@ -18,3 +18,6 @@ tempfile.workspace = true
 # The landing-half gates open a directory-backed lake and read the catalog back.
 pkdump-lake.workspace = true
 rusqlite.workspace = true
+# Needed to build a minimal valid bulk tarball for the fake upstream in tail_failure tests.
+flate2.workspace = true
+tar.workspace = true

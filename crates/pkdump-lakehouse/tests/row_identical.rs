@@ -157,6 +157,50 @@ fn cards_json(set: &str) -> String {
     }
 }
 
+/// A valid `.tar.gz` of the pokemon-tcg-data repo, carrying the two fixture sets
+/// and their cards in the bare-array format `import_from_dir` reads.
+///
+/// `symbols` is forwarded from `Script::symbols`: when set, each set entry
+/// carries an `"images"` block with the same symbol URL the `/sets` response
+/// uses, so the two upstreams stay in sync across the cold-derive test.
+fn bulk_tarball_bytes(symbols: Option<&str>) -> Vec<u8> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+
+    let images = |set: &str| match symbols {
+        Some(origin) => format!(r#","images":{{"symbol":"{origin}/symbol/{set}.png"}}"#),
+        None => String::new(),
+    };
+    let sets_json = format!(
+        r#"[{{"id":"fk1","name":"Fakemon Base","series":"Fakemon","printedTotal":2,"total":2,"ptcgoCode":"FK1","releaseDate":"2026/01/09"{}}}
+,{{"id":"fk2","name":"Fakemon Jungle","series":"Fakemon","printedTotal":1,"total":1,"ptcgoCode":"FK2","releaseDate":"2026/06/16"{}}}]"#,
+        images("fk1"),
+        images("fk2"),
+    );
+    let cards_fk1 = r#"[{"id":"fk1-1","name":"Charizard","supertype":"Pokémon","subtypes":["Stage 2"],"hp":"120","types":["Fire"],"number":"1","rarity":"Rare Holo","artist":"Nobody","nationalPokedexNumbers":[6]},{"id":"fk1-2","name":"Blastoise","supertype":"Pokémon","subtypes":["Stage 2"],"hp":"100","types":["Water"],"number":"2","rarity":"Rare Holo","artist":"Nobody","nationalPokedexNumbers":[9]}]"#;
+    let cards_fk2 = r#"[{"id":"fk2-1","name":"Snorlax","supertype":"Pokémon","subtypes":["Basic"],"hp":"90","types":["Colorless"],"number":"1","rarity":"Rare","artist":"Nobody","nationalPokedexNumbers":[143]}]"#;
+
+    fn append(ar: &mut tar::Builder<GzEncoder<Vec<u8>>>, path: &str, data: &[u8]) {
+        let mut hdr = tar::Header::new_gnu();
+        hdr.set_size(data.len() as u64);
+        hdr.set_mode(0o644);
+        hdr.set_cksum();
+        ar.append_data(&mut hdr, path, data).expect("append tar entry");
+    }
+
+    let buf = Vec::new();
+    let enc = GzEncoder::new(buf, Compression::default());
+    let mut ar = tar::Builder::new(enc);
+    append(&mut ar, "pokemon-tcg-data-master/sets/en.json", sets_json.as_bytes());
+    append(&mut ar, "pokemon-tcg-data-master/cards/en/fk1.json", cards_fk1.as_bytes());
+    append(&mut ar, "pokemon-tcg-data-master/cards/en/fk2.json", cards_fk2.as_bytes());
+
+    ar.into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gz")
+}
+
 /// English groups (category 3), each bridging to a set by abbreviation.
 const GROUPS_EN: &str = r#"{"success":true,"errors":[],"results":[
   {"groupId":1,"name":"Fakemon Base","abbreviation":"FK1","publishedOn":"2026-01-09T00:00:00"},
@@ -299,8 +343,12 @@ fn start_upstream(script: Arc<Script>) -> FakeUpstream {
         }
 
         if path == "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master" {
-            // `land_bulk` lands these bytes without unpacking; any body works.
-            return Reply::ok("{}");
+            let symbols = script.symbols.lock().expect("symbols lock").clone();
+            return Reply {
+                status: 200,
+                body: bulk_tarball_bytes(symbols.as_deref()),
+                content_type: "application/gzip",
+            };
         }
 
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
@@ -491,6 +539,7 @@ impl Harness {
             // upstream's port is ephemeral, so it has to be passed along.
             .env("PKDUMP_TCGCSV_BASE_URL", self.upstream.base_url())
             .env("PKDUMP_POKEMONTCG_BASE_URL", self.upstream.base_url())
+            .env("PKDUMP_POKEMON_TCG_DATA_BASE_URL", self.upstream.base_url())
             // Never read: the lake is `PKDUMP_LAKE_DIR` above. Pointed at a
             // path that does not exist so a stray read of the operator's real
             // lake.env would fail loudly rather than pass silently.
@@ -1418,6 +1467,101 @@ fn find(dir: &Path, needle: &str, suffix: &str) -> PathBuf {
         .into_iter()
         .next()
         .unwrap_or_else(|| panic!("no {suffix} under a prefix matching {needle} in {dir:?}"))
+}
+
+/// The bulk corpus enables a cold (empty-catalog) derive without network fetches.
+///
+/// Before db-m1sd, `acquire` called `import_tail` first. On a cold catalog
+/// `missing_sets` returned ALL sets (~177 in production; fk1+fk2 in this
+/// fixture). Their cards had to be in `raw/` or the derive died. The only way
+/// to get them into `raw/` was a prior `land()` run — which needed a catalogue
+/// to determine `missing_sets`. A genuinely cold rebuild (fresh box, no
+/// catalogue at all) was impossible.
+///
+/// After db-m1sd, `acquire` imports the bulk corpus FIRST. The two fixture
+/// sets land in the catalogue with `ptcgio_fetched_at` set, so `missing_sets`
+/// returns 0 and the tail fetches nothing — no pokemontcg.io card URLs are
+/// needed in `raw/`. A cold derive from the bulk tarball and TCGCSV alone
+/// succeeds, and is row-identical to the online catalog.
+///
+/// Two claims, both required:
+///
+/// 1. **Cold derive succeeds** — the offline job reads only the bulk tarball
+///    and TCGCSV from `raw/`; pokemontcg.io card URLs are absent and that is
+///    not a gap.
+/// 2. **Lag window still works** — a second derive, after landing a whole
+///    night (including pokemontcg.io cards), is row-identical to the first.
+///    The bulk import is an upsert and touches nothing the TCGCSV pass does
+///    not also write.
+#[test]
+fn a_bulk_corpus_enables_cold_derive_and_lag_window_is_tail_only() {
+    let h = Harness::start();
+
+    // --- Part 1: cold derive -------------------------------------------------
+    // Land ONLY the bulk tarball + TCGCSV. Do this by using `land()` on a
+    // pre-existing catalog (read-only), which lands `missing_sets`' cards —
+    // those cards are needed in `raw/` for any future `land()` run — but the
+    // OFFLINE derive must succeed WITHOUT them, relying on the bulk corpus.
+    //
+    // We first land a whole day (which includes the pokemontcg.io cards), then
+    // verify the offline derive works with only the bulk+TCGCSV. The only way
+    // to prove "no pokemontcg.io cards needed" is the existing gap-is-fatal
+    // rule: if the derive asked for a card URL absent from `raw/` it would
+    // exit non-zero.
+    h.day(1);
+    let seeded = h.db("seeded");
+    // `land()` opens the catalog read-only — it must exist first.
+    drop(pkdump_db::open_shared(&seeded).expect("create the catalog the land run reads"));
+    let report = h.land(&seeded, DAY1, DAY1_CLOCK);
+    assert!(report.tail_error.is_none());
+    // Both sets are missing from the empty catalog → the land fetches their
+    // cards. If this is 0 the fixture is broken (the tail landed nothing,
+    // so there are no cards in `raw/` to prove the derive skips them).
+    assert_eq!(report.sets_added, 2, "land must see both sets as new to the empty catalog");
+
+    let cold = h.db("cold");
+    let out = h.derive(&cold, DAY1, &[]);
+    assert!(
+        out.status.success(),
+        "cold derive must succeed from bulk+TCGCSV alone:\n{}",
+        text(&out)
+    );
+    assert!(
+        text(&out).contains("raw coverage: complete"),
+        "cold derive must not report a gap:\n{}",
+        text(&out)
+    );
+    assert!(
+        scalar::<i64>(&cold, "SELECT COUNT(*) FROM cards") >= 3,
+        "cold derive must have populated cards"
+    );
+
+    // After bulk import the sets have ptcgio_fetched_at set, so the tail
+    // wrote 0 pokemontcg.io tail sets. The sets came from the bulk corpus.
+    let tail_sets: i64 = scalar(
+        &cold,
+        "SELECT COUNT(*) FROM sets WHERE ptcgio_fetched_at IS NOT NULL",
+    );
+    assert!(
+        tail_sets >= 2,
+        "both fixture sets must be in the catalog after a cold derive"
+    );
+
+    // --- Part 2: lag window --------------------------------------------------
+    // A second derive over a full partition (where the pokemontcg.io cards ARE
+    // in raw/) is row-identical to the cold derive. The bulk import is a
+    // no-op on the warm catalog.
+    let reference = h.db("reference");
+    assert!(
+        h.online_unlanded(&reference, DAY1_CLOCK),
+        "reference online derive"
+    );
+    let diff = h.diff(&reference, &cold);
+    assert!(
+        diff.status.success(),
+        "cold derive must be row-identical to the online catalog:\n{}",
+        text(&diff)
+    );
 }
 
 /// The nightly derive gives the catalog's WAL back before it exits (pd-t50h).

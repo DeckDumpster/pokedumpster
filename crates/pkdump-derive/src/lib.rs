@@ -495,6 +495,16 @@ fn acquire(
     options: &Options<'_>,
     report: &mut Report,
 ) -> anyhow::Result<()> {
+    // 2a. pokemon-tcg-data bulk corpus — must run BEFORE the pokemontcg.io tail
+    //     so that `missing_sets` finds the bulk sets already in the catalog and
+    //     returns only the lag window. On a cold catalog `missing_sets` would
+    //     otherwise return all ~177 sets, none of whose cards are in `raw/`,
+    //     causing the replay to fail with a fatal missing-URL error (pd-m1sd).
+    //     Idempotent upsert: on a warm catalog this overwrites identical rows.
+    println!("Importing the pokemon-tcg-data bulk corpus...");
+    let bulk = pokemon_tcg_data::download_and_import(conn, &options.wire(), options.clock.fetched_at())?;
+    println!("  {} sets, {} cards from bulk corpus", bulk.sets, bulk.cards);
+
     // 2. pokemontcg.io tail — pick up sets released since the last refresh.
     //    The one step here allowed to fail without ending the run; see the fn
     //    docs. Its retries are already spent by the time it returns an error

@@ -440,8 +440,9 @@ mod tests {
     fn an_unbound_email_is_forbidden() {
         let dir = tempfile::tempdir().unwrap();
         let (tenants, _, _reg) = provisioned(dir.path(), &[]);
-        let AppError(status, body) =
-            tenants.resolve(&test_identity("unknown@example.com")).unwrap_err();
+        let AppError(status, body) = tenants
+            .resolve(&test_identity("unknown@example.com"))
+            .unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(
             body.contains("pkdump tenant identity add"),
@@ -529,10 +530,11 @@ mod tests {
         )
         .unwrap();
         // Bind a fresh email to the new alice.
-        registry::identity_add(&reg, &second.database_id, "alice2@test.local", None, None)
-            .unwrap();
+        registry::identity_add(&reg, &second.database_id, "alice2@test.local", None, None).unwrap();
 
-        let resolved = tenants.resolve(&test_identity("alice2@test.local")).unwrap();
+        let resolved = tenants
+            .resolve(&test_identity("alice2@test.local"))
+            .unwrap();
         assert_eq!(resolved.as_str(), second.database_id);
         assert_ne!(resolved.as_str(), first.database_id);
     }

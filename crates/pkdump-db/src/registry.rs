@@ -349,7 +349,11 @@ fn conflict(e: rusqlite::Error, msg: String) -> DbError {
 /// a constraint evaluated by SQLite — so they share [`EMAIL_CASES`].
 /// [`tests::the_normaliser_and_the_check_agree`] runs each case through both.
 pub fn normalise_email(email: &str) -> Option<String> {
-    if email.is_empty() { None } else { Some(email.to_lowercase()) }
+    if email.is_empty() {
+        None
+    } else {
+        Some(email.to_lowercase())
+    }
 }
 
 /// One row of `user_identity`: a verified identity bound to a tenant.
@@ -398,8 +402,8 @@ pub fn identity_add(
             user.handle
         )));
     }
-    let normalised = normalise_email(email)
-        .ok_or_else(|| DbError::Env("email must not be empty".into()))?;
+    let normalised =
+        normalise_email(email).ok_or_else(|| DbError::Env("email must not be empty".into()))?;
     let created_at = crate::clock::now_rfc3339();
     conn.execute(
         "INSERT INTO user_identity \
@@ -430,8 +434,8 @@ pub fn identity_remove(
     database_id: &str,
     email: &str,
 ) -> Result<IdentityBinding> {
-    let normalised = normalise_email(email)
-        .ok_or_else(|| DbError::Env("email must not be empty".into()))?;
+    let normalised =
+        normalise_email(email).ok_or_else(|| DbError::Env("email must not be empty".into()))?;
     let binding = conn
         .query_row(
             "SELECT database_id, email, sub, issuer, created_at \
@@ -910,11 +914,7 @@ mod tests {
     ];
 
     /// Helper: raw INSERT into user_identity, bypassing the accessor.
-    fn raw_insert_identity(
-        conn: &Connection,
-        db_id: &str,
-        email: &str,
-    ) -> rusqlite::Result<usize> {
+    fn raw_insert_identity(conn: &Connection, db_id: &str, email: &str) -> rusqlite::Result<usize> {
         conn.execute(
             "INSERT INTO user_identity \
              (database_id, email, sub, issuer, created_at, user_state) \
@@ -1003,15 +1003,18 @@ mod tests {
                 }
             }
         }
-        assert!(normalise_email("").is_none(), "empty email must return None");
+        assert!(
+            normalise_email("").is_none(),
+            "empty email must return None"
+        );
     }
 
     #[test]
     fn identity_add_binds_email_to_active_tenant() {
         let (_dir, conn) = registry();
         let alice = insert(&conn, "alice").unwrap();
-        let binding = identity_add(&conn, &alice.database_id, "Alice@Example.com", None, None)
-            .unwrap();
+        let binding =
+            identity_add(&conn, &alice.database_id, "Alice@Example.com", None, None).unwrap();
         // email is normalised to lowercase
         assert_eq!(binding.email, "alice@example.com");
         assert_eq!(binding.database_id, alice.database_id);
@@ -1028,8 +1031,8 @@ mod tests {
         let bob = insert(&conn, "bob").unwrap();
 
         identity_add(&conn, &alice.database_id, "shared@example.com", None, None).unwrap();
-        let err = identity_add(&conn, &bob.database_id, "shared@example.com", None, None)
-            .unwrap_err();
+        let err =
+            identity_add(&conn, &bob.database_id, "shared@example.com", None, None).unwrap_err();
         assert!(matches!(err, DbError::Conflict(_)), "{err:?}");
     }
 
@@ -1053,7 +1056,14 @@ mod tests {
         let (_dir, conn) = registry();
         let alice = insert(&conn, "alice").unwrap();
         identity_add(&conn, &alice.database_id, "alice@example.com", None, None).unwrap();
-        identity_add(&conn, &alice.database_id, "alice@work.example.com", None, None).unwrap();
+        identity_add(
+            &conn,
+            &alice.database_id,
+            "alice@work.example.com",
+            None,
+            None,
+        )
+        .unwrap();
         let listed = identity_list(&conn, &alice.database_id).unwrap();
         assert_eq!(listed.len(), 2);
     }

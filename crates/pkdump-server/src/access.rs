@@ -84,8 +84,7 @@ impl AccessConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         let team_domain = std::env::var(TEAM_DOMAIN_ENV)
             .map_err(|_| anyhow::anyhow!("{TEAM_DOMAIN_ENV} is required"))?;
-        let aud = std::env::var(AUD_ENV)
-            .map_err(|_| anyhow::anyhow!("{AUD_ENV} is required"))?;
+        let aud = std::env::var(AUD_ENV).map_err(|_| anyhow::anyhow!("{AUD_ENV} is required"))?;
         let jwks_url = std::env::var(JWKS_URL_ENV)
             .map_err(|_| anyhow::anyhow!("{JWKS_URL_ENV} is required"))?;
         Ok(AccessConfig {
@@ -193,7 +192,10 @@ impl JwksCache {
                     .map(|t| t.elapsed() < REFRESH_RATE_LIMIT)
                     .unwrap_or(false)
                 {
-                    return Err(AppError(StatusCode::UNAUTHORIZED, "unknown signing key".into()));
+                    return Err(AppError(
+                        StatusCode::UNAUTHORIZED,
+                        "unknown signing key".into(),
+                    ));
                 }
             }
         }
@@ -206,13 +208,17 @@ impl JwksCache {
                     fetched_at: now,
                     last_refresh_attempt: Some(now),
                 });
-                found.ok_or_else(|| AppError(StatusCode::UNAUTHORIZED, "unknown signing key".into()))
+                found
+                    .ok_or_else(|| AppError(StatusCode::UNAUTHORIZED, "unknown signing key".into()))
             }
             Err(_) => {
                 if let Some(c) = guard.as_mut() {
                     c.last_refresh_attempt = Some(now);
                 }
-                Err(AppError(StatusCode::UNAUTHORIZED, "key refresh failed".into()))
+                Err(AppError(
+                    StatusCode::UNAUTHORIZED,
+                    "key refresh failed".into(),
+                ))
             }
         }
     }
@@ -383,9 +389,7 @@ pub(crate) mod test_support {
             let pk = sk.to_public_key();
             let n = URL_SAFE_NO_PAD.encode(pk.n().to_bytes_be());
             let e = URL_SAFE_NO_PAD.encode(pk.e().to_bytes_be());
-            let pem = sk
-                .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
-                .unwrap();
+            let pem = sk.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
             let encoding_key = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
             TestKey {
                 kid: kid.into(),
@@ -511,7 +515,14 @@ pub(crate) mod test_support {
             )
         }
 
-        fn mint(&self, email: &str, iss: &str, aud: &str, exp_offset: i64, nbf_offset: i64) -> String {
+        fn mint(
+            &self,
+            email: &str,
+            iss: &str,
+            aud: &str,
+            exp_offset: i64,
+            nbf_offset: i64,
+        ) -> String {
             let now = unix_now() as i64;
             let claims = serde_json::json!({
                 "email": email,
@@ -542,8 +553,7 @@ pub(crate) mod test_support {
 
         /// A manually constructed JWT with `"alg":"none"` — no signature.
         pub(crate) fn alg_none_token(&self, email: &str) -> String {
-            let header_json =
-                format!(r#"{{"alg":"none","typ":"JWT","kid":"{}"}}"#, self.key.kid);
+            let header_json = format!(r#"{{"alg":"none","typ":"JWT","kid":"{}"}}"#, self.key.kid);
             let header = URL_SAFE_NO_PAD.encode(header_json.as_bytes());
             let now = unix_now() as i64;
             let payload = serde_json::json!({
@@ -555,8 +565,7 @@ pub(crate) mod test_support {
                 "nbf": now - 1,
                 "iat": now,
             });
-            let payload_b64 =
-                URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
+            let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
             format!("{header}.{payload_b64}.")
         }
 
@@ -598,8 +607,8 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_support::TestAccessFixture;
+    use super::*;
     use axum::http::Request as HttpRequest;
 
     // The eight required failure cases, each observed red (before this module
@@ -685,7 +694,11 @@ mod tests {
         let fx = TestAccessFixture::new().await;
         let token = fx.not_yet_valid_token("alice@example.com");
         let err = fx.access.verify(&token).await.unwrap_err();
-        assert_eq!(err.0, StatusCode::UNAUTHORIZED, "nbf-future token must be 401");
+        assert_eq!(
+            err.0,
+            StatusCode::UNAUTHORIZED,
+            "nbf-future token must be 401"
+        );
     }
 
     #[tokio::test]
@@ -693,7 +706,11 @@ mod tests {
         let fx = TestAccessFixture::new().await;
         let token = fx.wrong_aud_token("alice@example.com");
         let err = fx.access.verify(&token).await.unwrap_err();
-        assert_eq!(err.0, StatusCode::UNAUTHORIZED, "wrong-aud token must be 401");
+        assert_eq!(
+            err.0,
+            StatusCode::UNAUTHORIZED,
+            "wrong-aud token must be 401"
+        );
     }
 
     #[tokio::test]
@@ -713,7 +730,11 @@ mod tests {
         let fx = TestAccessFixture::new().await;
         let token = fx.unknown_kid_token("alice@example.com");
         let err = fx.access.verify(&token).await.unwrap_err();
-        assert_eq!(err.0, StatusCode::UNAUTHORIZED, "unknown-kid token must be 401");
+        assert_eq!(
+            err.0,
+            StatusCode::UNAUTHORIZED,
+            "unknown-kid token must be 401"
+        );
     }
 
     #[tokio::test]

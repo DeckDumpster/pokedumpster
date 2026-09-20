@@ -67,8 +67,9 @@ pub fn run(args: ServeArgs) -> anyhow::Result<()> {
         host: args.host,
         port: args.port,
         multi_tenant: args.multi_tenant || env_opt_in(MULTITENANT_ENV),
-        access_team_domain: std::env::var(pkdump_server::access::TEAM_DOMAIN_ENV)
-            .map_err(|_| anyhow::anyhow!("{} is required", pkdump_server::access::TEAM_DOMAIN_ENV))?,
+        access_team_domain: std::env::var(pkdump_server::access::TEAM_DOMAIN_ENV).map_err(
+            |_| anyhow::anyhow!("{} is required", pkdump_server::access::TEAM_DOMAIN_ENV),
+        )?,
         access_aud: std::env::var(pkdump_server::access::AUD_ENV)
             .map_err(|_| anyhow::anyhow!("{} is required", pkdump_server::access::AUD_ENV))?,
         access_jwks_url: std::env::var(pkdump_server::access::JWKS_URL_ENV)
@@ -116,5 +117,4 @@ mod tests {
         unsafe { std::env::remove_var(VAR) };
         assert!(!env_opt_in(VAR), "unset must not opt in");
     }
-
 }

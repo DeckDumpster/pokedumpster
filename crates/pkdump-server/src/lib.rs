@@ -468,12 +468,7 @@ mod tests {
     }
 
     /// Build a request, optionally injecting a JWT and a body.
-    fn request(
-        method: &str,
-        uri: &str,
-        token: Option<&str>,
-        body: Option<&str>,
-    ) -> Request<Body> {
+    fn request(method: &str, uri: &str, token: Option<&str>, body: Option<&str>) -> Request<Body> {
         let mut b = Request::builder().method(method).uri(uri);
         if let Some(t) = token {
             b = b.header(access::JWT_HEADER, t);
@@ -750,12 +745,7 @@ mod tests {
         assert_eq!(bad.status(), StatusCode::NOT_FOUND);
 
         let deleted = router
-            .oneshot(request(
-                "DELETE",
-                "/api/collection/1",
-                Some(&tok),
-                None,
-            ))
+            .oneshot(request("DELETE", "/api/collection/1", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
@@ -809,12 +799,7 @@ mod tests {
         assert!(body_string(found).await.contains("Bulbasaur"));
 
         let missing = router
-            .oneshot(request(
-                "GET",
-                "/api/card/sv3pt5/999",
-                Some(&tok),
-                None,
-            ))
+            .oneshot(request("GET", "/api/card/sv3pt5/999", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
@@ -838,12 +823,7 @@ mod tests {
 
         let owned = router
             .clone()
-            .oneshot(request(
-                "GET",
-                "/api/collection/search",
-                Some(&tok),
-                None,
-            ))
+            .oneshot(request("GET", "/api/collection/search", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(owned.status(), StatusCode::OK);
@@ -905,8 +885,7 @@ mod tests {
             }
         };
 
-        let empty =
-            page("/api/collection/search?include_unowned=1&limit=0".to_string()).await;
+        let empty = page("/api/collection/search?include_unowned=1&limit=0".to_string()).await;
         assert!(empty["rows"].as_array().unwrap().is_empty());
         assert_eq!(empty["total"], 1, "limit=0 is a count-only request");
 
@@ -1133,7 +1112,12 @@ mod tests {
 
         let created = router
             .clone()
-            .oneshot(request("POST", "/api/collection", Some(&alice_tok), Some(ADD_CARD)))
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some(&alice_tok),
+                Some(ADD_CARD),
+            ))
             .await
             .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
@@ -1192,7 +1176,12 @@ mod tests {
 
         let created = router
             .clone()
-            .oneshot(request("POST", "/api/collection", Some(&tok), Some(ADD_CARD)))
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some(&tok),
+                Some(ADD_CARD),
+            ))
             .await
             .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);

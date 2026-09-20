@@ -1348,8 +1348,17 @@ mod tests {
 
         // Open all connections before spawning so schema initialisation
         // (which needs the write lock) does not race with concurrent inserts.
+        // synchronous=NORMAL: WAL mode is crash-safe without per-commit
+        // fsync. Under whole-workspace I/O load (cargo compilation + parallel
+        // gates), fsync can take >1s, and 3 writers waiting for a 4th can
+        // approach BUSY_TIMEOUT. The outbox sequence property does not
+        // depend on durability settings (db-8bjm).
         let conns: Vec<_> = (0..WRITERS)
-            .map(|_| crate::open_user(&path).unwrap())
+            .map(|_| {
+                let c = crate::open_user(&path).unwrap();
+                c.execute_batch("PRAGMA synchronous = NORMAL").unwrap();
+                c
+            })
             .collect();
 
         std::thread::scope(|s| {
@@ -1730,6 +1739,14 @@ mod tests {
         // The state a redrive's snapshot would have caught.
         let stale = evs(&conn)[0].clone();
         assert_eq!(stale.seq, 1);
+
+        // The live mutation must have a strictly later occurred_at than the
+        // insert, so the occurred_at ordering gives it priority over the
+        // redrive. Both triggers use strftime('now') at millisecond resolution;
+        // without a brief pause they fire in the same millisecond, tying on
+        // occurred_at and falling back to seq — where seq=3 (redrive) would
+        // win, which is the bug this test exists to detect (db-8bjm).
+        std::thread::sleep(std::time::Duration::from_millis(2));
 
         // ...and then a live mutation, shipped normally.
         collection::update(

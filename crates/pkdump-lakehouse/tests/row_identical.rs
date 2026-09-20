@@ -298,6 +298,11 @@ fn start_upstream(script: Arc<Script>) -> FakeUpstream {
             return Reply::ok(cards_json(set));
         }
 
+        if path == "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master" {
+            // `land_bulk` lands these bytes without unpacking; any body works.
+            return Reply::ok("{}");
+        }
+
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
         match parts.as_slice() {
             ["3", "groups"] => Reply::ok(GROUPS_EN),
@@ -522,6 +527,7 @@ impl Harness {
         unsafe {
             std::env::set_var("PKDUMP_TCGCSV_BASE_URL", self.upstream.base_url());
             std::env::set_var("PKDUMP_POKEMONTCG_BASE_URL", self.upstream.base_url());
+            std::env::set_var("PKDUMP_POKEMON_TCG_DATA_BASE_URL", self.upstream.base_url());
         }
         guard
     }

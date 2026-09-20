@@ -441,8 +441,13 @@ check_fonts() {
 # against. A run that does not say what it ran on cannot be compared with one
 # that did.
 #
-# nproc, not getconf: nproc reports the CPUs available to THIS process, which
-# is the number cargo will actually use if anything has narrowed the affinity.
+# getconf, not nproc: getconf _NPROCESSORS_ONLN reads from sysfs and ignores
+# cgroup CPU quota. nproc honours the quota — CPUQuota=70% on a 24-core box
+# reports 1 — so running this check inside a constrained unit (e.g. a Spira
+# aeon) would fail the floor for a machine property the branch cannot affect.
+# A quota throttles TOTAL CPU TIME; it does not stop cargo from dispatching
+# work to all physical cores. We want to know the host's capacity, not how
+# much of it this process has been lent.
 #
 # Deliberately no disk figure here. deploy/diskcheck.sh owns the disk and
 # ci-parallel.sh warns in its own header that a second enumeration is how one
@@ -459,7 +464,9 @@ MACHINE_MIN_MEM_GIB=7
 
 check_machine() {
     local cores mem_kib mem_gib mem_disp rc=0
-    cores="$(nproc 2>/dev/null || echo 0)"
+    cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null \
+        || ls -d /sys/devices/system/cpu/cpu[0-9]* 2>/dev/null | wc -l \
+        || echo 1)"
     mem_kib="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null)"
     case "${cores}${mem_kib:-}" in *[!0-9]*|'') cores=0; mem_kib=0 ;; esac
     : "${mem_kib:=0}"

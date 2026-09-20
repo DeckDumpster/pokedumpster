@@ -99,13 +99,13 @@ pub fn open_shared_with_patience(path: &Path, patience: Duration) -> Result<Conn
         let _ = std::fs::create_dir_all(parent);
     }
     let mut conn = Connection::open(path)?;
+    conn.busy_timeout(patience)?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL; \
          PRAGMA synchronous = NORMAL; \
          PRAGMA cache_size = -65536; \
          PRAGMA foreign_keys = ON;",
     )?;
-    conn.busy_timeout(patience)?;
     // Before a single statement of schema runs: a catalog written by a newer
     // build is refused, not migrated backwards into.
     schema_version::gate(&conn, Database::Shared)?;
@@ -433,8 +433,12 @@ pub fn open_user(user_path: &Path) -> Result<Connection> {
         let _ = std::fs::create_dir_all(parent);
     }
     let conn = Connection::open(user_path)?;
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+    // Set the timeout BEFORE the WAL pragma: `PRAGMA journal_mode = WAL`
+    // needs a brief write lock even when WAL is already set, and two
+    // connections opening the same file simultaneously would fail
+    // immediately without it.
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
     schema_version::gate(&conn, Database::User)?;
     conn.execute_batch(SCHEMA_USER)?;
     add_missing_user_columns(&conn)?;
@@ -463,8 +467,8 @@ pub fn open_registry(path: &Path) -> Result<Connection> {
         let _ = std::fs::create_dir_all(parent);
     }
     let conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
     schema_version::gate(&conn, Database::Registry)?;
     conn.execute_batch(SCHEMA_REGISTRY)?;
     schema_version::stamp(&conn, Database::Registry)?;

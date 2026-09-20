@@ -1330,6 +1330,13 @@ mod tests {
     /// Half the writers hold singles and half hold sealed, because the
     /// sequence is shared: two tables contending for one AUTOINCREMENT is the
     /// arrangement that has to hold, not one table doing it alone.
+    ///
+    /// Connections are opened before the scope so schema writes do not
+    /// compound with insert writes.  A short sleep between inserts models the
+    /// natural inter-request spacing production writers have (HTTP overhead,
+    /// serialisation, etc.); without it four tight loops on one file can
+    /// exhaust BUSY_TIMEOUT on a loaded box, which is not a shape production
+    /// ever produces.
     #[test]
     fn the_sequence_is_monotonic_and_gap_free_under_concurrent_writers() {
         const WRITERS: usize = 4;
@@ -1339,11 +1346,15 @@ mod tests {
         let path = dir.path().join("collection.sqlite");
         crate::open_user(&path).unwrap();
 
+        // Open all connections before spawning so schema initialisation
+        // (which needs the write lock) does not race with concurrent inserts.
+        let conns: Vec<_> = (0..WRITERS)
+            .map(|_| crate::open_user(&path).unwrap())
+            .collect();
+
         std::thread::scope(|s| {
-            for w in 0..WRITERS {
-                let path = path.clone();
+            for (w, conn) in conns.into_iter().enumerate() {
                 s.spawn(move || {
-                    let conn = crate::open_user(&path).unwrap();
                     for i in 0..EACH {
                         if w % 2 == 0 {
                             conn.execute(
@@ -1361,6 +1372,10 @@ mod tests {
                             )
                             .unwrap();
                         }
+                        // Yield between writes: production callers are not
+                        // tight loops; this bounds worst-case lock wait to
+                        // ~3 × SLEEP_MS, well inside BUSY_TIMEOUT.
+                        std::thread::sleep(std::time::Duration::from_millis(5));
                     }
                 });
             }

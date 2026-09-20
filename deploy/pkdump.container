@@ -16,6 +16,13 @@ OnFailure=pkdump-alert@%n.service
 [Container]
 Image=localhost/pkdump:{{INSTANCE}}
 Environment=PKDUMP_HOME=/data
+# Per-instance Cloudflare Access config and multi-tenant mode flag.
+# The leading '-' makes the file optional — instances without it run
+# single-tenant. Prod has the file; CI test instances do not.
+# Values: PKDUMP_MULTITENANT, PKDUMP_ACCESS_TEAM_DOMAIN, PKDUMP_ACCESS_AUD,
+# PKDUMP_ACCESS_JWKS_URL. See "Configuring Access for a deployment" in
+# deploy/TENANTS.md, and deploy/setup.sh for the scaffold command.
+EnvironmentFile=-%h/.config/pkdump/{{INSTANCE}}/access.env
 PublishPort={{PORT}}:8080
 Volume=pkdump-{{INSTANCE}}-data:/data:Z
 AutoUpdate=local

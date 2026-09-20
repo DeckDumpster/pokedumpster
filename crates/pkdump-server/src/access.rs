@@ -625,6 +625,12 @@ pub(crate) mod test_support {
             .unwrap()
             .as_secs()
     }
+
+    /// Mint a `VerifiedIdentity` directly without going through JWT verification.
+    /// Only for use in tests.
+    pub(crate) fn identity(email: &str) -> super::VerifiedIdentity {
+        super::VerifiedIdentity::new(email.to_lowercase(), email.to_string())
+    }
 }
 
 // ---- unit tests -------------------------------------------------------------

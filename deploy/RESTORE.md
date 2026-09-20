@@ -396,11 +396,50 @@ sqlite3 "file:${MP}/registry.sqlite?mode=ro" \
 ```
 
 ```bash
-# ── STEP 3 — restore each database the registry named, then rebuild the catalog.
+# ── STEP 3 — restore each database the registry named, then rebuild the
+#             shared catalog from the lake.
 bash deploy/restore-litestream.sh --yes prod 01K2C7HQ8NZ0XW3V9R5M6D0ABC
 bash deploy/restore-litestream.sh --yes prod 01K2C7HQ8P41K8T2Y7Q3N5E1DEF
-bash deploy/seed.sh prod                        # rebuild the shared catalog from upstream
+
+# Rebuild the shared catalog from the lake.  Do NOT infer "the latest" date
+# from the directory listing — name the partition deliberately.  The failure
+# being designed against is yesterday's raw silently producing today's catalog
+# and looking current.
+#
+# A partition is usable when TCGCSV reports "complete": true.  A gap only in
+# the pokemontcg.io tail (sets/cards INCOMPLETE, products and prices COMPLETE)
+# derives and exits 2 — stale set list, prices whole — and is acceptable for
+# a restore.
+set -a; . ~/.config/pkdump/lake.env; set +a
+
+# 1. List available dates, newest first.  tcgcsv/prices is the dataset to
+#    check: it cannot be re-fetched and is the last dataset to go short.
+aws s3 ls "s3://${PKDUMP_LAKE_S3_BUCKET}/raw/source=tcgcsv/dataset=prices/" \
+  | grep 'PRE' | sed 's|.*ingest_date=||; s|/$||' | sort -r
+
+# 2. Pick a candidate date and confirm its manifest says "complete": true.
+#    The run ULID is the only subdirectory under the date prefix.
+DATE=2026-09-18     # <- replace with the date from step 1
+RUN=$(aws s3 ls \
+    "s3://${PKDUMP_LAKE_S3_BUCKET}/raw/source=tcgcsv/dataset=prices/ingest_date=${DATE}/" \
+    | grep 'PRE' | sed 's|.*run=||; s|/$||' | sort -r | head -1)
+aws s3 cp \
+    "s3://${PKDUMP_LAKE_S3_BUCKET}/raw/source=tcgcsv/dataset=prices/ingest_date=${DATE}/run=${RUN}/_manifest.json" \
+    - | jq '{complete, failures}'
+# "complete": true  — use this date.
+# "complete": false — try the previous date; failures[] says what was short.
+
+# 3. Rebuild from that date:
+bash deploy/derive.sh prod --ingest-date "${DATE}"
+
 systemctl --user start pkdump-prod              # start the app
+
+# ── FALLBACK — if the lake is also gone, rebuild from upstream.
+#    Use only when the lake bucket is inaccessible or holds no usable
+#    partition.  This path depends on pokemontcg.io and tcgcsv.com both being
+#    up at the moment of the restore, which may not hold during the incident
+#    that brought the box down.  Document the fallback if you use it.
+# bash deploy/seed.sh prod && systemctl --user start pkdump-prod
 ```
 
 **Cross-check against the bucket.** Neither source is trusted alone: the registry

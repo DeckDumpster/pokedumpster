@@ -223,6 +223,328 @@ fn normalize_symbols(args: RefreshArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Raw-landing coverage: every upstream input a refresh consumes reaches
+/// `raw/`, on an ordinary night and not just the first one.
+///
+/// This is a gate, not a review. The gap it was written for was invisible to
+/// reading the code: every fetch in the acquisition phase *does* go through
+/// `landing::fetch_bytes`, so a call-site audit passes — but `import_tail`
+/// only asks for a set's cards when the catalog lacks the set, so on every
+/// night after the first, `dataset=cards` was never requested and therefore
+/// never landed (pd-v1ca). A lake missing the cards corpus cannot derive
+/// `shared.sqlite`, and nothing said so: the refresh succeeded, the manifests
+/// were complete, and the dataset simply was not there.
+///
+/// The cards gap is now covered by the pokemon-tcg-data bulk corpus (db-9ogb):
+/// one tarball landing as `Dataset::Bulk` carries every set and card, so a
+/// cold rebuild can derive without the pokemontcg.io tail's cards. The tail
+/// still covers the 2–3 month lag window between a set's publication and the
+/// bulk repo catching up.
+///
+/// So the gate runs two acquisitions against a fake upstream — night one to
+/// fill the catalog, night two to be the ordinary night — and audits the
+/// second:
+///
+/// 1. every `Dataset` the refresh is responsible for has a complete prefix
+///    with parts in it, walked from [`Dataset::ALL`] so a dataset added later
+///    cannot be forgotten,
+/// 2. every request the upstream served was landed, exactly once — the
+///    call-site audit, done by comparing what was asked for against what was
+///    stored rather than by reading,
+/// 3. the TCGCSV prefixes carry both categories: English (3) and Pokémon
+///    Japan (85) share `source=tcgcsv`, which is why a bucket listing shows
+///    no Japanese dataset and why "Japan is not landed" is easy to conclude
+///    from the outside. It is landed; this pins that.
+#[cfg(test)]
+mod raw_coverage {
+    use std::path::Path;
+    use std::sync::{Mutex, MutexGuard};
+    use std::sync::Arc;
+
+    use pkdump_ingest::test_upstream::{FakeUpstream, Reply};
+    use pkdump_ingest::upstream::{
+        ENV_POKEMONTCG_BASE_URL, ENV_TCGCSV_BASE_URL, ENV_POKEMON_TCG_DATA_BASE_URL,
+    };
+    use pkdump_lake::{Dataset, DirStore, Manifest, RawLanding};
+
+    const INGEST_DATE: &str = "2026-09-20";
+    const CLOCK_AT: &str = "2026-09-20T06:00:00Z";
+
+    /// Where a dataset's bytes come from, for the audit below.
+    enum Coverage {
+        /// Every landing-enabled refresh lands it, every night.
+        Refresh,
+        /// Only when new sets are published by pokemontcg.io — the lag window
+        /// between publication and the bulk corpus catching up. On most nights
+        /// the catalog already has every set the tail finds, so nothing lands
+        /// here. The pokemon-tcg-data bulk corpus covers the full cards history
+        /// for cold rebuilds (db-9ogb).
+        TailLagWindow(&'static str),
+    }
+
+    /// The match is exhaustive on purpose: a new [`Dataset`] does not compile
+    /// until somebody says whether a refresh has to land it. That is what
+    /// makes this a gate against the *next* gap rather than a fix for this
+    /// one.
+    fn coverage(dataset: Dataset) -> Coverage {
+        match dataset {
+            Dataset::Sets
+            | Dataset::Groups
+            | Dataset::Products
+            | Dataset::Prices
+            | Dataset::Bulk => Coverage::Refresh,
+            Dataset::Cards => Coverage::TailLagWindow(
+                "the pokemontcg.io tail fetches cards only when a new set has been published \
+                 and the catalog lacks it — on most nights none are missing. The \
+                 pokemon-tcg-data bulk corpus (Dataset::Bulk) covers the full cards history \
+                 for cold rebuilds; the tail covers only the 2–3 month lag window before \
+                 the bulk repo catches up (pd-v1ca, db-9ogb)",
+            ),
+        }
+    }
+
+    // One set, one English group, one Japanese group: enough that every
+    // endpoint the acquisition phase knows how to call gets called.
+    const SETS: &str = r#"{"data":[
+        {"id":"sv3pt5","name":"151","series":"Scarlet & Violet",
+         "printedTotal":165,"total":207,"ptcgoCode":"MEW",
+         "releaseDate":"2023/09/22"}],
+        "page":1,"pageSize":250,"count":1,"totalCount":1}"#;
+    const CARDS: &str = r#"{"data":[
+        {"id":"sv3pt5-4","name":"Charmander","supertype":"Pokémon",
+         "subtypes":["Basic"],"hp":"60","types":["Fire"],"number":"4",
+         "rarity":"Common",
+         "set":{"id":"sv3pt5","name":"151","series":"Scarlet & Violet"},
+         "tcgplayer":{"prices":{"normal":{"market":0.5}}}}],
+        "page":1,"pageSize":250,"count":1,"totalCount":1}"#;
+    const ENGLISH_GROUPS: &str = r#"{"results":[
+        {"groupId":23237,"name":"SV: 151","abbreviation":"MEW",
+         "publishedOn":"2023-09-22"}],"success":true,"errors":[]}"#;
+    const JAPAN_GROUPS: &str = r#"{"results":[
+        {"groupId":23099,"name":"SV2a: Pokemon Card 151","abbreviation":"",
+         "publishedOn":"2023-06-16"}],"success":true,"errors":[]}"#;
+    const EMPTY: &str = r#"{"results":[],"success":true,"errors":[]}"#;
+
+    /// Both upstreams on one server — the TCGCSV origin is the root, the
+    /// pokemontcg.io one is `/v2`, and the bulk tarball is under
+    /// `/PokemonTCG/...`, exactly as the real hosts are shaped.
+    fn route(target: &str, _n: usize) -> Reply {
+        let path = target.split('?').next().unwrap_or(target);
+        match path {
+            "/3/groups" => Reply::ok(ENGLISH_GROUPS),
+            "/85/groups" => Reply::ok(JAPAN_GROUPS),
+            "/v2/sets" => Reply::ok(SETS),
+            "/v2/cards" => Reply::ok(CARDS),
+            p if p.ends_with("/products") || p.ends_with("/prices") => Reply::ok(EMPTY),
+            // The pokemon-tcg-data bulk tarball — landed as bytes, never
+            // parsed during a `pkdump data refresh` run.
+            p if p.contains("pokemon-tcg-data") => Reply {
+                status: 200,
+                body: b"bulk-placeholder".to_vec(),
+                content_type: "application/x-tar",
+            },
+            other => Reply::status(
+                404,
+                format!(
+                    r#"{{"error":"the acquisition phase asked for {other}, which this \
+                        fixture does not model — a new upstream call needs a route here \
+                        AND a landed dataset"}}"#
+                ),
+            ),
+        }
+    }
+
+    /// Serialised: the origin overrides are process-wide, and they are the
+    /// only way to point a whole acquisition phase somewhere (it builds its
+    /// own clients — see `pkdump_ingest::upstream`).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct Origins<'a>(#[allow(dead_code)] MutexGuard<'a, ()>);
+
+    impl Origins<'_> {
+        fn point_at(base: &str) -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: the lock is held for as long as the variables are set,
+            // and this is the only test binary that touches them.
+            unsafe {
+                std::env::set_var(ENV_TCGCSV_BASE_URL, base);
+                std::env::set_var(ENV_POKEMONTCG_BASE_URL, format!("{base}/v2"));
+                std::env::set_var(ENV_POKEMON_TCG_DATA_BASE_URL, base);
+            }
+            Self(guard)
+        }
+    }
+
+    impl Drop for Origins<'_> {
+        fn drop(&mut self) {
+            // SAFETY: as above — still under the lock this value holds.
+            unsafe {
+                std::env::remove_var(ENV_TCGCSV_BASE_URL);
+                std::env::remove_var(ENV_POKEMONTCG_BASE_URL);
+                std::env::remove_var(ENV_POKEMON_TCG_DATA_BASE_URL);
+            }
+        }
+    }
+
+    /// One landing-enabled derivation (fills the catalog and lands bytes).
+    /// Night one: populate the catalog so an ordinary night can run.
+    fn derive_landing(db: &Path, dir: &Path) {
+        let clock = pkdump_derive::DeriveClock::from_manifest(CLOCK_AT, "test clock")
+            .expect("parse clock");
+        let landing = Arc::new(RawLanding::new(
+            Box::new(DirStore::new(dir)),
+            INGEST_DATE,
+            clock.fetched_at(),
+        ));
+        let mut conn = pkdump_db::open_shared(db).expect("open the catalog read-write");
+        let outcome = pkdump_derive::derive(
+            &mut conn,
+            &pkdump_derive::Options {
+                clock,
+                data_dir: dir,
+                landing: Some(Arc::clone(&landing)),
+                replay: None,
+            },
+        );
+        pkdump_derive::finalize_landing(&landing, outcome.as_ref().err())
+            .expect("write the manifests");
+        outcome.expect("the derivation");
+    }
+
+    /// One landing-enabled land run (read-only catalog, lands bytes only).
+    /// Night two: the ordinary night where everything is already in the catalog.
+    fn land_night(db: &Path, dir: &Path) -> Vec<Manifest> {
+        let clock = pkdump_derive::DeriveClock::from_manifest(CLOCK_AT, "test clock")
+            .expect("parse clock");
+        let landing = Arc::new(RawLanding::new(
+            Box::new(DirStore::new(dir)),
+            INGEST_DATE,
+            clock.fetched_at(),
+        ));
+        let conn = pkdump_db::open_shared_readonly(db).expect("open the catalog read-only");
+        let outcome = pkdump_derive::land(
+            &conn,
+            &pkdump_derive::Options {
+                clock,
+                data_dir: dir,
+                landing: Some(Arc::clone(&landing)),
+                replay: None,
+            },
+        );
+        pkdump_derive::finalize_landing(&landing, outcome.as_ref().err())
+            .expect("write the manifests");
+        outcome.expect("the landing run");
+        landing.manifests()
+    }
+
+    /// Request targets, in served order, with the origin stripped.
+    fn targets(urls: impl IntoIterator<Item = String>, base: &str) -> Vec<String> {
+        let mut out: Vec<String> = urls
+            .into_iter()
+            .map(|u| u.strip_prefix(base).unwrap_or(&u).to_string())
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn manifest_for(manifests: &[Manifest], dataset: Dataset) -> Option<&Manifest> {
+        manifests.iter().find(|m| m.dataset == dataset.as_str())
+    }
+
+    /// The gate. See the module docs for what each assertion is for.
+    #[test]
+    fn an_ordinary_night_lands_every_dataset_the_catalog_is_derived_from() {
+        let upstream = FakeUpstream::start(route);
+        let _origins = Origins::point_at(&upstream.base_url());
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("shared.sqlite");
+
+        // Night one: an empty catalog, so `import_tail` imports the set and
+        // fetches its cards on the way past. This is the run that made the
+        // gap invisible — raw/ looked complete the day the lake was built.
+        derive_landing(&db, &tmp.path().join("night-1"));
+
+        // Night two: every set is already in the catalog. The ordinary night,
+        // and the one every night after the first looks like.
+        let before = upstream.requests().len();
+        let manifests = land_night(&db, &tmp.path().join("night-2"));
+
+        // 1. Every dataset a refresh is responsible for, walked from the enum
+        //    rather than from a list written here.
+        for dataset in Dataset::ALL {
+            match coverage(*dataset) {
+                Coverage::Refresh => {
+                    let landed = manifest_for(&manifests, *dataset).unwrap_or_else(|| {
+                        panic!(
+                            "an ordinary night landed no {dataset} at all — the refresh \
+                             derives the catalog from it, so raw/ cannot rebuild the \
+                             catalog without it"
+                        )
+                    });
+                    assert!(
+                        !landed.parts.is_empty(),
+                        "{dataset} has a prefix but no parts in it"
+                    );
+                    assert!(landed.complete, "{dataset} landed an incomplete run");
+                }
+                Coverage::TailLagWindow(_why) => assert!(
+                    manifest_for(&manifests, *dataset).is_none(),
+                    "{dataset} landed on an ordinary night — expected nothing (the tail \
+                     only fetches this when a new set has been published)"
+                ),
+            }
+        }
+
+        // 2. Everything asked for was stored — the call-site audit, made by
+        //    comparison rather than by reading. A fetch added to the
+        //    acquisition phase that skips `landing::fetch_bytes` shows up
+        //    here as a served request with no part.
+        let served = targets(
+            upstream.requests()[before..].iter().cloned(),
+            &upstream.base_url(),
+        );
+        let landed = targets(
+            manifests
+                .iter()
+                .flat_map(|m| m.parts.iter().map(|p| p.url.clone())),
+            &upstream.base_url(),
+        );
+        assert_eq!(
+            served, landed,
+            "every upstream response a refresh receives must be landed, exactly once"
+        );
+
+        // 3. Japanese TCGCSV (category 85) shares `source=tcgcsv` with
+        //    English (category 3), so the only evidence it landed is in the
+        //    URLs. Both categories, in the same prefixes.
+        for dataset in [Dataset::Groups, Dataset::Products, Dataset::Prices] {
+            let m = manifest_for(&manifests, dataset).expect("a tcgcsv prefix");
+            let urls: Vec<&str> = m.parts.iter().map(|p| p.url.as_str()).collect();
+            assert!(
+                urls.iter().any(|u| u.contains("/3/")),
+                "{dataset} landed nothing for English (category 3): {urls:?}"
+            );
+            assert!(
+                urls.iter().any(|u| u.contains("/85/")),
+                "{dataset} landed nothing for Pokémon Japan (category 85): {urls:?}"
+            );
+        }
+
+        // 4. The bytes are on disk under the keys the manifests claim, not
+        //    just in the manifests.
+        let root = tmp.path().join("night-2");
+        for m in &manifests {
+            for part in &m.parts {
+                assert!(
+                    root.join(&part.key).is_file(),
+                    "{} is in the manifest but not in the store",
+                    part.key
+                );
+            }
+        }
+    }
+}
+
 /// Execute `pkdump data refresh` — fetch every upstream and LAND it.
 ///
 /// ## It does not build the catalog any more (pd-lunn)

@@ -223,6 +223,114 @@ fn normalize_symbols(args: RefreshArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Execute `pkdump data refresh` — fetch every upstream and LAND it.
+///
+/// ## It does not build the catalog any more (pd-lunn)
+///
+/// It used to: this function called [`pkdump_derive::derive`] and wrote
+/// `shared.sqlite`, which meant the catalog had two builders. That is why
+/// `pkdump-derive@<instance>.timer` stayed disabled everywhere — arming it
+/// only did the same work a second time, from the bytes the first run had just
+/// landed, overwriting a catalog that was already right.
+///
+/// Item 6 of the lake-as-source epic picks one. `pkdump-lake-derive shared` is
+/// the builder; this command is the LANDING half and nothing else, which is
+/// what the two units have claimed to be since item 5 shipped. The blocking
+/// question — does a catalog replayed from `raw/` equal the one fetched
+/// online — was answered against prod's own nightly partition on 2026-08-25:
+/// row-identical across twenty tables, 12.6M price rows included.
+///
+/// So the shape here is now:
+///
+/// - the catalog is opened **read-only** (`open_shared_readonly`), and is
+///   asked one question: which sets it already has. A read-only handle is why
+///   "the refresh writes no catalog table" is a fact about the connection
+///   rather than a claim about this function.
+/// - landing is **required**, not a flag. See [`crate::landing::require`].
+/// - the derivation happens hours later, in its own unit, from the partition
+///   this run landed. `deploy/pkdump-derive.timer` is no longer optional on a
+///   box that runs this: without it the catalog simply stops advancing.
+///
+/// ## Exit status (pd-nons)
+///
+/// | | |
+/// | --- | --- |
+/// | 0 | every upstream was acquired and landed |
+/// | 2 | **partial**: the pokemontcg.io tail failed after exhausting its retries; the run continued and TCGCSV — the half a night cannot get back — was landed |
+/// | 1 | the run failed |
+///
+/// 2 is a distinct status because the two outcomes want different answers: a
+/// tail that fails one night costs a day's set list, a TCGCSV pull that fails
+/// costs a day's prices permanently. It is deliberately **not** wired to
+/// `SuccessExitStatus=` in `deploy/pkdump-refresh.service` — a set list that
+/// silently stopped advancing is exactly the failure nothing else on the box
+/// would report, so a partial run still reaches the wrapper's stall check. See
+/// the unit for the argument.
+fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
+    let db_path = match args.common.db {
+        Some(p) => p,
+        None => pkdump_db::shared_db_path()?,
+    };
+    println!("Opening shared catalog READ-ONLY at {}", db_path.display());
+    let conn = pkdump_db::open_shared_readonly(&db_path).map_err(|e| {
+        anyhow::anyhow!(
+            "{e}\n\nThe refresh reads the catalog to decide which sets are new; it does not \
+             create one. If this box has never been set up, run `pkdump setup` first."
+        )
+    })?;
+
+    // The run's clock, read ONCE — see `pkdump_derive::clock`. It picks the
+    // ingest_date partition and it is recorded in every manifest, which is
+    // what lets the offline derive stamp the same fetched_at / observed_at
+    // into the same rows from these bytes.
+    let clock = pkdump_derive::DeriveClock::now();
+
+    // Resolved before anything is fetched: a landing zone that cannot be
+    // opened stops the run at the start, not after an hour of requests whose
+    // bytes then have nowhere to go.
+    let landing = crate::landing::require(&clock)?;
+
+    // Only the symbol phase reads this, and that phase is the deriving side's,
+    // so nothing here opens it. Passed anyway rather than left to a default:
+    // the field is not optional, and the catalog's own directory is the answer
+    // every other command gives.
+    let data_dir = db_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    let report = pkdump_derive::land(
+        &conn,
+        &pkdump_derive::Options {
+            clock,
+            data_dir: &data_dir,
+            landing: Some(landing),
+            // The online side never replays. It has no way to: reading the
+            // landing zone is `pkdump-lakehouse`'s job and this crate does
+            // not depend on it.
+            replay: None,
+        },
+    )?;
+
+    if let Some(e) = report.tail_error {
+        eprintln!("!! Refresh PARTIAL: nothing was derived, and the tail is short");
+        eprintln!("!!   the pokemontcg.io tail failed after its retries: {e}");
+        eprintln!(
+            "!!   The run CONTINUED past it: TCGCSV groups, products and prices were fetched \
+             and landed. Tonight's partition can still be derived; its set list will be as old \
+             as the last partition that carried a whole one. Exit status 2."
+        );
+        // Not an `Err`: anyhow's main would print the error and exit 1, which
+        // is the status a run that landed nothing carries. This one landed the
+        // perishable half.
+        drop(conn);
+        std::process::exit(2);
+    }
+
+    println!("Refresh complete: landed, not derived. The catalog is built by pkdump-lake-derive.");
+    Ok(())
+}
+
 /// Raw-landing coverage: every upstream input a refresh consumes reaches
 /// `raw/`, on an ordinary night and not just the first one.
 ///
@@ -543,112 +651,4 @@ mod raw_coverage {
             }
         }
     }
-}
-
-/// Execute `pkdump data refresh` — fetch every upstream and LAND it.
-///
-/// ## It does not build the catalog any more (pd-lunn)
-///
-/// It used to: this function called [`pkdump_derive::derive`] and wrote
-/// `shared.sqlite`, which meant the catalog had two builders. That is why
-/// `pkdump-derive@<instance>.timer` stayed disabled everywhere — arming it
-/// only did the same work a second time, from the bytes the first run had just
-/// landed, overwriting a catalog that was already right.
-///
-/// Item 6 of the lake-as-source epic picks one. `pkdump-lake-derive shared` is
-/// the builder; this command is the LANDING half and nothing else, which is
-/// what the two units have claimed to be since item 5 shipped. The blocking
-/// question — does a catalog replayed from `raw/` equal the one fetched
-/// online — was answered against prod's own nightly partition on 2026-08-25:
-/// row-identical across twenty tables, 12.6M price rows included.
-///
-/// So the shape here is now:
-///
-/// - the catalog is opened **read-only** (`open_shared_readonly`), and is
-///   asked one question: which sets it already has. A read-only handle is why
-///   "the refresh writes no catalog table" is a fact about the connection
-///   rather than a claim about this function.
-/// - landing is **required**, not a flag. See [`crate::landing::require`].
-/// - the derivation happens hours later, in its own unit, from the partition
-///   this run landed. `deploy/pkdump-derive.timer` is no longer optional on a
-///   box that runs this: without it the catalog simply stops advancing.
-///
-/// ## Exit status (pd-nons)
-///
-/// | | |
-/// | --- | --- |
-/// | 0 | every upstream was acquired and landed |
-/// | 2 | **partial**: the pokemontcg.io tail failed after exhausting its retries; the run continued and TCGCSV — the half a night cannot get back — was landed |
-/// | 1 | the run failed |
-///
-/// 2 is a distinct status because the two outcomes want different answers: a
-/// tail that fails one night costs a day's set list, a TCGCSV pull that fails
-/// costs a day's prices permanently. It is deliberately **not** wired to
-/// `SuccessExitStatus=` in `deploy/pkdump-refresh.service` — a set list that
-/// silently stopped advancing is exactly the failure nothing else on the box
-/// would report, so a partial run still reaches the wrapper's stall check. See
-/// the unit for the argument.
-fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
-    let db_path = match args.common.db {
-        Some(p) => p,
-        None => pkdump_db::shared_db_path()?,
-    };
-    println!("Opening shared catalog READ-ONLY at {}", db_path.display());
-    let conn = pkdump_db::open_shared_readonly(&db_path).map_err(|e| {
-        anyhow::anyhow!(
-            "{e}\n\nThe refresh reads the catalog to decide which sets are new; it does not \
-             create one. If this box has never been set up, run `pkdump setup` first."
-        )
-    })?;
-
-    // The run's clock, read ONCE — see `pkdump_derive::clock`. It picks the
-    // ingest_date partition and it is recorded in every manifest, which is
-    // what lets the offline derive stamp the same fetched_at / observed_at
-    // into the same rows from these bytes.
-    let clock = pkdump_derive::DeriveClock::now();
-
-    // Resolved before anything is fetched: a landing zone that cannot be
-    // opened stops the run at the start, not after an hour of requests whose
-    // bytes then have nowhere to go.
-    let landing = crate::landing::require(&clock)?;
-
-    // Only the symbol phase reads this, and that phase is the deriving side's,
-    // so nothing here opens it. Passed anyway rather than left to a default:
-    // the field is not optional, and the catalog's own directory is the answer
-    // every other command gives.
-    let data_dir = db_path
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-
-    let report = pkdump_derive::land(
-        &conn,
-        &pkdump_derive::Options {
-            clock,
-            data_dir: &data_dir,
-            landing: Some(landing),
-            // The online side never replays. It has no way to: reading the
-            // landing zone is `pkdump-lakehouse`'s job and this crate does
-            // not depend on it.
-            replay: None,
-        },
-    )?;
-
-    if let Some(e) = report.tail_error {
-        eprintln!("!! Refresh PARTIAL: nothing was derived, and the tail is short");
-        eprintln!("!!   the pokemontcg.io tail failed after its retries: {e}");
-        eprintln!(
-            "!!   The run CONTINUED past it: TCGCSV groups, products and prices were fetched \
-             and landed. Tonight's partition can still be derived; its set list will be as old \
-             as the last partition that carried a whole one. Exit status 2."
-        );
-        // Not an `Err`: anyhow's main would print the error and exit 1, which
-        // is the status a run that landed nothing carries. This one landed the
-        // perishable half.
-        drop(conn);
-        std::process::exit(2);
-    }
-
-    println!("Refresh complete: landed, not derived. The catalog is built by pkdump-lake-derive.");
-    Ok(())
 }

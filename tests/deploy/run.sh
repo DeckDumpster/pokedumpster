@@ -330,6 +330,12 @@ check "access.env scaffold has PKDUMP_MULTITENANT commented out" "1" \
 # so value lines must carry no inline comments.
 check "access.env scaffold has no inline comments on value lines" "0" \
 	"$(grep -c '^PKDUMP_ACCESS_.*#' "${REPO_DIR}/deploy/setup.sh" || true)"
+# Quadlet does not implement the systemd 'EnvironmentFile=-...' optional-file
+# prefix — it treats the whole string as a literal path, producing a path like
+# .../systemd/-/home/... that can never exist. The file must always exist
+# (setup.sh guarantees this), so no leading '-' is ever correct here.
+check "no leading - in EnvironmentFile= in any .container file" "0" \
+	"$(grep -r '^EnvironmentFile=-' --include='*.container' "${REPO_DIR}/deploy/" 2>/dev/null | wc -l || true)"
 
 reset_store
 

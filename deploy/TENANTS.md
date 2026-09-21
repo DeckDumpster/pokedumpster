@@ -365,10 +365,10 @@ hatch nobody tests closed is indistinguishable from a guard that was deleted.
 
 ### Configuring Access for a deployment
 
-`deploy/pkdump.container` loads `~/.config/pkdump/{{INSTANCE}}/access.env`
-(optional — single-tenant instances run without it). `deploy/setup.sh`
-scaffolds the file when it does not exist. To enable multi-tenant mode for an
-instance:
+`deploy/pkdump.container` loads `~/.config/pkdump/{{INSTANCE}}/access.env`.
+`deploy/setup.sh` scaffolds the file on every setup; values default to
+commented-out, so instances stay single-tenant until the file is filled in.
+To enable multi-tenant mode for an instance:
 
 ```bash
 # setup.sh writes a template if the file does not exist:

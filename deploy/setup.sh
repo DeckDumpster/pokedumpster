@@ -327,30 +327,31 @@ EOF
 fi
 
 # Per-instance Cloudflare Access + multi-tenant config.
-# The Quadlet unit loads this with 'EnvironmentFile=-...' (optional), so an
-# instance that has never been configured runs single-tenant without error.
+# The Quadlet unit loads this with 'EnvironmentFile=...' (no leading '-', which
+# Quadlet does not support). This file is always created here so it always
+# exists. Values default to commented-out, meaning single-tenant.
 # Fill in the values from the Cloudflare dashboard (Access > Application > AUD tag).
 if [ ! -f "${LS_CONF_DIR}/access.env" ]; then
     cat > "${LS_CONF_DIR}/access.env" <<EOF
 # Cloudflare Access config for instance '${INSTANCE}'.
-# Uncomment PKDUMP_MULTITENANT and fill the three values to enable multi-tenant
-# mode. Leave them commented (or remove this file) to stay single-tenant.
+# Uncomment PKDUMP_MULTITENANT and the three values to enable multi-tenant
+# mode. Leave them commented to stay single-tenant.
 #
 # Steps:
 # 1. In the Cloudflare Zero Trust dashboard, open Access > Applications.
 # 2. Find the PokeDumpster application and copy its AUD tag (64-char hex).
-# 3. Fill in the three values below and uncomment PKDUMP_MULTITENANT.
+# 3. Uncomment and fill in the three values below, then uncomment PKDUMP_MULTITENANT.
 # 4. Redeploy to pick up the new file: bash deploy/deploy.sh ${INSTANCE}
 #
 # Note: systemd EnvironmentFile does not strip trailing # comments from value
 # lines. Put comments on their own lines, as shown here.
 #PKDUMP_MULTITENANT=1
 # Team domain — e.g. https://myteam.cloudflareaccess.com
-PKDUMP_ACCESS_TEAM_DOMAIN=CHANGE_ME
+#PKDUMP_ACCESS_TEAM_DOMAIN=CHANGE_ME
 # 64-char hex AUD tag from Access > Applications
-PKDUMP_ACCESS_AUD=CHANGE_ME
+#PKDUMP_ACCESS_AUD=CHANGE_ME
 # JWKS URL — e.g. https://myteam.cloudflareaccess.com/cdn-cgi/access/certs
-PKDUMP_ACCESS_JWKS_URL=CHANGE_ME
+#PKDUMP_ACCESS_JWKS_URL=CHANGE_ME
 EOF
     chmod 600 "${LS_CONF_DIR}/access.env"
     echo "    Wrote ${LS_CONF_DIR}/access.env — fill CHANGE_ME values to enable multi-tenant mode."

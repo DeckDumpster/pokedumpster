@@ -321,15 +321,16 @@ check "setup.sh does not" "0" \
 	"$(grep -c 'pkdump_store_load_config' "${REPO_DIR}/deploy/setup.sh" || true)"
 check "setup.sh scaffolds the knob commented out" "1" \
 	"$(grep -c '^#PKDUMP_STORE_ROOT=' "${REPO_DIR}/deploy/setup.sh" || true)"
-# access.env scaffold must not enable multi-tenant on CI instances:
-# setup.sh runs on every setup, including CI throwaway instances that bind
-# 0.0.0.0 — an uncommented PKDUMP_MULTITENANT=1 makes them refuse to start.
+# access.env scaffold lives in config-lib.sh (db-g6ku: extracted so deploy.sh
+# can scaffold it for existing instances). Must not enable multi-tenant on CI
+# instances: they bind 0.0.0.0 — an uncommented PKDUMP_MULTITENANT=1 makes
+# them refuse to start.
 check "access.env scaffold has PKDUMP_MULTITENANT commented out" "1" \
-	"$(grep -c '^#PKDUMP_MULTITENANT=1$' "${REPO_DIR}/deploy/setup.sh" || true)"
+	"$(grep -c '^#PKDUMP_MULTITENANT=1$' "${REPO_DIR}/deploy/config-lib.sh" || true)"
 # systemd EnvironmentFile does not strip trailing # comments from value lines,
 # so value lines must carry no inline comments.
 check "access.env scaffold has no inline comments on value lines" "0" \
-	"$(grep -c '^PKDUMP_ACCESS_.*#' "${REPO_DIR}/deploy/setup.sh" || true)"
+	"$(grep -c '^PKDUMP_ACCESS_.*#' "${REPO_DIR}/deploy/config-lib.sh" || true)"
 # Quadlet does not implement the systemd 'EnvironmentFile=-...' optional-file
 # prefix — it treats the whole string as a literal path, producing a path like
 # .../systemd/-/home/... that can never exist. The file must always exist
@@ -3508,6 +3509,68 @@ check "the wait fits inside the unit's own start timeout" "1" \
 # transaction of the derive's, not merely report a nicer error.
 check "and it is longer than an ordinary open's patience" "1" \
 	"$([ "${PATIENCE:-0}" -gt 5 ] && echo 1 || echo 0)"
+
+# ---------------------------------------------------------------------------
+log "§19 — a deploy onto an existing instance scaffolds required config (db-g6ku)"
+# ---------------------------------------------------------------------------
+#
+# pkdump-prod went down for ~1h after the d24da96 deploy because access.env
+# was new (db-i7bi) and EnvironmentFile= without a leading '-' is mandatory —
+# Quadlet does not implement the optional-file prefix. setup.sh creates it on
+# first install, but prod's Quadlet file had existed for months, so deploy.sh
+# took the else branch and never ran setup.sh. This section asserts that the
+# else branch also scaffolds the file.
+#
+# Driven end to end against a fake HOME that has a Quadlet file (existing
+# instance) but no access.env. Stubs for podman and systemctl; nothing builds
+# and nothing loads.
+
+reset_store
+
+FAKE19="${WORK}/deploy19home"
+QUADLET19="${FAKE19}/.config/containers/systemd"
+UNITS19="${FAKE19}/.config/systemd/user"
+mkdir -p "$QUADLET19" "$UNITS19" "${WORK}/bin19"
+
+cat > "${WORK}/bin19/podman" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "${WORK}/bin19/systemctl" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do [ "$a" = is-active ] && exit 3; done
+exit 0
+EOF
+chmod +x "${WORK}/bin19/podman" "${WORK}/bin19/systemctl"
+
+# Existing instance: Quadlet file present, no access.env.
+printf '[Unit]\nDescription=existing\n\n[Container]\nImage=localhost/pkdump:prod\nPublishPort=8090:8080\n' \
+	> "${QUADLET19}/pkdump-prod.container"
+
+ACCESS19="${FAKE19}/.config/pkdump/prod/access.env"
+check "access.env absent before deploy" "absent" \
+	"$([ -f "$ACCESS19" ] && echo present || echo absent)"
+
+PATH="${WORK}/bin19:${ORIG_PATH}" \
+	HOME="$FAKE19" \
+	bash "${REPO_DIR}/deploy/deploy.sh" prod > /dev/null 2>&1 || true
+
+check "deploy scaffolds access.env for existing instance" "present" \
+	"$([ -f "$ACCESS19" ] && echo present || echo absent)"
+check "scaffolded file has mode 600" "600" \
+	"$(stat -c '%a' "$ACCESS19" 2>/dev/null || echo missing)"
+check "scaffolded file has PKDUMP_MULTITENANT commented out" "1" \
+	"$(grep -c '^#PKDUMP_MULTITENANT=1$' "$ACCESS19" || true)"
+
+# Second run must not overwrite an existing file (idempotence).
+printf '# custom\nPKDUMP_MULTITENANT=1\n' > "$ACCESS19"
+PATH="${WORK}/bin19:${ORIG_PATH}" \
+	HOME="$FAKE19" \
+	bash "${REPO_DIR}/deploy/deploy.sh" prod > /dev/null 2>&1 || true
+check "a second deploy does not overwrite access.env" "1" \
+	"$(grep -c '^PKDUMP_MULTITENANT=1$' "$ACCESS19" || true)"
+
+reset_store
 
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"

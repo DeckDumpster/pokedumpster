@@ -356,17 +356,10 @@ step() {
     echo "==> $*"
 }
 
-# Capture the unit journal before a teardown destroys it.  Called on any abort
-# path where a systemd unit may have failed to start; the caller then exits.
-# Both commands are best-effort: a CI runner that lacks the unit or the journal
-# should not suppress the evidence it does have.
-dump_unit_diagnostics() {
-    local unit="$1"
-    echo "--- systemctl status ${unit} ---"
-    systemctl --user status "$unit" --no-pager 2>&1 || true
-    echo "--- journalctl --user -u ${unit} (last 40 lines) ---"
-    journalctl --user -u "$unit" --no-pager -n 40 2>&1 || true
-}
+# Capture the unit journal before a teardown destroys it. Shared with
+# deploy/deploy.sh — one definition in one place (db-g6ku).
+# shellcheck source=deploy/diagnostics-lib.sh
+. "$SCRIPT_DIR/diagnostics-lib.sh"
 
 # --- 0. Tier selection -------------------------------------------------------
 #

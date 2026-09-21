@@ -151,15 +151,49 @@ and a night that publishes none lands none. `Dataset::Cards` is
 nightly derive is green because it is INCREMENTAL: it updates the catalog it is
 given, which already holds every set, so it asks for no cards and misses none.
 
-**A cold derive does not need the pokemontcg.io cards dataset** (`db-9ogb`,
-`db-m1sd`, `db-5tgs`). The nightly refresh now also lands the
-`pokemon-tcg-data` bulk corpus (`raw/source=pokemon-tcg-data/dataset=bulk/`),
-and the derive processes it before the pokemontcg.io tail — so on a catalog
-that starts empty, `missing_sets` returns 0 after the bulk import and the
-per-set card URLs are never requested. `db-5tgs` is the acceptance gate: a
-cold derive into an empty catalog is row-identical to a warm one. The lake can
-now rebuild the catalog from scratch; `deploy/RESTORE.md` Scenario C step 3
+**The bulk corpus closes the cold-rebuild gap.** `raw/source=pokemon-tcg-data/
+dataset=bulk/` now lands on every nightly refresh — one GET of the
+`PokemonTCG/pokemon-tcg-data` GitHub tarball (2.65 MB on the wire, 26.0 MB
+uncompressed, 177 `cards/en/*.json` files across all sets, 0.54 s). A cold
+derive replays it instead of sweeping the pokemontcg.io API. The pokemontcg.io
+tail's remaining job is the 2–3 month lag window: sets published too recently
+to appear in the bulk repo are still fetched set-by-set and landed under
+`pokemontcgio/cards` the night they appear. Bead `db-m1sd` wires the derive to
+read from the bulk partition instead of the API; `db-5tgs` proves it. The lake
+can now rebuild the catalog from scratch; `deploy/RESTORE.md` Scenario C step 3
 depends on this.
+
+#### The cold-rebuild proof (`db-5tgs`)
+
+`row_identical.rs::cold_rebuild_from_raw_is_row_identical_to_warm_and_no_pokemontcgio_cards_needed`
+is the acceptance gate. The key property it establishes: the warm `online()` run
+imports the bulk corpus FIRST so `missing_sets` returns 0, meaning
+pokemontcg.io card URLs are **never fetched and never land in `raw/`**. The cold
+derive — starting from an empty catalog, zero rows in `cards` or `sets`, verified
+before the derive runs — must then rebuild from bulk + TCGCSV alone. If the bulk
+import were broken the derive would call `missing_sets`, get back the full set
+list, and try to replay their card URLs; those URLs are not in `raw/`, the gap
+is fatal, and the process exits non-zero. There is no way to reach the diff
+assertion on a broken bulk path.
+
+The gate also checks that the fixture upstream receives zero new requests during
+the cold derive: every URL the derive needs is replayed from `raw/` or is
+irrelevant, and any request that arrived would be for a URL the replay could
+not supply — which would already have killed the derive before this check.
+
+Over the fixture (2 sets, 3 cards, 5 prices):
+
+| side | `cards` | `sets` | `prices` | wall clock |
+| --- | ---: | ---: | ---: | ---: |
+| warm (online) | 3 | 2 | 5 | — |
+| cold (derive from raw) | 3 | 2 | 5 | **0.79 s** |
+
+Row-identical: `h.diff()` exits 0, `raw_derivation` excluded and named.
+
+The fixture is smaller than prod (3 cards vs 47,671; 2 sets vs 630), but the
+proof does not rest on scale — it rests on the card URLs being absent from
+`raw/`. At fixture scale, as at prod scale, the bulk corpus is the only source
+of card data in the partition.
 
 What would have gone wrong without the bulk corpus: a derive into an EMPTY
 catalog would have been a refusal. `missing_sets` would return all 174 sets,

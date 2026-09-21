@@ -1,42 +1,38 @@
 #!/usr/bin/env bash
-# Container-tier gate (pd-4g7c / db-ae5u): what the SHIPPED image does at
-# startup and over real HTTP once Access auth is in effect.
+# Container-tier gate: what the SHIPPED image answers to multi-tenant requests,
+# using Cloudflare Access JWT authentication (db-ae5u).
 #
 # Run by deploy/ci.sh. Standalone:
 #   bash tests/tenants/handles.sh          # ~1min after the image is warm
 #   KEEP=1 bash tests/tenants/handles.sh   # leave WORK + the container up
 #
 # ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
-# Tenant resolution is now driven by a verified Cloudflare Access identity —
-# the `VerifiedIdentity` proof-carrying type whose constructor is private to
-# the access module and can only be produced by verifying a real JWT. The
-# compile-time barrier is stronger than the old header guard, but the two
-# startup decisions that depend on it can only be tested at the process level:
+# The auth layer (db-ae5u) changed multi-tenant resolution from a plain
+# x-pkdump-tenant header to Cloudflare Access JWT verification. This gate
+# runs the shipped image against a TEST JWKS server (tests/lib/test_jwks.py)
+# that issues real RS256 tokens, so it exercises the actual JWT verification
+# path rather than a stub. The isolation claim rests on:
 #
-#   1. Multi-tenant ON, Access NOT configured → the server refuses to start.
-#      `check_multitenant_access` emits a message naming the three env vars.
-#      This is asserted in §3, and it is what makes the rest of the gate safe
-#      to run: a guard nobody ever tests closed is indistinguishable from a
-#      deleted one.
+#   - the ONLY way to identify a tenant is the email from a verified JWT, and
+#   - the ONLY way to produce a VerifiedIdentity (access::layer's output) is to
+#     present a valid JWT to the access middleware — the constructor is private.
 #
-#   2. Single-tenant mode (the production shape) is completely unaffected by
-#      Access configuration — not just by policy, but by construction: the
-#      access layer installs a placeholder identity and the resolver ignores
-#      it. §4 asserts this over the shipped binary, over real HTTP, at the
-#      bind address `pkdump serve` uses in production.
-#
-# JWT-based multi-tenant resolution (registered email → database) and the
-# leftover-header non-escalation guarantee are asserted in the unit tests in
-# crates/pkdump-server/src/lib.rs; they require a JWKS endpoint that the
-# container tier has no fixture for.
+# This gate is the container-tier complement to the unit test
+# `one_tenant_cannot_reach_another_tenants_collection` in
+# crates/pkdump-server/src/lib.rs.
 #
 # ── WHAT IT ASSERTS ─────────────────────────────────────────────────────────
-#   §3 Multi-tenant ON, no Access env vars → refuses to start. The error
-#      names `PKDUMP_ACCESS_TEAM_DOMAIN` so an operator knows what to set.
-#   §4 SINGLE-TENANT MODE IS UNAFFECTED — the server comes up, and /api/
-#      answers without any JWT. The header check that used to fire here is
-#      gone; what matters is that the access layer does not block a request
-#      that should sail through. This is the only mode production runs.
+#   §3 A JWKS server is started; alice's email is bound in the data directory.
+#   §4 Multi-tenant without Access vars refuses to start — Cloudflare Access
+#      is required, not optional.
+#   §5 A valid JWT for a bound email is served — the happy path.
+#   §6 A valid JWT for an unbound email is a 403, naming the fix.
+#   §7 An invalid JWT is a 401 — the server rejects it before resolving.
+#   §8 No JWT at all is a 401 — there is no ambient identity.
+#   §9 Nothing above provisioned anything new.
+#  §10 SINGLE-TENANT MODE IS UNAFFECTED — no JWT is required, no email is
+#      checked. This is the only mode production MUST run unless the full
+#      Access setup is in place.
 #
 # Prod-safe: its own image tag, container name, temp directory and port. It
 # touches no pkdump-* unit, no pkdump-*-data volume, no bucket.
@@ -48,8 +44,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FIXTURES="${REPO_DIR}/tests/ui/fixtures"
 
+# The shipped image, built here or — when deploy/ci.sh already built it once for
+# every gate in the run — tagged from that one. See deploy/image-lib.sh.
 # shellcheck source=deploy/image-lib.sh
 . "${REPO_DIR}/deploy/image-lib.sh"
+# Bounded condition polling, in one place for every harness (pd-86er).
 # shellcheck source=tests/lib/wait.sh
 . "${REPO_DIR}/tests/lib/wait.sh"
 
@@ -59,10 +58,14 @@ FIXTURES="${REPO_DIR}/tests/ui/fixtures"
 SUFFIX="${PDH_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)}"
 IMAGE="localhost/pkdump:handles-${SUFFIX}"
 APP_CTR="pkdump-handles-${SUFFIX}"
+# The host port is PODMAN'S to pick (`-p 127.0.0.1::8080`), read back off the
+# container by `start_app`.
 PORT=""
 
 WORK=${WORK:-$(mktemp -d /tmp/pd-handles.XXXXXX)}
 DATA="$WORK/data"
+JWKS_DIR="$WORK/jwks"
+JWKS_PID=""
 
 pass=0
 fail=0
@@ -85,16 +88,15 @@ cleanup() {
 		return
 	fi
 	podman rm -f --ignore "$APP_CTR" >/dev/null 2>&1 || true
-	# The image too (pd-5aba). The tag carries the checkout hash, so every
-	# worktree that ever ran this gate left one behind and nothing collected
-	# them. `rmi -f` on a name an image shares with others only UNTAGS it, so
-	# under PKDUMP_PREBUILT_IMAGE the gates running beside this one keep theirs.
+	[[ -n "$JWKS_PID" ]] && kill "$JWKS_PID" 2>/dev/null || true
+	# The image too (pd-5aba).
 	podman rmi -f "$IMAGE" >/dev/null 2>&1 || true
 	rm -rf "$WORK"
 }
 trap cleanup EXIT
 
-# The shipped image with the shipped ENTRYPOINT and PKDUMP_HOME.
+# The shipped image with the shipped ENTRYPOINT and PKDUMP_HOME; the only thing
+# added is the env vars that switch resolution on.
 start_app() { # start_app [-e VAR=VAL ...]
 	podman rm -f --ignore "$APP_CTR" >/dev/null 2>&1 || true
 	podman run -d --name "$APP_CTR" -p "127.0.0.1:${PDH_PORT:-}:8080" \
@@ -144,42 +146,137 @@ require_up() { # require_up <label>
 
 pkdump() { podman run --rm -v "${DATA}:/data:Z" --entrypoint pkdump "$IMAGE" "$@"; }
 
+# The Access JWT, passed in the header Cloudflare injects on proxied requests.
+# In a real deployment the browser carries a CF_Authorization cookie; in this
+# test we use the header form which the server accepts equally.
+api_status() { # api_status <jwt>
+	curl -s -o /dev/null -w '%{http_code}' \
+		-H "Cf-Access-Jwt-Assertion: $1" \
+		"http://127.0.0.1:${PORT}/api/collection"
+}
+api_status_anonymous() {
+	curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/api/collection"
+}
+
+tenant_files() { ls "${DATA}/tenants" 2>/dev/null | grep '\.sqlite$' | sort; }
+
 log "1. the shipped image"
 pkdump_image_ensure "$IMAGE" "$REPO_DIR" >/dev/null
 echo "  $IMAGE"
 
-log "2. a data directory with alice provisioned"
+log "2. a data directory provisioned with two users"
 mkdir -p "$DATA"
 cp "${FIXTURES}/shared.sqlite" "${DATA}/shared.sqlite"
 pkdump tenant create alice >/dev/null
-check "alice is registered" "1" \
+pkdump tenant create bob >/dev/null
+pkdump tenant detach bob --yes >/dev/null
+# An unregistered database in tenants/ — the registry is the only lookup path,
+# so a file with no row cannot be reached regardless of its name.
+cp "${FIXTURES}/collection.sqlite" "${DATA}/tenants/ghost.sqlite"
+check "one registered active user" "1" \
 	"$(sqlite3 "file:${DATA}/registry.sqlite?mode=ro" \
 		"SELECT count(*) FROM user WHERE state = 'active' AND handle = 'alice';")"
+check "bob's row survives, detached" "detached" \
+	"$(sqlite3 "file:${DATA}/registry.sqlite?mode=ro" \
+		"SELECT state FROM user WHERE handle = 'bob';")"
+BEFORE_FILES="$(tenant_files)"
 
-log "3. multi-tenant ON, no Access env vars → refuses to start"
-# PKDUMP_USER is still needed: `pkdump serve` resolves the process's own
-# collection up front regardless of multi-tenant mode. Without it the
-# container exits for a different reason before we can assert the Access guard.
+log "3. JWKS server started; alice's email bound in the registry"
+# tests/lib/test_jwks.py generates a fresh RSA-2048 key pair, writes its JWKS
+# to JWKS_DIR/jwks.json, and serves it at /cdn-cgi/access/certs on a random
+# port. It binds to 0.0.0.0 so the app container can reach it via
+# host.containers.internal (set by Podman in the container's /etc/hosts).
+mkdir -p "$JWKS_DIR"
+python3 "${REPO_DIR}/tests/lib/test_jwks.py" serve "$JWKS_DIR" &
+JWKS_PID=$!
+for i in $(seq 1 40); do
+	[[ -f "$JWKS_DIR/jwks.json" ]] && break
+	sleep 0.1
+done
+check "JWKS server is ready" "1" "$([[ -f "$JWKS_DIR/jwks.json" ]] && echo 1 || echo 0)"
+JWKS_PORT=$(python3 -c "import json; print(json.load(open('$JWKS_DIR/jwks.json'))['port'])")
+JWKS_AUD=$(python3 -c "import json; print(json.load(open('$JWKS_DIR/jwks.json'))['aud'])")
+JWKS_ISSUER=$(python3 -c "import json; print(json.load(open('$JWKS_DIR/jwks.json'))['issuer'])")
+# The URL the container uses: host.containers.internal is Podman's name for the
+# host machine, present in every container's /etc/hosts.
+JWKS_URL="http://host.containers.internal:${JWKS_PORT}/cdn-cgi/access/certs"
+
+# Bind alice's email — this is the runtime step that connects an authenticated
+# identity to a tenant. Without it, alice's JWT would get a 403.
+pkdump tenant identity add alice --email alice@example.com >/dev/null
+check "alice's email is bound" "1" \
+	"$(sqlite3 "file:${DATA}/registry.sqlite?mode=ro" \
+		"SELECT count(*) FROM user_identity ui JOIN user u USING (database_id)
+		 WHERE u.handle='alice' AND ui.email='alice@example.com';")"
+
+# Issue test tokens. ALICE_TOKEN is signed by the test JWKS key and carries
+# alice@example.com; UNBOUND_TOKEN carries an email nobody is registered under.
+ALICE_TOKEN=$(python3 "${REPO_DIR}/tests/lib/test_jwks.py" issue "$JWKS_DIR" alice@example.com)
+UNBOUND_TOKEN=$(python3 "${REPO_DIR}/tests/lib/test_jwks.py" issue "$JWKS_DIR" unbound@example.com)
+
+log "4. multi-tenant WITHOUT Access vars refuses to start"
+# The guard (check_multitenant_access) requires PKDUMP_ACCESS_TEAM_DOMAIN and
+# PKDUMP_ACCESS_AUD at startup. Without them the server exits immediately —
+# §5 onwards can only be reached by testing AGAINST this guard, not by removing
+# it. An escape hatch that nobody ever tests closed is indistinguishable from a
+# guard that has been deleted.
 start_app -e PKDUMP_MULTITENANT=1 -e PKDUMP_USER=alice
 check "it never listens" "down" "$(wait_up)"
 check "the process exited non-zero" "exited/1" "$(app_state)"
-check "and named the first required env var" "1" \
-	"$(podman logs "$APP_CTR" 2>&1 | grep -c 'PKDUMP_ACCESS_TEAM_DOMAIN' || true)"
+check "and said that Cloudflare Access was missing" "1" \
+	"$(podman logs "$APP_CTR" 2>&1 | grep -c 'Cloudflare Access' || true)"
 stop_app
 
-log "4. SINGLE-TENANT MODE IS UNAFFECTED"
-# Production's mode — no Access env vars, one tenant, the header is not read.
-# The access layer installs a synthetic placeholder identity (db-ae5u) so the
-# tenant layer does not fail; Tenants::resolve ignores it in single mode.
+log "5. multi-tenant with Access: a bound email JWT is served"
+# The three Access vars configure the JWT verifier. JWKS_URL points to our
+# test JWKS server, which the container reaches via host.containers.internal.
+# PKDUMP_USER is set even with resolution on: pkdump serve resolves the
+# process's own collection up front either way.
+start_app \
+	-e PKDUMP_MULTITENANT=1 \
+	-e PKDUMP_ACCESS_TEAM_DOMAIN="$JWKS_ISSUER" \
+	-e PKDUMP_ACCESS_AUD="$JWKS_AUD" \
+	-e PKDUMP_ACCESS_JWKS_URL="$JWKS_URL" \
+	-e PKDUMP_USER=alice
+require_up "the server came up with Access configured"
+check "alice's JWT is served" "200" "$(api_status "$ALICE_TOKEN")"
+
+log "6. a valid JWT for an UNBOUND email is a 403"
+# The JWT is correctly signed and not expired; the verifier accepts it. But
+# the email (unbound@example.com) has no binding in the registry, so the
+# resolver answers 403 and names the command that fixes it.
+check "unbound email -> 403" "403" "$(api_status "$UNBOUND_TOKEN")"
+# Verify the 403 names the fix command (not just a generic error).
+UNBOUND_BODY=$(curl -s \
+	-H "Cf-Access-Jwt-Assertion: $UNBOUND_TOKEN" \
+	"http://127.0.0.1:${PORT}/api/collection" || true)
+check "the 403 names the fix" "1" \
+	"$(printf '%s' "$UNBOUND_BODY" | grep -c 'pkdump tenant identity add' || true)"
+
+log "7. an INVALID JWT is a 401"
+# The server rejects the token before it ever reaches the tenant resolver.
+check "invalid JWT -> 401" "401" "$(api_status not.a.valid.jwt)"
+
+log "8. no JWT at all is a 401 — there is no ambient identity"
+check "anonymous -> 401" "401" "$(api_status_anonymous)"
+
+log "9. nothing above provisioned anything new"
+check "the tenant databases are exactly the ones we made" "$BEFORE_FILES" \
+	"$(tenant_files)"
+check "and nothing was created beside the catalog" "absent" \
+	"$([ -e "${DATA}/collection.sqlite" ] && echo present || echo absent)"
+
+log "10. SINGLE-TENANT MODE IS UNAFFECTED — no JWT is required"
+# Production's mode. In single-tenant mode the access layer is not wired at all:
+# there is no PKDUMP_MULTITENANT=1 and no Access config. Requests without a JWT
+# — or with an invalid one — are served normally. This is the gate that must
+# not be changed by improvements to multi-tenant security.
+stop_app
 start_app -e PKDUMP_USER=alice
-require_up "the server came up with no Access configured"
-check "api answers without a JWT" "200" \
-	"$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/api/collection")"
-# A leftover x-pkdump-tenant header is silently ignored — does not flip the
-# status to 400 or 401.
-check "a leftover tenant header is ignored" "200" \
-	"$(curl -s -o /dev/null -w '%{http_code}' \
-		-H 'x-pkdump-tenant: mallory' "http://127.0.0.1:${PORT}/api/collection")"
+require_up "the server came up in single-tenant mode"
+check "anonymous request is served" "200" "$(api_status_anonymous)"
+check "invalid JWT header is ignored" "200" "$(api_status not.a.valid.jwt)"
+check "alice's JWT header is also fine but unneeded" "200" "$(api_status "$ALICE_TOKEN")"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"
@@ -188,5 +285,6 @@ echo "  ${pass} passed, ${fail} failed"
 	podman logs "$APP_CTR" 2>&1 | tail -30 | sed 's/^/  /'
 	exit 1
 }
-echo "  PASS — multi-tenant refuses without Access config, and single-tenant mode"
-echo "         serves /api/ without a JWT."
+echo "  PASS — Access config required for multi-tenant, JWT verified against JWKS,"
+echo "         bound email is served, unbound is 403, invalid is 401, and"
+echo "         single-tenant mode requires no auth at all."

@@ -269,5 +269,52 @@ ok "a gate that reset --hard with no throwaway dir would be caught" \
    "$(grep -qE "$DESTRUCTIVE" "$FAKE" && ! grep -q 'mktemp -d' "$FAKE" && echo caught || echo missed)" "caught"
 
 echo ""
+echo "== §11 a worktree deleted externally mid-run is detected  (db-0ckr) =="
+# gate.sh's verdict() removes the gate worktree on EVERY exit path — including
+# lock-timeout, where the process timed out before acquiring the lock and
+# therefore never created or owned the tree. When a second gate times out and
+# calls verdict(), it removes the tree the lock holder is actively running in.
+#
+# The signature: HEAD disappears (to '<none>') with no reflog entries appended,
+# because the whole .git directory is gone. The existing pd-vnbc path gives
+# confusing output for this case — no reflog entries means nothing to read, and
+# "worktree moved" is technically true but points at the wrong kind of fix.
+mkrepo "$TMP/del-base" > /dev/null 2>&1
+git -C "$TMP/del-base" worktree add -q "$TMP/del-wt" HEAD > /dev/null 2>&1
+# Make a commit so the linked worktree's reflog definitely has content at arm time.
+git -C "$TMP/del-wt" commit -q --allow-empty -m "wt-setup" > /dev/null 2>&1
+DELETED="$(
+    cd "$TMP/del-wt" || exit 1
+    . "${REPO_DIR}/deploy/ci-treewatch.sh"
+    pkdump_treewatch_begin > /dev/null 2>&1
+    # Simulate gate.sh verdict() removing the worktree admin directory (which
+    # holds the per-worktree reflog). The log file lives in the base repo's
+    # .git/worktrees/<name>/ directory, so it is always deletable regardless
+    # of whether the working tree directory itself is the current CWD.
+    rm -f "$PKDUMP_TREEWATCH_LOG" 2>/dev/null
+    pkdump_treewatch_check "during cargo test" > /dev/null 2>&1 && echo unmoved || echo moved
+)"
+ok "a worktree whose log was removed externally is detected as moved" "$DELETED" "moved"
+
+# The diagnostic for this case must be distinct from the pd-vnbc rebase message
+# and must name the likely cause so the operator acts on the right thing.
+DELETED_DIAG="$(
+    mkrepo "$TMP/del2-base" > /dev/null 2>&1
+    git -C "$TMP/del2-base" worktree add -q "$TMP/del2-wt" HEAD > /dev/null 2>&1
+    git -C "$TMP/del2-wt" commit -q --allow-empty -m "wt-setup" > /dev/null 2>&1
+    cd "$TMP/del2-wt" || exit 1
+    . "${REPO_DIR}/deploy/ci-treewatch.sh"
+    pkdump_treewatch_begin > /dev/null 2>&1
+    rm -f "$PKDUMP_TREEWATCH_LOG" 2>/dev/null
+    pkdump_treewatch_check "during cargo test" 2>&1 || true
+)"
+ok "the diagnostic names worktree deletion as the cause" \
+   "$(grep -qiF 'worktree was deleted' <<<"$DELETED_DIAG" && echo yes || echo no)" "yes"
+ok "the diagnostic names the gate coordination mechanism" \
+   "$(grep -qiF 'gate process' <<<"$DELETED_DIAG" && echo yes || echo no)" "yes"
+ok "the worktree-deleted path does not raise the rebase (pd-vnbc) alarm" \
+   "$(grep -qF 'pd-vnbc' <<<"$DELETED_DIAG" && echo yes || echo no)" "no"
+
+echo ""
 if [ "$FAILS" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "$FAILS FAILED"; exit 1

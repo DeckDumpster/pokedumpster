@@ -21,3 +21,7 @@ rusqlite.workspace = true
 # Needed to build a minimal valid bulk tarball for the fake upstream in tail_failure tests.
 flate2.workspace = true
 tar.workspace = true
+# tail_failure.rs pulls in pkdump-ingest/tests/support/mod.rs by path, which
+# re-exports from pkdump_ingest::test_upstream — that module is gated behind
+# the test-support feature and is absent without it.
+pkdump-ingest = { workspace = true, features = ["test-support"] }

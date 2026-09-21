@@ -323,7 +323,9 @@ pkdump_units_install() {
 
     local existing_port port_mapping
     if [ "$port" = "0" ] && [ -f "${quadlet_dir}/${service_name}.container" ]; then
-        existing_port="$(sed -n 's|^PublishPort=\([0-9]\{1,\}\):8080$|\1|p' \
+        existing_port="$(sed -n \
+            -e 's|^PublishPort=\([0-9]\{1,\}\):8080$|\1|p' \
+            -e 's|^PublishPort=127\.0\.0\.1:\([0-9]\{1,\}\):8080$|\1|p' \
             "${quadlet_dir}/${service_name}.container" | head -1)"
         if [ -n "$existing_port" ]; then
             port="$existing_port"

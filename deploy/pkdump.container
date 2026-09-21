@@ -23,7 +23,12 @@ Environment=PKDUMP_HOME=/data
 # PKDUMP_ACCESS_JWKS_URL. See "Configuring Access for a deployment" in
 # deploy/TENANTS.md, and deploy/setup.sh for the scaffold command.
 EnvironmentFile=%h/.config/pkdump/{{INSTANCE}}/access.env
-PublishPort={{PORT}}:8080
+# Bind to loopback only: a Cloudflare Access logout revokes the session at
+# the edge, but the server verifies tokens locally (no revocation check) and
+# accepts them until exp. Binding to 127.0.0.1 closes the path that bypasses
+# the edge — only the cloudflared tunnel (loopback) reaches the container.
+# (db-a5g0)
+PublishPort=127.0.0.1:{{PORT}}:8080
 Volume=pkdump-{{INSTANCE}}-data:/data:Z
 AutoUpdate=local
 

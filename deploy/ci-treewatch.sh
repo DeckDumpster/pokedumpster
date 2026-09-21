@@ -179,7 +179,10 @@ pkdump_treewatch_check() {
     # The most common cause: a concurrent gate process timed out waiting for
     # the worktree lock, then called verdict() on exit, which removed the tree
     # without checking that it was the lock holder and the tree's owner.
-    # Scar: db-0ckr. The fix belongs in the gate machinery, not here.
+    # Scar: db-0ckr. The fix belongs in gate.sh: add GATE_TREE_OWNED=1 after
+    # a successful flock AND after git worktree add, then guard verdict()'s
+    # removal with [ -n "${GATE_TREE_OWNED:-}" ]. Filed upstream as
+    # DeckDumpster/spira#171; tracked locally in spira-local-deviations row 65.
     if [ ! -f "$PKDUMP_TREEWATCH_LOG" ] && [ "$PKDUMP_TREEWATCH_SIZE" -gt 0 ]; then
         diag ""
         diag "!! ================================================================"

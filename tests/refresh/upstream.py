@@ -72,6 +72,9 @@ class Upstream(http.server.BaseHTTPRequestHandler):
             self._reply(200, b'{"data":[],"page":1,"pageSize":250,"count":0,"totalCount":0}')
         elif PTCGIO_SETS_DOWN.match(path):
             self._reply(502, b'{"error":"upstream is having 2026-08-11"}')
+        elif path == "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master":
+            # land_bulk lands these bytes without unpacking; any payload lands.
+            self._reply(200, b"{}")
         else:
             self._reply(
                 404,

@@ -433,6 +433,48 @@ mod raw_coverage {
          "publishedOn":"2023-06-16"}],"success":true,"errors":[]}"#;
     const EMPTY: &str = r#"{"results":[],"success":true,"errors":[]}"#;
 
+    // Minimal sets/cards in the pokemon-tcg-data repo format (bare JSON arrays,
+    // camelCase, no API envelope).  The set id must match SETS so night-one's
+    // derive populates the catalog and night-two finds it already there.
+    const BULK_SETS: &str = r#"[{"id":"sv3pt5","name":"151",
+        "series":"Scarlet & Violet","printedTotal":165,"total":207,
+        "ptcgoCode":"MEW","releaseDate":"2023/09/22"}]"#;
+    const BULK_CARDS: &str = r#"[{"id":"sv3pt5-4","name":"Charmander",
+        "supertype":"Pokémon","subtypes":["Basic"],"hp":"60",
+        "types":["Fire"],"number":"4","rarity":"Common"}]"#;
+
+    /// A minimal tar.gz that `download_and_import` can unpack: one top-level
+    /// directory containing `sets/en.json` and `cards/en/sv3pt5.json`.
+    fn build_bulk_tarball() -> Vec<u8> {
+        use flate2::{Compression, write::GzEncoder};
+
+        let gz_buf = Vec::new();
+        let enc = GzEncoder::new(gz_buf, Compression::default());
+        let mut builder = tar::Builder::new(enc);
+
+        let add = |b: &mut tar::Builder<GzEncoder<Vec<u8>>>, path: &str, data: &[u8]| {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            b.append_data(&mut header, path, std::io::Cursor::new(data))
+                .expect("tar append");
+        };
+
+        add(
+            &mut builder,
+            "pokemon-tcg-data-master/sets/en.json",
+            BULK_SETS.as_bytes(),
+        );
+        add(
+            &mut builder,
+            "pokemon-tcg-data-master/cards/en/sv3pt5.json",
+            BULK_CARDS.as_bytes(),
+        );
+        let enc = builder.into_inner().expect("tar finish");
+        enc.finish().expect("gz finish")
+    }
+
     /// Both upstreams on one server — the TCGCSV origin is the root, the
     /// pokemontcg.io one is `/v2`, and the bulk tarball is under
     /// `/PokemonTCG/...`, exactly as the real hosts are shaped.
@@ -444,11 +486,11 @@ mod raw_coverage {
             "/v2/sets" => Reply::ok(SETS),
             "/v2/cards" => Reply::ok(CARDS),
             p if p.ends_with("/products") || p.ends_with("/prices") => Reply::ok(EMPTY),
-            // The pokemon-tcg-data bulk tarball — landed as bytes, never
-            // parsed during a `pkdump data refresh` run.
+            // The pokemon-tcg-data bulk tarball: a real tar.gz so the derive
+            // can unpack and import it on night one.
             p if p.contains("pokemon-tcg-data") => Reply {
                 status: 200,
-                body: b"bulk-placeholder".to_vec(),
+                body: build_bulk_tarball(),
                 content_type: "application/x-tar",
             },
             other => Reply::status(

@@ -151,18 +151,24 @@ and a night that publishes none lands none. `Dataset::Cards` is
 nightly derive is green because it is INCREMENTAL: it updates the catalog it is
 given, which already holds every set, so it asks for no cards and misses none.
 
-**The bulk corpus closes the cold-rebuild gap.** `raw/source=pokemon-tcg-data/
-dataset=bulk/` now lands on every nightly refresh — one GET of the
-`PokemonTCG/pokemon-tcg-data` GitHub tarball (2.65 MB on the wire, 26.0 MB
-uncompressed, 177 `cards/en/*.json` files across all sets, 0.54 s). A cold
-derive replays it instead of sweeping the pokemontcg.io API. The pokemontcg.io
-tail's remaining job is the 2–3 month lag window: sets published too recently
-to appear in the bulk repo are still fetched set-by-set and landed under
-`pokemontcgio/cards` the night they appear. Bead `db-m1sd` wires the derive to
-read from the bulk partition instead of the API; until it lands the bytes
-accumulate and the replay path is unused.
+**A cold derive does not need the pokemontcg.io cards dataset** (`db-9ogb`,
+`db-m1sd`, `db-5tgs`). The nightly refresh now also lands the
+`pokemon-tcg-data` bulk corpus (`raw/source=pokemon-tcg-data/dataset=bulk/`),
+and the derive processes it before the pokemontcg.io tail — so on a catalog
+that starts empty, `missing_sets` returns 0 after the bulk import and the
+per-set card URLs are never requested. `db-5tgs` is the acceptance gate: a
+cold derive into an empty catalog is row-identical to a warm one. The lake can
+now rebuild the catalog from scratch; `deploy/RESTORE.md` Scenario C step 3
+depends on this.
 
-#### What the sweep would cost, measured
+What would have gone wrong without the bulk corpus: a derive into an EMPTY
+catalog would have been a refusal. `missing_sets` would return all 174 sets,
+the tail would ask for `/v2/cards?q=set.id:…`, and `RawReplay::missing` is
+fatal with no fallback (`pd-6yql` removed the fallback deliberately). The
+sections below measure what a pokemontcg.io sweep to close that gap would have
+cost — the path evaluated and not taken.
+
+#### What a pokemontcg.io card sweep would have cost (the path not taken)
 
 Not estimated. On 2026-09-04 every request `land_tail` would make for a
 whole-catalog sweep was made for real against `api.pokemontcg.io`, mirroring

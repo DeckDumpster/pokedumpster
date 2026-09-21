@@ -223,8 +223,13 @@ log "4. multi-tenant WITHOUT Access vars refuses to start"
 start_app -e PKDUMP_MULTITENANT=1 -e PKDUMP_USER=alice
 check "it never listens" "down" "$(wait_up)"
 check "the process exited non-zero" "exited/1" "$(app_state)"
+# ANCHOR ON THE REFUSAL LINE, NOT THE PHRASE. check_multitenant_access bails with
+# a multi-line message that says "Cloudflare Access" on two of its lines, so
+# `grep -c 'Cloudflare Access'` scores 2 for a CORRECT refusal and this check
+# failed on green code (PR #145). The sentence below appears exactly once and is
+# the one the check is named after.
 check "and said that Cloudflare Access was missing" "1" \
-	"$(podman logs "$APP_CTR" 2>&1 | grep -c 'Cloudflare Access' || true)"
+	"$(podman logs "$APP_CTR" 2>&1 | grep -c 'refusing to start: multi-tenant resolution is on' || true)"
 stop_app
 
 log "5. multi-tenant with Access: a bound email JWT is served"

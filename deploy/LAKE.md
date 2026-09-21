@@ -122,7 +122,8 @@ column is `total_bytes` out of each `_manifest.json`, the bucket column is what
 | `tcgcsv/groups` | 2 | 135 kB | 21 kB |
 | `pokemontcgio/sets` | 1 | 58.8 kB | 6.7 kB |
 | `pokemontcgio/cards` | — | — | — |
-| **one night** | **1,353** | **85.4 MB** | **7.42 MB** |
+| `pokemon-tcg-data/bulk` | 1 | 26.0 MB | **2.65 MB** |
+| **one night** | **1,354** | **111.4 MB** | **10.07 MB** |
 
 `pd-fet2` measured 2026-08-11 at 1,345 parts / 85.3 MB / 7.40 MB. Three weeks
 of new TCGCSV groups moved it by 0.3%, so this is a stable figure rather than
@@ -136,7 +137,7 @@ wrong simplification: a group's product list is re-fetched whole each run
 whether or not it moved. And the bill is not really storage — 1,357 objects a
 night is ~495k PUTs/year, about $2.48, which is more than the bytes cost.
 
-### The empty row: `pokemontcgio/cards` has never landed
+### The `pokemontcgio/cards` row: covered by the bulk corpus
 
 That dash is not a quiet night. **`raw/source=pokemontcgio/dataset=cards/`
 does not exist in the bucket, on any date** — the whole listing under
@@ -150,13 +151,47 @@ and a night that publishes none lands none. `Dataset::Cards` is
 nightly derive is green because it is INCREMENTAL: it updates the catalog it is
 given, which already holds every set, so it asks for no cards and misses none.
 
-What that costs is one thing and it is the thing the lake was bought for: a
-derive into an EMPTY catalog cannot be replayed from any partition here.
-`missing_sets` would return all 174 sets, the tail would ask for
-`/v2/cards?q=set.id:…`, and `RawReplay::missing` is fatal with no fallback
-(`pd-6yql` removed the fallback deliberately). The lake can keep this catalog
-current and cannot rebuild one. Closing that is `pd-432m`; `pd-v1ca` was filed
-to close it, and its commit never reached `master`.
+**The bulk corpus closes the cold-rebuild gap.** `raw/source=pokemon-tcg-data/
+dataset=bulk/` now lands on every nightly refresh — one GET of the
+`PokemonTCG/pokemon-tcg-data` GitHub tarball (2.65 MB on the wire, 26.0 MB
+uncompressed, 177 `cards/en/*.json` files across all sets, 0.54 s). A cold
+derive replays it instead of sweeping the pokemontcg.io API. The pokemontcg.io
+tail's remaining job is the 2–3 month lag window: sets published too recently
+to appear in the bulk repo are still fetched set-by-set and landed under
+`pokemontcgio/cards` the night they appear. Bead `db-m1sd` wires the derive to
+read from the bulk partition instead of the API; `db-5tgs` proves it.
+
+#### The cold-rebuild proof (`db-5tgs`)
+
+`row_identical.rs::cold_rebuild_from_raw_is_row_identical_to_warm_and_no_pokemontcgio_cards_needed`
+is the acceptance gate. The key property it establishes: the warm `online()` run
+imports the bulk corpus FIRST so `missing_sets` returns 0, meaning
+pokemontcg.io card URLs are **never fetched and never land in `raw/`**. The cold
+derive — starting from an empty catalog, zero rows in `cards` or `sets`, verified
+before the derive runs — must then rebuild from bulk + TCGCSV alone. If the bulk
+import were broken the derive would call `missing_sets`, get back the full set
+list, and try to replay their card URLs; those URLs are not in `raw/`, the gap
+is fatal, and the process exits non-zero. There is no way to reach the diff
+assertion on a broken bulk path.
+
+The gate also checks that the fixture upstream receives zero new requests during
+the cold derive: every URL the derive needs is replayed from `raw/` or is
+irrelevant, and any request that arrived would be for a URL the replay could
+not supply — which would already have killed the derive before this check.
+
+Over the fixture (2 sets, 3 cards, 5 prices):
+
+| side | `cards` | `sets` | `prices` | wall clock |
+| --- | ---: | ---: | ---: | ---: |
+| warm (online) | 3 | 2 | 5 | — |
+| cold (derive from raw) | 3 | 2 | 5 | **0.79 s** |
+
+Row-identical: `h.diff()` exits 0, `raw_derivation` excluded and named.
+
+The fixture is smaller than prod (3 cards vs 47,671; 2 sets vs 630), but the
+proof does not rest on scale — it rests on the card URLs being absent from
+`raw/`. At fixture scale, as at prod scale, the bulk corpus is the only source
+of card data in the partition.
 
 #### What the sweep would cost, measured
 

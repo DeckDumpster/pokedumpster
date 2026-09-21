@@ -41,12 +41,43 @@ use std::sync::Arc;
 use pkdump_lake::{Dataset, DirStore, RawLanding, RawZone, Source};
 use support::{FakeUpstream, Reply};
 
+/// A minimal valid tar.gz served for the bulk corpus endpoint.
+///
+/// `download_and_import` unpacks this as a tarball; `{}` would fail the gzip
+/// decoder. The inner `sets/en.json` is an empty array so the bulk import
+/// contributes 0 sets — the tail-failure tests are about ordering and partial
+/// runs, not about the bulk corpus itself.
+fn empty_bulk_tarball() -> Vec<u8> {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+
+    let buf = Vec::new();
+    let enc = GzEncoder::new(buf, Compression::default());
+    let mut ar = tar::Builder::new(enc);
+    let data = b"[]";
+    let mut hdr = tar::Header::new_gnu();
+    hdr.set_size(data.len() as u64);
+    hdr.set_mode(0o644);
+    hdr.set_cksum();
+    ar.append_data(
+        &mut hdr,
+        "pokemon-tcg-data-master/sets/en.json",
+        data.as_ref(),
+    )
+    .expect("append tar entry");
+    ar.into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gz")
+}
+
 /// `derive` reads the origin and the retry budget from the environment,
 /// which is process-wide. These tests set both, so they take turns.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Serve both upstreams from one origin. TCGCSV lives under `/<category>/…`
 /// and pokemontcg.io under `/sets` and `/cards`, so the paths never collide.
+/// The pokemon-tcg-data tarball lands under its own path.
 fn route(target: &str, tail: fn(&str) -> Reply) -> Reply {
     match target.split('?').next().unwrap_or(target) {
         "/3/groups" => Reply::ok(
@@ -69,6 +100,15 @@ fn route(target: &str, tail: fn(&str) -> Reply) -> Reply {
                             "lowPrice":100.0,"midPrice":250.0,"highPrice":900.0,
                             "marketPrice":312.5,"directLowPrice":275.0}]}"#,
         ),
+        // The bulk corpus. `download_and_import` unpacks this as a tar.gz, so
+        // it must be a valid archive. An empty set list is fine: the
+        // tail-failure tests care about ordering and partial runs, not sets
+        // from the bulk corpus.
+        "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master" => Reply {
+            status: 200,
+            body: empty_bulk_tarball(),
+            content_type: "application/gzip",
+        },
         other => tail(other),
     }
 }
@@ -91,6 +131,7 @@ fn derive_landing(
     unsafe {
         std::env::set_var("PKDUMP_TCGCSV_BASE_URL", upstream.base_url());
         std::env::set_var("PKDUMP_POKEMONTCG_BASE_URL", upstream.base_url());
+        std::env::set_var("PKDUMP_POKEMON_TCG_DATA_BASE_URL", upstream.base_url());
         std::env::set_var("PKDUMP_HTTP_RETRY_ATTEMPTS", attempts);
         std::env::set_var("PKDUMP_HTTP_RETRY_BASE_MS", "1");
     }
@@ -110,6 +151,7 @@ fn derive_landing(
     unsafe {
         std::env::remove_var("PKDUMP_TCGCSV_BASE_URL");
         std::env::remove_var("PKDUMP_POKEMONTCG_BASE_URL");
+        std::env::remove_var("PKDUMP_POKEMON_TCG_DATA_BASE_URL");
         std::env::remove_var("PKDUMP_HTTP_RETRY_ATTEMPTS");
         std::env::remove_var("PKDUMP_HTTP_RETRY_BASE_MS");
     }
@@ -322,6 +364,7 @@ fn land_against(
     unsafe {
         std::env::set_var("PKDUMP_TCGCSV_BASE_URL", upstream.base_url());
         std::env::set_var("PKDUMP_POKEMONTCG_BASE_URL", upstream.base_url());
+        std::env::set_var("PKDUMP_POKEMON_TCG_DATA_BASE_URL", upstream.base_url());
         std::env::set_var("PKDUMP_HTTP_RETRY_ATTEMPTS", attempts);
         std::env::set_var("PKDUMP_HTTP_RETRY_BASE_MS", "1");
     }
@@ -353,6 +396,7 @@ fn land_against(
     unsafe {
         std::env::remove_var("PKDUMP_TCGCSV_BASE_URL");
         std::env::remove_var("PKDUMP_POKEMONTCG_BASE_URL");
+        std::env::remove_var("PKDUMP_POKEMON_TCG_DATA_BASE_URL");
         std::env::remove_var("PKDUMP_HTTP_RETRY_ATTEMPTS");
         std::env::remove_var("PKDUMP_HTTP_RETRY_BASE_MS");
     }

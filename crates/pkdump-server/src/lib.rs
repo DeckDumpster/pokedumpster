@@ -468,12 +468,7 @@ mod tests {
     }
 
     /// Build a request, optionally injecting a JWT and a body.
-    fn request(
-        method: &str,
-        uri: &str,
-        token: Option<&str>,
-        body: Option<&str>,
-    ) -> Request<Body> {
+    fn request(method: &str, uri: &str, token: Option<&str>, body: Option<&str>) -> Request<Body> {
         let mut b = Request::builder().method(method).uri(uri);
         if let Some(t) = token {
             b = b.header(access::JWT_HEADER, t);
@@ -750,12 +745,7 @@ mod tests {
         assert_eq!(bad.status(), StatusCode::NOT_FOUND);
 
         let deleted = router
-            .oneshot(request(
-                "DELETE",
-                "/api/collection/1",
-                Some(&tok),
-                None,
-            ))
+            .oneshot(request("DELETE", "/api/collection/1", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
@@ -809,12 +799,7 @@ mod tests {
         assert!(body_string(found).await.contains("Bulbasaur"));
 
         let missing = router
-            .oneshot(request(
-                "GET",
-                "/api/card/sv3pt5/999",
-                Some(&tok),
-                None,
-            ))
+            .oneshot(request("GET", "/api/card/sv3pt5/999", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
@@ -838,12 +823,7 @@ mod tests {
 
         let owned = router
             .clone()
-            .oneshot(request(
-                "GET",
-                "/api/collection/search",
-                Some(&tok),
-                None,
-            ))
+            .oneshot(request("GET", "/api/collection/search", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(owned.status(), StatusCode::OK);
@@ -1132,7 +1112,12 @@ mod tests {
 
         let created = router
             .clone()
-            .oneshot(request("POST", "/api/collection", Some(&alice_tok), Some(ADD_CARD)))
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some(&alice_tok),
+                Some(ADD_CARD),
+            ))
             .await
             .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
@@ -1191,7 +1176,12 @@ mod tests {
 
         let created = router
             .clone()
-            .oneshot(request("POST", "/api/collection", Some(&tok), Some(ADD_CARD)))
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some(&tok),
+                Some(ADD_CARD),
+            ))
             .await
             .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
@@ -1269,6 +1259,36 @@ mod tests {
     fn single_tenant_is_unaffected_by_access_config() {
         check_multitenant_access(false, false).unwrap();
         check_multitenant_access(false, true).unwrap();
+    }
+
+    /// Single-tenant mode without Access configured is the production shape.
+    /// The access layer must not block /api/ requests when `state.access` is
+    /// `None` — it installs a synthetic placeholder identity so `tenant::layer`
+    /// can call `access::current()` without error; `Tenants::resolve` ignores
+    /// it in single-tenant mode.
+    #[tokio::test]
+    async fn single_tenant_without_access_serves_api() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = seed(dir.path());
+        let user_db = dir.path().join("tenants").join("collection.sqlite");
+        pkdump_db::open_user(&user_db).unwrap();
+        let tenants = Tenants::single("collection", user_db, shared.clone()).unwrap();
+        // access: None — the production single-tenant shape.
+        let router = router_for(dir.path(), &shared, tenants, None);
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/collection")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "single-tenant mode with no Access config must serve /api/ routes"
+        );
     }
 
     #[tokio::test]

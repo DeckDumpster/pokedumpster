@@ -283,7 +283,6 @@ tokio::task_local! {
 }
 
 /// The identity verified for the request being served on this task.
-#[allow(dead_code)]
 pub(crate) fn current() -> Result<VerifiedIdentity, AppError> {
     CURRENT.try_with(VerifiedIdentity::clone).map_err(|_| {
         AppError::internal(
@@ -369,17 +368,28 @@ fn extract_token(req: &axum::http::request::Parts) -> Option<String> {
 /// Middleware: verify the Cloudflare Access JWT, then run the rest of the
 /// request with the identity in scope. Applied to `/api` as a `route_layer`.
 ///
-/// When `state.access` is `None` (Access not configured), the request passes
-/// through without authentication. This is the opt-in path: configuring the
-/// three Access env vars enables the layer; leaving them unset disables it.
-/// When the layer IS active, it is completely fail-closed — no token means 401.
+/// When `state.access` is `None` (Access not configured, single-tenant mode
+/// only — `check_multitenant_access` refuses multi-tenant without Access), the
+/// request passes through with a synthetic placeholder identity. The identity
+/// is still placed in scope so `tenant::layer` can call `access::current()`
+/// without error; in single-tenant mode `Tenants::resolve` ignores it.
+///
+/// When the layer IS active it is completely fail-closed — no token means 401.
 pub(crate) async fn layer(
     State(state): State<AppState>,
     request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
     let Some(access) = state.access.as_ref() else {
-        return Ok(next.run(request).await);
+        // No Access config → single-tenant passthrough. Install a placeholder
+        // so `access::current()` in tenant::layer does not fail; the value is
+        // never consulted (Tenants::resolve ignores the identity in single mode).
+        return Ok(CURRENT
+            .scope(
+                VerifiedIdentity::new(String::new(), String::new()),
+                next.run(request),
+            )
+            .await);
     };
     let (parts, body) = request.into_parts();
     let token = extract_token(&parts).ok_or_else(|| {

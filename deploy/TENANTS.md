@@ -306,10 +306,12 @@ up, all in `crates/pkdump-server/src/tenant.rs`:
   Handlers do not pass it, so they cannot pass the wrong one.
 - Opening a tenant connection asserts `pragma_database_list` holds exactly
   `main` = that tenant's file and `shared` = the catalog, and fails otherwise.
-- A request **cannot reach a database without a `VerifiedIdentity`**, because
-  `access::layer` runs before `tenant::layer` (outermost `route_layer` runs
-  first) and `VerifiedIdentity`'s constructor is private to `access` — only a
-  verified Cloudflare Access JWT produces one.
+- A request **cannot reach a database without a `VerifiedIdentity`**: `access::layer`
+  runs before `tenant::layer` (outermost `route_layer` first) and
+  `VerifiedIdentity`'s constructor is private to `access`. In multi-tenant mode a
+  valid Cloudflare JWT is the only source; in single-tenant mode the layer installs a
+  synthetic placeholder that `Tenants::resolve` ignores, so the invariant holds in
+  both modes.
 
 **The email is a lookup key, not a filename.** What the identity carries is an
 *email address*; what a request is served from is `tenants/<database_id>.sqlite`,

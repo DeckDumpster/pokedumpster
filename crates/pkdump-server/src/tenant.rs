@@ -39,9 +39,11 @@
 //!    nothing to thread.
 //! 3. [`assert_isolated`] fails the open unless the connection is wired to
 //!    exactly this tenant's file plus the one read-only shared catalog.
-//! 4. A request cannot reach a database without a [`crate::access::VerifiedIdentity`],
-//!    because [`crate::access::layer`] runs before this layer and its
-//!    constructor is private — only a verified Cloudflare Access JWT produces one.
+//! 4. A request cannot reach a database without a [`crate::access::VerifiedIdentity`]
+//!    in scope: [`crate::access::layer`] always runs first and its constructor is
+//!    private. In multi-tenant mode (Access configured) a valid Cloudflare JWT is the
+//!    only source; in single-tenant mode the layer installs a synthetic placeholder
+//!    that `Tenants::resolve` ignores.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -440,8 +442,9 @@ mod tests {
     fn an_unbound_email_is_forbidden() {
         let dir = tempfile::tempdir().unwrap();
         let (tenants, _, _reg) = provisioned(dir.path(), &[]);
-        let AppError(status, body) =
-            tenants.resolve(&test_identity("unknown@example.com")).unwrap_err();
+        let AppError(status, body) = tenants
+            .resolve(&test_identity("unknown@example.com"))
+            .unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(
             body.contains("pkdump tenant identity add"),
@@ -529,10 +532,11 @@ mod tests {
         )
         .unwrap();
         // Bind a fresh email to the new alice.
-        registry::identity_add(&reg, &second.database_id, "alice2@test.local", None, None)
-            .unwrap();
+        registry::identity_add(&reg, &second.database_id, "alice2@test.local", None, None).unwrap();
 
-        let resolved = tenants.resolve(&test_identity("alice2@test.local")).unwrap();
+        let resolved = tenants
+            .resolve(&test_identity("alice2@test.local"))
+            .unwrap();
         assert_eq!(resolved.as_str(), second.database_id);
         assert_ne!(resolved.as_str(), first.database_id);
     }

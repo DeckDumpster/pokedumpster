@@ -111,5 +111,4 @@ mod tests {
         unsafe { std::env::remove_var(VAR) };
         assert!(!env_opt_in(VAR), "unset must not opt in");
     }
-
 }

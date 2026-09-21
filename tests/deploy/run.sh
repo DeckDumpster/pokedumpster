@@ -643,6 +643,59 @@ check "a second deploy rewrites nothing" "1" \
 check "and leaves no temp files behind" "0" \
 	"$(find "$QUADLET" "$UNITS" -name '.*.new.*' | wc -l)"
 
+# --- Upgrade path: required config absent from an existing instance (db-si0b) --
+#
+# Incident 2026-09-21 (2h 21m): prod predated access.env; setup.sh had never
+# run since the file was introduced; the unit refused to start with
+# EnvironmentFile= mandatory; CI was always green because it builds instances
+# from scratch (db-g6ku).
+#
+# Driven from the EnvironmentFile= declarations in pkdump.container (the app
+# unit whose required config deploy.sh scaffolds — litestream.env and
+# lake.env have separate lifecycle management via setup-lake.sh). A new
+# required file added to pkdump.container is covered the day it lands without
+# anyone extending this test.
+#
+# Seen RED: comment out pkdump_scaffold_access_env in deploy.sh — the
+# "recreated" and "mode 600" checks for access.env fail.
+
+# Build the set of required config files from the app container template.
+# Pre-create each as a placeholder to simulate an existing, configured instance
+# (this decouples the upgrade test from what earlier deploy runs happened to
+# create, so the "recreated" checks are what fail under the red case, not the
+# fixture setup).
+UPGRADE_MISSING=""
+while IFS= read -r raw_path; do
+	expanded="$(printf '%s' "$raw_path" | sed "s|%h|${FAKE_HOME}|g; s|{{INSTANCE}}|prod|g")"
+	mkdir -p "$(dirname "$expanded")"
+	: > "$expanded"
+	rm -f "$expanded"
+	UPGRADE_MISSING="${UPGRADE_MISSING}${expanded}
+"
+done < <(grep -ho 'EnvironmentFile=[^ ]*' "${REPO_DIR}/deploy/pkdump.container" \
+	| sed 's/EnvironmentFile=//; s/^-//' | sort -u)
+
+: > "$SYSCTL_LOG"
+UPGRADE_OUT="$(
+	PATH="${WORK}/deploybin:${ORIG_PATH}" \
+		HOME="$FAKE_HOME" \
+		PKDUMP_TEST_SYSTEMCTL_LOG="$SYSCTL_LOG" \
+		bash "${REPO_DIR}/deploy/deploy.sh" prod 2>&1
+)"
+
+# Every file that was deleted must be back with the correct permissions, and
+# the deploy must have reported writing it.
+while IFS= read -r f; do
+	[ -z "$f" ] && continue
+	fname="$(basename "$f")"
+	check "upgrade: ${fname} recreated" "yes" \
+		"$([ -f "$f" ] && echo yes || echo no)"
+	check "upgrade: ${fname} is mode 600" "600" \
+		"$(stat -c '%a' "$f" 2>/dev/null || echo absent)"
+	check "upgrade: deploy reported writing ${fname}" "1" \
+		"$(printf '%s' "$UPGRADE_OUT" | grep -c "${fname}" || true)"
+done <<< "$UPGRADE_MISSING"
+
 # --- The OTHER image this checkout ships (pd-rn4c) --------------------------
 #
 # `lake/` builds a second image — the PyIceberg runtime the nightly price build

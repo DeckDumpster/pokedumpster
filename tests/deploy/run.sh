@@ -321,6 +321,15 @@ check "setup.sh does not" "0" \
 	"$(grep -c 'pkdump_store_load_config' "${REPO_DIR}/deploy/setup.sh" || true)"
 check "setup.sh scaffolds the knob commented out" "1" \
 	"$(grep -c '^#PKDUMP_STORE_ROOT=' "${REPO_DIR}/deploy/setup.sh" || true)"
+# access.env scaffold must not enable multi-tenant on CI instances:
+# setup.sh runs on every setup, including CI throwaway instances that bind
+# 0.0.0.0 — an uncommented PKDUMP_MULTITENANT=1 makes them refuse to start.
+check "access.env scaffold has PKDUMP_MULTITENANT commented out" "1" \
+	"$(grep -c '^#PKDUMP_MULTITENANT=1$' "${REPO_DIR}/deploy/setup.sh" || true)"
+# systemd EnvironmentFile does not strip trailing # comments from value lines,
+# so value lines must carry no inline comments.
+check "access.env scaffold has no inline comments on value lines" "0" \
+	"$(grep -c '^PKDUMP_ACCESS_.*#' "${REPO_DIR}/deploy/setup.sh" || true)"
 
 reset_store
 

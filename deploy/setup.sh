@@ -333,16 +333,24 @@ fi
 if [ ! -f "${LS_CONF_DIR}/access.env" ]; then
     cat > "${LS_CONF_DIR}/access.env" <<EOF
 # Cloudflare Access config for instance '${INSTANCE}'.
-# Enable multi-tenant mode and paste the three values from the Access dashboard.
-# Leave PKDUMP_MULTITENANT unset (or remove this file) to stay single-tenant.
+# Uncomment PKDUMP_MULTITENANT and fill the three values to enable multi-tenant
+# mode. Leave them commented (or remove this file) to stay single-tenant.
 #
+# Steps:
 # 1. In the Cloudflare Zero Trust dashboard, open Access > Applications.
-# 2. Find the PokeDumpster application and copy its AUD tag (a 64-char hex string).
-# 3. Redeploy after filling in the values: bash deploy/deploy.sh ${INSTANCE}
-PKDUMP_MULTITENANT=1
-PKDUMP_ACCESS_TEAM_DOMAIN=CHANGE_ME   # e.g. https://myteam.cloudflareaccess.com
-PKDUMP_ACCESS_AUD=CHANGE_ME           # 64-char hex from Access > Applications > AUD tag
-PKDUMP_ACCESS_JWKS_URL=CHANGE_ME      # e.g. https://myteam.cloudflareaccess.com/cdn-cgi/access/certs
+# 2. Find the PokeDumpster application and copy its AUD tag (64-char hex).
+# 3. Fill in the three values below and uncomment PKDUMP_MULTITENANT.
+# 4. Redeploy to pick up the new file: bash deploy/deploy.sh ${INSTANCE}
+#
+# Note: systemd EnvironmentFile does not strip trailing # comments from value
+# lines. Put comments on their own lines, as shown here.
+#PKDUMP_MULTITENANT=1
+# Team domain — e.g. https://myteam.cloudflareaccess.com
+PKDUMP_ACCESS_TEAM_DOMAIN=CHANGE_ME
+# 64-char hex AUD tag from Access > Applications
+PKDUMP_ACCESS_AUD=CHANGE_ME
+# JWKS URL — e.g. https://myteam.cloudflareaccess.com/cdn-cgi/access/certs
+PKDUMP_ACCESS_JWKS_URL=CHANGE_ME
 EOF
     chmod 600 "${LS_CONF_DIR}/access.env"
     echo "    Wrote ${LS_CONF_DIR}/access.env — fill CHANGE_ME values to enable multi-tenant mode."

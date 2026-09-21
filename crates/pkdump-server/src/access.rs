@@ -171,32 +171,31 @@ impl JwksCache {
         // Fast path under a read lock.
         {
             let guard = self.inner.read().await;
-            if let Some(c) = guard.as_ref() {
-                if c.fetched_at.elapsed() < CACHE_TTL {
-                    if let Some(k) = c.keys.get(kid) {
-                        return Ok(k.clone());
-                    }
-                }
+            if let Some(c) = guard.as_ref()
+                && c.fetched_at.elapsed() < CACHE_TTL
+                && let Some(k) = c.keys.get(kid)
+            {
+                return Ok(k.clone());
             }
         }
         // Slow path: stale or unknown kid — acquire the write lock.
         let mut guard = self.inner.write().await;
         // Re-check: another task may have refreshed while we waited.
-        if let Some(c) = guard.as_ref() {
-            if c.fetched_at.elapsed() < CACHE_TTL {
-                if let Some(k) = c.keys.get(kid) {
-                    return Ok(k.clone());
-                }
-                // Unknown kid but within the rate-limit window.
-                if c.last_refresh_attempt
-                    .map(|t| t.elapsed() < REFRESH_RATE_LIMIT)
-                    .unwrap_or(false)
-                {
-                    return Err(AppError(
-                        StatusCode::UNAUTHORIZED,
-                        "unknown signing key".into(),
-                    ));
-                }
+        if let Some(c) = guard.as_ref()
+            && c.fetched_at.elapsed() < CACHE_TTL
+        {
+            if let Some(k) = c.keys.get(kid) {
+                return Ok(k.clone());
+            }
+            // Unknown kid but within the rate-limit window.
+            if c.last_refresh_attempt
+                .map(|t| t.elapsed() < REFRESH_RATE_LIMIT)
+                .unwrap_or(false)
+            {
+                return Err(AppError(
+                    StatusCode::UNAUTHORIZED,
+                    "unknown signing key".into(),
+                ));
             }
         }
         let now = Instant::now();
@@ -323,10 +322,10 @@ impl AccessState {
 /// Extract the JWT from the `Cf-Access-Jwt-Assertion` header, falling back
 /// to the `CF_Authorization` cookie.
 fn extract_token(req: &axum::http::request::Parts) -> Option<String> {
-    if let Some(v) = req.headers.get(JWT_HEADER) {
-        if let Ok(s) = v.to_str() {
-            return Some(s.to_string());
-        }
+    if let Some(v) = req.headers.get(JWT_HEADER)
+        && let Ok(s) = v.to_str()
+    {
+        return Some(s.to_string());
     }
     for cookie_hdr in req.headers.get_all(header::COOKIE) {
         if let Ok(s) = cookie_hdr.to_str() {

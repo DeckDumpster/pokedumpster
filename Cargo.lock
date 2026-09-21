@@ -2359,6 +2359,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "flate2",
  "pkdump-core",
  "pkdump-db",
  "pkdump-derive",
@@ -2367,6 +2368,7 @@ dependencies = [
  "pkdump-lake",
  "pkdump-server",
  "rusqlite",
+ "tar",
  "tempfile",
  "tokio",
 ]
@@ -2438,6 +2440,7 @@ dependencies = [
  "image",
  "pkdump-core",
  "pkdump-db",
+ "pkdump-ingest",
  "pkdump-lake",
  "reqwest",
  "rusqlite",

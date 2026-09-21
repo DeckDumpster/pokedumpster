@@ -26,8 +26,9 @@
 #                     tests/visual/approval_test.sh,
 #                     tests/litestream/image_pin_test.sh,
 #                     tests/alarming/journal_summary_test.sh,
-#                     tests/alarming/alert_suppress_test.sh and
-#                     tests/ci/treewatch_test.sh.
+#                     tests/alarming/alert_suppress_test.sh,
+#                     tests/ci/treewatch_test.sh and
+#                     tests/ci/unit_diagnostics_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
 #   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
 #  3b. The image:      built ONCE, here. Five gates below need the shipped image
@@ -339,6 +340,18 @@ step() {
     CURRENT_STEP="$*"
     echo ""
     echo "==> $*"
+}
+
+# Capture the unit journal before a teardown destroys it.  Called on any abort
+# path where a systemd unit may have failed to start; the caller then exits.
+# Both commands are best-effort: a CI runner that lacks the unit or the journal
+# should not suppress the evidence it does have.
+dump_unit_diagnostics() {
+    local unit="$1"
+    echo "--- systemctl status ${unit} ---"
+    systemctl --user status "$unit" --no-pager 2>&1 || true
+    echo "--- journalctl --user -u ${unit} (last 40 lines) ---"
+    journalctl --user -u "$unit" --no-pager -n 40 2>&1 || true
 }
 
 # --- 0. Tier selection -------------------------------------------------------
@@ -788,6 +801,13 @@ if tier lint; then
     step "No pipeline into grep -q, which inverts under pipefail (tests/ci/grepq_test.sh)"
     bash "$REPO_DIR/tests/ci/grepq_test.sh"
 
+    # A failed systemctl start used to exit silently, destroying the evidence
+    # along with the ephemeral runner. dump_unit_diagnostics captures status
+    # and journal before exit; this asserts it is defined, contains both
+    # commands, and is wired to every abort path (pd-rpgu).
+    step "Unit startup evidence captured before exit (tests/ci/unit_diagnostics_test.sh)"
+    bash "$REPO_DIR/tests/ci/unit_diagnostics_test.sh"
+
     # Same tier again, and the same shape of bug: a layer that fires and says
     # nothing. §6 of the alarming gate proves Layer 2 PUSHES; this proves what
     # it pushes is readable — the causal line first, no OCI metadata, no
@@ -964,7 +984,7 @@ PORT=""
 if tier container; then
     step "Building and starting '--test' container instance..."
     bash "$SCRIPT_DIR/setup.sh" "$INSTANCE" --test
-    systemctl --user start "$SERVICE_NAME"
+    systemctl --user start "$SERVICE_NAME" || { dump_unit_diagnostics "$SERVICE_NAME"; exit 1; }
 
     step "Waiting for the server to answer..."
     # Asked four times a second rather than once every two: the check is a
@@ -983,7 +1003,7 @@ if tier container; then
     wait_until 60 0.25 server_answering || true
     if [ -z "$PORT" ]; then
         echo "ERROR: server failed to start within timeout."
-        journalctl --user -u "$SERVICE_NAME" --no-pager -n 40 2>/dev/null || true
+        dump_unit_diagnostics "$SERVICE_NAME"
         exit 1
     fi
 fi

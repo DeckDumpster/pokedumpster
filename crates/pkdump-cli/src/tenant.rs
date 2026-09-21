@@ -45,6 +45,7 @@
 //! Paths come from `$PKDUMP_HOME`, so `podman exec <ctr> pkdump tenant …`
 //! works against a running instance the same way `pkdump db` does.
 
+use pkdump_db::registry;
 use pkdump_db::schema_version::{Database, SchemaState};
 use pkdump_db::tenants::{self, TenantSchema};
 
@@ -76,6 +77,8 @@ enum TenantCommand {
     Migrate(MigrateArgs),
     /// Roll `migrate` back: name every collection by its handle again.
     Unmigrate,
+    /// Manage verified-identity bindings for a tenant.
+    Identity(IdentityArgs),
 }
 
 #[derive(clap::Args)]
@@ -126,6 +129,53 @@ pub struct OptionalNameArgs {
     /// Tenant to move. Defaults to `$PKDUMP_USER` (else `collection`) —
     /// the single user a pre-tenants data directory has.
     name: Option<String>,
+}
+
+/// Arguments for `pkdump tenant identity`.
+#[derive(clap::Args)]
+pub struct IdentityArgs {
+    #[command(subcommand)]
+    command: IdentityCommand,
+}
+
+#[derive(clap::Subcommand)]
+enum IdentityCommand {
+    /// Bind a verified identity (email address) to a tenant.
+    Add(IdentityAddArgs),
+    /// List identity bindings. With no handle, lists all bindings (the roster).
+    List(IdentityListArgs),
+    /// Remove one identity binding from a tenant.
+    Remove(IdentityRemoveArgs),
+}
+
+#[derive(clap::Args)]
+struct IdentityAddArgs {
+    /// Handle of the tenant to bind.
+    handle: String,
+    /// Email address to bind (case-insensitive; stored lowercase).
+    #[arg(long)]
+    email: String,
+    /// Identity provider subject (optional; stored for audit).
+    #[arg(long)]
+    sub: Option<String>,
+    /// Identity provider issuer URL (optional; stored for audit).
+    #[arg(long)]
+    issuer: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct IdentityListArgs {
+    /// Tenant handle to list bindings for. Omit to list all bindings (the roster).
+    handle: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct IdentityRemoveArgs {
+    /// Handle of the tenant to remove the binding from.
+    handle: String,
+    /// Email address to remove.
+    #[arg(long)]
+    email: String,
 }
 
 /// Execute `pkdump tenant`.
@@ -192,6 +242,96 @@ pub fn run(args: TenantArgs) -> anyhow::Result<()> {
         }
         TenantCommand::Migrate(a) => migrate(a.dry_run)?,
         TenantCommand::Unmigrate => unmigrate()?,
+        TenantCommand::Identity(a) => identity(a)?,
+    }
+    Ok(())
+}
+
+/// `pkdump tenant identity` — manage verified-identity bindings.
+fn identity(args: IdentityArgs) -> anyhow::Result<()> {
+    match args.command {
+        IdentityCommand::Add(a) => {
+            let conn = registry::open()?;
+            let user = registry::lookup(&conn, &a.handle)?
+                .ok_or_else(|| anyhow::anyhow!("no active tenant with handle {:?}", a.handle))?;
+            let binding = registry::identity_add(
+                &conn,
+                &user.database_id,
+                &a.email,
+                a.sub.as_deref(),
+                a.issuer.as_deref(),
+            )?;
+            println!(
+                "Bound {} to tenant {} (database {})",
+                binding.email, a.handle, binding.database_id
+            );
+        }
+        IdentityCommand::List(a) => identity_list_cmd(a)?,
+        IdentityCommand::Remove(a) => {
+            let conn = registry::open()?;
+            let user = registry::lookup(&conn, &a.handle)?
+                .ok_or_else(|| anyhow::anyhow!("no active tenant with handle {:?}", a.handle))?;
+            let removed = registry::identity_remove(&conn, &user.database_id, &a.email)?;
+            println!(
+                "Removed {} from tenant {} (database {})",
+                removed.email, a.handle, removed.database_id
+            );
+        }
+    }
+    Ok(())
+}
+
+fn identity_list_cmd(args: IdentityListArgs) -> anyhow::Result<()> {
+    let conn = registry::open()?;
+
+    let bindings: Vec<(String, registry::IdentityBinding)> = match args.handle {
+        Some(ref handle) => {
+            let user = registry::lookup(&conn, handle)?
+                .ok_or_else(|| anyhow::anyhow!("no active tenant with handle {:?}", handle))?;
+            registry::identity_list(&conn, &user.database_id)?
+                .into_iter()
+                .map(|b| (handle.clone(), b))
+                .collect()
+        }
+        None => {
+            // Roster: join bindings with user handles.
+            let users = registry::list(&conn)?;
+            let mut out = Vec::new();
+            for user in &users {
+                for b in registry::identity_list(&conn, &user.database_id)? {
+                    out.push((user.handle.clone(), b));
+                }
+            }
+            out
+        }
+    };
+
+    if bindings.is_empty() {
+        println!("No identity bindings.");
+        return Ok(());
+    }
+
+    let handle_w = bindings
+        .iter()
+        .map(|(h, _)| h.len())
+        .max()
+        .unwrap_or(0)
+        .max(6);
+    let email_w = bindings
+        .iter()
+        .map(|(_, b)| b.email.len())
+        .max()
+        .unwrap_or(0)
+        .max(5);
+    println!(
+        "{:<handle_w$}  {:<email_w$}  DATABASE ID                 ADDED",
+        "HANDLE", "EMAIL"
+    );
+    for (handle, b) in &bindings {
+        println!(
+            "{:<handle_w$}  {:<email_w$}  {}  {}",
+            handle, b.email, b.database_id, b.created_at
+        );
     }
     Ok(())
 }
@@ -412,6 +552,73 @@ mod tests {
             panic!("`tenant detach` must parse");
         };
         assert_eq!(b.handle, "alice");
+    }
+
+    #[test]
+    fn identity_subcommands_parse() {
+        let TenantCommand::Identity(ref i) =
+            parse(&["identity", "add", "alice", "--email", "alice@example.com"])
+        else {
+            panic!("`tenant identity add` must parse");
+        };
+        let IdentityCommand::Add(ref a) = i.command else {
+            panic!("add subcommand must parse");
+        };
+        assert_eq!(a.handle, "alice");
+        assert_eq!(a.email, "alice@example.com");
+        assert_eq!(a.sub, None);
+        assert_eq!(a.issuer, None);
+
+        // with optional flags
+        let TenantCommand::Identity(ref i2) = parse(&[
+            "identity",
+            "add",
+            "bob",
+            "--email",
+            "bob@example.com",
+            "--sub",
+            "sub-123",
+            "--issuer",
+            "https://issuer.example",
+        ]) else {
+            panic!("`tenant identity add` with sub/issuer must parse");
+        };
+        let IdentityCommand::Add(ref b) = i2.command else {
+            panic!()
+        };
+        assert_eq!(b.sub.as_deref(), Some("sub-123"));
+        assert_eq!(b.issuer.as_deref(), Some("https://issuer.example"));
+
+        let TenantCommand::Identity(ref i3) = parse(&["identity", "list"]) else {
+            panic!("`tenant identity list` must parse");
+        };
+        let IdentityCommand::List(ref l) = i3.command else {
+            panic!()
+        };
+        assert!(l.handle.is_none());
+
+        let TenantCommand::Identity(ref i4) = parse(&["identity", "list", "alice"]) else {
+            panic!("`tenant identity list alice` must parse");
+        };
+        let IdentityCommand::List(ref l2) = i4.command else {
+            panic!()
+        };
+        assert_eq!(l2.handle.as_deref(), Some("alice"));
+
+        let TenantCommand::Identity(ref i5) = parse(&[
+            "identity",
+            "remove",
+            "alice",
+            "--email",
+            "alice@example.com",
+        ]) else {
+            panic!("`tenant identity remove` must parse");
+        };
+        let IdentityCommand::Remove(ref r) = i5.command else {
+            panic!()
+        };
+        assert_eq!(r.handle, "alice");
+        assert_eq!(r.email, "alice@example.com");
     }
 
     /// Purge takes a `database_id`, not a handle. Naming a person is how a

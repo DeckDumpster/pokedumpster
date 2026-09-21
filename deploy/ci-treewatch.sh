@@ -171,6 +171,33 @@ pkdump_treewatch_check() {
     if [ "$now" = "$PKDUMP_TREEWATCH_SIZE" ]; then return 0; fi
 
     PKDUMP_TREEWATCH_TRIPPED=1
+
+    # When the log file is gone but had content at arm time, the worktree
+    # directory itself was deleted externally — not HEAD moved by a rebase.
+    # This is a different event from pd-vnbc and needs a different diagnosis.
+    #
+    # The most common cause: a concurrent gate process timed out waiting for
+    # the worktree lock, then called verdict() on exit, which removed the tree
+    # without checking that it was the lock holder and the tree's owner.
+    # Scar: db-0ckr. The fix belongs in gate.sh: add GATE_TREE_OWNED=1 after
+    # a successful flock AND after git worktree add, then guard verdict()'s
+    # removal with [ -n "${GATE_TREE_OWNED:-}" ]. Filed upstream as
+    # DeckDumpster/spira#171; tracked locally in spira-local-deviations row 65.
+    if [ ! -f "$PKDUMP_TREEWATCH_LOG" ] && [ "$PKDUMP_TREEWATCH_SIZE" -gt 0 ]; then
+        diag ""
+        diag "!! ================================================================"
+        diag "!! THE GATE WORKTREE WAS DELETED WHILE THIS RUN WAS IN PROGRESS"
+        diag "!! ================================================================"
+        diag "!!   detected   : ${1:-unspecified}"
+        diag "!!   The reflog file is gone because the .git directory is gone."
+        diag "!!   Likely cause: a concurrent gate process timed out on the"
+        diag "!!   worktree lock and then removed the tree on exit, without"
+        diag "!!   checking that it held the lock and owned the tree."
+        diag "!!   This is a gate coordination bug, not a code issue in the branch."
+        diag "!! ----------------------------------------------------------------"
+        return 1
+    fi
+
     local head_now ref_now busy dirt
     head_now="$(git rev-parse HEAD 2>/dev/null || echo '<none>')"
     ref_now="$(git symbolic-ref --short -q HEAD || echo '<detached>')"

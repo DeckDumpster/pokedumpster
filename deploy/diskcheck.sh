@@ -113,6 +113,14 @@ if [ "${1:-}" = "--floor" ]; then
             echo "  last time this happened a cargo link reported 'ld terminated with" >&2
             echo "  signal 7 [Bus error]'. Free space before re-running." >&2
             echo "  $(df -h "$p" | tail -n1)" >&2
+            # Show the top consumers so the operator knows what to clean without
+            # a separate diagnosis step. This is what was missing when / hit 97%:
+            # the error said "9G free" and left the cause to be discovered by hand.
+            echo "  largest directories (to identify what to clean):" >&2
+            du -sh "$HOME"/.cache "$HOME"/.local/share/containers \
+                "${TMPDIR:-/tmp}"/claude-* 2>/dev/null \
+                | sort -rh | head -5 | sed 's/^/    /' \
+                >&2 || true
             FAILED=1
         else
             echo "diskcheck: ${MOUNT} has ${FREE_GB}G free (floor ${FLOOR_GB}G) — ok"
@@ -173,6 +181,8 @@ ${USE}% used, ${FREE_GB}G free — ${WHY}
 Reclaim, safest first:
   bash deploy/teardown.sh <instance> --purge   # retire a finished non-prod instance
   bash deploy/store-teardown.sh <store-root>   # remove a whole non-prod store
+  cargo clean                                  # ~8-16G: ~/workspace/pokedumpster/target
+                                               # and ~/.cache/spira-gate/ (gate's build cache)
 Prod's store is ~/.local/share/containers and is SHARED with another project:
 never prune it by hand. Builds there already collect the previous build's
 orphans (deploy/image-lib.sh), so growth in it is worth investigating, not pruning.

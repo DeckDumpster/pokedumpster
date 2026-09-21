@@ -118,6 +118,8 @@ check "names the free space and the floor" "1" \
 	"$(printf '%s' "$GUARD_OUT" | grep -c 'floor 999999999G' || true)"
 check "explains the bus error" "1" \
 	"$(printf '%s' "$GUARD_OUT" | grep -c 'Bus error' || true)"
+check "diagnoses top consumers when below the floor" "1" \
+	"$(printf '%s' "$GUARD_OUT" | grep -c 'largest directories' || true)"
 
 set +e
 OK_OUT="$(PKDUMP_DISK_FLOOR_GB=0 bash "$DISKCHECK" --floor "$WORK" 2>&1)"

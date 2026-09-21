@@ -121,6 +121,7 @@ derive() { # derive <ingest-date> [extra args...]
 		-e PKDUMP_LAKE_ENV=/nonexistent/lake.env \
 		-e PKDUMP_TCGCSV_BASE_URL="$ORIGIN" \
 		-e PKDUMP_POKEMONTCG_BASE_URL="$ORIGIN" \
+		-e PKDUMP_POKEMON_TCG_DATA_BASE_URL="$ORIGIN" \
 		--entrypoint pkdump-lake-derive "$IMAGE" \
 		shared --ingest-date "$date" \
 		--db /fixture/derived.sqlite --data-dir /fixture "$@"

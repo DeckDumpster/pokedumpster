@@ -255,6 +255,9 @@ pub fn find(conn: &Connection, database_id: &str) -> Result<Option<User>> {
 /// active row is what makes a database reachable, and dropping it would
 /// leave bytes on disk that belong to nobody. [`detach`] first, deliberately,
 /// then this. Deleting the file is [`crate::tenants::purge`]'s half.
+///
+/// Identity bindings are deleted here too — they are personal data that must
+/// not outlive the user row.
 pub fn delete(conn: &Connection, database_id: &str) -> Result<User> {
     let user = find(conn, database_id)?
         .ok_or_else(|| DbError::NotFound(format!("no user with database id {database_id:?}")))?;
@@ -264,6 +267,9 @@ pub fn delete(conn: &Connection, database_id: &str) -> Result<User> {
             user.handle
         )));
     }
+    // Delete identity rows first: the FK constraint on user_identity prevents
+    // deleting the user row while referencing rows exist.
+    identity_delete_all(conn, database_id)?;
     conn.execute(
         "DELETE FROM user WHERE database_id = ?1",
         params![database_id],
@@ -327,6 +333,168 @@ fn conflict(e: rusqlite::Error, msg: String) -> DbError {
         }
         _ => e.into(),
     }
+}
+
+// ── IDENTITY BINDINGS ────────────────────────────────────────────────────
+
+/// Normalise an email address for storage and comparison.
+///
+/// Returns `None` for an empty string; `Some(lowercased)` for everything
+/// else. The normalised form is what the `email` column stores, and what
+/// the `CHECK (email = lower(email))` accepts.
+///
+/// Two enforcers of "normalised email": this function (Rust, every accessor
+/// call site) and the `CHECK` in `schema_registry.sql` (SQL, every writer).
+/// They cannot share an implementation — one is a function and the other is
+/// a constraint evaluated by SQLite — so they share [`EMAIL_CASES`].
+/// [`tests::the_normaliser_and_the_check_agree`] runs each case through both.
+pub fn normalise_email(email: &str) -> Option<String> {
+    if email.is_empty() {
+        None
+    } else {
+        Some(email.to_lowercase())
+    }
+}
+
+/// One row of `user_identity`: a verified identity bound to a tenant.
+///
+/// `database_id` is the stable key; `email` is the human-readable anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityBinding {
+    pub database_id: String,
+    pub email: String,
+    pub sub: Option<String>,
+    pub issuer: Option<String>,
+    pub created_at: String,
+}
+
+fn identity_from_row(row: &rusqlite::Row) -> rusqlite::Result<IdentityBinding> {
+    Ok(IdentityBinding {
+        database_id: row.get(0)?,
+        email: row.get(1)?,
+        sub: row.get(2)?,
+        issuer: row.get(3)?,
+        created_at: row.get(4)?,
+    })
+}
+
+/// Bind a verified identity to an active tenant.
+///
+/// `email` is normalised (lowercased) before storage. Returns the row that
+/// was inserted.
+///
+/// Fails with [`DbError::NotFound`] if `database_id` names no registered
+/// user, or with [`DbError::Conflict`] if the user is detached.
+/// Fails with [`DbError::Conflict`] if this email is already bound to
+/// another active tenant — one email, one active tenant.
+pub fn identity_add(
+    conn: &Connection,
+    database_id: &str,
+    email: &str,
+    sub: Option<&str>,
+    issuer: Option<&str>,
+) -> Result<IdentityBinding> {
+    let user = find(conn, database_id)?
+        .ok_or_else(|| DbError::NotFound(format!("no user with database id {database_id:?}")))?;
+    if user.state != UserState::Active {
+        return Err(DbError::Conflict(format!(
+            "user {:?} is detached — identity bindings require an active tenant",
+            user.handle
+        )));
+    }
+    let normalised =
+        normalise_email(email).ok_or_else(|| DbError::Env("email must not be empty".into()))?;
+    let created_at = crate::clock::now_rfc3339();
+    conn.execute(
+        "INSERT INTO user_identity \
+         (database_id, email, sub, issuer, created_at, user_state) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 'active')",
+        params![database_id, normalised, sub, issuer, created_at],
+    )
+    .map_err(|e| {
+        conflict(
+            e,
+            format!("email {normalised:?} is already bound to an active tenant"),
+        )
+    })?;
+    Ok(IdentityBinding {
+        database_id: database_id.to_string(),
+        email: normalised,
+        sub: sub.map(|s| s.to_string()),
+        issuer: issuer.map(|s| s.to_string()),
+        created_at,
+    })
+}
+
+/// Remove one identity binding. `email` is normalised before lookup.
+///
+/// Fails with [`DbError::NotFound`] if no such binding exists.
+pub fn identity_remove(
+    conn: &Connection,
+    database_id: &str,
+    email: &str,
+) -> Result<IdentityBinding> {
+    let normalised =
+        normalise_email(email).ok_or_else(|| DbError::Env("email must not be empty".into()))?;
+    let binding = conn
+        .query_row(
+            "SELECT database_id, email, sub, issuer, created_at \
+             FROM user_identity WHERE database_id = ?1 AND email = ?2",
+            params![database_id, normalised],
+            identity_from_row,
+        )
+        .optional()?
+        .ok_or_else(|| {
+            DbError::NotFound(format!(
+                "no identity binding for {normalised:?} on database {database_id:?}"
+            ))
+        })?;
+    conn.execute(
+        "DELETE FROM user_identity WHERE database_id = ?1 AND email = ?2",
+        params![database_id, normalised],
+    )?;
+    Ok(binding)
+}
+
+/// Every identity binding for one tenant, in creation order.
+///
+/// An empty `Vec` means the tenant has no bindings, not that it does not
+/// exist. The caller decides whether that is an error.
+pub fn identity_list(conn: &Connection, database_id: &str) -> Result<Vec<IdentityBinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT database_id, email, sub, issuer, created_at \
+         FROM user_identity WHERE database_id = ?1 ORDER BY created_at",
+    )?;
+    let rows = stmt
+        .query_map(params![database_id], identity_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Every identity binding across all tenants, ordered by tenant then email.
+///
+/// The roster: everything that would answer "who can log in".
+pub fn identity_roster(conn: &Connection) -> Result<Vec<IdentityBinding>> {
+    let mut stmt = conn.prepare(
+        "SELECT database_id, email, sub, issuer, created_at \
+         FROM user_identity ORDER BY database_id, created_at",
+    )?;
+    let rows = stmt
+        .query_map([], identity_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Delete all identity bindings for a tenant.
+///
+/// The deletion-obligation half: identity rows are personal data that must
+/// not outlive the decision to remove a tenant. Returns the number of rows
+/// removed (zero is not an error — a tenant may have no bindings).
+pub fn identity_delete_all(conn: &Connection, database_id: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "DELETE FROM user_identity WHERE database_id = ?1",
+        params![database_id],
+    )?)
 }
 
 #[cfg(test)]
@@ -692,5 +860,245 @@ mod tests {
             // Not a tenant, and not the catalog.
             assert!(!home.join("tenants").join("registry.sqlite").exists());
         });
+    }
+
+    // ── Identity binding tests ──────────────────────────────────────────
+
+    /// The corpus both enforcers of "normalised email" are held to.
+    ///
+    /// `true` means the string is already in normalised form (lowercase,
+    /// non-empty) and the SQL CHECK must accept it.  `false` means either
+    /// it is empty or it contains uppercase, and the CHECK must reject it.
+    ///
+    /// One corpus, two enforcers: [`normalise_email`] in Rust and the
+    /// `CHECK` in `schema_registry.sql`.  They share this list so a change
+    /// to one that is not reflected in the other causes a test failure here.
+    pub(crate) const EMAIL_CASES: &[(&str, bool)] = &[
+        // already normalised — CHECK accepts
+        ("alice@example.com", true),
+        ("user@domain.org", true),
+        ("a@b", true),
+        // uppercase present — CHECK rejects
+        ("Alice@example.com", false),
+        ("ALICE@EXAMPLE.COM", false),
+        ("alice@EXAMPLE.COM", false),
+        ("aliceB@example.com", false),
+        // empty — CHECK rejects (length < 1)
+        ("", false),
+    ];
+
+    /// Helper: raw INSERT into user_identity, bypassing the accessor.
+    fn raw_insert_identity(conn: &Connection, db_id: &str, email: &str) -> rusqlite::Result<usize> {
+        conn.execute(
+            "INSERT INTO user_identity \
+             (database_id, email, sub, issuer, created_at, user_state) \
+             VALUES (?1, ?2, NULL, NULL, '2026-01-01T00:00:00Z', 'active')",
+            params![db_id, email],
+        )
+    }
+
+    /// The SQL half of [`EMAIL_CASES`].
+    ///
+    /// The CHECK in `schema_registry.sql` must accept exactly the emails
+    /// [`EMAIL_CASES`] marks as already-normalised (true) and reject the rest.
+    /// The Rust half is [`normalise_email_produces_check_passing_values`].
+    ///
+    /// Two things at once: the definition of a normalised email belongs in
+    /// the schema, and the CHECK and the normaliser must not drift. The
+    /// normaliser is what a binding is inserted through; the CHECK is what
+    /// a direct sqlite3 insert or a migration is held to.
+    #[test]
+    fn the_normaliser_and_the_check_agree() {
+        let (_dir, conn) = registry();
+
+        for (i, (email, already_normalised)) in EMAIL_CASES.iter().enumerate() {
+            // A user row for the FK.
+            let db_id = format!("TEST{i:022}");
+            conn.execute(
+                "INSERT INTO user (database_id, handle, created_at, state) \
+                 VALUES (?1, ?2, '2026-01-01T00:00:00Z', 'active')",
+                params![db_id, format!("testuser{i}")],
+            )
+            .unwrap();
+
+            let written = raw_insert_identity(&conn, &db_id, email);
+            assert_eq!(
+                written.is_ok(),
+                *already_normalised,
+                "the CHECK and EMAIL_CASES disagree about {email:?}: {written:?}"
+            );
+            if let Err(ref e) = written {
+                assert!(
+                    e.to_string().contains("CHECK constraint failed"),
+                    "{email:?} must be refused by the CHECK, not something else: {e}"
+                );
+            }
+        }
+    }
+
+    /// normalise_email always produces a form the CHECK accepts.
+    ///
+    /// The SQL half above tests the CHECK in isolation; this test closes
+    /// the loop: the normalised form of every non-empty email must pass
+    /// the CHECK, so a caller who normalises before inserting cannot be
+    /// blocked by the constraint.
+    #[test]
+    fn normalise_email_produces_check_passing_values() {
+        let (_dir, conn) = registry();
+
+        // One shared user for every case. The UNIQUE constraint on the
+        // partial index is per-email per ACTIVE tenant; using a single
+        // database_id means the constraint is on (database_id, email) which
+        // is the PRIMARY KEY — so two inputs that normalise to the same email
+        // are de-duped naturally and the second is a no-op rather than a
+        // failure. What we are testing is the CHECK, not the UNIQUE index.
+        conn.execute(
+            "INSERT INTO user (database_id, handle, created_at, state) \
+             VALUES ('NORMUSR', 'normusr', '2026-01-01T00:00:00Z', 'active')",
+            [],
+        )
+        .unwrap();
+
+        for (email, _) in EMAIL_CASES.iter().filter(|(e, _)| !e.is_empty()) {
+            let normalised = normalise_email(email).expect("non-empty email must normalise");
+            // A UNIQUE/PK violation means the normalised form was already
+            // inserted for this user — the CHECK was satisfied. Only a CHECK
+            // violation means normalise_email produced a non-normalised value.
+            match raw_insert_identity(&conn, "NORMUSR", &normalised) {
+                Ok(_) => {}
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if e.extended_code == 2067 /* SQLITE_CONSTRAINT_UNIQUE */
+                        || e.extended_code == 1555 /* SQLITE_CONSTRAINT_PRIMARYKEY */ =>
+                {
+                    // same email already inserted — CHECK was satisfied
+                }
+                Err(e) => {
+                    panic!("normalise_email({email:?}) = {normalised:?} must pass the CHECK: {e}")
+                }
+            }
+        }
+        assert!(
+            normalise_email("").is_none(),
+            "empty email must return None"
+        );
+    }
+
+    #[test]
+    fn identity_add_binds_email_to_active_tenant() {
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        let binding =
+            identity_add(&conn, &alice.database_id, "Alice@Example.com", None, None).unwrap();
+        // email is normalised to lowercase
+        assert_eq!(binding.email, "alice@example.com");
+        assert_eq!(binding.database_id, alice.database_id);
+        assert_eq!(binding.sub, None);
+
+        let listed = identity_list(&conn, &alice.database_id).unwrap();
+        assert_eq!(listed, vec![binding]);
+    }
+
+    #[test]
+    fn identity_add_refuses_a_second_active_tenant_for_one_email() {
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        let bob = insert(&conn, "bob").unwrap();
+
+        identity_add(&conn, &alice.database_id, "shared@example.com", None, None).unwrap();
+        let err =
+            identity_add(&conn, &bob.database_id, "shared@example.com", None, None).unwrap_err();
+        assert!(matches!(err, DbError::Conflict(_)), "{err:?}");
+    }
+
+    #[test]
+    fn identity_email_freed_after_detach() {
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        identity_add(&conn, &alice.database_id, "alice@example.com", None, None).unwrap();
+
+        // Detach alice: her email must be freed for re-use.
+        detach(&conn, "alice").unwrap();
+
+        // A new active tenant may now take the same email.
+        let alice2 = insert(&conn, "alice").unwrap();
+        identity_add(&conn, &alice2.database_id, "alice@example.com", None, None)
+            .expect("same email must be bindable after the first tenant is detached");
+    }
+
+    #[test]
+    fn identity_add_allows_several_emails_per_tenant() {
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        identity_add(&conn, &alice.database_id, "alice@example.com", None, None).unwrap();
+        identity_add(
+            &conn,
+            &alice.database_id,
+            "alice@work.example.com",
+            None,
+            None,
+        )
+        .unwrap();
+        let listed = identity_list(&conn, &alice.database_id).unwrap();
+        assert_eq!(listed.len(), 2);
+    }
+
+    #[test]
+    fn identity_remove_deletes_one_binding() {
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        identity_add(&conn, &alice.database_id, "alice@example.com", None, None).unwrap();
+        identity_add(&conn, &alice.database_id, "alice@work.com", None, None).unwrap();
+
+        let removed = identity_remove(&conn, &alice.database_id, "alice@example.com").unwrap();
+        assert_eq!(removed.email, "alice@example.com");
+
+        let remaining = identity_list(&conn, &alice.database_id).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].email, "alice@work.com");
+
+        // Removing the same binding twice is a not-found error.
+        assert!(matches!(
+            identity_remove(&conn, &alice.database_id, "alice@example.com").unwrap_err(),
+            DbError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn identity_roster_lists_all_tenants() {
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        let bob = insert(&conn, "bob").unwrap();
+        identity_add(&conn, &alice.database_id, "alice@example.com", None, None).unwrap();
+        identity_add(&conn, &bob.database_id, "bob@example.com", None, None).unwrap();
+
+        let roster = identity_roster(&conn).unwrap();
+        assert_eq!(roster.len(), 2);
+    }
+
+    #[test]
+    fn identity_delete_all_clears_a_tenants_bindings() {
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        identity_add(&conn, &alice.database_id, "alice@example.com", None, None).unwrap();
+        identity_add(&conn, &alice.database_id, "alice@work.com", None, None).unwrap();
+
+        let n = identity_delete_all(&conn, &alice.database_id).unwrap();
+        assert_eq!(n, 2);
+        assert!(identity_list(&conn, &alice.database_id).unwrap().is_empty());
+
+        // A second call removes nothing and succeeds.
+        assert_eq!(identity_delete_all(&conn, &alice.database_id).unwrap(), 0);
+    }
+
+    #[test]
+    fn registry_delete_removes_identity_rows() {
+        let (_dir, conn) = registry();
+        let alice = insert(&conn, "alice").unwrap();
+        identity_add(&conn, &alice.database_id, "alice@example.com", None, None).unwrap();
+        detach(&conn, "alice").unwrap();
+
+        // delete() must remove the identity rows along with the user row.
+        delete(&conn, &alice.database_id).unwrap();
+        assert!(identity_list(&conn, &alice.database_id).unwrap().is_empty());
     }
 }

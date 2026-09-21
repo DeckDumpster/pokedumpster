@@ -198,14 +198,20 @@ fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
     // fallback exactly as it did before.
     //
     // Layer ordering: the outermost `route_layer` runs first. The access
-    // layer (outermost) verifies the JWT and installs the identity; the
-    // tenant layer (inner) maps that identity to a database.
-    let api = routes::api_router()
+    // layer (outermost) verifies the JWT before the tenant layer (inner)
+    // reads the tenant header.
+    //
+    // Public `/api` routes (see `routes::public_api_router`) are mounted
+    // separately, without the auth layers, so they remain reachable from
+    // plain localhost — e.g. `alarm-status.sh` reading `/api/backup-status`.
+    let authenticated_api = routes::authenticated_api_router()
         .route_layer(middleware::from_fn_with_state(state.clone(), tenant::layer))
         .route_layer(middleware::from_fn_with_state(state.clone(), access::layer));
+    let public_api = routes::public_api_router();
     Router::new()
         .route("/health", get(|| async { "ok" }))
-        .nest("/api", api)
+        .nest("/api", authenticated_api)
+        .nest("/api", public_api)
         .nest_service("/_app", ServeDir::new(static_dir.join("_app")))
         // Static-asset directories carried in by adapter-static. Each needs
         // an explicit nest_service so they don't fall through to the SPA
@@ -523,6 +529,53 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "a request with no JWT must be rejected"
         );
+    }
+
+    // Seen red first: with backup-status inside the authenticated router, this
+    // test fails with 401. Green only once it is in the public router.
+    #[tokio::test]
+    async fn backup_status_requires_no_token() {
+        let (_d, router, _fx) = test_app().await;
+        let resp = router
+            .oneshot(request("GET", "/api/backup-status", None, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "/api/backup-status must be reachable without a token (alarm-status.sh reads it from localhost)"
+        );
+    }
+
+    // Ratchet: every route listed here must still require authentication.
+    // If /api/backup-status is the only public route, adding to this list
+    // should be a deliberate edit alongside adding to public_api_router().
+    #[tokio::test]
+    async fn authenticated_api_routes_reject_tokenless_requests() {
+        let (_d, router, _fx) = test_app().await;
+        let unauthenticated_routes = [
+            "GET /api/collection",
+            "GET /api/sets",
+            "GET /api/card/sv3pt5/1",
+            "GET /api/binders",
+            "GET /api/decks",
+            "GET /api/wishlist",
+            "GET /api/variants",
+            "GET /api/conditions",
+        ];
+        for route in unauthenticated_routes {
+            let (method, uri) = route.split_once(' ').unwrap();
+            let resp = router
+                .clone()
+                .oneshot(request(method, uri, None, None))
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "{route} must require a token; if it is intentionally public, move it to public_api_router()"
+            );
+        }
     }
 
     #[tokio::test]

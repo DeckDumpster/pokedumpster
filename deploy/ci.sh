@@ -283,6 +283,20 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Share one cargo target directory across aeon builds (db-jz5t). Without this,
+# each worktree defaults to its own <worktree>/target, so N aeons in flight means
+# N independent 5G copies of the same build output. The gate already does this
+# with a separate path ($HOME/.cache/spira-gate/pokedumpster); this gives aeon
+# invocations the same property.
+#
+# Cargo serialises concurrent builds via its own file lock. That converts a disk
+# problem into latency: a second aeon blocks while the first compiles. At
+# SPIRA_MAX_AEONS pool size that trade is clearly worth it — incremental builds
+# are seconds, and contention is occasional. A caller that wants the worktree dir
+# (e.g. an isolated test fixture) can override by setting CARGO_TARGET_DIR before
+# invoking this script.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/pkdump-builds}"
+
 # Name our own failure (pd-8gjs). A gate that dies without printing why used to
 # leave the EXIT trap's "Stopping pkdump-ci-..." as the last line in the log,
 # which reads like a clean shutdown and says nothing about the step that died.

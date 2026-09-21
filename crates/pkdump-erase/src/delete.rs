@@ -93,6 +93,10 @@ pub fn delete(
         .is_some_and(|r| r.state == pkdump_keys::KeyState::Tombstoned);
     let row = pkdump_keys::destroy::tombstone(registry, database_id, reason)?;
 
+    // 1a. Identity bindings: personal data that must not survive a deletion.
+    // Idempotent — zero rows removed on a re-run is not an error.
+    pkdump_db::registry::identity_delete_all(registry, database_id)?;
+
     // 2. The partition drop.
     let dropped = Sweep::new(zone, config, database_id)?.drop_partition()?;
 

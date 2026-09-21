@@ -25,6 +25,7 @@ use pkdump_core::query::KeywordRegistry;
 use pkdump_db::DbError;
 use pkdump_db::search_meta::SearchFlag;
 
+pub mod access;
 mod routes;
 pub mod tenant;
 
@@ -45,6 +46,8 @@ pub struct AppState {
     /// The data dir — read by `/api/backup-status` for the `.backup-last-ok`
     /// freshness marker the host-side Layer 1 checker writes (ivq.5).
     data_dir: Arc<PathBuf>,
+    /// Cloudflare Access JWT validation state (JWKS cache + config).
+    pub(crate) access: Arc<access::AccessState>,
 }
 
 /// An error rendered as an HTTP response. `DbError::NotFound` → 404,
@@ -192,8 +195,13 @@ fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
     // `route_layer`, not `layer`: resolution runs for API routes that match,
     // and an unmatched `/api/...` path still falls through to the SPA
     // fallback exactly as it did before.
+    //
+    // Layer ordering: the outermost `route_layer` runs first. The access
+    // layer (outermost) verifies the JWT and installs the identity; the
+    // tenant layer (inner) maps that identity to a database.
     let api = routes::api_router()
-        .route_layer(middleware::from_fn_with_state(state.clone(), tenant::layer));
+        .route_layer(middleware::from_fn_with_state(state.clone(), tenant::layer))
+        .route_layer(middleware::from_fn_with_state(state.clone(), access::layer));
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .nest("/api", api)
@@ -237,43 +245,41 @@ pub struct ServeConfig {
     /// There is no authentication in front of it, so an instance with this
     /// on lets any caller name any tenant — see `deploy/TENANTS.md`.
     pub multi_tenant: bool,
-    /// The second opt-in that lets `multi_tenant` bind somewhere other than
-    /// loopback. Off unless explicitly set; see `check_bind`.
-    pub allow_insecure_bind: bool,
+    /// Cloudflare Access: full team URL, e.g.
+    /// `https://myteam.cloudflareaccess.com`. Required.
+    pub access_team_domain: String,
+    /// Cloudflare Access: the application's audience tag. Required.
+    pub access_aud: String,
+    /// Cloudflare Access: the JWKS endpoint URL. Explicit (not derived from
+    /// `access_team_domain`) so test infrastructure can point at localhost.
+    pub access_jwks_url: String,
 }
 
-/// Refuse the one combination that has no defence: per-request tenant
-/// resolution, reachable from off-box.
+/// Refuse multi-tenant mode when Cloudflare Access is not configured.
 ///
-/// `multi_tenant` takes the tenant from a header nothing authenticates, so on
-/// a non-loopback bind every collection belongs to whoever can reach the
-/// port. Every other guardrail around that flag — a default of off, an env
-/// parse that rejects `0`, a `deploy/` that never sets it — is a convention
-/// plus a printed warning. This is the mechanism: the process does not start.
+/// Multi-tenant resolution now requires Cloudflare Access: every request must
+/// carry a valid JWT and the verified email must be bound to a tenant in the
+/// registry. Without an Access configuration the JWT layer accepts nothing, so
+/// multi-tenant mode would refuse every request rather than serving any tenant.
 ///
-/// Whoever genuinely wants that combination later (behind a reverse proxy
-/// that does authenticate, say) says so a second time, explicitly, with
-/// `PKDUMP_MULTITENANT_INSECURE_BIND`.
-///
-/// Single-tenant mode is not touched at any address — the tenant is fixed at
-/// startup, no request can change it, and the container deployment binds
-/// `0.0.0.0`.
-fn check_bind(multi_tenant: bool, host: IpAddr, allow_insecure_bind: bool) -> anyhow::Result<()> {
-    if !multi_tenant || host.is_loopback() || allow_insecure_bind {
+/// Single-tenant mode is unaffected — the tenant is fixed at startup and no
+/// JWT is required.
+fn check_multitenant_access(multi_tenant: bool, access_configured: bool) -> anyhow::Result<()> {
+    if !multi_tenant || access_configured {
         return Ok(());
     }
     anyhow::bail!(
-        "refusing to start: multi-tenant resolution is on and --host {host} is not loopback.\n\
+        "refusing to start: multi-tenant resolution is on but Cloudflare Access is not \
+         configured.\n\
          \n\
-         In multi-tenant mode the tenant is whatever the request's `{}` header claims, and \
-         nothing authenticates that claim — there is no login, no session, no token. Bound \
-         anywhere but loopback, this process hands every tenant's collection to anyone who can \
-         reach the port and name a tenant.\n\
+         In multi-tenant mode every request must carry a valid Cloudflare Access JWT; the \
+         verified email in the JWT determines which tenant's collection is served. Without \
+         Access configured the JWT layer will reject every request.\n\
          \n\
-         Bind 127.0.0.1 (or ::1), or drop --multi-tenant / PKDUMP_MULTITENANT. If you really do \
-         mean to expose it — behind something that authenticates for it — say so a second time \
-         with PKDUMP_MULTITENANT_INSECURE_BIND=1.",
-        tenant::TENANT_HEADER
+         Set {} and {} (and optionally {}), or drop --multi-tenant / PKDUMP_MULTITENANT.",
+        access::TEAM_DOMAIN_ENV,
+        access::AUD_ENV,
+        access::JWKS_URL_ENV,
     )
 }
 
@@ -281,9 +287,9 @@ fn check_bind(multi_tenant: bool, host: IpAddr, allow_insecure_bind: bool) -> an
 /// opened up front — so a missing catalog (`pkdump setup` not run) fails at
 /// startup rather than on the first request.
 pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
-    // Before anything is opened or bound: an unauthenticated resolver must
-    // not become reachable from off-box.
-    check_bind(cfg.multi_tenant, cfg.host, cfg.allow_insecure_bind)?;
+    // Access config must be present when multi-tenant is on.
+    let access_configured = !cfg.access_team_domain.is_empty() && !cfg.access_aud.is_empty();
+    check_multitenant_access(cfg.multi_tenant, access_configured)?;
     // Idempotent shared-catalog convergence on startup. `pkdump setup` and
     // the nightly `pkdump-lake-derive shared` normally own shared schema —
     // the refresh used to be on that list and is not since pd-lunn, because
@@ -311,22 +317,19 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
             Arc::new(pkdump_db::search_meta::load_flags(&shared)?),
         )
     };
+    // Cloudflare Access JWT validation. Primes the JWKS cache; a failed fetch
+    // is a startup failure rather than a degraded-mode serve.
+    let access = access::AccessState::new(access::AccessConfig {
+        team_domain: cfg.access_team_domain,
+        aud: cfg.access_aud,
+        jwks_url: cfg.access_jwks_url,
+    })
+    .await?;
     let tenants = if cfg.multi_tenant {
         println!(
-            "pkdump: MULTI-TENANT resolution is ON — every request names its tenant in \
-             `{}`, and nothing authenticates that claim. Do not expose this instance.",
-            tenant::TENANT_HEADER
+            "pkdump: MULTI-TENANT resolution is ON — every request must carry a valid \
+             Cloudflare Access JWT and the verified email must be bound to a tenant."
         );
-        if !cfg.host.is_loopback() {
-            // Reachable only via the second opt-in — `check_bind` above
-            // refused otherwise.
-            println!(
-                "pkdump: PKDUMP_MULTITENANT_INSECURE_BIND is set and this instance is bound to \
-                 {} — every tenant's collection is readable and writable by anyone who can \
-                 reach this port.",
-                cfg.host
-            );
-        }
         Tenants::multi(cfg.tenants_dir, cfg.shared_db, &cfg.registry_db)?
     } else {
         Tenants::single(&cfg.tenant, cfg.user_db, cfg.shared_db)?
@@ -336,6 +339,7 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
         registry,
         flags,
         data_dir: Arc::new(cfg.data_dir.clone()),
+        access,
     };
     let addr = SocketAddr::new(cfg.host, cfg.port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -347,6 +351,7 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use access::test_support::TestAccessFixture;
     use axum::body::Body;
     use axum::http::{Request, header};
     use tower::ServiceExt;
@@ -386,7 +391,12 @@ mod tests {
         shared
     }
 
-    fn router_for(dir: &std::path::Path, shared: &std::path::Path, tenants: Tenants) -> Router {
+    fn router_for(
+        dir: &std::path::Path,
+        shared: &std::path::Path,
+        tenants: Tenants,
+        access: Arc<access::AccessState>,
+    ) -> Router {
         let registry = {
             let c = pkdump_db::open_shared(shared).unwrap();
             Arc::new(pkdump_db::search_meta::load_registry(&c).unwrap())
@@ -401,13 +411,14 @@ mod tests {
             registry,
             flags,
             data_dir: Arc::new(data_dir.clone()),
+            access,
         };
         app(state, dir.join("static"), data_dir)
     }
 
-    /// A single-tenant test router — the production shape, and the one every
-    /// pre-existing test below exercises.
-    fn test_app() -> (tempfile::TempDir, Router) {
+    /// A single-tenant test router — the production shape.
+    async fn test_app() -> (tempfile::TempDir, Router, TestAccessFixture) {
+        let fx = TestAccessFixture::new().await;
         let dir = tempfile::tempdir().unwrap();
         let shared = seed(dir.path());
         let tenants = Tenants::single(
@@ -416,15 +427,16 @@ mod tests {
             shared.clone(),
         )
         .unwrap();
-        let router = router_for(dir.path(), &shared, tenants);
-        (dir, router)
+        let router = router_for(dir.path(), &shared, tenants, fx.access.clone());
+        (dir, router, fx)
     }
 
-    /// A multi-tenant test router with `handles` provisioned, as
-    /// `pkdump tenant create` would leave them: a registry row per user, and
-    /// one database per user named by the `database_id` that row issued —
-    /// *not* by the handle.
-    fn multi_tenant_app(handles: &[&str]) -> (tempfile::TempDir, Router, PathBuf) {
+    /// A multi-tenant test router with `handles` provisioned, each with an
+    /// email binding `<handle>@example.com`.
+    async fn multi_tenant_app(
+        handles: &[&str],
+    ) -> (tempfile::TempDir, Router, PathBuf, TestAccessFixture) {
+        let fx = TestAccessFixture::new().await;
         let dir = tempfile::tempdir().unwrap();
         let shared = seed(dir.path());
         let tenants_dir = dir.path().join("tenants");
@@ -437,20 +449,29 @@ mod tests {
                 &pkdump_db::tenant_db_file(&tenants_dir, &user.database_id).unwrap(),
             )
             .unwrap();
+            pkdump_db::registry::identity_add(
+                &registry,
+                &user.database_id,
+                &format!("{handle}@example.com"),
+                None,
+                None,
+            )
+            .unwrap();
         }
         let router = router_for(
             dir.path(),
             &shared,
             Tenants::multi(tenants_dir.clone(), shared.clone(), &registry_db).unwrap(),
+            fx.access.clone(),
         );
-        (dir, router, tenants_dir)
+        (dir, router, tenants_dir, fx)
     }
 
-    /// `GET`/`POST`/`DELETE` helpers that optionally name a tenant.
-    fn request(method: &str, uri: &str, tenant: Option<&str>, body: Option<&str>) -> Request<Body> {
+    /// Build a request, optionally injecting a JWT and a body.
+    fn request(method: &str, uri: &str, token: Option<&str>, body: Option<&str>) -> Request<Body> {
         let mut b = Request::builder().method(method).uri(uri);
-        if let Some(t) = tenant {
-            b = b.header(tenant::TENANT_HEADER, t);
+        if let Some(t) = token {
+            b = b.header(access::JWT_HEADER, t);
         }
         match body {
             Some(json) => b
@@ -472,7 +493,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_responds() {
-        let (_d, router) = test_app();
+        let (_d, router, _fx) = test_app().await;
         let resp = router
             .oneshot(
                 Request::builder()
@@ -486,18 +507,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backup_status_no_marker_is_not_stale() {
-        // No `.backup-last-ok` on the data dir (dev/test/unarmed Layer 1):
-        // status reports unknown, never stale (the off-box monitor owns the
-        // never-configured case, not the in-app banner).
-        let (_d, router) = test_app();
+    async fn api_request_without_token_is_401() {
+        let (_d, router, _fx) = test_app().await;
         let resp = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/backup-status")
+                    .uri("/api/collection")
                     .body(Body::empty())
                     .unwrap(),
             )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "a request with no JWT must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn backup_status_no_marker_is_not_stale() {
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
+        let resp = router
+            .oneshot(request("GET", "/api/backup-status", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -508,21 +541,16 @@ mod tests {
 
     #[tokio::test]
     async fn backup_status_old_marker_is_stale() {
-        // A marker that exists but is far past the threshold flips `stale`.
-        let (dir, router) = test_app();
+        let (dir, router, fx) = test_app().await;
         let old = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64
-            - 100 * 3600; // 100h ago — well past the 12h default threshold
+            - 100 * 3600;
         std::fs::write(dir.path().join(".backup-last-ok"), old.to_string()).unwrap();
+        let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/backup-status")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request("GET", "/api/backup-status", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -532,9 +560,8 @@ mod tests {
 
     #[tokio::test]
     async fn serves_spa_index_with_fallback() {
-        let (_d, router) = test_app();
+        let (_d, router, _fx) = test_app().await;
 
-        // The index is served at the root.
         let root = router
             .clone()
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -543,7 +570,6 @@ mod tests {
         assert_eq!(root.status(), StatusCode::OK);
         assert!(body_string(root).await.contains("PokeDumpster"));
 
-        // An unknown (client-side) route falls back to index.html.
         let spa_route = router
             .oneshot(
                 Request::builder()
@@ -558,11 +584,6 @@ mod tests {
     }
 
     // ---- response compression (pd-2r0p) ----------------------------------
-    //
-    // Every response left this process uncompressed before `compression()`
-    // landed. These five tests pin the whole contract: what gets compressed,
-    // what deliberately does not, and that compressing never changes the
-    // bytes the client ends up with.
 
     async fn body_bytes(resp: Response) -> Vec<u8> {
         axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -571,13 +592,18 @@ mod tests {
             .to_vec()
     }
 
-    /// `GET uri`, optionally offering `Accept-Encoding`. Returns the response
-    /// with its `content-encoding` (as an owned `String`) alongside the body,
-    /// because reading the body consumes the response.
-    async fn get_encoding(router: &Router, uri: &str, accept: Option<&str>) -> (String, Vec<u8>) {
+    async fn get_encoding(
+        router: &Router,
+        uri: &str,
+        accept: Option<&str>,
+        token: Option<&str>,
+    ) -> (String, Vec<u8>) {
         let mut b = Request::builder().uri(uri);
         if let Some(a) = accept {
             b = b.header(header::ACCEPT_ENCODING, a);
+        }
+        if let Some(t) = token {
+            b = b.header(access::JWT_HEADER, t);
         }
         let resp = router
             .clone()
@@ -611,26 +637,24 @@ mod tests {
         out
     }
 
-    /// The keyword registry — the smallest endpoint in the seeded catalog
-    /// that clears [`COMPRESS_MIN_BYTES`], and JSON of exactly the shape the
-    /// big search payload is made of.
     const BULKY_JSON: &str = "/api/search/keywords";
 
     #[tokio::test]
     async fn json_gzips_and_decodes_to_the_uncompressed_bytes() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
 
-        let (plain_encoding, plain) = get_encoding(&router, BULKY_JSON, None).await;
-        // A client that asks for nothing still gets valid, unencoded JSON.
+        let (plain_encoding, plain) = get_encoding(&router, BULKY_JSON, None, Some(&tok)).await;
         assert_eq!(plain_encoding, "");
         serde_json::from_slice::<serde_json::Value>(&plain).unwrap();
         assert!(
             plain.len() > COMPRESS_MIN_BYTES as usize,
-            "fixture too small to exercise the threshold: {} bytes",
+            "fixture too small: {} bytes",
             plain.len()
         );
 
-        let (encoding, compressed) = get_encoding(&router, BULKY_JSON, Some("gzip")).await;
+        let (encoding, compressed) =
+            get_encoding(&router, BULKY_JSON, Some("gzip"), Some(&tok)).await;
         assert_eq!(encoding, "gzip");
         assert!(
             compressed.len() < plain.len(),
@@ -638,29 +662,27 @@ mod tests {
             plain.len(),
             compressed.len()
         );
-        // The point of the whole change: same bytes, fewer of them on the wire.
         assert_eq!(gunzip(&compressed), plain);
     }
 
     #[tokio::test]
     async fn brotli_is_used_when_the_client_offers_it() {
-        // Accept-Encoding is honoured, not overridden: offered both, the layer
-        // picks br, and a client that only speaks gzip still gets gzip.
-        let (_d, router) = test_app();
-        let (_, plain) = get_encoding(&router, BULKY_JSON, None).await;
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
+        let (_, plain) = get_encoding(&router, BULKY_JSON, None, Some(&tok)).await;
 
         let (encoding, compressed) =
-            get_encoding(&router, BULKY_JSON, Some("gzip, deflate, br")).await;
+            get_encoding(&router, BULKY_JSON, Some("gzip, deflate, br"), Some(&tok)).await;
         assert_eq!(encoding, "br");
         assert_eq!(unbrotli(&compressed), plain);
     }
 
     #[tokio::test]
     async fn responses_below_the_threshold_are_not_compressed() {
-        // `/api/backup-status` is a handful of fields; compressing it would
-        // cost CPU and a chunked body to save nothing.
-        let (_d, router) = test_app();
-        let (encoding, body) = get_encoding(&router, "/api/backup-status", Some("gzip, br")).await;
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
+        let (encoding, body) =
+            get_encoding(&router, "/api/backup-status", Some("gzip, br"), Some(&tok)).await;
         assert!(
             body.len() < COMPRESS_MIN_BYTES as usize,
             "no longer a small response: {} bytes",
@@ -672,49 +694,39 @@ mod tests {
 
     #[tokio::test]
     async fn images_are_never_recompressed() {
-        // Set symbols are PNG — already compressed. Re-encoding them spends
-        // CPU to make the payload bigger. This one is deliberately far above
-        // the size floor and trivially compressible, so if the content-type
-        // rule were dropped the layer would certainly compress it.
-        let (dir, router) = test_app();
+        let (dir, router, _fx) = test_app().await;
         let symbols = dir.path().join("symbols");
         std::fs::create_dir_all(&symbols).unwrap();
         let png = vec![b'P'; 8 * 1024];
         std::fs::write(symbols.join("sv3pt5.png"), &png).unwrap();
 
-        let (encoding, body) = get_encoding(&router, "/sym/sv3pt5.png", Some("gzip, br")).await;
+        // Images are not under /api so no token is needed.
+        let (encoding, body) =
+            get_encoding(&router, "/sym/sv3pt5.png", Some("gzip, br"), None).await;
         assert_eq!(encoding, "");
         assert_eq!(body, png);
     }
 
     #[tokio::test]
     async fn collection_endpoints_round_trip() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
 
         let created = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/collection")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"printing_id":"sv3pt5-1-normal","source":"manual_id"}"#,
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some(&tok),
+                Some(r#"{"printing_id":"sv3pt5-1-normal","source":"manual_id"}"#),
+            ))
             .await
             .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
 
         let listed = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/collection")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request("GET", "/api/collection", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(listed.status(), StatusCode::OK);
@@ -722,53 +734,36 @@ mod tests {
 
         let bad = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/collection")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"printing_id":"sv3pt5-1-nope","source":"manual_id"}"#,
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some(&tok),
+                Some(r#"{"printing_id":"sv3pt5-1-nope","source":"manual_id"}"#),
+            ))
             .await
             .unwrap();
         assert_eq!(bad.status(), StatusCode::NOT_FOUND);
 
         let deleted = router
-            .oneshot(
-                Request::builder()
-                    .method("DELETE")
-                    .uri("/api/collection/1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request("DELETE", "/api/collection/1", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
     }
 
-    /// The API says what kind of mistake was made, and the three answers are
-    /// different (pd-m4gw). A catalog printing is a **400** — it exists, it
-    /// just is not the tenant's to price, and the body names the file that
-    /// is. A printing nobody has heard of stays a 404.
     #[tokio::test]
     async fn manual_price_on_a_catalog_printing_is_a_400_naming_the_seed_file() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
 
         let refused = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/manual-prices")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"printing_id":"sv3pt5-1-normal","price":29.0}"#,
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(request(
+                "POST",
+                "/api/manual-prices",
+                Some(&tok),
+                Some(r#"{"printing_id":"sv3pt5-1-normal","price":29.0}"#),
+            ))
             .await
             .unwrap();
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
@@ -779,14 +774,12 @@ mod tests {
         );
 
         let unknown = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/manual-prices")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"printing_id":"nope-0-normal","price":1.0}"#))
-                    .unwrap(),
-            )
+            .oneshot(request(
+                "POST",
+                "/api/manual-prices",
+                Some(&tok),
+                Some(r#"{"printing_id":"nope-0-normal","price":1.0}"#),
+            ))
             .await
             .unwrap();
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
@@ -794,28 +787,19 @@ mod tests {
 
     #[tokio::test]
     async fn card_endpoint_returns_detail_and_404() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
 
         let found = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/card/sv3pt5/1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request("GET", "/api/card/sv3pt5/1", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(found.status(), StatusCode::OK);
         assert!(body_string(found).await.contains("Bulbasaur"));
 
         let missing = router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/card/sv3pt5/999")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request("GET", "/api/card/sv3pt5/999", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
@@ -823,33 +807,23 @@ mod tests {
 
     #[tokio::test]
     async fn search_owned_and_missing() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
 
-        // Add a copy so the default (owned) search returns it.
         router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/collection")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"printing_id":"sv3pt5-1-normal","source":"manual_id"}"#,
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some(&tok),
+                Some(r#"{"printing_id":"sv3pt5-1-normal","source":"manual_id"}"#),
+            ))
             .await
             .unwrap();
 
-        // Empty query → owned default view includes the owned printing.
         let owned = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/collection/search")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request("GET", "/api/collection/search", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(owned.status(), StatusCode::OK);
@@ -857,15 +831,14 @@ mod tests {
         assert!(body.contains("sv3pt5-1-normal"), "owned search: {body}");
         assert!(body.contains("\"owned\":true"), "owned flag: {body}");
 
-        // A card-level filter that excludes it returns nothing in owned mode.
         let none = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/collection/search?q=t:fire")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request(
+                "GET",
+                "/api/collection/search?q=t:fire",
+                Some(&tok),
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(none.status(), StatusCode::OK);
@@ -874,42 +847,37 @@ mod tests {
         assert!(body.contains("\"total\":0"), "no matches: {body}");
     }
 
-    /// pd-jsby. The body is a page envelope, not a bare array, and the page it
-    /// describes is bounded even when the caller names no bounds.
     #[tokio::test]
     async fn search_returns_a_page_envelope_with_a_bounded_default() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/collection/search?include_unowned=1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request(
+                "GET",
+                "/api/collection/search?include_unowned=1",
+                Some(&tok),
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
         assert_eq!(body["rows"].as_array().unwrap().len(), 1);
-        assert_eq!(body["total"], 1, "total counts the whole result set");
-        assert_eq!(
-            body["limit"],
-            pkdump_db::search::DEFAULT_LIMIT,
-            "an absent limit is the bounded default, not unbounded"
-        );
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["limit"], pkdump_db::search::DEFAULT_LIMIT);
         assert_eq!(body["offset"], 0);
     }
 
-    /// The page bounds reach the query, and `total` stays the size of the whole
-    /// result rather than of the page returned.
     #[tokio::test]
     async fn search_honours_limit_and_offset() {
-        let (_d, router) = test_app();
-        let page = |uri: &'static str| {
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
+        let page = |uri: String| {
             let router = router.clone();
+            let tok = tok.clone();
             async move {
                 let resp = router
-                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .oneshot(request("GET", &uri, Some(&tok), None))
                     .await
                     .unwrap();
                 assert_eq!(resp.status(), StatusCode::OK);
@@ -917,30 +885,30 @@ mod tests {
             }
         };
 
-        let empty = page("/api/collection/search?include_unowned=1&limit=0").await;
+        let empty = page("/api/collection/search?include_unowned=1&limit=0".to_string()).await;
         assert!(empty["rows"].as_array().unwrap().is_empty());
         assert_eq!(empty["total"], 1, "limit=0 is a count-only request");
 
-        let past_end = page("/api/collection/search?include_unowned=1&limit=10&offset=5").await;
+        let past_end =
+            page("/api/collection/search?include_unowned=1&limit=10&offset=5".to_string()).await;
         assert!(past_end["rows"].as_array().unwrap().is_empty());
-        assert_eq!(
-            past_end["total"], 1,
-            "an offset past the end is not an error"
-        );
+        assert_eq!(past_end["total"], 1);
         assert_eq!(past_end["limit"], 10);
         assert_eq!(past_end["offset"], 5);
     }
 
-    /// pd-2g84. The envelope prices the whole result, not the page — asserted
-    /// where it matters most, on a request that returns no rows at all. A
-    /// client holding nothing can still say what the result is worth.
     #[tokio::test]
     async fn search_prices_the_whole_result_and_not_the_page() {
-        let (dir, router) = test_app();
-        // Own a Near Mint copy (×1.00) and price its printing in the catalog.
+        let (dir, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
         router
             .clone()
-            .oneshot(request("POST", "/api/collection", None, Some(ADD_CARD)))
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some(&tok),
+                Some(ADD_CARD),
+            ))
             .await
             .unwrap();
         {
@@ -953,11 +921,12 @@ mod tests {
             .unwrap();
         }
 
-        let page = |uri: &'static str| {
+        let page = |uri: String| {
             let router = router.clone();
+            let tok = tok.clone();
             async move {
                 let resp = router
-                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .oneshot(request("GET", &uri, Some(&tok), None))
                     .await
                     .unwrap();
                 assert_eq!(resp.status(), StatusCode::OK);
@@ -965,68 +934,58 @@ mod tests {
             }
         };
 
-        let whole = page("/api/collection/search?limit=all").await;
-        assert_eq!(whole["total_value"], 12.5, "the result is worth its copy");
+        let whole = page("/api/collection/search?limit=all".to_string()).await;
+        assert_eq!(whole["total_value"], 12.5);
 
-        let none = page("/api/collection/search?limit=0").await;
+        let none = page("/api/collection/search?limit=0".to_string()).await;
         assert!(none["rows"].as_array().unwrap().is_empty());
-        assert_eq!(
-            none["total_value"], 12.5,
-            "the money describes the result, not the rows served"
-        );
+        assert_eq!(none["total_value"], 12.5);
     }
 
-    /// pd-7z4o. `limit=all` is the whole result set, and says so in the
-    /// envelope: the echoed `limit` is the row count, which is what makes the
-    /// response describe itself as unpaged rather than as a page that happened
-    /// to fit.
     #[tokio::test]
     async fn search_serves_the_whole_result_for_limit_all() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/collection/search?include_unowned=1&limit=all")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request(
+                "GET",
+                "/api/collection/search?include_unowned=1&limit=all",
+                Some(&tok),
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
         let rows = body["rows"].as_array().unwrap().len();
-        assert_eq!(body["total"], rows, "every matching row was served");
-        assert_eq!(body["limit"], rows, "the echoed limit is what was served");
+        assert_eq!(body["total"], rows);
+        assert_eq!(body["limit"], rows);
         assert_eq!(body["offset"], 0);
     }
 
-    /// Skipping rows out of a result you asked for in full is a contradiction,
-    /// so the pair is refused rather than one half of it quietly winning.
     #[tokio::test]
     async fn search_refuses_an_offset_alongside_limit_all() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/collection/search?limit=all&offset=10")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request(
+                "GET",
+                "/api/collection/search?limit=all&offset=10",
+                Some(&tok),
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
         assert!(body["error"].as_str().unwrap().contains("limit=all"));
-        assert!(body["position"].is_null(), "not a query error");
+        assert!(body["position"].is_null());
     }
 
-    /// A paging bound that is not a whole number in range is refused — never
-    /// honoured, never clamped to something the caller did not ask for. The 400
-    /// body carries `error` and no `position`, which is how the client tells a
-    /// paging complaint from a query-syntax one.
     #[tokio::test]
     async fn search_refuses_bad_paging_bounds() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
         let over_max = pkdump_db::search::MAX_LIMIT + 1;
         for uri in [
             "/api/collection/search?limit=-1".to_string(),
@@ -1039,7 +998,7 @@ mod tests {
         ] {
             let resp = router
                 .clone()
-                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .oneshot(request("GET", &uri, Some(&tok), None))
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
@@ -1049,50 +1008,36 @@ mod tests {
         }
     }
 
-    /// `value` and `adj` left the sort surface for good (pd-tjym): each ordered
-    /// through a subquery joining the tenant's `collection` to the shared
-    /// catalog's prices across the `ATTACH` boundary, and SQLite cannot index
-    /// across attached databases — so ordering by either had to materialise and
-    /// sort the whole match set before `LIMIT` could discard any of it.
-    ///
-    /// A client still asking is **told**. Falling back to name order would hand
-    /// it a result that looks sorted and isn't, which is exactly how a caller
-    /// stops noticing it is asking for a column that no longer exists.
     #[tokio::test]
     async fn search_refuses_a_sort_it_cannot_satisfy() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
         for key in ["value", "adj", "nonsense"] {
             let uri = format!("/api/collection/search?sort={key}");
             let resp = router
                 .clone()
-                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .oneshot(request("GET", &uri, Some(&tok), None))
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}");
             let body: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
             let message = body["error"].as_str().unwrap_or_default();
-            // The refusal names what IS sortable — a bare "bad sort" leaves the
-            // caller guessing at a vocabulary it cannot see.
             for named in pkdump_db::search::SORT_KEYS {
                 assert!(message.contains(named), "{uri}: {message} omits {named}");
             }
-            assert!(
-                body["position"].is_null(),
-                "a sort complaint is not a query-syntax error: {uri}"
-            );
+            assert!(body["position"].is_null(), "not a query error: {uri}");
         }
     }
 
-    /// And every key the endpoint advertises is served, so the refusal above is
-    /// about the key rather than about `sort=` having stopped being read.
     #[tokio::test]
     async fn search_serves_every_advertised_sort_key() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
         for key in pkdump_db::search::SORT_KEYS {
             let uri = format!("/api/collection/search?sort={key}&include_unowned=1");
             let resp = router
                 .clone()
-                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .oneshot(request("GET", &uri, Some(&tok), None))
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::OK, "{uri}");
@@ -1101,14 +1046,15 @@ mod tests {
 
     #[tokio::test]
     async fn search_rejects_unknown_keyword_with_position() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/collection/search?q=xyz:1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request(
+                "GET",
+                "/api/collection/search?q=xyz:1",
+                Some(&tok),
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -1119,14 +1065,10 @@ mod tests {
 
     #[tokio::test]
     async fn search_keywords_endpoint_serves_registry() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/search/keywords")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request("GET", "/api/search/keywords", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1137,14 +1079,10 @@ mod tests {
 
     #[tokio::test]
     async fn export_json_serves_a_downloadable_envelope() {
-        let (_d, router) = test_app();
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/export/json")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request("GET", "/api/export/json", Some(&tok), None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1154,57 +1092,39 @@ mod tests {
                 .unwrap()
                 .contains("pokedumpster-collection.json")
         );
-
         let envelope: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
         assert_eq!(
             envelope["format"],
             serde_json::Value::from(pkdump_db::json_backup::FORMAT)
         );
-        // Collection data is in; catalog data (served from the attached
-        // read-only shared database) is not.
         assert!(envelope.get("collection").is_some());
         assert!(envelope.get("printings").is_none());
     }
 
-    // ---------------------------------------------------------------------
-    // Tenant resolution and isolation.
-    //
-    // These assert the NEGATIVE. "Alice can see Alice's cards" is not the
-    // property that matters and would pass just as happily with no resolver
-    // at all; what matters is that nothing Bob sends reaches Alice's
-    // collection. Each test below is written so that removing or bypassing
-    // the resolver breaks it — verified by mutation, see `pd-5emg`.
-    // ---------------------------------------------------------------------
+    // ---- tenant resolution and isolation ------------------------------------
 
-    /// **The load-bearing test.** A request resolved as Bob cannot read, and
-    /// cannot destroy, anything belonging to Alice.
-    ///
-    /// Break the resolver — have `Tenants::resolve` ignore the header and
-    /// return a fixed tenant, or have `blocking` reach for some ambient
-    /// connection — and Bob's list comes back holding Alice's card, or his
-    /// DELETE succeeds. Either way this fails.
+    /// Each tenant's JWT email resolves to their own database only.
     #[tokio::test]
     async fn one_tenant_cannot_reach_another_tenants_collection() {
-        let (_d, router, _dir) = multi_tenant_app(&["alice", "bob"]);
+        let (_d, router, _dir, fx) = multi_tenant_app(&["alice", "bob"]).await;
+        let alice_tok = fx.valid_token("alice@example.com");
+        let bob_tok = fx.valid_token("bob@example.com");
 
-        // Alice registers a card.
         let created = router
             .clone()
             .oneshot(request(
                 "POST",
                 "/api/collection",
-                Some("alice"),
+                Some(&alice_tok),
                 Some(ADD_CARD),
             ))
             .await
             .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
 
-        // Bob's collection is empty. This is the assertion the whole epic
-        // is for.
         let bobs = router
             .clone()
-            .oneshot(request("GET", "/api/collection", Some("bob"), None))
+            .oneshot(request("GET", "/api/collection", Some(&bob_tok), None))
             .await
             .unwrap();
         assert_eq!(bobs.status(), StatusCode::OK);
@@ -1215,10 +1135,9 @@ mod tests {
             "bob's collection must not contain alice's card: {body}"
         );
 
-        // Nor can Bob reach it by id — the row exists, but not for him.
         let stolen = router
             .clone()
-            .oneshot(request("DELETE", "/api/collection/1", Some("bob"), None))
+            .oneshot(request("DELETE", "/api/collection/1", Some(&bob_tok), None))
             .await
             .unwrap();
         assert_eq!(
@@ -1227,255 +1146,124 @@ mod tests {
             "bob deleted a row out of alice's collection"
         );
 
-        // And Alice still has it — the negative above is not just "nobody
-        // can see anything".
         let alices = router
-            .oneshot(request("GET", "/api/collection", Some("alice"), None))
+            .oneshot(request("GET", "/api/collection", Some(&alice_tok), None))
             .await
             .unwrap();
         assert!(body_string(alices).await.contains("sv3pt5-1-normal"));
     }
 
-    /// Multi-tenant with no tenant named is refused. There is no ambient
-    /// tenant to fall back to — falling back would serve one person's
-    /// collection to an anonymous caller.
+    /// An unbound email is a 403 and does not create a database.
     #[tokio::test]
-    async fn a_request_that_names_no_tenant_is_refused() {
-        let (_d, router, _dir) = multi_tenant_app(&["alice"]);
-        router
+    async fn an_unbound_email_is_a_403_and_creates_nothing() {
+        let (_d, router, tenants_dir, fx) = multi_tenant_app(&["alice"]).await;
+        let tok = fx.valid_token("mallory@example.com");
+        let before = std::fs::read_dir(&tenants_dir).unwrap().count();
+        let resp = router
+            .oneshot(request("GET", "/api/collection", Some(&tok), None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(std::fs::read_dir(&tenants_dir).unwrap().count(), before);
+    }
+
+    /// In single-tenant mode, any authenticated caller reaches the one
+    /// collection — the JWT is validated but its email is not looked up.
+    #[tokio::test]
+    async fn with_the_flag_off_any_identity_reaches_the_single_tenant() {
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
+
+        let created = router
             .clone()
             .oneshot(request(
                 "POST",
                 "/api/collection",
-                Some("alice"),
+                Some(&tok),
                 Some(ADD_CARD),
             ))
             .await
             .unwrap();
-
-        let anon = router
-            .oneshot(request("GET", "/api/collection", None, None))
-            .await
-            .unwrap();
-        assert_eq!(anon.status(), StatusCode::BAD_REQUEST);
-        let body = body_string(anon).await;
-        assert!(
-            !body.contains("sv3pt5-1-normal"),
-            "an unresolved request was served a collection: {body}"
-        );
-    }
-
-    /// Naming a handle nobody registered is a 404 — it does not provision
-    /// one. A resolver that opened whatever it was handed would let any
-    /// caller create tenants by guessing names.
-    #[tokio::test]
-    async fn an_unknown_tenant_is_a_404_and_creates_nothing() {
-        let (_d, router, tenants_dir) = multi_tenant_app(&["alice"]);
-        let before = std::fs::read_dir(&tenants_dir).unwrap().count();
-        let resp = router
-            .oneshot(request("GET", "/api/collection", Some("mallory"), None))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        assert_eq!(std::fs::read_dir(&tenants_dir).unwrap().count(), before);
-    }
-
-    /// **`pd-rqgv`, end to end.** The header is a lookup key, so a handle
-    /// that names a *file* — one in `tenants/`, or one reached by climbing
-    /// out of it — resolves to nothing. There is no path to escape from,
-    /// because no path is built from what the header carries.
-    ///
-    /// `ghost` is the mutation canary: `ghost.sqlite` is a real collection,
-    /// and under the old `dir.join(format!("{name}.sqlite"))` that header
-    /// would have been served it. It is a perfectly well-formed handle, so
-    /// the boundary check is not what stops it — the lookup is, and this is
-    /// the 404 half of the distinction `pd-4g7c` draws.
-    #[tokio::test]
-    async fn a_handle_that_names_a_file_resolves_to_nothing() {
-        let (_d, router, tenants_dir) = multi_tenant_app(&["alice"]);
-
-        // A database in `tenants/` that the registry does not know about.
-        let ghost = tenants_dir.join("ghost.sqlite");
-        pkdump_db::open_user(&ghost).unwrap();
-
-        let resp = router
-            .clone()
-            .oneshot(request("GET", "/api/collection", Some("ghost"), None))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-
-        // The traversing ones do not even get that far: they are not handles.
-        for handle in ["../shared", "../../etc/passwd", "alice/../ghost"] {
-            let resp = router
-                .clone()
-                .oneshot(request("GET", "/api/collection", Some(handle), None))
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{handle:?}");
-        }
-    }
-
-    /// **`pd-4g7c`, over HTTP.** The two refusals are different answers, and
-    /// a client can tell them apart: a header that is not a handle is a 400
-    /// naming the rule, and a handle nobody holds is a 404.
-    ///
-    /// Asserted here rather than only against `Tenants::resolve` because the
-    /// status code is the deliverable — a 400 the middleware swallowed into a
-    /// 404 on the way out would satisfy the unit test and fail the caller.
-    /// Remove the `validate_tenant_name` call in `tenant::resolve` and the
-    /// first half of this becomes 404s.
-    #[tokio::test]
-    async fn a_malformed_handle_is_a_400_and_an_unknown_one_a_404() {
-        let (d, router, _dir) = multi_tenant_app(&["alice"]);
-
-        for malformed in ["Alice", "-flag", "a/b", "alice.sqlite", "has space"] {
-            let resp = router
-                .clone()
-                .oneshot(request("GET", "/api/collection", Some(malformed), None))
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{malformed:?}");
-            let body = body_string(resp).await;
-            assert!(
-                body.contains(pkdump_db::HANDLE_RULE),
-                "the 400 must say what a handle may be: {body}"
-            );
-            assert!(
-                !body.contains(malformed),
-                "the 400 echoed the header back: {body}"
-            );
-        }
-
-        // Well-formed and unregistered, well-formed and detached: both 404,
-        // and neither is a 400. A detached handle is a name that WAS held, so
-        // it is the sharpest case that the two answers are decided by
-        // different questions.
-        let registry = pkdump_db::open_registry(&d.path().join("registry.sqlite")).unwrap();
-        pkdump_db::registry::detach(&registry, "alice").unwrap();
-        for known_shaped in ["mallory", "alice"] {
-            let resp = router
-                .clone()
-                .oneshot(request("GET", "/api/collection", Some(known_shaped), None))
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{known_shaped:?}");
-        }
-    }
-
-    /// A user's `database_id` is not a second way in. Only the `handle`
-    /// column resolves, so knowing where someone's bytes live does not let
-    /// a caller ask to be served from them — and a ULID is not even a
-    /// well-formed handle, so it is refused before the lookup.
-    #[tokio::test]
-    async fn a_database_id_is_not_a_handle() {
-        let (d, router, _dir) = multi_tenant_app(&["alice"]);
-        let registry = pkdump_db::open_registry(&d.path().join("registry.sqlite")).unwrap();
-        let alice = pkdump_db::registry::lookup(&registry, "alice")
-            .unwrap()
-            .unwrap();
-
-        let resp = router
-            .oneshot(request(
-                "GET",
-                "/api/collection",
-                Some(&alice.database_id),
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    /// **Multitenancy is invisible when it is off.** The default build reads
-    /// no tenant header at all, so a request cannot switch collections by
-    /// sending one — the opt-in flag is the only switch there is.
-    #[tokio::test]
-    async fn with_the_flag_off_the_header_does_nothing() {
-        let (_d, router) = test_app();
-
-        // Register a card without naming a tenant, as the SPA does.
-        let created = router
-            .clone()
-            .oneshot(request("POST", "/api/collection", None, Some(ADD_CARD)))
-            .await
-            .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
 
-        // The same instance, asked for some other tenant, serves the one
-        // collection it has — it does not 404, and it does not switch.
+        // A different email — still resolves to the single collection.
+        let other_tok = fx.valid_token("someone-else@example.com");
         let claimed = router
-            .oneshot(request("GET", "/api/collection", Some("bob"), None))
+            .oneshot(request("GET", "/api/collection", Some(&other_tok), None))
             .await
             .unwrap();
         assert_eq!(claimed.status(), StatusCode::OK);
         assert!(body_string(claimed).await.contains("sv3pt5-1-normal"));
     }
 
-    // ---------------------------------------------------------------------
-    // Refusing an exposed unauthenticated resolver (`check_bind`).
-    //
-    // The flag defaulting to off, the env parse that rejects "0", and the
-    // startup warning are all conventions. These four assert the mechanism:
-    // the process does not start. Delete the `anyhow::bail!` in `check_bind`
-    // and `multi_tenant_refuses_a_non_loopback_bind` fails.
-    // ---------------------------------------------------------------------
+    /// A leftover `x-pkdump-tenant` header cannot be used to reach another
+    /// tenant's collection. The header is not read; resolution is from the JWT
+    /// email only. Sending bob's handle alongside alice's JWT still gives alice.
+    #[tokio::test]
+    async fn leftover_tenant_header_cannot_escalate_to_another_tenant() {
+        let (_d, router, _dir, fx) = multi_tenant_app(&["alice", "bob"]).await;
+        let alice_tok = fx.valid_token("alice@example.com");
 
-    /// **The load-bearing test.** Multi-tenant plus a bind anyone can reach
-    /// is refused, and the refusal says why rather than just what.
-    #[test]
-    fn multi_tenant_refuses_a_non_loopback_bind() {
-        for host in ["0.0.0.0", "::", "192.168.1.10", "10.0.0.2"] {
-            let err = match check_bind(true, host.parse().unwrap(), false) {
-                Ok(()) => panic!("{host} must not serve an unauthenticated resolver"),
-                Err(e) => e,
-            };
-            let msg = err.to_string();
-            assert!(msg.contains(host), "the error names the address: {msg}");
-            assert!(
-                msg.contains("nothing authenticates"),
-                "the error says WHY, not just what: {msg}"
-            );
-            assert!(
-                msg.contains("PKDUMP_MULTITENANT_INSECURE_BIND"),
-                "the error names the way out: {msg}"
-            );
-        }
+        // Alice adds a card.
+        let created = router
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some(&alice_tok),
+                Some(ADD_CARD),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        // Now alice sends a request with her own JWT but a header claiming to
+        // be bob. Resolution ignores the header; she still reaches alice's DB.
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/collection")
+                    .header(access::JWT_HEADER, &alice_tok)
+                    .header("x-pkdump-tenant", "bob")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("sv3pt5-1-normal"),
+            "alice's header claim resolved to the wrong collection: {body}"
+        );
     }
 
-    /// Loopback is the mode's intended shape — a developer, a demo, an SSH
-    /// tunnel — and stays allowed.
+    // ---- check_multitenant_access (sync, no HTTP) ----------------------------------------
+
     #[test]
-    fn multi_tenant_on_loopback_still_starts() {
-        for host in ["127.0.0.1", "::1", "127.0.0.5"] {
-            check_bind(true, host.parse().unwrap(), false)
-                .unwrap_or_else(|e| panic!("{host} is loopback and must serve: {e}"));
-        }
+    fn multi_tenant_without_access_refuses() {
+        let err = check_multitenant_access(true, false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(access::TEAM_DOMAIN_ENV), "{msg}");
+        assert!(msg.contains(access::AUD_ENV), "{msg}");
     }
 
-    /// The escape hatch works — for whoever puts authentication in front of
-    /// it later — and it is the *only* thing that opens the refused case.
     #[test]
-    fn the_explicit_opt_in_allows_the_insecure_bind() {
-        check_bind(true, "0.0.0.0".parse().unwrap(), true).unwrap();
+    fn multi_tenant_with_access_configured_starts() {
+        check_multitenant_access(true, true).unwrap();
     }
 
-    /// **Single-tenant is untouched at any address.** It is the shipped
-    /// default and `deploy/pkdump.container` binds `0.0.0.0`; a refusal that
-    /// caught it would break production.
     #[test]
-    fn single_tenant_is_unaffected_at_any_host() {
-        for host in ["0.0.0.0", "::", "127.0.0.1", "192.168.1.10"] {
-            check_bind(false, host.parse().unwrap(), false)
-                .unwrap_or_else(|e| panic!("single-tenant on {host} must serve: {e}"));
-        }
+    fn single_tenant_is_unaffected_by_access_config() {
+        check_multitenant_access(false, false).unwrap();
+        check_multitenant_access(false, true).unwrap();
     }
 
-    /// Every route reaches its database through `blocking`, which takes the
-    /// tenant from the request scope. Outside a resolved request there is no
-    /// connection to be had — not a default one, none.
     #[tokio::test]
     async fn there_is_no_database_outside_a_resolved_request() {
+        let fx = TestAccessFixture::new().await;
         let dir = tempfile::tempdir().unwrap();
         let shared = seed(dir.path());
         let state = AppState {
@@ -1490,6 +1278,7 @@ mod tests {
             registry: Arc::new(Default::default()),
             flags: Arc::new(Vec::new()),
             data_dir: Arc::new(dir.path().to_path_buf()),
+            access: fx.access.clone(),
         };
 
         let unscoped = blocking(&state, |c| {
@@ -1500,8 +1289,6 @@ mod tests {
         .await;
         assert!(unscoped.is_err(), "a connection without a resolved tenant");
 
-        // In scope, the same call works — the failure above is the missing
-        // tenant, not a broken query.
         let scoped = tenant::test_support::as_tenant(
             "collection",
             blocking(&state, |c| {

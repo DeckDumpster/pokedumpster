@@ -13,15 +13,6 @@ use pkdump_server::ServeConfig;
 /// deployment, which passes configuration as env and not as argv.
 const MULTITENANT_ENV: &str = "PKDUMP_MULTITENANT";
 
-/// The second opt-in: multi-tenant bound somewhere other than loopback.
-/// Without it the server refuses that combination outright rather than
-/// warning about it (`pkdump_server::check_bind`).
-///
-/// Deliberately env-only, with no `--allow-insecure-bind` twin. Exposing an
-/// unauthenticated resolver should not be one tab-completion away on a
-/// command line; whoever means it can spell it out.
-const MULTITENANT_INSECURE_BIND_ENV: &str = "PKDUMP_MULTITENANT_INSECURE_BIND";
-
 /// Arguments for `pkdump serve`.
 #[derive(clap::Args)]
 pub struct ServeArgs {
@@ -39,15 +30,10 @@ pub struct ServeArgs {
     #[arg(long, value_name = "DIR")]
     static_dir: Option<PathBuf>,
 
-    /// Serve every tenant, resolving each request to one of them by its
-    /// `x-pkdump-tenant` header, instead of serving only `$PKDUMP_USER`.
-    ///
-    /// OFF by default and it must stay off in production: nothing
-    /// authenticates the header, so with this on any caller may name any
-    /// tenant. Also settable as `PKDUMP_MULTITENANT=1`. Combined with a
-    /// non-loopback `--host` the server refuses to start unless
-    /// `PKDUMP_MULTITENANT_INSECURE_BIND=1` is also set. See
-    /// `deploy/TENANTS.md`.
+    /// Serve every tenant, resolving each request to the tenant whose email
+    /// is bound to the Cloudflare Access identity in the request's JWT.
+    /// Also settable as `PKDUMP_MULTITENANT=1`. Requires Cloudflare Access
+    /// to be configured. See `deploy/TENANTS.md`.
     #[arg(long)]
     multi_tenant: bool,
 }
@@ -81,9 +67,13 @@ pub fn run(args: ServeArgs) -> anyhow::Result<()> {
         host: args.host,
         port: args.port,
         multi_tenant: args.multi_tenant || env_opt_in(MULTITENANT_ENV),
-        // Same strict helper as the flag above, on purpose: a second parsing
-        // path is how `=0` gets read as "on" again.
-        allow_insecure_bind: env_opt_in(MULTITENANT_INSECURE_BIND_ENV),
+        access_team_domain: std::env::var(pkdump_server::access::TEAM_DOMAIN_ENV).map_err(
+            |_| anyhow::anyhow!("{} is required", pkdump_server::access::TEAM_DOMAIN_ENV),
+        )?,
+        access_aud: std::env::var(pkdump_server::access::AUD_ENV)
+            .map_err(|_| anyhow::anyhow!("{} is required", pkdump_server::access::AUD_ENV))?,
+        access_jwks_url: std::env::var(pkdump_server::access::JWKS_URL_ENV)
+            .map_err(|_| anyhow::anyhow!("{} is required", pkdump_server::access::JWKS_URL_ENV))?,
     };
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(pkdump_server::serve(cfg))
@@ -126,25 +116,5 @@ mod tests {
         }
         unsafe { std::env::remove_var(VAR) };
         assert!(!env_opt_in(VAR), "unset must not opt in");
-    }
-
-    /// The insecure-bind opt-in reads through the same strict helper — a
-    /// looser second path is exactly how `PKDUMP_MULTITENANT_INSECURE_BIND=0`
-    /// would come to mean "yes, expose every collection".
-    #[test]
-    fn the_insecure_bind_opt_in_uses_the_same_strict_parse() {
-        // No other test touches this variable, and `run` (its only real
-        // reader) is never called from the test binary.
-        for off in ["", "0", "false", "no", "off"] {
-            unsafe { std::env::set_var(MULTITENANT_INSECURE_BIND_ENV, off) };
-            assert!(
-                !env_opt_in(MULTITENANT_INSECURE_BIND_ENV),
-                "{off:?} must not open a non-loopback multi-tenant bind"
-            );
-        }
-        unsafe { std::env::set_var(MULTITENANT_INSECURE_BIND_ENV, "1") };
-        assert!(env_opt_in(MULTITENANT_INSECURE_BIND_ENV));
-        unsafe { std::env::remove_var(MULTITENANT_INSECURE_BIND_ENV) };
-        assert!(!env_opt_in(MULTITENANT_INSECURE_BIND_ENV), "unset is off");
     }
 }

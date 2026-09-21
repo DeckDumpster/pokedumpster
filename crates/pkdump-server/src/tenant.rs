@@ -1,64 +1,33 @@
 //! Tenant resolution — mapping one HTTP request to exactly one tenant's
 //! collection database.
 //!
-//! # This is resolution, not authentication
+//! # Resolution is driven by a verified identity
 //!
-//! There is no login, no session, no token. A request in multi-tenant mode
-//! says which tenant it is and is believed. That is the whole mechanism, and
-//! it is why the mode is **off by default** behind an explicit opt-in
-//! (`pkdump serve --multi-tenant` / `PKDUMP_MULTITENANT=1`) and why nothing
-//! running it may face the internet. Identity is a separate epic.
-//!
-//! "May not" is enforced, not asked for: with the flag on and a bind address
-//! that is not loopback, the process refuses to start
-//! (`check_bind` in the crate root) unless a second, explicit opt-in says to expose it
-//! anyway.
+//! In multi-tenant mode, [`Tenants::resolve`] takes a [`crate::access::VerifiedIdentity`]
+//! — a proof-carrying type whose constructor is private to `access`. The only
+//! source is [`crate::access::layer`], which verified a Cloudflare Access JWT.
+//! The email from that verified identity is looked up in the user registry; if
+//! it is bound to an active tenant, that tenant's database is served.
 //!
 //! With the flag off — production, and every existing UI test — this module
-//! is inert: [`Tenants::resolve`] ignores the request entirely and hands back
-//! the single tenant the process was started with. A request cannot switch
-//! tenants by sending a header, because in single-tenant mode the header is
-//! never read.
+//! is inert: [`Tenants::resolve`] ignores the identity entirely and hands back
+//! the single tenant the process was started with.
 //!
-//! # The header is a lookup key, not a filename
+//! # The email is a lookup key, not a filename
 //!
-//! What a request names is a **handle**. What it is served from is
-//! `tenants/<database_id>.sqlite`, and the two are joined by a row in the
-//! user registry ([`pkdump_db::registry`]) — never by string equality.
-//! Resolution is therefore a `SELECT` with the header as a bound parameter,
+//! What the identity carries is an **email address**. What a request is served
+//! from is `tenants/<database_id>.sqlite`, and the two are joined by a row in
+//! the user registry ([`pkdump_db::registry`]) — never by string equality.
+//! Resolution is therefore a `SELECT` with the email as a bound parameter,
 //! and the only string that reaches a path constructor is the `database_id`
-//! the registry hands back, which only the registry mints. An unknown handle
-//! is not in the table; a handle full of `../` is not in the table either.
-//! There is nothing for it to escape, because nothing concatenates it.
-//!
-//! That is the whole of `pd-rqgv`. Before it, the validated header value
-//! *was* the filename, and the only thing standing between an unauthenticated
-//! caller and a path was a charset regex.
-//!
-//! # The header is validated all the same
-//!
-//! Not to protect the path — see above, there is no path — but because a
-//! boundary that accepts anything answers wrongly. `pkdump tenant create`
-//! holds a handle to [`pkdump_db::HANDLE_RULE`] and the registry stores it
-//! under a `CHECK` of the same rule, so a header outside that rule names
-//! something that could never have been registered. Serving it "404 no such
-//! tenant" states that a well-formed name is unused, which is false; it is a
-//! malformed request, and a 400 says so and can be diagnosed. `pd-4g7c`, and
-//! OWASP's multi-tenant guidance, which names an unvalidated tenant header as
-//! the anti-pattern in as many words.
-//!
-//! Validation is necessary and nowhere near sufficient. The header is still
-//! *asserted* identity: nothing authenticates it, which is why the mode is
-//! off by default and why the auth epic replaces this with a verified
-//! principal, the header demoted to a selector checked against what that
-//! principal is entitled to. Nothing here may assume the header stays the
-//! identity.
+//! the registry hands back, which only the registry mints. An email with no
+//! binding is a 403; there is nothing for it to escape.
 //!
 //! # How isolation is enforced
 //!
 //! Structurally, not by filtering. A tenant's connection is opened against
 //! that tenant's own database file, so there is no row belonging to another
-//! tenant anywhere in its scope — no `WHERE tenant_id = ?` to forget. Three
+//! tenant anywhere in its scope — no `WHERE tenant_id = ?` to forget. Four
 //! things keep that true:
 //!
 //! 1. [`AppState`](crate::AppState) holds no connection of its own. The only
@@ -70,13 +39,16 @@
 //!    nothing to thread.
 //! 3. [`assert_isolated`] fails the open unless the connection is wired to
 //!    exactly this tenant's file plus the one read-only shared catalog.
+//! 4. A request cannot reach a database without a [`crate::access::VerifiedIdentity`],
+//!    because [`crate::access::layer`] runs before this layer and its
+//!    constructor is private — only a verified Cloudflare Access JWT produces one.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
 use rusqlite::Connection;
@@ -85,32 +57,6 @@ use pkdump_db::registry::{self, UserState};
 use pkdump_db::{DbError, validate_tenant_name};
 
 use crate::{AppError, AppState};
-
-/// The request header naming the tenant, when resolution is on.
-///
-/// A header rather than a hostname or a path prefix, deliberately: a browser
-/// does not send it on its own, so an unauthenticated multi-tenant instance
-/// cannot be driven by simply pointing a browser at it. Making the dangerous
-/// mode awkward to reach by accident is the point.
-pub const TENANT_HEADER: &str = "x-pkdump-tenant";
-
-/// The 400 for a header that is not a handle.
-///
-/// It says what a handle may be — a caller who sent one cannot fix it
-/// otherwise — and it does not repeat what they sent. The value is untrusted
-/// bytes that reached us over a header nothing authenticates, and it has no
-/// business in a response body; [`pkdump_db::validate_tenant_name`]'s own
-/// errors quote the offending name, which is right for a CLI argument and
-/// wrong here, so they are deliberately not what goes on the wire.
-fn malformed() -> AppError {
-    AppError(
-        StatusCode::BAD_REQUEST,
-        format!(
-            "`{TENANT_HEADER}` is not a well-formed handle: {rule}",
-            rule = pkdump_db::HANDLE_RULE
-        ),
-    )
-}
 
 /// A tenant that has been resolved for the request in hand.
 ///
@@ -222,64 +168,40 @@ impl Tenants {
 
     /// The tenant this request is served as.
     ///
-    /// In single-tenant mode the headers are not read at all — the header is
-    /// not a way to switch tenants on an instance that did not opt in.
+    /// In single-tenant mode the identity is not consulted — it is not a way
+    /// to switch tenants on an instance that did not opt in.
     ///
-    /// In multi-tenant mode the header is a **lookup key**: it is checked
-    /// against [`pkdump_db::HANDLE_RULE`] and then compared against
-    /// `user.handle` as a bound parameter, and is then done with. Three
-    /// answers, and the distinction between the first two is the point:
+    /// In multi-tenant mode the identity's **email** is a lookup key: it is
+    /// compared against `user_identity.email` as a bound parameter, and is
+    /// then done with. Two answers:
     ///
-    /// * not a well-formed handle — **400**. No row could ever have held it.
-    /// * well-formed and not an active user — **404**. Unregistered and
-    ///   detached are the same answer: neither is an active user, and
-    ///   distinguishing them would tell an unauthenticated caller which
-    ///   handles have ever existed.
-    /// * registered — the `database_id` on their row, never the header.
-    pub(crate) fn resolve(&self, headers: &HeaderMap) -> Result<TenantId, AppError> {
+    /// * no active binding for this email — **403**, naming the command to add one.
+    /// * bound — the `database_id` on their row, never the email.
+    pub(crate) fn resolve(
+        &self,
+        identity: &crate::access::VerifiedIdentity,
+    ) -> Result<TenantId, AppError> {
         let (dir, registry) = match &self.mode {
             Mode::Single { id, .. } => return Ok(id.clone()),
             Mode::Multi { dir, registry } => (dir, registry),
         };
-        let raw = headers.get(TENANT_HEADER).ok_or_else(|| {
-            AppError(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "multi-tenant resolution is on: every request must name its tenant \
-                     in the `{TENANT_HEADER}` header"
-                ),
-            )
-        })?;
-        // Non-ASCII bytes and a bad charset are the same answer, deliberately:
-        // "that is not a handle" is one fact about the request, and splitting
-        // it in two would have a caller chasing which of two rules they broke
-        // when there is only one.
-        let handle = raw.to_str().map_err(|_| malformed())?;
-        // Refuse a malformed handle here, before the lookup, and refuse it as
-        // MALFORMED. Not because a bad charset could hurt anything downstream
-        // — it could not, nothing builds a path from this string — but because
-        // `create` holds a handle to a rule and the registry stores it under a
-        // CHECK, so a value outside that rule is one no row could ever have.
-        // Answering it "no such tenant" would be a false statement: the tenant
-        // does not fail to exist, the request is not a well-formed question.
-        validate_tenant_name(handle).map_err(|_| malformed())?;
+        let email = identity.email();
         let found = registry
             .lock()
             .map_err(|_| AppError::internal("registry mutex poisoned"))
             .and_then(|conn| {
-                registry::lookup(&conn, handle)
+                registry::lookup_by_email(&conn, email)
                     .map_err(|e| AppError::internal(format!("registry lookup failed: {e}")))
             })?;
-        // Unregistered and detached are one answer: not an active user.
-        // Distinguishing them would tell an unauthenticated caller which
-        // handles have ever existed, and the handle is echoed back to
-        // nobody — it is untrusted bytes and does not belong in a response.
         let database_id = match found {
             Some(user) if user.state == UserState::Active => user.database_id,
             _ => {
                 return Err(AppError(
-                    StatusCode::NOT_FOUND,
-                    "no such tenant on this instance".to_string(),
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "no tenant is bound to identity {email:?}; \
+                         run: pkdump tenant identity add <handle> --email {email}",
+                    ),
                 ));
             }
         };
@@ -410,15 +332,20 @@ pub(crate) fn current() -> Result<TenantId, AppError> {
     })
 }
 
-/// Middleware: resolve the tenant, then run the rest of the request with it
-/// in scope. Applied to `/api` as a `route_layer`, so it runs for matched API
-/// routes and not for the SPA fallback.
+/// Middleware: resolve the tenant from the request's verified identity, then
+/// run the rest of the request with it in scope. Applied to `/api` as a
+/// `route_layer`, so it runs for matched API routes and not for the SPA
+/// fallback.
+///
+/// `access::layer` runs first (it is the outermost `route_layer`), so the
+/// identity is always in scope when this runs.
 pub(crate) async fn layer(
     State(state): State<AppState>,
     request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let id = state.tenants.resolve(request.headers())?;
+    let identity = crate::access::current()?;
+    let id = state.tenants.resolve(&identity)?;
     Ok(CURRENT.scope(id, next.run(request)).await)
 }
 
@@ -436,12 +363,9 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
-    fn headers(tenant: &str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(TENANT_HEADER, HeaderValue::from_str(tenant).unwrap());
-        h
+    fn test_identity(email: &str) -> crate::access::VerifiedIdentity {
+        crate::access::test_support::identity(email)
     }
 
     fn catalog(dir: &Path) -> PathBuf {
@@ -451,9 +375,10 @@ mod tests {
     }
 
     /// A multi-tenant instance with `handles` registered, each with the
-    /// collection database its `database_id` names — what
-    /// `pkdump tenant create` leaves behind. Returns the instance, the
-    /// `tenants/` directory, and the registry connection.
+    /// collection database its `database_id` names and an email binding
+    /// `<handle>@test.local` — what `pkdump tenant create` + `pkdump tenant
+    /// identity add` leaves behind. Returns the instance, the `tenants/`
+    /// directory, and the registry connection.
     fn provisioned(dir: &Path, handles: &[&str]) -> (Tenants, PathBuf, Connection) {
         let shared = catalog(dir);
         let tenants_dir = dir.join("tenants");
@@ -466,6 +391,14 @@ mod tests {
                 &pkdump_db::tenant_db_file(&tenants_dir, &user.database_id).unwrap(),
             )
             .unwrap();
+            registry::identity_add(
+                &reg,
+                &user.database_id,
+                &format!("{handle}@test.local"),
+                None,
+                None,
+            )
+            .unwrap();
         }
         let tenants = Tenants::multi(tenants_dir.clone(), shared, &registry_db).unwrap();
         (tenants, tenants_dir, reg)
@@ -475,47 +408,57 @@ mod tests {
         result.expect_err("resolved when it should not have").0
     }
 
-    /// Flag off: the header is not read, so it cannot move a request off the
-    /// tenant the process was started with.
+    /// Flag off: the identity is not consulted — it cannot move a request off
+    /// the tenant the process was started with.
     #[test]
-    fn single_tenant_mode_never_reads_the_header() {
+    fn single_tenant_mode_ignores_identity() {
         let dir = tempfile::tempdir().unwrap();
         let shared = catalog(dir.path());
         let tenants =
             Tenants::single("collection", dir.path().join("collection.sqlite"), shared).unwrap();
 
+        // Any identity maps to the fixed single tenant.
         assert_eq!(
-            tenants.resolve(&headers("alice")).unwrap().as_str(),
+            tenants
+                .resolve(&test_identity("anyone@example.com"))
+                .unwrap()
+                .as_str(),
             "collection"
         );
         assert_eq!(
-            tenants.resolve(&HeaderMap::new()).unwrap().as_str(),
+            tenants
+                .resolve(&test_identity("nobody@example.com"))
+                .unwrap()
+                .as_str(),
             "collection"
         );
     }
 
-    /// Flag on and no tenant named: an error, never the first or default
-    /// tenant. There is no ambient tenant to fall back to.
+    /// Flag on and email not bound: a 403 naming the fix command. There is no
+    /// ambient tenant to fall back to.
     #[test]
-    fn multi_tenant_mode_requires_the_header() {
+    fn an_unbound_email_is_forbidden() {
         let dir = tempfile::tempdir().unwrap();
         let (tenants, _, _reg) = provisioned(dir.path(), &[]);
-        let AppError(status, body) = tenants.resolve(&HeaderMap::new()).unwrap_err();
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains(TENANT_HEADER), "unhelpful error: {body}");
+        let AppError(status, body) = tenants
+            .resolve(&test_identity("unknown@example.com"))
+            .unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            body.contains("pkdump tenant identity add"),
+            "unhelpful error: {body}"
+        );
     }
 
-    /// Naming a handle nobody registered is a 404 — and, crucially, does
-    /// not bring a database into existence. Otherwise any caller could
-    /// provision tenants by guessing names.
+    /// An unbound email is a 403 and does not bring a database into existence.
     #[test]
-    fn an_unknown_handle_is_not_created() {
+    fn an_unbound_email_creates_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let (tenants, tenants_dir, _reg) = provisioned(dir.path(), &[]);
 
         assert_eq!(
-            status(tenants.resolve(&headers("mallory"))),
-            StatusCode::NOT_FOUND
+            status(tenants.resolve(&test_identity("mallory@example.com"))),
+            StatusCode::FORBIDDEN
         );
         assert_eq!(
             std::fs::read_dir(&tenants_dir).unwrap().count(),
@@ -524,167 +467,39 @@ mod tests {
         );
     }
 
-    /// **The load-bearing test (`pd-rqgv`).** A handle is a lookup key and
-    /// nothing else: a database that the registry does not name cannot be
-    /// reached by naming its *filename* in the header.
-    ///
-    /// `ghost.sqlite` is a real, openable collection sitting in `tenants/`.
-    /// Under the old resolver — `dir.join(format!("{name}.sqlite"))` behind
-    /// a charset check — the header `ghost` passed validation, the file
-    /// existed, and the request was served from it. Put that interpolation
-    /// back and this test fails on the first assertion.
+    /// A real file sitting in `tenants/` that has no registry row is
+    /// unreachable: any email that is not bound to a registered, active tenant
+    /// returns 403. The registered email resolves to the correct database_id.
     #[test]
     fn a_database_the_registry_does_not_name_cannot_be_reached() {
         let dir = tempfile::tempdir().unwrap();
         let (tenants, tenants_dir, reg) = provisioned(dir.path(), &["alice"]);
-        // A perfectly valid handle, a perfectly real file, no registry row.
+        // A real file, no registry row, no email binding.
         pkdump_db::open_user(&tenants_dir.join("ghost.sqlite")).unwrap();
         assert_eq!(
-            status(tenants.resolve(&headers("ghost"))),
-            StatusCode::NOT_FOUND
+            status(tenants.resolve(&test_identity("ghost@test.local"))),
+            StatusCode::FORBIDDEN
         );
 
-        // Nor by naming the file alice IS served from: a database_id is not
-        // a handle. Only the handle column is a way in — and a ULID is not
-        // even a well-formed handle (it is uppercase), so it is refused a
-        // step earlier, as the malformed question it is.
+        // The registered email resolves to the id, not to a filename.
         let alice = registry::lookup(&reg, "alice").unwrap().unwrap();
         assert_eq!(
-            status(tenants.resolve(&headers(&alice.database_id))),
-            StatusCode::BAD_REQUEST
-        );
-
-        // And the registered handle resolves to the id, not to its own name.
-        assert_eq!(
-            tenants.resolve(&headers("alice")).unwrap().as_str(),
+            tenants
+                .resolve(&test_identity("alice@test.local"))
+                .unwrap()
+                .as_str(),
             alice.database_id
         );
     }
 
-    /// The negative the epic exists for: a handle carrying traversal or a
-    /// separator never becomes a path.
-    ///
-    /// Two independent reasons, and the test asserts both. It is refused at
-    /// the boundary as malformed — a 400, `pd-4g7c` — and even with that
-    /// check gone it would miss the table, like any other string nobody
-    /// registered, because nothing concatenates a handle into a filename any
-    /// more. The `collection.sqlite` beside the catalog is the prize
-    /// `../collection` was reaching for; it is still there afterwards,
-    /// unopened.
+    /// A detached user's email no longer resolves: their database is still on
+    /// disk but their identity binding is inactive.
     #[test]
-    fn a_traversing_handle_never_reaches_a_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tenants, tenants_dir, _reg) = provisioned(dir.path(), &["alice"]);
-        // A database one level up, which a traversing handle would reach.
-        let outside = dir.path().join("collection.sqlite");
-        pkdump_db::open_user(&outside).unwrap();
-        let before = std::fs::read_dir(&tenants_dir).unwrap().count();
-
-        for hostile in [
-            "../collection",
-            "../../etc/passwd",
-            "tenants/../collection",
-            "alice/../alice",
-            "..",
-            ".",
-            "/etc/shadow",
-            "Alice",
-            "alice ",
-            "has space",
-            "",
-        ] {
-            let mut h = HeaderMap::new();
-            h.insert(
-                TENANT_HEADER,
-                HeaderValue::from_bytes(hostile.as_bytes()).unwrap(),
-            );
-            assert_eq!(
-                status(tenants.resolve(&h)),
-                StatusCode::BAD_REQUEST,
-                "{hostile:?}"
-            );
-        }
-
-        // Nothing was created, and nothing outside `tenants/` was touched
-        // into existence either.
-        assert_eq!(std::fs::read_dir(&tenants_dir).unwrap().count(), before);
-        assert!(!dir.path().join("collection.sqlite-wal").exists());
-    }
-
-    /// **`pd-4g7c`.** Malformed and unknown are different answers, and the
-    /// line between them is [`pkdump_db::HANDLE_RULE`] — the same rule
-    /// `tenant create` and the registry's `CHECK` are held to.
-    ///
-    /// Delete the `validate_tenant_name` call in `resolve` and every 400 here
-    /// becomes a 404: the resolver would be telling a caller that a string no
-    /// row could ever hold is merely an unused name.
-    #[test]
-    fn a_malformed_handle_is_a_400_and_a_well_formed_one_is_not() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tenants, _tenants_dir, _reg) = provisioned(dir.path(), &["alice"]);
-
-        for malformed in ["Alice", "-flag", "a/b", "alice.sqlite", "", "ünïcode"] {
-            let mut h = HeaderMap::new();
-            h.insert(
-                TENANT_HEADER,
-                HeaderValue::from_bytes(malformed.as_bytes()).unwrap(),
-            );
-            let AppError(code, body) = tenants.resolve(&h).unwrap_err();
-            assert_eq!(code, StatusCode::BAD_REQUEST, "{malformed:?}");
-            // Diagnosable: it says what a handle may be...
-            assert!(
-                body.contains(pkdump_db::HANDLE_RULE),
-                "{malformed:?} got an unhelpful 400: {body}"
-            );
-            // ...and does not echo the untrusted bytes back to say it.
-            assert!(
-                !body.contains(malformed) || malformed.is_empty(),
-                "the 400 echoed the header value: {body}"
-            );
-        }
-
-        // Well-formed, and nobody has it: a 404, unchanged. This is the half
-        // of the distinction that a blanket 400 would destroy.
-        for unknown in ["mallory", "0", "a-b_9", &"a".repeat(32)] {
-            let mut h = HeaderMap::new();
-            h.insert(TENANT_HEADER, HeaderValue::from_str(unknown).unwrap());
-            assert_eq!(
-                status(tenants.resolve(&h)),
-                StatusCode::NOT_FOUND,
-                "{unknown:?}"
-            );
-        }
-
-        // And a real one still resolves — the rule refuses nothing it should
-        // admit.
-        assert!(tenants.resolve(&headers("alice")).is_ok());
-    }
-
-    /// Bytes that are not even a string cannot be read as a handle, and are
-    /// refused before the rule gets a chance — with the same 400 and the same
-    /// message, so a caller sees one answer for "that is not a handle" rather
-    /// than two rules to chase.
-    #[test]
-    fn a_header_that_is_not_a_string_is_the_same_400() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tenants, _tenants_dir, _reg) = provisioned(dir.path(), &["alice"]);
-        let mut h = HeaderMap::new();
-        h.insert(TENANT_HEADER, HeaderValue::from_bytes(b"\xff\xfe").unwrap());
-        let AppError(code, body) = tenants.resolve(&h).unwrap_err();
-        assert_eq!(code, StatusCode::BAD_REQUEST);
-        assert!(body.contains(pkdump_db::HANDLE_RULE), "{body}");
-    }
-
-    /// A detached user is not an active user. Their handle is free for
-    /// someone else, and their database — which is still on disk, that
-    /// being the point of detaching rather than deleting — is not served to
-    /// whoever asks for the old name.
-    #[test]
-    fn a_detached_handle_resolves_to_nothing() {
+    fn a_detached_tenants_email_resolves_to_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let (tenants, tenants_dir, reg) = provisioned(dir.path(), &["alice"]);
         let alice = registry::lookup(&reg, "alice").unwrap().unwrap();
-        let detached = registry::detach(&reg, "alice").unwrap();
+        registry::detach(&reg, "alice").unwrap();
 
         // Her database is still there...
         assert!(
@@ -692,14 +507,10 @@ mod tests {
                 .unwrap()
                 .exists()
         );
-        // ...and her handle does not reach it. The row that keeps those bytes
-        // attributable still spells her name — it is `state`, not a rewritten
-        // handle, that takes her out of circulation, so the resolver has to
-        // be asking the right question and not merely failing to match.
-        assert_eq!(detached.handle, "alice");
+        // ...but her email no longer resolves to it.
         assert_eq!(
-            status(tenants.resolve(&headers("alice"))),
-            StatusCode::NOT_FOUND
+            status(tenants.resolve(&test_identity("alice@test.local"))),
+            StatusCode::FORBIDDEN
         );
     }
 
@@ -718,8 +529,12 @@ mod tests {
             &pkdump_db::tenant_db_file(&tenants_dir, &second.database_id).unwrap(),
         )
         .unwrap();
+        // Bind a fresh email to the new alice.
+        registry::identity_add(&reg, &second.database_id, "alice2@test.local", None, None).unwrap();
 
-        let resolved = tenants.resolve(&headers("alice")).unwrap();
+        let resolved = tenants
+            .resolve(&test_identity("alice2@test.local"))
+            .unwrap();
         assert_eq!(resolved.as_str(), second.database_id);
         assert_ne!(resolved.as_str(), first.database_id);
     }
@@ -732,9 +547,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (tenants, tenants_dir, reg) = provisioned(dir.path(), &[]);
         let alice = registry::insert(&reg, "alice").unwrap();
+        registry::identity_add(&reg, &alice.database_id, "alice@test.local", None, None).unwrap();
 
         assert_eq!(
-            status(tenants.resolve(&headers("alice"))),
+            status(tenants.resolve(&test_identity("alice@test.local"))),
             StatusCode::INTERNAL_SERVER_ERROR
         );
         assert!(
@@ -750,8 +566,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (tenants, _tenants_dir, _reg) = provisioned(dir.path(), &["alice", "bob"]);
 
-        let alice = tenants.resolve(&headers("alice")).unwrap();
-        let bob = tenants.resolve(&headers("bob")).unwrap();
+        let alice = tenants.resolve(&test_identity("alice@test.local")).unwrap();
+        let bob = tenants.resolve(&test_identity("bob@test.local")).unwrap();
         assert_ne!(alice, bob);
 
         let a = tenants.connection(&alice).unwrap();

@@ -711,14 +711,35 @@ same script replicates a handle-named database beside it and shows the old
 addressing handing the deleted user's card straight back, so the absence in the
 first half means something. It runs in `deploy/ci.sh`.
 
-## What is not here yet
+## Authentication — Cloudflare Access JWT validation
 
-- **Authentication** — Cloudflare Access JWT validation is in place
-  (`crates/pkdump-server/src/access.rs`). Every request to `/api/*` must
-  carry a valid RS256 JWT from Cloudflare Access, either in the
-  `Cf-Access-Jwt-Assertion` header or the `CF_Authorization` cookie. Three
-  env vars are required at startup: `PKDUMP_ACCESS_TEAM_DOMAIN`,
-  `PKDUMP_ACCESS_AUD`, and `PKDUMP_ACCESS_JWKS_URL`. A JWKS fetch failure
-  at startup is a failed startup. The `--multi-tenant` resolver still
-  believes whatever `x-pkdump-tenant` carries (identity → authorization is
-  a follow-on epic), so single-tenant is still the production shape.
+Cloudflare Access JWT validation is in place
+(`crates/pkdump-server/src/access.rs`). When configured, every request to
+`/api/*` must carry a valid RS256 JWT from Cloudflare Access, either in the
+`Cf-Access-Jwt-Assertion` header or the `CF_Authorization` cookie. A request
+with a missing or invalid token returns **401**.
+
+The layer is **opt-in by configuration**: set all three env vars below and
+the server enforces authentication. Leave them unset (the default) and the
+server starts without the authentication layer — suitable for CI instances and
+local development. There is no separate disable flag; configuration IS the
+opt-in.
+
+When configured, a JWKS fetch failure at startup is a failed startup. The vars
+must all be present or all absent; a partial set (some but not all) is a
+misconfiguration and the server refuses to start.
+
+```
+PKDUMP_ACCESS_TEAM_DOMAIN   full team URL, e.g. https://myteam.cloudflareaccess.com
+PKDUMP_ACCESS_AUD           the Access application's audience tag
+PKDUMP_ACCESS_JWKS_URL      the JWKS endpoint — explicit so tests can point at localhost
+```
+
+Prod: set all three in `~/.config/pkdump/access.env` and add
+`EnvironmentFile=%h/.config/pkdump/access.env` to the Quadlet unit.
+
+The `--multi-tenant` resolver still believes whatever `x-pkdump-tenant`
+carries (identity → authorization is a follow-on epic), so single-tenant is
+still the production shape.
+
+## What is not here yet

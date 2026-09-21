@@ -46,8 +46,9 @@ pub struct AppState {
     /// The data dir — read by `/api/backup-status` for the `.backup-last-ok`
     /// freshness marker the host-side Layer 1 checker writes (ivq.5).
     data_dir: Arc<PathBuf>,
-    /// Cloudflare Access JWT validation state (JWKS cache + config).
-    pub(crate) access: Arc<access::AccessState>,
+    /// Cloudflare Access JWT validation state (JWKS cache + config). `None`
+    /// when Access is not configured — the layer passes all requests through.
+    pub(crate) access: Option<Arc<access::AccessState>>,
 }
 
 /// An error rendered as an HTTP response. `DbError::NotFound` → 404,
@@ -248,14 +249,11 @@ pub struct ServeConfig {
     /// The second opt-in that lets `multi_tenant` bind somewhere other than
     /// loopback. Off unless explicitly set; see `check_bind`.
     pub allow_insecure_bind: bool,
-    /// Cloudflare Access: full team URL, e.g.
-    /// `https://myteam.cloudflareaccess.com`. Required.
-    pub access_team_domain: String,
-    /// Cloudflare Access: the application's audience tag. Required.
-    pub access_aud: String,
-    /// Cloudflare Access: the JWKS endpoint URL. Explicit (not derived from
-    /// `access_team_domain`) so test infrastructure can point at localhost.
-    pub access_jwks_url: String,
+    /// Cloudflare Access configuration. `None` when Access is not configured —
+    /// the authentication layer is skipped and the server starts without it.
+    /// When `Some`, all three fields are required and a JWKS fetch failure is a
+    /// startup failure. See `access::AccessConfig::from_env_if_configured`.
+    pub access: Option<access::AccessConfig>,
 }
 
 /// Refuse the one combination that has no defence: per-request tenant
@@ -327,14 +325,17 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
             Arc::new(pkdump_db::search_meta::load_flags(&shared)?),
         )
     };
-    // Cloudflare Access JWT validation. Primes the JWKS cache; a failed fetch
-    // is a startup failure rather than a degraded-mode serve.
-    let access = access::AccessState::new(access::AccessConfig {
-        team_domain: cfg.access_team_domain,
-        aud: cfg.access_aud,
-        jwks_url: cfg.access_jwks_url,
-    })
-    .await?;
+    // Cloudflare Access JWT validation — opt-in by configuration. When the
+    // three Access env vars are set, primes the JWKS cache; a failed fetch is a
+    // startup failure. When not configured, `None` here makes the layer a
+    // passthrough and the server starts without authentication.
+    let access = match cfg.access {
+        Some(cfg) => Some(access::AccessState::new(cfg).await?),
+        None => {
+            println!("pkdump: Cloudflare Access is NOT configured — /api is unauthenticated");
+            None
+        }
+    };
     let tenants = if cfg.multi_tenant {
         println!(
             "pkdump: MULTI-TENANT resolution is ON — every request names its tenant in \
@@ -416,7 +417,7 @@ mod tests {
         dir: &std::path::Path,
         shared: &std::path::Path,
         tenants: Tenants,
-        access: Arc<access::AccessState>,
+        access: Option<Arc<access::AccessState>>,
     ) -> Router {
         let registry = {
             let c = pkdump_db::open_shared(shared).unwrap();
@@ -448,7 +449,7 @@ mod tests {
             shared.clone(),
         )
         .unwrap();
-        let router = router_for(dir.path(), &shared, tenants, fx.access.clone());
+        let router = router_for(dir.path(), &shared, tenants, Some(fx.access.clone()));
         (dir, router, fx)
     }
 
@@ -474,7 +475,7 @@ mod tests {
             dir.path(),
             &shared,
             Tenants::multi(tenants_dir.clone(), shared.clone(), &registry_db).unwrap(),
-            fx.access.clone(),
+            Some(fx.access.clone()),
         );
         (dir, router, tenants_dir, fx)
     }
@@ -1465,7 +1466,7 @@ mod tests {
             registry: Arc::new(Default::default()),
             flags: Arc::new(Vec::new()),
             data_dir: Arc::new(dir.path().to_path_buf()),
-            access: fx.access.clone(),
+            access: Some(fx.access.clone()),
         };
 
         let unscoped = blocking(&state, |c| {

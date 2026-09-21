@@ -80,7 +80,7 @@ pub struct AccessConfig {
 }
 
 impl AccessConfig {
-    /// Read the three required env vars.
+    /// Read the three required env vars. Fails if any is absent.
     pub fn from_env() -> anyhow::Result<Self> {
         let team_domain = std::env::var(TEAM_DOMAIN_ENV)
             .map_err(|_| anyhow::anyhow!("{TEAM_DOMAIN_ENV} is required"))?;
@@ -92,6 +92,24 @@ impl AccessConfig {
             aud,
             jwks_url,
         })
+    }
+
+    /// Read the three env vars only when at least one is present in the
+    /// environment. Returns `None` when none of the three are set — Access is
+    /// not configured, and the server starts without the authentication layer.
+    /// Returns `Err` when at least one is set but the set is incomplete: a
+    /// partial configuration is a misconfiguration, not a quiet skip.
+    ///
+    /// This is the configuration-as-enablement idiom: setting up the config IS
+    /// enabling the layer. There is no separate opt-in flag.
+    pub fn from_env_if_configured() -> anyhow::Result<Option<Self>> {
+        let any_set = [TEAM_DOMAIN_ENV, AUD_ENV, JWKS_URL_ENV]
+            .iter()
+            .any(|v| std::env::var(v).is_ok());
+        if !any_set {
+            return Ok(None);
+        }
+        Ok(Some(Self::from_env()?))
     }
 }
 
@@ -345,11 +363,19 @@ fn extract_token(req: &axum::http::request::Parts) -> Option<String> {
 
 /// Middleware: verify the Cloudflare Access JWT, then run the rest of the
 /// request with the identity in scope. Applied to `/api` as a `route_layer`.
+///
+/// When `state.access` is `None` (Access not configured), the request passes
+/// through without authentication. This is the opt-in path: configuring the
+/// three Access env vars enables the layer; leaving them unset disables it.
+/// When the layer IS active, it is completely fail-closed — no token means 401.
 pub(crate) async fn layer(
     State(state): State<AppState>,
     request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
+    let Some(access) = state.access.as_ref() else {
+        return Ok(next.run(request).await);
+    };
     let (parts, body) = request.into_parts();
     let token = extract_token(&parts).ok_or_else(|| {
         AppError(
@@ -357,7 +383,7 @@ pub(crate) async fn layer(
             "missing Cloudflare Access token".into(),
         )
     })?;
-    let identity = state.access.verify(&token).await?;
+    let identity = access.verify(&token).await?;
     let request = Request::from_parts(parts, body);
     Ok(CURRENT.scope(identity, next.run(request)).await)
 }

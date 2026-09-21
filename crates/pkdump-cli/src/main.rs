@@ -53,6 +53,13 @@ enum Command {
     Outbox(outbox::OutboxArgs),
 }
 
+/// Serialised access to process-wide origin overrides (ENV_TCGCSV_BASE_URL etc.)
+/// used by test gates in data.rs and setup.rs. Both modules are compiled into
+/// the same test binary, so they need a single lock rather than independent ones
+/// that could allow the gates to run concurrently and corrupt each other's ENV.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Setup(args) => setup::run(args),

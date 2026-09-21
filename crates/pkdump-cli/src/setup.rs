@@ -349,6 +349,345 @@ fn import_tcgcsv(
     Ok((n_groups, n_sealed, n_cards, n_prices))
 }
 
+/// `pkdump setup`'s acquisition path, exercised against a fake upstream.
+///
+/// The nightly `raw_coverage` gate (in `data.rs`) audits `pkdump data refresh`
+/// — the landing-only path. `pkdump setup` uses different code: its own
+/// `import_tail` (which imports as well as fetches), `download_and_import`
+/// rather than `land_bulk`, and a full per-group TCGCSV import. This gate does
+/// for setup what `raw_coverage` does for refresh.
+///
+/// The upstream has two sets:
+/// - sv3pt5 in the bulk corpus and in the pokemontcg.io list.
+/// - svp ONLY in the pokemontcg.io list — the lag-window set not yet in the
+///   bulk corpus.
+///
+/// After `download_and_import` sv3pt5 is in the catalog with
+/// `ptcgio_fetched_at IS NOT NULL`, so `import_tail` skips it and fetches
+/// only svp's cards. The gate asserts that sv3pt5's cards are NOT fetched a
+/// second time and svp's ARE.
+///
+/// An exhaustive match on [`Dataset`] is the compile-time half: a new variant
+/// requires somebody to classify it before the test compiles, so a new
+/// upstream input cannot be invisible to this gate.
+#[cfg(test)]
+mod setup_coverage {
+    use super::*;
+    use std::sync::{Arc, MutexGuard};
+
+    use pkdump_ingest::test_upstream::{FakeUpstream, Reply};
+    use pkdump_ingest::upstream::{
+        ENV_POKEMON_TCG_DATA_BASE_URL, ENV_POKEMONTCG_BASE_URL, ENV_TCGCSV_BASE_URL,
+    };
+    use pkdump_lake::{Dataset, DirStore, Manifest, RawLanding};
+
+    /// Classification of each dataset's role in a `pkdump setup` run.
+    #[allow(dead_code)]
+    enum SetupNeeds {
+        /// Setup always fetches this from the network on any run.
+        Always,
+        /// Fetched only when a new set has been published since the last bulk
+        /// corpus snapshot. On a fully-current bulk corpus, `import_tail` still
+        /// fetches the pokemontcg.io sets list but finds nothing new to import,
+        /// so [`Dataset::Cards`] would not appear in the manifests. The test
+        /// exercises this path by serving svp, a set absent from the bulk
+        /// tarball, so the cards manifest IS expected here.
+        LagWindow(&'static str),
+    }
+
+    /// Exhaustive by design: adding a [`Dataset`] variant requires classifying
+    /// it here before the test compiles, so a new upstream input cannot be
+    /// invisible to this gate (the same guarantee `raw_coverage` gives for the
+    /// nightly refresh).
+    fn classification(dataset: Dataset) -> SetupNeeds {
+        match dataset {
+            Dataset::Bulk
+            | Dataset::Sets
+            | Dataset::Groups
+            | Dataset::Products
+            | Dataset::Prices => SetupNeeds::Always,
+            Dataset::Cards => SetupNeeds::LagWindow(
+                "setup fetches cards from pokemontcg.io only for sets the bulk corpus \
+                 hasn't caught up to yet — the same lag window pkdump data refresh's \
+                 tail covers. The test exercises this path by serving svp, a set that \
+                 is in pokemontcg.io but absent from the bulk tarball.",
+            ),
+        }
+    }
+
+    const INGEST_DATE: &str = "2026-09-21";
+    const CLOCK_AT: &str = "2026-09-21T06:00:00Z";
+
+    // sv3pt5 is in the bulk corpus and pokemontcg.io.
+    // svp is the lag-window set: in pokemontcg.io only, absent from the bulk tarball.
+    const SETS: &str = r#"{"data":[
+        {"id":"sv3pt5","name":"151","series":"Scarlet & Violet",
+         "printedTotal":165,"total":207,"ptcgoCode":"MEW",
+         "releaseDate":"2023/09/22"},
+        {"id":"svp","name":"SVP Black Star Promos","series":"Scarlet & Violet",
+         "printedTotal":999,"total":999,"ptcgoCode":"SVP",
+         "releaseDate":"2023/11/03"}],
+        "page":1,"pageSize":250,"count":2,"totalCount":2}"#;
+
+    // Cards for the lag-window set.
+    const SVP_CARDS: &str = r#"{"data":[
+        {"id":"svp-1","name":"Pikachu","supertype":"Pokémon","subtypes":["Basic"],
+         "hp":"70","types":["Lightning"],"number":"1","rarity":"Promo",
+         "set":{"id":"svp","name":"SVP Black Star Promos","series":"Scarlet & Violet"},
+         "tcgplayer":{"prices":{"holofoil":{}}}}],
+        "page":1,"pageSize":250,"count":1,"totalCount":1}"#;
+
+    // Bulk tarball: sv3pt5 only — svp is the lag-window set not yet in the corpus.
+    const BULK_SETS: &str = r#"[{"id":"sv3pt5","name":"151",
+        "series":"Scarlet & Violet","printedTotal":165,"total":207,
+        "ptcgoCode":"MEW","releaseDate":"2023/09/22"}]"#;
+    const BULK_CARDS: &str = r#"[{"id":"sv3pt5-4","name":"Charmander",
+        "supertype":"Pokémon","subtypes":["Basic"],"hp":"60",
+        "types":["Fire"],"number":"4","rarity":"Common"}]"#;
+
+    const ENGLISH_GROUPS: &str = r#"{"results":[
+        {"groupId":23237,"name":"SV: 151","abbreviation":"MEW",
+         "publishedOn":"2023-09-22"}],"success":true,"errors":[]}"#;
+    const JAPAN_GROUPS: &str = r#"{"results":[
+        {"groupId":23099,"name":"SV2a: Pokemon Card 151","abbreviation":"",
+         "publishedOn":"2023-06-16"}],"success":true,"errors":[]}"#;
+    const EMPTY: &str = r#"{"results":[],"success":true,"errors":[]}"#;
+
+    fn build_bulk_tarball() -> Vec<u8> {
+        use flate2::{Compression, write::GzEncoder};
+
+        let gz_buf = Vec::new();
+        let enc = GzEncoder::new(gz_buf, Compression::default());
+        let mut builder = tar::Builder::new(enc);
+
+        let add = |b: &mut tar::Builder<GzEncoder<Vec<u8>>>, path: &str, data: &[u8]| {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            b.append_data(&mut header, path, std::io::Cursor::new(data))
+                .expect("tar append");
+        };
+        add(
+            &mut builder,
+            "pokemon-tcg-data-master/sets/en.json",
+            BULK_SETS.as_bytes(),
+        );
+        add(
+            &mut builder,
+            "pokemon-tcg-data-master/cards/en/sv3pt5.json",
+            BULK_CARDS.as_bytes(),
+        );
+        let enc = builder.into_inner().expect("tar finish");
+        enc.finish().expect("gz finish")
+    }
+
+    /// Both upstreams on one server.  TCGCSV lives under `/<category>/…`,
+    /// pokemontcg.io under `/v2`, and the bulk tarball under the GitHub path.
+    /// A 404 for an unexpected path is the gate's "new call-site with no
+    /// landing" detector.
+    fn route(target: &str, _n: usize) -> Reply {
+        let path = target.split('?').next().unwrap_or(target);
+        match path {
+            "/3/groups" => Reply::ok(ENGLISH_GROUPS),
+            "/85/groups" => Reply::ok(JAPAN_GROUPS),
+            p if p.ends_with("/products") || p.ends_with("/prices") => Reply::ok(EMPTY),
+            "/v2/sets" => Reply::ok(SETS),
+            "/v2/cards" => Reply::ok(SVP_CARDS),
+            p if p.contains("pokemon-tcg-data") => Reply {
+                status: 200,
+                body: build_bulk_tarball(),
+                content_type: "application/x-tar",
+            },
+            other => Reply::status(
+                404,
+                format!(
+                    r#"{{"error":"setup asked for {other}, which this fixture does not \
+                        model — add a route here and a classification in setup_coverage"}}"#
+                ),
+            ),
+        }
+    }
+
+    struct Origins<'a>(#[allow(dead_code)] MutexGuard<'a, ()>);
+
+    impl Origins<'_> {
+        fn point_at(base: &str) -> Self {
+            let guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: the lock is held for as long as the variables are set.
+            unsafe {
+                std::env::set_var(ENV_TCGCSV_BASE_URL, base);
+                std::env::set_var(ENV_POKEMONTCG_BASE_URL, format!("{base}/v2"));
+                std::env::set_var(ENV_POKEMON_TCG_DATA_BASE_URL, base);
+            }
+            Self(guard)
+        }
+    }
+
+    impl Drop for Origins<'_> {
+        fn drop(&mut self) {
+            // SAFETY: still under the lock this value holds.
+            unsafe {
+                std::env::remove_var(ENV_TCGCSV_BASE_URL);
+                std::env::remove_var(ENV_POKEMONTCG_BASE_URL);
+                std::env::remove_var(ENV_POKEMON_TCG_DATA_BASE_URL);
+            }
+        }
+    }
+
+    fn manifest_for(manifests: &[Manifest], dataset: Dataset) -> Option<&Manifest> {
+        manifests.iter().find(|m| m.dataset == dataset.as_str())
+    }
+
+    fn strip_base(url: &str, base: &str) -> String {
+        url.strip_prefix(base).unwrap_or(url).to_string()
+    }
+
+    /// `pkdump setup`'s acquisition fetches every dataset a fresh catalog
+    /// needs, lands every byte it receives, and exercises the lag-window
+    /// path (cards for sets the bulk corpus hasn't caught up to yet).
+    #[test]
+    fn setup_acquires_every_upstream_input_a_fresh_catalog_needs() {
+        let upstream = FakeUpstream::start(route);
+        let _origins = Origins::point_at(&upstream.base_url());
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("shared.sqlite");
+        let land_dir = tmp.path().join("raw");
+
+        let clock = pkdump_derive::DeriveClock::from_manifest(CLOCK_AT, "setup_coverage clock")
+            .expect("parse clock");
+        let landing = Arc::new(RawLanding::new(
+            Box::new(DirStore::new(&land_dir)),
+            INGEST_DATE,
+            clock.fetched_at(),
+        ));
+
+        let mut conn = pkdump_db::open_shared(&db_path).unwrap();
+
+        let args = SetupArgs {
+            from_dir: None,
+            skip_tail: false,
+            skip_prices: false,
+            skip_japan: false,
+            db: None,
+            land_raw: false, // landing is passed directly — land_raw is not needed
+        };
+
+        let outcome = acquire(&mut conn, &args, &clock, Some(&landing));
+        pkdump_derive::finalize_landing(&landing, outcome.as_ref().err()).expect("write manifests");
+        outcome.expect("setup acquisition succeeded");
+
+        let manifests = landing.manifests();
+
+        // 1. Exhaustive classification: every dataset setup acquires is present
+        //    with at least one landed part. The match is exhaustive so a new
+        //    Dataset variant cannot slip past without being classified here.
+        for dataset in Dataset::ALL {
+            match classification(*dataset) {
+                SetupNeeds::Always | SetupNeeds::LagWindow(_) => {
+                    let m = manifest_for(&manifests, *dataset).unwrap_or_else(|| {
+                        panic!(
+                            "setup landed nothing for {dataset} — add it to acquire() and \
+                             classify it in setup_coverage::classification()"
+                        )
+                    });
+                    assert!(!m.parts.is_empty(), "{dataset}: manifest has no parts");
+                    assert!(m.complete, "{dataset}: manifest is incomplete");
+                }
+            }
+        }
+
+        // 2. Everything the upstream served was stored — the call-site audit.
+        //    A fetch added to acquire() that bypasses landing::fetch_bytes shows
+        //    up as a served URL absent from every manifest.
+        let mut served: Vec<String> = upstream
+            .requests()
+            .into_iter()
+            .map(|u| strip_base(&u, &upstream.base_url()))
+            .collect();
+        served.sort();
+        let mut landed: Vec<String> = manifests
+            .iter()
+            .flat_map(|m| {
+                m.parts
+                    .iter()
+                    .map(|p| strip_base(&p.url, &upstream.base_url()))
+            })
+            .collect();
+        landed.sort();
+        assert_eq!(
+            served, landed,
+            "every upstream response setup receives must be landed exactly once"
+        );
+
+        // 3. The lag-window path was exercised: cards for svp were fetched but
+        //    NOT for sv3pt5, which was already in the catalog from the bulk tarball.
+        //    The pokemontcg.io client percent-encodes the colon in `set.id:svp`
+        //    to `%3A` in the query string, so we check for the encoded form.
+        let cards_m =
+            manifest_for(&manifests, Dataset::Cards).expect("cards manifest for lag-window set");
+        assert!(
+            cards_m.parts.iter().any(|p| p.url.contains("set.id%3Asvp")),
+            "setup must fetch cards for the lag-window set (svp): {:?}",
+            cards_m.parts.iter().map(|p| &p.url).collect::<Vec<_>>()
+        );
+        assert!(
+            !cards_m.parts.iter().any(|p| p.url.contains("sv3pt5")),
+            "setup must NOT re-fetch cards for sv3pt5 (already in catalog from bulk tarball): \
+             {:?}",
+            cards_m.parts.iter().map(|p| &p.url).collect::<Vec<_>>()
+        );
+
+        // 4. Japanese TCGCSV (category 85) shares `source=tcgcsv` with
+        //    English (category 3) — same check as raw_coverage.
+        for dataset in [Dataset::Groups, Dataset::Products, Dataset::Prices] {
+            let m = manifest_for(&manifests, dataset).expect("tcgcsv manifest");
+            let urls: Vec<&str> = m.parts.iter().map(|p| p.url.as_str()).collect();
+            assert!(
+                urls.iter().any(|u| u.contains("/3/")),
+                "{dataset} landed nothing for English (category 3): {urls:?}"
+            );
+            assert!(
+                urls.iter().any(|u| u.contains("/85/")),
+                "{dataset} landed nothing for Pokémon Japan (category 85): {urls:?}"
+            );
+        }
+
+        // 5. Both sets acquired by setup are in the catalog: sv3pt5 from the
+        //    bulk tarball and svp from import_tail. The bridge overlay in
+        //    import_groups may also synthesize other sets (like "mep"), so
+        //    the Japan import adds jp- prefixed rows; we only assert on what
+        //    acquire() directly imported.
+        let has_sv3pt5: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sets WHERE set_code = 'sv3pt5'",
+                [],
+                |r| r.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .unwrap();
+        let has_svp: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sets WHERE set_code = 'svp'",
+                [],
+                |r| r.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .unwrap();
+        assert!(has_sv3pt5, "sv3pt5 (bulk tarball) must be in the catalog");
+        assert!(has_svp, "svp (pokemontcg.io tail) must be in the catalog");
+        let svp_cards: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM cards WHERE set_code = 'svp'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            svp_cards, 1,
+            "svp's card from pokemontcg.io must be in the catalog"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -40,8 +40,8 @@ CREATE TABLE IF NOT EXISTS user (
     -- paths::tests::tenant_names_are_validated and through this CHECK by
     -- registry::tests::the_check_and_the_validator_agree. Relax one side only
     -- and one of those two fails. It matters because the validator is also
-    -- what refuses a malformed tenant header with a 400 (pd-4g7c): a handle
-    -- one side admits and the other does not is a request answered wrongly.
+    -- what refuses a malformed handle in CLI arguments: a handle one side
+    -- admits and the other does not is a command answered wrongly.
     --
     --   * 1..32 characters — long enough to name a person, short enough to
     --     stay a filename-safe label rather than a payload.

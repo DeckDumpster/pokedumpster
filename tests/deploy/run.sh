@@ -606,7 +606,9 @@ check "app unit gets its restart bounds" "2" \
 # An outage caused by fixing the units is not a fix. Refreshing must never move
 # an instance off the address everything reaches it on.
 check "the published port survives the refresh" "1" \
-	"$(grep -c '^PublishPort=8090:8080$' "${QUADLET}/pkdump-prod.container" || true)"
+	"$(grep -c '^PublishPort=127\.0\.0\.1:8090:8080$' "${QUADLET}/pkdump-prod.container" || true)"
+check "the published port is loopback-bound" "1" \
+	"$(grep -c '^PublishPort=127\.0\.0\.1:' "${QUADLET}/pkdump-prod.container" || true)"
 
 # The alarming and refresh templates travel with a deploy too — alarm-status.sh
 # tells an operator to run setup.sh when one is missing, and a deploy that

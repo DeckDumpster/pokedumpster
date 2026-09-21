@@ -28,6 +28,10 @@ pub const ENV_TCGCSV_BASE_URL: &str = "PKDUMP_TCGCSV_BASE_URL";
 /// `PokemonTcgClient`'s origin. Test-tier; see the module docs.
 pub const ENV_POKEMONTCG_BASE_URL: &str = "PKDUMP_POKEMONTCG_BASE_URL";
 
+/// `land_bulk`'s tarball origin (`https://codeload.github.com`). Test-tier;
+/// see the module docs.
+pub const ENV_POKEMON_TCG_DATA_BASE_URL: &str = "PKDUMP_POKEMON_TCG_DATA_BASE_URL";
+
 /// `default`, unless `env` names somewhere else to look.
 ///
 /// A set-but-empty variable is not an origin, and taking it as one would build

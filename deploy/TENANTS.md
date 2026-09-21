@@ -3,11 +3,11 @@
 Every tenant gets its own collection database. The card catalog stays a single
 shared copy, `ATTACH`ed read-only per connection exactly as it always was.
 
-> **Status: multi-tenant with Cloudflare Access authentication.** Resolution
-> is off by default — `pkdump serve` opens the one collection `$PKDUMP_USER`
-> names, exactly as it always did. Enabling `--multi-tenant` requires
-> Cloudflare Access to be configured; every request must carry a valid JWT,
-> and the verified email must be bound to a tenant.
+> **Status: multi-tenant with Cloudflare Access.** Resolution is off by
+> default — `pkdump serve` opens the one collection `$PKDUMP_USER` names,
+> exactly as it always did. Production runs with `PKDUMP_MULTITENANT=1` and
+> Cloudflare Access JWT verification; every `/api` request must carry a valid
+> token, and the verified email must be bound to a tenant in the registry.
 
 ## Layout
 
@@ -270,9 +270,15 @@ Which is why:
 - The flag is off unless explicitly set, and `PKDUMP_MULTITENANT` only counts
   `1`, `true` or `yes` as on — `PKDUMP_MULTITENANT=0` does not switch it on by
   the mere fact of being set.
-- The server prints a message at startup when it is on.
-- **Production stays single-tenant** until Access is wired to this instance's
-  domain. `deploy/pkdump.container` does not set the variable.
+- The server prints a warning line at startup when it is on.
+- The mechanism is a **header**, not a hostname or a URL prefix. A browser does
+  not send it on its own, so a multi-tenant instance cannot be driven by
+  pointing a browser at it — the frontend is unchanged and remains
+  single-tenant. Browser-reachable multi-tenancy waits on the identity epic.
+- **Production runs multi-tenant** (db-i7bi). `deploy/pkdump.container`
+  loads `~/.config/pkdump/prod/access.env` via `EnvironmentFile`, which sets
+  `PKDUMP_MULTITENANT=1` and the three Access variables. See "Configuring
+  Access for a deployment" below.
 
 ### The refusal
 
@@ -356,6 +362,45 @@ not, which is why nothing under `deploy/` sets either variable. So the gate's
 first section runs that same container *without* the opt-in and asserts the
 refusal: exits non-zero, never listens, and names the variable. An escape
 hatch nobody tests closed is indistinguishable from a guard that was deleted.
+
+### Configuring Access for a deployment
+
+`deploy/pkdump.container` loads `~/.config/pkdump/{{INSTANCE}}/access.env`.
+`deploy/setup.sh` scaffolds the file on every setup; values default to
+commented-out, so instances stay single-tenant until the file is filled in.
+To enable multi-tenant mode for an instance:
+
+```bash
+# setup.sh writes a template if the file does not exist:
+bash deploy/setup.sh <instance>
+
+# Then fill in the three values from the Cloudflare Zero Trust dashboard
+# (Access > Applications > your app > AUD tag):
+editor ~/.config/pkdump/<instance>/access.env
+#   PKDUMP_MULTITENANT=1
+#   PKDUMP_ACCESS_TEAM_DOMAIN=https://<team>.cloudflareaccess.com
+#   PKDUMP_ACCESS_AUD=<64-char hex>
+#   PKDUMP_ACCESS_JWKS_URL=https://<team>.cloudflareaccess.com/cdn-cgi/access/certs
+
+# Redeploy to pick up the new env file:
+bash deploy/deploy.sh <instance>
+
+# Verify — the container env should show all three Access vars:
+podman exec systemd-pkdump-<instance> env | grep PKDUMP_ACCESS
+# And an unauthenticated request must fail:
+curl -s -o /dev/null -w '%{http_code}' http://localhost:<port>/api/collection
+# Expected: 401
+```
+
+The file is optional and not in the repo. CI test instances that call
+`deploy/setup.sh --test` get the scaffold and should fill nothing in — the
+`EnvironmentFile=-` prefix means the missing file is silently skipped,
+leaving those instances single-tenant.
+
+**The AUD tag is an environment fact, not a secret**, but it is
+instance-specific and only readable from the Cloudflare dashboard. The team
+domain and JWKS URL follow the same pattern across all applications on a
+team; only the AUD tag is per-application.
 
 ## Migrating the existing production database
 
@@ -707,7 +752,7 @@ Prod: set all three in `~/.config/pkdump/access.env` and add
 ## What is not here yet
 
 - **Identity → tenant binding in the frontend** — the Access JWT is validated
-  and the email looked up on every `/api` request. The frontend does not yet
-  carry Access metadata; a browser session's collection is still the single
-  tenant the server started with (`$PKDUMP_USER`) unless `--multi-tenant` is
-  on and the Access gateway is wiring the JWT cookie.
+  and the verified email looked up on every `/api` request. The frontend does
+  not yet carry Access metadata; a browser session's collection is still the
+  single tenant the server started with (`$PKDUMP_USER`) unless `--multi-tenant`
+  is on and the Access gateway is wiring the JWT cookie.

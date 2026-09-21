@@ -84,6 +84,13 @@ pub fn run(args: ServeArgs) -> anyhow::Result<()> {
         // Same strict helper as the flag above, on purpose: a second parsing
         // path is how `=0` gets read as "on" again.
         allow_insecure_bind: env_opt_in(MULTITENANT_INSECURE_BIND_ENV),
+        access_team_domain: std::env::var(pkdump_server::access::TEAM_DOMAIN_ENV).map_err(
+            |_| anyhow::anyhow!("{} is required", pkdump_server::access::TEAM_DOMAIN_ENV),
+        )?,
+        access_aud: std::env::var(pkdump_server::access::AUD_ENV)
+            .map_err(|_| anyhow::anyhow!("{} is required", pkdump_server::access::AUD_ENV))?,
+        access_jwks_url: std::env::var(pkdump_server::access::JWKS_URL_ENV)
+            .map_err(|_| anyhow::anyhow!("{} is required", pkdump_server::access::JWKS_URL_ENV))?,
     };
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(pkdump_server::serve(cfg))

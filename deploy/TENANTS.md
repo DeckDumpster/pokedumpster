@@ -713,6 +713,12 @@ first half means something. It runs in `deploy/ci.sh`.
 
 ## What is not here yet
 
-- **Authentication** — a separate epic, not started. Until it lands, the
-  `--multi-tenant` resolver believes whatever a caller claims, which is why
-  nothing running it may be exposed.
+- **Authentication** — Cloudflare Access JWT validation is in place
+  (`crates/pkdump-server/src/access.rs`). Every request to `/api/*` must
+  carry a valid RS256 JWT from Cloudflare Access, either in the
+  `Cf-Access-Jwt-Assertion` header or the `CF_Authorization` cookie. Three
+  env vars are required at startup: `PKDUMP_ACCESS_TEAM_DOMAIN`,
+  `PKDUMP_ACCESS_AUD`, and `PKDUMP_ACCESS_JWKS_URL`. A JWKS fetch failure
+  at startup is a failed startup. The `--multi-tenant` resolver still
+  believes whatever `x-pkdump-tenant` carries (identity → authorization is
+  a follow-on epic), so single-tenant is still the production shape.

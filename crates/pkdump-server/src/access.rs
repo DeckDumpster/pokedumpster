@@ -1,19 +1,23 @@
 //! Cloudflare Access JWT validation — the application-layer authentication gate.
 //!
-//! Every `/api` request must carry a valid Cloudflare Access JWT, extracted from
-//! the `Cf-Access-Jwt-Assertion` header or the `CF_Authorization` cookie. The
-//! token is verified against the team's published JWKS: RS256 only, with
-//! issuer, audience, `exp`, and `nbf` all checked.
+//! When configured, every `/api` request must carry a valid Cloudflare Access
+//! JWT, extracted from the `Cf-Access-Jwt-Assertion` header or the
+//! `CF_Authorization` cookie. The token is verified against the team's published
+//! JWKS: RS256 only, with issuer, audience, `exp`, and `nbf` all checked.
 //!
-//! # No bypass flag
+//! # Opt-in by configuration
 //!
-//! There is no `PKDUMP_AUTH_DISABLED`, no skip-on-loopback, and no debug mode.
-//! Every such flag is the hole this module exists to close. Tests use real
-//! RS256 keys through an in-process JWKS server; they do not need a bypass.
+//! The layer is **opt-in**: setting all three env vars below enables it. When
+//! none are set the server starts without authentication — suitable for CI,
+//! tests, and local development. A partial configuration (some but not all vars
+//! set) is a misconfiguration and the server refuses to start.
 //!
-//! # Required configuration
+//! When the layer is active, it is completely fail-closed: a missing or invalid
+//! token returns 401 with no fallthrough. There is no `PKDUMP_AUTH_DISABLED`,
+//! no skip-on-loopback, and no debug mode. Tests use real RS256 keys through an
+//! in-process JWKS server; they do not need a bypass.
 //!
-//! Three env vars must be set before the server starts:
+//! # Configuration
 //!
 //! * `PKDUMP_ACCESS_TEAM_DOMAIN` — full team URL, e.g.
 //!   `https://myteam.cloudflareaccess.com`
@@ -22,7 +26,8 @@
 //!   derived from the team domain so that test infrastructure can point at a
 //!   localhost server without faking the `iss` claim
 //!
-//! The JWKS is fetched at startup. A failed fetch is a failed startup.
+//! When configured, the JWKS is fetched at startup. A failed fetch is a failed
+//! startup.
 //!
 //! # Key cache
 //!

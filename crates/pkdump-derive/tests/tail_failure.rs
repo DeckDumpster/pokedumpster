@@ -59,8 +59,12 @@ fn empty_bulk_tarball() -> Vec<u8> {
     hdr.set_size(data.len() as u64);
     hdr.set_mode(0o644);
     hdr.set_cksum();
-    ar.append_data(&mut hdr, "pokemon-tcg-data-master/sets/en.json", data.as_ref())
-        .expect("append tar entry");
+    ar.append_data(
+        &mut hdr,
+        "pokemon-tcg-data-master/sets/en.json",
+        data.as_ref(),
+    )
+    .expect("append tar entry");
     ar.into_inner()
         .expect("finish tar")
         .finish()

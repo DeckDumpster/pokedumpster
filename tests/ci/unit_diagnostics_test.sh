@@ -16,7 +16,7 @@
 #   §2  The helper is wired to the systemctl --user start failure path, so a
 #       failed start does not exit silently.
 #
-#   §3  The helper is wired to the wait_until timeout path, so both failure
+#   §3  The helper is wired to the server-wait timeout path, so both failure
 #       shapes produce the same evidence.
 #
 #   §4  The standalone journalctl call that predated the helper is gone — no
@@ -82,7 +82,7 @@ check "start failure path exits after dumping diagnostics" "yes" \
     "$(grep -qE 'systemctl --user start.*\|\|.*dump_unit_diagnostics' "$CI_SH" && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
-log "§3 helper is called on wait_until timeout"
+log "§3 helper is called on the server-wait timeout"
 
 # The timeout path must call dump_unit_diagnostics rather than an inline
 # journalctl.

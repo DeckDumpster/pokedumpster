@@ -236,11 +236,11 @@ fn acquire(
     let stats = match &args.from_dir {
         Some(dir) => {
             println!("Importing pokemon-tcg-data from {}", dir.display());
-            pokemon_tcg_data::import_from_dir(conn, dir)?
+            pokemon_tcg_data::import_from_dir(conn, dir, clock.fetched_at())?
         }
         None => {
             println!("Downloading the pokemon-tcg-data repo...");
-            pokemon_tcg_data::download_and_import(conn, &wire)?
+            pokemon_tcg_data::download_and_import(conn, &wire, clock.fetched_at())?
         }
     };
     println!("  imported {} sets, {} cards", stats.sets, stats.cards);

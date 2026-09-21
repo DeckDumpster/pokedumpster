@@ -18,6 +18,7 @@ use serde_json::Value;
 use crate::error::{IngestError, Result};
 use crate::landing::{self, Wire};
 use crate::pokemontcg::{PokemonTcgCard, PokemonTcgSet, cards_from_values};
+use crate::upstream;
 
 const UPSTREAM_CARD_CORRECTIONS: &str =
     include_str!("../../../data/overrides/upstream_card_corrections.json");
@@ -131,8 +132,15 @@ pub fn apply_corrections_to_db(conn: &Connection) -> Result<Vec<PendingCorrectio
     Ok(pending)
 }
 
-const REPO_TARBALL: &str =
-    "https://codeload.github.com/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master";
+const REPO_TARBALL_PATH: &str = "/PokemonTCG/pokemon-tcg-data/tar.gz/refs/heads/master";
+
+fn tarball_url() -> String {
+    let base = upstream::base_url(
+        upstream::ENV_POKEMON_TCG_DATA_BASE_URL,
+        "https://codeload.github.com",
+    );
+    format!("{base}{REPO_TARBALL_PATH}")
+}
 
 /// Counts produced by an import run.
 #[derive(Debug, Default, Clone, Copy)]
@@ -144,18 +152,21 @@ pub struct ImportStats {
 /// Import sets and cards from a local checkout of the pokemon-tcg-data repo.
 /// `dir` must contain `sets/en.json` and `cards/en/<setid>.json`. Idempotent —
 /// re-running upserts in place.
-pub fn import_from_dir(conn: &mut Connection, dir: &Path) -> Result<ImportStats> {
+///
+/// `now` is the fetch timestamp written to `ptcgio_fetched_at`. Pass
+/// `options.clock.fetched_at()` on the derive path so the column carries the
+/// same instant in online and offline runs and the two catalogs remain
+/// row-identical.
+pub fn import_from_dir(conn: &mut Connection, dir: &Path, now: &str) -> Result<ImportStats> {
     let sets_path = dir.join("sets").join("en.json");
     let sets_text = std::fs::read_to_string(&sets_path)
         .map_err(|e| IngestError::BadResponse(format!("{}: {e}", sets_path.display())))?;
     // The repo stores bare JSON arrays — there is no API-style `data` envelope.
     let sets: Vec<PokemonTcgSet> = serde_json::from_str(&sets_text)?;
-
-    let now = chrono::Utc::now().to_rfc3339();
     let mut stats = ImportStats::default();
     let tx = conn.transaction()?;
     for set in &sets {
-        upsert_set(&tx, set, &now)?;
+        upsert_set(&tx, set, now)?;
         stats.sets += 1;
 
         let card_path = dir
@@ -178,20 +189,47 @@ pub fn import_from_dir(conn: &mut Connection, dir: &Path) -> Result<ImportStats>
     Ok(stats)
 }
 
+/// Fetch the repo tarball and land it in the raw zone, without unpacking or
+/// importing it.
+///
+/// This is the acquisition half — `wire` records the bytes under
+/// `source=pokemon-tcg-data/dataset=bulk/`. A later derive call with a
+/// replaying wire will unpack and import them. `acquire` in `pkdump-derive`
+/// calls `download_and_import` (bead 2), which replays what this function
+/// lands.
+pub fn land_bulk(wire: &Wire) -> Result<()> {
+    let http = reqwest::blocking::Client::builder()
+        .user_agent("pokedumpster/0.1 (+cache-population)")
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    landing::fetch_bytes(
+        &http,
+        http.get(tarball_url()),
+        wire,
+        Source::PokemonTcgData,
+        Dataset::Bulk,
+        PartFormat::TarGz,
+    )?;
+    Ok(())
+}
+
 /// Download the repo tarball and import it into the shared catalog.
 ///
 /// `wire` lands the tarball exactly as fetched before a byte of it is
 /// unpacked — or replays the one a previous run landed. The corpus is one
 /// archive carrying both sets and cards, so it lands under `dataset=bulk`
 /// rather than pretending to be either.
-pub fn download_and_import(conn: &mut Connection, wire: &Wire) -> Result<ImportStats> {
+///
+/// `now` is passed to [`import_from_dir`] and written to `ptcgio_fetched_at`
+/// on each set row. Pass `options.clock.fetched_at()` on the derive path.
+pub fn download_and_import(conn: &mut Connection, wire: &Wire, now: &str) -> Result<ImportStats> {
     let http = reqwest::blocking::Client::builder()
         .user_agent("pokedumpster/0.1 (+cache-population)")
         .timeout(std::time::Duration::from_secs(120))
         .build()?;
     let bytes = landing::fetch_bytes(
         &http,
-        http.get(REPO_TARBALL),
+        http.get(tarball_url()),
         wire,
         Source::PokemonTcgData,
         Dataset::Bulk,
@@ -209,7 +247,7 @@ pub fn download_and_import(conn: &mut Connection, wire: &Wire) -> Result<ImportS
         .find(|p| p.is_dir())
         .ok_or_else(|| IngestError::BadResponse("tarball had no directory".into()))?;
 
-    import_from_dir(conn, &root)
+    import_from_dir(conn, &root, now)
 }
 
 /// Upsert a single set into the catalog. Shared by the file importer and
@@ -372,7 +410,7 @@ mod tests {
         let dbdir = tempfile::tempdir().unwrap();
         let mut conn = pkdump_db::open_shared(&dbdir.path().join("shared.sqlite")).unwrap();
 
-        let stats = import_from_dir(&mut conn, repo.path()).unwrap();
+        let stats = import_from_dir(&mut conn, repo.path(), "2024-01-01T00:00:00Z").unwrap();
         assert_eq!(stats.sets, 1);
         assert_eq!(stats.cards, 2);
 
@@ -582,8 +620,8 @@ mod tests {
         let dbdir = tempfile::tempdir().unwrap();
         let mut conn = pkdump_db::open_shared(&dbdir.path().join("shared.sqlite")).unwrap();
 
-        import_from_dir(&mut conn, repo.path()).unwrap();
-        import_from_dir(&mut conn, repo.path()).unwrap();
+        import_from_dir(&mut conn, repo.path(), "2024-01-01T00:00:00Z").unwrap();
+        import_from_dir(&mut conn, repo.path(), "2024-01-01T00:00:00Z").unwrap();
 
         let cards: i64 = conn
             .query_row("SELECT count(*) FROM cards", [], |r| r.get(0))

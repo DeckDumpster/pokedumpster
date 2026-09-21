@@ -122,7 +122,8 @@ column is `total_bytes` out of each `_manifest.json`, the bucket column is what
 | `tcgcsv/groups` | 2 | 135 kB | 21 kB |
 | `pokemontcgio/sets` | 1 | 58.8 kB | 6.7 kB |
 | `pokemontcgio/cards` | — | — | — |
-| **one night** | **1,353** | **85.4 MB** | **7.42 MB** |
+| `pokemon-tcg-data/bulk` | 1 | 26.0 MB | **2.65 MB** |
+| **one night** | **1,354** | **111.4 MB** | **10.07 MB** |
 
 `pd-fet2` measured 2026-08-11 at 1,345 parts / 85.3 MB / 7.40 MB. Three weeks
 of new TCGCSV groups moved it by 0.3%, so this is a stable figure rather than
@@ -136,7 +137,7 @@ wrong simplification: a group's product list is re-fetched whole each run
 whether or not it moved. And the bill is not really storage — 1,357 objects a
 night is ~495k PUTs/year, about $2.48, which is more than the bytes cost.
 
-### The empty row: `pokemontcgio/cards` has never landed
+### The `pokemontcgio/cards` row: covered by the bulk corpus
 
 That dash is not a quiet night. **`raw/source=pokemontcgio/dataset=cards/`
 does not exist in the bucket, on any date** — the whole listing under
@@ -150,13 +151,16 @@ and a night that publishes none lands none. `Dataset::Cards` is
 nightly derive is green because it is INCREMENTAL: it updates the catalog it is
 given, which already holds every set, so it asks for no cards and misses none.
 
-What that costs is one thing and it is the thing the lake was bought for: a
-derive into an EMPTY catalog cannot be replayed from any partition here.
-`missing_sets` would return all 174 sets, the tail would ask for
-`/v2/cards?q=set.id:…`, and `RawReplay::missing` is fatal with no fallback
-(`pd-6yql` removed the fallback deliberately). The lake can keep this catalog
-current and cannot rebuild one. Closing that is `pd-432m`; `pd-v1ca` was filed
-to close it, and its commit never reached `master`.
+**The bulk corpus closes the cold-rebuild gap.** `raw/source=pokemon-tcg-data/
+dataset=bulk/` now lands on every nightly refresh — one GET of the
+`PokemonTCG/pokemon-tcg-data` GitHub tarball (2.65 MB on the wire, 26.0 MB
+uncompressed, 177 `cards/en/*.json` files across all sets, 0.54 s). A cold
+derive replays it instead of sweeping the pokemontcg.io API. The pokemontcg.io
+tail's remaining job is the 2–3 month lag window: sets published too recently
+to appear in the bulk repo are still fetched set-by-set and landed under
+`pokemontcgio/cards` the night they appear. Bead `db-m1sd` wires the derive to
+read from the bulk partition instead of the API; until it lands the bytes
+accumulate and the replay path is unused.
 
 #### What the sweep would cost, measured
 

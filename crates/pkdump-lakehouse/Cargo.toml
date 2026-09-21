@@ -20,6 +20,10 @@ anyhow.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
+# row_identical.rs pulls in pkdump-ingest/tests/support/mod.rs by path, which
+# re-exports from pkdump_ingest::test_upstream — that module is gated behind
+# the test-support feature and is absent without it.
+pkdump-ingest = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 image.workspace = true
 zstd.workspace = true

@@ -84,6 +84,7 @@ pub fn run(args: ServeArgs) -> anyhow::Result<()> {
         // Same strict helper as the flag above, on purpose: a second parsing
         // path is how `=0` gets read as "on" again.
         allow_insecure_bind: env_opt_in(MULTITENANT_INSECURE_BIND_ENV),
+        access: pkdump_server::access::AccessConfig::from_env_if_configured()?,
     };
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(pkdump_server::serve(cfg))

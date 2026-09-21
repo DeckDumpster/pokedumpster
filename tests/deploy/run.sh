@@ -257,11 +257,17 @@ check "the undeliverable push was really attempted" "1" \
 check "the dropped alert is still reported" "1" \
 	"$(printf '%s' "$LOW_OUT" | grep -c 'ALERT NOT DELIVERED' || true)"
 
-# The other arm: under the threshold nothing is pushed at all, so a box with a
-# healthy disk never touches the channel.
+# The other arm: under both the percentage threshold and the warn line, nothing
+# is pushed at all, so a box with a healthy disk never touches the channel.
+# PKDUMP_DISK_WARN_GB must be set here too: the free-space arm was added in
+# pd-smcp and fires BEFORE the threshold arm — on a box where $WORK's filesystem
+# has less than WARN_GB free, the free-space arm triggers even at threshold=101.
+# Setting WARN_GB=1 suppresses it without needing to know the actual free space;
+# FLOOR_GB=0 keeps the refusal check (WARN_GB > FLOOR_GB) from firing on it.
 set +e
 OKD_OUT="$(PKDUMP_ALERTS_ENV="${WORK}/alerts.env" PUSHOVER_TOKEN= PUSHOVER_USER= \
-	PKDUMP_DISK_THRESHOLD=101 PKDUMP_DISK_PATH="$WORK" bash "$DISKCHECK" 2>&1)"
+	PKDUMP_DISK_THRESHOLD=101 PKDUMP_DISK_FLOOR_GB=0 PKDUMP_DISK_WARN_GB=1 \
+	PKDUMP_DISK_PATH="$WORK" bash "$DISKCHECK" 2>&1)"
 OKD_RC=$?
 set -e
 check "alert mode exits zero under the threshold" "0" "$OKD_RC"

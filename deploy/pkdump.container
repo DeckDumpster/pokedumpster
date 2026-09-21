@@ -2,6 +2,16 @@
 Description=PokeDumpster server ({{INSTANCE}})
 After=network-online.target
 Wants=network-online.target
+# The app runs continuously. OnFailure fires when the unit enters `failed` —
+# which requires the start limit to be reachable. With RestartSec=10 in
+# [Service], five crashes in 300 seconds (a genuine crash-loop trips it in
+# ~50s) exhausts the burst while an ordinary restart after a deploy does not
+# come close. Too tight and a transient blip takes the site down permanently
+# until someone intervenes; too loose and it never fires (today's shape, with
+# the inherited 10s/5 defaults). 300s/5 is the chosen trade. (db-rl3o)
+StartLimitIntervalSec=300
+StartLimitBurst=5
+OnFailure=pkdump-alert@%n.service
 
 [Container]
 Image=localhost/pkdump:{{INSTANCE}}

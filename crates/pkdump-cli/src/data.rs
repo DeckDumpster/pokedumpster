@@ -366,8 +366,7 @@ fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
 #[cfg(test)]
 mod raw_coverage {
     use std::path::Path;
-    use std::sync::Arc;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::{Arc, MutexGuard};
 
     use pkdump_ingest::test_upstream::{FakeUpstream, Reply};
     use pkdump_ingest::upstream::{
@@ -504,18 +503,14 @@ mod raw_coverage {
         }
     }
 
-    /// Serialised: the origin overrides are process-wide, and they are the
-    /// only way to point a whole acquisition phase somewhere (it builds its
-    /// own clients — see `pkdump_ingest::upstream`).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
     struct Origins<'a>(#[allow(dead_code)] MutexGuard<'a, ()>);
 
     impl Origins<'_> {
         fn point_at(base: &str) -> Self {
-            let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            // SAFETY: the lock is held for as long as the variables are set,
-            // and this is the only test binary that touches them.
+            // crate::ENV_LOCK is shared with setup.rs's setup_coverage gate
+            // — both modules set the same process-wide ENV vars.
+            let guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: the lock is held for as long as the variables are set.
             unsafe {
                 std::env::set_var(ENV_TCGCSV_BASE_URL, base);
                 std::env::set_var(ENV_POKEMONTCG_BASE_URL, format!("{base}/v2"));

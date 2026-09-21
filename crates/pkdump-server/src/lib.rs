@@ -197,8 +197,8 @@ fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
     // fallback exactly as it did before.
     //
     // Layer ordering: the outermost `route_layer` runs first. The access
-    // layer (outermost) verifies the JWT before the tenant layer (inner)
-    // reads the tenant header.
+    // layer (outermost) verifies the JWT and installs the identity; the
+    // tenant layer (inner) maps that identity to a database.
     let api = routes::api_router()
         .route_layer(middleware::from_fn_with_state(state.clone(), tenant::layer))
         .route_layer(middleware::from_fn_with_state(state.clone(), access::layer));
@@ -1194,6 +1194,50 @@ mod tests {
             .unwrap();
         assert_eq!(claimed.status(), StatusCode::OK);
         assert!(body_string(claimed).await.contains("sv3pt5-1-normal"));
+    }
+
+    /// A leftover `x-pkdump-tenant` header cannot be used to reach another
+    /// tenant's collection. The header is not read; resolution is from the JWT
+    /// email only. Sending bob's handle alongside alice's JWT still gives alice.
+    #[tokio::test]
+    async fn leftover_tenant_header_cannot_escalate_to_another_tenant() {
+        let (_d, router, _dir, fx) = multi_tenant_app(&["alice", "bob"]).await;
+        let alice_tok = fx.valid_token("alice@example.com");
+
+        // Alice adds a card.
+        let created = router
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/api/collection",
+                Some(&alice_tok),
+                Some(ADD_CARD),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        // Now alice sends a request with her own JWT but a header claiming to
+        // be bob. Resolution ignores the header; she still reaches alice's DB.
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/collection")
+                    .header(access::JWT_HEADER, &alice_tok)
+                    .header("x-pkdump-tenant", "bob")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("sv3pt5-1-normal"),
+            "alice's header claim resolved to the wrong collection: {body}"
+        );
     }
 
     // ---- check_multitenant_access (sync, no HTTP) ----------------------------------------

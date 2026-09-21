@@ -120,3 +120,84 @@ CREATE TABLE IF NOT EXISTS tenant_key (
     reason        TEXT,
     CHECK ((state = 'tombstoned') = (tombstoned_at IS NOT NULL))
 );
+
+-- ── IDENTITY BINDINGS (db-dbb9) ───────────────────────────────────────────
+--
+-- One row per (verified identity, tenant) binding. A person proves who they
+-- are by presenting a Cloudflare Access JWT; this table maps the email in
+-- that JWT to the tenant they own.
+--
+-- Four design decisions, stated here rather than in the accessor alone:
+--
+--   1. BOUND TO database_id, NOT handle. A handle is a mutable label;
+--      database_id is the stable identity. An identity bound to a handle
+--      would follow a rename onto whoever takes that handle next.
+--   2. KEYED ON email, sub STORED ALONGSIDE. The Access policy is written
+--      in terms of email addresses; keying on email means the two systems
+--      agree by construction. sub is kept for audit and for detecting a
+--      provider change (same address, different sub), which should be
+--      surfaced, not silently accepted or refused.
+--   3. EMAIL NORMALISATION IS A CHECK. The stored value must already be
+--      lowercase — `email = lower(email)` is enforced here, not by the
+--      accessor alone. The accessor normalises before inserting; this check
+--      holds every writer to it. Both are tested against EMAIL_CASES in
+--      crate::registry so they cannot drift.
+--   4. ONE EMAIL PER ACTIVE TENANT. Several identities per tenant (a person
+--      with two addresses) is allowed; one identity mapping to several ACTIVE
+--      tenants is refused — ambiguous at resolution time. The uniqueness index
+--      is partial on user_state = 'active' so a detached tenant's email is
+--      freed for re-onboarding. user_state mirrors user.state via the trigger
+--      below.
+--
+-- Deletion obligation: when a tenant is deleted, their identity rows must
+-- be removed too — they are personal data. pkdump-erase handles the offline
+-- half; registry::delete handles the online half. Neither may skip this.
+CREATE TABLE IF NOT EXISTS user_identity (
+    -- Stable; unchanged by renames.
+    database_id  TEXT NOT NULL REFERENCES user(database_id),
+    -- Normalised to lowercase. The human-readable anchor for a provider
+    -- change: sub values are opaque and would orphan every binding on a
+    -- provider migration.
+    --
+    -- The CHECK verifies that what is stored is already normalised — it does
+    -- not normalise. The Rust normalise_email() lowercases before inserting;
+    -- this check holds every writer to the same thing. Two implementations
+    -- of "normalised" that cannot share code share EMAIL_CASES instead —
+    -- the same pattern as HANDLE_CASES for handles.
+    email        TEXT NOT NULL CHECK (
+        length(email) >= 1
+        AND email = lower(email)
+    ),
+    -- Identity provider subject. Opaque; stored for audit and for detecting
+    -- a provider change (same address, different sub).
+    sub          TEXT,
+    -- Identity provider issuer URL.
+    issuer       TEXT,
+    created_at   TEXT NOT NULL,
+    -- Mirror of user.state. Maintained by the trigger below, so a detach
+    -- automatically frees the email for re-onboarding. The uniqueness index
+    -- is partial on this column.
+    user_state   TEXT NOT NULL CHECK (user_state IN ('active', 'detached')),
+    PRIMARY KEY (database_id, email)
+);
+
+-- One email maps to at most ONE ACTIVE tenant.
+--
+-- Several identities per tenant is allowed (a person with two addresses).
+-- One identity mapping to several ACTIVE tenants is refused — ambiguous at
+-- resolution time, and that ambiguity must not be writable rather than
+-- handled in code.
+--
+-- Partial on user_state = 'active' so that a detached user's email is freed
+-- for re-onboarding: detach is an ordinary state change, not a deletion.
+CREATE UNIQUE INDEX IF NOT EXISTS user_identity_one_active_per_email
+    ON user_identity(email) WHERE user_state = 'active';
+
+-- Keep user_state in sync with user.state. Fires when a user is detached
+-- (state 'active' → 'detached'); the mirror is how the partial unique index
+-- above stays accurate without re-reading the user table on every lookup.
+CREATE TRIGGER IF NOT EXISTS user_identity_sync_state
+AFTER UPDATE OF state ON user
+BEGIN
+    UPDATE user_identity SET user_state = NEW.state WHERE database_id = NEW.database_id;
+END;

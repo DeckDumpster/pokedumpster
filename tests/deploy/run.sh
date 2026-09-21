@@ -571,6 +571,13 @@ sed -e 's|{{INSTANCE}}|prod|g' -e 's|{{PORT}}:8080|8090:8080|' \
 	"${REPO_DIR}/deploy/pkdump.container" > "${WORK}/app.expected"
 check "app unit matches the template" "same" \
 	"$(cmp -s "${QUADLET}/pkdump-prod.container" "${WORK}/app.expected" && echo same || echo differs)"
+# Explicit alerting checks on the app unit — the template match above is
+# the whole-file assertion; these name the specific lines so a regression
+# is legible rather than a byte diff. (db-rl3o: app unit was the one gap)
+check "app unit gets OnFailure=" "1" \
+	"$(grep -c '^OnFailure=pkdump-alert@%n.service$' "${QUADLET}/pkdump-prod.container" || true)"
+check "app unit gets its restart bounds" "2" \
+	"$(grep -c '^StartLimit\(IntervalSec\|Burst\)=' "${QUADLET}/pkdump-prod.container" || true)"
 
 # An outage caused by fixing the units is not a fix. Refreshing must never move
 # an instance off the address everything reaches it on.
@@ -3240,6 +3247,10 @@ check "and names the override" "1" \
 # throwaway is the normal case here, not the anomaly.
 check "the instance's own Quadlet is still installed" "yes" \
 	"$([ -f "${HOST_QUADLET}/pkdump-ci-9f2c1a.container" ] && echo yes || echo no)"
+# _alert_sed must strip OnFailure= from a non-alerting CI instance —
+# a CI container that pages Pushover on teardown is its own incident.
+check "CI app unit has no OnFailure=" "0" \
+	"$(grep -c '^OnFailure=' "${HOST_QUADLET}/pkdump-ci-9f2c1a.container" || true)"
 
 # --- The real deployment always wins ----------------------------------------
 install_as prod >/dev/null

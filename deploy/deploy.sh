@@ -72,11 +72,21 @@ else
     . "$SCRIPT_DIR/units-lib.sh"
     pkdump_units_install "$INSTANCE"
     pkdump_units_report
+
+    # Scaffold config files the units require. setup.sh creates them on first
+    # install; a deploy must do the same for config added after the instance was
+    # created — the unit will refuse to start if a required EnvironmentFile is
+    # absent (db-g6ku).
+    # shellcheck source=deploy/config-lib.sh
+    . "$SCRIPT_DIR/config-lib.sh"
+    pkdump_scaffold_access_env "$INSTANCE" "${HOME}/.config/pkdump/${INSTANCE}"
 fi
 
 echo "==> Reloading systemd and restarting ${SERVICE_NAME}..."
+# shellcheck source=deploy/diagnostics-lib.sh
+. "$SCRIPT_DIR/diagnostics-lib.sh"
 systemctl --user daemon-reload
-systemctl --user restart "$SERVICE_NAME"
+systemctl --user restart "$SERVICE_NAME" || { dump_unit_diagnostics "$SERVICE_NAME"; exit 1; }
 
 # The sidecar is a separate unit with its own container: daemon-reload makes
 # systemd read the new file, but the running container keeps the arguments it

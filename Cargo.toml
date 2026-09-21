@@ -81,6 +81,10 @@ parquet = { version = "59", default-features = false, features = ["zstd"] }
 # `hkdf` is: this is the second place where subtly wrong is unrecoverable.
 aes-gcm = "0.11"
 bytes = "1"
+# Cloudflare Access JWT validation (pkdump-server). RS256 verification with
+# JWK Set support. Uses the `ring` crypto backend (already in the tree via
+# reqwest → rustls), so no new native-code dependency is added.
+jsonwebtoken = "9"
 
 [profile.release]
 strip = true

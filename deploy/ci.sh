@@ -518,6 +518,31 @@ pkdump_store_activate
 # teardown is still outstanding. Warns; never fails the run. See store-lib.sh.
 pkdump_store_split_check
 
+step "Prune cargo incremental artifacts"
+# Cargo incremental state grows unboundedly across gate runs and is expendable:
+# it speeds up re-compiles but is never needed for correctness, and the rlibs
+# in deps/ survive — so only the changed crates recompile on the next run.
+# When disk falls inside the warning band (< 2×floor) it can exhaust the floor
+# the next check enforces (db-6gob). Remove it first in that case, giving the
+# floor check a reading for what actual build work needs rather than for what
+# previous runs left behind.
+_ci_inc_target="${CARGO_TARGET_DIR:-${REPO_DIR}/target}"
+if [ -d "$_ci_inc_target" ]; then
+    _ci_inc_free="$(df -BG --output=avail "$_ci_inc_target" | tail -n1 | tr -dc '0-9')"
+    _ci_inc_warn="$(( ${PKDUMP_DISK_FLOOR_GB:-10} * 2 ))"
+    if [ "${_ci_inc_free:-99}" -lt "$_ci_inc_warn" ]; then
+        echo "  ${_ci_inc_free}G free on $(df --output=target "$_ci_inc_target" | tail -n1) — below warn (${_ci_inc_warn}G), pruning incremental"
+        while IFS= read -r -d '' _ci_inc_dir; do
+            _ci_inc_kb="$(du -sk "$_ci_inc_dir" 2>/dev/null | cut -f1 || echo 0)"
+            rm -rf -- "$_ci_inc_dir" 2>/dev/null || true
+            echo "  -${_ci_inc_kb}K: ${_ci_inc_dir#"${_ci_inc_target}/"}"
+        done < <(find "$_ci_inc_target" -maxdepth 2 -name incremental -type d -print0 2>/dev/null)
+    else
+        echo "  ${_ci_inc_free}G free — above warn (${_ci_inc_warn}G), skipping"
+    fi
+fi
+unset _ci_inc_target _ci_inc_free _ci_inc_warn _ci_inc_dir _ci_inc_kb
+
 step "Disk floor check"
 # Before the build, not after it dies: at 697M free a cargo link failed with
 # `ld terminated with signal 7 [Bus error]`, which reads as a toolchain bug and

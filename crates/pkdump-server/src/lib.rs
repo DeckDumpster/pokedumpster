@@ -931,8 +931,7 @@ mod tests {
             }
         };
 
-        let empty =
-            page("/api/collection/search?include_unowned=1&limit=0".to_string()).await;
+        let empty = page("/api/collection/search?include_unowned=1&limit=0".to_string()).await;
         assert!(empty["rows"].as_array().unwrap().is_empty());
         assert_eq!(empty["total"], 1, "limit=0 is a count-only request");
 
@@ -1119,7 +1118,13 @@ mod tests {
         let (_d, router, fx) = test_app().await;
         let tok = fx.valid_token("u@example.com");
         let resp = router
-            .oneshot(request("GET", "/api/search/keywords", Some(&tok), None, None))
+            .oneshot(request(
+                "GET",
+                "/api/search/keywords",
+                Some(&tok),
+                None,
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1174,7 +1179,13 @@ mod tests {
 
         let bobs = router
             .clone()
-            .oneshot(request("GET", "/api/collection", Some(&tok), Some("bob"), None))
+            .oneshot(request(
+                "GET",
+                "/api/collection",
+                Some(&tok),
+                Some("bob"),
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(bobs.status(), StatusCode::OK);
@@ -1387,7 +1398,13 @@ mod tests {
         assert_eq!(created.status(), StatusCode::CREATED);
 
         let claimed = router
-            .oneshot(request("GET", "/api/collection", Some(&tok), Some("bob"), None))
+            .oneshot(request(
+                "GET",
+                "/api/collection",
+                Some(&tok),
+                Some("bob"),
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(claimed.status(), StatusCode::OK);

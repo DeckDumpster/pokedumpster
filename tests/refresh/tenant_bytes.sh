@@ -153,6 +153,7 @@ refresh() {
 	podman run --rm -v "${DATA}:/data:Z" -v "${LAKE}:/lake:Z" \
 		-e PKDUMP_TCGCSV_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/tcgplayer" \
 		-e PKDUMP_POKEMONTCG_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/v2" \
+		-e PKDUMP_POKEMON_TCG_DATA_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}" \
 		-e PKDUMP_LAKE_DIR=/lake \
 		--entrypoint pkdump "$IMAGE" data refresh
 }
@@ -407,6 +408,7 @@ DOWN_RC=0
 podman run --rm -v "${DATA}:/data:Z" -v "${RAW}:/raw:Z" \
 	-e PKDUMP_TCGCSV_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/tcgplayer" \
 	-e PKDUMP_POKEMONTCG_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}/v2-down" \
+	-e PKDUMP_POKEMON_TCG_DATA_BASE_URL="http://host.containers.internal:${UPSTREAM_PORT}" \
 	-e PKDUMP_HTTP_RETRY_ATTEMPTS=3 \
 	-e PKDUMP_HTTP_RETRY_BASE_MS=25 \
 	-e PKDUMP_LAKE_DIR=/raw \

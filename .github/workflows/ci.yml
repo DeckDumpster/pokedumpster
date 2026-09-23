@@ -80,6 +80,10 @@ jobs:
     outputs:
       vmid: ${{ steps.vm.outputs.vmid }}
       label: ${{ steps.vm.outputs.label }}
+      # Guard 4b's ownership token. teardown REFUSES a VM that carries a token
+      # when the caller presents none, so this output is not optional once the
+      # pinned provision stamps one.
+      vm-token: ${{ steps.vm.outputs.vm-token }}
     steps:
       - uses: DeckDumpster/ephemeral-ci/provision@v1
         id: vm
@@ -90,6 +94,7 @@ jobs:
           pve-token-id:       ${{ secrets.PVE_TOKEN_ID }}
           pve-token-secret:   ${{ secrets.PVE_TOKEN_SECRET }}
           pve-api-host:       ${{ vars.PVE_API_HOST }}
+          pve-api-hostname:   ${{ vars.PVE_API_HOSTNAME }}
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
 
@@ -302,4 +307,7 @@ jobs:
           pve-token-id:       ${{ secrets.PVE_TOKEN_ID }}
           pve-token-secret:   ${{ secrets.PVE_TOKEN_SECRET }}
           pve-api-host:       ${{ vars.PVE_API_HOST }}
+          pve-api-hostname:   ${{ vars.PVE_API_HOSTNAME }}
+          pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
           pve-node:           ${{ vars.PVE_NODE }}
+          vm-token:           ${{ needs.provision.outputs.vm-token }}

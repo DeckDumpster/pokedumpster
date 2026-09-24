@@ -1696,17 +1696,28 @@ mod tests {
         );
         // SQLite treats NULL as less than every non-NULL value, so NULL
         // release_date sorts FIRST in ASC and LAST in DESC.
-        assert_eq!(runs[0], "nodate", "NULL release_date sorts first (least) asc: {runs:?}");
+        assert_eq!(
+            runs[0], "nodate",
+            "NULL release_date sorts first (least) asc: {runs:?}"
+        );
         // early set (1999) comes before the 2000/06/01 sets.
-        assert_eq!(runs[1], "early", "earliest non-null date set is second asc: {runs:?}");
+        assert_eq!(
+            runs[1], "early",
+            "earliest non-null date set is second asc: {runs:?}"
+        );
         // Within each set, collector numbers are ascending.
         // Within the early set, collector numbers must be ascending.
         let rows = search(&f.conn, &c).unwrap();
-        let raw: Vec<&str> = rows.iter()
+        let raw: Vec<&str> = rows
+            .iter()
             .filter(|r| r.set_code == "early")
             .map(|r| r.printing_id.as_str())
             .collect();
-        assert_eq!(raw, vec!["early-1-n", "early-2-n"], "card 1 before 2 within set");
+        assert_eq!(
+            raw,
+            vec!["early-1-n", "early-2-n"],
+            "card 1 before 2 within set"
+        );
     }
 
     #[test]
@@ -1736,12 +1747,19 @@ mod tests {
         );
         // SQLite NULL < non-NULL, so in DESC the newest dates come first and
         // NULL release_date sorts LAST.
-        assert_eq!(runs[3], "nodate", "NULL release_date sorts last (least) desc: {runs:?}");
+        assert_eq!(
+            runs[3], "nodate",
+            "NULL release_date sorts last (least) desc: {runs:?}"
+        );
         // early set (1999, oldest non-null date) comes second-to-last in DESC.
-        assert_eq!(runs[2], "early", "earliest non-null date set is second-to-last desc: {runs:?}");
+        assert_eq!(
+            runs[2], "early",
+            "earliest non-null date set is second-to-last desc: {runs:?}"
+        );
         // Within the early set, collector numbers remain ascending.
         let rows2 = search(&f.conn, &c).unwrap();
-        let raw: Vec<&str> = rows2.iter()
+        let raw: Vec<&str> = rows2
+            .iter()
             .filter(|r| r.set_code == "early")
             .map(|r| r.printing_id.as_str())
             .collect();

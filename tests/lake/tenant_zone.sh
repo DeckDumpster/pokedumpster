@@ -141,7 +141,7 @@ trap cleanup EXIT
 mc_as() {
 	local ak="$1" sk="$2"
 	shift 2
-	podman run --rm --network "$NET" \
+	podman run --rm -i --network "$NET" \
 		-v "$WORK/policies:/policies:ro,Z" \
 		-e "MC_HOST_x=http://${ak}:${sk}@${MINIO_CTR}:9000" \
 		"$MC_IMAGE" "$@"
@@ -460,6 +460,9 @@ can_put "$TEN_AK" "$TEN_SK" "$PROBE_KEY" ||
 	die "tenant credentials cannot write their own zone — the policy is too narrow"
 can_get "$TEN_AK" "$TEN_SK" "$PROBE_KEY" ||
 	die "tenant credentials cannot read back what they just wrote"
+probe_content=$(mc_as "$TEN_AK" "$TEN_SK" cat "x/${BUCKET}/${PROBE_KEY}")
+[[ "$probe_content" == "governance probe" ]] ||
+	die "can_put wrote wrong content (expected 'governance probe', got '${probe_content}')"
 can_list "$TEN_AK" "$TEN_SK" "tenant/" ||
 	die "tenant credentials cannot list tenant/"
 echo "    ok   catalog reads raw/ + lake/; tenant reads, writes and lists tenant/"

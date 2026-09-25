@@ -114,7 +114,7 @@ LEG_CTR=pdrc-legacy-$SUFFIX
 # a deterministic number this gate had no second chance at (pd-r0ri).
 MINIO_PORT=${MINIO_PORT:-$(free_port)}
 
-WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdrc.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdrc.XXXXXX")}
 mkdir -p "$WORK/data" "$WORK/legacy/tenants" "$WORK/minio" "$WORK/restore"
 
 # The recognisable card. Unique per run so a stale object in a shared bucket

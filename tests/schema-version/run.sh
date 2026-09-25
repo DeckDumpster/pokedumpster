@@ -94,7 +94,7 @@ command -v sqlite3 >/dev/null 2>&1 || {
 # under `set -e` a single SQLITE_BUSY takes the whole CI run down.
 sq() { sqlite3 -cmd '.timeout 5000' "$@"; }
 
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/pkdump-sv.XXXXXX)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/pkdump-sv.XXXXXX")
 
 pass=0
 fail=0

@@ -81,7 +81,7 @@ APP_CTR="pkdump-upgrade-${SUFFIX}"
 # failed. PDUP_PORT still pins it for a human who wants a known port.
 PORT=""
 
-WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pd-upgrade.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pd-upgrade.XXXXXX")}
 DATA="$WORK/data"
 
 pass=0

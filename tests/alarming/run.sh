@@ -107,7 +107,7 @@ LS_CTR="pkdump-${INSTANCE}-litestream"
 MINIO_PORT=${MINIO_PORT:-$(free_port)}
 SINK_PORT=${SINK_PORT:-$(free_port)}
 
-WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pkdump-alarm.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pkdump-alarm.XXXXXX")}
 SINK_LOG="${WORK}/sink.jsonl"
 SINK_PID=""
 

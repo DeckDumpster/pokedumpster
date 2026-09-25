@@ -64,7 +64,7 @@ SUFFIX="${PDDERIVE_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)}"
 NET="pdderive-net-${SUFFIX}"
 IMAGE="localhost/pkdump:derive-${SUFFIX}"
 
-WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdderive.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdderive.XXXXXX")}
 FIXTURE="$WORK/fixture"
 
 # The two dates the fixture lands. Kept in step with

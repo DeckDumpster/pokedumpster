@@ -111,7 +111,7 @@ CAT_SK=pdtzcatalogsecret123
 TEN_AK=pdtztenant
 TEN_SK=pdtztenantsecret123
 
-WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdtz-test.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdtz-test.XXXXXX")}
 mkdir -p "$WORK/minio" "$WORK/policies"
 chmod 777 "$WORK/minio" "$WORK/policies"
 

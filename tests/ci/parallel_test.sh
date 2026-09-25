@@ -60,7 +60,7 @@ check() { # check <label> <expected> <actual>
 }
 log() { printf '\n=== %s ===\n' "$*"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/pd-partest.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/pd-partest.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 # A driver script, so every case runs the real library in its own shell with

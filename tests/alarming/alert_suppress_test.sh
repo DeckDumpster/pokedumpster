@@ -32,7 +32,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=tests/lib/ports.sh
 . "${REPO_DIR}/tests/lib/ports.sh"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/pkdump-alertsup.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/pkdump-alertsup.XXXXXX")"
 STATE="${WORK}/state"
 SINK_PID=""
 # shellcheck disable=SC2329  # invoked via trap

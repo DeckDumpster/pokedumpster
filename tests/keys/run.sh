@@ -64,7 +64,7 @@ SUFFIX="${PDK_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)}"
 IMAGE="localhost/pkdump:keys-${SUFFIX}"
 INSTANCE="keys-${SUFFIX}"
 
-WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pd-keys.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pd-keys.XXXXXX")}
 DATA="$WORK/data"
 # The wrapper's host-config directory, redirected at a throwaway so the real
 # ~/.config/pkdump is never written to. Through PKDUMP_KEYS_CONF_DIR rather

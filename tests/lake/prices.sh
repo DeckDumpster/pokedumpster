@@ -92,7 +92,7 @@ WAREHOUSE="s3://${BUCKET}/lake"
 # Nothing here publishes a host port. Health checks and jobs all run as
 # containers ON the network, which is the only way to reach an --internal one
 # anyway — and it means this gate cannot pick a port (pd-r0ri).
-WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdprices.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdprices.XXXXXX")}
 FIXTURE="$WORK/fixture"
 mkdir -p "$WORK/nessie" "$WORK/minio" "$FIXTURE"
 chmod 777 "$WORK/nessie" "$WORK/minio"

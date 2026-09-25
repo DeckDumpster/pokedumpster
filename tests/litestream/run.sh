@@ -127,7 +127,7 @@ export LITESTREAM_S3_REGISTRY_PATH=citest/registry.sqlite
 export LITESTREAM_S3_REGION=us-west-2
 export LITESTREAM_S3_ENDPOINT="http://${MINIO_CTR}:9000"
 
-WORK=${WORK:-$(mktemp -d /tmp/pdls-test.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdls-test.XXXXXX")}
 mkdir -p "$WORK/data/tenants" "$WORK/minio" "$WORK/restore"
 
 # FOUR tenants (alpha, bravo, charlie, delta) so "restore a non-first tenant"

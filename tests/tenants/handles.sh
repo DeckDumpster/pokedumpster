@@ -62,7 +62,7 @@ APP_CTR="pkdump-handles-${SUFFIX}"
 # container by `start_app`.
 PORT=""
 
-WORK=${WORK:-$(mktemp -d /tmp/pd-handles.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pd-handles.XXXXXX")}
 DATA="$WORK/data"
 JWKS_DIR="$WORK/jwks"
 JWKS_PID=""

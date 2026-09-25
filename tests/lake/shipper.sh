@@ -92,7 +92,7 @@ CAT_SK=pdshipcatalogsecret123
 TEN_AK=pdshiptenant
 TEN_SK=pdshiptenantsecret123
 
-WORK=${WORK:-$(mktemp -d /tmp/pdship.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdship.XXXXXX")}
 DATA="$WORK/data"
 KEYS="$WORK/keys"
 mkdir -p "$WORK/minio" "$WORK/policies" "$DATA" "$KEYS"

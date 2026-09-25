@@ -102,7 +102,7 @@ SECRET=pdlaketestsecret123
 # overlap.
 WAREHOUSE="s3://${BUCKET}/lake"
 
-WORK=${WORK:-$(mktemp -d /tmp/pdlake-test.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdlake-test.XXXXXX")}
 # Nessie's version store. On a real box this is a directory on /workspaces; here
 # it is a temp dir, but it is a HOST directory either way — that is what §4
 # restarts across.

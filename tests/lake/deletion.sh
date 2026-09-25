@@ -84,7 +84,7 @@ CAT_SK=pderasecatalogsecret123
 TEN_AK=pderasetenant
 TEN_SK=pderasetenantsecret123
 
-WORK=${WORK:-$(mktemp -d /tmp/pderase.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pderase.XXXXXX")}
 DATA="$WORK/data"
 KEYS="$WORK/keys"
 mkdir -p "$WORK/minio" "$WORK/policies" "$DATA" "$KEYS"

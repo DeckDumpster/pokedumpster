@@ -182,7 +182,7 @@ RENAMED=charlie   # renamed in §7, then restored under the new handle
 DETACHED=alpha    # detached in §8, then restored from its replica
 RENAMED_TO=charlize
 
-WORK=${WORK:-$(mktemp -d /tmp/pkdump-drill.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pkdump-drill.XXXXXX")}
 
 pass=0
 fail=0

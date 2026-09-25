@@ -62,10 +62,13 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 # contention is the scenario, not an edge case. Same 5s as everywhere else.
 sq() { sqlite3 -cmd '.timeout 5000' "$@"; }
 
-AWSCLI_IMAGE=${AWSCLI_IMAGE:-docker.io/amazon/aws-cli:latest}
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# The AWS CLI image, pinned, from the one definition (db-fdct).
+# shellcheck source=tests/lib/awscli.sh
+. "${REPO_DIR}/tests/lib/awscli.sh"
+AWSCLI_IMAGE=${AWSCLI_IMAGE:-$PKDUMP_AWSCLI_IMAGE}
 
 # The MinIO images, pinned and off Docker Hub, from the one definition.
 # shellcheck source=tests/lib/minio.sh

@@ -282,7 +282,32 @@ done <<<"$MINIO_USERS"
 none "every harness that runs MinIO sources the pin" "${UNPINNED%$'\n'}"
 
 # ---------------------------------------------------------------------------
-log "8. no mktemp under tests/ or deploy/ hardcodes /tmp/ (db-qm76)"
+log "8. the AWS CLI image comes from the one pin, and rides no moving tag (db-fdct)"
+# Same shape as §7 for MinIO. Three harnesses named docker.io/amazon/aws-cli:latest
+# as their own literal. An output or error-message change in a new version reads as
+# an object-store failure in tenant_zone.sh, drill.sh and recreate.sh. One constant
+# in one library, asserted over the tree so a fourth harness cannot copy the old form.
+AWSCLI_PIN_FILE="${REPO_DIR}/tests/lib/awscli.sh"
+check "the awscli pin exists" "yes" "$([[ -f "$AWSCLI_PIN_FILE" ]] && echo yes || echo no)"
+check "…and names no moving tag" "" \
+	"$(grep -oE 'PKDUMP_AWSCLI_IMAGE="[^"]*:latest"' "$AWSCLI_PIN_FILE")"
+
+AWSCLI_HARDCODED="$(harnesses | grep -v '/tests/lib/awscli.sh$' |
+	xargs grep -nE 'amazon/aws-cli:' /dev/null |
+	grep -vE '^[^:]*:[0-9]+:[[:space:]]*#')"
+none "no harness hardcodes an AWS CLI image" "${AWSCLI_HARDCODED%$'\n'}"
+
+AWSCLI_USERS="$(harnesses | xargs grep -l 'AWSCLI_IMAGE' /dev/null |
+	grep -v '/tests/lib/awscli.sh$')"
+AWSCLI_UNPINNED=""
+while IFS= read -r f; do
+	[[ -z "$f" ]] && continue
+	grep -q 'tests/lib/awscli.sh"' "$f" || AWSCLI_UNPINNED+="${f}"$'\n'
+done <<<"$AWSCLI_USERS"
+none "every harness that runs the AWS CLI sources the pin" "${AWSCLI_UNPINNED%$'\n'}"
+
+# ---------------------------------------------------------------------------
+log "9. no mktemp under tests/ or deploy/ hardcodes /tmp/ (db-qm76)"
 # deploy/ci.sh moves TMPDIR off the RAM-backed tmpfs on the CI runner; a
 # harness that calls mktemp -d /tmp/NAME.XXXXXX ignores that and fills the
 # RAM disk anyway. The correct forms are mktemp -d "${TMPDIR:-/tmp}/NAME.XXXXXX"

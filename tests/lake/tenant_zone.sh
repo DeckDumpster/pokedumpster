@@ -62,10 +62,13 @@
 # it writes under `tenant/` is a literal governance probe, and §7 removes it.
 set -euo pipefail
 
-AWSCLI_IMAGE=${AWSCLI_IMAGE:-docker.io/amazon/aws-cli:latest}
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# The AWS CLI image, pinned, from the one definition (db-fdct).
+# shellcheck source=tests/lib/awscli.sh
+. "${REPO_DIR}/tests/lib/awscli.sh"
+AWSCLI_IMAGE=${AWSCLI_IMAGE:-$PKDUMP_AWSCLI_IMAGE}
 
 # The MinIO images, pinned and off Docker Hub, from the one definition.
 # shellcheck source=tests/lib/minio.sh

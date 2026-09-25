@@ -49,7 +49,7 @@ pub fn collectr_singles_csv(conn: &Connection) -> Result<String> {
            JOIN cards cd ON p.card_id = cd.card_id \
            JOIN sets s ON cd.set_code = s.set_code \
          WHERE c.status = 'owned' \
-         ORDER BY s.set_sort_order, cd.number_sortable, p.variant, c.id",
+         ORDER BY s.release_date, s.set_code, cd.number_sortable, p.variant, c.id",
     )?;
 
     let mut writer = csv::Writer::from_writer(Vec::new());
@@ -105,7 +105,7 @@ pub fn collectr_sealed_csv(conn: &Connection) -> Result<String> {
            JOIN sealed_products sp ON sc.product_id = sp.product_id \
            LEFT JOIN sets s ON sp.set_code = s.set_code \
          WHERE sc.status = 'owned' \
-         ORDER BY s.set_sort_order, sp.name, sc.id",
+         ORDER BY s.release_date, s.set_code, sp.name, sc.id",
     )?;
 
     let mut writer = csv::Writer::from_writer(Vec::new());
@@ -367,5 +367,78 @@ Main,Lorcana,Foo,Bar,1,Promo,Holofoil,Ungraded,Near Mint,0,1,1.00,0,false,2026-0
             crate::sealed_import::resolve_sealed(&conn, &re_sealed.sealed).unwrap();
         assert_eq!(re_sealed_report.matched.len(), 1);
         assert_eq!(re_sealed_report.matched[0].product_id, 7001);
+    }
+
+    /// The singles export groups cards by set even when set_sort_order is NULL
+    /// for every set (the prod state — db-hdwl).  Uses two sets so interleaving
+    /// is detectable; set_sort_order is deliberately absent from the INSERT.
+    #[test]
+    fn singles_export_groups_by_set_with_null_set_sort_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            // Two sets, set_sort_order NULL (omitted), one with an earlier date.
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, printed_total, release_date)
+                 VALUES ('old', 'Old Set', 'Gen1', 10, '1999/01/01'),
+                        ('new', 'New Set', 'Gen2', 10, '2023/01/01')",
+                [],
+            )
+            .unwrap();
+            // Two cards in each set, numbers 1 and 2.
+            c.execute(
+                "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity)
+                 VALUES ('old-1','old','1',1,'Old One','Common'),
+                        ('old-2','old','2',2,'Old Two','Common'),
+                        ('new-1','new','1',1,'New One','Common'),
+                        ('new-2','new','2',2,'New Two','Common')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id, card_id, variant)
+                 VALUES ('old-1-n','old-1','normal'),
+                        ('old-2-n','old-2','normal'),
+                        ('new-1-n','new-1','normal'),
+                        ('new-2-n','new-2','normal')",
+                [],
+            )
+            .unwrap();
+        }
+        let mut conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        // Own one copy of every printing so all four show up.
+        for pid in ["old-1-n", "old-2-n", "new-1-n", "new-2-n"] {
+            crate::collection::add(
+                &mut conn,
+                &crate::collection::NewCopy {
+                    printing_id: pid.into(),
+                    source: "test".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let csv = collectr_singles_csv(&conn).unwrap();
+        let set_names: Vec<&str> = csv
+            .lines()
+            .skip(1) // header
+            .map(|line| line.split(',').nth(2).unwrap_or(""))
+            .collect();
+        // All Old Set rows must be contiguous; same for New Set.
+        let runs: Vec<&str> = {
+            let mut v: Vec<&str> = Vec::new();
+            for name in &set_names {
+                if v.last().copied() != Some(*name) {
+                    v.push(name);
+                }
+            }
+            v
+        };
+        assert_eq!(
+            runs,
+            vec!["Old Set", "New Set"],
+            "export must group by set with set_sort_order NULL: {runs:?}"
+        );
     }
 }

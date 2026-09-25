@@ -140,7 +140,7 @@ MINIO_URL="http://${MINIO_CTR}:9000"
 mc_as() {
 	local ak="$1" sk="$2"
 	shift 2
-	podman run --rm --network "$NET" \
+	podman run --rm -i --network "$NET" \
 		-v "$WORK/policies:/policies:ro,Z" \
 		-e "MC_HOST_x=http://${ak}:${sk}@${MINIO_CTR}:9000" \
 		"$MC_IMAGE" "$@"

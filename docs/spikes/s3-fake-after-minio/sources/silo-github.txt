@@ -1,0 +1,537 @@
+SOURCE: https://github.com/pgsty/silo
+RETRIEVED: 2026-09-25 (spike db-hny6)
+---
+GitHub - pgsty/silo: S3-Compatible Object Storage. A MinIO fork maintained by PGSTY · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ pgsty
+ 
+ / 
+ 
+ silo 
+
+ Public 
+
+ forked from minio/minio 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 205 
+
+ Star
+ 3.5k 
+
+ Code 
+
+ Issues 
+ 15 
+
+ Pull requests 
+ 2 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ main 
+
+ Branches Tags 
+
+ Go to file 
+
+ Code Open more actions menu 
+
+ Latest commit
+
+ History
+ 13,023 Commits 
+ 13,023 Commits 
+
+ Folders and files
+ Name Name Last commit message 
+ Last commit date 
+ 
+ .github 
+
+ .github 
+
+ buildscripts 
+
+ buildscripts 
+
+ cmd 
+
+ cmd 
+
+ dockerscripts 
+
+ dockerscripts 
+
+ docs 
+
+ docs 
+
+ helm/ silo 
+
+ helm/ silo 
+
+ internal 
+
+ internal 
+
+ .dockerignore 
+
+ .dockerignore 
+
+ .gitignore 
+
+ .gitignore 
+
+ .golangci.yml 
+
+ .golangci.yml 
+
+ .mailmap 
+
+ .mailmap 
+
+ .typos.toml 
+
+ .typos.toml 
+
+ AGENTS.md 
+
+ AGENTS.md 
+
+ CHANGELOG.md 
+
+ CHANGELOG.md 
+
+ CLAUDE.md 
+
+ CLAUDE.md 
+
+ COMPLIANCE.md 
+
+ COMPLIANCE.md 
+
+ CONTRIBUTING.md 
+
+ CONTRIBUTING.md 
+
+ CONTRIBUTORS.md 
+
+ CONTRIBUTORS.md 
+
+ CREDITS 
+
+ CREDITS 
+
+ Dockerfile.distroless 
+
+ Dockerfile.distroless 
+
+ Dockerfile.goreleaser 
+
+ Dockerfile.goreleaser 
+
+ LICENSE 
+
+ LICENSE 
+
+ Makefile 
+
+ Makefile 
+
+ NOTICE 
+
+ NOTICE 
+
+ PULL_REQUESTS_ETIQUETTE.md 
+
+ PULL_REQUESTS_ETIQUETTE.md 
+
+ README.md 
+
+ README.md 
+
+ README_ZH.md 
+
+ README_ZH.md 
+
+ SECURITY.md 
+
+ SECURITY.md 
+
+ VULNERABILITY_REPORT.md 
+
+ VULNERABILITY_REPORT.md 
+
+ code_of_conduct.md 
+
+ code_of_conduct.md 
+
+ go.mod 
+
+ go.mod 
+
+ go.sum 
+
+ go.sum 
+
+ main.go 
+
+ main.go 
+
+ silo.env 
+
+ silo.env 
+
+ silo.service 
+
+ silo.service 
+
+ silo.sysusers 
+
+ silo.sysusers 
+
+ update-credits.sh 
+
+ update-credits.sh 
+
+ View all files 
+
+ Repository files navigation
+ 
+ README 
+ Code of conduct 
+ Contributing 
+ AGPL-3.0 license 
+ Security 
+ 
+ More items 
+
+ S3-compatible object storage — a MinIO fork maintained by PGSTY 
+
+ Website ·
+ Documentation ·
+ Download ·
+ Release Notes ·
+ Compatibility ·
+ Manifesto ·
+ Security ·
+ 中文 
+
+ Important
+ PGSTY Silo (hereinafter “Silo”) is an independent, community-maintained fork of the open-source MinIO server, published by Pigsty from pgsty/silo . It is not affiliated with, endorsed by, or sponsored by MinIO, Inc. “MinIO” is used only to identify the upstream project and compatibility lineage.
+
+ Note
+ Renamed from pgsty/minio to pgsty/silo , default branch master → main , on 2026-08-06. Artifacts under the original MinIO identity stay published on the archived minio branch and in releases up to RELEASE.2026-08-04T00-00-00Z .
+
+ Current release and main branch
+
+ The latest published Server is 20260903 .
+As of 2026-09-16, the main branch has newer security, storage, Console and
+shared-package changes that have not shipped in a Server release. See
+ CHANGELOG.md and the component version matrix 
+for the exact release/source boundary, including SN-2026-011 and password-policy migration.
+
+ Overview
+
+ PGSTY SILO keeps one maintained release line of the open-source MinIO server alive after upstream ended community distribution: builds, packages, multi-arch images, security fixes, and the full web console. Pigsty runs it in production as its PostgreSQL backup repository.
+
+ It follows one rule — the product and its delivery surfaces are renamed; the protocol and your data are not. Everything else lives on silo.pgsty.com .
+
+ Related: pgsty/mc client (shipped as mcli ) · pgsty/silo-console · pgsty/silo-pkg · pgsty/pigsty 
+
+ Quick Start
+
+ docker run -d --name silo -p 9000:9000 -p 9001:9001 \
+ -e MINIO_ROOT_USER=minioadmin \
+ -e MINIO_ROOT_PASSWORD=change-me-long-password \
+ -v " $PWD /data:/data " \
+ docker.io/pgsty/silo:latest server /data --console-address " :9001 " 
+
+ Console on http://localhost:9001 , S3 API on http://localhost:9000 . The image bundles the client as mcli :
+
+ docker exec silo mcli alias set local http://127.0.0.1:9000 minioadmin change-me-long-password
+docker exec silo mcli mb local/demo && docker exec silo mcli ls local 
+
+ Warning
+ For production, pin a release, use unique credentials and TLS, monitor the service, keep independent backups, and test recovery. Start from the documentation .
+
+ Install
+
+ Method 
+ Where 
+
+ Container 
+ pgsty/silo , multi-arch for linux/amd64 and linux/arm64 
+
+ Binaries 
+ GitHub Releases — Linux, macOS, Windows on amd64 and arm64 
+
+ Packages 
+ RPM, DEB, and APK, also via the Pigsty repository 
+
+ Kubernetes 
+ Helm chart, see Download & Install 
+
+ Source 
+ go build -o silo . && ./silo --version 
+
+ Every release ships checksums, SPDX SBOMs, Sigstore-signed manifests, and GitHub build attestations. Installation methods and verification commands are documented at Download & Install ; migrating from upstream MinIO — taking over an existing minio.service and its /etc/default/minio , and keeping data ownership stable with a /etc/systemd/system/silo.service.d/10-legacy-user.conf drop-in — is covered by the migration guide and the binary & service notes .
+
+ Compatibility
+
+ Silo preserves S3 and storage-format compatibility, including existing MINIO_* variables, minio_* metrics, x-minio-* headers, /minio/* routes, and .minio.sys data. CI guards selected compatibility identifiers; release notes document intentional security and behavior changes. Silo-owned delivery surfaces use the silo executable, package, service, Helm chart, and container image; no minio server binary alias is installed.
+
+ The supported release stack is pgsty/silo + pgsty/silo-console + pgsty/mc + pgsty/silo-pkg ; compatibility with unmodified upstream MinIO/MC is best effort. The Server, Console, and client retain their historical module paths where needed, while maintained code imports github.com/pgsty/silo-pkg/v3 directly. The SDK github.com/minio/minio-go/v7 is an explicit upstream dependency. See the current go.mod for versions and replacements.
+
+ Every divergence from upstream is listed in the code-verified compatibility audit . Treat each release as a downstream upgrade: pin versions, read the release notes , and keep a rollback path.
+
+ TLS and Go upgrades
+
+ The following TLS repair is on main and is not included in Server 20260903.
+With that repair, TLS key exchange follows Go's defaults across the S3 listener, node links,
+replication, identity providers, etcd, and external HTTP services. If an endpoint
+cannot accept ML-KEM, GODEBUG=tlsmlkem=0 disables the default hybrid exchanges
+for the process; certificate verification remains enabled. This option does not
+disable ML-DSA signatures or resolve every TLS reset. Prefer updating the
+incompatible endpoint before removing the temporary setting.
+If only the new SecP hybrids cause problems, GODEBUG=tlssecpmlkem=0 disables
+those groups while retaining X25519MLKEM768.
+
+ For builds targeting Go 1.27, setting either SSL_CERT_FILE or SSL_CERT_DIR 
+on macOS replaces Keychain trust with on-disk roots and Go's verifier. Stale or
+incomplete CA paths can break previously trusted connections; unset inherited
+values to restore Keychain trust. Explicit certificates in the configured CAs 
+directory remain additive to the selected root pool.
+Go 1.27 binaries require macOS 13 or later. See the
+ Go release notes and the
+ Go 1.27 TLS and OIDC discovery guide .
+
+ Documentation ownership
+
+ User documentation is maintained at silo.pgsty.com ,
+with source in pgsty/silo.pgsty.com .
+The remaining docs/ tree contains inherited references, examples, and tooling
+fixtures. Investigation logs, AI work records, and temporary reports are kept
+outside this repository; reusable findings belong in the companion site.
+See AGENTS.md for repository ownership and maintenance rules.
+
+ Security & Contributing
+
+ Report vulnerabilities privately as described in SECURITY.md ; every fix ships with a public advisory . Contributions are accepted inbound=outbound under AGPL-3.0-or-later with no CLA — only DCO sign-off ( git commit -s ) is required; see CONTRIBUTING.md .
+
+ Contributors
+
+ Every human issue or pull-request author is part of the SILO community, including open and unmerged work. Merged fixes, adopted proposals, and actionable reports receive priority, with first participation guiding the remaining order. Gold rings highlight reviewed significant contributions.
+
+ View contribution notes and actual PR status .
+
+ Star History
+
+ Background
+
+ Upstream wound down its community edition: the web console was cut back to a stub, prebuilt community binaries stopped, and the community repository was archived. Silo exists to keep those deployments running. The fork is a means, not an identity — if upstream restores its community edition, we will narrow our scope and offer the fixes back.
+
+ The Manifesto is the project's public commitment in eleven articles, under one discipline: every article is either something already done with public evidence, or something explicitly refused. In short:
+
+ Compatibility contract — the protocol and your data do not change, and every release documents its tested rollback target and path.
+
+ The license cannot change — AGPLv3, no CLA, no copyright aggregation; nobody here, ourselves included, holds enough copyright to relicense on everyone else's behalf.
+
+ The never list , append-only — no paywalling existing features, no registration wall on downloads, no telemetry (upstream's phone-home paths are removed outright), no CLA, no license change, no trademark enforcement against normal use.
+
+ Security and release discipline — a public advisory for every fix, and a release every one to two months, at most a quarter apart. Judge both against the public record.
+
+ Essays: MinIO Is Dead · Who Takes Over? · Long Live MinIO · Promise Kept 
+
+ License & Trademark
+
+ Silo is AGPL-3.0-or-later , derived from minio/minio with upstream copyright and third-party notices preserved in NOTICE and CREDITS . MinIO is a trademark of MinIO, Inc.; the name is used here only to identify the upstream project and compatibility lineage.
+
+ Details: license · attribution · trademark 
+
+ About 
+ S3-Compatible Object Storage. A MinIO fork maintained by PGSTY
+ silo.pgsty.com 
+ Topics 
+ minio object-storage pigsty s3 
+ Resources 
+ Readme 
+ AGPL-3.0 license 
+ Code of conduct 
+ Code of conduct 
+ Contributing 
+ Contributing 
+ Security policy 
+ Security policy 
+ Activity 
+ Custom properties 
+ Stars 
+ 3.5k stars 
+ Watchers 
+ 31 watching 
+ Forks 
+ 205 forks 
+ Report repository 
+
+ Releases 
+
+ Packages 
+
+ Contributors 
+
+ Languages 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

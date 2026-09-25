@@ -1,0 +1,327 @@
+SOURCE: https://blog.localstack.cloud/the-road-ahead-for-localstack/
+RETRIEVED: 2026-09-25 (spike db-hny6)
+---
+The Road Ahead for LocalStack: Upcoming Changes to the Delivery of Our AWS Cloud Emulators 
+ Products
+
+ Products
+ Local cloud development emulators
+
+ Start for Free
+
+ LocalStack for AWS
+ Get to know LocalStack, the company
+
+ LocalStack for Snowflake
+ Learn about LocalStack values
+
+ LocalStack for AWS
+ Emulate your AWS Services.
+
+ LocalStack for Snowflake
+ Emulate your Snowflake Services.
+
+ Resources
+
+ Docs
+
+ LocalStack for AWS Docs
+ Docs for our AWS Emulator
+
+ LocalStack for Snowflake Docs
+ Docs for our Snowflake Emulator
+
+ Additional Resources
+
+ Resource Library
+ Explore the LocalStack Resource Library
+
+ Customer Stories
+ Read through our customer stories
+
+ Blog
+ Advice and updates from the LocalStack team
+
+ Events
+ See our upcoming Meetups/Events
+
+ Company
+
+ About LocalStack
+
+ About us
+ Get to know LocalStack, the company
+
+ Values
+ Learn about LocalStack values
+
+ Careers
+ Work with us!
+
+ Pricing
+
+ Pricing & Packaging
+
+ LocalStack for AWS
+ Learn more about LocalStack for AWS pricing & packaging
+
+ LocalStack for Snowflake
+ Learn more about LocalStack for Snowflake pricing & packaging
+
+ LocalStack for Students
+ Learn more about availability for students
+
+ Enterprise 
+ Sign in
+ Talk to Sales
+ Sign up
+ Sign in
+ Talk to Sales
+ Sign up
+
+ LocalStack Blog → News → The Road Ahead for LocalStack: Upcoming Changes to the Delivery of Our AWS Cloud Emulators The Road Ahead for LocalStack: Upcoming Changes to the Delivery of Our AWS Cloud Emulators
+ We’re simplifying and improving the LocalStack for AWS experience by unifying Community and Pro into one image, offering a free account-based experience for individuals and open source users, and introducing a new CLI (CLI v2) to power the next generation of local cloud development.
+
+ 12 min read
+ Published December 18, 2025 · Updated March 17, 2026 
+ Authors Waldemar Hummer 
+ Gerta Sheganaku 
+ 
+ Category News 
+ Tags LocalStack 
+
+ At LocalStack, we’re very fortunate to fundamentally shape how local cloud development is done. By providing high-fidelity cloud service emulators, we enable developers to run a digital twin of their cloud environment locally–a true local cloud sandbox. What began as a seemingly crazy idea among a handful of individuals and community members (“why would you build a cloud on your laptop?”) has since evolved into a major driver of cloud development productivity for enterprises and teams around the globe.
+
+ Over time, LocalStack for AWS has also evolved well beyond a local AWS emulator running in a container. We’ve invested heavily in expanding our cloud offering and Web Console, introducing powerful new capabilities such as a visual resource browser, collaboration features, chaos engineering workflows, IAM policy debugging, and much more.
+
+ As LocalStack’s sophistication has increased–and as our active user base has grown rapidly –we’ve encountered a growing divide between two distinct groups: (1) users who sign up for our platform (free or paid), actively engage with us and our community, and provide regular feedback on advanced features; and (2) a large, anonymous user base that primarily pulls the image and with whom we have limited interaction or insight.
+
+ Going forward, we will focus our efforts primarily on the former group. By working more closely with engaged users, we believe we can have a deeper impact–delivering advanced capabilities that meaningfully transform developer workflows and significantly improve productivity for cloud development teams.
+
+ Table of Contents
+
+ Table of Contents 
+
+ Why we’re making a change 
+
+ What’s changing? 
+
+ Future journey: LocalStack for AWS remains free for students, hobbyists, and open source projects 
+
+ Frequently Asked Questions 
+ 
+ What is changing? 
+
+ When will this change occur? 
+
+ What do I need to do today? 
+
+ Will the community image still be available? 
+
+ Will Pro still be available at localstack/localstack-pro ? 
+
+ Will I need to start paying for LocalStack for AWS? 
+
+ I already use the pro image on Docker Hub. Will anything change for me? 
+
+ Will this affect our current CI deployments that rely on LocalStack for AWS? 
+
+ My question isn’t answered here. Who can I reach out to? 
+
+ Why we’re making a change
+
+ LocalStack started as a scrappy open-source experiment, and the community made it what it is today. Over time, however, the scope, security requirements, and operational complexity of maintaining high-fidelity AWS emulation have grown significantly.
+
+ To continue delivering accurate, secure, and production-grade cloud emulation - while still offering a free entry point - we need a distribution model that lets us engage directly with users, understand how LocalStack is used, and sustainably invest in the platform.
+
+ What’s changing?
+
+ For the last several years, we’ve maintained two separate versions of LocalStack for AWS: our Community edition, which is open-source and freely available to the community; and our Pro edition, which is only accessible with a paid license.
+
+ Beginning in March 2026, LocalStack for AWS will be delivered as a single, unified version. Users will need to create an account to run LocalStack for AWS, which allows us to provide a secure, up-to-date, and feature-rich experience for everyone–from those on our free and student plans to those at enterprise accounts.
+
+ As a result of this shift, we cannot commit to releasing regular updates to the Community edition of LocalStack for AWS. Regular product enhancements and security patches will only be applied to the new version of LocalStack for AWS available via our website.
+
+ Meanwhile, the source code for prior versions of the LocalStack for AWS Community edition will remain openly available on GitHub. While the LocalStack team will scale back active maintenance, the repository will continue to serve as a reference point for the community. Ongoing feature development and regular updates will no longer be part of our focus for this repository, which will be clearly marked as inactive, with its current status reflected in the README.
+
+ For those using the Community edition of LocalStack for AWS today (i.e., the localstack/localstack Docker image), any project that automatically pulls the latest image of LocalStack for AWS from Docker Hub will need to be updated before the change goes live in March 2026.
+
+ Those who would like to take advantage of the latest LocalStack for AWS features once this change is implemented will have several options to choose from:
+
+ Our free plan, which is designed for individual engineers and others looking to experiment with AWS recreationally (UPDATE: The free tier is intended for non-commercial use. See our recent pricing update for more details.) 
+
+ Our self-service options, which are designed to support small teams of engineers looking to collaborate on local development
+
+ Our Enterprise plan, which is designed to scale across large engineering teams, with dedicated support and deployment models for modern platform engineering and DevOps organizations
+
+ Future journey: LocalStack for AWS remains free for students, hobbyists, and open source projects
+
+ LocalStack is committed to supporting our community, from individual innovators to large enterprise software organizations. Our free plan will continue to provide a dynamic environment for experimental development and exploration (UPDATE: LocalStack’s free tier is intended only for non-commercial use. See our recent pricing update .) We will introduce new monthly and annual subscription options for individual and team-level adoption. And our Student Plan, available to those who participate in GitHub’s Student Developer Pack, will not be affected by this change.
+
+ Hobbyists looking to continue leveraging the Community edition of LocalStack for AWS are advised to pin to a fixed version of the Community image (e.g., version 4.12) in any automation, rather than using the latest image tag.
+
+ While pinning to a previous version of the Community edition of LocalStack for AWS will prevent any disruption to your automation, please note that previous versions will not receive backport support.
+
+ We spend a lot of time and effort creating an experience that makes cloud development easier and faster for our users. These changes ensure that all LocalStack for AWS users can benefit from this work.
+
+ In the coming months, we will share documentation and resources to help our community prepare for this change. Stay tuned for more information.
+
+ LocalStack would not exist without our community - from the early skeptics to power users who pushed us to be better and helped us get to where we are today. These changes are about ensuring that LocalStack can continue to exist, evolve, and serve developers for the long term.
+
+ We’re committed to making this transition transparent, gradual, and respectful - and we welcome your feedback as we move forward. Below are answers to some frequently asked questions relating to this change.
+
+ Frequently Asked Questions
+
+ What is changing?
+
+ Our current distribution for our AWS emulator, which was packaged both as a free Community image ( localstack/localstack ) and a commercial Pro image ( localstack/localstack-pro ) on Docker Hub, will be consolidated into a single image beginning in March 2026. Going forward, LocalStack for AWS will be available via a single image distribution on Docker Hub at localstack/localstack .
+
+ The new unified distribution will require authentication via an auth token for use. This means that, once the change is published in March, pulling and running localstack/localstack:latest will prompt you for an auth token if you have not already provided one.
+
+ For Existing Customers on a Paid Tier 
+
+ Nothing will change. We will continue to publish updates to localstack/localstack-pro . Ensure that you have your auth token set on LocalStack on your machine. For details on how to find and set your auth token, check our auth token documentation . If you are using LocalStack in CI, please also ensure that you have set a CI auth token in your CI environment.
+
+ For Existing Users on a Free Tier 
+
+ Your existing configuration will still work using localstack/localstack-pro provided you have set your auth token. For details on how to find and set your auth token, check our auth token documentation . Our free plan does not include CI credits. If you wish to use LocalStack within a CI environment, we encourage you to explore our pricing tier options to see what best suits your requirements. UPDATE: The free tier is for non-commercial use only, but there will be no more limitations on CI credits for any plan of LocalStack for AWS. See our recent pricing update for more details. 
+
+ For Existing Users of the Community Image 
+
+ To prevent any disruption after the consolidated image is launched, you can use one of the following options:
+
+ Sign up for the free tier: The LocalStack for AWS free tier gives you the equivalent resources that are provided in the community image UPDATE: The free tier is intended for non-commercial use. See our recent pricing update for more details. Once you sign up for LocalStack for AWS, be sure to set your auth token as shown in the auth token documentation . Our free plan does not include CI credits. If you wish to use LocalStack within a CI environment, we encourage you to explore our pricing tier options to see what best suits your requirements. UPDATE: There will be no more limitations on CI credits for any plan of LocalStack for AWS. See our recent pricing update for more details. 
+
+ Pin to a prior version: Once the image consolidation is complete, use of the localstack/localstack:latest version will require authentication. However, prior version tags will still be available to run without authentication both locally and within a CI environment. Note that this option will not give you access to service and/or security updates that will be released in future versions of LocalStack.
+
+ When will this change occur?
+
+ This change is currently planned to go live in March 2026. The exact date will be shared as we approach the transition. We will communicate this change via all available channels, including in-product, email, blog, social and our Slack community .
+
+ What do I need to do today?
+
+ Nothing needs to be done today.
+
+ We are issuing this announcement now to provide details proactively so our users have time to prepare. For details on how this might impact you once the change is implemented and options for addressing that, please see the details listed under “What is changing?” 
+
+ Will the community image still be available?
+
+ The community image will no longer be available on Docker Hub when using localstack/localstack:latest once the image consolidation is complete. Past releases of the community image will still be available, and you can choose to pin your setup to a prior version tag. It’s important to note that pinning to a prior version will opt you out of any future updates or security patches. The open source code for the community image will remain on GitHub, but the repository will be less actively maintained, as we cannot commit to making active ongoing contributions.
+
+ Will Pro still be available at localstack/localstack-pro ?
+
+ The localstack/localstack-pro image will remain available. We do not currently plan to change this in order to facilitate the transition for our customers. After the change goes into effect, localstack/localstack and localstack/localstack-pro will both have the same image.
+
+ Will I need to start paying for LocalStack for AWS?
+
+ We will continue to make a free tier available to all LocalStack users, and, for many use cases, transitioning to the free tier from the community image will offer equivalent capabilities, including emulation of the AWS services currently supported by the community image. However, our free plan does not include CI credits. If you wish to use LocalStack for AWS within a CI environment, we encourage you to explore our pricing tier options to see what best suits your requirements. UPDATE: The free tier is limited to non-commercial use. There will be no more limitations on CI credits for any plan of LocalStack for AWS. See our recent pricing update for more details. 
+
+ I already use the pro image on Docker Hub. Will anything change for me?
+
+ No. You can continue to use the pro image at localstack/localstack-pro . Your current configuration will continue to work, unchanged, provided you have already set your auth token and CI auth tokens as required. For details on how to find and set your auth token, check our auth token documentation . If you are using LocalStack in CI, please also ensure that you have set a CI auth token in your CI environment.
+
+ Will this affect our current CI deployments that rely on LocalStack for AWS?
+
+ Once the image consolidation is completed in March 2026, using the most recent version of LocalStack for AWS via the localstack/localstack:latest image tag will require authentication. For CI environments, this requires that you set a CI auth token . CI runs using LocalStack consume CI credits across your workspace. The number of CI credits allotted to your workspace depends on your pricing tier . Free tier accounts do not include CI credits. 
+
+ If you are a current open source user 
+
+ Sign up for a paid tier 
+
+ Pin to a prior version tag of LocalStack on Docker Hub 
+
+ Please note that pinning to a prior version tag of LocalStack on Docker Hub will opt you out of any future updates or security patches. 
+
+ UPDATE: There will be no more limitations on CI credits for any plan of LocalStack for AWS. See our recent pricing update for more details. 
+
+ If you are a current paid tier customer relying on the localstack/localstack-pro image on Docker Hub, no changes need to be made. Your CI deployments will run the same after the image consolidation provided that you have set a CI auth token in your CI environment.
+
+ My question isn’t answered here. Who can I reach out to?
+
+ If you are a current open source or free tier user, you can join our LocalStack Community Slack to ask questions. The LocalStack team is active there and can help address your questions.
+
+ For questions relating to the use of LocalStack for AWS for business purposes, please contact our team via this form. 
+
+ If you are a current paid tier customer, you can email support@localstack.cloud or utilize the support chat option from the LocalStack dashboard to contact a support engineer.
+
+ On this page
+ Why we’re making a change 
+ What’s changing? 
+ Future journey: LocalStack for AWS remains free for students, hobbyists, and open source projects 
+ Frequently Asked Questions 
+ What is changing? 
+ When will this change occur? 
+ What do I need to do today? 
+ Will the community image still be available? 
+ Will Pro still be available at localstack/localstack-pro? 
+ Will I need to start paying for LocalStack for AWS? 
+ I already use the pro image on Docker Hub. Will anything change for me? 
+ Will this affect our current CI deployments that rely on LocalStack for AWS? 
+ My question isn’t answered here. Who can I reach out to? 
+ LocalStack replicates fully functional cloud applications on a local infrastructure so you can build freely without the complexity and cost of cloud dev accounts.
+ Get Started Request a Demo 
+ Share
+ Copied! 
+
+ ← Older post Testing AWS Fault Injection Service (FIS) templates using LocalStack Newer post → Automate Terraform testing with LocalStack & GitHub Actions About the Author
+ Waldemar Hummer CTO & co-CEO at LocalStack
+ Waldemar Hummer is co-founder and CTO of LocalStack, where he and his team are building the world-leading platform for local cloud development! Prior to founding LocalStack, Waldemar has held several engineering and management roles at startups as well as large international companies, including Atlassian, IBM, and Zurich Insurance.
+
+ Gerta Sheganaku COO & co-CEO at LocalStack
+ Gerta Sheganaku is co-founder and COO of LocalStack, where she brings extensive experience leading innovation projects in the software industry. Previously, Gerta was leading the development of AI based test automation solutions as a Senior Product Manager at Tricentis, and was building the global customer success strategy, guiding large enterprises through their DevOps transformation journey.
+
+ Subscribe to our Newsletter
+ Get the latest tips, tutorials, and insights on local cloud development.
+
+ Success!
+ Thanks for subscribing to our newsletter.
+
+ Something went wrong. Please try again later.
+
+ Subscribe 
+ LocalStack needs the contact information you provide to us to contact you about our products and services. You may unsubscribe from these communications at any time. For information, check out our Privacy Policy. 
+ 
+ Related Articles
+ Important Updates to Pricing & Packaging for LocalStack for AWS
+ LocalStack Team • February 27, 2026 
+
+ LocalStack for AWS Is Moving to a Single Image. Here are Your Next Steps
+ LocalStack Team • March 5, 2026 
+
+ How to build your own LocalStack Extension
+ Harsh Mishra • April 16, 2026 
+
+ Testing Serverless Apps Locally — AWS SAM Local vs LocalStack
+ Harsh Mishra • August 26, 2025 
+
+ Running dbt workflows locally with LocalStack for Snowflake
+ Harsh Mishra • August 19, 2025 
+
+ Testing Your AWS Serverless App Locally Like a Boss (or at Least Like Someone Who Writes Tests 😅)
+ Kiah Imani • August 7, 2025 
+
+ Launch yourself in the world of local cloud development
+
+ Start a free trial 
+ 
+ FROM THE BLOG 
+ Archive Tutorials News Showcase Changelog LocalStack for AI Agents Customer Stories 
+
+ Products 
+ AWS Emulator Snowflake Emulator Pricing 
+
+ Documentation 
+ LocalStack for AWS Docs LocalStack for Snowflake Docs 
+
+ Support 
+ Contact Sales Get Help FAQ Request a Demo Try for Free Request Open Source Licensing 
+
+ Company 
+ About us Values Careers We're hiring! 
+
+ Legal 
+ Terms & Conditions MSA Enterprise SLA Privacy Policy DPA Fair Usage Policy 
+
+ Follow US 
+
+ © 2025 LocalStack. All rights reserved

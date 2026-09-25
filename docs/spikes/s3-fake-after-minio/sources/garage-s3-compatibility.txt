@@ -1,0 +1,506 @@
+SOURCE: https://garagehq.deuxfleurs.fr/documentation/reference-manual/s3-compatibility/
+RETRIEVED: 2026-09-25 (spike db-hny6)
+---
+S3 Compatibility status | Garage HQ
+
+ Overview
+
+ Docs
+
+ Blog
+
+ Download 
+
+ Quick Start
+
+ Cookbook
+
+ Deployment on a cluster
+
+ Compiling Garage from source
+
+ Binary packages
+
+ Starting Garage with systemd
+
+ Configuring a gateway node
+
+ Exposing buckets as websites
+
+ Configuring a reverse proxy
+
+ Deploying on Kubernetes
+
+ Deploying with Ansible
+
+ Monitoring Garage
+
+ Encryption
+
+ Existing integrations
+
+ Apps (Nextcloud, Peertube...)
+
+ Websites (Hugo, Jekyll, Publii...)
+
+ Repositories (Docker, Nix, Git...)
+
+ Browsing tools
+
+ Backups (restic, duplicity...)
+
+ FUSE (s3fs, goofys, s3backer...)
+
+ Observability
+
+ Build your own app
+
+ Javascript
+
+ Python
+
+ Golang
+
+ Rust
+
+ Others
+
+ Operations & Maintenance
+
+ Upgrading Garage
+
+ Multi-HDD support
+
+ Cluster layout management
+
+ Durability & Repairs
+
+ Recovering from failures
+
+ Reference Manual
+
+ List of Garage features
+
+ Configuration file format
+
+ Garage CLI
+
+ Administration API
+
+ Monitoring
+
+ S3 Compatibility status
+
+ Known issues
+
+ K2V
+
+ Design
+
+ Goals and use cases
+
+ Internals
+
+ Benchmarks
+
+ Related work
+
+ Development
+
+ Setup your environment
+
+ Development scripts
+
+ Release process
+
+ Miscellaneous notes
+
+ Working Documents
+
+ S3 compatibility target
+
+ Migrating from 1.0 to 2.0
+
+ Migrating from 0.9 to 1.0
+
+ Migrating from 0.8 to 0.9
+
+ Migrating from 0.7 to 0.8
+
+ Migrating from 0.6 to 0.7
+
+ Migrating from 0.5 to 0.6
+
+ Migrating from 0.3 to 0.4
+
+ Testing strategy
+
+ Design draft (obsolete)
+
+ Load balancing data (obsolete)
+
+ S3 Compatibility status
+
+ 10 min 
+
+ DISCLAIMER
+
+ The compatibility list for other platforms is given only for informational
+purposes and based on available documentation. They are sometimes completed,
+in a best effort approach, with the source code and inputs from maintainers
+when documentation is lacking. We are not proactively monitoring new versions
+of each software: check the modification history to know when the page has been
+updated for the last time. Some entries will be inexact or outdated. For any
+serious decision, you must make your own tests.
+ The official documentation of each project can be accessed by clicking on the
+project name in the column header. 
+
+ Feel free to open a PR to suggest fixes this table. Minio is missing because they do not provide a public S3 compatibility list.
+
+ Update history
+
+ 2022-02-07 - First version of this page
+
+ 2022-05-25 - Many Ceph S3 endpoints are not documented but implemented. Following a notification from the Ceph community, we added them.
+
+ High-level features
+
+ Feature Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ signature v2 (deprecated) ❌ Missing ✅ ✅ ✅ ✅ 
+
+ signature v4 ✅ Implemented ✅ ✅ ❌ ✅ 
+
+ URL path-style (eg. host.tld/bucket/key ) ✅ Implemented ✅ ✅ ❓ ✅ 
+
+ URL vhost-style URL (eg. bucket.host.tld/key ) ✅ Implemented ❌ ✅ ✅ ✅ 
+
+ Presigned URLs ✅ Implemented ❌ ✅ ✅ ✅(❓) 
+
+ SSE-C encryption ✅ Implemented ❓ ✅ ❌ ✅ 
+
+ Bucket versioning ❌ Missing ✅ ✅ ❌ ✅ 
+
+ Note: OpenIO does not says if it supports presigned URLs. Because it is part
+of signature v4 and they claim they support it without additional precisions,
+we suppose that OpenIO supports presigned URLs.
+
+ Endpoint implementation
+
+ All endpoints that are missing on Garage will return a 501 Not Implemented.
+Some x-amz- headers are not implemented.
+
+ Core endpoints
+
+ Endpoint Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ CreateBucket ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ DeleteBucket ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ GetBucketLocation ✅ Implemented ✅ ✅ ❌ ✅ 
+
+ HeadBucket ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ ListBuckets ✅ Implemented ❌ ✅ ✅ ✅ 
+
+ HeadObject ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ CopyObject ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ DeleteObject ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ DeleteObjects ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ GetObject ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ ListObjects ✅ Implemented (see details below) ✅ ✅ ✅ ❌ 
+
+ ListObjectsV2 ✅ Implemented ❌ ✅ ❌ ✅ 
+
+ PostObject ✅ Implemented ❌ ✅ ❌ ❌ 
+
+ PutObject ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ ListObjects: Implemented, but there isn't a very good specification of what
+ encoding-type=url covers so there might be some encoding bugs. In our
+implementation the url-encoded fields are in the same in ListObjects as they
+are in ListObjectsV2.
+
+ Note: Ceph API documentation is incomplete and lacks at least HeadBucket and UploadPartCopy,
+but these endpoints are documented in Red Hat Ceph Storage - Chapter 2. Ceph Object Gateway and the S3 API 
+
+ Multipart Upload endpoints
+
+ Endpoint Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ AbortMultipartUpload ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ CompleteMultipartUpload ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ CreateMultipartUpload ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ ListMultipartUpload ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ ListParts ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ UploadPart ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ UploadPartCopy ✅ Implemented ✅ ✅ ✅ ✅ 
+
+ Website endpoints
+
+ Endpoint Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ DeleteBucketWebsite ✅ Implemented ❌ ❌ ❌ ❌ 
+
+ GetBucketWebsite ✅ Implemented ❌ ❌ ❌ ❌ 
+
+ PutBucketWebsite ⚠ Partially implemented (see below) ❌ ❌ ❌ ❌ 
+
+ DeleteBucketCors ✅ Implemented ❌ ✅ ❌ ✅ 
+
+ GetBucketCors ✅ Implemented ❌ ✅ ❌ ✅ 
+
+ PutBucketCors ✅ Implemented ❌ ✅ ❌ ✅ 
+
+ PutBucketWebsite: Implemented, but only stores the index document suffix and the error document path. Redirects are not supported.
+
+ Note: Ceph radosgw has some support for static websites but it is different from the Amazon one. It also does not implement its configuration endpoints. 
+
+ ACL, Policies endpoints
+
+ Amazon has 2 access control mechanisms in S3: ACL (legacy) and policies (new one).
+Garage implements none of them, and has its own system instead, built around a per-access-key-per-bucket logic.
+See Garage CLI reference manual to learn how to use Garage's permission system.
+
+ Endpoint Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ DeleteBucketPolicy ❌ Missing ❌ ✅ ✅ ❌ 
+
+ GetBucketPolicy ❌ Missing ❌ ✅ ⚠ ❌ 
+
+ GetBucketPolicyStatus ❌ Missing ❌ ✅ ❌ ❌ 
+
+ PutBucketPolicy ❌ Missing ❌ ✅ ⚠ ❌ 
+
+ GetBucketAcl ❌ Missing ✅ ✅ ✅ ✅ 
+
+ PutBucketAcl ❌ Missing ✅ ✅ ✅ ✅ 
+
+ GetObjectAcl ❌ Missing ✅ ✅ ✅ ✅ 
+
+ PutObjectAcl ❌ Missing ✅ ✅ ✅ ✅ 
+
+ Notes: Riak CS only supports a subset of the policy configuration.
+
+ Versioning, Lifecycle endpoints
+
+ Garage does not (yet) support object versioning.
+If you need this feature, please share your use case in our dedicated issue .
+
+ Endpoint Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ DeleteBucketLifecycle ✅ Implemented ❌ ✅ ❌ ✅ 
+
+ GetBucketLifecycleConfiguration ✅ Implemented ❌ ✅ ❌ ✅ 
+
+ PutBucketLifecycleConfiguration ⚠ Partially implemented (see below) ❌ ✅ ❌ ✅ 
+
+ GetBucketVersioning ❌ Stub (see below) ✅ ✅ ❌ ✅ 
+
+ ListObjectVersions ❌ Missing ❌ ✅ ❌ ✅ 
+
+ PutBucketVersioning ❌ Missing ❌ ✅ ❌ ✅ 
+
+ PutBucketLifecycleConfiguration: The only actions supported are
+ AbortIncompleteMultipartUpload and Expiration (without the
+ ExpiredObjectDeleteMarker field). All other operations are dependent on
+either bucket versioning or storage classes which Garage currently does not
+implement. The deprecated Prefix member directly in the the Rule 
+structure/XML tag is not supported, specified prefixes must be inside the
+ Filter structure/XML tag.
+
+ GetBucketVersioning: Stub implementation which always returns "versioning not enabled", since Garage does not yet support bucket versioning.
+
+ Replication endpoints
+
+ Please open an issue if you have a use case for replication.
+
+ Endpoint Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ DeleteBucketReplication ❌ Missing ❌ ✅ ❌ ❌ 
+
+ GetBucketReplication ❌ Missing ❌ ✅ ❌ ❌ 
+
+ PutBucketReplication ❌ Missing ❌ ⚠ ❌ ❌ 
+
+ Note: Ceph documentation briefly says that Ceph supports
+ replication through the S3 API 
+but with some limitations.
+Additionally, replication endpoints are not documented in the S3 compatibility page so I don't know what kind of support we can expect. 
+
+ Locking objects
+
+ Amazon defines a concept of object locking that can be achieved either through a Retention period or a Legal hold.
+
+ Endpoint Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ GetObjectLegalHold ❌ Missing ❌ ✅ ❌ ❌ 
+
+ PutObjectLegalHold ❌ Missing ❌ ✅ ❌ ❌ 
+
+ GetObjectRetention ❌ Missing ❌ ✅ ❌ ❌ 
+
+ PutObjectRetention ❌ Missing ❌ ✅ ❌ ❌ 
+
+ GetObjectLockConfiguration ❌ Missing ❌ ✅ ❌ ❌ 
+
+ PutObjectLockConfiguration ❌ Missing ❌ ✅ ❌ ❌ 
+
+ (Server-side) encryption
+
+ We think that you can either encrypt your server partition or do client-side encryption, so we did not implement server-side encryption for Garage.
+Please open an issue if you have a use case.
+
+ Endpoint Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ DeleteBucketEncryption ❌ Missing ❌ ✅ ❌ ❌ 
+
+ GetBucketEncryption ❌ Missing ❌ ✅ ❌ ❌ 
+
+ PutBucketEncryption ❌ Missing ❌ ✅ ❌ ❌ 
+
+ Misc endpoints
+
+ Endpoint Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ GetBucketNotificationConfiguration ❌ Missing ❌ ✅ ❌ ❌ 
+
+ PutBucketNotificationConfiguration ❌ Missing ❌ ✅ ❌ ❌ 
+
+ DeleteBucketTagging ❌ Missing ❌ ✅ ❌ ✅ 
+
+ GetBucketTagging ❌ Missing ❌ ✅ ❌ ✅ 
+
+ PutBucketTagging ❌ Missing ❌ ✅ ❌ ✅ 
+
+ DeleteObjectTagging ❌ Missing ❌ ✅ ❌ ✅ 
+
+ GetObjectTagging ❌ Missing ❌ ✅ ❌ ✅ 
+
+ PutObjectTagging ❌ Missing ❌ ✅ ❌ ✅ 
+
+ GetObjectTorrent ❌ Missing ❌ ✅ ❌ ❌ 
+
+ Vendor specific endpoints
+
+ Display Amazon specific endpoints 
+ Endpoint Garage Openstack Swift Ceph Object Gateway Riak CS OpenIO 
+ 
+ DeleteBucketAnalyticsConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ DeleteBucketIntelligentTieringConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ DeleteBucketInventoryConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ DeleteBucketMetricsConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ DeleteBucketOwnershipControls ❌ Missing ❌ ❌ ❌ ❌ 
+
+ DeletePublicAccessBlock ❌ Missing ❌ ❌ ❌ ❌ 
+
+ GetBucketAccelerateConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ GetBucketAnalyticsConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ GetBucketIntelligentTieringConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ GetBucketInventoryConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ GetBucketLogging ❌ Missing ❌ ❌ ❌ ❌ 
+
+ GetBucketMetricsConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ GetBucketOwnershipControls ❌ Missing ❌ ❌ ❌ ❌ 
+
+ GetBucketRequestPayment ❌ Missing ❌ ❌ ❌ ❌ 
+
+ GetPublicAccessBlock ❌ Missing ❌ ❌ ❌ ❌ 
+
+ ListBucketAnalyticsConfigurations ❌ Missing ❌ ❌ ❌ ❌ 
+
+ ListBucketIntelligentTieringConfigurations ❌ Missing ❌ ❌ ❌ ❌ 
+
+ ListBucketInventoryConfigurations ❌ Missing ❌ ❌ ❌ ❌ 
+
+ ListBucketMetricsConfigurations ❌ Missing ❌ ❌ ❌ ❌ 
+
+ PutBucketAccelerateConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ PutBucketAnalyticsConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ PutBucketIntelligentTieringConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ PutBucketInventoryConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ PutBucketLogging ❌ Missing ❌ ❌ ❌ ❌ 
+
+ PutBucketMetricsConfiguration ❌ Missing ❌ ❌ ❌ ❌ 
+
+ PutBucketOwnershipControls ❌ Missing ❌ ❌ ❌ ❌ 
+
+ PutBucketRequestPayment ❌ Missing ❌ ❌ ❌ ❌ 
+
+ PutPublicAccessBlock ❌ Missing ❌ ❌ ❌ ❌ 
+
+ RestoreObject ❌ Missing ❌ ❌ ❌ ❌ 
+
+ SelectObjectContent ❌ Missing ❌ ❌ ❌ ❌ 
+
+ Page content 
+
+ DISCLAIMER 
+
+ Update history 
+
+ High-level features 
+
+ Endpoint implementation 
+
+ Core endpoints
+
+ Multipart Upload endpoints
+
+ Website endpoints
+
+ ACL, Policies endpoints
+
+ Versioning, Lifecycle endpoints
+
+ Replication endpoints
+
+ Locking objects
+
+ (Server-side) encryption
+
+ Misc endpoints
+
+ Vendor specific endpoints
+
+ Navigation 
+
+ Reference Manual 
+
+ Navigation 
+
+ Reference Manual 
+
+ Search 
+ (alt + S) 
+
+ (Esc) 
+
+ Built with Zola ,
+ powered by Garage ,
+ hosted by Deuxfleurs

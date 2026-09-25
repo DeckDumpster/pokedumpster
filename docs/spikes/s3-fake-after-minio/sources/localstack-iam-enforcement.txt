@@ -1,0 +1,508 @@
+SOURCE: https://docs.localstack.cloud/aws/developer-tools/security-testing/iam-policy-enforcement/
+RETRIEVED: 2026-09-25 (spike db-hny6)
+---
+IAM Policy Enforcement | Docs Skip to content Docs 
+ Search 
+ GitHub Slack LinkedIn YouTube 
+ Select theme Dark Light Auto Get Started for Free 
+
+ Menu Menu AWS Snowflake Azure Welcome 
+ Getting Started Overview 
+ Installation 
+ Local Development 
+ CI Integration 
+ AI & Agent Workflows 
+ Auth Token 
+ FAQ 
+ 
+ Quickstart Library Overview 
+ App Inspection & Tracing 
+ Deploy LocalStack on Kubernetes 
+ 
+ Local AWS Services 
+ Sample Apps 
+ Connecting Overview 
+ AWS CLI 
+ AWS SDKs Overview 
+ AWS SDK for .NET 
+ AWS SDK for C++ 
+ AWS SDK for Go 
+ AWS SDK for Java 
+ AWS SDK for JavaScript 
+ AWS SDK for PHP 
+ AWS SDK for Python (Boto3) 
+ AWS SDK for Ruby 
+ 
+ Infrastructure as Code Overview 
+ Terraform 
+ AWS SAM 
+ AWS CDK 
+ Serverless Framework 
+ Pulumi 
+ AWS Chalice 
+ Crossplane 
+ Cloud Custodian 
+ Former2 
+ Deprecated Wrapper Scripts 
+ 
+ LocalStack Console Overview 
+ Instance Management 
+ Resource Browser 
+ Stack Overview 
+ 
+ IDE Extensions Overview 
+ LocalStack Toolkit for VS Code 
+ AWS Toolkit for VS Code 
+ 
+ Credentials 
+ 
+ Developer Tools Overview 
+ Running LocalStack Overview 
+ lstk CLI Overview 
+ Authentication 
+ Configuration 
+ Lifecycle Commands 
+ Cloud & IaC Commands 
+ Snapshots 
+ Automation & CI 
+ Setup & Maintenance 
+ Migration Guide 
+ FAQ & Troubleshooting 
+ 
+ LocalStack MCP Server 
+ LocalStack Desktop 
+ Deprecated LocalStack CLI 
+ 
+ Snapshots Overview 
+ Saving snapshots locally 
+ Saving snapshots to Cloud Pods 
+ Saving snapshots to S3 
+ Merging snapshots 
+ Persistence 
+ Service coverage 
+ 
+ App Inspector 
+ Chaos Engineering Overview 
+ AWS Fault Injection Service 
+ Chaos API 
+ Chaos Engineering Dashboard 
+ 
+ Security Testing Overview 
+ Explainable IAM 
+ IAM Policy Enforcement 
+ IAM Policy Simulator 
+ IAM Policy Stream 
+ Custom TLS certificates 
+ IAM Coverage 
+ 
+ Lambda Tools Overview 
+ Hot Reloading 
+ Remote Debugging 
+ 
+ AWS Replicator 
+ Cloud Sandbox Overview 
+ Ephemeral Instances 
+ Application Preview 
+
+ CI Pipelines Overview 
+ CI Best Practices 
+ CircleCI 
+ BitBucket 
+ GitHub Actions 
+ GitLab CI 
+ CodeBuild 
+ Travis CI 
+ 
+ Customization Overview 
+ Configuration Options 
+ Logging 
+ Kubernetes Overview 
+ Concepts & Architecture 
+ Deploy LocalStack Operator 
+ Deploy with Helm 
+ Kubernetes Executor 
+ Pod Configuration 
+ Kubernetes Configuration 
+ OpenShift 
+ eksctl 
+ Limitations 
+ FAQ 
+ 
+ Integrations Overview 
+ LocalStack Extensions Overview 
+ Managing extensions 
+ Extensions Library 
+ Official Extensions 
+ The Mailhog Extension 
+ 
+ LocalStack SDKs Overview 
+ Java 
+ Python 
+ Testing Utils 
+ 
+ App Frameworks Overview 
+ Architect 
+ Quarkus 
+ Spring Cloud Function 
+ Aspire 
+ Self-managed Kafka cluster 
+ 
+ Testing Overview 
+ Testcontainers 
+ LambdaTest HyperExecute 
+
+ Networking Overview 
+ Internal Endpoints 
+ External Service Port Range 
+ Transparent endpoint injection 
+ Accessing LocalStack via the endpoint URL 
+ Accessing a resource created by LocalStack 
+ DNS Server 
+ HTTPS/TLS Support 
+ 
+ Other Installations Overview 
+ Docker Images 
+ Enterprise Image 
+ Podman 
+ Rancher Desktop 
+ DevContainers 
+ LocalStack Docker Extension 
+ 
+ Advanced Features Overview 
+ ARM64 Support 
+ Cross-Account and Cross-Region Access 
+ Multi-Account Setups 
+ Filesystem Layout 
+ Initialization Hooks 
+ Regions Coverage 
+ Usage Tracking 
+
+ Organizations & Admin Overview 
+ Accounts 
+ Workspace 
+ Users and Licenses 
+ Single Sign-On Single-Sign On 
+ SSO for Azure AD 
+ SCIM Overview 
+ SCIM with Okta 
+ SCIM with Entra ID 
+
+ Stack Insights 
+ 
+ Tutorials 
+ Changelog 
+ Licensing & Tiers 
+ Help & Support Overview 
+ Get Help 
+ Support Offerings 
+ Enterprise Support 
+ 
+ GitHub Slack LinkedIn YouTube 
+ Select theme Dark Light Auto Get Started for Free 
+
+ Welcome 
+ Getting Started Overview 
+ Installation 
+ Local Development 
+ CI Integration 
+ AI & Agent Workflows 
+ Auth Token 
+ FAQ 
+ 
+ Features 
+ Sample Apps 
+ Capabilities Overview 
+ Configuration 
+ Initialization Hooks 
+ State Management 
+ 
+ Developer Tools User Interface 
+ lstk CLI Overview 
+ Authentication 
+ Configuration 
+ Lifecycle Commands 
+ Cloud & IaC Commands 
+ Snapshots 
+ Automation & CI 
+ Setup & Maintenance 
+ FAQ & Troubleshooting 
+
+ Integrations Overview 
+ Airflow 
+ Continuous Integration 
+ DBeaver 
+ dbt 
+ Flyway 
+ Pulumi 
+ Snowflake CLI 
+ SnowSQL 
+ Snowflake Drivers 
+ Snowpark 
+ Terraform 
+ 
+ Tutorials Connecting Snowpark to Lambda using LocalStack 
+ Credit Scoring with Snowpark & LocalStack 
+ Querying S3 Tables with Snowflake 
+ 
+ Feature Coverage 
+ SQL Functions 
+ Changelog 
+ Help & Support Overview 
+ Get Help 
+ Report an Issue 
+ Support Plans 
+ Enterprise Support 
+ 
+ GitHub Slack LinkedIn YouTube 
+ Select theme Dark Light Auto Get Started for Free 
+
+ Welcome 
+ Getting Started Installation 
+ Auth Token 
+ Quickstart 
+ 
+ Local Azure Services 
+ Developer Tools lstk CLI 
+ Azure Portal (emulated) 
+ 
+ Integrations Azure Integrations 
+ az 
+ azd 
+ Python 
+ Terraform 
+ 
+ Changelog 
+ GitHub Slack LinkedIn YouTube 
+ Select theme Dark Light Auto Get Started for Free 
+
+ On this page Back to top 
+ Introduction 
+ Getting started Create a user 
+ Attempt to create a bucket 
+ Attach a policy to the user 
+ Create a bucket 
+ 
+ Service Control Policies 
+ Feature coverage 
+
+ On this page
+ Back to top 
+ Introduction 
+ Getting started Create a user 
+ Attempt to create a bucket 
+ Attach a policy to the user 
+ Create a bucket 
+ 
+ Service Control Policies 
+ Feature coverage 
+
+ Included in Plans Base Ultimate 
+
+ IAM Policy Enforcement
+ Copy page 
+
+ Introduction
+ Section titled “Introduction” 
+
+ IAM Policy Enforcement feature can be used to test your security policies and create a more realistic environment that more closely resembles real AWS.
+The environment configuration ENFORCE_IAM=1 is required while starting LocalStack to enable this feature.
+Per default, IAM enforcement is disabled, and all APIs can be accessed without authentication.
+
+ When enabled, LocalStack evaluates identity-based policies, resource-based policies, permissions boundaries, and service control policies together to decide whether a request is allowed.
+When a request is denied, LocalStack returns a descriptive error that identifies the denied action and the policy responsible for the denial.
+See Explainable IAM for a detailed look at these messages.
+
+ Getting started
+ Section titled “Getting started” 
+
+ This guide is designed for users new to IAM Policy Enforcement and assumes basic knowledge of the AWS CLI and our lstk aws AWS CLI proxy.
+
+ Start your LocalStack container with the DEBUG=1 and ENFORCE_IAM=1 environment variables set:
+
+ .lstk/config.toml [[ containers ]] 
+
+ type = "aws" 
+
+ env = [ "iam-enforcement" ] 
+
+ [ env . iam-enforcement ] 
+
+ DEBUG = "1" 
+
+ ENFORCE_IAM = "1" 
+
+ Terminal window lstk start 
+
+ We will demonstrate IAM Policy Enforcement, by creating a user and obtaining the access/secret keys.
+We will make an attempt to create a bucket using the user’s credentials, which inevitably fails due to insufficient permissions.
+
+ Lastly, a policy is attached to the user, granting the necessary s3:CreateBucket permission, thereby enabling the successful creation of the bucket.
+
+ Create a user
+ Section titled “Create a user” 
+
+ To follow this guide, open two separate terminal sessions: Terminal 1 for the administrative IAM commands, which will utilize the default root IAM user, and Terminal 2 for executing the commands under the test IAM user you are about to create.
+This way, we can demonstrate the differentiation in access permissions between the administrative and test users in real-time.
+
+ In Terminal 1 , execute the following commands to create a test user and obtain the access/secret keys:
+
+ Terminal window lstk aws iam create-user --user-name test 
+
+ Terminal window { 
+
+ "User" : { 
+
+ "Path" : "/", 
+
+ "UserName" : "test", 
+
+ "UserId" : "d7ryukg7bls4rq1ihq1d", 
+
+ "Arn" : "arn:aws:iam::000000000000:user/test", 
+
+ "CreateDate" : "2023-11-03T12:20:12.332000Z" 
+
+ } 
+
+ } 
+
+ Terminal window lstk aws iam create-access-key --user-name test 
+
+ Terminal window { 
+
+ "AccessKey" : { 
+
+ "UserName" : "test", 
+
+ "AccessKeyId" : "LKIAQAAAAAAAHFR7QTN3", 
+
+ "Status" : "Active", 
+
+ "SecretAccessKey" : "EYUHpIol7bRJpKd/28c/LI2C4bbEnp82LJCRwXRV", 
+
+ "CreateDate" : "2023-11-03T12:20:27Z" 
+
+ } 
+
+ } 
+
+ Attempt to create a bucket
+ Section titled “Attempt to create a bucket” 
+
+ Navigate to Terminal 2 , where we will configure the access keys for the user test in the environment.
+Once the access keys are set, you will attempt to create an S3 bucket using these credentials.
+
+ Terminal window export AWS_ACCESS_KEY_ID = LKIAQAAAAAAAHFR7QTN3 AWS_SECRET_ACCESS_KEY = EYUHpIol7bRJpKd / 28c / LI2C4bbEnp82LJCRwXRV 
+
+ lstk aws s3 mb s3://mybucket 
+
+ Terminal window make_bucket failed: s3://mybucket An error occurred (AccessDeniedException) when calling the CreateBucket operation: User: arn:aws:iam::000000000000:user/test is not authorized to perform: s3:CreateBucket on resource: arn:aws:s3:::mybucket because no identity-based policy allows the s3:CreateBucket action 
+
+ As anticipated, the attempt to create the bucket fails with an AccessDeniedException error, confirming that user test lacks the necessary permissions for this action.
+The error message names the denied action ( s3:CreateBucket ) and explains that no identity-based policy allows it.
+You can view the LocalStack logs to validate the policy enforcement:
+
+ Terminal window 2023-11-03T12:21:10.971 INFO --- [ asgi_gw_1] localstack.pro.core.services.iam.policy_engine.handler : User: arn:aws:iam::000000000000:user/test is not authorized to perform: s3:CreateBucket on resource: arn:aws:s3:::mybucket because no identity-based policy allows the s3:CreateBucket action 
+
+ 2023-11-03T12:21:10.972 INFO --- [ asgi_gw_1] localstack.request.aws : AWS s3.CreateBucket => 403 (AccessDenied) 
+
+ 403 (AccessDenied)"> 
+
+ Attach a policy to the user
+ Section titled “Attach a policy to the user” 
+
+ Let’s now return to Terminal 1 and execute the following commands to attach a policy to the user test :
+
+ Terminal window lstk aws iam create-policy --policy-name p1 --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:CreateBucket","Resource":"*"}]}' 
+
+ lstk aws iam attach-user-policy --user-name test --policy-arn arn:aws:iam::000000000000:policy/p1 
+
+ Create a bucket
+ Section titled “Create a bucket” 
+
+ Now, let’s switch back to Terminal 2 and observe how the bucket creation succeeds with the test IAM user:
+
+ Terminal window lstk aws s3 mb s3://mybucket 
+
+ Terminal window make_bucket: mybucket 
+
+ The bucket creation succeeds, confirming that the user test now has the necessary permissions to perform this action.
+You can view the LocalStack logs to validate the policy enforcement:
+
+ Terminal window 2023-11-03T12:23:11.469 INFO --- [ asgi_gw_1] localstack.request.aws : AWS iam.CreatePolicy => 200 
+
+ 2023-11-03T12:23:15.753 INFO --- [ asgi_gw_1] localstack.request.aws : AWS iam.AttachUserPolicy => 200 
+
+ 2023-11-03T12:23:22.795 INFO --- [ asgi_gw_2] localstack.request.aws : AWS s3.CreateBucket => 200 
+
+ 2002023-11-03T12:23:15.753 INFO --- [ asgi_gw_1] localstack.request.aws : AWS iam.AttachUserPolicy => 2002023-11-03T12:23:22.795 INFO --- [ asgi_gw_2] localstack.request.aws : AWS s3.CreateBucket => 200"> 
+
+ You can further use the IAM Policy Enforcement feature to test your Infrastructure as Code (IaC) deployments and ensure that your policies are correctly enforced.
+If the IAM policies are not correctly enforced, you will get an unsuccessful response from the API call, and the LocalStack logs will provide you with the necessary information to debug the issue.
+
+ Service Control Policies
+ Section titled “Service Control Policies” 
+
+ Service Control Policies (SCPs) are a policy type managed by AWS Organizations .
+Unlike identity-based and resource-based policies, SCPs do not grant permissions on their own — they act as guardrails that define the maximum permissions available to the accounts they apply to.
+If an SCP does not allow an action (or explicitly denies it), no Allow in an identity-based policy can override that result.
+
+ With ENFORCE_IAM=1 , LocalStack evaluates SCPs alongside identity-based policies, resource-based policies, and permissions boundaries.
+This applies both to single-account access and to cross-account access, where a principal in one account acts on a resource owned by another.
+
+ The steps below extend the walkthrough above: user test already has an identity-based policy that allows s3:CreateBucket .
+We will add an SCP that denies the action and confirm that the request is blocked despite the identity-based Allow .
+
+ In Terminal 1 , create an organization and a service control policy that denies s3:CreateBucket :
+
+ Terminal window awslocal organizations create-organization --feature-set ALL 
+
+ Terminal window awslocal organizations create-policy \ 
+
+ --name deny-create-bucket \ 
+
+ --type SERVICE_CONTROL_POLICY \ 
+
+ --description "Deny S3 bucket creation" \ 
+
+ --content '{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"s3:CreateBucket","Resource":"*"}]}' 
+
+ Attach the SCP to the target account:
+
+ Terminal window awslocal organizations attach-policy \ 
+
+ --policy-id <POLICY_ID> \ 
+
+ --target-id <TARGET_ID> 
+
+ \ --target-id "> 
+
+ Back in Terminal 2 , attempt to create the bucket again as user test :
+
+ Terminal window awslocal s3 mb s3://mybucket 
+
+ Even though the user’s identity-based policy allows s3:CreateBucket , the SCP guardrail blocks the request, and the denial message names the responsible SCP:
+
+ Terminal window make_bucket failed: s3://mybucket An error occurred (AccessDeniedException) when calling the CreateBucket operation: User: arn:aws:iam::000000000000:user/test is not authorized to perform: s3:CreateBucket on resource: arn:aws:s3:::mybucket with an explicit deny in a service control policy: arn:aws:organizations::000000000000:policy/<POLICY_ID> 
+
+ "> 
+
+ The LocalStack logs record the same information:
+
+ Terminal window 2023-11-03T12:30:44.512 INFO --- [ asgi_gw_1] localstack.pro.core.services.iam.policy_engine.handler : User: arn:aws:iam::000000000000:user/test is not authorized to perform: s3:CreateBucket on resource: arn:aws:s3:::mybucket with an explicit deny in a service control policy: arn:aws:organizations::000000000000:policy/<POLICY_ID> 
+
+ 2023-11-03T12:30:44.513 INFO --- [ asgi_gw_1] localstack.request.aws : AWS s3.CreateBucket => 403 (AccessDenied) 
+
+ 2023-11-03T12:30:44.513 INFO --- [ asgi_gw_1] localstack.request.aws : AWS s3.CreateBucket => 403 (AccessDenied)"> 
+
+ This confirms that the SCP overrides the identity-based Allow , matching the AWS evaluation order in which an SCP guardrail takes precedence.
+
+ Feature coverage
+ Section titled “Feature coverage” 
+
+ The feature coverage is documented in the IAM coverage documentation .
+
+ Was this page helpful? Yes No 
+
+ Edit page 
+ Previous Explainable IAM Next IAM Policy Simulator

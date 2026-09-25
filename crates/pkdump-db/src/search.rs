@@ -1683,7 +1683,7 @@ mod tests {
         let runs: Vec<&str> = {
             let mut v: Vec<&str> = Vec::new();
             for code in &ids {
-                if v.last().map(|s| *s) != Some(code.as_str()) {
+                if v.last().copied() != Some(code.as_str()) {
                     v.push(code.as_str());
                 }
             }
@@ -1734,7 +1734,7 @@ mod tests {
         let runs: Vec<&str> = {
             let mut v: Vec<&str> = Vec::new();
             for code in &ids {
-                if v.last().map(|s| *s) != Some(code.as_str()) {
+                if v.last().copied() != Some(code.as_str()) {
                     v.push(code.as_str());
                 }
             }

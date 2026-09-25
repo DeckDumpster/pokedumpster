@@ -20,11 +20,15 @@
 #
 # TWO DECISIONS, and they are separate:
 #
-#   Registry. quay.io, not Docker Hub. MinIO publishes the same builds to both
-#   and quay.io still serves them anonymously. The alternative is a Docker Hub
-#   credential, which would put a secret in the path of every gate and every
-#   developer checkout to fetch a public image — a real cost for no capability,
-#   and one more thing a fresh VM has to be given.
+#   Registry. ghcr.io/deckdumpster, not quay.io or Docker Hub. MinIO withdrew
+#   public images from Docker Hub on 2026-09-15 and from quay.io by 2026-09-25;
+#   github.com/minio/minio is now archived ("THIS REPOSITORY IS NO LONGER
+#   MAINTAINED") and distributed as source only. The DeckDumpster mirror at
+#   ghcr.io/deckdumpster/* holds the exact pinned versions below — mirrored from
+#   the prod box's cache, verified by minio --version / mc --version inside them
+#   — and is the only source. The mirror holds these two tags and nothing will
+#   ever update them. The planned replacement is testing against real S3
+#   (follow-up epic), not a newer MinIO.
 #
 #   Version. Pinned, not `latest`, independent of the registry. The tags below
 #   are the digests `latest` pointed at when this was written; a gate that rides
@@ -37,5 +41,5 @@
 
 PKDUMP_MINIO_VERSION="RELEASE.2025-09-07T16-13-09Z"
 PKDUMP_MC_VERSION="RELEASE.2025-08-13T08-35-41Z"
-PKDUMP_MINIO_IMAGE="quay.io/minio/minio:${PKDUMP_MINIO_VERSION}"
-PKDUMP_MC_IMAGE="quay.io/minio/mc:${PKDUMP_MC_VERSION}"
+PKDUMP_MINIO_IMAGE="ghcr.io/deckdumpster/minio:${PKDUMP_MINIO_VERSION}"
+PKDUMP_MC_IMAGE="ghcr.io/deckdumpster/mc:${PKDUMP_MC_VERSION}"

@@ -1,0 +1,646 @@
+SOURCE: https://github.com/pgsty/mc
+RETRIEVED: 2026-09-25 (spike db-hny6)
+---
+GitHub - pgsty/mc: Silo object storage client (mcli), a community-maintained fork of the MinIO Client · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ pgsty
+ 
+ / 
+ 
+ mc 
+
+ Public 
+
+ forked from minio/mc 
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 7 
+
+ Star
+ 42 
+
+ Code 
+
+ Issues 
+ 0 
+
+ Pull requests 
+ 1 
+
+ Actions 
+
+ Projects 
+
+ Security and quality 
+ 0 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Actions
+
+ Projects
+
+ Security and quality
+
+ Insights
+
+ main 
+
+ Branches Tags 
+
+ Go to file 
+
+ Code Open more actions menu 
+
+ Latest commit
+
+ History
+ 5,147 Commits 
+ 5,147 Commits 
+
+ Folders and files
+ Name Name Last commit message 
+ Last commit date 
+ 
+ .github 
+
+ .github 
+
+ buildscripts 
+
+ buildscripts 
+
+ cmd 
+
+ cmd 
+
+ docs 
+
+ docs 
+
+ pkg 
+
+ pkg 
+
+ testdata 
+
+ testdata 
+
+ .dockerignore 
+
+ .dockerignore 
+
+ .gitignore 
+
+ .gitignore 
+
+ .golangci.yml 
+
+ .golangci.yml 
+
+ .mailmap 
+
+ .mailmap 
+
+ AGENTS.md 
+
+ AGENTS.md 
+
+ CHANGELOG.md 
+
+ CHANGELOG.md 
+
+ CONFLICT.md 
+
+ CONFLICT.md 
+
+ CONTRIBUTING.md 
+
+ CONTRIBUTING.md 
+
+ CONTRIBUTORS.md 
+
+ CONTRIBUTORS.md 
+
+ CREDITS 
+
+ CREDITS 
+
+ Dockerfile 
+
+ Dockerfile 
+
+ Dockerfile.dev 
+
+ Dockerfile.dev 
+
+ Dockerfile.dockerignore 
+
+ Dockerfile.dockerignore 
+
+ Dockerfile.goreleaser 
+
+ Dockerfile.goreleaser 
+
+ Dockerfile.hotfix 
+
+ Dockerfile.hotfix 
+
+ LICENSE 
+
+ LICENSE 
+
+ Makefile 
+
+ Makefile 
+
+ NOTICE 
+
+ NOTICE 
+
+ README.md 
+
+ README.md 
+
+ README_ZH.md 
+
+ README_ZH.md 
+
+ code_of_conduct.md 
+
+ code_of_conduct.md 
+
+ contributors.sh 
+
+ contributors.sh 
+
+ functional-tests.sh 
+
+ functional-tests.sh 
+
+ go.mod 
+
+ go.mod 
+
+ go.sum 
+
+ go.sum 
+
+ main.go 
+
+ main.go 
+
+ staticcheck.conf 
+
+ staticcheck.conf 
+
+ View all files 
+
+ Repository files navigation
+ 
+ README 
+ Code of conduct 
+ Contributing 
+ AGPL-3.0 license 
+ 
+ More items 
+
+ mcli
+
+ The command-line for Silo — a MinIO Client fork maintained by PIGSTY 
+
+ Website ·
+ Documentation ·
+ Download ·
+ Release Notes ·
+ Compatibility ·
+ Security ·
+ 中文 
+
+ Important
+ pgsty/mc is an independent, community-maintained fork of the open-source MinIO Client , published by Pigsty . It is not affiliated with, endorsed by, or sponsored by MinIO, Inc. “MinIO” is used only to identify the upstream project and compatibility lineage.
+
+ Current release
+
+ 20260916 
+( 20260916000000.0.0 ) uses silo-pkg v3.14.1 and upstream minio-go 32e1f32cb176 .
+See CHANGELOG.md for behavior changes and the
+ component matrix for the
+published Server/Console versions versus their newer main branches.
+
+ Overview
+
+ pgsty/mc maintains one downstream release line based on the final upstream MinIO Client commit, 77f82e18 . After the upstream repository was archived, this fork keeps the client built, patched, tested, and released through the same maintained supply chain as the Silo object storage server, while remaining a general-purpose client for filesystems and Amazon S3-compatible object stores.
+
+ The fork follows one rule: the shipped artifact and its distribution channels are renamed; the tool you use is not. Standalone archives and Linux packages ship the binary as mcli , while retaining familiar command syntax, configuration and wire interfaces, with the documented correctness and security changes below. The complete, versioned list of differences is maintained in the compatibility notes .
+
+ The official project portal is silo.pgsty.com . It brings the command reference, downloads, release and security notes, and project legal information together.
+
+ Find the Right Resource
+
+ Looking for 
+ Canonical location 
+
+ Project overview and navigation 
+ Silo Website 
+
+ mcli installation methods and downloads 
+ Download & Install 
+
+ Client and administration command reference 
+ mcli reference · mcli admin reference 
+
+ Release notes for this client 
+ mcli release notes 
+
+ Differences from upstream mc 
+ mcli compatibility notes 
+
+ Project news and security advisories 
+ Blog · release and security notes 
+
+ Versioned archives, packages, checksums, and source 
+ GitHub Releases 
+
+ Bug reports and feature discussions 
+ GitHub Issues 
+
+ Vulnerability reporting 
+ Security Policy 
+
+ License, attribution, and trademark information 
+ LICENSE · NOTICE · CREDITS · portal license , attribution , and trademark pages 
+
+ Related Projects
+
+ Repository 
+ Description 
+
+ pgsty/silo 
+ Silo object storage server — the S3-compatible MinIO fork this client accompanies 
+
+ pgsty/mc 
+ This repository — the Silo client, shipped as mcli with the mc command name 
+
+ pgsty/silo-console 
+ Admin web console for the Silo server 
+
+ pgsty/silo-pkg 
+ Shared Go packages maintained for the Silo forks 
+
+ pgsty/pigsty 
+ Pigsty — the PostgreSQL distribution that ships Silo as its object storage 
+
+ Maintenance Policy
+
+ The active main release line covers:
+
+ build, toolchain, and dependency maintenance;
+
+ applicable security fixes and sensitive-output hardening;
+
+ focused fixes for reproducible defects and Silo interoperability;
+
+ versioned archives, Linux packages, checksums, and multi-architecture images;
+
+ release automation, documentation, and Pigsty integration.
+
+ Changes are kept narrow and tested where practical. Maintenance is best effort; no response, remediation, or release schedule is guaranteed.
+
+ Out of scope
+
+ a separate client roadmap, new object-storage protocol, or speculative commands;
+
+ broad rewrites or changes that materially expand the downstream delta;
+
+ historical releases or multiple support branches;
+
+ commercial support, SLAs, 24×7 coverage, or SUBNET services;
+
+ guaranteed compatibility with every S3 implementation or future proprietary MinIO API.
+
+ Governance
+
+ The client is maintained together with the Silo server under one release process: DCO-signed commits, reviewed changes with CI validation (direct pushes to main are permitted; artifact publication separately requires successful workflows for the exact tagged commit), signed and immutable RELEASE.YYYY-MM-DDTHH-MM-SSZ tags with checksummed artifacts. Each release is announced with a release note on the portal; security advisories follow the security policy . Upstream copyright, license, and third-party notices are preserved in LICENSE , NOTICE , and CREDITS .
+
+ Compatibility
+
+ This fork aims to preserve:
+
+ the github.com/minio/mc module path, ~/.mc configuration, and familiar command behavior;
+
+ S3 Signature V2/V4 access and common MinIO/Silo administration workflows;
+
+ RELEASE.YYYY-MM-DDTHH-MM-SSZ tags and the mc container entrypoint;
+
+ the mc name for source builds, while standalone archives and Linux packages use mcli ; the Silo image provides both names.
+
+ Connections to MinIO-operated services — the update feed, SUBNET, telemetry, and the pre-seeded play alias — are severed; affected commands remain for script compatibility and fail with a stable error. In particular, mc update is intentionally disabled: upgrade through the Pigsty package repository or GitHub Releases .
+
+ Compatibility is a goal, not a guarantee. Server-specific administration commands may vary across versions. Pin releases, review the release notes and compatibility notes , keep a rollback path, and test the client against the target service before production use.
+
+ Downloads and Release Artifacts
+
+ Use Download & Install to choose a client installation method. GitHub Releases remains the source for versioned archives, packages, checksums, and source archives.
+
+ Artifact 
+ Location 
+
+ Source 
+ github.com/pgsty/mc 
+
+ Standalone archives 
+ GitHub Releases , providing mcli for Linux, macOS, and Windows on amd64 and arm64 
+
+ Linux packages 
+ RPM, DEB, and APK for x86_64 / aarch64 , also distributed through the Pigsty repository 
+
+ Container image 
+ pgsty/mc , multi-arch for linux/amd64 and linux/arm64 , with mc as the entrypoint 
+
+ Silo bundle 
+ pgsty/silo includes the client as mcli with an mc compatibility alias 
+
+ Go and TLS compatibility
+
+ Go 1.27 builds require macOS 13 or later. On macOS, builds targeting Go 1.27
+replace Keychain trust with on-disk roots and Go's verifier when either
+ SSL_CERT_FILE or SSL_CERT_DIR is set. Stale or incomplete CA paths can break
+previously trusted connections; unset inherited values to restore Keychain
+trust. Certificates in mcli's configured CAs directory are still added to the
+selected root pool.
+
+ S3, Admin, and alias TLS connections use Go's default key exchanges.
+ GODEBUG=tlsmlkem=0 can temporarily accommodate an ML-KEM-intolerant endpoint;
+it does not disable certificate verification or ML-DSA signatures.
+ GODEBUG=tlssecpmlkem=0 is the narrower option for disabling only the SecP
+hybrids while retaining X25519MLKEM768. The relevant
+changes are described in the Go release notes .
+
+ Quick Start
+
+ Standalone archives and Linux packages expose the command as mcli :
+
+ mcli alias set local http://127.0.0.1:9000 ACCESS_KEY SECRET_KEY
+mcli mb local/demo
+mcli cp README.md local/demo/
+mcli ls local/demo 
+
+ The container retains the familiar mc entrypoint:
+
+ docker run --rm pgsty/mc:latest --version
+docker run --rm pgsty/mc:latest alias ls 
+
+ Warning
+ For production, pin a release instead of latest , verify checksums, use TLS and least-privilege credentials, and test destructive commands against non-production data first.
+
+ Build from source:
+
+ git clone https://github.com/pgsty/mc.git
+ cd mc
+make build
+./mc --version 
+
+ Common Commands
+
+ Use mcli --json ... or MC_JSON=true for machine-readable output. Once JSON
+mode is selected, unknown options, invalid option values, and missing required
+command arguments return a JSON error on stdout with exit status 1. Put
+ --json before the command: a flag after a rejected option is not parsed.
+Explicit --help and --version requests keep their human-readable output.
+Command groups such as mcli --json admin user also display human-readable
+help and exit 0 when invoked without a subcommand.
+
+ Command 
+ Purpose 
+
+ alias 
+ Configure credentials and endpoints 
+
+ ls , tree , stat , du 
+ Inspect buckets, objects, and local files 
+
+ mb , rb 
+ Create or remove buckets 
+
+ cp , get , put , mv , rm 
+ Transfer and manage objects 
+
+ mirror , diff , find 
+ Synchronize, compare, and search data 
+
+ anonymous , share 
+ Manage anonymous access and temporary URLs 
+
+ version , retention , legalhold , ilm 
+ Manage data-protection policies 
+
+ replicate 
+ Configure bucket replication 
+
+ admin 
+ Operate compatible MinIO/Silo servers 
+
+ Run mcli --help , mcli <command> --help , or consult the client reference for the complete command set.
+
+ Contributing
+
+ Useful contributions include security and dependency updates, reproducible bug fixes, interoperability tests, release automation, packaging, and documentation.
+
+ Issues and pull requests should include the affected client and server versions, reproduction steps, impact, expected behavior, tests, and compatibility notes. Discuss large changes in an issue first.
+
+ There is no CLA: contributions are accepted inbound=outbound under the project license (AGPL-3.0-or-later) and contributors keep their copyright. Every commit must be signed off ( git commit -s ) per the Developer Certificate of Origin ; see CONTRIBUTING.md .
+
+ Background
+
+ The upstream minio/mc repository was archived after its final 2025 development line. Pigsty maintains this fork because Silo needs a reproducible companion client release channel rather than depending on an archived upstream project.
+
+ The broader upstream changes, alternatives considered, and early fork maintenance record are documented below:
+
+ Essay 
+ Subject 
+
+ MinIO Is Dead 
+ Changes to the upstream project and distribution model 
+
+ MinIO Is Dead, Who Takes Over? 
+ Alternatives considered 
+
+ MinIO Is Dead, Long Live MinIO 
+ Establishing the server and client release pipeline 
+
+ Two months into maintaining a MinIO fork 
+ Initial security and maintenance work 
+
+ License, Attribution, and Trademark
+
+ The client source is distributed under the GNU Affero General Public License v3.0 or later . This fork derives from minio/mc : NOTICE retains the upstream product notice, CREDITS records licenses and notices for included third-party components, and the Git history records downstream modifications.
+
+ MinIO is a trademark of MinIO, Inc. The name is used here only to identify the upstream project and compatibility lineage. Pigsty, Silo, pgsty/mc , and mcli are independent community efforts and are not affiliated with, endorsed by, or sponsored by MinIO, Inc.
+
+ The portal separately publishes the project license summary , documentation attribution , and trademark notice .
+
+ About 
+ Silo object storage client (mcli), a community-maintained fork of the MinIO Client
+ silo.pgsty.com 
+ Topics 
+ cli client minio object-storage s3 silo 
+ Resources 
+ Readme 
+ AGPL-3.0 license 
+ Code of conduct 
+ Code of conduct 
+ Contributing 
+ Contributing 
+ Activity 
+ Custom properties 
+ Stars 
+ 42 stars 
+ Watchers 
+ 1 watching 
+ Forks 
+ 7 forks 
+ Report repository 
+
+ Releases 
+
+ Used by 
+
+ Contributors 
+
+ Languages 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

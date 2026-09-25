@@ -1,0 +1,902 @@
+SOURCE: https://silo.pgsty.com/
+RETRIEVED: 2026-09-25 (spike db-hny6)
+---
+SILO 
+
+ Skip to content 
+
+ Docs 
+
+ Blog 
+
+ Download 
+
+ Pigsty 
+
+ Search… 
+ / 
+
+ 简体中文 
+
+ English 
+
+ 简体中文 
+
+ Light 
+ 
+ Dark 
+ 
+ System 
+
+ Docs 
+
+ Blog 
+
+ Download 
+
+ Pigsty 
+
+ Search… 
+ GitHub 
+
+ NEWS 
+ 20260916 Released! 
+
+ OPEN-SOURCE S3/MINIO-COMPATIBLE OBJECT STORAGE 
+
+ S 3 I nterface 
+ L ibre O bject 
+
+ PGSTY SILO is a MinIO fork maintained by PGSTY 
+ Provide packages, images, console, and CVE fixes 
+
+ Docs 
+ Install 
+
+ The PGSTY SILO Manifesto: our commitments, and limits → 
+
+ SILO // STORAGE NODE 
+ PGSTY-01 
+
+ S3 API :9000 APPLICATION TRAFFIC 
+
+ OBJECT STORAGE 
+ SILO 
+ S3-COMPATIBLE 
+
+ CONSOLE :9001 OPERATOR ACCESS 
+
+ ERASURE SET // DISTRIBUTED DISKS
+
+ D01 ONLINE D02 ONLINE D03 ONLINE D04 ONLINE 
+
+ COMMUNITY FORK MAINTAINED BY PIGSTY 
+
+ KEY METRICS 
+
+ Maintained in public, visible at a glance
+
+ Every number here comes from a public source you can check yourself.
+
+ 1,091,990 
+ Docker Pulls 
+
+ 3,505 
+ GitHub Stars 
+
+ 18 
+ Security Notes 
+
+ 27 
+ Release Notes 
+
+ Mockestra TESTCONTAINERS MODULE 
+
+ Grafana Loki HELM · BUNDLED SERVICE 
+
+ RAGFlow DEFAULT COMPOSE 
+
+ nixpkgs DISTRIBUTION PACKAGE 
+
+ Dokploy PRODUCT TEMPLATE 
+
+ UNCTAD UPGRADE PLAYBOOK 
+
+ Measure BACKEND DEPLOYMENT 
+
+ Firemoot REFERENCE COMPOSE · CI 
+
+ Open-Lutra S3 DEV PROFILE 
+
+ ConfigHub HELM RECIPE PIPELINE 
+
+ Mockestra TESTCONTAINERS MODULE 
+
+ Grafana Loki HELM · BUNDLED SERVICE 
+
+ RAGFlow DEFAULT COMPOSE 
+
+ nixpkgs DISTRIBUTION PACKAGE 
+
+ Dokploy PRODUCT TEMPLATE 
+
+ UNCTAD UPGRADE PLAYBOOK 
+
+ Measure BACKEND DEPLOYMENT 
+
+ Firemoot REFERENCE COMPOSE · CI 
+
+ Open-Lutra S3 DEV PROFILE 
+
+ ConfigHub HELM RECIPE PIPELINE 
+
+ Ynfra COMPOSE MODULE 
+
+ MetalK8s K8S DISTRIBUTION 
+
+ dCache CI · K8S TEST RIG 
+
+ RuoYi-Vue-Plus DEFAULT COMPOSE 
+
+ FlyEnv DOWNLOAD SOURCE 
+
+ OpenCHAMI HPC PODMAN QUADLET 
+
+ Macaroni OS PORTAGE EBUILD 
+
+ buun-stack KUBERNETES STACK 
+
+ SpectrumX DEPLOY GUIDE · mc 
+
+ anydbver DB TEST HARNESS 
+
+ Ynfra COMPOSE MODULE 
+
+ MetalK8s K8S DISTRIBUTION 
+
+ dCache CI · K8S TEST RIG 
+
+ RuoYi-Vue-Plus DEFAULT COMPOSE 
+
+ FlyEnv DOWNLOAD SOURCE 
+
+ OpenCHAMI HPC PODMAN QUADLET 
+
+ Macaroni OS PORTAGE EBUILD 
+
+ buun-stack KUBERNETES STACK 
+
+ SpectrumX DEPLOY GUIDE · mc 
+
+ anydbver DB TEST HARNESS 
+
+ AcePanel PANEL APP TEMPLATE 
+
+ Pigsty PG BACKUP REPO 
+
+ Omnia HPC PLATFORM RUNTIME 
+
+ DaoCloud PUBLIC IMAGE MIRROR 
+
+ KubeStellar INSTALL KNOWLEDGE BASE 
+
+ ModelarDB CI · INTEGRATION 
+
+ AgentsMesh COMPOSE · CI 
+
+ Kukan COMPOSE MIGRATION 
+
+ Mayflower POSTHOG HELM CHART 
+
+ NVIDIA AI Hub DGX APP RECIPE · 3RD PARTY 
+
+ AcePanel PANEL APP TEMPLATE 
+
+ Pigsty PG BACKUP REPO 
+
+ Omnia HPC PLATFORM RUNTIME 
+
+ DaoCloud PUBLIC IMAGE MIRROR 
+
+ KubeStellar INSTALL KNOWLEDGE BASE 
+
+ ModelarDB CI · INTEGRATION 
+
+ AgentsMesh COMPOSE · CI 
+
+ Kukan COMPOSE MIGRATION 
+
+ Mayflower POSTHOG HELM CHART 
+
+ NVIDIA AI Hub DGX APP RECIPE · 3RD PARTY 
+
+ RudderStack COMPOSE · STORAGE PROFILE 
+
+ RuoYi-Cloud-Plus DEFAULT COMPOSE 
+
+ SereneDB BENCHMARK · S3 FIXTURE 
+
+ randomcoww/homelab TERRAFORM · DIGEST PIN 
+
+ tedsluis/monitoring PODMAN · OBSERVABILITY 
+
+ OnlineJudge CUSTOM IMAGE 
+
+ Philanthropy Data Commons CI · S3 SERVICE 
+
+ ContainerHive BUILD CACHE GUIDE 
+
+ AltStack Data DEPLOYMENT GUIDE 
+
+ tyriis/home-ops HOMELAB COMPOSE 
+
+ RudderStack COMPOSE · STORAGE PROFILE 
+
+ RuoYi-Cloud-Plus DEFAULT COMPOSE 
+
+ SereneDB BENCHMARK · S3 FIXTURE 
+
+ randomcoww/homelab TERRAFORM · DIGEST PIN 
+
+ tedsluis/monitoring PODMAN · OBSERVABILITY 
+
+ OnlineJudge CUSTOM IMAGE 
+
+ Philanthropy Data Commons CI · S3 SERVICE 
+
+ ContainerHive BUILD CACHE GUIDE 
+
+ AltStack Data DEPLOYMENT GUIDE 
+
+ tyriis/home-ops HOMELAB COMPOSE 
+
+ CapRover ONE-CLICK APP TEMPLATE 
+
+ AutoMQ DEVKIT · DOCKER COMPOSE 
+
+ Grafana Mimir DEV MODES · S3 BACKEND 
+
+ OpenCTI CI · COMPOSE SERVICE 
+
+ Velox S3 TEST STORAGE 
+
+ Open VSX LOCAL COMPOSE · BUCKET INIT 
+
+ Lakekeeper ICEBERG WAREHOUSE EXAMPLE 
+
+ Milvus Operator HELM VALUES · STORAGE 
+
+ Duckgres COMPOSE · DIGEST PIN 
+
+ Stirling PDF MULTINODE TEST STORAGE 
+
+ CapRover ONE-CLICK APP TEMPLATE 
+
+ AutoMQ DEVKIT · DOCKER COMPOSE 
+
+ Grafana Mimir DEV MODES · S3 BACKEND 
+
+ OpenCTI CI · COMPOSE SERVICE 
+
+ Velox S3 TEST STORAGE 
+
+ Open VSX LOCAL COMPOSE · BUCKET INIT 
+
+ Lakekeeper ICEBERG WAREHOUSE EXAMPLE 
+
+ Milvus Operator HELM VALUES · STORAGE 
+
+ Duckgres COMPOSE · DIGEST PIN 
+
+ Stirling PDF MULTINODE TEST STORAGE 
+
+ VALUE PROPOSITION 
+
+ What upstream dropped, PGSTY SILO picks up
+
+ MinIO's OSS edition gutted its console, stopped shipping binaries, and archived its security updates. Silo restores all these — on the same codebase, with CI/CD pipe
+
+ ADMIN CONSOLE
+
+ The full console, restored 
+
+ ◇ Manage buckets, identity, monitoring, and replication in the browser
+
+ Upstream stripped the AGPL web console down to a stub
+
+ SILO ships the full management UI: buckets, IAM, monitoring, site replication 
+
+ No paywall, no feature gate—the console every operator remembers
+
+ The console upstream took away, back in your browser
+
+ SECURITY PATCHES
+
+ CVEs fixed, patches shipped 
+
+ ＋ Advisories published next to the code that fixes them
+
+ Upstream's community edition is archived—new CVEs land on no one's desk
+
+ Security fixes with public advisories , documenting affected versions and delivery status
+
+ Report privately, triage reproducibly, publish transparently
+
+ Security that keeps moving
+
+ blog/security · 18 ENTRIES 
+ 
+ 2025-10-15 CVE-2025-62506: Session-Policy Privilege Escalation 
+
+ 2026-04-15 CVE-2026-32285: The jsonparser Advisory That Required No Patch 
+
+ 2026-04-15 CVE-2026-33322: OIDC JWT Algorithm Confusion 
+
+ 2026-04-15 CVE-2026-33419: LDAP STS Enumeration and the Throttling Chain 
+
+ 2026-04-15 CVE-2026-34204: Replication Metadata Injection 
+
+ 2026-04-15 CVE-2026-39414: Oversized S3 Select Records and a SIMD Bypass 
+
+ 2026-04-16 CVE-2026-40344: Snowball Auto-Extract Authentication Bypass 
+
+ 2026-04-16 CVE-2026-41145: Unsigned-Trailer Query Authentication Bypass 
+
+ 2026-06-12 CVE-2026-42600: ReadMultiple Storage-REST Path Traversal 
+
+ 2026-08-02 Internode Path Containment Audit: Paying Off What CVE-2026-42600 Left Owing 
+
+ 2026-08-03 Sorted Is Not Increasing: How One Duplicate Part Number Doubled an Object 
+
+ 2026-08-04 The Parser Knew, the Schema Didn't: Config Keys That Could Take Every Notification Down 
+
+ 2026-08-04 Object Grant, Bucket Reach: When 'bucket/*' Could Rewrite the Bucket Itself 
+
+ 2026-08-04 Absent Is Not Empty: A Blank versionid and the Fail-Open It Invites 
+
+ 2026-08-04 Three Headers, One Lie: Making the Client Source Address Mean Something 
+
+ 2026-09-03 SILO 20260903 Security Notes: SN-2026-006 through 010 
+
+ 2026-09-13 SN-2026-011: Fix and Release Status 
+
+ 2026-09-16 September Security Repairs: Payload Integrity, IAM Revocation and Console Sharing 
+
+ BROWSE THE SECURITY CHRONICLE → 
+
+ RELEASE ARTIFACTS
+
+ Prebuilt, signed binaries 
+
+ ▦ Packages you can install without building anything
+
+ Every release ships binaries, packages, and images. No build step
+
+ Versioned binaries, RPM / DEB / APK , and multi-arch container images
+
+ GPG signatures, SHA-256 checksums, SBOMs, and build provenance
+
+ Download it and run it
+
+ SILO // RELEASE ARTIFACTS VERSIONED · CHECKSUMMED 
+ 
+ OCI amd64 · arm64 
+ RPM EL compatible 
+ DEB Debian · Ubuntu 
+ APK Alpine Linux 
+ BIN server · client 
+ SUM SHA256 checksums 
+ 
+ ACTIVE RELEASE LINE → 
+
+ COMPATIBILITY
+
+ Migrate from MinIO 
+
+ ⇄ Keep your data volumes; check the version-specific migration requirements
+
+ Artifacts use silo , retaining the object layout and protocol identifiers
+
+ Retain the S3 API and MINIO_* configuration names ; policy, metadata and rollback changes are documented per release
+
+ See the compatibility audit and migration guide , rollback included
+
+ The four-component SILO stack is supported; upstream compatibility is best effort
+
+ docker-compose.yml 
+ # Migrate from MinIO to PGSTY SILO 
+ services :
+ minio :
+ - image: minio/minio:latest 
+ + image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z 
+ environment : # MINIO_* unchanged 
+ volumes : # same volume, same data 
+
+ S3 INTERFACE 
+
+ Same interface
+
+ Keep familiar S3 APIs, MINIO_* configuration names and metric identifiers. Review the target release's policy and persistent-state changes before upgrading.
+
+ Compatibility Notes → 
+ S3 Clients → 
+ Environment Variables → 
+ Command-Line Client → 
+
+ S3 S3 API Application interface 
+ $ silo Server executable 
+ ENV MINIO_* Environment Vars 
+ REL RELEASE.* Version tags 
+ MC mcli / mc Command-line client 
+ IAM IAM + TLS Security controls 
+
+ OBJECT STORAGE CAPABILITIES 
+
+ Buckets Versioning Object Lock Encryption Metrics Policies Replication Lifecycle 
+ Buckets Versioning Object Lock Encryption Metrics Policies Replication Lifecycle 
+
+ Distributed Erasure Code Quorum Site Replication S3 Select Audit Logs Tiering Console 
+ Distributed Erasure Code Quorum Site Replication S3 Select Audit Logs Tiering Console 
+
+ Browse the Documentation → 
+
+ OPERATIONS 
+
+ Console is back, even better!
+
+ Open Console Docs ↗ 
+ We put the gutted console back, added a bilingual UI, and cleaned up the visuals.
+
+ THIRD-PARTY REPORTS 
+
+ What people say about silo
+
+ Public posts from February to July 2026, quoted verbatim.
+
+ Yingfeng
+
+ Founder @ InfiniFlow · RAGFlow
+
+ “Using pgsty/minio's fork as the default storage is a reasonable solution right now.”
+
+ GitHub · RAGFlow #13840 · 2026-03-31 
+
+ Mauricio Siu
+
+ Creator of Dokploy
+
+ “Drop-in replacement: same env vars, same server command, same /data on-disk format, and it restores the full web console upstream had gutted.”
+
+ GitHub · Dokploy templates #1012 · 2026-07-15 
+
+ Debjeet Biswas
+
+ Building measure.sh
+
+ “This PR switches to a community trusted minio image.”
+
+ GitHub · measure #3831 · 2026-06-06 
+
+ chalukyaj
+
+ Author of Silo Operator
+
+ “To discover that the community maintained version not only exists, but has had a recent release which outperforms the last published minio image was a delight.”
+
+ GitHub · pgsty/minio #30 · 2026-04-19 
+
+ Clayton Auld
+
+ Engineer @ GCI
+
+ “Looks like a community fork of MinIO may be the real solution here … this is likely the easiest migration path.”
+
+ GitHub · Notesnook #79 · 2026-02-24 
+
+ kuma_3838
+
+ Qiita Author
+
+ “最小限の変更で済むため、直近の対応としては最も手軽です。”
+
+ Qiita · 2026-02-25 
+
+ Grafana Loki
+
+ Helm chart · values.yaml
+
+ “Override the upstream MinIO, Inc. images with the Pigsty (pgsty) community fork to mitigate the unresolved CVE in the abandoned MinIO images.”
+
+ GitHub · grafana/loki 
+
+ Yingfeng
+
+ Founder @ InfiniFlow · RAGFlow
+
+ “Using pgsty/minio's fork as the default storage is a reasonable solution right now.”
+
+ Mauricio Siu
+
+ Creator of Dokploy
+
+ “Drop-in replacement: same env vars, same server command, same /data on-disk format, and it restores the full web console upstream had gutted.”
+
+ Debjeet Biswas
+
+ Building measure.sh
+
+ “This PR switches to a community trusted minio image.”
+
+ chalukyaj
+
+ Author of Silo Operator
+
+ “To discover that the community maintained version not only exists, but has had a recent release which outperforms the last published minio image was a delight.”
+
+ Clayton Auld
+
+ Engineer @ GCI
+
+ “Looks like a community fork of MinIO may be the real solution here … this is likely the easiest migration path.”
+
+ kuma_3838
+
+ Qiita Author
+
+ “最小限の変更で済むため、直近の対応としては最も手軽です。”
+
+ Grafana Loki
+
+ Helm chart · values.yaml
+
+ “Override the upstream MinIO, Inc. images with the Pigsty (pgsty) community fork to mitigate the unresolved CVE in the abandoned MinIO images.”
+
+ Søren Kejser Jensen
+
+ ModelarDB · Aalborg University
+
+ “Switching from minio/minio to pgsty/minio as neither RustFS and VersityGW seems suitable for a production deployment.”
+
+ GitHub · ModelarDB-RS #400 · 2026-06-22 
+
+ Łukasz Różewicz
+
+ RAGFlow Community
+
+ “A community fork of MinIO … that restores the admin console and ships patched binaries.”
+
+ GitHub · RAGFlow #13840 · 2026-03-28 
+
+ Du
+
+ Software Engineer
+
+ “The fork keeps the wire protocol, on-disk format, and mc client compatible with upstream.”
+
+ GitHub · pgsty/minio #42 · 2026-07-21 
+
+ ekko
+
+ 1Panel Community
+
+ “原 minio 官方已不再维护，pgsty 开源社区 fork 重新维护的版本是否考虑”
+
+ GitHub · 1Panel #12753 · 2026-05-18 
+
+ buun-stack
+
+ Kubernetes Home Lab
+
+ “Uses the pgsty/minio image, since MinIO's upstream Community Edition is archived/EOL; the embedded admin console is restored.”
+
+ GitHub · buun-ch/buun-stack · 2026-06-21 
+
+ Upendra N
+
+ GitHub Community
+
+ “Thank you for the initiative. Just name it S4 — the next version of S3 😅”
+
+ GitHub · pgsty/minio #7 · 2026-03-20 
+
+ Dokploy Templates
+
+ Template documentation
+
+ “This template uses pgsty/minio, the actively maintained community fork.”
+
+ docs.dokploy.com · 2026-07 
+
+ Søren Kejser Jensen
+
+ ModelarDB · Aalborg University
+
+ “Switching from minio/minio to pgsty/minio as neither RustFS and VersityGW seems suitable for a production deployment.”
+
+ Łukasz Różewicz
+
+ RAGFlow Community
+
+ “A community fork of MinIO … that restores the admin console and ships patched binaries.”
+
+ Du
+
+ Software Engineer
+
+ “The fork keeps the wire protocol, on-disk format, and mc client compatible with upstream.”
+
+ ekko
+
+ 1Panel Community
+
+ “原 minio 官方已不再维护，pgsty 开源社区 fork 重新维护的版本是否考虑”
+
+ buun-stack
+
+ Kubernetes Home Lab
+
+ “Uses the pgsty/minio image, since MinIO's upstream Community Edition is archived/EOL; the embedded admin console is restored.”
+
+ Upendra N
+
+ GitHub Community
+
+ “Thank you for the initiative. Just name it S4 — the next version of S3 😅”
+
+ Dokploy Templates
+
+ Template documentation
+
+ “This template uses pgsty/minio, the actively maintained community fork.”
+
+ 50 community contributors · View full record 
+
+ Issues, pull requests, and security reports all count. · 2026-09-16
+
+ Feng Ruohang Maintains SILO, Console, mcli, shared packages, releases, and documentation 
+
+ ZouhairCharef Patched CVE-2026-34986 in go-jose 
+
+ Mario Fredenhagen Patched CVE-2026-39883 in OpenTelemetry 
+
+ ping Repaired bucket notification streaming 
+
+ ycjlin Fixed missing-bucket ListObjects semantics 
+
+ Wesley Schwengle Repointed documentation links to the SILO portal 
+
+ Shooks Added ChecksumType to multipart completion responses 
+
+ mohammadjavad seydi Fixed bucket quota metrics; contributed access-frequency ILM and S3-compatible multipart listing proposals 
+
+ h5vx Implemented per-bucket CORS configuration and enforcement 
+
+ Pogromskiy Nikita Fixed duplicate logger targets that broke Metrics V3 collection 
+
+ Ayush Sharma Preserved Object Lock legal-hold headers in federated CopyObject 
+
+ Ilia Burakov Reported and proposed conditional DELETE support for If-Match 
+
+ Davin Kevin Proposed the distroless container image and dependency automation 
+
+ Fabian Schmieder Reported and proposed explicit-version delete authorization 
+
+ mikemikimike Contributed the replicated SSE-C plaintext part-size fix 
+
+ Julien Laurenceau Reported MRF queue and delete-marker retry defects; contributed repair proposals, tests, and documentation 
+
+ chodorenko Reported and contributed the fix for aws-chunked leaking into replica metadata 
+
+ sulin37392 Proposed dependency updates 
+
+ lem21h Proposed robustness and goroutine improvements 
+
+ Vamp Reported LDAP TLS and Console login regressions 
+
+ Christophe Bornet Reported multipart and streaming checksum defects and missing-bucket semantics 
+
+ Oren Yomtov Reported the unsigned-header CopyObject cross-object read (SN-2026-011) 
+
+ Jiri Pejchal Reported the RabbitMQ client vulnerability and the Console share proxy's exposure of internal metrics 
+
+ AEGEGE Reported the slow-HTTP denial-of-service vulnerability 
+
+ mosesdd Requested a maintained Helm chart 
+
+ Xavier-777 Reported Console lifecycle management and file preview gaps 
+
+ jiadzh Requested Windows build guidance 
+
+ Anton Melser Asked for clarity on Helm chart and operator options 
+
+ T.v.Dein Reported the missing client in release tarballs 
+
+ zylpsrs Reported missing Console tiering and site replication 
+
+ Nicola Sanitate Proposed CNCF Sandbox governance 
+
+ makinikm Reported the missing client in the container image 
+
+ spaceg00se-r Requested cpuv1 support and reported a workflow token failure 
+
+ heroes1412 Reported the unusable profiling option 
+
+ chalukyaj Proposed making the SILO Operator easier to discover 
+
+ James Vasile Reported missing user, group, and defaults in Debian packages 
+
+ Kesavaambati Asked about community support and image maintenance 
+
+ yingzhou Wang Reported Chinese documentation availability 
+
+ kuldeep-link11 Reported NATS JWT credentials and target reload issues 
+
+ Du Requested the migration guide from upstream MinIO 
+
+ Pavel Mezhuev Reported missing RPM package signatures 
+
+ khomenokk Reported inter-node I/O timeouts and OIDC configuration-fetch failures 
+
+ Bag Raul Cristian Requested KES-compatible external KMS and OpenBao support 
+
+ liuhaodongliu990-cmyk Reported indeterminate progress for prefix downloads 
+
+ DestroyLee Reported the missing documentation navigation 
+
+ Anton Bornev Reported ListMultipartUploads prefix and pagination semantics 
+
+ 木木 Reported bucket quota metrics reading a deprecated field 
+
+ Yu Yanan Proposed a built-in image processing pipeline 
+
+ TiredEnzo Reported inconsistent documentation for two-drive EC:1 support 
+
+ aschyolkin Reported a data race in CPU metrics collection 
+
+ MAINTENANCE 
+
+ A deliberately narrow promise
+
+ SILO exists to keep existing MinIO deployments running, nothing broader.
+
+ ✓ MAINTAINED SURFACE
+
+ What stays maintained
+
+ Builds and dependencies for the active release line
+ Applicable security fixes and advisories
+ Focused fixes for reproducible defects
+ Versioned artifacts and documentation
+ A release typically every 1–2 months, at most a quarter
+
+ ✕ OUT OF SCOPE
+
+ What we don't promise
+
+ A full continuation of the upstream roadmap
+ Historical releases or multiple support branches
+ Compatibility guarantees we have not tested
+ Response or remediation-time SLAs
+
+ Read the PGSTY SILO Manifesto → 
+
+ FAQ 
+
+ Questions we get asked
+
+ Short answers. The details are behind the links.
+
+ Q1 Why does this project exist? 
+ Upstream wound down its community edition: the web console was cut back to a stub, prebuilt binaries stopped, and the server repository was archived. Pigsty runs its own PostgreSQL backups on this code, so it needed a maintainer either way. Everything else follows from that. The reasoning is written out in the PGSTY SILO Manifesto .
+
+ Q2 What problem does it solve? 
+ It keeps existing MinIO-compatible deployments running: versioned binaries and packages you can download , security fixes with public advisories, and the full web console. No build step and no commercial license. This is maintenance work, not a new product.
+
+ Q3 What do you promise? 
+ A short list, kept short on purpose. AGPLv3 with no CLA: contributions come in under DCO sign-off, so copyright stays with each author. No paywalls, no registration walls, no telemetry. A release every one to two months, at most a quarter apart. A public advisory for every security fix we ship. The Manifesto also lists what we refuse to promise, such as fix-time SLAs.
+
+ Q4 Who maintains this fork? 
+ One person, named. The fork is maintained under the PGSTY organization by Ruohang Feng (Vonng) , who wrote the Pigsty PostgreSQL distribution. He has deployed and run a 25 PB MinIO cluster, and does the packaging and releases here. Article 9 of the Manifesto says in advance what happens if that arrangement ends.
+
+ Q5 What role do coding agents play? 
+ Most of the code, and most of the first-pass review, is written by coding agents. A human reads every diff, decides the trade-offs, and merges; nothing lands without CI and that review. We keep the agents' working notes and trade-off write-ups, because when a fix turns out to be wrong, the reasoning behind it is the thing you want. The security advisories and release notes are what this arrangement produces in public. Judge it on those.
+
+ Q6 Will the on-disk format change? 
+ The .minio.sys and object-layout identifiers are retained; migration does not require renaming data. Metadata behavior, replication format gates and rollback limits are recorded per version. Check component versions and compatibility notes before upgrading. Upstream interoperability is best effort, not a guarantee that arbitrary versions can be mixed.
+
+ Q7 How compatible is it? 
+ Common deployments can retain their S3 clients, MINIO_* configuration names, minio_* metric names and existing data directories. Check the source and target SILO versions against the compatibility notes , validate permission, configuration and metadata changes in a test environment, then follow the migration guide to switch images or packages and rehearse rollback. Retained interface names do not guarantee a direct replacement for every upstream version.
+
+ Q8 Can I run it in production? 
+ SILO provides versioned artifacts and Pigsty deployment integration, with public third-party adoption records on this page. Review current release and security status , pin a version, validate your workload and rehearse rollback. A repository merge, public release and deployment to a particular production environment are separate events.
+
+ Q9 What does the AGPL mean for my app? 
+ Silo carries AGPLv3 , the same license as the upstream it forked. Our position (a position, not legal advice) is that using Silo through its S3 API does not make your application a derivative work, and we will not use the license as a threat or a sales instrument. We also could not relicense it if we wanted to: there is no CLA, contributions come in under DCO, and copyright stays spread across everyone who wrote a line. Article 3 of the Manifesto has the full statement.
+
+ Q10 What if maintenance stops one day? 
+ Released artifacts and documentation are meant to stay up, and we will keep them up as long as we can. The build is documented and provenance-attested, so anyone can rebuild equivalent artifacts from source without us. That part does not depend on us being around. If active maintenance stops for six months, we will say so publicly and archive the project rather than let it go quiet. Article 9 of the Manifesto has the exit plan.
+
+ DOWNLOAD 
+
+ Get PGSTY SILO
+
+ Pick the server or the admin client, then your platform and install method.
+
+ DATA SERVICE
+
+ SILO Server
+
+ Server binaries, container images, Linux packages, source, and Pigsty Ansible automation.
+
+ Linux Docker Kubernetes Ansible macOS Windows 
+
+ Choose install method ↗ 
+
+ ADMIN CLI
+
+ MCLI Client
+
+ The mc -compatible command-line client for buckets, objects, identity, and cluster administration.
+
+ Linux macOS Windows Docker Source 
+
+ Choose install method ↗ 
+
+ S 3 I nterface, L ibre O bject Store
+Keep the interface. Own the objects.
+
+ A MinIO fork maintained by the Pigsty community.
+
+ MinIO ® is a registered trademark of MinIO, Inc. 
+Silo is not affiliated with or endorsed by MinIO, Inc.
+
+ Resources
+
+ SILO Download 
+
+ MCLI Download 
+
+ Release Notes 
+
+ Security Notes 
+
+ Documentation
+
+ Operations 
+
+ Administration 
+
+ Developers 
+
+ Reference 
+
+ Ecosystem
+
+ GitHub 
+
+ Issue 
+
+ Pigsty 
+
+ PG Center 
+
+ About
+
+ License 
+
+ Trademark 
+
+ Attribution 
+
+ Security Policy 
+
+ © 2020-2026 Ruohang Feng ( Vonng ) @ PGSTY 
+ Powered by Oink 
+ 
+ 简体中文 
+
+ esc 
+
+ ↑ ↓ Navigate 
+ ↵ Open 
+ esc Close

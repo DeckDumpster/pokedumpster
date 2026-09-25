@@ -1,0 +1,1184 @@
+SOURCE: https://silo.pgsty.com/compatibility/mcli/
+RETRIEVED: 2026-09-25 (spike db-hny6)
+---
+MCLI Client Compatibility Notes | SILO 
+
+ Skip to content 
+
+ Docs 
+
+ Blog 
+
+ Download 
+
+ Pigsty 
+
+ Search… 
+ / 
+
+ 简体中文 
+
+ English 
+
+ 简体中文 
+
+ Light 
+ 
+ Dark 
+ 
+ System 
+
+ Search… 
+ / 
+
+ Docs 
+
+ Docs 
+ pgsty/silo 20260916 Documentation 
+
+ About 
+ The PGSTY SILO manifesto, license, trademark, attribution, and security policy for the project and its documentation. 
+
+ Compatibility 
+ Can SILO replace MinIO? A user-facing index of 12 compatible improvements, 4 minor differences, and 8 changes to check when their conditions apply. 
+
+ Operations 
+ Deploy, monitor, secure, recover, and troubleshoot Silo deployments. 
+
+ Administration 
+ Manage objects, identity, encryption, replication, and batch jobs. 
+
+ Developers 
+ Build with Silo SDKs, STS, Object Lambda, and file transfer protocols. 
+
+ Blog 
+ News, Release & Security Notes 
+
+ Reference 
+ Kubernetes, bare-metal, S3 API, integration, release, and security references. 
+
+ Integrations 
+
+ Docs 
+
+ About 
+
+ Manifesto 
+
+ License 
+
+ Trademark 
+
+ Attribution 
+
+ Contributors 
+
+ Security 
+
+ Compatibility 
+
+ Component Versions 
+
+ Password Permissions 
+
+ Migration 
+
+ Native Package 
+
+ Silo Server 
+
+ MC Client 
+
+ Console 
+
+ Feature Notes 
+
+ Healthcheck 
+
+ Operations 
+
+ Installation and Management 
+
+ Deploy Silo on Kubernetes 
+
+ MinIO Kubernetes Operator 
+
+ Deploy Operator With Helm 
+
+ Upgrade MinIO Operator 
+
+ Silo Tenants with MinIO Operator 
+
+ Deploy a Silo Tenant 
+
+ Deploy a Silo Tenant with Helm Charts 
+
+ Modify a Silo Tenant 
+
+ Upgrade a Silo Tenant 
+
+ Expand a Silo Tenant 
+
+ Delete a Silo Tenant 
+
+ Deploy Silo on Bare Metal 
+
+ Install the Silo Server 
+
+ Deploy Silo on RHEL-Compatible Linux 
+
+ Deploy Silo on Ubuntu Linux 
+
+ Deploy Silo as a Container 
+
+ Deploy Silo on macOS 
+
+ Deploy Silo on Windows 
+
+ Upgrade a Silo Deployment 
+
+ Expand a Distributed Silo Deployment 
+
+ Decommission Server Pools 
+
+ Migrate from Gateway or Filesystem Mode 
+
+ Site Replication Overview 
+
+ Core Operational Concepts 
+
+ Deployment Architecture 
+
+ Availability and Resiliency 
+
+ Erasure Coding 
+
+ Object Healing 
+
+ Object Scanner 
+
+ Thresholds and Limits 
+
+ Monitoring and Alerts 
+
+ Metrics and alerts 
+
+ Monitoring and Alerting using Prometheus 
+
+ Monitoring and Alerting using InfluxDB 
+
+ Metrics version 2 
+
+ Publish Server or Audit Logs to an External Service 
+
+ Healthcheck API 
+
+ Monitor a Silo Server with Grafana 
+
+ External Identity Management 
+
+ Configure Silo Authentication with Active Directory / LDAP 
+
+ Configure Silo Authentication with Keycloak 
+
+ Configure Silo Authentication with OpenID 
+
+ Data Encryption (SSE) 
+
+ Server-Side Object Encryption with KES 
+
+ Network Encryption (TLS) 
+
+ Enable TLS for Silo 
+
+ Enable Multiple-Domain TLS for Silo 
+
+ cert-manager 
+
+ cert-manager for Operator 
+
+ cert-manager for Tenants 
+
+ Deployment Checklists 
+
+ Hardware Checklist 
+
+ Security Checklist 
+
+ Software Checklist 
+
+ Recover after Hardware Failure 
+
+ Drive Failure Recovery 
+
+ Node Failure Recovery 
+
+ Site Failure Recovery 
+
+ Troubleshooting 
+
+ Encrypting Files 
+
+ Administration 
+
+ Silo Console 
+
+ Managing Your Deployment 
+
+ Managing Objects 
+
+ Security and Access 
+
+ SUBNET 
+
+ Object Management 
+
+ Bucket Versioning 
+
+ Silo Object Locking 
+
+ Object Deletion 
+
+ Object Lifecycle Management 
+
+ Transition Objects to Remote MinIO Deployment 
+
+ Transition Objects from MinIO to S3 
+
+ Transition Objects from MinIO to GCS 
+
+ Transition Objects from MinIO to Azure 
+
+ Automatic Object Expiration 
+
+ Data Compression 
+
+ Monitoring Bucket and Object Events 
+
+ Bucket notifications 
+
+ Publish Events to AMQP (RabbitMQ) 
+
+ Publish Events to MQTT 
+
+ Publish Events to NATS 
+
+ Publish Events to NSQ 
+
+ Publish Events to Elasticsearch 
+
+ Publish Events to Kafka 
+
+ Publish Events to MySQL 
+
+ Publish Events to PostgreSQL 
+
+ Publish Events to Redis 
+
+ Publish Events to Webhook 
+
+ Identity and Access Management 
+
+ Silo Identity Management 
+
+ User Management 
+
+ Group Management 
+
+ OpenID Connect Access Management 
+
+ Active Directory / LDAP Access Management 
+
+ Silo External Identity Management Plugin 
+
+ Access Management 
+
+ Silo External Access Management Plugin 
+
+ Server-Side Encryption of Objects 
+
+ Server-Side Encryption with Per-Bucket Keys (SSE-KMS) 
+
+ Server-Side Encryption Per-Deployment Key (SSE-S3) 
+
+ Server-Side Encryption with Client-Managed Keys (SSE-C) 
+
+ Bucket Replication 
+
+ Requirements to Set Up Bucket Replication 
+
+ Enable One-Way Server-Side Bucket Replication 
+
+ Enable Two-Way Server-Side Bucket Replication 
+
+ Enable Multi-Site Server-Side Bucket Replication 
+
+ Resynchronize Bucket from Remote Replica 
+
+ Batch Framework 
+
+ Batch Replication 
+
+ Batch Key Rotation 
+
+ Batch Expiration 
+
+ Core Administration Concepts 
+
+ Developers 
+
+ Software Development Kits (SDK) 
+
+ Go Quickstart Guide 
+
+ Python Quickstart Guide 
+
+ .NET Quickstart Guide 
+
+ Java Quickstart Guide 
+
+ JavaScript Quickstart Guide 
+
+ Haskell Quickstart Guide 
+
+ Rust Quickstart Guide 
+
+ Security Token Service (STS) 
+
+ AssumeRoleWithCustomToken 
+
+ AssumeRoleWithLDAPIdentity 
+
+ AssumeRoleWithWebIdentity 
+
+ Security Token Service (STS) for MinIO Operator 
+
+ Transforms with Object Lambda 
+
+ File Transfer Protocol (FTP/SFTP) 
+
+ Reference 
+
+ Kubernetes Reference 
+
+ MinIO Custom Resource Definition 
+
+ MinIO Operator Environment Variables 
+
+ Operator Helm Charts 
+
+ Tenant Helm Charts 
+
+ Baremetal Reference 
+
+ Silo Client (mcli / mc) 
+
+ Silo Client Settings 
+
+ mc alias 
+
+ mc alias list 
+
+ mc alias remove 
+
+ mc alias set 
+
+ mc alias import 
+
+ mc alias export 
+
+ mc anonymous 
+
+ mc anonymous set 
+
+ mc anonymous get 
+
+ mc anonymous list 
+
+ mc anonymous links 
+
+ mc anonymous get-json 
+
+ mc anonymous set-json 
+
+ mc batch 
+
+ mc batch cancel 
+
+ mc batch describe 
+
+ mc batch generate 
+
+ mc batch list 
+
+ mc batch start 
+
+ mc batch status 
+
+ mc cat 
+
+ mc cp 
+
+ mc diff 
+
+ mc du 
+
+ mc encrypt 
+
+ mc encrypt clear 
+
+ mc encrypt info 
+
+ mc encrypt set 
+
+ mc event 
+
+ mc event add 
+
+ mc event ls 
+
+ mc event rm 
+
+ mc find 
+
+ mc get 
+
+ mc head 
+
+ mc idp ldap 
+
+ mc idp ldap add 
+
+ mc idp ldap disable 
+
+ mc idp ldap enable 
+
+ mc idp ldap info 
+
+ mc idp ldap ls 
+
+ mc idp ldap rm 
+
+ mc idp ldap update 
+
+ mc idp ldap accesskey 
+
+ mc idp ldap accesskey disable 
+
+ mc idp ldap accesskey edit 
+
+ mc idp ldap accesskey enable 
+
+ mc idp ldap accesskey info 
+
+ mc idp ldap accesskey ls 
+
+ mc idp ldap accesskey rm 
+
+ mc idp ldap accesskey create-with-login 
+
+ mc idp ldap policy 
+
+ mc idp ldap policy attach 
+
+ mc idp ldap policy detach 
+
+ mc idp ldap policy entities 
+
+ mc idp openid 
+
+ mc ilm 
+
+ mc ilm restore 
+
+ mc ilm rule 
+
+ mc ilm rule add 
+
+ mc ilm rule edit 
+
+ mc ilm rule export 
+
+ mc ilm rule import 
+
+ mc ilm rule ls 
+
+ mc ilm rule rm 
+
+ mc ilm tier 
+
+ mc ilm tier add 
+
+ mc ilm tier check 
+
+ mc ilm tier info 
+
+ mc ilm tier ls 
+
+ mc ilm tier rm 
+
+ mc ilm tier update 
+
+ mc legalhold 
+
+ mc legalhold clear 
+
+ mc legalhold info 
+
+ mc legalhold set 
+
+ mc license 
+
+ mc license info 
+
+ mc license register 
+
+ mc license update 
+
+ mc ls 
+
+ mc mb 
+
+ mc mirror 
+
+ mc mv 
+
+ mc od 
+
+ mc ping 
+
+ mc pipe 
+
+ mc put 
+
+ mc rb 
+
+ mc ready 
+
+ mc replicate 
+
+ mc replicate add 
+
+ mc replicate backlog 
+
+ mc replicate ls 
+
+ mc replicate update 
+
+ mc replicate resync 
+
+ mc replicate rm 
+
+ mc replicate status 
+
+ mc replicate export 
+
+ mc replicate import 
+
+ mc retention 
+
+ mc retention set 
+
+ mc retention info 
+
+ mc retention clear 
+
+ mc rm 
+
+ mc share 
+
+ mc share download 
+
+ mc share upload 
+
+ mc share ls 
+
+ mc sql 
+
+ mc stat 
+
+ mc support 
+
+ mc support callhome 
+
+ mc support diag 
+
+ mc support inspect 
+
+ mc support perf 
+
+ mc support profile 
+
+ mc support proxy 
+
+ mc support top 
+
+ mc support top api 
+
+ mc support top locks 
+
+ mc support top disk 
+
+ mc support top net 
+
+ mc support top rpc 
+
+ mc support upload 
+
+ mc tag 
+
+ mc tag set 
+
+ mc tag list 
+
+ mc tag remove 
+
+ mc tree 
+
+ mc undo 
+
+ mc update 
+
+ mc version 
+
+ mc version enable 
+
+ mc version info 
+
+ mc version suspend 
+
+ mc watch 
+
+ Silo Client Administration 
+
+ mc admin accesskey 
+
+ mc admin accesskey create 
+
+ mc admin accesskey disable 
+
+ mc admin user accesskey edit 
+
+ mc admin accesskey enable 
+
+ mc admin accesskey info 
+
+ mc admin accesskey ls 
+
+ mc admin accesskey rm 
+
+ mc admin cluster bucket 
+
+ mc admin cluster bucket import 
+
+ mc admin cluster bucket export 
+
+ mc admin cluster iam 
+
+ mc admin cluster iam import 
+
+ mc admin cluster iam export 
+
+ mc admin config 
+
+ mc admin decommission 
+
+ mc admin group 
+
+ mc admin heal 
+
+ mc admin info 
+
+ mc admin kms key 
+
+ mc admin logs 
+
+ mc admin policy 
+
+ mc admin policy attach 
+
+ mc admin policy create 
+
+ mc admin policy detach 
+
+ mc admin policy entities 
+
+ mc admin policy info 
+
+ mc admin policy ls 
+
+ mc admin policy rm 
+
+ mc admin prometheus 
+
+ mc admin prometheus generate 
+
+ mc admin prometheus metrics 
+
+ mc admin rebalance 
+
+ mc admin replicate 
+
+ mc admin scanner 
+
+ mc admin scanner status 
+
+ mc admin scanner trace 
+
+ mc admin service 
+
+ mc admin trace 
+
+ mc admin update 
+
+ mc admin user 
+
+ mc admin user add 
+
+ mc admin user disable 
+
+ mc admin user enable 
+
+ mc admin user info 
+
+ mc admin user ls 
+
+ mc admin user rm 
+
+ mc admin user sts info 
+
+ mc admin user svcacct 
+
+ mc admin user svcacct add 
+
+ mc admin user svcacct disable 
+
+ mc admin user svcacct edit 
+
+ mc admin user svcacct enable 
+
+ mc admin user svcacct info 
+
+ mc admin user svcacct ls 
+
+ mc admin user svcacct rm 
+
+ Silo Server (minio) 
+
+ Settings Overview 
+
+ Core Settings 
+
+ Root Access Settings 
+
+ Erasure Code Settings 
+
+ Silo Console Settings 
+
+ Metrics and Logging Settings 
+
+ Bucket Notifications Settings 
+
+ AMQP Notification Settings 
+
+ Elasticsearch Notification Settings 
+
+ Kafka Notification Settings 
+
+ MQTT Notification Settings 
+
+ MySQL Notification Settings 
+
+ NATS Notification Settings 
+
+ NSQ Notification Settings 
+
+ PostgreSQL Notification Settings 
+
+ Redis Notification Settings 
+
+ Webhook Service Notification Settings 
+
+ Identity and Access Management Settings 
+
+ Active Directory / LDAP Settings 
+
+ OpenID Identity Management Settings 
+
+ Silo Identity Management Plugin Settings 
+
+ Silo Access Management Plugin Settings 
+
+ ILM Settings 
+
+ Key Encryption Service Settings 
+
+ Object Lambda function settings 
+
+ Deprecated Settings 
+
+ Deprecated Commands 
+
+ mc ilm add 
+
+ mc ilm edit 
+
+ mc ilm export 
+
+ mc ilm import 
+
+ mc ilm ls 
+
+ mc ilm rm 
+
+ mc quota 
+
+ mc quota clear 
+
+ mc quota info 
+
+ mc quota set 
+
+ mc quota clear 
+
+ mc quota info 
+
+ mc quota set 
+
+ mc admin bucket quota 
+
+ mc admin bucket remote 
+
+ mc admin console 
+
+ mc admin idp ldap 
+
+ mc admin idp ldap policy 
+
+ mc admin idp openid 
+
+ mc admin profile 
+
+ mc admin speedtest 
+
+ mc admin tier 
+
+ mc admin top 
+
+ S3 API Compatibility 
+
+ Glossary 
+
+ Integrations 
+
+ Using Silo with Veeam 
+
+ Disaggregated HDP Spark and Hive with Silo 
+
+ AWS CLI with Silo Server 
+
+ Configure NGINX Proxy for Silo Server 
+
+ Upload Files Using Pre-signed URLs 
+
+ Generate a Let’s Encrypt Certificate for Silo with Certbot 
+
+ Compatibility 
+
+ MC Client
+
+ Copy Markdown 
+
+ View markdown 
+
+ View edit history 
+
+ Edit this page 
+
+ Create child page 
+
+ Create docs issue 
+
+ Create project issue 
+
+ Print entire section 
+
+ MCLI Client Compatibility Notes
+
+ Compatibility, behavior changes, installation, and the current pgsty/mc release
+
+ mcli is Silo’s build of the MinIO Client ( mc ). This page records where the two are interchangeable and where they differ.
+
+ pgsty/mc forked from the upstream minio/mc at its final commit, 77f82e18 (2025-11-06). The upstream repository was archived in July 2026 without ever cutting a release that contains that commit — so every mcli release is strictly newer than any official mc binary ever published. Documented fork releases: 20260313 , 20260321 , 20260417 , 20260804 , 20260806 , 20260903 and 20260913 . The latest is 20260916 ; historical notes retain their own comparison baselines.
+
+ Tip 
+
+ Current release: RELEASE.2026-09-16T00-00-00Z , package 20260916000000.0.0 , source e952aa78f10a . Six OS/architecture archives, RPM/DEB/APK and multi-architecture images are published. See the release notes and component matrix .
+
+ Current release changes 
+
+ 20260916 uses pkg v3.14.1, upstream SDK 32e1f32cb176 , JWX v3.3.0 and Go 1.27.1.
+The SDK retries and reports S3 errors embedded in CopyObject HTTP 200 responses,
+so a failed copy cannot authorize mv to remove its source. JWX fixes JSON
+field-name escaping; pkg v3.14.0 password-policy semantics are unchanged.
+
+ Per-object mirror permission errors are reported and accumulated while later objects continue; finite jobs exit 1. Failed local destination removals are no longer swallowed. These permission failures do not require --skip-errors to continue; watch listing/watcher errors retain their existing cancellation/retry behavior.
+
+ Failed mirrors suppress normal final success statistics. Explicit --summary still reports statistics, with JSON status: failure ; text errors go to stderr and statistics to stdout.
+
+ Failed legalhold set/clear, partial recursive retention failures, and mv source-deletion failures now return nonzero. Successful objects are not rolled back. Retention reports each failed object once.
+
+ Empty retention durations and invalid find regexes produce normal errors instead of panics. Very short transfers no longer produce infinite speeds in JSON statistics.
+
+ Automation migration: affected failure paths that returned 0 now return 1.
+Check the final exit code and error records; per-object success start messages
+and progress bytes are not completion proof. Configuration, aliases and MC_* 
+variables are unchanged. See the release notes .
+
+ Changes inherited from 20260913 
+
+ 20260913 uses pkg v3.14.0, upstream SDK 60bd07042d49 and Go 1.27.1, with
+refreshed Go x/* modules. It preserves mirror destination history and fixes
+restart dry runs, noninteractive behavior, transfer/SQL failure exits, explicit
+checksums for empty uploads and quiet JSON output. Boolean environment values
+accept on/off. Deny/NotResource and bounded wildcard fixes preserve clauses that
+could previously be lost; recover already-lost clauses from the original policy.
+The password-permission split requires
+Console v2.4.1 and a matching Server. Review the existing policy denies as
+part of the coordinated upgrade.
+
+ Changes inherited from 20260903 
+
+ The 20260903 client keeps the upstream command, configuration, protocol, and JSON contracts, with these deliberate additions and tightenings since 20260806:
+
+ Read-only checksum audit: mc checksum verify streams object data and compares stored FULL_OBJECT CRC32, CRC32C, CRC64NVME, SHA1, or SHA256 values. It supports one object, recursive prefixes, exact or all versions, JSON Lines manifests, dry runs, bounded workers, size/time filters, SSE-C, machine-readable output, private report files, and explicit failure policies. It never repairs or mutates an object.
+
+ Credential output is fail-closed: --debug , admin trace , errors, redirects, trailers, JSON documents, SSE-C paths, custom headers, and registered runtime secrets are scrubbed before display. Support and cluster-export artifacts, including rotated copies, are created with mode 0600 on POSIX systems.
+
+ Correctness repairs: JSON Prometheus metrics no longer panic; empty pipe input uses a regular zero-byte PUT; S3 Select responses are no longer closed twice after valid rows are printed; malformed app-level global flags fail instead of being ignored; and service-account policy clearing works again.
+
+ Strict writes, permissive reads: named policy and service-account write paths reject empty or malformed policies, bare ARN namespaces, and mixed S3/admin action statements. Existing stored policies remain readable; an empty service-account policy still means “clear the inline policy.”
+
+ Dependency and toolchain floor: builds require Go 1.27.1 and directly consume github.com/pgsty/silo-pkg/v3 v3.13.2. minio-go is pinned to upstream master commit 0e78d3f18efe ; gRPC is 1.83.2 and x/crypto is 0.56.0. Darwin binaries require macOS 13 or newer.
+
+ Verifiable delivery: the public release is immutable, contains 19 checksum-checked assets, and binds archives plus DEB/APK packages to the signed tag and exact source with Sigstore attestations. RPMs carry the PGSTY GPG signature. The release and latest container tags publish matching linux/amd64 and linux/arm64 manifests.
+
+ Two low-level compatibility changes are worth testing in specialized deployments: JWX 3.2 rejects non-compliant JWT crit processing more strictly, and updated Unicode width handling can slightly change table/progress alignment for Indic or ZWJ-heavy strings.
+
+ Principles 
+
+ The fork follows one rule: the shipped artifact and its channels are renamed; the tool you use is not. 
+
+ Renamed / replaced — the artifact name on disk ( mcli ), the product identity in --version and --help , the distribution channels (GitHub pgsty/mc , the Pigsty repository, docker.io/pgsty/mc ), and the signing keys. Not the command syntax, and — depending on how you install it — not even the name you type.
+
+ Preserved interfaces — familiar command syntax, S3/admin protocols and x-minio-* identifiers; versioned output, authorization and error-handling changes are documented above; the configuration file format and alias semantics; MC_* environment variables (including MC_HOST_<alias> ); the .part.minio resume suffix; and the Go module path github.com/minio/mc .
+
+ Severed — every connection to MinIO-operated services: the release/update feed, the SUBNET support and licensing portal, telemetry, and the pre-seeded play demo alias. Affected commands remain in the CLI for script compatibility and fail with a stable error rather than disappearing.
+
+ Preserved — upstream copyright and the AGPL-3.0 license. Runtime output credits both MinIO, Inc. and PGSTY.
+
+ A configuration written by upstream mc is readable by mcli unchanged, and vice versa. SILO releases test mcli against Silo; operation against upstream MinIO and other S3-compatible endpoints is retained on a best-effort basis and should be verified with the exact versions in use.
+
+ What changed 
+
+ Ordered by how likely each change is to affect you, most likely first.
+
+ 1. The name — what you type, and where the config lives 
+
+ For many users nothing changes here: the container image keeps mc as its entrypoint, and a binary installed under the name mc behaves identically to upstream. What changed is what we ship — archives and Linux packages install the binary as /usr/local/bin/mcli (package name mcli ).
+
+ Neither name is hardcoded anywhere. Since 2016 the upstream client has derived its runtime identity from the name it is invoked as, and mcli is the exact rename upstream’s own CONFLICT.md recommended ( issue #873 ) for the Midnight Commander clash — this fork merely promoted that suggestion to the official shipping name, with zero code changes. What that mechanism means in practice:
+
+ Follows the invoked name 
+ Fixed, regardless of the name 
+
+ Configuration directory: ~/.mc vs ~/.mcli (Windows: %USERPROFILE%\mc\ vs …\mcli\ ) 
+ Environment variables: always MC_* — there is no MCLI_CONFIG_DIR 
+
+ Program name shown in help and usage text 
+ config.json format — identical and interchangeable in both directions 
+
+ Shell-completion registration 
+ All commands, flags, JSON output, exit codes 
+
+ User-Agent application suffix ( mc/… vs mcli/… ) 
+ --config-dir and MC_CONFIG_DIR overrides 
+
+ The one real trap: run mcli for the first time and your existing mc aliases are not there — it starts from an empty ~/.mcli . Either keep invoking it as mc (a symlink suffices — argv[0] is what counts), or copy the state once with cp -a ~/.mc ~/.mcli . For automation and configuration templates, set MC_CONFIG_DIR explicitly: the environment prefix does not follow the name, so one template serves both. Details in Migration .
+
+ Get it from GitHub Releases (SHA-256 mcli_<version>_checksums.txt ), the Pigsty repository (RPMs GPG-signed, key fingerprint 9592A7BC7A682E7333376E09E7935D8DB9BD8B20 ), or docker.io/pgsty/mc . Upstream’s minisign key does not sign these artifacts, and dl.min.io is never contacted. Release tags ( RELEASE.YYYY-MM-DDTHH-MM-SSZ ) and package versions ( YYYYMMDDHHMMSS.0.0 ) keep their upstream schemes.
+
+ 2. mcli update always fails — on purpose 
+
+ Self-update is removed. mcli update never contacts the network and never replaces its binary; it prints an explicit notice and always exits 1 . Upstream mc update exited 0 when already current, so any cron job or script that calls it and treats a non-zero exit as failure will start failing — drop the call and upgrade through your package manager or GitHub Releases instead. The per-invocation version probe against upstream release feeds is also gone, and MC_UPDATE / MINIO_UPDATE are no longer consulted.
+
+ ( mcli admin update ALIAS — updating the server — still exists, but Silo servers reject in-place updates server-side.)
+
+ 3. SUBNET, licensing, and telemetry commands 
+
+ Everything that reached MinIO SUBNET is disabled at build time. Affected commands keep their names and flags, print a stable notice — “MinIO SUBNET services (registration, licensing, uploads) are disabled in this Silo build of mc; diagnostics remain available locally.” — and exit 1 :
+
+ Command 
+ Behavior now 
+ Use instead 
+
+ mcli license register 
+ notice, exit 1 
+ — 
+
+ mcli license update ALIAS (online renewal) 
+ notice, exit 1 
+ mcli license update ALIAS license.key (offline, still works) 
+
+ mcli support upload 
+ notice, exit 1 
+ share files through your own channels 
+
+ mcli support proxy set 
+ notice, exit 1 
+ proxy remove still clears a legacy setting 
+
+ mcli support callhome enable 
+ notice, exit 1 
+ disable / status still work 
+
+ The diagnostics themselves stay: mcli support diag / perf / profile / inspect always run in local (airgap) mode — results are written to local files, nothing is uploaded, and SUBNET registration is no longer a prerequisite. Two related hardening changes: inspect no longer falls back to encrypting output with an embedded MinIO public key (your archives stay decryptable by you), and since 20260804 --debug output redacts SUBNET credentials — if you ever shared debug logs from older builds, rotate the keys in them. mcli license info and unregister work locally.
+
+ 4. The play demo alias is no longer pre-seeded 
+
+ Fresh configurations seed local , s3 , and gcs — not play . Tutorials and smoke scripts that assume the demo alias need it added explicitly: mcli alias set play https://play.min.io <access-key> <secret-key> restores the old behavior, since nothing blocks deliberate access to any S3 endpoint. Existing configuration files are never modified.
+
+ 5. Output text carries the Silo identity 
+
+ mcli --version keeps its machine-readable first line and adds an identity line plus dual copyright; --help says “Silo client” and examples use mysilo . Command syntax is untouched — only scripts that grep for upstream identity strings (e.g. “MinIO Client”) need adjusting.
+
+ 6. For developers 
+
+ The module path stays github.com/minio/mc , so imports compile unchanged — but go install github.com/minio/mc@latest installs the archived upstream , not this fork. Build from source ( git clone https://github.com/pgsty/mc && cd mc && make ) or consume it via a replace directive. Contributions need no CLA but require a DCO sign-off ( git commit -s ). Upstream being archived also means inherited defects are only ever fixed here — most notably minio/mc#5139 ( mirror --remove --watch on versioned buckets).
+
+ Migration 
+
+ Moving from an official mc binary to mcli :
+
+ Install mcli from one of the fork’s channels (see §1 for verification): GitHub Releases archive, yum install mcli / apt install mcli from the Pigsty repository, or docker pull pgsty/mc .
+
+ Decide what to call it — this determines which configuration it reads:
+ 
+ Keep the mc name (least friction) : after confirming no upstream binary remains ( command -v mc ), install it as mc — e.g. ln -s /usr/local/bin/mcli /usr/local/bin/mc . Invoked as mc , it reads your existing ~/.mc untouched; nothing else to migrate.
+
+ Adopt the mcli name : carry your state over once with cp -a ~/.mc ~/.mcli , or set MC_CONFIG_DIR=~/.mc . Both clients can also coexist side by side, each with its own directory.
+
+ Clean up automation :
+ 
+ remove mc update calls — they now always exit 1 ;
+
+ remove license register , support upload , support callhome enable , and support proxy set — same stable failure;
+
+ support diag / perf / profile / inspect keep working and write local files; drop any step that expected a SUBNET upload;
+
+ review anything that greps --version output beyond the first line.
+
+ Re-check play usage in tutorials and smoke scripts ( §4 ).
+
+ Verify : mcli --version , mcli alias ls , then mcli ls <alias> and mcli ping <alias> against your servers.
+
+ Rollback stays trivial: the configuration format is identical in both directions, so keeping the old mc binary around lets you switch back at any time.
+
+ See also 
+
+ Silo vs. MinIO — how the silo server compares to minio 
+
+ The HTTP-200 CopyObject repair applies when mcli selects a single CopyObject: objects smaller than 64 MiB or explicit --disable-multipart . Larger copies normally use ComposeObject; this fix does not substitute for separate evidence for that path.
+
+ Last modified 2026-09-25 · routine metrics update (c6ce19a) 
+
+ ← Silo Server 
+
+ Console → 
+
+ Content 
+
+ Current release changes 
+
+ Changes inherited from 20260913 
+
+ Changes inherited from 20260903 
+
+ Principles 
+
+ What changed 
+ 
+ 1. The name — what you type, and where the config lives 
+
+ 2. mcli update always fails — on purpose 
+
+ 3. SUBNET, licensing, and telemetry commands 
+
+ 4. The play demo alias is no longer pre-seeded 
+
+ 5. Output text carries the Silo identity 
+
+ 6. For developers 
+
+ Migration 
+
+ See also 
+
+ S 3 I nterface, L ibre O bject Store
+Keep the interface. Own the objects.
+
+ A MinIO fork maintained by the Pigsty community.
+
+ MinIO ® is a registered trademark of MinIO, Inc. 
+Silo is not affiliated with or endorsed by MinIO, Inc.
+
+ Resources
+
+ SILO Download 
+
+ MCLI Download 
+
+ Release Notes 
+
+ Security Notes 
+
+ Documentation
+
+ Operations 
+
+ Administration 
+
+ Developers 
+
+ Reference 
+
+ Ecosystem
+
+ GitHub 
+
+ Issue 
+
+ Pigsty 
+
+ PG Center 
+
+ About
+
+ License 
+
+ Trademark 
+
+ Attribution 
+
+ Security Policy 
+
+ © 2020-2026 Ruohang Feng ( Vonng ) @ PGSTY 
+ Powered by Oink 
+ 
+ 简体中文 
+
+ esc 
+
+ ↑ ↓ Navigate 
+ ↵ Open 
+ esc Close

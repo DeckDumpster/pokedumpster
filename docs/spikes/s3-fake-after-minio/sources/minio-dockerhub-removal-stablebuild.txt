@@ -1,0 +1,129 @@
+SOURCE: https://www.stablebuild.com/blog/minio-images-disappeared-from-docker-hub
+RETRIEVED: 2026-09-25 (spike db-hny6)
+---
+MinIO images disappeared from Docker Hub - StableBuild blog 
+
+ Docs 
+ Features 
+ Pricing 
+ 
+ Pages
+ Home About Pricing Pricing Single Contact Features 
+ Blog Blog Post Careers Careers Single Integrations Integrations Single 
+
+ Utility Pages
+ Start Here Styleguide 404 Not Found Password Protected Licenses Changelog Browse More Templates 
+
+ Blog 
+ 
+ Login
+ 
+ Get started 
+
+ 
+ Login
+ Get started 🇯🇵
+ 日本語
+
+ Articles
+ 
+ September 17, 2026
+
+ MinIO images disappeared from Docker Hub
+
+ Earlier this week, one of our subsystems started failing its smoke tests.
+ Nothing relevant had changed in the code, and the failures weren't pointing at anything we had recently touched. We traced it back to MinIO.
+ The tests were trying to pull minio/minio and minio/mc from Docker Hub. Both repositories were gone.
+ Other projects started seeing the same thing. Fresh development environments and CI jobs that had worked normally were suddenly failing with errors like:
+ pull access denied for minio/minio, repository does not exist or may require 'docker login' The error looks like an authentication problem, but logging in doesn't fix it. The repository is no longer there.
+ ‍
+ What happened to MinIO? 
+ The Docker Hub removal follows a longer change around MinIO Community Edition.
+ By late 2025, MinIO was describing Community Edition as source-only . In December, the repository entered maintenance mode . On April 25, 2026, the MinIO repository was archived and made read-only.
+ The current README says Community Edition is distributed as source code only. Historical binaries remain available, but are no longer maintained.
+ Then, around September 12, projects started reporting that minio/minio and minio/mc could no longer be pulled from Docker Hub.
+ We couldn't find an announcement from MinIO specifically explaining the Docker Hub removal, so we don't know why it happened when it did.
+ What we do know is that the repositories are gone and builds that still reference them have started failing.
+ ‍
+ There is a straightforward fix 
+ MinIO's historical images are still available from Quay .
+ For example:
+ minio/minio:RELEASE.2025-09-07T16-13-09Z can currently be replaced with:
+ quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z The Apache Gravitino project ran into exactly this when its MinIO integration tests started failing. The Docker Hub image no longer pulled, while the same release was still available from Quay.
+ ‍ Readest reported the same problem with both minio/minio and minio/mc , including pinned historical releases.
+ So if the Docker Hub removal has broken your MinIO setup, switching to Quay is the practical fix today. But there’s no guarantee those images will stay available forever.
+ ‍
+ A pinned version can still disappear 
+ The affected builds weren't necessarily pulling latest .
+ A reference like:
+ minio/minio:RELEASE.2025-09-07T16-13-09Z is already very specific.
+ It protects you from accidentally moving to another MinIO release.
+ It doesn't make the registry keep serving that release.
+ This can be easy to miss on a developer machine where the image is already cached locally. Run the same project on a fresh machine or CI runner and it has to fetch the image again.
+ That's when the missing dependency shows up.
+ The version is still pinned correctly. The image just isn't available from that registry anymore.
+ ‍
+ We got hit by it too 
+ We were caught by this ourselves because that particular subsystem was pulling MinIO directly from Docker Hub.
+ One of our customers happened to be using MinIO too, but had already been pulling the image through StableBuild. Their cached copy was still available.
+ StableBuild's Docker mirror is an immutable pull-through cache. The first time an image is pulled through it, StableBuild stores the image. Later pulls of that tag return the stored copy rather than relying on the upstream registry still having it.
+ Our subsystem hadn't done that.
+ Our customer's build had.
+ There is an important limitation here. StableBuild can't recover an image that disappeared before it was ever cached.
+ If your MinIO pull is failing now, Quay is the useful fix because the image still exists there.
+ Preserving the image is about what happens the next time you need the same build.
+ ‍
+ MinIO isn't gone 
+ There's been a lot of discussion this week about MinIO being gone.
+ That's not quite what happened.
+ The source still exists. Historical container images are currently available on Quay, and MinIO continues developing AIStor.
+ What disappeared is a Docker Hub distribution point that a lot of projects had quietly come to depend on.
+ That was enough to break builds without those projects changing their own code.
+ Public registries are very good at distributing software. They aren't necessarily permanent archives for every historical dependency a build may need again later.
+ If one of your builds depends on an image that still exists today, this is a good time to make sure you'll still have it when you need to rebuild.
+ StableBuild now supports quay.io in its Docker mirror as well, so images pulled from Quay can be preserved in the same way.
+ We have a free Community tier if you want to try preserving one of your own container dependencies while it's still available.
+ ‍
+
+ Related posts
+ Browse all posts  
+ 
+ Articles
+ ROS 1 is EOL and deployed robots still need its packages
+ 
+ November 18, 2023
+
+ Updates
+ NVIDIA CUDA Container Tags Can Disappear: StableBuild Now Supports NVIDIA NGC and GitHub Container Registry
+ NVIDIA CUDA container tags can disappear even when precisely pinned. StableBuild now supports NVIDIA NGC and GitHub Container Registry, helping teams preserve the container images their builds depend on.
+ May 17, 2024
+
+ Subscribe to our newsletter!
+
+ 
+ Thank you! Your submission has been received!
+
+ Oops! Something went wrong while submitting the form.
+
+ Pages
+ Home 
+ Docs 
+ Features 
+ Pricing 
+ 
+ Blog 
+ Contact 
+ Privacy Policy 
+ Terms of Service 
+
+ Follow us
+ 
+ 𝕏
+
+ X
+
+ 
+
+ LinkedIn
+
+ Copyright © StableBuild, Inc. all rights reserved

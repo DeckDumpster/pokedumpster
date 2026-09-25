@@ -1,0 +1,389 @@
+SOURCE: https://github.com/seaweedfs/seaweedfs/issues/8754
+RETRIEVED: 2026-09-25 (spike db-hny6)
+---
+Inability to apply aws_s3_bucket_lifecycle_configuration to SeaweedFS · Issue #8754 · seaweedfs/seaweedfs · GitHub 
+
+ Skip to content 
+
+ Navigation Menu
+ 
+ Sign in Appearance settings
+
+ Platform AI CODE CREATION GitHub Copilot Write better code with AI 
+ GitHub Copilot app Direct agents from issue to merge 
+ MCP Registry Integrate external tools 
+
+ DEVELOPER WORKFLOWS Actions Automate any workflow 
+ Codespaces Instant dev environments 
+ Issues Plan and track work 
+ Code Review Manage code changes 
+ Code Quality Enforce quality at merge 
+
+ APPLICATION SECURITY GitHub Advanced Security Find and fix vulnerabilities 
+ Code security Secure your code as you build 
+ Secret protection Stop leaks before they start 
+
+ EXPLORE Why GitHub 
+ Documentation 
+ Blog 
+ Changelog 
+ Marketplace 
+
+ View all features 
+
+ Solutions BY COMPANY SIZE Enterprises 
+ Small and medium teams 
+ Startups 
+ Nonprofits 
+
+ BY USE CASE App Modernization 
+ DevSecOps 
+ DevOps 
+ CI/CD 
+ View all use cases 
+
+ BY INDUSTRY Healthcare 
+ Financial services 
+ Manufacturing 
+ Government 
+ View all industries 
+
+ View all solutions 
+
+ Resources EXPLORE BY TOPIC AI 
+ Software Development 
+ DevOps 
+ Security 
+ View all topics 
+
+ EXPLORE BY TYPE Customer stories 
+ Events & webinars 
+ Ebooks & reports 
+ Business insights 
+ GitHub Skills 
+
+ SUPPORT & SERVICES Documentation 
+ Customer support 
+ Community forum 
+ Trust center 
+ Partners 
+
+ View all resources 
+
+ Open Source COMMUNITY GitHub Sponsors Fund open source developers 
+
+ PROGRAMS Security Lab 
+ Maintainer Community 
+ GitHub Stars 
+ Archive Program 
+
+ REPOSITORIES Topics 
+ Trending 
+ Collections 
+
+ Enterprise ENTERPRISE SOLUTIONS Enterprise platform AI-powered developer platform 
+
+ AVAILABLE ADD-ONS GitHub Advanced Security Enterprise-grade security features 
+ Copilot for Business Enterprise-grade AI features 
+ Premium Support Enterprise-grade 24/7 support 
+
+ Pricing 
+ Search / 
+
+ Sign in 
+ Sign up Appearance settings
+
+ You signed in with another tab or window. Reload to refresh your session. 
+ You signed out in another tab or window. Reload to refresh your session. 
+ You switched accounts on another tab or window. Reload to refresh your session. 
+
+ Dismiss alert 
+
+ {{ message }}
+
+ seaweedfs
+ 
+ / 
+ 
+ seaweedfs 
+
+ Public 
+
+ Uh oh!
+
+ There was an error while loading. Please reload this page .
+
+ Notifications
+ You must be signed in to change notification settings 
+
+ Fork
+ 3k 
+
+ Star
+ 35k 
+
+ Code 
+
+ Issues 
+ 689 
+
+ Pull requests 
+ 97 
+
+ Discussions 
+
+ Actions 
+
+ Projects 
+
+ Wiki 
+
+ Security and quality 
+ 25 
+
+ Insights 
+
+ Additional navigation options 
+
+ Code
+
+ Issues
+
+ Pull requests
+
+ Discussions
+
+ Actions
+
+ Projects
+
+ Wiki
+
+ Security and quality
+
+ Insights
+
+ Inability to apply aws_s3_bucket_lifecycle_configuration to SeaweedFS #8754 
+
+ New issue 
+ 
+ Copy link 
+
+ New issue 
+ 
+ Copy link 
+
+ Closed 
+ #8805 
+
+ Closed 
+ Inability to apply aws_s3_bucket_lifecycle_configuration to SeaweedFS #8754 
+ #8805 
+
+ Copy link 
+
+ Description
+ 
+ makuartur 
+ opened on Mar 24, 2026 
+
+ Issue body actions 
+
+ SeaweedFS version: 4.15
+
+AWS Terraform provider version: 6.37.0
+
+Terraform example:
+
+ provider "aws" {
+ alias = "seaweed"
+ access_key = data.vault_generic_secret.vault_seaweedfs.data["aws_access_key_id"]
+ secret_key = data.vault_generic_secret.vault_seaweedfs.data["aws_secret_access_key"]
+ s3_use_path_style = true
+ skip_credentials_validation = true
+ skip_metadata_api_check = true
+ skip_requesting_account_id = true
+ endpoints {
+ s3 = "https://s3.test.net"
+ iam = "https://s3.test.net"
+ sts = "https://s3.test.net"
+ }
+}
+
+resource "aws_s3_bucket" "this" {
+ bucket = "cleanup-test-net"
+ object_lock_enabled = true
+}
+
+resource "aws_s3_bucket_versioning" "this" {
+ bucket = aws_s3_bucket.this.id
+ versioning_configuration {
+ status = "Enabled"
+ }
+}
+
+resource "aws_s3_bucket_object_lock_configuration" "this" {
+ bucket = aws_s3_bucket.this.id
+
+ rule {
+ default_retention {
+ mode = "COMPLIANCE"
+ days = 1
+ }
+ }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "this" {
+ bucket = aws_s3_bucket.this.id
+
+ rule {
+ id = "rotation"
+ expiration {
+ days = 1
+ }
+ status = "Enabled"
+ }
+}
+
+ Error during apply:
+
+ While waiting: timeout while waiting for state to become 'true' (last state: 'false', timeout: 3m0s): operation error S3: GetBucketLifecycleConfiguration, context deadline exceeded
+
+ Lifecycle after apply (despite the error):
+
+ aws s3api get-bucket-lifecycle-configuration --endpoint-url=https://s3.test.net --bucket cleanup-test-net
+{
+ "Rules": [
+ {
+ "Expiration": {
+ "Days": 1
+ },
+ "Prefix": "",
+ "Status": "Enabled"
+ }
+ ]
+}
+
+ Tcpdump during Terraform apply:
+
+ F�PF�GET /cleanup-test-net?lifecycle= HTTP/1.1
+Host: s3.test.net
+X-Real-IP: __redacted__
+X-Forwarded-For: __redacted__
+X-Forwarded-Host: s3.test.net
+X-Forwarded-Port: 443
+X-Forwarded-Proto: https
+User-Agent: APN/1.0 HashiCorp/1.0 Terraform/1.13.3 (+https://www.terraform.io) terraform-provider-aws/6.37.0 (+https://registry.terraform.io/providers/hashicorp/aws) aws-sdk-go-v2/1.41.4 ua/2.1 os/macos lang/go#1.25.8 md/GOOS#darwin md/GOARCH#arm64 api/s3#1.97.1 m/e
+Accept-Encoding: identity
+Amz-Sdk-Invocation-Id: 250904cc-2786-4b72-b4b3-b9706fbfeac2
+Amz-Sdk-Request: attempt=1; max=25
+Authorization: AWS4-HMAC-SHA256 Credential=__redacted__, SignedHeaders=accept-encoding;amz-sdk-invocation-id;amz-sdk-request;host;x-amz-content-sha256;x-amz-date, Signature=__redacted__
+X-Amz-Content-Sha256: __redacted__
+X-Amz-Date: 20260324T075101Z
+
+eB�i���E���@@��
+�
+� ��F3������?!U
+F�TF�PHTTP/1.1 200 OK
+Accept-Ranges: bytes
+Content-Length: 181
+Content-Type: application/xml
+Server: SeaweedFS 8000GB 4.15
+Vary: Origin
+X-Amz-Request-Id: 1774338661522735346
+Date: Tue, 24 Mar 2026 07:51:01 GMT
+
+<?xml version="1.0" encoding="UTF-8"?>
+<LifecycleConfiguration><Rule><Status>Enabled</Status><Prefix></Prefix><Expiration><Days>1</Days></Expiration></Rule></LifecycleConfiguration>eB�i��BE4��@@=
+
+ Output of fs.configure:
+
+ > fs.configure
+{
+ "version": 0,
+ "locations": [
+ {
+ "locationPrefix": "/buckets/cleanup-test-net/",
+ "collection": "cleanup-test-net",
+ "replication": "",
+ "ttl": "1d",
+ "diskType": "",
+ "fsync": false,
+ "volumeGrowthCount": 0,
+ "readOnly": false,
+ "dataCenter": "",
+ "rack": "",
+ "dataNode": "",
+ "maxFileNameLength": 0,
+ "disableChunkDeletion": false,
+ "worm": false,
+ "wormGracePeriodSeconds": "0",
+ "wormRetentionTimeSeconds": "0"
+ },
+
+ Is there any way to apply lifecycle configuration via Terraform?
+
+ Reactions are currently unavailable 
+
+ Activity
+
+ Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment 
+
+ Metadata
+ Metadata
+ Assignees
+
+ No one assigned 
+
+ Labels
+
+ No labels No labels
+
+ Type
+
+ No type 
+
+ Projects
+
+ No projects 
+
+ Milestone
+
+ No milestone 
+
+ Relationships
+
+ None yet 
+
+ Development
+
+ No branches or pull requests 
+
+ Issue actions
+ Open in GitHub Copilot app 
+
+ Footer
+
+ © 2026 GitHub, Inc.
+
+ Footer navigation
+
+ Terms 
+
+ Privacy 
+
+ Security 
+
+ Status 
+
+ Community 
+
+ Docs 
+
+ Contact 
+
+ Manage cookies
+
+ Do not share my personal information
+
+ You can’t perform that action at this time.

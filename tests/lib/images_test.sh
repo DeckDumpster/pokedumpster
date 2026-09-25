@@ -123,7 +123,7 @@ log "2. the ratchet is seen red"
 # The claim of §1 is worth exactly as much as its ability to fail. A copy of a
 # real gate with its `podman rmi` line deleted must be caught — otherwise a
 # pattern that matches nothing passes §1 forever.
-RED="$(mktemp -d /tmp/pd-images-red.XXXXXX)"
+RED="$(mktemp -d "${TMPDIR:-/tmp}/pd-images-red.XXXXXX)"
 trap 'rm -rf "$RED"' EXIT
 grep -v 'podman rmi' "${REPO_DIR}/tests/tenants/handles.sh" >"${RED}/leaky.sh"
 check "a gate with its rmi line removed creates a tag" "IMAGE" "$(tags_created_in "${RED}/leaky.sh")"

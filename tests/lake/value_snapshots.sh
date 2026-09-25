@@ -118,7 +118,7 @@ WAREHOUSE="s3://${BUCKET}/lake"
 
 # Nothing here publishes a host port (pd-r0ri): every check runs as a container
 # ON the network, which is the only way to reach an --internal one anyway.
-WORK=${WORK:-$(mktemp -d /tmp/pdvalue.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdvalue.XXXXXX)}
 FIXTURE="$WORK/fixture"
 KEYS="$WORK/keys"
 mkdir -p "$WORK/nessie" "$WORK/minio" "$FIXTURE" "$KEYS"

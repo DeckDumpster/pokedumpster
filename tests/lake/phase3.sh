@@ -115,7 +115,7 @@ SECRET=pdphase3rootsecret123
 
 WAREHOUSE="s3://${BUCKET}/lake"
 
-WORK=${WORK:-$(mktemp -d /tmp/pdphase3.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pdphase3.XXXXXX)}
 FIXTURE="$WORK/fixture"
 KEYS="$WORK/keys"
 mkdir -p "$WORK/nessie" "$WORK/minio" "$FIXTURE" "$KEYS"

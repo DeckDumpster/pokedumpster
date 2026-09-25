@@ -27,7 +27,7 @@ FIX="${SCRIPT_DIR}/fixtures"
 # shellcheck source=tests/lib/ports.sh
 . "${REPO_DIR}/tests/lib/ports.sh"
 
-WORK="$(mktemp -d /tmp/pkdump-jsum.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/pkdump-jsum.XXXXXX)"
 # §5 pushes through the real alert.sh, which now remembers what it sent
 # (pd-hqdt). Keep that memory inside the temp dir: the real one under
 # ~/.local/state belongs to the box's own alerting, and a test that wrote there

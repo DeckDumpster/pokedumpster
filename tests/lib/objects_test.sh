@@ -282,6 +282,69 @@ done <<<"$MINIO_USERS"
 none "every harness that runs MinIO sources the pin" "${UNPINNED%$'\n'}"
 
 # ---------------------------------------------------------------------------
+log "8. no mktemp under tests/ or deploy/ hardcodes /tmp/ (db-qm76)"
+# deploy/ci.sh moves TMPDIR off the RAM-backed tmpfs on the CI runner; a
+# harness that calls mktemp -d /tmp/NAME.XXXXXX ignores that and fills the
+# RAM disk anyway. The correct forms are mktemp -d "${TMPDIR:-/tmp}/NAME.XXXXXX"
+# or mktemp -d -t NAME.XXXXXX; both honour $TMPDIR.
+#
+# Why the pattern mktemp[^|]*/tmp/ does NOT match the fixed form:
+# ${TMPDIR:-/tmp} puts a } before the trailing slash, so the literal /tmp/
+# string is broken — the text reads /tmp}/ not /tmp/. mktemp -d -t carries
+# no /tmp/ string at all.
+#
+# THIS FILE IS THE ONE EXCLUSION from the tree scan below, and it is not a
+# loophole carved for convenience: the fixture heredoc below must spell the
+# offending mktemp to show the scanner finding it, and the section header and
+# check labels also contain the literal pattern — the same reason grepq_test.sh
+# excludes itself with ! -name grepq_test.sh. An offender written into this
+# file would not be caught; that is the cost of being the gate for the rule.
+#
+# SEEN RED arm: the fixture below plants a hardcoded mktemp and confirms the
+# scanner finds it; the fixed form confirms it is not caught.
+scan_hardcoded_tmp() {  # <dir>... -> "file:lineno:text" per offender
+    local f result=""
+    while IFS= read -r f; do
+        local matches
+        if matches="$(grep -nE 'mktemp[^|]*/tmp/' "$f" 2>/dev/null)"; then
+            while IFS= read -r line; do
+                local text="${line#*:}"
+                [[ "$text" =~ ^[[:space:]]*# ]] && continue
+                result+="${f}:${line}"$'\n'
+            done <<<"$matches"
+        fi
+    done < <(find "$@" -type f -name '*.sh' \
+        ! -name 'objects_test.sh' \
+        ! -path '*/node_modules/*' ! -path '*/target/*' ! -path '*/.git/*' \
+        | sort)
+    printf '%s' "$result"
+}
+
+mkdir -p "$WORK/tmpdir-fixture"
+cat > "$WORK/tmpdir-fixture/offender.sh" <<'FIX'
+#!/usr/bin/env bash
+WORK="$(mktemp -d /tmp/pkdump-test.XXXXXX)"
+FIX
+cat > "$WORK/tmpdir-fixture/cured.sh" <<'FIX'
+#!/usr/bin/env bash
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/pkdump-test.XXXXXX)"
+WORK2="$(mktemp -d -t pkdump-test.XXXXXX)"
+WORK3="$(mktemp -d)"
+FIX
+
+FOUND_TMP="$(scan_hardcoded_tmp "$WORK/tmpdir-fixture")"
+check "the scanner finds a hardcoded mktemp /tmp/" "yes" \
+    "$(grep -qF 'offender.sh:2' <<<"$FOUND_TMP" && echo yes || echo no)"
+check "…and does not fire on the TMPDIR cure" "no" \
+    "$(grep -qF 'cured.sh' <<<"$FOUND_TMP" && echo yes || echo no)"
+check "exactly one offending line in the fixture" "1" "$(grep -c . <<<"$FOUND_TMP")"
+
+OFFENDERS_TMP="$(scan_hardcoded_tmp \
+    "$REPO_DIR/tests" "$REPO_DIR/deploy")"
+none "no harness writes WORK to a hardcoded /tmp/ via mktemp" \
+    "${OFFENDERS_TMP%$'\n'}"
+
+# ---------------------------------------------------------------------------
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"
 [[ $fail -eq 0 ]] || exit 1

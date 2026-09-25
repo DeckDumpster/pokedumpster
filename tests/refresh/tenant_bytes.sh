@@ -104,7 +104,7 @@ IMAGE="localhost/pkdump:refresh-${SUFFIX}"
 # picked one costs, and tests/lib/ports_test.sh fails the build over a relapse.
 UPSTREAM_PORT=${UPSTREAM_PORT:-$(free_port)}
 
-WORK=${WORK:-$(mktemp -d /tmp/pd-refresh.XXXXXX)}
+WORK=${WORK:-$(mktemp -d "${TMPDIR:-/tmp}/pd-refresh.XXXXXX)}
 DATA="$WORK/data"
 # The landing zone every ordinary refresh writes into, OUTSIDE the data
 # directory — see the header.

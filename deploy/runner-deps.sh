@@ -459,8 +459,12 @@ check_fonts() {
 # is currently green on is an outage rather than a finding. 7, not 8: a VM
 # given 8 GiB reports ~7.6 to /proc/meminfo, and the kernel never hands back
 # all of it.
+#
+# 5 is a stopgap set on 2026-09-25 to fit the shared 6144 MiB runner (template
+# 107, MemTotal ~5.3 GiB, which integer-divides to 5). db-zbck replaces this
+# with a measured floor and memory-aware gate parallelism.
 MACHINE_MIN_CORES=4
-MACHINE_MIN_MEM_GIB=7
+MACHINE_MIN_MEM_GIB=5
 
 check_machine() {
     local cores mem_kib mem_gib mem_disp rc=0

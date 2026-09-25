@@ -931,7 +931,11 @@ pub fn is_sortable(key: &str) -> bool {
 fn order_sql(order_by: Option<&str>) -> String {
     match order_by.unwrap_or("name") {
         "number" => "cd.number_sortable".to_string(),
-        "set" => "s.set_sort_order".to_string(),
+        // release_date is only the primary key here; build_full_sql adds
+        // set_code as the secondary set-level key so sets sharing a date stay
+        // grouped.  set_sort_order is NULL for every set in prod and is never
+        // written by ingest, so it cannot be used.
+        "set" => "s.release_date".to_string(),
         "rarity" => "(SELECT rank FROM rarities WHERE name = cd.rarity)".to_string(),
         "hp" => "cd.hp".to_string(),
         "price" => format!("({MARKET_PRICE_EXPR})"),
@@ -978,7 +982,6 @@ fn where_clause(c: &CompiledSearch) -> String {
 
 fn build_full_sql(c: &CompiledSearch, page: Option<(u32, u32)>) -> String {
     let where_clause = where_clause(c);
-    let order_col = order_sql(c.order_by.as_deref());
     let dir = if matches!(c.order_dir, Dir::Desc) {
         "DESC"
     } else {
@@ -993,6 +996,15 @@ fn build_full_sql(c: &CompiledSearch, page: Option<(u32, u32)>) -> String {
     } else {
         ""
     };
+    // sort=set needs two set-level keys under dir so that sets sharing a
+    // release_date still group correctly; within a set, collector number is
+    // always ascending regardless of dir.
+    let order_clause = if c.order_by.as_deref() == Some("set") {
+        format!("s.release_date {dir}, s.set_code {dir}, cd.number_sortable ASC, p.printing_id ASC")
+    } else {
+        let order_col = order_sql(c.order_by.as_deref());
+        format!("{order_col} {dir}, cd.number_sortable ASC, p.printing_id ASC")
+    };
     format!(
         "SELECT p.printing_id, cd.card_id, cd.set_code, s.name AS set_name, s.ptcgo_code, \
                 s.symbol_url, cd.number, cd.name, cd.rarity, cd.supertype, \
@@ -1002,7 +1014,7 @@ fn build_full_sql(c: &CompiledSearch, page: Option<(u32, u32)>) -> String {
                 ({OWNED_COUNT_SUBQ}) AS owned_count \
          {FROM_CLAUSE} \
          WHERE {where_clause} \
-         ORDER BY {order_col} {dir}, cd.number_sortable ASC, p.printing_id ASC{paging}"
+         ORDER BY {order_clause}{paging}"
     )
 }
 
@@ -1569,6 +1581,221 @@ mod tests {
                 "sv3pt5-25-reverse_holo",
                 "base1-2-holo",
             ]
+        );
+    }
+
+    // --- sort=set with NULL set_sort_order (db-hdwl) ----------------------
+    //
+    // In prod set_sort_order is NULL for every set — ingest never writes it.
+    // The sort must therefore use release_date + set_code, both of which ingest
+    // does populate.  The fixture below is shaped like prod: set_sort_order NULL
+    // throughout, two sets sharing a release_date, and one set with no
+    // release_date at all.
+
+    /// A minimal fixture shaped like the prod catalog for the set-sort bug:
+    /// set_sort_order = NULL everywhere, two sets share a release_date, one
+    /// set has no release_date.
+    fn set_sort_fixture() -> Fix {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let mut c = open_shared(&shared).unwrap();
+            search_meta::reconcile(&mut c).unwrap();
+            // Three sets.  set_sort_order deliberately omitted so it is NULL.
+            // 'early' and 'late' share 2000/06/01; 'nodate' has no release_date.
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, release_date)
+                 VALUES ('early',  'Early Set',  'Gen1', '2000/01/01'),
+                        ('shared', 'Shared Date','Gen2', '2000/06/01'),
+                        ('also',   'Also Shared','Gen3', '2000/06/01'),
+                        ('nodate', 'No Date Set','Gen4', NULL)",
+                [],
+            )
+            .unwrap();
+            // Two cards per set, collector numbers 1 and 2.
+            c.execute(
+                "INSERT INTO cards (card_id,set_code,number,number_sortable,name,supertype,
+                    subtypes,hp,types,rarity,artist,legalities)
+                 VALUES
+                 ('early-1','early','1',1,'E-One','Pokémon','[\"Basic\"]',60,'[\"Fire\"]',
+                   'Common','A','{\"unlimited\":\"Legal\"}'),
+                 ('early-2','early','2',2,'E-Two','Pokémon','[\"Basic\"]',60,'[\"Fire\"]',
+                   'Common','A','{\"unlimited\":\"Legal\"}'),
+                 ('shared-1','shared','1',1,'S-One','Pokémon','[\"Basic\"]',60,'[\"Water\"]',
+                   'Common','B','{\"unlimited\":\"Legal\"}'),
+                 ('shared-2','shared','2',2,'S-Two','Pokémon','[\"Basic\"]',60,'[\"Water\"]',
+                   'Common','B','{\"unlimited\":\"Legal\"}'),
+                 ('also-1','also','1',1,'A-One','Pokémon','[\"Basic\"]',60,'[\"Lightning\"]',
+                   'Common','C','{\"unlimited\":\"Legal\"}'),
+                 ('also-2','also','2',2,'A-Two','Pokémon','[\"Basic\"]',60,'[\"Lightning\"]',
+                   'Common','C','{\"unlimited\":\"Legal\"}'),
+                 ('nodate-1','nodate','1',1,'N-One','Pokémon','[\"Basic\"]',60,'[\"Grass\"]',
+                   'Common','D','{\"unlimited\":\"Legal\"}'),
+                 ('nodate-2','nodate','2',2,'N-Two','Pokémon','[\"Basic\"]',60,'[\"Grass\"]',
+                   'Common','D','{\"unlimited\":\"Legal\"}')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id,card_id,variant) VALUES
+                 ('early-1-n','early-1','normal'),
+                 ('early-2-n','early-2','normal'),
+                 ('shared-1-n','shared-1','normal'),
+                 ('shared-2-n','shared-2','normal'),
+                 ('also-1-n','also-1','normal'),
+                 ('also-2-n','also-2','normal'),
+                 ('nodate-1-n','nodate-1','normal'),
+                 ('nodate-2-n','nodate-2','normal')",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let registry = search_meta::load_registry(&conn).unwrap();
+        let flags = search_meta::load_flags(&conn).unwrap();
+        Fix {
+            _dir: dir,
+            shared,
+            conn,
+            registry,
+            flags,
+        }
+    }
+
+    /// Positive control: verifies the test fixture actually catches the bug that
+    /// existed in prod.  With the old `s.set_sort_order` sort key (always NULL),
+    /// SQLite falls back to the tiebreak `cd.number_sortable, p.printing_id`,
+    /// which interleaves sets by collector number instead of grouping them.
+    ///
+    /// This test would fail on the pre-fix code and passes after the fix.
+    #[test]
+    fn sort_by_set_groups_each_set_as_a_contiguous_run_asc() {
+        let f = set_sort_fixture();
+        let mut c = all_printings();
+        c.set_catalog_wide(true);
+        c.override_order(Some("set"), Some("asc"));
+        let ids: Vec<String> = search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.set_code)
+            .collect();
+        // Each set must form a contiguous run — no set_code interleaves another.
+        let runs: Vec<&str> = {
+            let mut v: Vec<&str> = Vec::new();
+            for code in &ids {
+                if v.last().map(|s| *s) != Some(code.as_str()) {
+                    v.push(code.as_str());
+                }
+            }
+            v
+        };
+        assert_eq!(
+            runs.len(),
+            4,
+            "four distinct contiguous runs expected (one per set), got: {runs:?}"
+        );
+        // SQLite treats NULL as less than every non-NULL value, so NULL
+        // release_date sorts FIRST in ASC and LAST in DESC.
+        assert_eq!(
+            runs[0], "nodate",
+            "NULL release_date sorts first (least) asc: {runs:?}"
+        );
+        // early set (1999) comes before the 2000/06/01 sets.
+        assert_eq!(
+            runs[1], "early",
+            "earliest non-null date set is second asc: {runs:?}"
+        );
+        // Within each set, collector numbers are ascending.
+        // Within the early set, collector numbers must be ascending.
+        let rows = search(&f.conn, &c).unwrap();
+        let raw: Vec<&str> = rows
+            .iter()
+            .filter(|r| r.set_code == "early")
+            .map(|r| r.printing_id.as_str())
+            .collect();
+        assert_eq!(
+            raw,
+            vec!["early-1-n", "early-2-n"],
+            "card 1 before 2 within set"
+        );
+    }
+
+    #[test]
+    fn sort_by_set_desc_reverses_set_order_and_keeps_runs() {
+        let f = set_sort_fixture();
+        let mut c = all_printings();
+        c.set_catalog_wide(true);
+        c.override_order(Some("set"), Some("desc"));
+        let ids: Vec<String> = search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.set_code)
+            .collect();
+        let runs: Vec<&str> = {
+            let mut v: Vec<&str> = Vec::new();
+            for code in &ids {
+                if v.last().map(|s| *s) != Some(code.as_str()) {
+                    v.push(code.as_str());
+                }
+            }
+            v
+        };
+        assert_eq!(
+            runs.len(),
+            4,
+            "four contiguous runs expected in desc order: {runs:?}"
+        );
+        // SQLite NULL < non-NULL, so in DESC the newest dates come first and
+        // NULL release_date sorts LAST.
+        assert_eq!(
+            runs[3], "nodate",
+            "NULL release_date sorts last (least) desc: {runs:?}"
+        );
+        // early set (1999, oldest non-null date) comes second-to-last in DESC.
+        assert_eq!(
+            runs[2], "early",
+            "earliest non-null date set is second-to-last desc: {runs:?}"
+        );
+        // Within the early set, collector numbers remain ascending.
+        let rows2 = search(&f.conn, &c).unwrap();
+        let raw: Vec<&str> = rows2
+            .iter()
+            .filter(|r| r.set_code == "early")
+            .map(|r| r.printing_id.as_str())
+            .collect();
+        assert_eq!(
+            raw,
+            vec!["early-1-n", "early-2-n"],
+            "card 1 before 2 within set even in desc mode"
+        );
+    }
+
+    /// Paging across a set boundary must not drop or duplicate any card
+    /// (regression guard for pd-tjym / pd-tsqd).
+    #[test]
+    fn sort_by_set_paged_walk_has_no_gaps_or_repeats() {
+        let f = set_sort_fixture();
+        let mut c = all_printings();
+        c.set_catalog_wide(true);
+        c.override_order(Some("set"), Some("asc"));
+        let expected: Vec<String> = search(&f.conn, &c)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.printing_id)
+            .collect();
+        let mut walked: Vec<String> = Vec::new();
+        let mut offset = 0u32;
+        loop {
+            let page = search_page(&f.conn, &c, Slice::Page { limit: 3, offset }).unwrap();
+            if page.rows.is_empty() {
+                break;
+            }
+            walked.extend(page.rows.into_iter().map(|r| r.printing_id));
+            offset += 3;
+        }
+        assert_eq!(
+            walked, expected,
+            "paged walk must equal the full result with no gaps or repeats"
         );
     }
 

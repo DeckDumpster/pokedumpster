@@ -450,7 +450,7 @@ ZONE_ROOT_RS=(lib.rs)
 WRITE_PATH_PY=(catalog.py prices.py raw.py roundtrip.py __init__.py)
 # Catalog-zone modules that READ. Same rule as the write path — a reader that
 # resolved a tenant would be reading one zone with the other's business.
-CATALOG_READ_PY=(verify.py freshness.py)
+CATALOG_READ_PY=(verify.py freshness.py nessie_backup.py)
 # The one job that opens tenant databases on purpose (§7 is its rule).
 TRANSFORM_PY=(value_snapshots.py)
 # Tenant-zone Python: none today, and that is the honest entry. The tenant zone

@@ -1,0 +1,18 @@
+[Unit]
+Description=PokeDumpster Nessie catalog backup (%i)
+# sp-87nj2v. Exports the shared Nessie version store off-box. Runs AFTER the
+# nightly chain: the export briefly stops Nessie (RocksDB is single-opener), and
+# the catalog's only consumer is that chain. Ordering is declared, never
+# Wants= (the trap pkdump-prices@.service documents).
+After=pkdump-refresh@%i.service pkdump-derive@%i.service pkdump-prices@%i.service
+After=pkdump-ship@%i.service pkdump-value-snapshots@%i.service
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=%h/.config/pkdump/lake.env
+OnFailure=pkdump-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/nessie-backup.sh %i backup'
+# Inventory, stop, export, start + wait for the JVM (<=120s), upload, re-verify.
+TimeoutStartSec=1800

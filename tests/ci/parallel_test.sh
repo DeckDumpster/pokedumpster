@@ -367,15 +367,16 @@ N="\$(cat "${WORK}/floor.n" 2>/dev/null || echo 0)"
 N=\$((N + 1)); echo "\$N" > "${WORK}/floor.n"
 [ "\$N" -le 1 ] && exit 0
 [ -e "${WORK}/released" ] && exit 0
+: > "${WORK}/denied"
 echo "stub: below the floor" >&2
 exit 1
 EOF
 : >"${WORK}/floor.n"
-rm -f "${WORK}/released"
+rm -f "${WORK}/released" "${WORK}/denied"
 RAN3="${WORK}/ran3"
 mkdir -p "$RAN3"
 
-body="pkdump_par_add first bash -c 'touch ${RAN3}/first; sleep 0.3; touch ${WORK}/released'"$'\n'
+body="pkdump_par_add first bash -c 'touch ${RAN3}/first; for _ in \$(seq 600); do [ -e ${WORK}/denied ] && break; sleep 0.05; done; touch ${WORK}/released'"$'\n'
 body+="pkdump_par_add second bash -c 'touch ${RAN3}/second'"$'\n'
 body+="pkdump_par_add third bash -c 'touch ${RAN3}/third'"$'\n'
 out="$(PKDUMP_PAR_DISKCHECK="${WORK}/floor-stub.sh" PKDUMP_CI_JOBS=3 drive "$body")"

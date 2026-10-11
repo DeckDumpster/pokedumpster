@@ -1385,3 +1385,81 @@ lake (the lake holds 328 more, being the sub-types `sealed_prices` cannot
 represent — §6). `shared.latest_prices` was 296,697 rows, of which exactly
 289,327 carry that day's `observed_at`; the remaining 7,370 are the most
 recent quote for products TCGCSV no longer lists.
+
+## 11. The shared Nessie catalog is durable (sp-87nj2v)
+
+One Nessie serves every project on the box. Its RocksDB version store is the
+**only** thing pointing at the Iceberg metadata files: lose the disk and every
+table is stranded in S3 (Parquet and `metadata.json` intact, no catalog entry).
+
+### Backup
+
+`pkdump-nessie-backup@<instance>.timer` (08:00, after the whole nightly chain)
+runs `deploy/nessie-backup.sh <instance> backup`:
+
+1. inventory the live catalog (every table: metadata location, snapshot, row
+   count from the snapshot summary — metadata only);
+2. stop Nessie (RocksDB is single-opener; a copy of live files is not a backup),
+   run `nessie-server-admin export` from the image matching the server's tag,
+   restart and **wait until it answers** (a trap, so it happens however the
+   script ends);
+3. verify the zip, upload `nessie/<UTC-id>/export.zip`, read it back, and only
+   then publish `nessie/<id>/manifest.json` (written last: no manifest, no
+   backup); keep the newest 14.
+
+Host config in `lake.env`: `PKDUMP_NESSIE_BACKUP_URL=s3://<backup-bucket>/<prefix>`
+— **no default**, and refused if it is the lake bucket. The lake credential
+needs no access to it beyond put/get/list/delete under that prefix.
+Enable: `systemctl --user enable --now pkdump-nessie-backup@prod.timer
+pkdump-nessie-backup-check@prod.timer`.
+
+> The `export --path` / `import --path` spelling of `nessie-server-admin` follows
+> the 0.104 docs and has **not** been run against the real image (the authoring
+> box had no registry access). The first run on prod is the proof: run `drill`
+> straight after it and do not trust the backup before that passes.
+
+### Alarm
+
+`pkdump-nessie-backup-check@` (every 6h, a *separate* unit so it still fires if
+the backup timer is dead) re-downloads the newest export, checks size, SHA-256 and
+zip CRCs against the manifest and the age against 26h. Exit 3 = stale or no
+backup, 4 = newest backup does not verify, anything else = could not ask; all
+page. `tests/lake/nessie_backup_test.py` seeds each of those (positive controls).
+
+### Restore drill
+
+`bash deploy/nessie-backup.sh prod drill` fetches the newest backup, imports it
+into an **empty scratch** version store, starts a scratch Nessie on the lake
+network, and for every table in the manifest requires: it loads, it points at the
+same `metadata.json`, and PyIceberg reads back the recorded row count. Any miss
+exits **5**; an empty manifest or a missing required namespace
+(`PKDUMP_NESSIE_DRILL_NAMESPACES`, default `catalog`; add `deckdumpster`) also
+fails. Deckdumpster's tables are covered automatically as they appear in the
+manifest. Run it once after enabling, and after any Nessie upgrade.
+
+### Disaster recovery
+
+1. New box: restore the *lake.env*, AWS config and bootstrap secret first.
+2. **Restore Nessie before any job runs** (do not enable the chain timers yet):
+   `bash deploy/setup-lake.sh <inst>`; stop the unit; fetch the newest backup
+   (`pkdump-lake-nessie-backup fetch`, in the job image, `--out-dir`);
+   `nessie-server-admin import --path export.zip` into the empty data dir; start
+   Nessie; run `drill`.
+3. **No usable backup:** re-register from S3 —
+   `podman run … pkdump-lake-nessie-backup reregister --warehouse s3://<lake-bucket>/lake`
+   registers each table from its newest `metadata.json`
+   (`<ns>/<table>_<uuid>/metadata/NNNNN-<uuid>.metadata.json`). This loses
+   Nessie commit history and non-`main` refs, not data. The path parser is unit
+   tested; a run against a real warehouse is still owed (do it once, in a
+   scratch Nessie, with the drill).
+
+### Sharing it (deckdumpster and others)
+
+* Endpoint (container network): `http://pkdump-nessie-<instance>:19120/iceberg/`
+  on the `pkdump-lake-<instance>` podman network; host-side, loopback only.
+  Nessie has no authentication — never publish it beyond 127.0.0.1.
+* **One namespace per project**: `catalog` (pokedumpster), `deckdumpster`
+  (deckdumpster). Never write into another project's namespace.
+* A project's job containers join `pkdump-lake-<instance>` and set
+  `PKDUMP_LAKE_NESSIE_URI` to the endpoint above; the warehouse and S3 settings
+  are vended by the server.

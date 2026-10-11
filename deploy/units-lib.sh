@@ -98,6 +98,8 @@ PKDUMP_HOST_WIDE_UNIT_FILES=(
     pkdump-value-snapshots@.service  pkdump-value-snapshots@.timer
     pkdump-ship@.service             pkdump-ship@.timer
     pkdump-backup-check@.service     pkdump-backup-check@.timer
+    pkdump-nessie-backup@.service    pkdump-nessie-backup@.timer
+    pkdump-nessie-backup-check@.service pkdump-nessie-backup-check@.timer
     pkdump-alert@.service
     pkdump-diskcheck.service         pkdump-diskcheck.timer
     pkdump-tmpreap.service           pkdump-tmpreap.timer
@@ -221,6 +223,16 @@ _pkdump_units_install_host_wide() {
         _pkdump_units_render "${systemd_user_dir}/pkdump-prices@.${ext}" nostamp \
             "$repo_dir/deploy/pkdump-prices.${ext}" \
             -e "s|{{REPO_DIR}}|${repo_dir}|g"
+    done
+
+    # --- The shared Nessie catalog's backup and its alarm (sp-87nj2v) -------
+    # Installed for every instance, enabled for none; inert without lake.env.
+    for unit in nessie-backup nessie-backup-check; do
+        for ext in service timer; do
+            _pkdump_units_render "${systemd_user_dir}/pkdump-${unit}@.${ext}" nostamp \
+                "$repo_dir/deploy/pkdump-${unit}.${ext}" \
+                -e "s|{{REPO_DIR}}|${repo_dir}|g"
+        done
     done
 
     # --- The transform tier's nightly run (pd-8m5c) -------------------------

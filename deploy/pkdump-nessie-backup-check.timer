@@ -1,0 +1,11 @@
+[Unit]
+Description=PokeDumpster Nessie backup alarm timer (%i)
+
+[Timer]
+# Every 6h against a 26h limit: a missed night is caught by the next check after
+# 26h, and a credential break (which makes the check itself fail) within 6h.
+OnCalendar=*-*-* 03,09,15,21:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

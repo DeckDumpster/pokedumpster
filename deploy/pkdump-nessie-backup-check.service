@@ -1,0 +1,15 @@
+[Unit]
+Description=PokeDumpster Nessie backup age + verify alarm (%i)
+# sp-87nj2v. A SEPARATE unit from the backup, so it still fires when the backup
+# timer is dead, disabled or never ran — an alarm inside the job it watches
+# cannot notice the job's absence. It downloads the newest export and re-hashes
+# it against its manifest: it restores, it does not watch telemetry.
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=%h/.config/pkdump/lake.env
+OnFailure=pkdump-alert@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'exec bash {{REPO_DIR}}/deploy/nessie-backup.sh %i check'
+TimeoutStartSec=600

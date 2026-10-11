@@ -50,6 +50,8 @@ systemctl --user disable --now "pkdump-refresh@${INSTANCE}.timer" 2>/dev/null ||
 systemctl --user disable --now "pkdump-backup-check@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-derive@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-prices@${INSTANCE}.timer" 2>/dev/null || true
+systemctl --user disable --now "pkdump-nessie-backup@${INSTANCE}.timer" 2>/dev/null || true
+systemctl --user disable --now "pkdump-nessie-backup-check@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-value-snapshots@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-ship@${INSTANCE}.timer" 2>/dev/null || true
 systemctl --user disable --now "pkdump-heartbeat@${INSTANCE}.timer" 2>/dev/null || true
@@ -72,6 +74,8 @@ for _u in "$SERVICE_NAME" \
           "pkdump-backup-check@${INSTANCE}."{service,timer} \
           "pkdump-derive@${INSTANCE}."{service,timer} \
           "pkdump-prices@${INSTANCE}."{service,timer} \
+          "pkdump-nessie-backup@${INSTANCE}."{service,timer} \
+          "pkdump-nessie-backup-check@${INSTANCE}."{service,timer} \
           "pkdump-value-snapshots@${INSTANCE}."{service,timer} \
           "pkdump-ship@${INSTANCE}."{service,timer} \
           "pkdump-heartbeat@${INSTANCE}."{service,timer}; do

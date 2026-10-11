@@ -833,6 +833,9 @@ if tier lint; then
     step "No pipeline into grep -q, which inverts under pipefail (tests/ci/grepq_test.sh)"
     bash "$REPO_DIR/tests/ci/grepq_test.sh"
 
+    step "Nessie catalog backup: stale/corrupt alarm, restore-drill failures (tests/lake/nessie_backup_test.sh)"
+    bash "$REPO_DIR/tests/lake/nessie_backup_test.sh"
+
     # A failed systemctl start used to exit silently, destroying the evidence
     # along with the ephemeral runner. dump_unit_diagnostics captures status
     # and journal before exit; this asserts it is defined, contains both

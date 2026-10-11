@@ -28,6 +28,10 @@ pkdump-lake-prices-age = "pkdump_lake.freshness:main"
 # for EVERY registered tenant. Reads the lake, writes each tenant's own SQLite.
 pkdump-lake-value-snapshots = "pkdump_lake.value_snapshots:main"
 
+# Nessie's version store made durable (sp-87nj2v): ship an export off-box, the
+# age+verify alarm, the restore drill, and the re-register fallback.
+pkdump-lake-nessie-backup = "pkdump_lake.nessie_backup:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

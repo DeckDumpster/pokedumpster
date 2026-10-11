@@ -1,0 +1,13 @@
+[Unit]
+Description=Nightly PokeDumpster Nessie catalog backup (%i)
+
+[Timer]
+# After the whole chain: the transform is at 07:30 with TimeoutStartSec=1800, so
+# 08:00 is the first minute it is over by its own unit's bounds; the After= lines
+# in the service are the actual guarantee.
+OnCalendar=*-*-* 08:00:00
+# Persistent: a box that was off at 08:00 takes its backup when it returns.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

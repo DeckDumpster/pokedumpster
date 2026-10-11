@@ -476,6 +476,12 @@ tenant, and `watch: true` puts it back under replication within ~5s.
 
 ---
 
+### Scenario C addendum — the Nessie lake catalog
+
+The lakehouse catalog is not in Litestream. Its backup, alarm, drill and restore
+order (Nessie restored **before** any lake job or chain timer runs; re-register
+from S3 if no backup is usable) are in `deploy/LAKE.md` §11.
+
 ## Verify a restore
 
 ```bash

@@ -9,6 +9,12 @@ Description=PokeDumpster failure alert for %i
 # instance template alerts for any unit. {{REPO_DIR}} is sed-substituted by
 # deploy/setup.sh (single-clone deployment).
 #
+# OnFailure= fires the instant the unit fails, which can be before journald has
+# written the unit's last lines (sp-wxx4pd: under load the push named the unit
+# and carried no tail). So the tail is read after a --sync and a bounded wait on
+# CONTENT, systemd's own "Failed with result" line, not on time alone. grep -c
+# rather than grep -q: no early exit, nothing to SIGPIPE.
+#
 # The tail goes through journal-summary.sh before it reaches alert.sh (pd-pwk8):
 # raw, the last 900 bytes of a failed unit's journal are systemd boilerplate and
 # podman OCI metadata, and the line that says what went wrong is buried above
@@ -30,4 +36,4 @@ EnvironmentFile=-%h/.config/pkdump/alerts.env
 # is indistinguishable from the backup-stopped-running failure this layer exists
 # to catch. A gate present but broken at runtime is covered by its --self-test in CI.
 # No shell variables here on purpose: systemd would expand `$?` itself.
-ExecStart=/bin/sh -c 'if [ ! -r {{REPO_DIR}}/deploy/alert-gate.sh ] || bash {{REPO_DIR}}/deploy/alert-gate.sh %i; then journalctl --user -u %i -n 80 -o short-iso --no-pager | bash {{REPO_DIR}}/deploy/journal-summary.sh %i | bash {{REPO_DIR}}/deploy/alert.sh "PokeDumpster unit FAILED: %i"; fi'
+ExecStart=/bin/sh -c 'if [ ! -r {{REPO_DIR}}/deploy/alert-gate.sh ] || bash {{REPO_DIR}}/deploy/alert-gate.sh %i; then journalctl --sync >/dev/null 2>&1; for _ in 1 2 3 4 5 6 7 8 9 10; do journalctl --user -u %i -n 80 --no-pager | grep -c "Failed with result" >/dev/null && break; sleep 0.5; done; journalctl --user -u %i -n 80 -o short-iso --no-pager | bash {{REPO_DIR}}/deploy/journal-summary.sh %i | bash {{REPO_DIR}}/deploy/alert.sh "PokeDumpster unit FAILED: %i"; fi'

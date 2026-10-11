@@ -77,6 +77,10 @@ permissions:
 jobs:
   provision:
     runs-on: ubuntu-latest
+    # id-token:write is the OIDC assumption of AWS_SPILL_ROLE_ARN when Proxmox is full.
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       vmid: ${{ steps.vm.outputs.vmid }}
       label: ${{ steps.vm.outputs.label }}
@@ -98,6 +102,10 @@ jobs:
           pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
+          spill:              ec2
+          spill-after-seconds: 600
+          spill-max-instances: 2
+          aws-role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}
 
   # NAMED `gate` BECAUSE THAT NAME IS A CONTRACT WITH SPIRA. Spira's merge queue
   # reads the status-check rollup for an entry whose name is exactly `gate`; the

@@ -836,6 +836,10 @@ if tier lint; then
     step "Nessie catalog backup: stale/corrupt alarm, restore-drill failures (tests/lake/nessie_backup_test.sh)"
     bash "$REPO_DIR/tests/lake/nessie_backup_test.sh"
 
+    # The force_spill dispatch input: default off, and only true yields ec2-only.
+    step "force_spill dispatch input shape (tests/ci/spill_input_test.sh)"
+    bash "$REPO_DIR/tests/ci/spill_input_test.sh"
+
     # A failed systemctl start used to exit silently, destroying the evidence
     # along with the ephemeral runner. dump_unit_diagnostics captures status
     # and journal before exit; this asserts it is defined, contains both

@@ -373,6 +373,11 @@ env -u PKDUMP_CI_SELECTED PKDUMP_CI_SELECT_ONLY=1 \
 	bash "$CI_SH" >/dev/null 2>&1
 check "PKDUMP_CI_TIERS and PKDUMP_CI_CHANGED_FILES both set -> exit 1" "1" "$?"
 
+# .spira/testenv.toml declares one [tier.<name>] per canonical tier, so
+# `testenv --suites <tier>` can run every tier CI runs and none is missing.
+DECLARED="$(sed -n 's/^\[tier\.\([a-z]*\)\]$/\1/p' "${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}/.spira/testenv.toml" | tr '\n' ' ' | sed 's/ $//')"
+check ".spira/testenv.toml declares exactly the canonical tiers, in order" "$ALL" "$DECLARED"
+
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

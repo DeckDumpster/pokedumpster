@@ -1,0 +1,71 @@
+# Declares deploy/ci.sh's tiers to testenv (testenv/DESIGN.md §2.1.1), so
+# `testenv --suites <tier> <branch> pokedumpster` runs what CI runs for that tier.
+# Tier names mirror PKDUMP_CI_ALL_TIERS in deploy/ci-select.sh; keep them in step
+# (tests/ci/select_test.sh holds this file to that list). Each tier is
+# `PKDUMP_CI_TIERS=<tier> bash deploy/ci.sh`, the explicit-list path, which runs
+# exactly that tier with no floor added.
+# The image is the builder base the Containerfile names. It stands in for CI's
+# host runner: lint and rust need only a toolchain, bash and git. deploy, frontend,
+# container, litestream, tenants, browser, schema, lake and refresh need podman
+# (and node, chromium, systemd) which this image does not carry, so they are
+# declared — CI runs them — but only work where those are reachable; they are not
+# in `default`.
+image = "docker.io/library/rust:1.94-slim-bookworm"
+workdir = "/work"
+timeout = 1800
+default = ["lint", "rust"]
+
+[tier.lint]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "lint" }
+timeout = 600
+
+[tier.rust]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "rust" }
+timeout = 1800
+
+[tier.deploy]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "deploy" }
+timeout = 900
+
+[tier.frontend]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "frontend" }
+timeout = 900
+
+[tier.container]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "container" }
+timeout = 2400
+
+[tier.litestream]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "litestream" }
+timeout = 2400
+
+[tier.tenants]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "tenants" }
+timeout = 2400
+
+[tier.browser]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "browser" }
+timeout = 3000
+
+[tier.schema]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "schema" }
+timeout = 2400
+
+[tier.lake]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "lake" }
+timeout = 3000
+
+[tier.refresh]
+argv = ["bash", "deploy/ci.sh"]
+env = { PKDUMP_CI_TIERS = "refresh" }
+timeout = 2400

@@ -22,6 +22,13 @@ bd close <id>         # Complete work
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 
+## Before you submit
+
+Run the CI tiers your change touches, before `work submit`:
+`testenv --suites <lint|rust|deploy|frontend|container|litestream|tenants|browser|schema|lake|refresh> spira/<bead> pokedumpster`
+(declared in `.spira/testenv.toml`, mirroring `deploy/ci.sh`; with no `--suites` it runs `lint` and `rust`).
+Commit first: it tests the committed branch.
+
 ## Session Completion
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

@@ -112,7 +112,7 @@ jobs:
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
           spill:              ${{ inputs.force_spill && 'ec2-only' || 'ec2' }}
-          spill-after-seconds: 600
+          spill-after-seconds: '60'
           spill-max-instances: 2
           aws-role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}
 

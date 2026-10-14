@@ -22,9 +22,9 @@
 
 use std::sync::Arc;
 
+use dumpster_kit_lake::RawLanding;
 use pkdump_derive::DeriveClock;
 use pkdump_ingest::landing::Wire;
-use pkdump_lake::RawLanding;
 
 /// Enables landing without a command-line flag — how the containerised
 /// nightly refresh turns it on, since its unit runs a fixed command line.
@@ -44,7 +44,7 @@ pub fn enabled(flag: bool) -> bool {
 /// day is the `ingest_date` every object lands under, and its instant is the
 /// `started_at` every manifest records. That second one is what lets an
 /// offline derive stamp the same `fetched_at` / `observed_at` values into the
-/// same rows — see [`pkdump_derive::clock`].
+/// same rows — see [`pkdump_derive::DeriveClock`].
 ///
 /// Called before the first fetch, so a lake that was asked for and is not
 /// configured stops the run immediately. Note what this does *not* do: it
@@ -58,7 +58,8 @@ pub fn open(flag: bool, clock: &DeriveClock) -> anyhow::Result<Option<Arc<RawLan
         return Ok(None);
     }
     let ingest_date = clock.observed_date();
-    let landing = pkdump_lake::open(ingest_date, clock.fetched_at())?;
+    let landing =
+        dumpster_kit_lake::open(&pkdump_site::lake_env(), ingest_date, clock.fetched_at())?;
     println!(
         "Landing raw upstream responses in {} (ingest_date={ingest_date})",
         landing.describe()
@@ -82,7 +83,12 @@ pub fn open(flag: bool, clock: &DeriveClock) -> anyhow::Result<Option<Arc<RawLan
 /// problem and never a code one.
 pub fn require(clock: &DeriveClock) -> anyhow::Result<Arc<RawLanding>> {
     let ingest_date = clock.observed_date();
-    let landing = pkdump_lake::open(ingest_date, clock.fetched_at()).map_err(|e| {
+    let landing = dumpster_kit_lake::open(
+        &pkdump_site::lake_env(),
+        ingest_date,
+        clock.fetched_at(),
+    )
+    .map_err(|e| {
         anyhow::anyhow!(
             "{e:#}\n\n`pkdump data refresh` fetches the upstreams and LANDS them; the catalog \
              is built from that partition by `pkdump-lake-derive shared` (pd-lunn). Without a \

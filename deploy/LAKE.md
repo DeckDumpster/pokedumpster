@@ -400,7 +400,7 @@ anywhere — the one state §3 says must not exist.
 nothing else (`pd-8gjd`): no AWS config, no bootstrap secret, no lake settings.
 `podman exec` cannot add a mount to a running container, and mounting the
 lake's credentials on the app container would hand the always-on web server
-ambient write access to the lake bucket — the coupling `pkdump-lake` is
+ambient write access to the lake bucket — the coupling `dumpster-kit-lake` is
 offline-only to prevent. It would also make the bootstrap secret a hard start
 dependency of the *server*, so every instance without one would stop serving.
 
@@ -909,9 +909,10 @@ Two things keep this from becoming a licence for a smaller catalog:
   `pokemontcgio/cards` are `Incomplete::Partial`; every other dataset is
   `Incomplete::Refuse` and still exits 1. A `tcgcsv/products` prefix holding 200
   groups of an unknown 450 is exactly the quietly-smaller catalog the refusal
-  exists for. The table is `crates/pkdump-lakehouse/src/partition.rs::
-  requirement`, exhaustive with no wildcard arm, so adding another exemption is
-  a decision somebody has to write down.
+  exists for. The tables are in `crates/pkdump-lakehouse/src/partition.rs` (three kit
+  tables, because the kit takes one `Incomplete` per table), and
+  `every_dataset_is_looked_for` holds them to `pkdump_site::DATASETS`, so adding
+  another exemption is a decision somebody has to write down.
 - **The night still replays to the same catalog.** The URL the tail died on was
   never landed, so the replay fails at exactly that request and the offline
   derive's tail fails where the online one's did. `row_identical.rs::
@@ -1206,7 +1207,7 @@ finished; there is nothing to repair.
 
 | what | where |
 | --- | --- |
-| key layout, manifest, stores, config | `crates/pkdump-lake/` |
+| key layout, manifest, stores, config | `dumpster-kit-lake` (the kit); this site's names and upstreams are `crates/pkdump-site/` |
 | the one place a response becomes bytes | `crates/pkdump-ingest/src/landing.rs` |
 | flag → landing zone (the WRITING half only) | `crates/pkdump-cli/src/landing.rs` |
 | the acquisition phase it brackets | `acquire()` in `crates/pkdump-derive/src/lib.rs` and `crates/pkdump-cli/src/setup.rs` |
@@ -1215,7 +1216,7 @@ finished; there is nothing to repair.
 | the check against `shared.sqlite` | `lake/src/pkdump_lake/verify.py` |
 | per-tenant value snapshots (the transform tier) | `lake/src/pkdump_lake/value_snapshots.py` |
 | what the timer runs it as | `deploy/value-snapshots.sh` + `deploy/pkdump-value-snapshots.{service,timer}` |
-| reading `raw/` back, in Rust — the twin of `raw.py` | `crates/pkdump-lake/src/reader.rs` |
+| reading `raw/` back, in Rust — the twin of `raw.py` | `dumpster-kit-lake`'s `src/reader.rs` |
 | the catalog derivation itself, both callers share it | `crates/pkdump-derive/` |
 | the offline derive: partition choice, replay, the diff | `crates/pkdump-lakehouse/` |
 | what its timer runs it as | `deploy/derive.sh` + `deploy/pkdump-derive.{service,timer}` |

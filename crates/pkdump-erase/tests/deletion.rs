@@ -24,9 +24,9 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
+use dumpster_kit_lake::{DirStore, ObjectPurge, TenantZoneConfig};
 use pkdump_erase::verify::Check;
 use pkdump_erase::{StrayCopy, Verdict};
-use pkdump_lake::{DirStore, ObjectPurge, TenantZoneConfig};
 
 const ALICE: &str = "01J0000000000000000000000A";
 const BOB: &str = "01J0000000000000000000000B";
@@ -55,15 +55,15 @@ impl World {
         std::fs::create_dir_all(&zone_root).unwrap();
 
         let previous_home = std::env::var("PKDUMP_HOME").ok();
-        let previous_key = std::env::var(pkdump_keys::master::KEY_ENV_FILE).ok();
+        let previous_key = std::env::var(pkdump_site::key_env().key_file_var).ok();
         unsafe {
             std::env::set_var("PKDUMP_HOME", &home);
             std::env::set_var(
-                pkdump_keys::master::KEY_ENV_FILE,
+                pkdump_site::key_env().key_file_var,
                 dir.path().join("tenant-master.key"),
             );
         }
-        pkdump_keys::master::create().unwrap();
+        dumpster_kit_keys::master::create(&pkdump_site::key_env()).unwrap();
 
         World {
             _dir: dir,
@@ -72,7 +72,7 @@ impl World {
             zone: DirStore::new(zone_root),
             config: TenantZoneConfig {
                 profile: "pkdump-tenant-test".to_string(),
-                prefix: pkdump_lake::TENANT_ROOT.to_string(),
+                prefix: dumpster_kit_lake::TENANT_ROOT.to_string(),
             },
             previous_home,
             previous_key,
@@ -99,7 +99,7 @@ impl World {
             .join("tenants")
             .join(format!("{database_id}.sqlite"));
         drop(pkdump_db::open_user(&path).unwrap());
-        pkdump_keys::state::register(&registry, database_id).unwrap();
+        dumpster_kit_keys::state::register(&registry, database_id).unwrap();
 
         pkdump_db::tenants::list()
             .unwrap()
@@ -143,18 +143,18 @@ impl World {
     /// the real key layout.
     fn seal_a_valuation(&self, database_id: &str) -> String {
         let object_key = self.config.rooted(
-            pkdump_lake::part_key(
+            dumpster_kit_lake::part_key(
                 database_id,
-                pkdump_lake::TenantDataset::Valuations,
+                dumpster_kit_lake::TenantDataset::Valuations,
                 "2026-08-14",
                 0,
             )
             .unwrap(),
         );
-        let key = pkdump_keys::tenant_key(&self.registry(), database_id).unwrap();
+        let key = pkdump_ship::tenant_key(&self.registry(), database_id).unwrap();
         let sealed =
             pkdump_ship::cipher::seal(&key, &object_key, b"PAR1 what it was worth").unwrap();
-        use pkdump_lake::ObjectStore;
+        use dumpster_kit_lake::ObjectStore;
         self.zone.put(&object_key, sealed).unwrap();
         object_key
     }
@@ -162,7 +162,7 @@ impl World {
     /// Take a copy of one of a tenant's objects, exactly as it is in the
     /// zone — the "stray copy" a deletion has to be proven against.
     fn copy_out(&self, object_key: &str) -> StrayCopy {
-        use pkdump_lake::ObjectSource;
+        use dumpster_kit_lake::ObjectSource;
         StrayCopy {
             object_key: object_key.to_string(),
             bytes: self.zone.get(object_key).unwrap(),
@@ -181,7 +181,7 @@ impl Drop for World {
             None => unsafe { std::env::remove_var(k) },
         };
         restore("PKDUMP_HOME", &self.previous_home);
-        restore(pkdump_keys::master::KEY_ENV_FILE, &self.previous_key);
+        restore(&pkdump_site::key_env().key_file_var, &self.previous_key);
     }
 }
 
@@ -205,7 +205,7 @@ fn a_deleted_tenant_s_shipped_holdings_are_unreachable_by_every_path() {
     world.add_holdings(&alice, 6);
     assert_eq!(world.ship().events(), 6);
 
-    let shipped = world.keys_under(&pkdump_lake::tenant_prefix(ALICE).unwrap());
+    let shipped = world.keys_under(&dumpster_kit_lake::tenant_prefix(ALICE).unwrap());
     assert_eq!(shipped.len(), 1, "one part: {shipped:?}");
     let stray = world.copy_out(&shipped[0]);
 
@@ -243,11 +243,11 @@ fn a_copy_that_survived_the_drop_is_ciphertext_nobody_holds_a_key_for() {
     world.add_holdings(&alice, 4);
     world.ship();
 
-    let shipped = world.keys_under(&pkdump_lake::tenant_prefix(ALICE).unwrap());
+    let shipped = world.keys_under(&dumpster_kit_lake::tenant_prefix(ALICE).unwrap());
     let stray = world.copy_out(&shipped[0]);
 
     // Before: the copy opens, and the plaintext is a tenant's holdings.
-    let key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+    let key = pkdump_ship::tenant_key(&world.registry(), ALICE).unwrap();
     let plaintext = pkdump_ship::cipher::open(&key, &stray.object_key, &stray.bytes).unwrap();
     let events = pkdump_ship::encode::decode(plaintext).unwrap();
     assert_eq!(events.len(), 4);
@@ -264,7 +264,7 @@ fn a_copy_that_survived_the_drop_is_ciphertext_nobody_holds_a_key_for() {
     .unwrap();
 
     // After: the bytes are exactly the same bytes, and nothing can open them.
-    let err = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap_err();
+    let err = pkdump_ship::tenant_key(&world.registry(), ALICE).unwrap_err();
     assert!(
         err.is_deliberate_revocation(),
         "the refusal must be a revocation, not a broken box: {err}"
@@ -294,7 +294,7 @@ fn before_the_deletion_every_one_of_those_checks_reports_the_path_open() {
     world.ship();
     world.seal_a_valuation(ALICE);
 
-    let shipped = world.keys_under(&pkdump_lake::tenant_prefix(ALICE).unwrap());
+    let shipped = world.keys_under(&dumpster_kit_lake::tenant_prefix(ALICE).unwrap());
     let holdings = shipped
         .iter()
         .find(|k| k.contains("dataset=holdings"))
@@ -381,7 +381,7 @@ fn deleting_one_tenant_leaves_the_others_shipped_data_readable() {
     world.add_holdings(&bob, 5);
     world.ship();
 
-    let bobs = world.keys_under(&pkdump_lake::tenant_prefix(BOB).unwrap());
+    let bobs = world.keys_under(&dumpster_kit_lake::tenant_prefix(BOB).unwrap());
     assert_eq!(bobs.len(), 1);
     let bobs_copy = world.copy_out(&bobs[0]);
 
@@ -398,11 +398,11 @@ fn deleting_one_tenant_leaves_the_others_shipped_data_readable() {
     // Bob's objects are there, his key derives, and his part still opens.
     assert_eq!(
         world
-            .keys_under(&pkdump_lake::tenant_prefix(BOB).unwrap())
+            .keys_under(&dumpster_kit_lake::tenant_prefix(BOB).unwrap())
             .len(),
         1
     );
-    let key = pkdump_keys::tenant_key(&world.registry(), BOB).unwrap();
+    let key = pkdump_ship::tenant_key(&world.registry(), BOB).unwrap();
     let plaintext =
         pkdump_ship::cipher::open(&key, &bobs_copy.object_key, &bobs_copy.bytes).unwrap();
     assert_eq!(pkdump_ship::encode::decode(plaintext).unwrap().len(), 5);
@@ -452,7 +452,7 @@ fn a_deleted_tenant_is_not_shipped_again() {
     assert_eq!(hers.parts, 0);
     assert!(
         world
-            .keys_under(&pkdump_lake::tenant_prefix(ALICE).unwrap())
+            .keys_under(&dumpster_kit_lake::tenant_prefix(ALICE).unwrap())
             .is_empty(),
         "the shipper put data back under a dropped prefix"
     );

@@ -1,6 +1,6 @@
 //! The raw landing zone, end to end through the real HTTP clients.
 //!
-//! `crates/pkdump-lake` proves the key layout and the manifest in isolation.
+//! `dumpster-kit-lake` proves the key layout and the manifest in isolation.
 //! What it cannot prove is the property this feature actually promises: that
 //! landing is a **tee**, not a transform — the bytes stored are the bytes
 //! received, and the catalog built from a landed run is identical to the
@@ -16,9 +16,9 @@ mod support;
 
 use std::sync::Arc;
 
+use dumpster_kit_lake::{Dataset, DirStore, Manifest, RawLanding, Source};
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::{self, TcgcsvClient};
-use pkdump_lake::{Dataset, DirStore, Manifest, RawLanding, Source};
 use support::{FakeUpstream, Reply};
 
 const INGEST_DATE: &str = "2026-08-11";
@@ -64,7 +64,7 @@ fn manifest_of(
 ) -> Manifest {
     read_manifest(
         root,
-        &pkdump_lake::keys::manifest_key(source, dataset, INGEST_DATE, landing.run_id()),
+        &dumpster_kit_lake::keys::manifest_key(source, dataset, INGEST_DATE, landing.run_id()),
     )
 }
 
@@ -156,9 +156,9 @@ fn the_manifest_describes_the_bytes_that_were_stored() {
     // part, and no part describes a request that never happened. This is the
     // "land every upstream fetch" claim, checked against the upstream's own
     // record rather than against the client's intent.
-    let mut landed: Vec<String> = [Dataset::Groups, Dataset::Products, Dataset::Prices]
+    let mut landed: Vec<String> = [Dataset::GROUPS, Dataset::PRODUCTS, Dataset::PRICES]
         .into_iter()
-        .flat_map(|d| manifest_of(tmp.path(), &landing, Source::Tcgcsv, d).parts)
+        .flat_map(|d| manifest_of(tmp.path(), &landing, Source::TCGCSV, d).parts)
         .map(|p| p.url.trim_start_matches(&upstream.base_url()).to_string())
         .collect();
     landed.sort();
@@ -167,11 +167,11 @@ fn the_manifest_describes_the_bytes_that_were_stored() {
     assert_eq!(landed, served);
 
     for (dataset, expected_parts) in [
-        (Dataset::Groups, 1),
-        (Dataset::Products, 2),
-        (Dataset::Prices, 2),
+        (Dataset::GROUPS, 1),
+        (Dataset::PRODUCTS, 2),
+        (Dataset::PRICES, 2),
     ] {
-        let manifest = manifest_of(tmp.path(), &landing, Source::Tcgcsv, dataset);
+        let manifest = manifest_of(tmp.path(), &landing, Source::TCGCSV, dataset);
         assert!(manifest.complete, "{dataset} should be complete");
         assert_eq!(manifest.parts.len(), expected_parts, "{dataset}");
 
@@ -182,7 +182,7 @@ fn the_manifest_describes_the_bytes_that_were_stored() {
             assert_eq!(part.bytes, raw.len() as u64, "{}", part.key);
             assert_eq!(
                 part.sha256,
-                pkdump_lake::sink::sha256_hex(&raw),
+                dumpster_kit_lake::sink::sha256_hex(&raw),
                 "{}",
                 part.key
             );
@@ -228,7 +228,7 @@ fn a_run_that_fails_partway_leaves_a_manifest_that_says_so() {
         .expect_err("the upstream is answering 503");
 
     // Flushed at the moment of failure, with no finalize call yet.
-    let prices = manifest_of(tmp.path(), &landing, Source::Tcgcsv, Dataset::Prices);
+    let prices = manifest_of(tmp.path(), &landing, Source::TCGCSV, Dataset::PRICES);
     assert!(!prices.complete);
     assert!(prices.parts.is_empty());
     assert_eq!(prices.failures.len(), 1);
@@ -238,11 +238,11 @@ fn a_run_that_fails_partway_leaves_a_manifest_that_says_so() {
     // Finalizing with the acquisition error keeps it incomplete and records
     // the error; the datasets that did succeed are still marked complete.
     landing.finalize(Some(&err.to_string())).unwrap();
-    let prices = manifest_of(tmp.path(), &landing, Source::Tcgcsv, Dataset::Prices);
+    let prices = manifest_of(tmp.path(), &landing, Source::TCGCSV, Dataset::PRICES);
     assert!(!prices.complete);
     assert!(prices.error.expect("an error is recorded").contains("503"));
 
-    let groups_manifest = manifest_of(tmp.path(), &landing, Source::Tcgcsv, Dataset::Groups);
+    let groups_manifest = manifest_of(tmp.path(), &landing, Source::TCGCSV, Dataset::GROUPS);
     assert_eq!(groups_manifest.parts.len(), 1);
 }
 
@@ -287,8 +287,8 @@ fn a_retry_lands_beside_the_first_attempt_not_on_it() {
 
     assert_ne!(first.run_id(), second.run_id());
 
-    let failed = manifest_of(tmp.path(), &first, Source::Tcgcsv, Dataset::Groups);
-    let retried = manifest_of(tmp.path(), &second, Source::Tcgcsv, Dataset::Groups);
+    let failed = manifest_of(tmp.path(), &first, Source::TCGCSV, Dataset::GROUPS);
+    let retried = manifest_of(tmp.path(), &second, Source::TCGCSV, Dataset::GROUPS);
 
     // The failed run's evidence survives the successful retry, in full.
     assert!(!failed.complete);
@@ -299,9 +299,9 @@ fn a_retry_lands_beside_the_first_attempt_not_on_it() {
 
     // Same date, same dataset, different run — both prefixes present.
     let prefix = |run: &str| {
-        tmp.path().join(pkdump_lake::keys::run_prefix(
-            Source::Tcgcsv,
-            Dataset::Groups,
+        tmp.path().join(dumpster_kit_lake::keys::run_prefix(
+            Source::TCGCSV,
+            Dataset::GROUPS,
             INGEST_DATE,
             run,
         ))
@@ -342,7 +342,12 @@ fn each_page_of_a_paginated_fetch_is_its_own_part() {
 
     assert_eq!(sets.len(), 251);
 
-    let manifest = manifest_of(tmp.path(), &landing, Source::PokemonTcgIo, Dataset::Sets);
+    let manifest = manifest_of(
+        tmp.path(),
+        &landing,
+        pkdump_site::POKEMON_TCG_IO,
+        pkdump_site::SETS,
+    );
     assert_eq!(manifest.parts.len(), 2);
     assert!(manifest.complete);
     assert!(

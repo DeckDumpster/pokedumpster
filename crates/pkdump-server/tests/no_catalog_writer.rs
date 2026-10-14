@@ -11,7 +11,7 @@
 //! a deploy happens to land inside the build.
 //!
 //! Stated over the crate's source rather than over the two files that are
-//! right today, for the same reason `crates/pkdump-keys/tests/separation.rs`
+//! right today, for the same reason `dumpster-kit-keys`'s `tests/separation.rs`
 //! is: it has to stay true of code nobody has written yet.
 
 /// Every `.rs` under `crates/pkdump-server/src`, with each file truncated at

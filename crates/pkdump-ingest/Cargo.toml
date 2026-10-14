@@ -8,7 +8,8 @@ authors.workspace = true
 [dependencies]
 pkdump-core.workspace = true
 pkdump-db.workspace = true
-pkdump-lake.workspace = true
+dumpster-kit-lake.workspace = true
+pkdump-site.workspace = true
 dumpster-kit-tcgcsv.workspace = true
 rusqlite.workspace = true
 reqwest.workspace = true

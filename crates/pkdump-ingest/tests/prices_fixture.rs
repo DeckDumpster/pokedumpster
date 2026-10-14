@@ -44,8 +44,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
+use dumpster_kit_lake::{DirStore, RawLanding};
 use pkdump_ingest::tcgcsv::{self, TcgcsvClient};
-use pkdump_lake::{DirStore, RawLanding};
 use support::{FakeUpstream, Reply};
 
 /// Only an incomplete run landed here.
@@ -299,10 +299,10 @@ fn builds_a_landing_zone_and_the_catalog_from_the_same_bytes() {
         "a retry must land BESIDE the first attempt, never on it"
     );
 
-    let manifest = |date: &str, run: &str| -> pkdump_lake::Manifest {
-        let key = pkdump_lake::keys::manifest_key(
-            pkdump_lake::Source::Tcgcsv,
-            pkdump_lake::Dataset::Prices,
+    let manifest = |date: &str, run: &str| -> dumpster_kit_lake::Manifest {
+        let key = dumpster_kit_lake::keys::manifest_key(
+            dumpster_kit_lake::Source::TCGCSV,
+            dumpster_kit_lake::Dataset::PRICES,
             date,
             run.trim_start_matches("run="),
         );
@@ -316,7 +316,7 @@ fn builds_a_landing_zone_and_the_catalog_from_the_same_bytes() {
 
     // By count, not by position: two runs a few milliseconds apart can share a
     // ULID timestamp, and which sorts first is then the random tail's business.
-    let new_manifests: Vec<pkdump_lake::Manifest> = runs(DATE_NEW)
+    let new_manifests: Vec<dumpster_kit_lake::Manifest> = runs(DATE_NEW)
         .iter()
         .map(|run| manifest(DATE_NEW, run))
         .collect();

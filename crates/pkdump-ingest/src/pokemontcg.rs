@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use pkdump_lake::{Dataset, PartFormat, RawLanding, Source};
+use dumpster_kit_lake::{Dataset, PartFormat, RawLanding};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -193,7 +193,7 @@ impl PokemonTcgClient {
             &self.http,
             req,
             &self.wire,
-            Source::PokemonTcgIo,
+            pkdump_site::POKEMON_TCG_IO,
             dataset,
             PartFormat::Json,
         )?;
@@ -211,7 +211,7 @@ impl PokemonTcgClient {
                     ("page", page.to_string()),
                     ("pageSize", PAGE_SIZE.to_string()),
                 ],
-                Dataset::Sets,
+                pkdump_site::SETS,
             )?;
             let batch = parse_set_list(&envelope)?;
             let full = batch.len() == PAGE_SIZE;
@@ -236,7 +236,7 @@ impl PokemonTcgClient {
                     ("page", page.to_string()),
                     ("pageSize", PAGE_SIZE.to_string()),
                 ],
-                Dataset::Cards,
+                pkdump_site::CARDS,
             )?;
             let batch = parse_card_list(&envelope)?;
             let full = batch.len() == PAGE_SIZE;

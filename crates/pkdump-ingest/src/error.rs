@@ -21,7 +21,7 @@ pub enum IngestError {
     Db(#[from] pkdump_db::DbError),
 
     #[error("lake: {0}")]
-    Lake(#[from] pkdump_lake::LakeError),
+    Lake(#[from] dumpster_kit_lake::LakeError),
 
     #[error("unexpected upstream data: {0}")]
     BadResponse(String),

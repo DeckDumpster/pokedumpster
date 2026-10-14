@@ -52,8 +52,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rusqlite::{Connection, params};
 
+use dumpster_kit_lake::{DirStore, RawLanding};
 use pkdump_ingest::tcgcsv::{self, TcgcsvClient};
-use pkdump_lake::{DirStore, RawLanding};
 use support::{FakeUpstream, Reply};
 
 /// The older priced day. A snapshot taken *for* this date must value the

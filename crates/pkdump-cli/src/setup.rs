@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use rusqlite::Connection;
 
+use dumpster_kit_lake::RawLanding;
 use pkdump_derive::DeriveClock;
-use pkdump_lake::RawLanding;
 
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
@@ -375,11 +375,11 @@ mod setup_coverage {
     use super::*;
     use std::sync::{Arc, MutexGuard};
 
+    use dumpster_kit_lake::{Dataset, DirStore, Manifest, RawLanding};
     use pkdump_ingest::test_upstream::{FakeUpstream, Reply};
     use pkdump_ingest::upstream::{
         ENV_POKEMON_TCG_DATA_BASE_URL, ENV_POKEMONTCG_BASE_URL, ENV_TCGCSV_BASE_URL,
     };
-    use pkdump_lake::{Dataset, DirStore, Manifest, RawLanding};
 
     /// Classification of each dataset's role in a `pkdump setup` run.
     #[allow(dead_code)]
@@ -389,28 +389,31 @@ mod setup_coverage {
         /// Fetched only when a new set has been published since the last bulk
         /// corpus snapshot. On a fully-current bulk corpus, `import_tail` still
         /// fetches the pokemontcg.io sets list but finds nothing new to import,
-        /// so [`Dataset::Cards`] would not appear in the manifests. The test
+        /// so [`pkdump_site::CARDS`] would not appear in the manifests. The test
         /// exercises this path by serving svp, a set absent from the bulk
         /// tarball, so the cards manifest IS expected here.
         LagWindow(&'static str),
     }
 
-    /// Exhaustive by design: adding a [`Dataset`] variant requires classifying
-    /// it here before the test compiles, so a new upstream input cannot be
-    /// invisible to this gate (the same guarantee `raw_coverage` gives for the
-    /// nightly refresh).
+    /// Every dataset in [`pkdump_site::DATASETS`] is classified here, and an unclassified one
+    /// panics by name, so a new upstream input cannot be invisible to this gate (the same
+    /// guarantee `raw_coverage` gives for the nightly refresh).
     fn classification(dataset: Dataset) -> SetupNeeds {
         match dataset {
-            Dataset::Bulk
-            | Dataset::Sets
-            | Dataset::Groups
-            | Dataset::Products
-            | Dataset::Prices => SetupNeeds::Always,
-            Dataset::Cards => SetupNeeds::LagWindow(
+            pkdump_site::BULK
+            | pkdump_site::SETS
+            | Dataset::GROUPS
+            | Dataset::PRODUCTS
+            | Dataset::PRICES => SetupNeeds::Always,
+            pkdump_site::CARDS => SetupNeeds::LagWindow(
                 "setup fetches cards from pokemontcg.io only for sets the bulk corpus \
                  hasn't caught up to yet — the same lag window pkdump data refresh's \
                  tail covers. The test exercises this path by serving svp, a set that \
                  is in pokemontcg.io but absent from the bulk tarball.",
+            ),
+            other => panic!(
+                "{other} is not classified: say whether setup has to land it, here and in \
+                 pkdump_site::DATASETS"
             ),
         }
     }
@@ -579,13 +582,26 @@ mod setup_coverage {
 
         let manifests = landing.manifests();
 
+        // The loop below walks the site's own list, so a dataset landed and never listed
+        // would be invisible to it. This is the other direction: nothing landed is unlisted.
+        for m in &manifests {
+            assert!(
+                pkdump_site::DATASETS
+                    .iter()
+                    .any(|(s, d)| s.as_str() == m.source && d.as_str() == m.dataset),
+                "{}/{} was landed but is not in pkdump_site::DATASETS",
+                m.source,
+                m.dataset
+            );
+        }
+
         // 1. Exhaustive classification: every dataset setup acquires is present
         //    with at least one landed part. The match is exhaustive so a new
         //    Dataset variant cannot slip past without being classified here.
-        for dataset in Dataset::ALL {
-            match classification(*dataset) {
+        for &(_, dataset) in pkdump_site::DATASETS {
+            match classification(dataset) {
                 SetupNeeds::Always | SetupNeeds::LagWindow(_) => {
-                    let m = manifest_for(&manifests, *dataset).unwrap_or_else(|| {
+                    let m = manifest_for(&manifests, dataset).unwrap_or_else(|| {
                         panic!(
                             "setup landed nothing for {dataset} — add it to acquire() and \
                              classify it in setup_coverage::classification()"
@@ -624,8 +640,8 @@ mod setup_coverage {
         //    NOT for sv3pt5, which was already in the catalog from the bulk tarball.
         //    The pokemontcg.io client percent-encodes the colon in `set.id:svp`
         //    to `%3A` in the query string, so we check for the encoded form.
-        let cards_m =
-            manifest_for(&manifests, Dataset::Cards).expect("cards manifest for lag-window set");
+        let cards_m = manifest_for(&manifests, pkdump_site::CARDS)
+            .expect("cards manifest for lag-window set");
         assert!(
             cards_m.parts.iter().any(|p| p.url.contains("set.id%3Asvp")),
             "setup must fetch cards for the lag-window set (svp): {:?}",
@@ -640,7 +656,7 @@ mod setup_coverage {
 
         // 4. Japanese TCGCSV (category 85) shares `source=tcgcsv` with
         //    English (category 3) — same check as raw_coverage.
-        for dataset in [Dataset::Groups, Dataset::Products, Dataset::Prices] {
+        for dataset in [Dataset::GROUPS, Dataset::PRODUCTS, Dataset::PRICES] {
             let m = manifest_for(&manifests, dataset).expect("tcgcsv manifest");
             let urls: Vec<&str> = m.parts.iter().map(|p| p.url.as_str()).collect();
             assert!(

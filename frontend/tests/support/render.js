@@ -21,11 +21,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { render } from 'svelte/server';
+import { tokensCss } from './tokens.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 /** @type {string} */
-export const uiDir = join(here, '../../src/lib/components/ui');
+export const uiDir = join(here, '../../src/lib/kit/components');
 
 /**
  * Server-render a component and return its markup.
@@ -72,7 +73,7 @@ export function rootClass(html) {
  * A primitive may reference visual values only through the semantic layer.
  * Checked against the source file rather than the rendered CSS so that a
  * literal smuggled into an inline `style` attribute is caught too.
- * @param {string} file basename inside src/lib/components/ui
+ * @param {string} file basename inside src/lib/kit/components
  */
 export function assertTokenOnly(file) {
 	// Comments are stripped first, the same way tokens.contrast.test.js does it:
@@ -115,11 +116,11 @@ export function tokensUsed(css) {
  * @param {string} css
  */
 export function assertTokensDeclared(css) {
-	const tokensCss = readFileSync(join(here, '../../src/lib/styles/tokens.css'), 'utf8').replace(
+	const stripped = tokensCss.replace(
 		/\/\*[\s\S]*?\*\//g,
 		''
 	);
-	const declared = new Set([...tokensCss.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+	const declared = new Set([...stripped.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
 	const unknown = tokensUsed(css).filter(
 		// Component-local custom properties (`--badge-fill` and friends) are set
 		// and read inside the component itself; only global roles must exist.

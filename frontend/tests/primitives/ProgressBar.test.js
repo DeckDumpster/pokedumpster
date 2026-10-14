@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import ProgressBar from '../../src/lib/components/ui/ProgressBar.svelte';
+import ProgressBar from '../../src/lib/kit/components/ProgressBar.svelte';
 import { markup, styles, rootClass, assertTokenOnly, assertTokensDeclared } from '../support/render.js';
 
 /** @param {Record<string, unknown>} [props] */

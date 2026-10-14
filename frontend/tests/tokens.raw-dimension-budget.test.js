@@ -38,11 +38,11 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, sep } from 'node:path';
+import { tokenFiles } from './support/tokens.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const frontendRoot = join(here, '..');
 const srcRoot = join(frontendRoot, 'src');
-const tokensPath = join(srcRoot, 'lib/styles/tokens.css');
 const budgetPath = join(srcRoot, 'lib/styles/raw-dimension-budget.json');
 
 /** @type {{ total: number, files: Record<string, number> }} */
@@ -142,7 +142,7 @@ function walk(dir) {
 /** Actual counts, keyed the same way as the budget: src-relative, `/` separated. */
 const actual = new Map(
 	walk(srcRoot)
-		.filter((f) => f !== tokensPath && SCANNED.test(f))
+		.filter((f) => !tokenFiles.includes(f) && SCANNED.test(f))
 		.map((f) => /** @type {[string, string[]]} */ ([
 			relative(srcRoot, f).split(sep).join('/'),
 			rawDimensions(readFileSync(f, 'utf8'))

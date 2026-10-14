@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import EmptyState from '../../src/lib/components/ui/EmptyState.svelte';
+import EmptyState from '../../src/lib/kit/components/EmptyState.svelte';
 import { markup, styles, rootClass, slot, assertTokenOnly, assertTokensDeclared } from '../support/render.js';
 
 /** @param {Record<string, unknown>} [props] */

@@ -1,0 +1,21 @@
+{
+	"kit": "https://github.com/DeckDumpster/dumpster-kit",
+	"rev": "ecc3ed6ebf32d551262609f61fe519546c0878ea",
+	"files": {
+		"components/Badge.svelte": "be5490143438088608868487f273f57e0c3a623564daedd2b35728dac61ced8a",
+		"components/Button.svelte": "9deb4297b913bb6b147e195575e276fd04af206f8e3a7223eaa778b8c729093b",
+		"components/EmptyState.svelte": "83cc0fd21875155ca8ec3f57b85d166827e6b187cbd5962cecac6f0cda149778",
+		"components/Field.svelte": "8460621a09849b1b00f55eb871fa0332e32271b26c7901281503890380dd337e",
+		"components/Menu.svelte": "9a61c75ec57b6c42742a8e71310957ed769e26d96478c6146643a01148832bf9",
+		"components/Panel.svelte": "a3d8fb70dcff126b48b64fff0e77cc8e99455fd4076756e8cf3d211a0d105795",
+		"components/ProgressBar.svelte": "b7d7a0a8df6e51e6d1271d72838235215594f54b67e2f429371fa6e049a8b0a8",
+		"components/SearchField.svelte": "8b2944015af386c532cf506b729c6ef6fb01a50909c1e052bb7011a6a49ab83f",
+		"components/SectionHeader.svelte": "ff2294ae25df7fe5ac8f0d6994ee8a8e5f4f8612bc875e76405becb67829f653",
+		"components/Segmented.svelte": "2f0d0688598d9e607d1c4a684e80f5dd19e563f45b633872099dda5cde0478ab",
+		"components/Toolbar.svelte": "18110c705b2dc6cfb0c180acd02f05747dc0c16538c978e0f1e74f52bafc433e",
+		"components/index.ts": "57f7746010f8377aa09bc8c573d215282ab2276af72074b7cec1b8b92a6488d9",
+		"contrast-pairs.json": "dbd9be906005196a1b9a8fd68b683dab32d89251108cf97e2be36317f1abf93c",
+		"tokens.css": "d1742d28e1132fc845487777bf7819be8f56d34d1bab931f87bb69791dd13260",
+		"tokens.ts": "15e065df8dfb937d6070028011ba61326f498b0d4e3ba43b61178ea9f0ac7498"
+	}
+}

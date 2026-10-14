@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import Panel from '../../src/lib/components/ui/Panel.svelte';
+import Panel from '../../src/lib/kit/components/Panel.svelte';
 import { markup, styles, rootClass, slot, assertTokenOnly, assertTokensDeclared } from '../support/render.js';
 
 /** @param {Record<string, unknown>} [props] */

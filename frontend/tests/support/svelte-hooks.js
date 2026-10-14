@@ -1,7 +1,7 @@
 /**
  * Teach Node's module loader to import `.svelte` files.
  *
- * The primitives in `src/lib/components/ui/` need render tests, and the test
+ * The primitives in `src/lib/kit/components/` need render tests, and the test
  * runner is Node's built-in one — no jsdom, no testing-library, no extra
  * dependency (the same rule `tokens.contrast.test.js` set). So instead of a
  * DOM we compile each component for the server and render it to a string:

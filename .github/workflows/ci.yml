@@ -53,14 +53,14 @@ on:
     branches:
       - master
       - 'integration/**'
-  # `force_spill` runs the job on EC2 on demand instead of Proxmox (provision's
-  # `spill: ec2-only`). For the Concierge and the spill probe proof after a
-  # runner/AMI change. Default false: push, PR and a dispatch that omits it keep
-  # `spill: ec2` (EC2 only when the hypervisor is full) and pay nothing extra.
+  # The gate runs on EC2 by default (provision's `spill: ec2-only`), like
+  # deckdumpster's: the Proxmox disk is contended and the serial tiers no longer
+  # fit the 90-minute timeout there (sp-crsh57). `allow_proxmox` is the escape
+  # hatch: true restores `spill: ec2` (EC2 only when the hypervisor is full).
   workflow_dispatch:
     inputs:
-      force_spill:
-        description: 'Run on EC2 (spill: ec2-only), skipping Proxmox'
+      allow_proxmox:
+        description: 'Allow Proxmox (spill: ec2) instead of EC2 only'
         type: boolean
         default: false
 
@@ -111,7 +111,7 @@ jobs:
           pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
-          spill:              ${{ inputs.force_spill && 'ec2-only' || 'ec2' }}
+          spill:              ${{ inputs.allow_proxmox && 'ec2' || 'ec2-only' }}
           spill-after-seconds: '60'
           spill-max-instances: 2
           aws-role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}

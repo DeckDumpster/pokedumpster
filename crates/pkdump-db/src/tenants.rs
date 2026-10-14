@@ -334,7 +334,7 @@ pub fn purge(database_id: &str) -> Result<User> {
     }
     remove_sidecars(&path);
     let _ = std::fs::remove_dir_all(litestream_dir(&path));
-    registry::delete(&conn, database_id)
+    Ok(registry::delete(&conn, database_id)?)
 }
 
 /// One database moved between the two ways of naming it.
@@ -463,7 +463,7 @@ pub fn unmigrate() -> Result<(Vec<Moved>, Vec<User>)> {
             // Put it back rather than leaving a handle-named file that a row
             // still claims under its id.
             let _ = std::fs::rename(&to, &from);
-            return Err(e);
+            return Err(e.into());
         }
         moved.push(Moved {
             handle: user.handle,

@@ -131,10 +131,6 @@ pub(crate) const NOT_CATALOG_INPUTS: &[(&str, &str)] = &[
         "the per-tenant collection database, converged by open_user on its own file",
     ),
     (
-        "crates/pkdump-db/src/schema_registry.sql",
-        "registry.sqlite, converged by open_registry on its own file",
-    ),
-    (
         "data/conditions.json",
         "the collection's own condition multipliers — pd-s4c2 moved `conditions` out of \
          the catalog and into the tenant database, and `init_user_schema` seeds it there \

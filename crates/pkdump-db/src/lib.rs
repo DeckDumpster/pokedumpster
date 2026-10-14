@@ -49,12 +49,13 @@ mod error;
 mod paths;
 
 pub use connection::{
-    BUSY_TIMEOUT, IngestSeeds, WalCheckpoint, WalReclaim, attach_shared_readonly,
+    BUSY_TIMEOUT, IngestSeeds, TENANT_SPEC, WalCheckpoint, WalReclaim, attach_shared_readonly,
     checkpoint_truncate, connect_user, init_user_schema, open_registry, open_shared,
     open_shared_for_serving, open_shared_readonly, open_shared_with_patience, open_user,
     reclaim_catalog_wal, reconcile_ingest_dependent_seeds, restore_db, snapshot_db,
 };
 pub use error::{DbError, Result};
+pub use paths::app as app_prefix;
 pub use paths::{
     HANDLE_RULE, TENANTS_DIR, current_user, legacy_user_db_path, pkdump_home, registry_db_path,
     shared_db_path, tenant_db_file, tenant_db_path, tenants_dir, validate_database_id,

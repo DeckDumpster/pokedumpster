@@ -87,8 +87,8 @@ PKDUMP_CI_FRONTEND_TIERS="frontend container browser"
 
 # What a change under lake/ can reach. The PYTHON tree only: it builds its own job
 # image from lake/Containerfile and lake/pyproject.toml, and nothing outside it
-# consumes it — the `pkdump_lake` references in crates/ are the RUST crate
-# `pkdump-lake`, which is a different thing and lives under crates/.
+# consumes it — the `dumpster_kit_lake` references in crates/ are the kit's RUST
+# crate, which is a different thing and lives in the dumpster-kit repository.
 #
 # All four lake gates sit behind `if tier lake` in deploy/ci.sh — run.sh, prices.sh,
 # value_snapshots.sh and derive.sh — so this bucket runs every test that exercises
@@ -97,7 +97,7 @@ PKDUMP_CI_FRONTEND_TIERS="frontend container browser"
 #
 # NOT extended to crates/pkdump-lakehouse/: the app Containerfile BUILDS and SHIPS
 # pkdump-lake-derive, and pkdump-cli and pkdump-derive both depend on the
-# pkdump-lake crate. A change there reaches the app image, so it still runs
+# dumpster-kit-lake crate. A change there reaches the app image, so it still runs
 # everything until that coupling is actually broken.
 PKDUMP_CI_LAKE_TIERS="lake"
 

@@ -344,7 +344,7 @@ fn refresh(args: RefreshCmdArgs) -> anyhow::Result<()> {
 /// were complete, and the dataset simply was not there.
 ///
 /// The cards gap is now covered by the pokemon-tcg-data bulk corpus (db-9ogb):
-/// one tarball landing as `Dataset::Bulk` carries every set and card, so a
+/// one tarball landing as `pkdump_site::BULK` carries every set and card, so a
 /// cold rebuild can derive without the pokemontcg.io tail's cards. The tail
 /// still covers the 2–3 month lag window between a set's publication and the
 /// bulk repo catching up.
@@ -368,11 +368,11 @@ mod raw_coverage {
     use std::path::Path;
     use std::sync::{Arc, MutexGuard};
 
+    use dumpster_kit_lake::{Dataset, DirStore, Manifest, RawLanding};
     use pkdump_ingest::test_upstream::{FakeUpstream, Reply};
     use pkdump_ingest::upstream::{
         ENV_POKEMON_TCG_DATA_BASE_URL, ENV_POKEMONTCG_BASE_URL, ENV_TCGCSV_BASE_URL,
     };
-    use pkdump_lake::{Dataset, DirStore, Manifest, RawLanding};
 
     const INGEST_DATE: &str = "2026-09-20";
     const CLOCK_AT: &str = "2026-09-20T06:00:00Z";
@@ -389,23 +389,27 @@ mod raw_coverage {
         TailLagWindow(&'static str),
     }
 
-    /// The match is exhaustive on purpose: a new [`Dataset`] does not compile
-    /// until somebody says whether a refresh has to land it. That is what
-    /// makes this a gate against the *next* gap rather than a fix for this
-    /// one.
+    /// Every dataset in [`pkdump_site::DATASETS`] is classified, and a dataset that is not
+    /// panics by name. The kit's `Dataset` is an open type, so the compiler no longer
+    /// forces the question; the loop over the site's own list and the panic here do, which
+    /// keeps this a gate against the *next* gap rather than a fix for this one.
     fn coverage(dataset: Dataset) -> Coverage {
         match dataset {
-            Dataset::Sets
-            | Dataset::Groups
-            | Dataset::Products
-            | Dataset::Prices
-            | Dataset::Bulk => Coverage::Refresh,
-            Dataset::Cards => Coverage::TailLagWindow(
+            pkdump_site::SETS
+            | Dataset::GROUPS
+            | Dataset::PRODUCTS
+            | Dataset::PRICES
+            | pkdump_site::BULK => Coverage::Refresh,
+            pkdump_site::CARDS => Coverage::TailLagWindow(
                 "the pokemontcg.io tail fetches cards only when a new set has been published \
                  and the catalog lacks it — on most nights none are missing. The \
-                 pokemon-tcg-data bulk corpus (Dataset::Bulk) covers the full cards history \
+                 pokemon-tcg-data bulk corpus (pkdump_site::BULK) covers the full cards history \
                  for cold rebuilds; the tail covers only the 2–3 month lag window before \
                  the bulk repo catches up (pd-v1ca, db-9ogb)",
+            ),
+            other => panic!(
+                "{other} is not classified: say whether an ordinary refresh has to land it, \
+                 here and in pkdump_site::DATASETS"
             ),
         }
     }
@@ -614,12 +618,25 @@ mod raw_coverage {
         let before = upstream.requests().len();
         let manifests = land_night(&db, &tmp.path().join("night-2"));
 
+        // The loop below walks the site's own list, so a dataset landed and never listed
+        // would be invisible to it. This is the other direction: nothing landed is unlisted.
+        for m in &manifests {
+            assert!(
+                pkdump_site::DATASETS
+                    .iter()
+                    .any(|(s, d)| s.as_str() == m.source && d.as_str() == m.dataset),
+                "{}/{} was landed but is not in pkdump_site::DATASETS",
+                m.source,
+                m.dataset
+            );
+        }
+
         // 1. Every dataset a refresh is responsible for, walked from the enum
         //    rather than from a list written here.
-        for dataset in Dataset::ALL {
-            match coverage(*dataset) {
+        for &(_, dataset) in pkdump_site::DATASETS {
+            match coverage(dataset) {
                 Coverage::Refresh => {
-                    let landed = manifest_for(&manifests, *dataset).unwrap_or_else(|| {
+                    let landed = manifest_for(&manifests, dataset).unwrap_or_else(|| {
                         panic!(
                             "an ordinary night landed no {dataset} at all — the refresh \
                              derives the catalog from it, so raw/ cannot rebuild the \
@@ -633,7 +650,7 @@ mod raw_coverage {
                     assert!(landed.complete, "{dataset} landed an incomplete run");
                 }
                 Coverage::TailLagWindow(_why) => assert!(
-                    manifest_for(&manifests, *dataset).is_none(),
+                    manifest_for(&manifests, dataset).is_none(),
                     "{dataset} landed on an ordinary night — expected nothing (the tail \
                      only fetches this when a new set has been published)"
                 ),
@@ -662,7 +679,7 @@ mod raw_coverage {
         // 3. Japanese TCGCSV (category 85) shares `source=tcgcsv` with
         //    English (category 3), so the only evidence it landed is in the
         //    URLs. Both categories, in the same prefixes.
-        for dataset in [Dataset::Groups, Dataset::Products, Dataset::Prices] {
+        for dataset in [Dataset::GROUPS, Dataset::PRODUCTS, Dataset::PRICES] {
             let m = manifest_for(&manifests, dataset).expect("a tcgcsv prefix");
             let urls: Vec<&str> = m.parts.iter().map(|p| p.url.as_str()).collect();
             assert!(

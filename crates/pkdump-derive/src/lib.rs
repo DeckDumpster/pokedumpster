@@ -65,21 +65,20 @@
 //! filed rather than papered over, and it is why this crate says so out loud
 //! rather than leaving it to be discovered from a row count.
 
-pub mod clock;
-
 use std::path::Path;
 use std::sync::Arc;
 
 use rusqlite::Connection;
 
+use dumpster_kit_lake::RawLanding;
 use pkdump_ingest::landing::{ReplaySource, Wire};
 use pkdump_ingest::pokemontcg::PokemonTcgClient;
 use pkdump_ingest::tcgcsv::TcgcsvClient;
-use pkdump_lake::RawLanding;
 
 use pkdump_ingest::{coverage, japan, overrides, pokemon_tcg_data, symbols, tcgcsv};
 
-pub use clock::DeriveClock;
+// The clock and the landing bracket are the kit's: every site's derive shares them.
+pub use dumpster_kit_derive::{DeriveClock, finalize_landing};
 
 /// Everything a derivation needs that is not the database.
 pub struct Options<'a> {
@@ -658,45 +657,4 @@ fn import_tcgcsv(
         n_prices += tcgcsv::import_prices(conn, &prices, observed)?;
     }
     Ok((n_groups, n_sealed, n_cards, n_prices))
-}
-
-/// Write the run's manifests and report what landed.
-///
-/// `error` is the acquisition phase's failure, if it had one; every manifest
-/// then records that the run stopped early. A manifest that cannot be
-/// written is an error in its own right — an unwritten manifest is
-/// indistinguishable from a run that never got that far — but it must not
-/// mask the fetch failure that is the more useful diagnosis.
-pub fn finalize_landing(
-    landing: &Arc<RawLanding>,
-    error: Option<&anyhow::Error>,
-) -> anyhow::Result<()> {
-    let text = error.map(|e| format!("{e:#}"));
-    let outcome = landing.finalize(text.as_deref());
-
-    for manifest in landing.manifests() {
-        println!(
-            "  raw: {}/{} — {} part(s), {} byte(s), {}",
-            manifest.source,
-            manifest.dataset,
-            manifest.parts.len(),
-            manifest.total_bytes(),
-            if manifest.complete {
-                "complete".to_string()
-            } else {
-                format!("INCOMPLETE ({} failure(s))", manifest.failures.len())
-            }
-        );
-    }
-
-    match outcome {
-        Ok(()) => Ok(()),
-        // The acquisition error is the one worth propagating; this one still
-        // has to be said out loud rather than dropped.
-        Err(e) if error.is_some() => {
-            eprintln!("WARN: could not write the raw landing manifests: {e}");
-            Ok(())
-        }
-        Err(e) => Err(e.into()),
-    }
 }

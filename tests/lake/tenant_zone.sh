@@ -570,43 +570,13 @@ echo "    ok   tenant/ holds nothing; the catalog's 2 seeded objects are untouch
 echo "==> §8  The prefixes and the window do not drift across their three homes"
 # Rust (the shipper reads them at runtime), the policy documents (AWS reads
 # them) and the deploy script (bash) cannot share an implementation. What they
-# can share is this check. A prefix changed in one and not the others does not
-# fail loudly — it silently widens a policy.
-RS="${REPO_DIR}/crates/pkdump-lake/src/tenant.rs"
-RUST_TENANT=$(grep -oP 'TENANT_ROOT: &str = "\K[^"]+' "$RS")
-RUST_DAYS=$(grep -oP 'RETENTION_DAYS: u32 = \K[0-9]+' "$RS")
-# Split on the comma FIRST: without it `[^"]+` happily matches the `, ` between
-# two quoted strings and the list comes out with a phantom entry in it.
-RUST_CATALOG=$(grep -oP 'CATALOG_ROOTS: &\[&str\] = &\[\K[^]]+' "$RS" |
-	tr ',' '\n' | grep -oP '"\K[^"]+')
-
-[ "$RUST_TENANT" = "tenant/" ] || die "tenant.rs says the zone is ${RUST_TENANT}; this gate is written against tenant/"
-[ "$RUST_DAYS" = "90" ] || die "tenant.rs says ${RUST_DAYS}-day retention; 90 is the product limit"
-
-SRC_POLICIES="${REPO_DIR}/deploy/policies/tenant-zone"
-grep -q "\"Prefix\": \"${RUST_TENANT}\"" "${SRC_POLICIES}/lifecycle.json" ||
-	die "lifecycle.json does not scope itself to ${RUST_TENANT}"
-grep -q "\"Days\": ${RUST_DAYS}" "${SRC_POLICIES}/lifecycle.json" ||
-	die "lifecycle.json does not expire after ${RUST_DAYS} days"
-grep -q "{{BUCKET}}/${RUST_TENANT}\*" "${SRC_POLICIES}/catalog-credentials.json" ||
-	die "the catalog policy does not deny ${RUST_TENANT} by that name"
-grep -q "{{BUCKET}}/${RUST_TENANT}\*" "${SRC_POLICIES}/tenant-credentials.json" ||
-	die "the tenant policy does not allow ${RUST_TENANT} by that name"
-for c in $RUST_CATALOG; do
-	grep -q "{{BUCKET}}/${c}\*" "${SRC_POLICIES}/catalog-credentials.json" ||
-		die "the catalog policy does not allow ${c}, which tenant.rs calls a catalog root"
-	grep -q "{{BUCKET}}/${c}\*" "${SRC_POLICIES}/tenant-credentials.json" ||
-		die "the tenant policy does not deny ${c}, which tenant.rs calls a catalog root"
-done
-
-ZONE_SH="${REPO_DIR}/deploy/setup-tenant-zone.sh"
-grep -q "^TENANT_PREFIX=\"${RUST_TENANT}\"$" "$ZONE_SH" ||
-	die "setup-tenant-zone.sh disagrees with tenant.rs about the zone prefix"
-grep -q "^RETENTION_DAYS=${RUST_DAYS}$" "$ZONE_SH" ||
-	die "setup-tenant-zone.sh disagrees with tenant.rs about the retention window"
-grep -q "^CATALOG_PREFIXES=\"$(echo "$RUST_CATALOG" | tr '\n' ' ' | sed 's/ $//')\"$" "$ZONE_SH" ||
-	die "setup-tenant-zone.sh disagrees with tenant.rs about the catalog prefixes"
-echo "    ok   ${RUST_TENANT} / ${RUST_CATALOG//$'\n'/ } / ${RUST_DAYS}d agree across Rust, the policies and the script"
+# can share is a check, and it is not here any more: the Rust constants are
+# dumpster-kit-lake's, so a regex over crates/pkdump-lake/src/tenant.rs had
+# nothing left to read. `cargo test -p pkdump-site zone_agreement` compares the
+# COMPILED values to the policies and the script instead -- hermetic, in the
+# unit tier, and about the number the shipper really uses rather than about the
+# text that spells it. This gate keeps what only a real bucket can show.
+echo "    (held by cargo test -p pkdump-site zone_agreement)"
 
 echo ""
 echo "==> tests/lake/tenant_zone.sh PASSED"

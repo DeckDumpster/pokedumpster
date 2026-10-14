@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use pkdump_lake::{Dataset, PartFormat, Source};
+use dumpster_kit_lake::PartFormat;
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::Value;
@@ -206,8 +206,8 @@ pub fn land_bulk(wire: &Wire) -> Result<()> {
         &http,
         http.get(tarball_url()),
         wire,
-        Source::PokemonTcgData,
-        Dataset::Bulk,
+        pkdump_site::POKEMON_TCG_DATA,
+        pkdump_site::BULK,
         PartFormat::TarGz,
     )?;
     Ok(())
@@ -231,8 +231,8 @@ pub fn download_and_import(conn: &mut Connection, wire: &Wire, now: &str) -> Res
         &http,
         http.get(tarball_url()),
         wire,
-        Source::PokemonTcgData,
-        Dataset::Bulk,
+        pkdump_site::POKEMON_TCG_DATA,
+        pkdump_site::BULK,
         PartFormat::TarGz,
     )?;
 

@@ -68,8 +68,8 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use dumpster_kit_lake::{DirStore, RawLanding};
 use pkdump_derive::DeriveClock;
-use pkdump_lake::{DirStore, RawLanding};
 use support::{FakeUpstream, Reply};
 
 /// The first day's partition, and the clock the run that landed it read.
@@ -1121,7 +1121,7 @@ fn a_gap_in_raw_is_fatal_with_the_upstream_sitting_right_there() {
     // the "we stopped landing this endpoint" shape.
     let manifest = find_manifest(&h.raw(), "dataset=prices");
     let text_before = std::fs::read_to_string(&manifest).expect("read manifest");
-    let mut parsed: pkdump_lake::Manifest =
+    let mut parsed: dumpster_kit_lake::Manifest =
         serde_json::from_str(&text_before).expect("parse manifest");
     let dropped = parsed
         .parts

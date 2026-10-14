@@ -105,22 +105,28 @@ cargo test -p pkdump-db          # test a single crate
 cargo test -p pkdump-cli         # the CLI, incl. `outbox status
                                  #   --require-backfill` — the check
                                  #   `setup-lake.sh --arm-shipper` arms on
-cargo test -p pkdump-lake        # raw-landing key layout, manifest, config
+cargo test -p pkdump-site        # the site's declarations over the kit's lake:
+                                 #   the landed layout is unchanged, the names
+                                 #   the runbooks spell, and zone_agreement —
+                                 #   the tenant zone's prefix and window across
+                                 #   the kit's Rust, the policies and the script
 cargo test -p pkdump-ingest --test raw_landing
                                  # the real HTTP clients against a local
                                  #   upstream: landing is a tee, a retry never
                                  #   overwrites, a short run says so
-cargo test -p pkdump-ship        # the shipper: part planning and gap
-                                 #   detection, the sealed envelope, Parquet —
-                                 #   and tests/shipping.rs, the four claims
-                                 #   pd-dxn3 asks for, end to end
-cargo test -p pkdump-erase       # the deletion path: the prefix-confined sweep,
-                                 #   the proof and both its vacuity guards —
-                                 #   and tests/deletion.rs, the whole path over
-                                 #   really-shipped holdings, seen green AND red
-cargo test -p pkdump-lakehouse   # partition choice, replay, the comparator —
-                                 #   and tests/row_identical.rs, the acceptance
-                                 #   matrix, against the shipped binary
+cargo test -p pkdump-ship        # the shipper bound to this site: tests/
+                                 #   shipping.rs, the four claims pd-dxn3 asks
+                                 #   for, end to end; site_bindings.rs, the
+                                 #   claims about THIS schema the kit cannot
+                                 #   make; prod_compatibility.rs, the bytes
+                                 #   already in the bucket still open
+cargo test -p pkdump-erase       # the deletion path bound to this site: tests/
+                                 #   deletion.rs, the whole path over really-
+                                 #   shipped holdings, seen green AND red
+cargo test -p pkdump-lakehouse   # this site's requirement tables and replay
+                                 #   adapter — and tests/row_identical.rs, the
+                                 #   acceptance matrix, against the shipped
+                                 #   binary
 bash tests/lake/derive.sh        # the whole CATALOG from raw/, in the shipped
                                  #   image, on an --internal network with the
                                  #   socket-to-1.1.1.1 egress assertion
@@ -230,7 +236,8 @@ cd tests/ui && npm test
 
 ## Architecture Overview
 
-Cargo workspace, ten crates (`crates/`):
+Cargo workspace, nine crates (`crates/`) over **dumpster-kit** — see "The kit's
+lakehouse" below for what is the kit's and what stays here:
 
 - **pkdump-core** — domain types + pure logic (variant code parsing,
   override matching, import format adapters). No IO.
@@ -256,20 +263,20 @@ Cargo workspace, ten crates (`crates/`):
   `pkdump setup` / `pkdump data refresh` — never at request time.
   `landing.rs` is the one place an upstream response becomes bytes, so
   "land what we fetched" is a property of a single function.
-- **pkdump-lake** — the raw landing zone: the `raw/` key layout, the
-  run manifest, the object stores, and the `lake.env` config. Write-only
-  and offline-only; nothing on the serving path touches it. See
-  `deploy/LAKE.md`.
+- **pkdump-site** — this site's declarations over the kit's lake, and nothing
+  else: the `PKDUMP` prefix every configuration name derives from, the
+  upstreams it lands (`tcgcsv`, `pokemontcgio`, `pokemon-tcg-data`) and the
+  datasets from each. No behaviour; see "The kit's lakehouse" below.
 - **pkdump-ship** — the shipper (`pkdump-ship`): the ownership outbox into
-  the tenant zone, encrypted per tenant. Offline and bin-plus-lib; it is a
-  separate crate because it must read SQLite, and `pkdump-lake` deliberately
-  links no SQLite at all. See "The shipper" below.
+  the tenant zone, encrypted per tenant. `dumpster-kit-ship`, bound to this
+  site: which tables are holdings, how a tenant database is opened, where the
+  registry is. Offline and bin-plus-lib. See "The shipper" below.
 - **pkdump-erase** — the deletion path (`pkdump-erase`): tombstone the
   tenant's key, drop their partition, and then prove the result by attempting
-  every read path and requiring each to fail. Offline and its own crate for
-  the same reason the shipper is — it needs the tenant credentials and the
-  master key, and `pkdump-cli` must not link either. See "The deletion path"
-  below.
+  every read path and requiring each to fail. `dumpster-kit-erase`, bound to
+  this site's key custody. Offline and its own crate for the same reason the
+  shipper is — it needs the tenant credentials and the master key, and
+  `pkdump-cli` must not link either. See "The deletion path" below.
 - **pkdump-server** — Axum HTTP app; JSON API under `/api` + serves the
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).
@@ -1490,22 +1497,29 @@ cross-tenant, shared, forever) against the **tenant zone** (`tenant/` —
 tenant-keyed by construction, governed separately). Four things about it are
 decisions:
 
-- **The catalog zone keeps every assertion it had.** No Iceberg field is
-  tenant-identifying, `crates/pkdump-lake` links no SQLite at all, the Python
-  write path imports no `sqlite3`, the derive resolves no tenant.
+- **The catalog zone keeps every assertion it had** — except one, which the
+  kit cutover (sp-2x82v8) weakened and the guard's header says so rather than
+  dropping it quietly. No Iceberg field is tenant-identifying, the Python
+  write path imports no `sqlite3`, the derive resolves no tenant. What does
+  NOT survive is "the lake crate links no SQLite at all": `dumpster-kit-lake`
+  depends on `dumpster-kit-tenancy` (for `AppPrefix`), which links rusqlite,
+  so that claim now rests on the kit's source, which this repository pins by
+  revision and does not scan.
 - **The tenant zone's rules are INVERTED, not relaxed.** It must be
-  tenant-keyed — every key builder in `tenant.rs` takes a `database_id`,
-  because that prefix is what a deletion drops — and it must resolve no
-  identity: being handed an id is the contract, looking one up is not. The
-  shipper reaches no catalog prefix, no catalog entry point and no catalog
-  credential; the online path (`pkdump-db`, `pkdump-server`, `pkdump-keys`)
-  links neither zone, which is what makes the outbox the only way holdings
-  leave a collection.
-- **The carve-out is by ZONE and it is TOTAL.** Every Rust file in
-  `crates/pkdump-lake` must be classified into exactly one zone, and §12 fails
-  if the three lists do not cover the directory. A per-file exemption list is
-  what erodes; a classification that has to cover the directory cannot be
-  added to silently.
+  tenant-keyed — every key builder in the kit's `tenant.rs` takes a
+  `database_id`, because that prefix is what a deletion drops, and the kit
+  holds that in its own tests — and it must resolve no identity: being handed
+  an id is the contract, looking one up is not. The shipper and the eraser
+  reach no catalog prefix, no catalog entry point and no catalog credential;
+  the online path (`pkdump-db`, `pkdump-server`) links no lake, key-custody or
+  S3 crate, which is what makes the outbox the only way holdings leave a
+  collection; and the crates that build the catalog from `raw/` link neither
+  key custody, the shipper nor the eraser.
+- **The carve-out is TOTAL.** Every Rust file in `crates/pkdump-site` must be
+  classified, and §12 fails if the list does not cover the directory. A
+  per-file exemption list is what erodes; a classification that has to cover
+  the directory cannot be added to silently. (This used to cover
+  `crates/pkdump-lake` in three zone lists; that code is the kit's now.)
 - **It has been seen red.** `tests/lake/tenant_isolation_selftest.sh` (lint
   tier, ~45s) copies the source trees, injects ONE violation at a time and
   requires the *specific* assertion to be the one that fails — 25 of them,
@@ -1518,9 +1532,73 @@ The credential half of the same boundary is not here and cannot be — it is two
 IAM documents against a real bucket, and `tests/lake/tenant_zone.sh` §4-§6 is
 where it is asserted, in both directions, seen red.
 
+### The kit's lakehouse (sp-2x82v8)
+
+The raw landing zone, the tenant zone's layout and stores, key custody, the
+shipper, the eraser, the derive clock and the lakehouse parts (partition
+choice, replay, the row-by-row comparator) are **dumpster-kit's**, used by
+dumpstar too, pinned at one revision in the root `Cargo.toml` (every kit crate
+at the SAME rev: two revisions would put two tenancy kernels in the tree, and
+an `AppPrefix` from one is not the other's). Nothing here keeps a copy of any
+of it. What stays is what only this site can say, and it is deliberately
+small:
+
+- **`crates/pkdump-site`** — the `PKDUMP` prefix every configuration name
+  derives from (`PKDUMP_LAKE_S3_BUCKET`, `~/.config/pkdump/lake.env`,
+  `PKDUMP_MASTER_KEY_FILE`, the HKDF labels), and the upstreams and datasets
+  it lands. The kit's `Source`/`Dataset` are open types because a kit that
+  enumerated one site's upstreams would be wrong for the next; the strings are
+  on-disk layout and `the_landed_layout_is_unchanged` holds them.
+- **`pkdump-ship` / `pkdump-erase`** — bin-plus-lib bindings, no steps of
+  their own (see "The shipper" and "The deletion path").
+- **`pkdump-lakehouse`** — this site's requirement tables. The kit's
+  `partition::choose` takes **one** `Incomplete` per table, and this site's
+  answer differs by dataset (pd-llbq: only the pokemontcg.io tail may be
+  short), so the table is three kit tables read in order — TCGCSV (refuse),
+  the tail (partial), bulk (refuse) — and `every_dataset_is_looked_for` holds
+  them to `pkdump_site::DATASETS`. A fourth upstream is a row in one of them
+  and a decision about what its shortfall means.
+
+Five things are decisions, not implementation:
+
+- **The bytes already in the bucket still open.** The cutover replaced the
+  code that derives every tenant's key and seals every part. A derivation that
+  drifts by one byte is every shipped part unreadable, and nothing reports it —
+  a part that will not open looks exactly like a part that was never written.
+  `crates/pkdump-ship/tests/prod_compatibility.rs` asserts LITERAL vectors
+  (master fingerprint, tenant key, a sealed part) produced by the pre-cutover
+  implementation from a fixed master key; a test that computed the expectation
+  with the code under test would pass for any prefix.
+- **`zone_holdings_run` counts by source in a JSON object** (`per_source`),
+  not in a column each (`rows`, `sealed_rows`). The kit writes it and knows no
+  site's sources. `rows` is therefore every holding, not the loose cards; the
+  transform reads `per_source` and refuses a row that says `{}` — written by a
+  build that counted differently — naming the command that reads the zone back.
+  An existing collection gains the column on open (`USER_ADDED_COLUMNS`, no
+  `user_version` bump) and keeps the old `sealed_rows` column, defaulting to 0
+  and read by nothing. `site_bindings.rs` has the upgrade as a test.
+- **`pkdump-db` keeps its own `outbox::Event` and `project`.** The kit has one
+  too (`dumpster_kit_ship::outbox`), and "one implementation of the resolution
+  rule" is the property that matters — but `pkdump-db` is the online crate and
+  the isolation guard forbids it linking the shipper (parquet, AES, S3). The
+  two are therefore held together by comparison, not by sharing:
+  `a_shipped_part_projects_back_to_the_live_collection` reduces the shipped
+  parts with the kit's `project` and requires the result equal to
+  `pkdump_db::outbox::project` over the collection's own outbox.
+- **The replay refusal names this site's command.** The kit says "the site's
+  data refresh"; `SiteReplay` says `pkdump data refresh`, and
+  `a_gap_in_raw_is_fatal_with_the_upstream_sitting_right_there` asserts the
+  sentence, so a kit that rewords it fails there rather than printing
+  something an operator cannot act on.
+- **Compile-time exhaustiveness over datasets is gone and a runtime check
+  replaced it.** The old `match` over a closed enum forced a decision for every
+  new dataset. The two raw-coverage gates (`data.rs`, `setup.rs`) now walk
+  `pkdump_site::DATASETS`, panic on a dataset they have not classified, and
+  require that nothing landed is missing from that list.
+
 ### Key custody for the tenant zone
 
-`pkdump-keys` is crypto-shredding for the tenant zone, defence in depth beside
+`dumpster-kit-keys` is crypto-shredding for the tenant zone, defence in depth beside
 the partition-drop deletion. One **master key** on the box (mode 600, in
 `~/.config/pkdump/<instance>/` beside `litestream.env`), per-tenant keys
 **derived** — `HKDF-SHA256(master, database_id)` — and a `tenant_key` table in
@@ -1537,7 +1615,7 @@ call for opposite responses (do nothing; page somebody). Four things hold it:
 - **Backup and destruction are different code paths**, and the difference is
   structural rather than nominal. `backup.rs` is about a **file** and never
   opens the registry; `destroy.rs` is about a **row** and never opens the key
-  file. `crates/pkdump-keys/tests/separation.rs` reads both sources and fails
+  file. The kit's `dumpster-kit-keys/tests/separation.rs` reads both sources and fails
   if either grows a reference to the other's world, so it stays true of code
   nobody has written yet. Sharing a helper is how "we lost it" becomes "we
   destroyed it"; sharing a name is not.
@@ -1584,12 +1662,14 @@ thing in the workspace that writes under `tenant/`.
 tenant/database_id=<id>/dataset=holdings/as_of=<date>/part-seq-<from>-<to>.parquet.enc
 ```
 
-It is a **separate crate** for a structural reason, not a tidiness one: the
-shipper must open a tenant's SQLite, and `crates/pkdump-lake` links no SQLite
-crate at all — which is what makes pd-cgi9 §1 ("no lake write path can open a
-tenant database") true by construction rather than by review. `pkdump-lake`
-still owns where the bytes go and hands out the handle
-(`open_tenant_zone`); `pkdump-ship` decides what is in one.
+It is `dumpster-kit-ship` bound to this site. The shipper must open a tenant's
+SQLite, which is why it was never part of the lake crate; the kit keeps that
+separation (`dumpster-kit-lake` owns where the bytes go and hands out the
+handle, `open_tenant_zone`; the shipper decides what is in one). The part that
+is this site's is small and is all in `crates/pkdump-ship/src/lib.rs`: which
+tables are holdings (`HOLDINGS_SOURCES`, held to `pkdump_db::outbox::
+SOURCE_TABLES` by `site_bindings.rs`), `pkdump_db::open_user` as the one
+opener of a tenant database, and the registry rows converted to the kit's.
 
 Five things are decisions:
 
@@ -1694,8 +1774,11 @@ says so in the same nightly run) and it is exactly why it is *conditional on
 there being a nightly shipper run to say anything at all*. Enable the two
 together.
 
-Gates: `cargo test -p pkdump-ship` (hermetic — planning, the envelope, Parquet,
-and `tests/shipping.rs`, which proves gap detection, idempotence, resumability
+Gates: `cargo test -p pkdump-ship` (hermetic — the planning, the envelope and
+Parquet are the kit's own tests now; here `tests/site_bindings.rs` restates
+the kit's claims over this site's real schema, `tests/prod_compatibility.rs`
+holds literal vectors the pre-cutover code produced (a tenant key, a sealed
+part) so every shipped part still opens, and `tests/shipping.rs` proves gap detection, idempotence, resumability
 and encryption-under-the-right-key over a `DirStore`, plus the seam with item
 5: a backfilled collection ships as ordinary events, dated from the rows' own
 timestamps rather than the day the backfill ran) and
@@ -1764,10 +1847,10 @@ and its replica — stays `pkdump tenant detach` / `pkdump tenant purge`. Doing
 it here would put a tenant-zone credential and the master key inside the
 binary that serves requests.
 
-`ObjectPurge` (`pkdump-lake`) is the third and narrowest zone handle: list a
+`ObjectPurge` (`dumpster-kit-lake`) is the third and narrowest zone handle: list a
 prefix, delete a key, and nothing else — no `get`, so the job that deletes a
 tenant's holdings never reads them. Confinement to ONE tenant's prefix is a
-level up, in `pkdump_erase::sweep`, which refuses a key outside it fatally
+level up, in the kit's `dumpster_kit_erase::sweep`, which refuses a key outside it fatally
 rather than skipping it.
 
 Gates: `cargo test -p pkdump-erase` (hermetic — the sweep, both vacuity
@@ -1804,10 +1887,10 @@ it in shape:
   That is the runtime half. The static half is
   `tests/lake/tenant_isolation_test.sh` (lint tier, hermetic, pd-cgi9): no
   Iceberg schema field name is tenant-identifying, and no lake write path *can*
-  open a tenant database — `crates/pkdump-lake` links no SQLite crate and the
-  Python write-path modules import no `sqlite3`, so both hold by construction
-  rather than by review, the way the closed `Source` enum holds "images are
-  never landed". Adding a tenant column or a tenant DB open now fails in a
+  open a tenant database — the Python write-path modules import no `sqlite3`
+  (the lake crate's half of this moved to the kit with the crate; see the
+  guard's header), so it holds by construction rather than by review, the way
+  the site's list of upstreams holds "images are never landed". Adding a tenant column or a tenant DB open now fails in a
   second instead of nothing at all. The transform tier is the deliberate
   exception the guard encodes: it opens every tenant's database, and is
   asserted to only ever READ the lake. Since the inbound leg that guard's axis
@@ -2146,8 +2229,8 @@ Anything that lands in a ROW is passed in rather than read: `DeriveClock`
 carries the one instant a run read, `Manifest.started_at` is where the landing
 side wrote it down, and `expand_all_printings` takes `deprecated_at` for the
 same reason. A clock read inside the derivation is the one value an offline
-rebuild can never reproduce, which is why `crates/pkdump-derive/src/clock.rs`
-is mostly argument.
+rebuild can never reproduce, which is why the kit's `DeriveClock`
+(`dumpster-kit-derive`) is mostly argument.
 
 Two units, and the split is the point (item 5): `pkdump-refresh@` LANDS,
 `pkdump-derive@` DERIVES, so a derive can run against yesterday's raw on a

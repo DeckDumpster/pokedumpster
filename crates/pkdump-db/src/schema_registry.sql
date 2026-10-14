@@ -79,7 +79,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS user_one_active_handle
 -- Per-tenant encryption keys for the tenant zone are DERIVED, never stored:
 -- HKDF(master key, database_id). So there is no key column here and never will
 -- be — the only thing worth recording is whether this database's key may still
--- be derived at all. See crates/pkdump-keys.
+-- be derived at all. See the kit's `dumpster-kit-keys`.
 --
 -- Three properties of this table are decisions, not implementation:
 --
@@ -103,7 +103,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS user_one_active_handle
 --
 -- What this table is NOT is the master key's business. The master key is a
 -- file; this is a database. Backing the key up never touches a row here, and
--- tombstoning a tenant never touches that file — see crates/pkdump-keys, where
+-- tombstoning a tenant never touches that file — see the kit's `dumpster-kit-keys`, where
 -- the two paths are kept apart on purpose.
 CREATE TABLE IF NOT EXISTS tenant_key (
     -- The database whose key state this is. Opaque ULID, exactly as

@@ -312,7 +312,7 @@ pub(crate) const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
 /// The same convergence for `schema_user.sql`. A collection created between
 /// pd-5m54 and pd-385w already carries `ownership_outbox`, so the amended
 /// `CREATE TABLE IF NOT EXISTS` above does nothing to it and the provenance
-/// column arrives only here. Same for `zone_holdings_run.sealed_rows` on any
+/// column arrives only here. Same for `zone_holdings_run.per_source` on any
 /// collection that has been read back from the zone at least once.
 ///
 /// This one is not defaultless, and that is the point rather than an
@@ -334,17 +334,20 @@ const USER_ADDED_COLUMNS: &[(&str, &str, &str)] = &[
         "ALTER TABLE ownership_outbox ADD COLUMN source TEXT NOT NULL \
          DEFAULT 'trigger' CHECK (source IN ('trigger', 'backfill', 'redrive'))",
     ),
-    // pd-bbv7. A collection read back from the zone before sealed had a
-    // staging table has a `zone_holdings_run` row that counts only its
-    // singles, and `0` is the true number of sealed lots that read
-    // materialised — so the default is a statement about those rows rather
-    // than a placeholder in them. No `user_version` bump, for the reason
-    // above it: an older binary writes the row without this column and reads
-    // the collection exactly as it did before.
+    // The kit cutover. `zone_holdings_run` counted each source in a column of its own
+    // (`rows`, `sealed_rows`); the shipper that writes it is now `dumpster-kit-ship`'s, which
+    // knows no site's sources and writes one JSON object keyed by source table instead.
+    // A collection read back by the old build has a row with no such object, and `'{}'`
+    // says exactly that: the transform refuses it, naming the command that reads the zone
+    // back, rather than valuing from a read that cannot say what it staged. The old
+    // `sealed_rows` column stays where an existing box has it, defaulting to 0 and read by
+    // nothing; a fresh collection never gets it. No `user_version` bump, for the reason
+    // above it: an older binary writes the row without this column and reads the collection
+    // exactly as it did before.
     (
         "zone_holdings_run",
-        "sealed_rows",
-        "ALTER TABLE zone_holdings_run ADD COLUMN sealed_rows INTEGER NOT NULL DEFAULT 0",
+        "per_source",
+        "ALTER TABLE zone_holdings_run ADD COLUMN per_source TEXT NOT NULL DEFAULT '{}'",
     ),
 ];
 

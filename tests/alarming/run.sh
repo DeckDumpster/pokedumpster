@@ -1244,9 +1244,26 @@ check "the Quadlet sidecar's OnFailure survives generation" "${P}-alert@${P}-lit
 
 # The timer alone is not enough — the checker's success under systemd is still
 # unproven. Running it proves the unit's ExecStart as well as the plumbing.
+# The replicator can die of litestream's directory-scan race (an lstat of a
+# -shm that SQLite removed between readdir and lstat) while this gate churns
+# tenant databases; the deployed sidecar is restarted by its Quadlet unit, and
+# the unit-run below reads "is the sidecar running" as part of its verdict
+# (sp-crsh57: run 38629067188 on EC2). Bring it back, loudly, if it died.
+if [ "$(podman inspect -f '{{.State.Running}}' "$LS_CTR" 2>/dev/null)" != true ]; then
+	echo "    replicator ${LS_CTR} was not running; its last words:"
+	podman logs --tail 5 "$LS_CTR" 2>&1 | sed 's/^/      /'
+	podman start "$LS_CTR" >/dev/null 2>&1
+fi
 BEFORE=$(sink_total)
 systemctl --user start "${P}-backup-check@${INSTANCE}.service" >/dev/null 2>&1
-check "the systemd unit's own run pings the monitor" "1" "$(since_grep "$BEFORE" "$GREEN_PING")"
+UNIT_PINGS="$(since_grep "$BEFORE" "$GREEN_PING")"
+if [ "$UNIT_PINGS" != 1 ]; then
+	# A failure carries its own explanation: the gate used to show only the count.
+	echo "    unit journal:"
+	journalctl --user -u "${P}-backup-check@${INSTANCE}.service" -n 25 --no-pager 2>&1 | sed 's/^/      /'
+	echo "    replicator ${LS_CTR}: $(podman inspect -f '{{.State.Status}}' "$LS_CTR" 2>&1)"
+fi
+check "the systemd unit's own run pings the monitor" "1" "$UNIT_PINGS"
 
 # Layer 0 the same way: the timer existing proves nothing, running it does. A
 # serving target must ping its OWN monitor and must not touch Layer 1's.

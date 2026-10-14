@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 pkdump-core.workspace = true
 pkdump-db.workspace = true
+dumpster-kit-tenancy.workspace = true
 rusqlite.workspace = true
 axum.workspace = true
 tokio.workspace = true
@@ -17,9 +18,6 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ts-rs.workspace = true
-# Cloudflare Access JWT validation.
-jsonwebtoken.workspace = true
-reqwest.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -28,7 +26,5 @@ serde_json.workspace = true
 # compressed response decodes back to exactly the uncompressed bytes.
 flate2.workspace = true
 brotli.workspace = true
-# RSA key generation and PEM export for the in-process JWKS test server.
-rsa = { version = "0.9", features = ["pem"] }
-# Base64url encoding for JWK construction.
-base64 = "0.22"
+# The in-process RS256 JWKS server and token minters (valid and every negative case).
+dumpster-kit-tenancy = { workspace = true, features = ["testing"] }

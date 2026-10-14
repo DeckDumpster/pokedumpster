@@ -86,30 +86,37 @@ fn no_crate_carries_its_own_copy_of_the_kernel() {
 /// one of them. (If the kit renames a thing, this fails and says which marker went stale.)
 #[test]
 fn every_marker_is_something_the_kernel_really_contains() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    let metadata = std::process::Command::new(env!("CARGO"))
-        .args([
-            "metadata",
-            "--format-version",
-            "1",
-            "--offline",
-            "--manifest-path",
-        ])
-        .arg(&manifest)
-        .output()
-        .unwrap();
-    assert!(metadata.status.success(), "cargo metadata failed");
-    let json: serde_json::Value = serde_json::from_slice(&metadata.stdout).unwrap();
-    let kit_manifest = json["packages"]
-        .as_array()
+    // Not `cargo metadata`: offline it must resolve every platform's dependencies, which a
+    // gate's cargo cache does not hold, and it took minutes even where it worked. The pinned
+    // revision is in the workspace manifest; cargo checks it out under `$CARGO_HOME`.
+    let root = std::fs::read_to_string(workspace_root().join("Cargo.toml")).unwrap();
+    let rev = root
+        .lines()
+        .find(|l| l.starts_with("dumpster-kit-tenancy"))
+        .and_then(|l| l.split("rev = \"").nth(1))
+        .and_then(|r| r.split('"').next())
+        .expect("the workspace pins dumpster-kit-tenancy by rev");
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cargo"));
+    let checkouts = cargo_home.join("git/checkouts");
+    let kit_src = std::fs::read_dir(&checkouts)
         .unwrap()
-        .iter()
-        .find(|p| p["name"] == "dumpster-kit-tenancy")
-        .expect("pkdump-db depends on dumpster-kit-tenancy")["manifest_path"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let kit_src = Path::new(&kit_manifest).parent().unwrap().join("src");
+        .filter_map(|e| e.ok())
+        .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten())
+        .map(|e| e.path())
+        .filter(|p| {
+            let n = p.file_name().unwrap().to_string_lossy().to_string();
+            rev.starts_with(&n) || n.starts_with(&rev[..7.min(rev.len())])
+        })
+        .map(|p| p.join("crates/dumpster-kit-tenancy/src"))
+        .find(|p| p.is_dir())
+        .unwrap_or_else(|| {
+            panic!(
+                "no checkout of dumpster-kit-tenancy {rev} under {}",
+                checkouts.display()
+            )
+        });
     let mut all = Vec::new();
     files(&kit_src, &mut all);
     let kernel: String = all

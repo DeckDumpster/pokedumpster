@@ -1182,11 +1182,31 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-tcgcsv"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1aa9e97cc98bccc86ff991656a0e3e338f4cc63d#1aa9e97cc98bccc86ff991656a0e3e338f4cc63d"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=ecc3ed6ebf32d551262609f61fe519546c0878ea#ecc3ed6ebf32d551262609f61fe519546c0878ea"
 dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "dumpster-kit-tenancy"
+version = "0.1.0"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=ecc3ed6ebf32d551262609f61fe519546c0878ea#ecc3ed6ebf32d551262609f61fe519546c0878ea"
+dependencies = [
+ "axum",
+ "base64",
+ "chrono",
+ "jsonwebtoken",
+ "reqwest",
+ "rsa",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "ulid",
 ]
 
 [[package]]
@@ -2399,6 +2419,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "csv",
+ "dumpster-kit-tenancy",
  "pkdump-core",
  "reqwest",
  "rusqlite",
@@ -2523,14 +2544,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "base64",
  "brotli",
+ "dumpster-kit-tenancy",
  "flate2",
- "jsonwebtoken",
  "pkdump-core",
  "pkdump-db",
- "reqwest",
- "rsa",
  "rusqlite",
  "serde",
  "serde_json",

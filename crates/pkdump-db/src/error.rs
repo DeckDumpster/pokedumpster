@@ -48,6 +48,19 @@ pub enum DbError {
     Seed(#[from] serde_json::Error),
 }
 
+impl From<dumpster_kit_tenancy::TenancyError> for DbError {
+    fn from(e: dumpster_kit_tenancy::TenancyError) -> Self {
+        use dumpster_kit_tenancy::TenancyError as T;
+        match e {
+            T::Sqlite(e) => DbError::Sqlite(e),
+            T::Env(m) => DbError::Env(m),
+            T::NotFound(m) => DbError::NotFound(m),
+            T::Conflict(m) => DbError::Conflict(m),
+            T::SchemaVersion(m) => DbError::SchemaVersion(m),
+        }
+    }
+}
+
 impl From<pkdump_core::import::ImportError> for DbError {
     fn from(e: pkdump_core::import::ImportError) -> Self {
         DbError::Import(e.to_string())

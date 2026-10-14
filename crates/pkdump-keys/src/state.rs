@@ -13,7 +13,7 @@
 //!   to restore, and a second chance to restore it in the wrong order.
 //!
 //! The table's own rules (no foreign key, absence is not permission, a
-//! tombstone is terminal) live in `schema_registry.sql` where the reasoning
+//! tombstone is terminal) live in the kernel's `schema_registry.sql` (`dumpster-kit-tenancy`) where the reasoning
 //! belongs. This module is the accessor.
 //!
 //! ## What this module deliberately cannot do
@@ -205,10 +205,7 @@ pub(crate) mod tests {
     /// `pkdump-db` applies, so this crate is never testing a schema of its
     /// own invention.
     pub(crate) fn registry() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../../pkdump-db/src/schema_registry.sql"))
-            .unwrap();
-        conn
+        pkdump_db::open_registry(std::path::Path::new(":memory:")).unwrap()
     }
 
     const A: &str = "01J0000000000000000000000A";

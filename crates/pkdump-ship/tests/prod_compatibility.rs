@@ -45,10 +45,9 @@ fn with_master<T>(f: impl FnOnce(&rusqlite::Connection) -> T) -> T {
     let var = pkdump_site::key_env().key_file_var;
     unsafe { std::env::set_var(&var, &path) };
 
-    let registry = rusqlite::Connection::open_in_memory().unwrap();
-    registry
-        .execute_batch(include_str!("../../pkdump-db/src/schema_registry.sql"))
-        .unwrap();
+    let registry =
+        dumpster_kit_tenancy::connection::open_registry(&dir.path().join("registry.sqlite"))
+            .unwrap();
     dumpster_kit_keys::state::register(&registry, ID).unwrap();
     let out = f(&registry);
     unsafe { std::env::remove_var(&var) };

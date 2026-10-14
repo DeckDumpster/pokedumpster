@@ -95,7 +95,8 @@ pub fn delete(
 
     // 1a. Identity bindings: personal data that must not survive a deletion.
     // Idempotent — zero rows removed on a re-run is not an error.
-    pkdump_db::registry::identity_delete_all(registry, database_id)?;
+    pkdump_db::registry::identity_delete_all(registry, database_id)
+        .map_err(pkdump_db::DbError::from)?;
 
     // 2. The partition drop.
     let dropped = Sweep::new(zone, config, database_id)?.drop_partition()?;

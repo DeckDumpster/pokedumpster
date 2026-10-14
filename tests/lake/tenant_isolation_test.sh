@@ -16,9 +16,34 @@
 # nothing and failed nothing.
 #
 # Contrast the sibling rule that IS mechanical: "images are never landed" is
-# held by the closed `Source` enum in crates/pkdump-lake/src/keys.rs — there is
-# no images variant, so landing one takes a code change that shows up in
-# review. This file is the missing equivalent for "no tenant data".
+# held by the list of upstreams the site declares (crates/pkdump-site, and
+# `Source` in the kit) — there is no images upstream, so landing one takes a
+# code change that shows up in review. This file is the missing equivalent for
+# "no tenant data".
+#
+# ── WHAT THE KIT CUTOVER MOVED (sp-2x82v8) ──────────────────────────────────
+# crates/pkdump-lake, the layout and the stores for BOTH zones, is
+# `dumpster-kit-lake` now, pinned at a revision in the root Cargo.toml, and so
+# are key custody, the shipper and the eraser. A guard cannot grep source this
+# repository no longer holds, so the assertions about those files went with
+# them: the kit's own tests hold "every tenant-zone key builder takes a
+# database_id" and "the zone roots do not contain each other" (the latter also
+# runs here, in crates/pkdump-site, against the pinned kit's constants).
+#
+# What this file still holds is what PokeDumpster owns:
+#   * the site's own lake code — crates/pkdump-site (the upstreams it lands and
+#     the names its configuration derives from), crates/pkdump-lakehouse, and
+#     the Python under lake/ — names no tenant, in the catalog zone;
+#   * crates/pkdump-ship and crates/pkdump-erase, the site's bindings of the
+#     kit's shipper and eraser, stay inside the tenant zone;
+#   * the ONLINE path links neither zone, and the catalog BUILD path links
+#     neither key custody nor the shipper.
+# One structural claim does NOT survive, and is said here rather than dropped
+# quietly: "the lake crate can open no database at all" was true of
+# crates/pkdump-lake by construction. dumpster-kit-lake depends on
+# dumpster-kit-tenancy (for `AppPrefix`), which links rusqlite, so the argument
+# is no longer a Cargo.toml one. It now rests on the kit's own source, which this
+# repository pins by revision and does not scan.
 #
 # ── WHY THE AXIS MOVED (pd-7x83) ────────────────────────────────────────────
 # The rule as first written was "the LAKE holds no tenant data", and its
@@ -370,77 +395,23 @@ iceberg_fields() { # iceberg_fields <file>...
 		sed -E 's/(NestedField\([0-9]+,[[:space:]]*|pa\.field\([[:space:]]*)"([^"]+)"/\2/'
 }
 
-# Every `pub fn` in a file whose return type is a key — `Result<String>` — as
-# `<name>:<takes a database_id?>`. The tenant zone's inverted rule is about
-# these and only these: a key builder that needs no tenant id builds a key
-# that is not inside anybody's deletion prefix.
-key_builders() { # key_builders <file>
-	python3 - "$1" <<-'PY'
-		import re, sys
-		src = open(sys.argv[1], encoding="utf-8").read()
-		# Signature lines only; a doc comment showing a `pub fn` is not one.
-		src = "\n".join(
-		    "" if re.match(r"\s*//", line) else line for line in src.split("\n")
-		)
-		for m in re.finditer(r"\bpub fn\s+(\w+)\s*\(", src):
-		    body = src.find("{", m.end())
-		    sig = src[m.start() : body if body != -1 else len(src)]
-		    if "-> Result<String>" not in sig:
-		        continue
-		    print(f"{m.group(1)}:{'yes' if 'database_id' in sig else 'NO'}")
-	PY
-}
-
-# The zone roots as the code declares them — TENANT_ROOT and every element of
-# CATALOG_ROOTS — checked for containment. Prints `ok`, or the offending pair.
-zone_roots() { # zone_roots <tenant.rs>
-	python3 - "$1" <<-'PY'
-		import re, sys
-		src = open(sys.argv[1], encoding="utf-8").read()
-		src = "\n".join("" if re.match(r"\s*//", l) else l for l in src.split("\n"))
-		roots = []
-		m = re.search(r'TENANT_ROOT:\s*&str\s*=\s*"([^"]*)"', src)
-		if m:
-		    roots.append(("TENANT_ROOT", m.group(1)))
-		m = re.search(r"CATALOG_ROOTS:\s*&\[&str\]\s*=\s*&\[(.*?)\]", src, re.S)
-		if m:
-		    roots += [("CATALOG_ROOTS", v) for v in re.findall(r'"([^"]*)"', m.group(1))]
-		if len(roots) < 2:
-		    print(f"only found {roots}; the roots are not declared where this can read them")
-		    raise SystemExit
-		bad = [
-		    f"{an}={a!r} contains {bn}={b!r}"
-		    for an, a in roots
-		    for bn, b in roots
-		    if (an, a) != (bn, b) and b.startswith(a)
-		]
-		print("\n".join(bad) if bad else "ok")
-	PY
-}
-
 # ── the corpora ─────────────────────────────────────────────────────────────
-LAKE_CRATE="${REPO_DIR}/crates/pkdump-lake"
+SITE_CRATE="${REPO_DIR}/crates/pkdump-site"
 LAKEHOUSE_CRATE="${REPO_DIR}/crates/pkdump-lakehouse"
 SHIP_CRATE="${REPO_DIR}/crates/pkdump-ship"
+ERASE_CRATE="${REPO_DIR}/crates/pkdump-erase"
 PYLAKE="${REPO_DIR}/lake/src/pkdump_lake"
 
-# ── the zone split inside crates/pkdump-lake ────────────────────────────────
-# The crate holds the layout of BOTH zones, so the file list is where the
-# boundary is drawn. §12 asserts these three lists together cover src/*.rs
-# exactly — a file in none of them fails the gate, which is what makes adding
-# one a zone decision rather than an omission.
-#
-# CATALOG: `raw/` and the warehouse beside it. Cross-tenant, shared, forever.
-CATALOG_ZONE_RS=(config.rs error.rs keys.rs manifest.rs reader.rs sink.rs store.rs)
-# TENANT: `tenant/`. Tenant-keyed by construction, 90 days, its own credential.
-TENANT_ZONE_RS=(tenant.rs)
-# The crate root routes to both and resolves neither. It is its own class
-# because it is the one file allowed to name the tenant zone's API — and still
-# not allowed to look a tenant up.
+# ── the site's declarations over the kit's lake ─────────────────────────────
+# crates/pkdump-site routes to BOTH zones — it states the upstreams the catalog
+# zone lands and the names the tenant zone's configuration derives from — and
+# resolves neither tenant nor registry. §12 asserts this list covers src/*.rs
+# exactly, so a new file there is a decision this gate makes somebody take
+# rather than an omission it misses.
 ZONE_ROOT_RS=(lib.rs)
 
-# ── the same split, on the Python side ──────────────────────────────────────
-# Classified for the same reason and checked for totality the same way (§12).
+# ── the Python side: classified by zone ─────────────────────────────────────
+# Classified for the same reason and checked for totality (§12).
 # The hole this closes is not hypothetical: freshness.py landed after the
 # original guard, and no section scanned it — it was in no list, so it could
 # have named a tenant and nothing would have fired.
@@ -463,11 +434,14 @@ SQLITE_ALLOWED=(value_snapshots.py verify.py)
 
 # The crates that serve requests and record holdings changes. None of them may
 # link a zone. pkdump-cli is deliberately NOT here: it is the one binary that
-# is both `pkdump serve` and the offline landing commands, so it links
-# pkdump-lake by construction. That boundary is a DEPLOYMENT one — the app
-# container is given no lake credential — and it is asserted where it lives,
-# in deploy/refresh.sh and tests/deploy/run.sh.
-ONLINE_CRATES=(pkdump-db pkdump-server pkdump-keys)
+# is both `pkdump serve` and the offline landing commands, so it links the
+# kit's lake and key custody by construction. That boundary is a DEPLOYMENT one
+# — the app container is given no lake credential — and it is asserted where it
+# lives, in deploy/refresh.sh and tests/deploy/run.sh.
+ONLINE_CRATES=(pkdump-db pkdump-server)
+# The crates that BUILD the catalog from raw/. They link the landing zone and
+# never key custody, the shipper or the eraser: those hold a tenant key.
+CATALOG_BUILD_CRATES=(pkdump-ingest pkdump-derive pkdump-lakehouse)
 
 rust_sources() { # rust_sources <crate-dir>
 	find "$1/src" -name '*.rs' -type f 2>/dev/null | sort
@@ -503,52 +477,47 @@ scan_strings() { # scan_strings <regex> <file>...
 zone_files() { # zone_files <name-of-array>
 	local -n names="$1"
 	local n
-	for n in "${names[@]}"; do printf '%s\n' "${LAKE_CRATE}/src/${n}"; done
+	for n in "${names[@]}"; do printf '%s\n' "${SITE_CRATE}/src/${n}"; done
 }
 
-mapfile -t CATALOG_RS_FILES < <(zone_files CATALOG_ZONE_RS)
-mapfile -t TENANT_RS_FILES < <(zone_files TENANT_ZONE_RS)
 mapfile -t ROOT_RS_FILES < <(zone_files ZONE_ROOT_RS)
 mapfile -t LAKEHOUSE_RS_FILES < <(rust_sources "$LAKEHOUSE_CRATE")
 mapfile -t SHIP_RS_FILES < <(rust_sources "$SHIP_CRATE")
+mapfile -t ERASE_RS_FILES < <(rust_sources "$ERASE_CRATE")
+mapfile -t BUILD_RS_FILES < <(for c in "${CATALOG_BUILD_CRATES[@]}"; do rust_sources "${REPO_DIR}/crates/${c}"; done)
 
 # One interpreter for each mode, before any section runs. Correctness does not
 # depend on this — rust_code strips on demand for anything not primed — only
 # the runtime does.
 prime_strip_cache code \
-	"${CATALOG_RS_FILES[@]}" "${TENANT_RS_FILES[@]}" "${ROOT_RS_FILES[@]}" \
-	"${LAKEHOUSE_RS_FILES[@]}" "${SHIP_RS_FILES[@]}"
-prime_strip_cache keep-strings "${TENANT_RS_FILES[@]}" "${SHIP_RS_FILES[@]}"
+	"${ROOT_RS_FILES[@]}" "${LAKEHOUSE_RS_FILES[@]}" "${SHIP_RS_FILES[@]}" \
+	"${ERASE_RS_FILES[@]}" "${BUILD_RS_FILES[@]}"
+prime_strip_cache keep-strings "${ROOT_RS_FILES[@]}" "${SHIP_RS_FILES[@]}" "${ERASE_RS_FILES[@]}"
 
 # ════════════════════════════════════════════════════════════════════════════
 #   PART A — THE CATALOG ZONE.  `raw/`, `lake/`: no tenant, anywhere, ever.
 # ════════════════════════════════════════════════════════════════════════════
 
-log "1. the lake crate cannot open a database at all (structural)"
-# pkdump-lake writes raw/ and says where tenant/ is. It links no SQLite: not
-# rusqlite, not pkdump-db, not libsqlite3-sys. That is why "no lake write path
-# opens a tenant database" is true of it by construction rather than by
-# discipline — and adding one of these to its Cargo.toml is the code change
-# that has to show up in review, exactly like adding a variant to Source.
-#
-# The re-cut made this stronger rather than weaker. The tenant zone's LAYOUT
-# lives in this crate; its WRITER is crates/pkdump-ship, a separate crate, and
-# the reason is exactly this line: filling a tenant part means reading a
-# tenant's SQLite, and a crate that links no SQLite cannot be asked to.
-LAKE_TOML="${LAKE_CRATE}/Cargo.toml"
-check "crates/pkdump-lake/Cargo.toml exists" "yes" \
-	"$([[ -f "$LAKE_TOML" ]] && echo yes || echo no)"
+log "1. the site's lake declarations link no SQLite of their own (structural)"
+# crates/pkdump-site states which upstreams this site lands and what its
+# configuration is called. It names no database crate and not pkdump-db, so
+# nothing in it can open a tenant database by its own means. Weaker than the
+# claim this section used to make about crates/pkdump-lake — see the header —
+# and said so: the kit's lake links tenancy, which links rusqlite. What this
+# does hold is that no SITE code is added to that, and that adding a database
+# dependency to the site's declarations is a change that shows up in review.
+SITE_TOML="${SITE_CRATE}/Cargo.toml"
+check "crates/pkdump-site/Cargo.toml exists" "yes" \
+	"$([[ -f "$SITE_TOML" ]] && echo yes || echo no)"
 DBDEPS="$(grep -nE '^[[:space:]]*(rusqlite|pkdump-db|libsqlite3-sys|sqlx|diesel)[[:space:]]*[.=]' \
-	"$LAKE_TOML")"
+	"$SITE_TOML")"
 none "it depends on no SQLite crate and not pkdump-db" "$DBDEPS"
 
-log "2. no catalog-zone module names a tenant"
-# And nothing in the catalog zone's source names one either — a path dependency
-# added under a different key, or a re-export reached through another crate,
-# would not show up above. This is the original §1 grep, over the catalog zone's
-# files rather than the whole crate.
-none "no catalog-zone source names a tenant or a SQLite handle" \
-	"$(scan "${IDENT_RX}|rusqlite|pkdump_db" "${CATALOG_RS_FILES[@]}")"
+log "2. (retired) no catalog-zone module of the lake crate names a tenant"
+# The scan this section ran was over the files of crates/pkdump-lake, which is
+# the kit's now. The site's own catalog-zone code is §3's (the offline derive)
+# and §8's (the site's root); the kit's is held by the kit's tests.
+echo "  (moved to dumpster-kit-lake with the code it scanned)"
 
 log "3. the offline derive calls no tenant-resolving API (pd-1uem's crate)"
 # pkdump-lakehouse cannot get the structural guard: it derives shared.sqlite, so
@@ -641,71 +610,54 @@ none "it makes no Iceberg write call" "$WRITES"
 #   PART B — THE TENANT ZONE.  `tenant/`: tenant-keyed on purpose, contained.
 # ════════════════════════════════════════════════════════════════════════════
 
-log "8. the tenant zone is keyed by tenant, and resolves none (pd-uz8q)"
-# The carve-out, and the reason it is a carve-out rather than an exemption:
-# the tenant zone has rules of its own and they are the INVERSE of the catalog's.
-#
-# It must be tenant-keyed. `database_id` is the FIRST partition component so
-# that one prefix covers a tenant's holdings and their valuations together —
-# that prefix is the unit a deletion drops, so a key builder that does not take
-# a database_id builds an object no deletion would find.
-BUILDERS="$(key_builders "${LAKE_CRATE}/src/tenant.rs")"
-some "the tenant zone declares key builders at all" "$BUILDERS"
-none "every tenant-zone key builder takes a database_id" \
-	"$(grep -v ':yes$' <<<"$BUILDERS" | sed 's|^|crates/pkdump-lake/src/tenant.rs: |')"
-
-# What it may NOT do is look a tenant up. It is handed an id by a caller that
-# got it from the registry; consulting the registry itself, or a tenants
-# directory, or PKDUMP_USER, would make the zone an authority on identity
-# instead of a partitioning of it — and it links no SQLite (§1) precisely so
-# that this is a grep about intent rather than a hole.
-none "the tenant zone resolves no tenant identity" \
-	"$(scan "${RESOLVE_RX}" "${TENANT_RS_FILES[@]}")"
-
-# The crate root routes to both zones — `pub mod tenant`, `open_tenant_zone` —
-# and that is all it may do with the tenant's name. Same rule, same pattern.
-none "the crate root routes to the tenant zone without resolving one" \
+log "8. the site's lake declarations resolve no tenant identity (pd-uz8q)"
+# The tenant zone's own rules — every key builder takes a database_id, and the
+# zone roots are disjoint — are the kit's, and the kit holds them in its own
+# tests (and the second, against the pinned kit's constants, in
+# crates/pkdump-site's tests). What is the site's is that its declarations are
+# handed names and look nothing up: the registry is the authority on which ids
+# exist (`pkdump_db::registry`), and a declaration that consulted it would be
+# resolving identity rather than naming a prefix.
+none "the site's lake root resolves no tenant identity" \
 	"$(scan "${RESOLVE_RX}" "${ROOT_RS_FILES[@]}")"
 
-# The two zones' roots have to be disjoint, or every containment assertion in
-# this file is about a boundary that does not exist. Containment, not equality:
-# a `tenant/` moved under `lake/` would be inside the catalog's own prefix,
-# governed by the catalog's indefinite-retention lifecycle rule, and reachable
-# by any credential granted the catalog — while every line of code and every
-# policy document still said the two zones were separate.
-ROOT_OVERLAP="$(zone_roots "${LAKE_CRATE}/src/tenant.rs")"
-check "no zone root contains another" "ok" "$ROOT_OVERLAP"
-
 log "9. the shipper writes the tenant zone and reaches no catalog prefix (pd-dxn3)"
-# crates/pkdump-ship is the only thing in the workspace that writes under
+# crates/pkdump-ship binds the only thing in the workspace that writes under
 # `tenant/`. It opens a tenant database on purpose — that is the outbox it
-# reads — so §1's structural argument is unavailable and deliberately so. Its
-# rule is containment: everything it writes lands in the tenant zone.
+# reads — so a structural argument is unavailable and deliberately so. Its
+# rule is containment: everything it writes lands in the tenant zone. The
+# eraser beside it (crates/pkdump-erase) is held to the same: it may delete
+# under `tenant/`, and it may not name the catalog.
 #
 # Strings are KEPT here. An object key is a string literal, so "does the
 # shipper name a catalog prefix" is a question the identifier scan cannot ask.
 none "no catalog-zone prefix appears in the shipper" \
 	"$(scan_strings '"(raw|lake)/' "${SHIP_RS_FILES[@]}")"
-# Nor may it reach the catalog through the API. pkdump_lake::open/open_reader
+none "no catalog-zone prefix appears in the eraser" \
+	"$(scan_strings '"(raw|lake)/' "${ERASE_RS_FILES[@]}")"
+# Nor may it reach the catalog through the API. dumpster_kit_lake::open/open_reader
 # hand out the catalog's landing zone under the catalog's ambient credentials;
 # the tenant zone has its own entry points because it has its own identity.
 none "the shipper calls no catalog-zone entry point" \
-	"$(scan 'pkdump_lake::(open|open_reader|keys|sink|manifest|reader)\b|RawLanding|RawZone' \
-		"${SHIP_RS_FILES[@]}")"
+	"$(scan 'dumpster_kit_lake::(open|open_reader|keys|sink|manifest|reader)\b|RawLanding|RawZone' \
+		"${SHIP_RS_FILES[@]}" "${ERASE_RS_FILES[@]}")"
 # And it must not name the catalog's credential. One profile for both zones is
-# not a narrow policy, it is no boundary at all (crates/pkdump-lake/src/
-# tenant.rs), and the shipper is the process holding a tenant key.
+# not a narrow policy, it is no boundary at all (`TenantZoneConfig` in the
+# kit refuses it), and the shipper is the process holding a tenant key.
 none "the shipper names no catalog credential" \
-	"$(scan_strings 'AWS_PROFILE|KEY_CATALOG_PROFILE' "${SHIP_RS_FILES[@]}")"
-# The other direction, so none of the three above is passing because the
-# shipper does nothing: it does reach the tenant zone, through the entry points
-# that carry the tenant credential, and it builds its keys from the layout
-# module rather than by hand.
+	"$(scan_strings 'AWS_PROFILE|KEY_CATALOG_PROFILE' "${SHIP_RS_FILES[@]}" "${ERASE_RS_FILES[@]}")"
+# The other direction, so none of the above is passing because the shipper does
+# nothing: it does reach the tenant zone, through the entry points that carry
+# the tenant credential, and it ships with the kit's shipper rather than by
+# hand — the object keys, the envelope and the cursor are not written here.
 some "the shipper opens the tenant zone through its own entry point" \
 	"$(scan 'open_tenant_zone' "${SHIP_RS_FILES[@]}")"
-some "and builds its object keys from the tenant-zone layout module" \
-	"$(scan 'pkdump_lake::(range_part_key|part_key|tenant_prefix|partition_prefix)' \
-		"${SHIP_RS_FILES[@]}")"
+some "and ships with the kit's shipper" \
+	"$(scan 'dumpster_kit_ship::' "${SHIP_RS_FILES[@]}")"
+some "the eraser opens the tenant zone through its purge entry point" \
+	"$(scan 'open_tenant_zone_purge' "${ERASE_RS_FILES[@]}")"
+none "the shipper builds no object key of its own" \
+	"$(scan 'range_part_key|part_key|tenant_prefix|partition_prefix' "${SHIP_RS_FILES[@]}")"
 
 log "10. the online path cannot reach either zone (structural)"
 # Item 1's outbox (pd-5m54) is a table in the tenant's OWN database, written by
@@ -713,7 +665,7 @@ log "10. the online path cannot reach either zone (structural)"
 # first premise: holdings leave a collection through the outbox, and the
 # offline side is fed from there — never by the request-serving process
 # writing to a bucket. So the crates that serve requests and record events link
-# no lake crate and no S3 SDK, which makes a dual write impossible rather than
+# no lake crate, no key custody and no S3 SDK, which makes a dual write impossible rather than
 # merely absent, and keeps the standing rule mechanical: nothing that serves a
 # request may hold a lake credential.
 ONLINE_DEPS=""
@@ -722,7 +674,7 @@ for c in "${ONLINE_CRATES[@]}"; do
 	toml="${REPO_DIR}/crates/${c}/Cargo.toml"
 	[[ -f "$toml" ]] || continue
 	ONLINE_FOUND=$((ONLINE_FOUND + 1))
-	hits="$(grep -nE '^[[:space:]]*(pkdump-lake|pkdump-lakehouse|pkdump-ship|aws-sdk-s3|aws-config)[[:space:]]*[.=]' \
+	hits="$(grep -nE '^[[:space:]]*(pkdump-site|pkdump-lakehouse|pkdump-ship|pkdump-erase|dumpster-kit-(lake|keys|ship|erase|derive|lakehouse)|aws-sdk-s3|aws-config)[[:space:]]*[.=]' \
 		"$toml" | sed "s|^|crates/${c}/Cargo.toml:|")"
 	[[ -n "$hits" ]] && ONLINE_DEPS+="${hits}"$'\n'
 done
@@ -730,24 +682,29 @@ check "every online crate was found to check" "${#ONLINE_CRATES[@]}" "$ONLINE_FO
 none "no online crate depends on a lake crate or the S3 SDK" "${ONLINE_DEPS%$'\n'}"
 
 log "11. the two zones do not reach each other"
-# The boundary, in both directions, at the source level. §6 holds while the
-# tenant zone is plain Parquet; the moment catalog-zone code could build a
-# tenant key, "every Iceberg field is catalog-scoped" would stop being a
-# statement about where tenant data can be.
-none "no catalog-zone module reaches the tenant zone" \
-	"$(scan 'tenant::|TENANT_ROOT|TenantZone|open_tenant_zone|TenantDataset' \
-		"${CATALOG_RS_FILES[@]}")"
-# And the mirror: the tenant zone names the catalog's roots — it has to, they
-# are the boundary it is defined against — but it must not USE the catalog's
-# key builders or landing sink. Naming a boundary is not crossing it.
-none "the tenant zone builds no catalog key" \
-	"$(scan 'crate::(keys|sink|manifest|reader)\b|RawLanding|Source::' \
-		"${TENANT_RS_FILES[@]}")"
+# The boundary, at the source level. §6 holds while the tenant zone is plain
+# Parquet; the moment code that BUILDS the catalog could reach a tenant key,
+# "every Iceberg field is catalog-scoped" would stop being a statement about
+# where tenant data can be. So the crates that build the catalog from raw/ link
+# neither key custody, the shipper nor the eraser — all three hold, or open
+# things under, a tenant key — and name none of the tenant zone's entry points.
+BUILD_DEPS=""
+BUILD_FOUND=0
+for c in "${CATALOG_BUILD_CRATES[@]}"; do
+	toml="${REPO_DIR}/crates/${c}/Cargo.toml"
+	[[ -f "$toml" ]] || continue
+	BUILD_FOUND=$((BUILD_FOUND + 1))
+	hits="$(grep -nE '^[[:space:]]*(pkdump-ship|pkdump-erase|dumpster-kit-(keys|ship|erase))[[:space:]]*[.=]' \
+		"$toml" | sed "s|^|crates/${c}/Cargo.toml:|")"
+	[[ -n "$hits" ]] && BUILD_DEPS+="${hits}"$'\n'
+done
+check "every catalog-build crate was found to check" "${#CATALOG_BUILD_CRATES[@]}" "$BUILD_FOUND"
+none "no catalog-build crate depends on key custody, the shipper or the eraser" "${BUILD_DEPS%$'\n'}"
 # The offline derive writes the catalog and only the catalog. §3 already
 # refuses `tenant` there as an identifier; this says the same thing about the
 # zone's API, so a rename that got past IDENT_RX would still be caught.
-none "the offline derive reaches no tenant-zone entry point" \
-	"$(scan 'open_tenant_zone|TENANT_ROOT|TenantZone|range_part_key' "${LAKEHOUSE_RS_FILES[@]}")"
+none "the catalog-build path reaches no tenant-zone entry point" \
+	"$(scan 'open_tenant_zone|TENANT_ROOT|TenantZone|range_part_key|tenant_key' "${BUILD_RS_FILES[@]}")"
 
 # ════════════════════════════════════════════════════════════════════════════
 #   PART C — the guard read something.
@@ -762,24 +719,26 @@ log "12. the guard read something (fail closed)"
 # directory rather than one list of exceptions: a file added to
 # crates/pkdump-lake/src and classified nowhere is checked by nothing, and the
 # only symptom would be a section quietly scanning one file fewer.
-check "pkdump-lake has Rust sources" "yes" \
-	"$([[ -n "$(rust_sources "$LAKE_CRATE")" ]] && echo yes || echo no)"
+check "pkdump-site has Rust sources" "yes" \
+	"$([[ -n "$(rust_sources "$SITE_CRATE")" ]] && echo yes || echo no)"
 check "pkdump-lakehouse has Rust sources" "yes" \
 	"$([[ ${#LAKEHOUSE_RS_FILES[@]} -gt 0 ]] && echo yes || echo no)"
 check "pkdump-ship has Rust sources" "yes" \
 	"$([[ ${#SHIP_RS_FILES[@]} -gt 0 ]] && echo yes || echo no)"
+check "pkdump-erase has Rust sources" "yes" \
+	"$([[ ${#ERASE_RS_FILES[@]} -gt 0 ]] && echo yes || echo no)"
+check "the catalog-build crates have Rust sources" "yes" \
+	"$([[ ${#BUILD_RS_FILES[@]} -gt 0 ]] && echo yes || echo no)"
 
-# The classification is total: every .rs in the lake crate's src is in exactly
-# one zone list, and every file in a zone list exists.
-ACTUAL_RS="$(find "${LAKE_CRATE}/src" -maxdepth 1 -name '*.rs' -type f 2>/dev/null |
+# The classification is total: every .rs in the site crate's src is in the list,
+# and every file in the list exists.
+ACTUAL_RS="$(find "${SITE_CRATE}/src" -maxdepth 1 -name '*.rs' -type f 2>/dev/null |
 	xargs -r -n1 basename | sort | tr '\n' ' ')"
-CLASSIFIED_RS="$(printf '%s\n' "${CATALOG_ZONE_RS[@]}" "${TENANT_ZONE_RS[@]}" "${ZONE_ROOT_RS[@]}" |
-	sort | tr '\n' ' ')"
-check "every lake-crate source is classified into exactly one zone" \
-	"$ACTUAL_RS" "$CLASSIFIED_RS"
+CLASSIFIED_RS="$(printf '%s\n' "${ZONE_ROOT_RS[@]}" | sort | tr '\n' ' ')"
+check "every site-crate source is classified" "$ACTUAL_RS" "$CLASSIFIED_RS"
 # A subdirectory would escape the -maxdepth above and be classified by nobody.
-none "the lake crate's sources are all at the top of src/" \
-	"$(find "${LAKE_CRATE}/src" -mindepth 2 -name '*.rs' -type f 2>/dev/null |
+none "the site crate's sources are all at the top of src/" \
+	"$(find "${SITE_CRATE}/src" -mindepth 2 -name '*.rs' -type f 2>/dev/null |
 		sed "s|^${REPO_DIR}/||")"
 
 FOUND_PY=0
@@ -802,16 +761,12 @@ check "Iceberg schema fields were found to check" "yes" \
 # The parsers themselves: if python3 stopped emitting anything, §1-§5 go green
 # by producing no lines to grep.
 check "the Rust comment stripper produced output" "yes" \
-	"$([[ -n "$(rust_code "${LAKE_CRATE}/src/keys.rs")" ]] && echo yes || echo no)"
-KEPT="$(rust_code "${LAKE_CRATE}/src/tenant.rs" keep-strings)"
+	"$([[ -n "$(rust_code "${SITE_CRATE}/src/lib.rs")" ]] && echo yes || echo no)"
+KEPT="$(rust_code "${SITE_CRATE}/src/lib.rs" keep-strings)"
 check "the Rust stripper keeps strings when asked" "yes" \
-	"$([ "$(grep -cE '"tenant/"' <<<"$KEPT" || true)" != 0 ] && echo yes || echo no)"
-check "the zone roots were found to compare" "yes" \
-	"$([[ "$ROOT_OVERLAP" == ok || "$ROOT_OVERLAP" == *contains* ]] && echo yes || echo no)"
+	"$([ "$(grep -cE '"pokemontcgio"' <<<"$KEPT" || true)" != 0 ] && echo yes || echo no)"
 check "the Python tokenizer produced output" "yes" \
 	"$([[ -n "$(py_code "${PYLAKE}/prices.py")" ]] && echo yes || echo no)"
-check "the key-builder parser produced output" "yes" \
-	"$([[ -n "$BUILDERS" ]] && echo yes || echo no)"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"

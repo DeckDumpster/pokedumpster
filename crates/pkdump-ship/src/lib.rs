@@ -1,125 +1,168 @@
-//! `pkdump-ship` — the shipper (`pd-dxn3`, item 4 of the inbound-leg epic).
+//! PokeDumpster's shipper: `dumpster-kit-ship`, bound to this site.
 //!
-//! It moves rows from the ownership outbox (`pd-5m54`) into the tenant zone
-//! (`pd-uz8q`), encrypted under the per-tenant key the key-custody registry
-//! permits (`pd-ulds`). It is the seam between all three, and it is the only
-//! thing in this workspace that writes under `tenant/`.
+//! The shipper itself — the part layout, the sealed envelope, the cursor and gap ledger, the
+//! zone read-back — is the kit's, once. What is PokeDumpster's is the four things the kit
+//! cannot know: which tables are holdings ([`HOLDINGS_SOURCES`], with the triggers on them in
+//! `pkdump-db`), how a tenant database is opened (`pkdump_db::open_user`, whose schema gate
+//! must apply here too), where the registry lives, and the names its configuration derives
+//! from ([`pkdump_site`]).
 //!
-//! ```text
-//!  tenants/<database_id>.sqlite                         the tenant zone
-//!  ┌──────────────────────────┐                ┌───────────────────────────┐
-//!  │ collection               │                │ tenant/database_id=<id>/  │
-//!  │   └─ triggers ──▶ outbox │ ──▶ shipper ──▶│   dataset=holdings/       │
-//!  │ outbox_cursor            │      ▲         │     as_of=<date>/         │
-//!  │ outbox_gap               │      │         │       part-seq-A-B        │
-//!  └──────────────────────────┘   tenant key   └───────────────────────────┘
-//!                                (derived, or refused by a tombstone)
-//! ```
+//! Nothing here re-implements a step. Every item is a binding: a table name, a conversion
+//! between this site's registry row and the kit's, or a kit call with this site's arguments
+//! filled in.
 //!
-//! ## Five decisions, none of them incidental
-//!
-//! ### 1. The shipper reads no clock
-//!
-//! Every partition value comes out of the data: `as_of` is the UTC date of
-//! the event's own `occurred_at`, and a part is a maximal run of consecutive
-//! outbox rows sharing that date. So re-shipping a range on a later day lands
-//! in the *same* partition it landed in the first time, and no run has to be
-//! told what day it is to be correct. (Contrast the transform tier, whose
-//! `--date` is a genuine choice of which day to compute — there the scheduler
-//! is the one component allowed to know. Here there is nothing to choose.)
-//!
-//! The one timestamp this crate writes is `shipped_at` on the cursor row,
-//! which is operational and addresses nothing.
-//!
-//! ### 2. The object key is the sequence range, never an ordinal
-//!
-//! ```text
-//! tenant/database_id=<id>/dataset=holdings/as_of=<date>/part-seq-<from>-<to>.parquet.enc
-//! ```
-//!
-//! At-least-once delivery means a part will sometimes be shipped twice — a
-//! crash between the PUT and the cursor write is the normal way, and it is
-//! deliberately *not* prevented, because the alternative (advance the cursor
-//! first) loses events instead of repeating them. An ordinal part number
-//! would make the retry a second, different object holding the same rows.
-//! Addressing a part by the rows it carries makes the retry address the
-//! object it is retrying, which is what turns at-least-once into
-//! at-least-once *and idempotent*. See [`plan`].
-//!
-//! ### 3. The encryption is deterministic, so the retry is byte-identical
-//!
-//! AES-256-GCM under the derived tenant key, with a nonce derived from the
-//! object key and the plaintext rather than drawn at random ([`cipher`]).
-//! A random nonce would make the retry in decision 2 write *different bytes*
-//! to the same key — which is still idempotent in content but not in the
-//! object store, and not provable by comparing what is there. The usual
-//! danger of a non-random nonce is reuse across different plaintexts; here
-//! the nonce is a function of the plaintext, so two parts share a nonce only
-//! if they are the same part.
-//!
-//! ### 4. The cursor and the gap ledger live in the tenant's own database
-//!
-//! Beside the outbox they point into ([`cursor`]), so a restore of that
-//! database restores the log and the position in it together, and so the
-//! whole of a tenant's shipping state is dropped by the same deletion that
-//! drops the tenant. Both tables are excluded from the portable JSON envelope
-//! for the reason the outbox itself is: they are transport state, not
-//! collection state.
-//!
-//! ### 5. A sequence gap is recorded, alarmed, and shipped past
-//!
-//! The outbox's `seq` is gap-free by construction — `AUTOINCREMENT`, written
-//! by a trigger inside the mutation's own transaction, never reused even
-//! across a trim. So a gap is not a curiosity, it is the proof that an event
-//! was **lost**, and the offline copy is therefore incomplete in a way
-//! nothing downstream could otherwise notice.
-//!
-//! What the shipper does about it is deliberate: it records the missing range
-//! in [`cursor::GAP_TABLE`] *before* the cursor moves past it, prints it, and
-//! ends the run at [`Outcome::Gap`] — which the wrapper turns into an alarm.
-//! It does **not** stop shipping. The rows that are missing are already gone;
-//! withholding the rows that are still there would be a second loss caused by
-//! the detection of the first. "Detected and alarmed" is the requirement;
-//! "detected and stuck" would be a self-inflicted outage on a tenant whose
-//! data is already incomplete.
-//!
-//! ## What it deliberately does not do
-//!
-//! * **It does not branch on where an outbox row came from.** Item 5
-//!   (backfill/redrive) emits synthetic events *through the outbox*, marked
-//!   with a provenance column; a consumer that treated them differently would
-//!   make the backfill a second code path instead of the same one. Every row
-//!   is shipped identically.
-//! * **It does not ship a tombstoned tenant.** [`pkdump_keys::tenant_key`]
-//!   refuses to derive the key, and that refusal is the authority — this
-//!   crate does not second-guess it or carry its own idea of who is deleted.
-//! * **It does not register anybody.** An id nothing is recorded about is
-//!   skipped and named, because absence is not permission (`pd-ulds`).
-//!
-//! ## The other direction: reading the zone back (`pd-szh2`)
-//!
-//! [`zone`] is the inverse — list a tenant's holdings parts, open them under
-//! the same derived key, decode them into the same [`Event`], and reduce them
-//! with the same [`pkdump_db::outbox::project`]. It exists because Phase 3
-//! values a collection from the zone rather than from `collection`, and it
-//! lives in this crate rather than beside the transform for the reason
-//! everything else here does: the envelope, the key derivation and the
-//! resolution rule each have exactly one implementation, and it is this one.
-//!
-//! Writing is still the *only* thing that touches `tenant/` with a `put` —
-//! the reader holds an [`pkdump_lake::ObjectSource`], which has none.
+//! The operator binary is `pkdump-ship` (`src/bin/pkdump-ship.rs`) and `deploy/ship.sh` is
+//! what turns its four exit statuses into a journal line and a page.
 
-pub mod cipher;
-pub mod cursor;
-pub mod encode;
-pub mod error;
-pub mod plan;
-pub mod run;
-#[cfg(test)]
-mod test_support;
-pub mod zone;
+use std::path::Path;
 
-pub use error::{Result, ShipError};
-pub use plan::{Event, Gap, Part, plan};
-pub use run::{Outcome, Report, Status, TenantOutcome, ship_all, ship_one};
-pub use zone::{ZoneHoldings, materialize, read};
+use dumpster_kit_keys::TenantKey;
+use dumpster_kit_lake::{ObjectSource, ObjectStore, TenantZoneConfig};
+use dumpster_kit_ship::run::ShipContext;
+use rusqlite::Connection;
+
+pub use dumpster_kit_ship::{
+    Event, Gap, Outcome, Part, Report, ShipError, Status, TenantOutcome, ZoneHoldings, cipher,
+    cursor, encode, outbox, plan, run, zone,
+};
+
+/// The staging table Phase 3 reads for loose cards. Created by [`materialize`] from
+/// `collection`, and named here because two implementations spell it — the shipper's read-back
+/// and the transform's SQL.
+pub const HOLDINGS_TABLE: &str = "zone_holdings";
+
+/// The same for sealed product, derived from `sealed_collection` (`pd-bbv7`).
+pub const SEALED_HOLDINGS_TABLE: &str = "zone_sealed_holdings";
+
+/// Where the rows in [`HOLDINGS_TABLE`] came from: which parts, how far through the outbox,
+/// and when.
+pub const HOLDINGS_RUN_TABLE: &str = dumpster_kit_ship::zone::HOLDINGS_RUN_TABLE;
+
+/// The outbox source tables whose events become holdings, each with the staging table its
+/// reduction lands in.
+///
+/// This is the reader's whole notion of what the zone carries, and it is held to
+/// `pkdump_db::outbox::SOURCE_TABLES` by `every_outbox_source_has_a_staging_table`: a source
+/// the outbox ships and this reader has no table for would be declined every night, silently
+/// and forever, which is exactly how sealed stayed out of every valuation.
+pub const HOLDINGS_SOURCES: &[(&str, &str)] = &[
+    ("collection", HOLDINGS_TABLE),
+    ("sealed_collection", SEALED_HOLDINGS_TABLE),
+];
+
+/// The kit's view of one of this site's tenants.
+pub fn tenant(t: &pkdump_db::tenants::Tenant) -> dumpster_kit_ship::Tenant {
+    dumpster_kit_ship::Tenant {
+        user: kit_user(&t.user),
+        path: t.path.clone(),
+    }
+}
+
+/// This site's registry row as the kit's.
+///
+/// The two registries are one table with one schema (`schema_registry.sql`); only the Rust
+/// type differs until the tenancy cutover makes them the same one.
+pub fn kit_user(u: &pkdump_db::registry::User) -> dumpster_kit_tenancy::registry::User {
+    dumpster_kit_tenancy::registry::User {
+        database_id: u.database_id.clone(),
+        handle: u.handle.clone(),
+        created_at: u.created_at.clone(),
+        state: match u.state {
+            pkdump_db::registry::UserState::Active => {
+                dumpster_kit_tenancy::registry::UserState::Active
+            }
+            pkdump_db::registry::UserState::Detached => {
+                dumpster_kit_tenancy::registry::UserState::Detached
+            }
+        },
+        retired_at: u.retired_at.clone(),
+    }
+}
+
+/// Everything one shipping run needs that is not a tenant, with this site's answers.
+pub fn with_context<T>(
+    zone: &dyn ObjectStore,
+    config: &TenantZoneConfig,
+    registry: &Connection,
+    f: impl FnOnce(&ShipContext<'_>) -> T,
+) -> T {
+    let keys = pkdump_site::key_env();
+    let (crash_var, cli) = ShipContext::names(&pkdump_site::app());
+    let open_tenant = |path: &Path| -> dumpster_kit_ship::Result<Connection> {
+        pkdump_db::open_user(path).map_err(|e| ShipError::Tenancy(tenancy_error(e)))
+    };
+    f(&ShipContext {
+        keys: &keys,
+        zone,
+        config,
+        registry,
+        open_tenant: &open_tenant,
+        crash_var,
+        cli,
+    })
+}
+
+/// A `pkdump-db` failure as the kernel's, for the kit's `open_tenant` seam. A schema-version
+/// refusal stays a schema-version refusal — it is the one error there that is never retryable.
+fn tenancy_error(e: pkdump_db::DbError) -> dumpster_kit_tenancy::TenancyError {
+    use dumpster_kit_tenancy::TenancyError;
+    match e {
+        pkdump_db::DbError::SchemaVersion(m) => TenancyError::SchemaVersion(m),
+        pkdump_db::DbError::Sqlite(e) => TenancyError::Sqlite(e),
+        other => TenancyError::Env(other.to_string()),
+    }
+}
+
+/// Ship every tenant in `tenants`, one at a time. See [`dumpster_kit_ship::ship_all`].
+pub fn ship_all(
+    zone: &dyn ObjectStore,
+    config: &TenantZoneConfig,
+    registry: &Connection,
+    tenants: &[pkdump_db::tenants::Tenant],
+    max_rows: usize,
+) -> Report {
+    let kit: Vec<_> = tenants.iter().map(tenant).collect();
+    with_context(zone, config, registry, |ctx| {
+        dumpster_kit_ship::ship_all(ctx, &kit, max_rows)
+    })
+}
+
+/// Ship one tenant. See [`dumpster_kit_ship::ship_one`].
+pub fn ship_one(
+    zone: &dyn ObjectStore,
+    config: &TenantZoneConfig,
+    registry: &Connection,
+    tenant_: &pkdump_db::tenants::Tenant,
+    max_rows: usize,
+) -> TenantOutcome {
+    with_context(zone, config, registry, |ctx| {
+        dumpster_kit_ship::ship_one(ctx, &tenant(tenant_), max_rows)
+    })
+}
+
+/// Read a tenant's holdings back out of the zone, for this site's sources.
+pub fn read(
+    source: &dyn ObjectSource,
+    config: &TenantZoneConfig,
+    key: &TenantKey,
+    database_id: &str,
+) -> dumpster_kit_ship::Result<ZoneHoldings> {
+    dumpster_kit_ship::zone::read(source, config, key, database_id, HOLDINGS_SOURCES)
+}
+
+/// Stage what [`read`] found into this site's staging tables.
+pub fn materialize(
+    conn: &Connection,
+    holdings: &ZoneHoldings,
+    read_at: &str,
+) -> dumpster_kit_ship::Result<usize> {
+    dumpster_kit_ship::zone::materialize(conn, holdings, HOLDINGS_SOURCES, read_at)
+}
+
+/// The per-tenant key for `database_id`, under this site's key custody.
+pub fn tenant_key(
+    registry: &Connection,
+    database_id: &str,
+) -> dumpster_kit_keys::Result<TenantKey> {
+    dumpster_kit_keys::tenant_key(&pkdump_site::key_env(), registry, database_id)
+}

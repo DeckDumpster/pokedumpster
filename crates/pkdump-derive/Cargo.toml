@@ -8,7 +8,9 @@ authors.workspace = true
 [dependencies]
 pkdump-db.workspace = true
 pkdump-ingest.workspace = true
-pkdump-lake.workspace = true
+dumpster-kit-derive.workspace = true
+dumpster-kit-lake.workspace = true
+pkdump-site.workspace = true
 rusqlite.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
@@ -16,7 +18,8 @@ chrono.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 # The landing-half gates open a directory-backed lake and read the catalog back.
-pkdump-lake.workspace = true
+dumpster-kit-lake.workspace = true
+pkdump-site.workspace = true
 rusqlite.workspace = true
 # Needed to build a minimal valid bulk tarball for the fake upstream in tail_failure tests.
 flate2.workspace = true

@@ -1180,9 +1180,98 @@ dependencies = [
 ]
 
 [[package]]
+name = "dumpster-kit-derive"
+version = "0.1.0"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=cafe79d6e9c899d0771ae5c2442b82abf783f3d0#cafe79d6e9c899d0771ae5c2442b82abf783f3d0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dumpster-kit-lake",
+]
+
+[[package]]
+name = "dumpster-kit-erase"
+version = "0.1.0"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=cafe79d6e9c899d0771ae5c2442b82abf783f3d0#cafe79d6e9c899d0771ae5c2442b82abf783f3d0"
+dependencies = [
+ "dumpster-kit-keys",
+ "dumpster-kit-lake",
+ "dumpster-kit-ship",
+ "dumpster-kit-tenancy",
+ "rusqlite",
+ "thiserror",
+]
+
+[[package]]
+name = "dumpster-kit-keys"
+version = "0.1.0"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=cafe79d6e9c899d0771ae5c2442b82abf783f3d0#cafe79d6e9c899d0771ae5c2442b82abf783f3d0"
+dependencies = [
+ "chrono",
+ "dumpster-kit-tenancy",
+ "getrandom 0.3.4",
+ "hex",
+ "hkdf",
+ "rusqlite",
+ "sha2 0.10.9",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
+name = "dumpster-kit-lake"
+version = "0.1.0"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=cafe79d6e9c899d0771ae5c2442b82abf783f3d0#cafe79d6e9c899d0771ae5c2442b82abf783f3d0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
+ "chrono",
+ "dumpster-kit-tenancy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+ "ulid",
+ "zstd",
+]
+
+[[package]]
+name = "dumpster-kit-lakehouse"
+version = "0.1.0"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=cafe79d6e9c899d0771ae5c2442b82abf783f3d0#cafe79d6e9c899d0771ae5c2442b82abf783f3d0"
+dependencies = [
+ "anyhow",
+ "dumpster-kit-derive",
+ "dumpster-kit-lake",
+ "rusqlite",
+ "thiserror",
+]
+
+[[package]]
+name = "dumpster-kit-ship"
+version = "0.1.0"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=cafe79d6e9c899d0771ae5c2442b82abf783f3d0#cafe79d6e9c899d0771ae5c2442b82abf783f3d0"
+dependencies = [
+ "aes-gcm",
+ "bytes",
+ "chrono",
+ "dumpster-kit-keys",
+ "dumpster-kit-lake",
+ "dumpster-kit-tenancy",
+ "hex",
+ "parquet",
+ "rusqlite",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "dumpster-kit-tcgcsv"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=ecc3ed6ebf32d551262609f61fe519546c0878ea#ecc3ed6ebf32d551262609f61fe519546c0878ea"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=cafe79d6e9c899d0771ae5c2442b82abf783f3d0#cafe79d6e9c899d0771ae5c2442b82abf783f3d0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1192,18 +1281,15 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-tenancy"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=ecc3ed6ebf32d551262609f61fe519546c0878ea#ecc3ed6ebf32d551262609f61fe519546c0878ea"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=cafe79d6e9c899d0771ae5c2442b82abf783f3d0#cafe79d6e9c899d0771ae5c2442b82abf783f3d0"
 dependencies = [
  "axum",
- "base64",
  "chrono",
  "jsonwebtoken",
  "reqwest",
- "rsa",
  "rusqlite",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror",
  "tokio",
  "ulid",
@@ -2389,14 +2475,15 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "dumpster-kit-keys",
+ "dumpster-kit-lake",
  "flate2",
  "pkdump-core",
  "pkdump-db",
  "pkdump-derive",
  "pkdump-ingest",
- "pkdump-keys",
- "pkdump-lake",
  "pkdump-server",
+ "pkdump-site",
  "rusqlite",
  "tar",
  "tempfile",
@@ -2419,7 +2506,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "csv",
- "dumpster-kit-tenancy",
  "pkdump-core",
  "reqwest",
  "rusqlite",
@@ -2438,10 +2524,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "dumpster-kit-derive",
+ "dumpster-kit-lake",
  "flate2",
  "pkdump-db",
  "pkdump-ingest",
- "pkdump-lake",
+ "pkdump-site",
  "rusqlite",
  "tar",
  "tempfile",
@@ -2453,13 +2541,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dumpster-kit-erase",
+ "dumpster-kit-keys",
+ "dumpster-kit-lake",
  "pkdump-db",
- "pkdump-keys",
- "pkdump-lake",
  "pkdump-ship",
+ "pkdump-site",
  "rusqlite",
  "tempfile",
- "thiserror",
 ]
 
 [[package]]
@@ -2467,13 +2556,14 @@ name = "pkdump-ingest"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dumpster-kit-lake",
  "dumpster-kit-tcgcsv",
  "flate2",
  "image",
  "pkdump-core",
  "pkdump-db",
  "pkdump-ingest",
- "pkdump-lake",
+ "pkdump-site",
  "reqwest",
  "rusqlite",
  "serde",
@@ -2485,51 +2575,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "pkdump-keys"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "getrandom 0.3.4",
- "hex",
- "hkdf",
- "pkdump-db",
- "rusqlite",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
- "zeroize",
-]
-
-[[package]]
-name = "pkdump-lake"
-version = "0.1.0"
-dependencies = [
- "aws-config",
- "aws-sdk-s3",
- "chrono",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
- "tokio",
- "ulid",
- "zstd",
-]
-
-[[package]]
 name = "pkdump-lakehouse"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "dumpster-kit-derive",
+ "dumpster-kit-lake",
+ "dumpster-kit-lakehouse",
  "flate2",
  "image",
  "pkdump-db",
  "pkdump-derive",
  "pkdump-ingest",
- "pkdump-lake",
+ "pkdump-site",
  "reqwest",
  "rusqlite",
  "serde_json",
@@ -2544,11 +2604,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "brotli",
- "dumpster-kit-tenancy",
  "flate2",
+ "jsonwebtoken",
  "pkdump-core",
  "pkdump-db",
+ "reqwest",
+ "rsa",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2563,22 +2626,27 @@ dependencies = [
 name = "pkdump-ship"
 version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "anyhow",
- "bytes",
  "chrono",
  "clap",
- "hex",
- "parquet",
+ "dumpster-kit-keys",
+ "dumpster-kit-lake",
+ "dumpster-kit-ship",
+ "dumpster-kit-tenancy",
  "pkdump-db",
- "pkdump-keys",
- "pkdump-lake",
+ "pkdump-site",
  "rusqlite",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
- "thiserror",
- "zeroize",
+]
+
+[[package]]
+name = "pkdump-site"
+version = "0.1.0"
+dependencies = [
+ "dumpster-kit-keys",
+ "dumpster-kit-lake",
+ "dumpster-kit-tenancy",
 ]
 
 [[package]]

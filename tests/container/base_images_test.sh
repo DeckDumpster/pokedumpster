@@ -29,7 +29,7 @@
 #      rig root, a CI runner and any number of polecat worktrees — all building
 #      /app. A constant id shares one target directory between them, and the
 #      worktree whose rlib is merely newer wins. That failed a real CI run with
-#      `cannot find trait ObjectPurge in crate pkdump_lake` while COPY
+#      `cannot find trait ObjectPurge in crate dumpster_kit_lake` while COPY
 #      demonstrably delivered the right sources; the quieter form of it links
 #      cleanly and ships old behaviour. So the id carries a second component the
 #      caller supplies per checkout, and this asserts both that the Containerfile

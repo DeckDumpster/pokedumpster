@@ -177,8 +177,8 @@ fn do_run(a: &RunArgs) -> anyhow::Result<i32> {
         return Ok(0);
     }
 
-    let (zone, config) = pkdump_lake::open_tenant_zone()?;
-    let registry = pkdump_keys::state::open()?;
+    let (zone, config) = dumpster_kit_lake::open_tenant_zone(&pkdump_site::lake_env())?;
+    let registry = pkdump_db::registry::open()?;
 
     println!(
         "==> shipping {} tenant(s) to {} as {}",
@@ -302,8 +302,8 @@ fn do_holdings(a: &ScopeArgs) -> anyhow::Result<i32> {
         return Ok(0);
     }
 
-    let (source, config) = pkdump_lake::open_tenant_zone_reader()?;
-    let registry = pkdump_keys::state::open()?;
+    let (source, config) = dumpster_kit_lake::open_tenant_zone_reader(&pkdump_site::lake_env())?;
+    let registry = pkdump_db::registry::open()?;
     let read_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     println!(
@@ -378,8 +378,8 @@ fn do_holdings(a: &ScopeArgs) -> anyhow::Result<i32> {
 
 /// One tenant. `Ok(None)` is a deliberate revocation, which is not a failure.
 fn materialize_one(
-    source: &dyn pkdump_lake::ObjectSource,
-    config: &pkdump_lake::TenantZoneConfig,
+    source: &dyn dumpster_kit_lake::ObjectSource,
+    config: &dumpster_kit_lake::TenantZoneConfig,
     registry: &rusqlite::Connection,
     tenant: &pkdump_db::tenants::Tenant,
     read_at: &str,
@@ -388,7 +388,7 @@ fn materialize_one(
     // The key first, before the database is opened — the same order the
     // shipper uses, and for the same reason: a tenant whose holdings we have
     // undertaken not to hold is not one to go looking for.
-    let key = match pkdump_keys::tenant_key(registry, id) {
+    let key = match pkdump_ship::tenant_key(registry, id) {
         Ok(key) => key,
         Err(e) if e.is_deliberate_revocation() => return Ok(None),
         Err(e) => return Err(e.into()),
@@ -399,7 +399,7 @@ fn materialize_one(
         tenant.path.display()
     );
 
-    let holdings = pkdump_ship::zone::read(source, config, &key, id)?;
+    let holdings = pkdump_ship::read(source, config, &key, id)?;
     // Named, not merely counted (pd-bbv7). A source the zone carries and this
     // reader has no staging table for is a holding nothing values, every
     // night, and the operator has to be able to read WHICH from one line.
@@ -410,16 +410,16 @@ fn materialize_one(
         );
     }
     let conn = pkdump_db::open_user(&tenant.path)?;
-    pkdump_ship::zone::materialize(&conn, &holdings, read_at)?;
+    pkdump_ship::materialize(&conn, &holdings, read_at)?;
     Ok(Some(holdings))
 }
 
 fn do_decrypt(a: &DecryptArgs) -> anyhow::Result<i32> {
     let database_id = database_id_of(&a.key)?;
-    let registry = pkdump_keys::state::open()?;
-    let key = pkdump_keys::tenant_key(&registry, &database_id)?;
+    let registry = pkdump_db::registry::open()?;
+    let key = pkdump_ship::tenant_key(&registry, &database_id)?;
 
-    let (source, config) = pkdump_lake::open_tenant_zone_reader()?;
+    let (source, config) = dumpster_kit_lake::open_tenant_zone_reader(&pkdump_site::lake_env())?;
     let object_key = config.rooted(a.key.clone());
     let sealed = source.get(&object_key)?;
     let parquet = pkdump_ship::cipher::open(&key, &object_key, &sealed)?;
@@ -482,7 +482,7 @@ fn database_id_of(key: &str) -> anyhow::Result<String> {
             anyhow::anyhow!(
                 "{key:?} has no database_id= component, so there is no way to know whose key \
                  would decrypt it. Every object in the tenant zone is partitioned by \
-                 database_id first — see pkdump_lake::tenant."
+                 database_id first — see dumpster_kit_lake::tenant."
             )
         })
 }

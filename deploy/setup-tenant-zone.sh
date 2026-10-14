@@ -75,9 +75,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 POLICY_DIR="${SCRIPT_DIR}/policies/tenant-zone"
 
-# The zone's prefix and its retention live in crates/pkdump-lake/src/tenant.rs
+# The zone's prefix and its retention live in the kit's `dumpster-kit-lake` (`tenant.rs`)
 # as well, because the shipper needs them at runtime. These two lines are the
-# other copy, and tests/lake/tenant_zone.sh §8 is what stops them drifting.
+# other copy, and `cargo test -p pkdump-site zone_agreement` is what stops them drifting.
 TENANT_PREFIX="tenant/"
 CATALOG_PREFIXES="raw/ lake/"
 RETENTION_DAYS=90

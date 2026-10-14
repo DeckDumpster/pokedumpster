@@ -7,11 +7,10 @@ members = [
     "crates/pkdump-derive",
     "crates/pkdump-erase",
     "crates/pkdump-ingest",
-    "crates/pkdump-keys",
-    "crates/pkdump-lake",
     "crates/pkdump-lakehouse",
     "crates/pkdump-server",
     "crates/pkdump-ship",
+    "crates/pkdump-site",
 ]
 
 [workspace.package]
@@ -28,15 +27,21 @@ pkdump-db = { path = "crates/pkdump-db" }
 pkdump-derive = { path = "crates/pkdump-derive" }
 pkdump-erase = { path = "crates/pkdump-erase" }
 pkdump-ingest = { path = "crates/pkdump-ingest" }
-pkdump-keys = { path = "crates/pkdump-keys" }
-pkdump-lake = { path = "crates/pkdump-lake" }
 pkdump-server = { path = "crates/pkdump-server" }
 pkdump-ship = { path = "crates/pkdump-ship" }
+pkdump-site = { path = "crates/pkdump-site" }
 
-# Shared kit (one implementation of the tcgcsv client and the tenancy kernel, used by dumpstar
-# too). One revision for every kit crate: two would build the kit twice.
-dumpster-kit-tcgcsv = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "ecc3ed6ebf32d551262609f61fe519546c0878ea" }
-dumpster-kit-tenancy = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "ecc3ed6ebf32d551262609f61fe519546c0878ea" }
+# Shared kit (one implementation of the tcgcsv client and of the lakehouse, used by dumpstar
+# too). ONE revision for every kit crate: two revisions would put two copies of the
+# tenancy kernel in the tree, and `AppPrefix` from one is not the other's.
+dumpster-kit-tcgcsv = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-tenancy = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-lake = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-keys = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-ship = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-erase = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-derive = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-lakehouse = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
 
 # External — crates opt in via `dep.workspace = true` as tasks need them
 anyhow = "1"
@@ -86,6 +91,10 @@ parquet = { version = "59", default-features = false, features = ["zstd"] }
 # `hkdf` is: this is the second place where subtly wrong is unrecoverable.
 aes-gcm = "0.11"
 bytes = "1"
+# Cloudflare Access JWT validation (pkdump-server). RS256 verification with
+# JWK Set support. Uses the `ring` crypto backend (already in the tree via
+# reqwest → rustls), so no new native-code dependency is added.
+jsonwebtoken = "9"
 
 [profile.release]
 strip = true

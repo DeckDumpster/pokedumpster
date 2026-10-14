@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use pkdump_lake::{DirStore, ObjectStore, TenantZoneConfig};
+use dumpster_kit_lake::{DirStore, ObjectStore, TenantZoneConfig};
 use pkdump_ship::run::{Outcome, Status};
 use pkdump_ship::{cipher, cursor, encode};
 use rusqlite::Connection;
@@ -38,7 +38,7 @@ const BOB: &str = "01J0000000000000000000000B";
 // ── the world one test runs in ──────────────────────────────────────────────
 
 /// The environment this crate's jobs read is process-wide, so tests that set
-/// it cannot overlap. Same shape as `pkdump-keys`' own guard.
+/// it cannot overlap. Same shape as the kit's own guard in `dumpster-kit-keys`.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct World {
@@ -61,15 +61,15 @@ impl World {
         std::fs::create_dir_all(&zone_root).unwrap();
 
         let previous_home = std::env::var("PKDUMP_HOME").ok();
-        let previous_key = std::env::var(pkdump_keys::master::KEY_ENV_FILE).ok();
+        let previous_key = std::env::var(pkdump_site::key_env().key_file_var).ok();
         unsafe {
             std::env::set_var("PKDUMP_HOME", &home);
             std::env::set_var(
-                pkdump_keys::master::KEY_ENV_FILE,
+                pkdump_site::key_env().key_file_var,
                 dir.path().join("tenant-master.key"),
             );
         }
-        pkdump_keys::master::create().unwrap();
+        dumpster_kit_keys::master::create(&pkdump_site::key_env()).unwrap();
 
         World {
             _dir: dir,
@@ -92,7 +92,7 @@ impl World {
                 rusqlite::params![database_id, handle],
             )
             .unwrap();
-        pkdump_keys::state::register(&registry, database_id).unwrap();
+        dumpster_kit_keys::state::register(&registry, database_id).unwrap();
         let path = self
             .home
             .join("tenants")
@@ -140,8 +140,8 @@ impl Drop for World {
                 None => std::env::remove_var("PKDUMP_HOME"),
             }
             match &self.previous_key {
-                Some(v) => std::env::set_var(pkdump_keys::master::KEY_ENV_FILE, v),
-                None => std::env::remove_var(pkdump_keys::master::KEY_ENV_FILE),
+                Some(v) => std::env::set_var(pkdump_site::key_env().key_file_var, v),
+                None => std::env::remove_var(pkdump_site::key_env().key_file_var),
             }
         }
     }
@@ -165,13 +165,12 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
 }
 
 fn config() -> TenantZoneConfig {
+    let env = pkdump_site::lake_env();
     TenantZoneConfig::from_settings(
-        &[(
-            pkdump_lake::tenant::KEY_TENANT_PROFILE.to_string(),
-            "pkdump-tenant-test".to_string(),
-        )]
-        .into_iter()
-        .collect(),
+        &env,
+        &[(env.tenant_profile.clone(), "pkdump-tenant-test".to_string())]
+            .into_iter()
+            .collect(),
         None,
     )
     .unwrap()
@@ -357,7 +356,7 @@ struct DiesAfter {
 }
 
 impl ObjectStore for DiesAfter {
-    fn put(&self, key: &str, body: Vec<u8>) -> pkdump_lake::Result<()> {
+    fn put(&self, key: &str, body: Vec<u8>) -> dumpster_kit_lake::Result<()> {
         self.inner.put(key, body)?;
         let done = self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         if done >= self.after {
@@ -425,7 +424,7 @@ fn a_crash_after_a_part_lands_but_before_the_cursor_moves_re_ships_only_that_par
     // Nothing was lost: every event is in the zone exactly once.
     let mut seqs: Vec<i64> = Vec::new();
     for (key, bytes) in &objects {
-        let tenant_key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+        let tenant_key = pkdump_ship::tenant_key(&world.registry(), ALICE).unwrap();
         let parquet = cipher::open(&tenant_key, key, bytes).unwrap();
         seqs.extend(encode::decode(parquet).unwrap().into_iter().map(|e| e.seq));
     }
@@ -536,8 +535,8 @@ fn each_tenant_s_parts_open_only_under_that_tenant_s_own_key() {
     let objects = world.objects();
     assert_eq!(objects.len(), 2);
     let registry = world.registry();
-    let alice_key = pkdump_keys::tenant_key(&registry, ALICE).unwrap();
-    let bob_key = pkdump_keys::tenant_key(&registry, BOB).unwrap();
+    let alice_key = pkdump_ship::tenant_key(&registry, ALICE).unwrap();
+    let bob_key = pkdump_ship::tenant_key(&registry, BOB).unwrap();
 
     for (key, bytes) in &objects {
         let (mine, theirs) = if key.contains(ALICE) {
@@ -580,7 +579,7 @@ fn what_lands_in_the_zone_is_what_the_outbox_held() {
 
     ship(&world, &[alice], 100);
     let (key, bytes) = world.objects().into_iter().next().unwrap();
-    let tenant_key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+    let tenant_key = pkdump_ship::tenant_key(&world.registry(), ALICE).unwrap();
     let events = encode::decode(cipher::open(&tenant_key, &key, &bytes).unwrap()).unwrap();
 
     assert_eq!(
@@ -607,7 +606,7 @@ fn a_tombstoned_tenant_is_not_shipped_and_is_not_an_anomaly() {
     add_holdings(&world.collection(ALICE), 3, "2026-08-14");
     add_holdings(&world.collection(BOB), 3, "2026-08-14");
 
-    pkdump_keys::destroy::tombstone(&world.registry(), BOB, Some("account deleted")).unwrap();
+    dumpster_kit_keys::destroy::tombstone(&world.registry(), BOB, Some("account deleted")).unwrap();
 
     let report = ship(&world, &[alice, bob], 100);
 
@@ -665,7 +664,7 @@ fn a_run_that_ships_nobody_at_all_is_a_failure_not_a_warning() {
     let alice = world.tenant("alice", ALICE);
     add_holdings(&world.collection(ALICE), 2, "2026-08-14");
     // The systemic failure: the master key is gone, so no tenant can ship.
-    std::fs::remove_file(pkdump_keys::master::key_path().unwrap()).unwrap();
+    std::fs::remove_file(pkdump_site::key_env().key_path().unwrap()).unwrap();
 
     let report = ship(&world, &[alice], 100);
     assert_eq!(report.outcome(), Outcome::Failed);
@@ -762,7 +761,7 @@ fn a_backfilled_collection_ships_as_ordinary_events() {
          the day the backfill ran — otherwise re-running it would move the \
          partition. Key was {key}"
     );
-    let tenant_key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+    let tenant_key = pkdump_ship::tenant_key(&world.registry(), ALICE).unwrap();
     let events = encode::decode(cipher::open(&tenant_key, &key, &bytes).unwrap()).unwrap();
     assert_eq!(
         events
@@ -836,10 +835,12 @@ fn a_shipped_part_projects_back_to_the_live_collection() {
     assert_eq!(report.outcome(), Outcome::Clean);
     assert!(world.objects().len() > 1, "the fixture spans parts");
 
-    // Decode every part in the zone and reduce it with the collection's own
-    // resolution rule. Nothing here reimplements that rule.
-    let tenant_key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
-    let mut shipped: Vec<pkdump_db::outbox::Event> = world
+    // Decode every part in the zone and reduce it with the kit's resolution rule, then hold it
+    // against the collection's own (`pkdump_db::outbox::project`, which the online crate keeps
+    // because it may not link the shipper). Two implementations of one rule are only safe
+    // while something compares them, and this is where they meet.
+    let tenant_key = pkdump_ship::tenant_key(&world.registry(), ALICE).unwrap();
+    let mut shipped: Vec<pkdump_ship::Event> = world
         .objects()
         .into_iter()
         .flat_map(|(key, bytes)| {
@@ -847,7 +848,7 @@ fn a_shipped_part_projects_back_to_the_live_collection() {
         })
         .collect();
     shipped.sort_by_key(|e| e.seq);
-    let zone = pkdump_db::outbox::project(&shipped);
+    let zone = pkdump_ship::outbox::project(&shipped);
 
     // 1. The transport lost nothing: the zone reduces to what the collection's
     //    own outbox reduces to.
@@ -929,8 +930,8 @@ fn the_zone_read_back_materialises_the_collection_row_for_row() {
     assert_eq!(report.outcome(), Outcome::Clean);
     assert!(world.objects().len() > 1, "the fixture spans parts");
 
-    let key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
-    let holdings = pkdump_ship::zone::read(&world.zone(), &config(), &key, ALICE).unwrap();
+    let key = pkdump_ship::tenant_key(&world.registry(), ALICE).unwrap();
+    let holdings = pkdump_ship::read(&world.zone(), &config(), &key, ALICE).unwrap();
     assert_eq!(
         holdings.partitions,
         vec!["2026-08-13".to_string(), "2026-08-14".to_string()],
@@ -939,7 +940,7 @@ fn the_zone_read_back_materialises_the_collection_row_for_row() {
     );
     assert!(holdings.declined.is_empty(), "{:?}", holdings.declined);
 
-    pkdump_ship::zone::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
+    pkdump_ship::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
 
     assert_eq!(
         dump(&conn, "zone_holdings"),
@@ -975,14 +976,14 @@ fn the_zone_read_back_materialises_the_sealed_lots_too() {
     let report = ship(&world, &[alice], 3);
     assert_eq!(report.outcome(), Outcome::Clean);
 
-    let key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
-    let holdings = pkdump_ship::zone::read(&world.zone(), &config(), &key, ALICE).unwrap();
+    let key = pkdump_ship::tenant_key(&world.registry(), ALICE).unwrap();
+    let holdings = pkdump_ship::read(&world.zone(), &config(), &key, ALICE).unwrap();
     assert!(
         holdings.declined.is_empty(),
         "sealed is materialised now, not declined: {:?}",
         holdings.declined
     );
-    pkdump_ship::zone::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
+    pkdump_ship::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
 
     assert_eq!(
         dump(&conn, "zone_sealed_holdings"),
@@ -997,7 +998,9 @@ fn the_zone_read_back_materialises_the_sealed_lots_too() {
 
     let (cards, sealed): (i64, i64) = conn
         .query_row(
-            "SELECT rows, sealed_rows FROM zone_holdings_run WHERE dataset = 'holdings'",
+            "SELECT json_extract(per_source, '$.collection'), \
+             json_extract(per_source, '$.sealed_collection') \
+             FROM zone_holdings_run WHERE dataset = 'holdings'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -1035,10 +1038,10 @@ fn a_change_that_has_not_shipped_is_not_in_the_staged_holdings() {
     add_holdings(&conn, 3, "2026-08-13");
     ship(&world, std::slice::from_ref(&alice), 100);
 
-    let key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
+    let key = pkdump_ship::tenant_key(&world.registry(), ALICE).unwrap();
     let read = |conn: &Connection| {
-        let holdings = pkdump_ship::zone::read(&world.zone(), &config(), &key, ALICE).unwrap();
-        pkdump_ship::zone::materialize(conn, &holdings, "2026-08-14T09:00:00Z").unwrap()
+        let holdings = pkdump_ship::read(&world.zone(), &config(), &key, ALICE).unwrap();
+        pkdump_ship::materialize(conn, &holdings, "2026-08-14T09:00:00Z").unwrap()
     };
     assert_eq!(read(&conn), 3);
     assert_eq!(dump(&conn, "zone_holdings"), dump(&conn, "collection"));
@@ -1079,18 +1082,18 @@ fn a_tenant_reads_only_their_own_holdings() {
     assert_eq!(ship(&world, &[alice, bob], 100).outcome(), Outcome::Clean);
 
     let registry = world.registry();
-    let alice_key = pkdump_keys::tenant_key(&registry, ALICE).unwrap();
-    let bob_key = pkdump_keys::tenant_key(&registry, BOB).unwrap();
+    let alice_key = pkdump_ship::tenant_key(&registry, ALICE).unwrap();
+    let bob_key = pkdump_ship::tenant_key(&registry, BOB).unwrap();
 
     assert_eq!(
-        pkdump_ship::zone::read(&world.zone(), &config(), &alice_key, ALICE)
+        pkdump_ship::read(&world.zone(), &config(), &alice_key, ALICE)
             .unwrap()
             .rows
             .len(),
         4
     );
     assert_eq!(
-        pkdump_ship::zone::read(&world.zone(), &config(), &bob_key, BOB)
+        pkdump_ship::read(&world.zone(), &config(), &bob_key, BOB)
             .unwrap()
             .rows
             .len(),
@@ -1099,7 +1102,7 @@ fn a_tenant_reads_only_their_own_holdings() {
 
     // Alice's key against Bob's prefix: the objects are found and none of
     // them opens. Not an empty read — a refusal.
-    let crossed = pkdump_ship::zone::read(&world.zone(), &config(), &alice_key, BOB);
+    let crossed = pkdump_ship::read(&world.zone(), &config(), &alice_key, BOB);
     assert!(
         crossed.is_err(),
         "alice's key opened bob's partition: {crossed:?}"
@@ -1117,13 +1120,10 @@ fn a_tenant_with_nothing_in_the_zone_stages_an_empty_table() {
     let conn = world.collection(ALICE);
     add_holdings(&conn, 2, "2026-08-14"); // in the outbox, never shipped
 
-    let key = pkdump_keys::tenant_key(&world.registry(), ALICE).unwrap();
-    let holdings = pkdump_ship::zone::read(&world.zone(), &config(), &key, ALICE).unwrap();
+    let key = pkdump_ship::tenant_key(&world.registry(), ALICE).unwrap();
+    let holdings = pkdump_ship::read(&world.zone(), &config(), &key, ALICE).unwrap();
     assert_eq!(holdings.parts, 0);
-    assert_eq!(
-        pkdump_ship::zone::materialize(&conn, &holdings, "x").unwrap(),
-        0
-    );
+    assert_eq!(pkdump_ship::materialize(&conn, &holdings, "x").unwrap(), 0);
 
     let (parts, rows, max_seq): (i64, i64, i64) = conn
         .query_row(
@@ -1153,7 +1153,7 @@ fn the_staged_holdings_are_not_carried_by_the_json_envelope() {
         ("collection".into(), 1),
         serde_json::json!({"id": 1, "printing_id": "p", "acquired_at": "x", "source": "zone"}),
     );
-    pkdump_ship::zone::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
+    pkdump_ship::materialize(&conn, &holdings, "2026-08-14T09:00:00Z").unwrap();
 
     let envelope = pkdump_db::json_backup::export(&conn).unwrap();
     assert!(!envelope.contains("zone_holdings"), "{envelope}");

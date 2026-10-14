@@ -51,8 +51,9 @@
 # exists to prevent, one side of the split later.
 #
 # It is still narrow. Every other short prefix is exit 1: the exemption is per
-# dataset in crates/pkdump-lakehouse/src/partition.rs::requirement, where the
-# compiler makes adding another one a decision somebody has to write down.
+# dataset, in the requirement tables of crates/pkdump-lakehouse/src/partition.rs,
+# where `every_dataset_is_looked_for` makes adding another one a decision
+# somebody has to write down.
 set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 

@@ -30,7 +30,7 @@ tenant/database_id=<id>/dataset=holdings/as_of=YYYY-MM-DD/part-seq-<from>-<to>.p
 tenant/database_id=<id>/dataset=valuations/as_of=YYYY-MM-DD/part-NNNN.parquet.enc
 ```
 
-Built by `pkdump_lake::tenant` — `tenant_prefix`, `partition_prefix`,
+Built by `dumpster_kit_lake::tenant` — `tenant_prefix`, `partition_prefix`,
 `part_key`, `range_part_key` — which is the one place these strings are
 constructed.
 
@@ -134,7 +134,7 @@ settings with another zone's credentials:
 PKDUMP_TENANT_AWS_PROFILE=<profile>   # reaches tenant/ and nothing else
 ```
 
-Resolved by `pkdump_lake::tenant::TenantZoneConfig`, with **no default**, and
+Resolved by `dumpster_kit_lake::tenant::TenantZoneConfig`, with **no default**, and
 two refusals:
 
 - unconfigured → refuses, naming the file. Falling back to the catalog
@@ -464,7 +464,7 @@ statuses.
 `tests/lake/tenant_isolation_test.sh` is the source-level boundary (lint tier,
 hermetic, pd-cgi9 re-cut by pd-7x83). It is where "the tenant zone is
 tenant-keyed and the catalog zone is not" stops being a convention: every key
-builder in `crates/pkdump-lake/src/tenant.rs` takes a `database_id`, the zone
+builder in the kit's `dumpster-kit-lake` (`tenant.rs`) takes a `database_id`, the zone
 resolves no tenant identity of its own, the shipper names no catalog prefix,
 entry point or credential, and the online path links neither zone. Its own red
 proof is `tests/lake/tenant_isolation_selftest.sh`, which breaks each of those
@@ -531,8 +531,9 @@ been taken, so `sealed_collection` lands in `zone_sealed_holdings`, built from
 its own `pragma_table_info` the same way. Two tables, never one: `row_id` is
 unique only *within* a source (`pd-4gop`), so the first single and the first
 sealed lot are both 1 and reducing them together would merge two unrelated
-holdings into a plausible wrong number. `zone_holdings_run.sealed_rows` counts
-the second half beside `rows`.
+holdings into a plausible wrong number. `zone_holdings_run.per_source` counts
+each half (`{"collection": n, "sealed_collection": m}`) beside `rows`, which
+is every holding.
 
 An event from a source this reader has **no** staging table for is still
 declined — and now counted **by name**, per table, on stderr. The single
@@ -578,7 +579,7 @@ anywhere between the outbox and `zone_holdings` shows up as a changed number.
   collection at last week's holdings and every number would look reasonable.
   That is the quiet failure this whole item could otherwise become.
 - **Staging tables from two different reads** → skipped too (`pd-bbv7`).
-  `zone_holdings_run.sealed_rows` against `COUNT(*)` in
+  `zone_holdings_run.per_source`'s `sealed_collection` against `COUNT(*)` in
   `zone_sealed_holdings`: any build that materialises both writes the two in
   ONE transaction, so a disagreement means they were not written together. It
   is a **rollback's** fingerprint — an older `pkdump-ship holdings` rebuilds

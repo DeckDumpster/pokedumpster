@@ -128,6 +128,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import sqlite3
 import sys
@@ -656,7 +657,7 @@ def require_zone_holdings(conn: sqlite3.Connection, tenant: Tenant) -> str:
         )
 
     row = conn.execute(
-        "SELECT max_seq, read_at, parts, rows, sealed_rows FROM "
+        "SELECT max_seq, read_at, parts, per_source FROM "
         + ZONE_HOLDINGS_RUN
         + " WHERE dataset = ?",
         ("holdings",),
@@ -668,7 +669,20 @@ def require_zone_holdings(conn: sqlite3.Connection, tenant: Tenant) -> str:
             "missing table would be valuing from nothing; valuing from a stale one would be "
             "worse, so neither is guessed at."
         )
-    max_seq, read_at, parts, rows, sealed_rows = row
+    max_seq, read_at, parts, per_source = row
+    # One JSON object keyed by outbox source table, written by the shipper's read-back in the
+    # same transaction as the staging tables it counts. `{}` is a row written before the
+    # shipper counted that way: it cannot say what it staged, so it is not valued from.
+    counts = json.loads(per_source)
+    if "collection" not in counts or "sealed_collection" not in counts:
+        raise TransformError(
+            f"{tenant.handle}'s zone_holdings_run counts {sorted(counts) or 'no source'} but "
+            "the transform needs collection and sealed_collection — it was written by a build "
+            f"that counted differently. Re-run `pkdump-ship holdings --tenant "
+            f"{tenant.database_id}` (deploy/TENANT_ZONE.md)."
+        )
+    rows = counts["collection"]
+    sealed_rows = counts["sealed_collection"]
 
     cursor = conn.execute(
         "SELECT shipped_thru FROM ownership_outbox_cursor WHERE id = 1"

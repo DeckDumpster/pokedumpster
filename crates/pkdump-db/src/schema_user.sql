@@ -475,14 +475,20 @@ CREATE TABLE IF NOT EXISTS zone_holdings_run (
     events        INTEGER NOT NULL,          -- outbox events in them
     max_seq       INTEGER NOT NULL,          -- how far through the outbox the zone has got
     partitions    TEXT NOT NULL,             -- the as_of= dates read, comma-separated
-    rows          INTEGER NOT NULL,          -- `collection` holdings the reduction produced
-    read_at       TEXT NOT NULL,             -- UTC ISO-8601
-    -- `sealed_collection` lots the same reduction produced (pd-bbv7). One
-    -- read of one dataset fills two staging tables, so the row that describes
-    -- the read counts both. A collection whose last read-back predates sealed
-    -- reports 0 here, which is exactly what that read materialised — see
-    -- `connection.rs::USER_ADDED_COLUMNS`.
-    sealed_rows   INTEGER NOT NULL DEFAULT 0
+    rows          INTEGER NOT NULL,          -- holdings the reduction produced, every source
+    -- How many each source produced: a JSON object keyed by outbox source table
+    -- (`{"collection": 4, "sealed_collection": 1}`). One read of one dataset
+    -- fills a staging table per source (pd-bbv7), so the row that describes the
+    -- read counts each of them, in ONE transaction -- which is what lets the
+    -- transform notice a staging table that belongs to an earlier read. The
+    -- shape is the shipper's (`dumpster-kit-ship`'s `zone::materialize`), and
+    -- it replaced the `rows`/`sealed_rows` pair when the kit took the shipper
+    -- over: a column per source was the site's, and a JSON object is what lets
+    -- a kit that knows no site's sources write it. A collection whose last
+    -- read-back predates the column reads `{}` and is refused by the transform
+    -- until it is read back again -- see `connection.rs::USER_ADDED_COLUMNS`.
+    per_source    TEXT NOT NULL DEFAULT '{}',
+    read_at       TEXT NOT NULL              -- UTC ISO-8601
 );
 
 -- ---------------------------------------------------------------------

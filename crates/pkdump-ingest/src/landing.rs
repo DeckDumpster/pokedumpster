@@ -35,7 +35,7 @@
 
 use std::sync::Arc;
 
-use pkdump_lake::{Dataset, PartFormat, RawLanding, Source};
+use dumpster_kit_lake::{Dataset, PartFormat, RawLanding, Source};
 
 use crate::error::{IngestError, Result};
 use crate::retry::{self, RetryPolicy};
@@ -185,7 +185,7 @@ fn attempt(
 /// evidence of where it stopped rather than a short prefix that reads as
 /// whole. **Only that one is recorded.** A manifest failure means "this URL
 /// was not fetched", and `complete` is computed from `failures.is_empty()`
-/// (`pkdump_lake::sink::finalize`), so logging the attempts a retry went on
+/// (`dumpster_kit_lake::sink::finalize`), so logging the attempts a retry went on
 /// to recover from would mark a whole run incomplete for a hiccup it
 /// survived. The retries are still visible — loudly, on stderr, in the
 /// journal the nightly unit writes.

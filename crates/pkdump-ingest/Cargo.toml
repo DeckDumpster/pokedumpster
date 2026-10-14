@@ -9,6 +9,7 @@ authors.workspace = true
 pkdump-core.workspace = true
 pkdump-db.workspace = true
 pkdump-lake.workspace = true
+dumpster-kit-tcgcsv.workspace = true
 rusqlite.workspace = true
 reqwest.workspace = true
 serde.workspace = true

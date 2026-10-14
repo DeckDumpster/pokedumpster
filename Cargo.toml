@@ -33,6 +33,9 @@ pkdump-lake = { path = "crates/pkdump-lake" }
 pkdump-server = { path = "crates/pkdump-server" }
 pkdump-ship = { path = "crates/pkdump-ship" }
 
+# Shared kit (one implementation of the tcgcsv client, used by dumpstar too)
+dumpster-kit-tcgcsv = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "1aa9e97cc98bccc86ff991656a0e3e338f4cc63d" }
+
 # External — crates opt in via `dep.workspace = true` as tasks need them
 anyhow = "1"
 thiserror = "2"

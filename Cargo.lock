@@ -1180,6 +1180,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dumpster-kit-tcgcsv"
+version = "0.1.0"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1aa9e97cc98bccc86ff991656a0e3e338f4cc63d#1aa9e97cc98bccc86ff991656a0e3e338f4cc63d"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2436,6 +2446,7 @@ name = "pkdump-ingest"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dumpster-kit-tcgcsv",
  "flate2",
  "image",
  "pkdump-core",

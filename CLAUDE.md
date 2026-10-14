@@ -365,8 +365,8 @@ refusals are different answers: not a handle is a **400** quoting
 `pkdump_db::HANDLE_RULE` (and never the value sent), a handle nobody actively
 holds is a **404**. The rule has two enforcers that cannot share code — that
 validator and the `handle` `CHECK` in `schema_registry.sql` — so they share the
-`paths::HANDLE_CASES` corpus, run through each by a test on each side. Add a
-character to one and the other's test fails. `tests/tenants/handles.sh` is the
+kit's `conformance/handles/cases.json` corpus, run through each by a test on each
+side. Add a character to one and the other's test fails. `tests/tenants/handles.sh` is the
 container-tier gate for the status codes, single-tenant mode included.
 
 ## Deployment
@@ -1310,6 +1310,21 @@ worth watching. `tests/lib/wait_test.sh` §7 used to carry a narrower copy of th
 same tree scan and needed the same exemption for the same reason; it was retired
 into this gate rather than exempted beside it, because two ratchets for one rule
 is how one of them stops travelling.
+
+### The tenancy kernel is dumpster-kit's (sp-rstvfe)
+
+Paths, the user registry (and `schema_registry.sql`), the tenant-connection opener
+(`connect_tenant`, `assert_isolated`, per-file `user_version`), Cloudflare Access
+verification and multi-tenant resolution are `dumpster-kit-tenancy`, pinned in the root
+`Cargo.toml` to the same revision as the other kit crates. `pkdump-db`'s `paths`,
+`registry`, `schema_version` and `connection` are thin bindings of the kernel to
+PokeDumpster: its `PKDUMP` prefix, its schema versions (`Database`) and its collection
+(`TENANT_SPEC`: `schema_user.sql` plus the column fixups and `conditions` seed as the
+kernel's `prepare` hook). Change the rule in the kit and re-pin; never reintroduce a copy.
+What stays here, because the kernel has no such mode: single-tenant serving
+(`pkdump-server/src/tenant.rs`, `Mode::Single`) and the Access-not-configured passthrough
+(`access::layer`). The registry schema is applied only by opening the registry
+(`pkdump_db::open_registry`, `":memory:"` in tests) — there is no copy of the SQL file.
 
 ## Conventions & Patterns
 

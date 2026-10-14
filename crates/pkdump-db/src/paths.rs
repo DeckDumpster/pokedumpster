@@ -1,9 +1,13 @@
 //! Filesystem paths for PokeDumpster's databases.
 //!
-//! Layout — one shared catalog, one collection database per tenant:
+//! The layout, the two identifier validators and the rule that a handle is never a path
+//! component are the tenancy kernel's (`dumpster-kit-tenancy`, `paths`), shared with every other
+//! site. What is PokeDumpster's is one thing: its name. [`app`] is the `PKDUMP` prefix, and every
+//! function here is the kernel's, bound to it — `$PKDUMP_HOME` (default `~/.pkdump`) and
+//! `$PKDUMP_USER` derive from it.
 //!
 //! ```text
-//! $PKDUMP_HOME/                     # default ~/.pkdump
+//! $PKDUMP_HOME/
 //!   shared.sqlite                   # the catalog: one copy, ATTACHed by every tenant
 //!   registry.sqlite                 # handle → database_id (see [`crate::registry`])
 //!   tenants/
@@ -11,371 +15,110 @@
 //!     <handle>.sqlite               # ...or by handle, before `tenant migrate`
 //! ```
 //!
-//! The path functions split by what they are handed, and that difference is
-//! the whole point of `pd-fci1`:
-//!
-//! * [`tenant_db_path`] takes a *handle* — a name a person chose. It is the
-//!   pre-registry layout, and the only things with any business there are the
-//!   migrations that move a data directory off it ([`crate::tenants::adopt`],
-//!   [`crate::tenants::migrate`]), their rollbacks, and
-//!   [`crate::tenants::resolve`] when it finds a data directory still on it.
-//! * [`tenant_db_file`] and [`tenant_db_path_for_id`] take a *`database_id`*
-//!   — an opaque ULID the registry minted. Nothing outside this process ever
-//!   chose one, so no caller-supplied string reaches a path constructor.
-//!   They differ only in where the directory comes from: the caller's, or
-//!   the current `$PKDUMP_HOME`.
-//!
-//! Tenant databases live in their own directory rather than beside the
-//! catalog for two reasons, both load-bearing:
-//!
-//! 1. `shared.sqlite` must never be mistaken for a tenant. It is rebuildable
-//!    from upstream and is deliberately NOT replicated; a flat layout makes
-//!    "every `*.sqlite` in the data dir" mean two different kinds of file.
-//! 2. It makes the whole set of tenant databases addressable as one glob,
-//!    which is exactly the shape Litestream's `dir:` + `pattern:` + `watch:`
-//!    mode wants (`deep-dives/litestream-multi-db/RESULT.md` §4). In that
-//!    mode the replica path is derived from the filename, so distinct tenant
-//!    names give distinct replica prefixes *by construction* — which is what
-//!    forecloses the silent cross-tenant substitution the spike found (§2).
-//!
-//! The catalog path is unchanged by all of this: `shared.sqlite` sits at the
-//! root of the data dir, and every tenant `ATTACH`es that same one file.
-//!
 //! Provisioning lives in [`crate::tenants`]; this module is only paths.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
-use crate::error::{DbError, Result};
+use dumpster_kit_tenancy::{self as kit, AppPrefix};
 
-const DEFAULT_USER: &str = "collection";
+use crate::error::Result;
 
-/// Directory under the data dir holding one database per tenant.
-pub const TENANTS_DIR: &str = "tenants";
+pub use dumpster_kit_tenancy::{HANDLE_RULE, TENANTS_DIR};
 
-/// Maximum tenant-name length. A tenant name becomes a filename and an S3
-/// replica-path component; 32 keeps both comfortable.
-const MAX_TENANT_NAME: usize = 32;
+/// PokeDumpster's identity in the kernel.
+pub fn app() -> &'static AppPrefix {
+    static APP: OnceLock<AppPrefix> = OnceLock::new();
+    APP.get_or_init(|| AppPrefix::new("PKDUMP").expect("PKDUMP is a valid app prefix"))
+}
+
+/// Reject anything that is not a handle (see [`HANDLE_RULE`]).
+pub fn validate_tenant_name(name: &str) -> Result<()> {
+    Ok(kit::validate_tenant_name(name)?)
+}
+
+/// Reject anything that is not a canonical ULID as the registry mints them.
+pub fn validate_database_id(id: &str) -> Result<()> {
+    Ok(kit::validate_database_id(id)?)
+}
+
+/// A tenants directory plus an issued `database_id` → that user's collection database. The only
+/// way a tenant database path is built at request time.
+pub fn tenant_db_file(dir: &std::path::Path, database_id: &str) -> Result<PathBuf> {
+    Ok(kit::tenant_db_file(dir, database_id)?)
+}
 
 /// The PokeDumpster data directory: `$PKDUMP_HOME` if set, else `$HOME/.pkdump`.
 pub fn pkdump_home() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("PKDUMP_HOME") {
-        return Ok(PathBuf::from(dir));
-    }
-    let home = std::env::var("HOME")
-        .map_err(|_| DbError::Env("neither PKDUMP_HOME nor HOME is set".into()))?;
-    Ok(PathBuf::from(home).join(".pkdump"))
+    Ok(kit::home(app())?)
 }
 
 /// Path to the shared catalog database. One copy, shared by every tenant.
 pub fn shared_db_path() -> Result<PathBuf> {
-    Ok(pkdump_home()?.join("shared.sqlite"))
+    Ok(kit::shared_db_path(app())?)
 }
 
 /// The directory holding every tenant's collection database.
 pub fn tenants_dir() -> Result<PathBuf> {
-    Ok(pkdump_home()?.join(TENANTS_DIR))
+    Ok(kit::tenants_dir(app())?)
 }
 
 /// Path to the user registry database — the handle → `database_id` map.
-///
-/// Beside the catalog at the data root, deliberately NOT under `tenants/`:
-/// that directory means "one file per tenant" exactly, which is what makes
-/// the Litestream glob a correct description of the irreplaceable set.
-/// The registry is irreplaceable too, but it is not a tenant, so it is
-/// replicated as itself rather than by being smuggled into the glob.
 pub fn registry_db_path() -> Result<PathBuf> {
-    Ok(pkdump_home()?.join("registry.sqlite"))
+    Ok(kit::registry_db_path(app())?)
 }
 
 /// The active tenant: `$PKDUMP_USER` if set, else `collection`.
 pub fn current_user() -> String {
-    std::env::var("PKDUMP_USER").unwrap_or_else(|_| DEFAULT_USER.to_string())
+    kit::current_user(app())
 }
 
-/// What a handle may contain, in one sentence, for telling a caller what
-/// they got wrong.
-///
-/// The rule is stated three times in this codebase and that is one time too
-/// many, so the three are pinned together deliberately: [`validate_tenant_name`]
-/// below decides, the `handle` `CHECK` in `schema_registry.sql` holds every
-/// writer to the same thing, and this string is how either of them says so.
-/// [`HANDLE_CASES`] is the corpus that keeps the first two honest — one list,
-/// run through the Rust validator by `tenant_names_are_validated` and through
-/// the SQL constraint by `registry::tests::the_check_and_the_validator_agree`.
-/// Change the rule in one place only and one of those two fails.
-pub const HANDLE_RULE: &str =
-    "1-32 characters of a-z, 0-9, `-` or `_`, starting with a letter or digit";
-
-/// Reject anything that would not be safe as both a filename and an S3
-/// replica-path component: `[a-z0-9][a-z0-9_-]{0,31}`.
-///
-/// Deliberately narrow. A tenant name is not user-facing prose — it is an
-/// identifier that ends up in a path on two systems at once:
-///
-/// * Lowercase only. On a case-insensitive filesystem (the macOS deployment
-///   in `deploy/mac-setup.sh`) `Alice` and `alice` are the same file but two
-///   different S3 prefixes — the replica and the database would disagree
-///   about how many tenants exist.
-/// * No `.`, `/` or `\`. Path traversal, and a name ending in `.sqlite`
-///   would produce `foo.sqlite.sqlite`.
-/// * No leading `-`, which reads as a flag to every CLI it is passed to.
-///
-/// This is where a *claim* is checked — a name off a CLI argument or out of
-/// the tenant header. It is not what keeps a handle from becoming a path
-/// (nothing concatenates one any more; see [`validate_database_id`]); it is
-/// what lets a malformed request be refused as malformed instead of being
-/// answered "no such tenant", which would be a false statement about a
-/// string that could never have been registered in the first place.
-pub fn validate_tenant_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(DbError::Env("tenant name is empty".into()));
-    }
-    if name.len() > MAX_TENANT_NAME {
-        return Err(DbError::Env(format!(
-            "tenant name {name:?} is longer than {MAX_TENANT_NAME} characters"
-        )));
-    }
-    let first = name.as_bytes()[0];
-    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
-        return Err(DbError::Env(format!(
-            "tenant name {name:?} must start with a lowercase letter or digit"
-        )));
-    }
-    if let Some(bad) = name
-        .chars()
-        .find(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-' || *c == '_'))
-    {
-        return Err(DbError::Env(format!(
-            "tenant name {name:?} contains {bad:?}; allowed: a-z 0-9 - _"
-        )));
-    }
-    Ok(())
-}
-
-/// Every handle both enforcers of [`HANDLE_RULE`] are held to, and the verdict
-/// each must reach.
-///
-/// One corpus, two enforcers: [`validate_tenant_name`] in Rust and the `handle`
-/// `CHECK` in `schema_registry.sql`. They cannot share an implementation — one
-/// is a function and the other is a constraint SQLite evaluates for writers
-/// that never enter this crate — so what they share is this list and the two
-/// tests that run it through each of them. A rule relaxed on one side and not
-/// the other stops being a disagreement someone has to notice and becomes a
-/// failing test.
-///
-/// Hostile strings are in here as *cases*, not as the reason the rule exists:
-/// `../etc/passwd` is refused because it is not a handle, and separately it
-/// never becomes a path, because nothing interpolates a handle into one.
-#[cfg(test)]
-pub(crate) const HANDLE_CASES: &[(&str, bool)] = &[
-    ("collection", true),
-    ("alice", true),
-    ("a", true),
-    ("0", true),
-    ("9lives", true),
-    ("tenant-2", true),
-    ("tenant_2", true),
-    ("a-b_9", true),
-    ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true), // 32, the longest there is
-    ("", false),
-    ("Alice", false), // case-insensitive FS collides
-    // Uppercase anywhere, not just first. Seeded by mutating the SQL side to
-    // `[^a-zA-Z0-9_-]`: every other case here survived it, because they all
-    // fail the leading-character GLOB too and the corpus could not see the
-    // difference. A corpus that agrees for the wrong reason is not agreement.
-    ("aliceB", false),
-    ("../escape", false),                         // traversal
-    ("a/b", false),                               // traversal
-    ("a\\b", false),                              // traversal, Windows-flavoured
-    ("..", false),                                //
-    (".", false),                                 //
-    ("/etc/shadow", false),                       //
-    ("-flag", false),                             // reads as a CLI flag
-    ("_leading", false),                          // must start alnum
-    ("has space", false),                         //
-    ("alice ", false),                            // trailing space
-    ("dot.sqlite", false),                        // would yield dot.sqlite.sqlite
-    ("a*b", false),                               // a GLOB metacharacter, refused
-    ("alice:detached:01J", false),                // the old composite retired name
-    ("ünïcode", false),                           //
-    ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false), // 33
-];
-
-/// Path to a tenant's collection database, named by *handle*. Validates the
-/// name; does not touch the filesystem.
-///
-/// This is the pre-registry addressing. A registered user's database is named
-/// by their `database_id` — see [`tenant_db_path_for_id`] — so the only
-/// remaining callers are the migrations that move a data directory between the
-/// two namings ([`crate::tenants::adopt`], [`crate::tenants::migrate`] and
-/// their rollbacks) and [`crate::tenants::resolve`], none of which takes its
-/// name from a request.
+/// Path to a tenant's collection database, named by *handle* — the pre-registry addressing, for
+/// the migrations that move a data directory between the two namings.
 pub fn tenant_db_path(name: &str) -> Result<PathBuf> {
-    validate_tenant_name(name)?;
-    Ok(tenants_dir()?.join(format!("{name}.sqlite")))
+    Ok(kit::tenant_db_path(app(), name)?)
 }
 
-/// A canonical ULID is 26 characters of Crockford base32.
-const DATABASE_ID_LEN: usize = 26;
-
-/// Crockford base32, the alphabet a ULID renders in: the digits and the
-/// uppercase letters minus `I`, `L`, `O` and `U`.
-const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-/// Reject anything that is not a canonical ULID as the registry mints them.
-///
-/// This is narrower than [`validate_tenant_name`] and it is a different
-/// question. A tenant name is a *claim* — it arrives from outside and is
-/// checked for what it must not contain. A `database_id` is *issued*:
-/// [`crate::registry::insert`] is the only thing that writes one and it is
-/// read back out of a `UNIQUE` column, so the check here is not "is this
-/// safe" but "is this one of ours". Anything else — a handle, a header, a
-/// hand-edited registry row — is not, and never becomes a path.
-///
-/// Checked rather than trusted because this is the one string that *does*
-/// become a filename, and the epic exists because a string that became a
-/// filename had only a regex between it and the filesystem. The alphabet
-/// contains no `.`, `/` or `\`, so a value that passes cannot name anything
-/// but a sibling inside `tenants/`.
-///
-/// Checked explicitly rather than by parsing with `Ulid::from_string`, which
-/// accepts lowercase — and `01j…` and `01J…` are one file on a
-/// case-insensitive filesystem but two S3 prefixes, the exact disagreement
-/// [`validate_tenant_name`] refuses handles to prevent.
-pub fn validate_database_id(id: &str) -> Result<()> {
-    if id.len() != DATABASE_ID_LEN {
-        return Err(DbError::Env(format!(
-            "database id {id:?} is not {DATABASE_ID_LEN} characters"
-        )));
-    }
-    if let Some(bad) = id.chars().find(|c| !CROCKFORD.contains(&(*c as u8))) {
-        return Err(DbError::Env(format!(
-            "database id {id:?} contains {bad:?}; expected Crockford base32"
-        )));
-    }
-    Ok(())
-}
-
-/// A tenant directory + an issued `database_id` → that user's collection
-/// database.
-///
-/// The **only** way a tenant database path is built at request time, and it
-/// takes a `database_id` rather than a name for that reason: a handle read
-/// off an unauthenticated header is a lookup key in [`crate::registry`],
-/// never a path component. See `pd-rqgv`.
-///
-/// Takes the directory rather than deriving it so the server can hold the
-/// one it resolved at startup; [`tenant_db_path_for_id`] is the
-/// `$PKDUMP_HOME`-derived spelling.
-pub fn tenant_db_file(dir: &std::path::Path, database_id: &str) -> Result<PathBuf> {
-    validate_database_id(database_id)?;
-    Ok(dir.join(format!("{database_id}.sqlite")))
-}
-
-/// Path to the collection database named by an opaque `database_id`, under
-/// the [`tenants_dir`] of the current `$PKDUMP_HOME`.
-///
-/// The registry resolves a handle to one of these; this turns it into a file.
-/// Validates the id; does not touch the filesystem.
+/// Path to the collection database named by an opaque `database_id`.
 pub fn tenant_db_path_for_id(database_id: &str) -> Result<PathBuf> {
-    tenant_db_file(&tenants_dir()?, database_id)
+    Ok(kit::tenant_db_path_for_id(app(), database_id)?)
 }
 
-/// Where a tenant's collection database lived before the `tenants/` layout:
-/// `$PKDUMP_HOME/<name>.sqlite`, beside the catalog.
-///
-/// Only [`user_db_path`] (to refuse an unmigrated data dir) and
-/// [`crate::tenants::adopt`] / [`crate::tenants::revert`] (to move the file,
-/// and to move it back) have any business with this path.
+/// Where a tenant's collection database lived before the `tenants/` layout.
 pub fn legacy_user_db_path(name: &str) -> Result<PathBuf> {
-    validate_tenant_name(name)?;
-    Ok(pkdump_home()?.join(format!("{name}.sqlite")))
+    Ok(kit::legacy_user_db_path(app(), name)?)
 }
 
-/// Run `f` against a throwaway `$PKDUMP_HOME`.
-///
-/// `$PKDUMP_HOME` is process-global and `cargo test` is threaded, so every
-/// test that sets it — here and in [`crate::tenants`] — has to share ONE
-/// lock. Two locks would be no lock at all.
+/// Run `f` against a throwaway `$PKDUMP_HOME`. The lock is the kernel's, shared by every test
+/// that sets a home variable.
 #[cfg(test)]
 pub(crate) fn with_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
-    use std::sync::Mutex;
-    static LOCK: Mutex<()> = Mutex::new(());
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    // SAFETY: serialised by LOCK, which every PKDUMP_HOME test goes through.
-    unsafe { std::env::set_var("PKDUMP_HOME", dir.path()) };
-    let out = f(dir.path());
-    unsafe { std::env::remove_var("PKDUMP_HOME") };
-    out
+    kit::paths::with_home(app(), f)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The one thing PokeDumpster contributes: its prefix names the variables and the default
+    /// directory. Everything else is held by the kernel's own tests and corpora.
     #[test]
-    fn tenant_db_lives_under_tenants_dir() {
+    fn the_prefix_names_the_data_dir_and_the_tenant_variables() {
+        assert_eq!(app().var("HOME"), "PKDUMP_HOME");
+        assert_eq!(app().var("USER"), "PKDUMP_USER");
+        assert_eq!(app().cli(), "pkdump");
         with_home(|home| {
+            assert_eq!(pkdump_home().unwrap(), home);
             assert_eq!(
                 tenant_db_path("alice").unwrap(),
                 home.join("tenants").join("alice.sqlite")
             );
-            // The catalog does NOT move — every tenant attaches this one file.
             assert_eq!(shared_db_path().unwrap(), home.join("shared.sqlite"));
+            assert_eq!(registry_db_path().unwrap(), home.join("registry.sqlite"));
         });
     }
 
-    /// The Rust half of [`HANDLE_CASES`]. The SQL half is
-    /// `registry::tests::the_check_and_the_validator_agree`, over the same list.
-    #[test]
-    fn tenant_names_are_validated() {
-        for (name, valid) in HANDLE_CASES {
-            assert_eq!(
-                validate_tenant_name(name).is_ok(),
-                *valid,
-                "{name:?} should be {}",
-                if *valid { "accepted" } else { "rejected" }
-            );
-        }
-    }
-
-    #[test]
-    fn only_an_issued_database_id_becomes_a_path() {
-        let dir = std::path::Path::new("/data/tenants");
-        let id = crate::registry::mint_database_id();
-        assert_eq!(
-            tenant_db_file(dir, &id).unwrap(),
-            dir.join(format!("{id}.sqlite"))
-        );
-
-        // Nothing a caller could send is one. A handle is not — not even a
-        // perfectly ordinary one, which is the point: there is no string a
-        // request can carry that this function will turn into a filename.
-        for not_an_id in [
-            "alice",
-            "collection",
-            "../../etc/passwd",
-            "../shared",
-            "a/b",
-            "alice\0",
-            "",
-            &id.to_lowercase(),                      // ULIDs are uppercase
-            &id[..25],                               // too short
-            &format!("{id}X"),                       // too long
-            &format!("{}I{}", &id[..13], &id[14..]), // outside Crockford
-            // The right length, and still not an id: a separator does not
-            // stop being a separator by arriving in a 26-character string.
-            &format!("{}/{}", &id[..13], &id[14..]),
-        ] {
-            assert!(
-                validate_database_id(not_an_id).is_err(),
-                "{not_an_id:?} was accepted as a database id"
-            );
-            assert!(tenant_db_file(dir, not_an_id).is_err(), "{not_an_id:?}");
-        }
-    }
-
+    /// Hostile names never become paths through PokeDumpster's wrappers either.
     #[test]
     fn traversal_cannot_escape_the_tenants_dir() {
         with_home(|_| {
@@ -383,41 +126,5 @@ mod tests {
             assert!(legacy_user_db_path("../../etc/passwd").is_err());
             assert!(tenant_db_path_for_id("../../etc/passwd").is_err());
         });
-    }
-
-    #[test]
-    fn a_database_id_names_a_file_under_tenants() {
-        with_home(|home| {
-            let id = ulid::Ulid::generate().to_string();
-            assert_eq!(
-                tenant_db_path_for_id(&id).unwrap(),
-                home.join("tenants").join(format!("{id}.sqlite"))
-            );
-        });
-    }
-
-    #[test]
-    fn database_ids_are_validated() {
-        let good = ulid::Ulid::generate().to_string();
-        assert_eq!(good.len(), DATABASE_ID_LEN);
-        assert!(validate_database_id(&good).is_ok());
-
-        // Built rather than typed out: a hand-counted 26-character literal
-        // is how a length test ends up asserting nothing.
-        let pad = |s: &str| format!("{s}{}", "0".repeat(DATABASE_ID_LEN - s.len()));
-        for bad in [
-            String::new(),
-            "0".repeat(DATABASE_ID_LEN - 1),
-            "0".repeat(DATABASE_ID_LEN + 1),
-            good.to_lowercase(), // one file, two S3 prefixes
-            pad("01I"),          // I is not in Crockford base32
-            pad("01U"),          // nor U
-            pad("../../etc/passwd"),
-            pad("01J."), // a dot would extend the suffix
-            pad("01J/"), // a separator would leave the directory
-            pad("alice"),
-        ] {
-            assert!(validate_database_id(&bad).is_err(), "{bad:?}");
-        }
     }
 }

@@ -50,9 +50,7 @@ pub fn collection_db() -> (tempfile::TempDir, rusqlite::Connection) {
 
 /// A registry holding the real schema, with `ids` registered as live tenants.
 pub fn registry(ids: &[&str]) -> rusqlite::Connection {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch(include_str!("../../pkdump-db/src/schema_registry.sql"))
-        .unwrap();
+    let conn = pkdump_db::open_registry(std::path::Path::new(":memory:")).unwrap();
     for id in ids {
         pkdump_keys::state::register(&conn, id).unwrap();
     }

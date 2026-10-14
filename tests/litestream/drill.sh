@@ -567,12 +567,13 @@ write_phase early
 # The user registry (pd-nd6w). At the data ROOT, deliberately outside tenants/,
 # holding the only statement anywhere of which file belongs to whom.
 #
-# Applied from the SHIPPED schema rather than a copy of it, so this fixture
-# cannot drift away from the table the product actually writes. Seeded with
+# The schema is the tenancy kernel's (dumpster-kit), and the one way to apply it
+# is to let the product open the registry: `pkdump tenant list` creates
+# registry.sqlite and applies the shipped schema, so this fixture cannot drift
+# away from the table the product actually writes. The ROWS are seeded with
 # sqlite3 rather than the app for the same reason the tenant databases are: the
-# drill exercises the BACKUP layer and should not need a build to run.
-sqlite3 "$(registry_file)" 'PRAGMA journal_mode=WAL;' >/dev/null
-sqlite3 "$(registry_file)" < "${REPO_DIR}/crates/pkdump-db/src/schema_registry.sql"
+# drill exercises the BACKUP layer.
+pk tenant list >/dev/null
 # RFC3339, with no space in it, because that is what `registry::insert` writes —
 # and because `pkdump tenant list` prints the registry as a whitespace-separated
 # table, so a `datetime('now')` fixture (which has a space) would silently shift

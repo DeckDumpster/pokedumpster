@@ -78,7 +78,6 @@
 //! exemption is spelled out per dataset and the compiler makes adding one a
 //! decision.
 
-mod diff;
 mod partition;
 mod replay;
 
@@ -163,7 +162,7 @@ fn shared(args: SharedArgs) -> anyhow::Result<()> {
     // The lake, opened for READING. `open_reader` hands back a handle with no
     // `put` on it at all: `raw/` is immutable, and the job that derives from
     // the evidence must not be able to rewrite it.
-    let zone = pkdump_lake::open_reader()?;
+    let zone = dumpster_kit_lake::open_reader(&pkdump_site::lake_env())?;
     println!(
         "Deriving ingest_date={} from {}",
         args.ingest_date,
@@ -201,7 +200,7 @@ fn shared(args: SharedArgs) -> anyhow::Result<()> {
         );
     }
 
-    let replay = Arc::new(replay::RawReplay::new(zone, &plan.chosen)?);
+    let replay = Arc::new(replay::SiteReplay::new(zone, &plan.chosen)?);
     println!("  {} URL(s) replayable from this partition", replay.urls());
 
     println!("Opening shared catalog at {}", db_path.display());
@@ -346,7 +345,8 @@ fn diff_cmd(args: DiffArgs) -> anyhow::Result<()> {
         args.left.display(),
         args.right.display()
     );
-    let report = diff::compare(&left, &right, &args.exclude, args.max_diffs)?;
+    let report =
+        dumpster_kit_lakehouse::diff::compare(&left, &right, &args.exclude, args.max_diffs)?;
     report.print();
 
     if report.matched() {

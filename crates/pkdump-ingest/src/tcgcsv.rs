@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use pkdump_lake::{Dataset, PartFormat, RawLanding, Source};
+use dumpster_kit_lake::{Dataset, PartFormat, RawLanding, Source};
 use rusqlite::Connection;
 use serde::Deserialize;
 
@@ -1128,11 +1128,11 @@ impl dumpster_kit_tcgcsv::Fetch for WireFetch<'_> {
             .strip_prefix(&canonical)
             .unwrap_or_else(|| panic!("kit URL {url} is not under {canonical}"));
         let dataset = if path.ends_with("/groups") {
-            Dataset::Groups
+            Dataset::GROUPS
         } else if path.ends_with("/products") {
-            Dataset::Products
+            Dataset::PRODUCTS
         } else if path.ends_with("/prices") {
-            Dataset::Prices
+            Dataset::PRICES
         } else {
             panic!("kit asked for {url}, which is no dataset this client lands")
         };
@@ -1145,7 +1145,7 @@ impl dumpster_kit_tcgcsv::Fetch for WireFetch<'_> {
             &c.http,
             c.http.get(format!("{}{path}", c.base_url)),
             &c.wire,
-            Source::Tcgcsv,
+            Source::TCGCSV,
             dataset,
             PartFormat::Json,
         )

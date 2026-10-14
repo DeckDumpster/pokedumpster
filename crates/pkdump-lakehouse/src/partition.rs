@@ -27,7 +27,7 @@
 //! retries and gives up, `pkdump data refresh` carries on and exits 2
 //! (pd-nons), and the landing zone is left honest about it: `pokemontcgio/sets`
 //! records the failure and reads `complete: false` while `tcgcsv/prices` reads
-//! complete, because [`finalize`](pkdump_lake::RawLanding::finalize) computes
+//! complete, because [`finalize`](dumpster_kit_lake::RawLanding::finalize) computes
 //! completeness per dataset.
 //!
 //! Refusing that partition outright made the two units answer one night's
@@ -60,99 +60,83 @@
 //! request for one becomes a replay miss — which is loud (see
 //! [`crate::replay`]) rather than silent.
 
-use std::collections::BTreeMap;
+use dumpster_kit_lake::RawZone;
+use dumpster_kit_lakehouse::partition::{Incomplete, Need, Requirement, Requirements};
 
-use pkdump_derive::DeriveClock;
-use pkdump_lake::{Dataset, RawZone, Run, Source, select_run};
+pub use dumpster_kit_lakehouse::partition::{Chosen, clock_of};
 
-/// Whether a derive can proceed without a dataset's bytes at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Need {
-    /// Every refresh fetches this. Absent is a refusal.
-    Required,
-    /// A refresh may legitimately not have fetched this. Absent contributes
-    /// no URLs and any request for one becomes a replay miss, which is loud.
-    Optional,
-}
+/// The half a night cannot lose. A price is a fact about one day and there is no asking for it
+/// later, so a prefix that may be short of an unknown number of groups is not something to
+/// derive from: **short is a refusal.**
+const TCGCSV: Requirements<'static> = Requirements {
+    rows: &[
+        Requirement {
+            source: pkdump_site::TCGCSV,
+            dataset: pkdump_site::GROUPS,
+            need: Need::Required,
+        },
+        Requirement {
+            source: pkdump_site::TCGCSV,
+            dataset: pkdump_site::PRODUCTS,
+            need: Need::Required,
+        },
+        Requirement {
+            source: pkdump_site::TCGCSV,
+            dataset: pkdump_site::PRICES,
+            need: Need::Required,
+        },
+    ],
+    incomplete: Incomplete::Refuse,
+};
 
-/// What a dataset that landed but did not FINISH means for the derive.
+/// The tail. Absent is still a refusal for `sets` — a date no refresh reached the tail of is a
+/// date nothing landed — but SHORT is a partial night rather than an underivable one
+/// (pd-llbq). `cards` is fetched only for sets the catalog lacks, so a night with no new set
+/// lands none, and that is an ordinary night rather than a gap; short is the tail dying
+/// between two sets, which is the same partial night.
+const TAIL: Requirements<'static> = Requirements {
+    rows: &[
+        Requirement {
+            source: pkdump_site::POKEMON_TCG_IO,
+            dataset: pkdump_site::SETS,
+            need: Need::Required,
+        },
+        Requirement {
+            source: pkdump_site::POKEMON_TCG_IO,
+            dataset: pkdump_site::CARDS,
+            need: Need::Optional,
+        },
+    ],
+    incomplete: Incomplete::Partial,
+};
+
+/// `pkdump setup`'s bulk corpus. A refresh never fetches it, and a `setup` that fetched half of
+/// it derives half a catalog: absent is fine, short is a refusal.
+const BULK: Requirements<'static> = Requirements {
+    rows: &[Requirement {
+        source: pkdump_site::POKEMON_TCG_DATA,
+        dataset: pkdump_site::BULK,
+        need: Need::Optional,
+    }],
+    incomplete: Incomplete::Refuse,
+};
+
+/// This site's requirement table, in the order a derive chooses and reports.
 ///
-/// Separate from [`Need`] because the two questions have different answers for
-/// the same dataset: `pokemontcgio/cards` may be absent (an ordinary night with
-/// no new set) *and* may be short (the night the tail died), and those are not
-/// the same fact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Incomplete {
-    /// A refusal. An incomplete run's parts are real bytes, but nothing in the
-    /// landing zone can say whether they add up to a day — the writer never
-    /// learns how many parts it was owed. A catalog that is quietly smaller
-    /// reads as *cards that do not exist*.
-    Refuse,
-    /// A **partial** derivation, not a refusal — the pokemontcg.io tail, and
-    /// only it. See the module docs: the shortfall is bounded (a stale set
-    /// list, superseded by tomorrow's) where TCGCSV's is not, and refusing it
-    /// would cost the night's prices once this job is the only builder.
-    Partial,
-}
-
-/// Where a dataset's payloads come from, whether a derive needs them, and what
-/// a short prefix of them means.
-///
-/// Exhaustive over [`Dataset`] with no wildcard arm, on purpose: landing a new
-/// dataset stops this compiling until somebody decides whether a rebuild may
-/// run without it. That decision is exactly the coverage question item 1 of
-/// the epic made a test rather than a review, and this is where it is asked
-/// for the *reading* side.
-pub fn requirement(dataset: Dataset) -> (Source, Need, Incomplete) {
-    match dataset {
-        // THE half a night cannot lose. A price is a fact about one day and
-        // there is no asking for it later, so a prefix that may be short of
-        // an unknown number of groups is not something to derive from.
-        Dataset::Groups => (Source::Tcgcsv, Need::Required, Incomplete::Refuse),
-        Dataset::Products => (Source::Tcgcsv, Need::Required, Incomplete::Refuse),
-        Dataset::Prices => (Source::Tcgcsv, Need::Required, Incomplete::Refuse),
-        // The tail. Absent is still a refusal — a date no refresh reached the
-        // tail of is a date nothing landed — but SHORT is a partial night
-        // rather than an underivable one (pd-llbq).
-        Dataset::Sets => (Source::PokemonTcgIo, Need::Required, Incomplete::Partial),
-        // Fetched only for sets the catalog lacks — a night with no new set
-        // lands none, and that is an ordinary night rather than a gap. Short
-        // is the tail dying between two sets, which is the same partial night.
-        Dataset::Cards => (Source::PokemonTcgIo, Need::Optional, Incomplete::Partial),
-        // `pkdump setup`'s bulk corpus. A refresh never fetches it, and a
-        // `setup` that fetched half of it derives half a catalog.
-        Dataset::Bulk => (Source::PokemonTcgData, Need::Optional, Incomplete::Refuse),
-    }
-}
-
-/// One dataset's chosen run for the date being derived.
-#[derive(Debug, Clone)]
-pub struct Chosen {
-    /// Where the payloads came from.
-    pub source: Source,
-    /// Which endpoint's payloads.
-    pub dataset: Dataset,
-    /// The run selected — newest complete, per [`select_run`].
-    pub run: Run,
-}
-
-impl Chosen {
-    /// `source/dataset date`, the phrase every refusal names.
-    pub fn what(&self, ingest_date: &str) -> String {
-        format!("{}/{} {ingest_date}", self.source, self.dataset)
-    }
-}
+/// The kit takes **one** `Incomplete` per table; this site's answer differs by dataset, so the
+/// table is three kit tables and [`choose`] reads them in order. A fourth upstream is a fourth
+/// row in one of them, and a decision about what its shortfall means.
+const TABLES: [&Requirements<'static>; 3] = [&TCGCSV, &TAIL, &BULK];
 
 /// The runs a date's derive will read, and whether the night was whole.
 #[derive(Debug, Clone)]
 pub struct Plan {
-    /// One run per dataset, in [`Dataset::ALL`] order.
+    /// One run per dataset, in the requirement table's order.
     pub chosen: Vec<Chosen>,
     /// One line per dataset that landed short — empty on a whole night.
     ///
-    /// Only the pokemontcg.io tail can populate this; every other dataset's
-    /// incompleteness is a refusal, so `choose` returns `Err` instead. See
-    /// [`Incomplete`] and the module docs.
+    /// Only the pokemontcg.io tail can populate this; every other dataset's incompleteness is
+    /// a refusal, so `choose` returns `Err` instead. See the module docs.
     pub partial: Vec<String>,
 }
 
@@ -163,137 +147,53 @@ impl Plan {
     }
 }
 
-/// Choose one run per dataset for `ingest_date`, refusing a date that cannot
-/// be derived.
+/// Choose one run per dataset for `ingest_date`, refusing a date that cannot be derived.
 ///
-/// Returns the chosen runs in [`Dataset::ALL`] order — deterministic, so the
-/// job's output and its provenance rows do not depend on a listing's order.
+/// Returns the chosen runs in table order — deterministic, so the job's output and its
+/// provenance rows do not depend on a listing's order.
 ///
-/// A dataset the landing zone marked short is a refusal for everything except
-/// the tail, where it is recorded in [`Plan::partial`] and derived from
-/// anyway. The refusals still win over that: a TCGCSV dataset with no complete
-/// run returns `Err` whatever the tail did, so "partial" can only ever mean
-/// "the set list is old", never "some of the prices are missing".
+/// A dataset the landing zone marked short is a refusal for everything except the tail, where
+/// it is recorded in [`Plan::partial`] and derived from anyway. The refusals still win over
+/// that: a TCGCSV dataset with no complete run returns `Err` whatever the tail did, so
+/// "partial" can only ever mean "the set list is old", never "some of the prices are missing".
 pub fn choose(zone: &RawZone, ingest_date: &str) -> anyhow::Result<Plan> {
     let mut chosen = Vec::new();
-    let mut partial = Vec::new();
-    for &dataset in Dataset::ALL {
-        let (source, need, incomplete) = requirement(dataset);
-        let what = format!("{source}/{dataset} {ingest_date}");
-        let runs = zone.runs(source, dataset, ingest_date)?;
-
-        if runs.is_empty() && need == Need::Optional {
-            println!("  {what}: nothing landed (optional)");
-            continue;
-        }
-        // `select_run` is the shared rule — newest complete wins, no complete
-        // run refuses — and it is deliberately the same function the Python
-        // side documents, so two jobs cannot disagree about what a date IS.
-        let run = match select_run(&runs, &what) {
-            Ok(run) => {
-                println!(
-                    "  {what}: {} ({} part(s))",
-                    run.run_id,
-                    run.manifest.parts.len()
-                );
-                run
-            }
-            // The tail, and only the tail. `runs` is non-empty here (an empty
-            // one is either the `Optional` skip above or `select_run`'s "no
-            // runs landed", which stays a refusal for the tail too — a date
-            // nothing landed is not a partial night, it is not a night), and
-            // it is ordered oldest-first, so the last is the newest attempt.
-            Err(_) if incomplete == Incomplete::Partial && !runs.is_empty() => {
-                let run = runs.last().expect("runs is not empty").clone();
-                println!("  {what}: {} — INCOMPLETE", run.describe());
-                partial.push(format!("{what}: {}", run.describe()));
-                run
-            }
-            Err(e) => return Err(e.into()),
-        };
-        chosen.push(Chosen {
-            source,
-            dataset,
-            run,
-        });
+    for table in TABLES {
+        chosen.extend(dumpster_kit_lakehouse::partition::choose(zone, ingest_date, table)?.chosen);
     }
+    // The kit chose a short run under `Partial` without saying so in the plan; the manifest
+    // is where that was written down, so it is read back from there.
+    let partial: Vec<String> = chosen
+        .iter()
+        .filter(|c| !c.run.manifest.complete)
+        .map(|c| {
+            println!(
+                "  {}: {} — INCOMPLETE",
+                c.what(ingest_date),
+                c.run.describe()
+            );
+            format!("{}: {}", c.what(ingest_date), c.run.describe())
+        })
+        .collect();
     Ok(Plan { chosen, partial })
 }
 
-/// The clock every chosen run agrees on.
-///
-/// A derive reproduces **one fetch**. Its rows carry `fetched_at` and
-/// `observed_at` values that came from the clock the fetching run read once,
-/// and the manifest is where that instant was written down — so recovering it
-/// is what makes "row-identical" mean identical rather than
-/// identical-apart-from-the-timestamps.
-///
-/// Two runs of one date that disagree about it are two different fetches, and
-/// rows stamped from a blend of them would be neither run's output. That is
-/// refused, naming both, rather than resolved by a rule (newest? first?) that
-/// would quietly pick one fetch's bytes and the other's clock. It happens when
-/// a date was landed by two invocations — a `setup` and a `refresh` on the same
-/// day, say — and the remedy is to derive a date one run landed.
-///
-/// A run whose manifest carries no clock at all is refused by
-/// [`DeriveClock::from_manifest`], which says which partition and what to do.
-pub fn clock_of(chosen: &[Chosen], ingest_date: &str) -> anyhow::Result<DeriveClock> {
-    let mut by_instant: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    for c in chosen {
-        by_instant
-            .entry(c.run.manifest.started_at.trim())
-            .or_default()
-            .push(format!("{} run={}", c.what(ingest_date), c.run.run_id));
-    }
-
-    if by_instant.len() > 1 {
-        let detail = by_instant
-            .iter()
-            .map(|(instant, who)| {
-                let instant = if instant.is_empty() {
-                    "(none)"
-                } else {
-                    instant
-                };
-                format!("{instant}: {}", who.join(", "))
-            })
-            .collect::<Vec<_>>()
-            .join("\n  ");
-        anyhow::bail!(
-            "{ingest_date}: the runs this derive would read were fetched at different \
-             instants, so there is no single clock to stamp its rows with:\n  {detail}\n\
-             A derive reproduces one fetch. Rows built from one run's bytes and another \
-             run's clock are neither run's output, which is precisely the \"old data looks \
-             new\" failure the ingest_date partition exists to prevent.\n\
-             Derive a date that one run landed, or re-land this one \
-             (pkdump data refresh) so every dataset comes from the same run."
-        );
-    }
-
-    let (instant, who) = by_instant
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("{ingest_date}: no runs were chosen"))?;
-    DeriveClock::from_manifest(instant, &who.join(", "))
-}
-
-/// The provenance rows for a completed derive — see
-/// [`pkdump_db::raw_derivation`].
+/// The provenance rows for a completed derive — see [`pkdump_db::raw_derivation`].
 pub fn provenance(
     chosen: &[Chosen],
     ingest_date: &str,
-    clock: &DeriveClock,
+    clock: &pkdump_derive::DeriveClock,
 ) -> Vec<pkdump_db::raw_derivation::RawDerivation> {
-    chosen
-        .iter()
-        .map(|c| pkdump_db::raw_derivation::RawDerivation {
-            ingest_date: ingest_date.to_string(),
-            source: c.source.to_string(),
-            dataset: c.dataset.to_string(),
-            run_id: c.run.run_id.clone(),
-            parts: c.run.manifest.parts.len() as i64,
-            complete: c.run.manifest.complete,
-            observed_at: clock.observed_date().to_string(),
+    dumpster_kit_lakehouse::partition::provenance(chosen, ingest_date, clock)
+        .into_iter()
+        .map(|p| pkdump_db::raw_derivation::RawDerivation {
+            ingest_date: p.ingest_date,
+            source: p.source,
+            dataset: p.dataset,
+            run_id: p.run_id,
+            parts: p.parts,
+            complete: p.complete,
+            observed_at: p.observed_at,
         })
         .collect()
 }
@@ -301,7 +201,7 @@ pub fn provenance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pkdump_lake::{DirStore, PartFormat, RawLanding};
+    use dumpster_kit_lake::{Dataset, DirStore, PartFormat, RawLanding, Source};
 
     const STARTED: &str = "2026-08-11T04:51:02+00:00";
     const DATE: &str = "2026-08-11";
@@ -311,10 +211,26 @@ mod tests {
     fn land(root: &std::path::Path, date: &str, started: &str, fail: bool) -> String {
         let sink = RawLanding::new(Box::new(DirStore::new(root)), date, started);
         for (source, dataset, url) in [
-            (Source::Tcgcsv, Dataset::Groups, "https://up/3/groups"),
-            (Source::Tcgcsv, Dataset::Products, "https://up/3/1/products"),
-            (Source::Tcgcsv, Dataset::Prices, "https://up/3/1/prices"),
-            (Source::PokemonTcgIo, Dataset::Sets, "https://up/sets"),
+            (
+                pkdump_site::TCGCSV,
+                pkdump_site::GROUPS,
+                "https://up/3/groups",
+            ),
+            (
+                pkdump_site::TCGCSV,
+                pkdump_site::PRODUCTS,
+                "https://up/3/1/products",
+            ),
+            (
+                pkdump_site::TCGCSV,
+                pkdump_site::PRICES,
+                "https://up/3/1/prices",
+            ),
+            (
+                pkdump_site::POKEMON_TCG_IO,
+                pkdump_site::SETS,
+                "https://up/sets",
+            ),
         ] {
             sink.land(source, dataset, url, 200, PartFormat::Json, b"{}")
                 .unwrap();
@@ -332,16 +248,28 @@ mod tests {
     fn land_with_dead_tail(root: &std::path::Path, date: &str, started: &str) -> String {
         let sink = RawLanding::new(Box::new(DirStore::new(root)), date, started);
         for (source, dataset, url) in [
-            (Source::Tcgcsv, Dataset::Groups, "https://up/3/groups"),
-            (Source::Tcgcsv, Dataset::Products, "https://up/3/1/products"),
-            (Source::Tcgcsv, Dataset::Prices, "https://up/3/1/prices"),
+            (
+                pkdump_site::TCGCSV,
+                pkdump_site::GROUPS,
+                "https://up/3/groups",
+            ),
+            (
+                pkdump_site::TCGCSV,
+                pkdump_site::PRODUCTS,
+                "https://up/3/1/products",
+            ),
+            (
+                pkdump_site::TCGCSV,
+                pkdump_site::PRICES,
+                "https://up/3/1/prices",
+            ),
         ] {
             sink.land(source, dataset, url, 200, PartFormat::Json, b"{}")
                 .unwrap();
         }
         sink.record_failure(
-            Source::PokemonTcgIo,
-            Dataset::Sets,
+            pkdump_site::POKEMON_TCG_IO,
+            pkdump_site::SETS,
             "https://up/sets",
             Some(502),
             "http 502 after 4 attempts",
@@ -366,7 +294,7 @@ mod tests {
         assert_eq!(chosen.len(), 4, "the four datasets every refresh fetches");
         assert!(chosen.iter().all(|c| c.run.run_id == run));
         // Optional and unlanded: absent from the plan rather than an error.
-        assert!(!chosen.iter().any(|c| c.dataset == Dataset::Bulk));
+        assert!(!chosen.iter().any(|c| c.dataset == pkdump_site::BULK));
         assert_eq!(clock_of(&chosen, DATE).unwrap().observed_date(), DATE);
     }
 
@@ -485,8 +413,8 @@ mod tests {
         land(tmp.path(), DATE, STARTED, false);
         let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), DATE, STARTED);
         sink.land(
-            Source::PokemonTcgData,
-            Dataset::Bulk,
+            pkdump_site::POKEMON_TCG_DATA,
+            pkdump_site::BULK,
             "https://up/bulk/cards.json",
             200,
             PartFormat::Json,
@@ -550,8 +478,8 @@ mod tests {
         land(tmp.path(), DATE, STARTED, false);
         let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), DATE, STARTED);
         sink.land(
-            Source::PokemonTcgIo,
-            Dataset::Cards,
+            pkdump_site::POKEMON_TCG_IO,
+            pkdump_site::CARDS,
             "https://up/cards?q=set.id:fk1",
             200,
             PartFormat::Json,
@@ -559,8 +487,8 @@ mod tests {
         )
         .unwrap();
         sink.record_failure(
-            Source::PokemonTcgIo,
-            Dataset::Cards,
+            pkdump_site::POKEMON_TCG_IO,
+            pkdump_site::CARDS,
             "https://up/cards?q=set.id:fk2",
             Some(502),
             "http 502",
@@ -601,9 +529,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sink = RawLanding::new(Box::new(DirStore::new(tmp.path())), DATE, STARTED);
         for (source, dataset, url) in [
-            (Source::Tcgcsv, Dataset::Groups, "https://up/3/groups"),
-            (Source::Tcgcsv, Dataset::Products, "https://up/3/1/products"),
-            (Source::Tcgcsv, Dataset::Prices, "https://up/3/1/prices"),
+            (
+                pkdump_site::TCGCSV,
+                pkdump_site::GROUPS,
+                "https://up/3/groups",
+            ),
+            (
+                pkdump_site::TCGCSV,
+                pkdump_site::PRODUCTS,
+                "https://up/3/1/products",
+            ),
+            (
+                pkdump_site::TCGCSV,
+                pkdump_site::PRICES,
+                "https://up/3/1/prices",
+            ),
         ] {
             sink.land(source, dataset, url, 200, PartFormat::Json, b"{}")
                 .unwrap();
@@ -616,19 +556,21 @@ mod tests {
         assert!(err.contains("never falls back"), "{err}");
     }
 
-    /// Every dataset the landing zone knows about is accounted for here. The
-    /// exhaustive match in `requirement` is the compile-time half of this; the
-    /// runtime half is that `choose` looks for all of them.
+    /// Every dataset this site lands is accounted for in the tables above, in the order the
+    /// site declares them, and each is a prefix the reader can be asked about. The kit's enum
+    /// was exhaustive at compile time; its replacement is this runtime comparison of the site's
+    /// two lists, so a dataset added to [`pkdump_site::DATASETS`] and not to a table fails here.
     #[test]
     fn every_dataset_is_looked_for() {
         let tmp = tempfile::tempdir().unwrap();
         land(tmp.path(), DATE, STARTED, false);
         let zone = zone(tmp.path());
-        for &d in Dataset::ALL {
-            let (source, _, _) = requirement(d);
-            // Every one of them is a prefix the reader can be asked about —
-            // the compile-time half of this is `requirement`'s exhaustive
-            // match, which has no wildcard arm.
+        let in_tables: Vec<(Source, Dataset)> = TABLES
+            .iter()
+            .flat_map(|t| t.rows.iter().map(|r| (r.source, r.dataset)))
+            .collect();
+        assert_eq!(in_tables, pkdump_site::DATASETS);
+        for &(source, d) in pkdump_site::DATASETS {
             zone.runs(source, d, DATE).unwrap();
         }
     }

@@ -38,7 +38,7 @@ mod support;
 use std::path::Path;
 use std::sync::Arc;
 
-use pkdump_lake::{Dataset, DirStore, RawLanding, RawZone, Source};
+use dumpster_kit_lake::{Dataset, DirStore, RawLanding, RawZone, Source};
 use support::{FakeUpstream, Reply};
 
 /// A valid `.tar.gz` containing `pokemon-tcg-data-master/sets/en.json` with an
@@ -286,7 +286,7 @@ fn a_dead_tail_leaves_a_partition_that_says_which_half_is_short() {
     };
 
     // 1. The tail's own dataset is INCOMPLETE, and it says why.
-    let sets = one(Source::PokemonTcgIo, Dataset::Sets);
+    let sets = one(pkdump_site::POKEMON_TCG_IO, pkdump_site::SETS);
     assert!(
         !sets.manifest.complete,
         "a failed tail is not a complete prefix"
@@ -319,8 +319,8 @@ fn a_dead_tail_leaves_a_partition_that_says_which_half_is_short() {
     // 3. The half a night cannot lose is COMPLETE, in the same run. This is the
     //    whole asymmetry: `finalize` was called with `None`, so completeness is
     //    each dataset's own answer rather than the run's.
-    for dataset in [Dataset::Groups, Dataset::Products, Dataset::Prices] {
-        let run = one(Source::Tcgcsv, dataset);
+    for dataset in [Dataset::GROUPS, Dataset::PRODUCTS, Dataset::PRICES] {
+        let run = one(Source::TCGCSV, dataset);
         assert!(
             run.manifest.complete,
             "tcgcsv/{dataset} must be complete on a night only the tail failed: {:?}",
@@ -339,7 +339,7 @@ fn a_dead_tail_leaves_a_partition_that_says_which_half_is_short() {
 
     // 4. One run, not two: the tail's failure did not start a new one.
     assert_eq!(
-        one(Source::Tcgcsv, Dataset::Prices).run_id,
+        one(Source::TCGCSV, Dataset::PRICES).run_id,
         sets.run_id,
         "every dataset of a night belongs to that night's run"
     );
@@ -376,8 +376,8 @@ fn land_against(
     let clock =
         pkdump_derive::DeriveClock::at("2026-08-11T04:51:02Z".parse().expect("a fixed instant"));
     let raw = dir.join("raw-zone");
-    let landing = Arc::new(pkdump_lake::RawLanding::new(
-        Box::new(pkdump_lake::DirStore::new(raw.clone())),
+    let landing = Arc::new(dumpster_kit_lake::RawLanding::new(
+        Box::new(dumpster_kit_lake::DirStore::new(raw.clone())),
         clock.observed_date(),
         clock.fetched_at(),
     ));

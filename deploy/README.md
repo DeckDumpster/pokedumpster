@@ -811,10 +811,11 @@ tenant, ever. Per-tenant point-in-time recovery is Litestream's job, above.
 That rule is mechanical rather than a convention people remember
 (`tests/lake/tenant_isolation_test.sh`, lint tier, pd-cgi9). It asserts the two
 halves separately: no Iceberg schema field name is tenant-identifying, and no
-lake write path can open a tenant database — `crates/pkdump-lake` links no
-SQLite crate at all, and the Python write-path modules import no `sqlite3`, so
-both are true by construction the way "images are never landed" is true of the
-closed `Source` enum. The transform tier (`value_snapshots.py`) is the one job
+lake write path can open a tenant database — the Python write-path modules
+import no `sqlite3`, so that half is true by construction the way "images are
+never landed" is true of the site's list of upstreams. (The Rust lake crate's
+half — "links no SQLite at all" — moved to the kit with the code and is weaker
+there: see the guard's header.) The transform tier (`value_snapshots.py`) is the one job
 that opens tenant databases on purpose, and its half of the rule is the other
 direction: it reads the lake and never writes to it.
 
@@ -826,10 +827,10 @@ guard's axis is the catalog zone against the tenant zone rather than the lake
 against everything else (pd-7x83), and the tenant zone is a carve-out with the
 rules INVERTED: every key it builds takes a `database_id`, it resolves no tenant
 identity of its own, the shipper that fills it reaches no catalog prefix and no
-catalog credential, and the online path (`pkdump-db`, `pkdump-server`,
-`pkdump-keys`) links neither zone. The carve-out is total rather than a list of
-exceptions — every Rust file in `crates/pkdump-lake` must be classified into
-exactly one zone, so adding one is a decision the gate makes you take.
+catalog credential, and the online path (`pkdump-db`, `pkdump-server`) links
+neither zone. The carve-out is total rather than a list of exceptions — every
+Rust file in `crates/pkdump-site` must be classified, so adding one is a
+decision the gate makes you take.
 
 And the guard has been **seen red**: `tests/lake/tenant_isolation_selftest.sh`
 (lint tier) injects one violation at a time into a copy of the tree and requires

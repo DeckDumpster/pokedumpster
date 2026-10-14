@@ -205,8 +205,8 @@ fn do_delete(a: &DeleteArgs) -> anyhow::Result<i32> {
     }
 
     let stray = stray_of(&a.stray)?;
-    let (zone, config) = pkdump_lake::open_tenant_zone_purge()?;
-    let registry = pkdump_keys::state::open()?;
+    let (zone, config) = dumpster_kit_lake::open_tenant_zone_purge(&pkdump_site::lake_env())?;
+    let registry = pkdump_db::registry::open()?;
 
     println!("==> deleting {database_id} from {}", zone.describe());
     let _ = std::io::stdout().flush();
@@ -264,8 +264,8 @@ fn do_delete(a: &DeleteArgs) -> anyhow::Result<i32> {
 fn do_verify(a: &VerifyArgs) -> anyhow::Result<i32> {
     let database_id = resolve(&a.scope.tenant)?;
     let stray = stray_of(&a.stray)?;
-    let (zone, config) = pkdump_lake::open_tenant_zone_purge()?;
-    let registry = pkdump_keys::state::open()?;
+    let (zone, config) = dumpster_kit_lake::open_tenant_zone_purge(&pkdump_site::lake_env())?;
+    let registry = pkdump_db::registry::open()?;
 
     println!("==> verifying {database_id} against {}", zone.describe());
     let verdict = pkdump_erase::verify(
@@ -293,7 +293,7 @@ fn do_verify(a: &VerifyArgs) -> anyhow::Result<i32> {
 
 fn do_list(a: &ScopeArgs) -> anyhow::Result<i32> {
     let database_id = resolve(&a.tenant)?;
-    let (zone, config) = pkdump_lake::open_tenant_zone_purge()?;
+    let (zone, config) = dumpster_kit_lake::open_tenant_zone_purge(&pkdump_site::lake_env())?;
     let sweep = pkdump_erase::Sweep::new(zone.as_ref(), &config, &database_id)?;
     let keys = sweep.list()?;
     if keys.is_empty() {

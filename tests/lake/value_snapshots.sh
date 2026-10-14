@@ -436,7 +436,7 @@ import sqlite3, sys
 conn = sqlite3.connect(sys.argv[1], isolation_level=None)
 conn.execute('BEGIN IMMEDIATE')
 conn.execute('DELETE FROM zone_sealed_holdings')
-conn.execute('UPDATE zone_holdings_run SET sealed_rows = 0')
+conn.execute('UPDATE zone_holdings_run SET per_source = json_set(per_source, \\'$.sealed_collection\\', 0)')
 conn.execute('COMMIT')
 " "/fixture/home/tenants/${ALICE}.sqlite" || die "could not empty the sealed staging table"
 

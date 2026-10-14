@@ -53,10 +53,10 @@ difference is structural rather than nominal:
 | verb | copy it out / put it back | record a tombstone |
 | scope | every tenant at once | exactly one `database_id` |
 | reach | never opens the registry | never opens the key file |
-| code | `crates/pkdump-keys/src/backup.rs` | `crates/pkdump-keys/src/destroy.rs` |
+| code | `dumpster-kit-keys`'s `src/backup.rs` | `dumpster-kit-keys`'s `src/destroy.rs` |
 
 That last row is a rule, not a description.
-`crates/pkdump-keys/tests/separation.rs` reads both files and fails if either
+The kit's `dumpster-kit-keys/tests/separation.rs` reads both files and fails if either
 grows a reference to the other's world — so it stays true of code nobody has
 written yet.
 

@@ -7,11 +7,10 @@ members = [
     "crates/pkdump-derive",
     "crates/pkdump-erase",
     "crates/pkdump-ingest",
-    "crates/pkdump-keys",
-    "crates/pkdump-lake",
     "crates/pkdump-lakehouse",
     "crates/pkdump-server",
     "crates/pkdump-ship",
+    "crates/pkdump-site",
 ]
 
 [workspace.package]
@@ -28,15 +27,21 @@ pkdump-db = { path = "crates/pkdump-db" }
 pkdump-derive = { path = "crates/pkdump-derive" }
 pkdump-erase = { path = "crates/pkdump-erase" }
 pkdump-ingest = { path = "crates/pkdump-ingest" }
-pkdump-keys = { path = "crates/pkdump-keys" }
-pkdump-lake = { path = "crates/pkdump-lake" }
 pkdump-server = { path = "crates/pkdump-server" }
 pkdump-ship = { path = "crates/pkdump-ship" }
+pkdump-site = { path = "crates/pkdump-site" }
 
-# Shared kit (one implementation of the tcgcsv client and the tenancy kernel, used by dumpstar
-# too). One revision for every kit crate: two would build the kit twice.
-dumpster-kit-tcgcsv = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "ecc3ed6ebf32d551262609f61fe519546c0878ea" }
-dumpster-kit-tenancy = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "ecc3ed6ebf32d551262609f61fe519546c0878ea" }
+# Shared kit (one implementation of the tcgcsv client and of the lakehouse, used by dumpstar
+# too). ONE revision for every kit crate: two revisions would put two copies of the
+# tenancy kernel in the tree, and `AppPrefix` from one is not the other's.
+dumpster-kit-tcgcsv = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-tenancy = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-lake = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-keys = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-ship = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-erase = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-derive = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
+dumpster-kit-lakehouse = { git = "https://github.com/DeckDumpster/dumpster-kit", rev = "cafe79d6e9c899d0771ae5c2442b82abf783f3d0" }
 
 # External — crates opt in via `dep.workspace = true` as tasks need them
 anyhow = "1"
@@ -61,31 +66,17 @@ tar = "0.4"
 csv = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ulid = { version = "3", default-features = false, features = ["std"] }
-# Raw landing zone (pkdump-lake). zstd is the archive codec the lakehouse design
-# names for `raw/` — a different question from HTTP response compression, where
+# Raw landing zone, key custody and the shipper are dumpster-kit's now, with the
+# dependencies they were written against (HKDF, AES-GCM, Parquet, the S3 SDK). zstd is
+# the archive codec the lakehouse design names for `raw/`, still wanted directly by the
+# tests that read it — a different question from HTTP response compression, where
 # pkdump-server deliberately stayed on br/gzip (see its `compression()`).
 zstd = "0.13"
 sha2 = "0.10"
-# Key custody (pkdump-keys). HKDF-SHA256 is the whole of the derivation — one
-# master key, per-tenant keys derived from it, nothing stored per tenant. The
-# RustCrypto `hkdf` crate rather than a hand-rolled HMAC ladder: RFC 5869 is
-# easy to get subtly wrong and this is the one place in the codebase where
-# subtly wrong is unrecoverable.
-hkdf = "0.12"
-getrandom = "0.3"
-hex = "0.4"
-zeroize = "1"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-s3 = "1"
-# The shipper (pkdump-ship). Parquet without arrow: the tenant zone is plain
-# partitioned Parquet, and the low-level column writer is all a five-column
-# append-only batch needs — `default-features = false` keeps the whole arrow
-# stack out of a workspace that has no other use for it.
-parquet = { version = "59", default-features = false, features = ["zstd"] }
-# AES-256-GCM for the tenant zone's objects. RustCrypto again, for the reason
-# `hkdf` is: this is the second place where subtly wrong is unrecoverable.
-aes-gcm = "0.11"
-bytes = "1"
+# Cloudflare Access JWT validation (pkdump-server). RS256 verification with
+# JWK Set support. Uses the `ring` crypto backend (already in the tree via
+# reqwest → rustls), so no new native-code dependency is added.
+jsonwebtoken = "9"
 
 [profile.release]
 strip = true

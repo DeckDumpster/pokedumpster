@@ -13,8 +13,6 @@ use std::time::Duration;
 use pkdump_lake::{Dataset, PartFormat, RawLanding, Source};
 use rusqlite::Connection;
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
-use serde_json::Value;
 
 use crate::error::{IngestError, Result};
 use crate::landing::{self, Wire};
@@ -31,8 +29,7 @@ pub const CATEGORY_POKEMON: i64 = 3;
 pub const CATEGORY_POKEMON_JAPAN: i64 = 85;
 
 /// A TCGplayer "group" — roughly a set.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct TcgGroup {
     pub group_id: i64,
     pub name: String,
@@ -42,16 +39,14 @@ pub struct TcgGroup {
 
 /// One `extendedData` entry on a product. Single cards carry a `Number`
 /// entry here; sealed products do not.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ExtendedDatum {
     pub name: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// A TCGplayer product — either a single card or a sealed product.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct TcgProduct {
     pub product_id: i64,
     pub group_id: i64,
@@ -62,15 +57,12 @@ pub struct TcgProduct {
     /// the mechanically-generated `image_url` resolves to a 403 — common
     /// for newly-listed cards, Pokemon Center Exclusives, and [Staff]
     /// variants. We treat the URL as unusable when this is 0.
-    #[serde(default)]
     pub image_count: i64,
-    #[serde(default)]
     pub extended_data: Vec<ExtendedDatum>,
 }
 
 /// A spot price for one product + printing sub-type.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct TcgPrice {
     pub product_id: i64,
     pub sub_type_name: Option<String>,
@@ -81,15 +73,47 @@ pub struct TcgPrice {
     pub direct_low_price: Option<f64>,
 }
 
-/// Extract and deserialize the `results` array from a TCGCSV envelope.
-fn parse_results<T: DeserializeOwned>(envelope: &Value) -> Result<Vec<T>> {
-    let arr = envelope
-        .get("results")
-        .and_then(Value::as_array)
-        .ok_or_else(|| IngestError::BadResponse("TCGCSV envelope missing 'results'".into()))?;
-    arr.iter()
-        .map(|v| serde_json::from_value(v.clone()).map_err(IngestError::from))
-        .collect()
+impl From<dumpster_kit_tcgcsv::Group> for TcgGroup {
+    fn from(g: dumpster_kit_tcgcsv::Group) -> Self {
+        Self {
+            group_id: g.group_id,
+            name: g.name,
+            abbreviation: g.abbreviation,
+            published_on: g.published_on,
+        }
+    }
+}
+
+impl From<dumpster_kit_tcgcsv::Product> for TcgProduct {
+    fn from(p: dumpster_kit_tcgcsv::Product) -> Self {
+        Self {
+            product_id: p.product_id,
+            group_id: p.group_id,
+            name: p.name,
+            image_url: p.image_url,
+            url: p.url,
+            image_count: p.image_count,
+            extended_data: p
+                .extended_data
+                .into_iter()
+                .map(|(name, value)| ExtendedDatum { name, value })
+                .collect(),
+        }
+    }
+}
+
+impl From<dumpster_kit_tcgcsv::Price> for TcgPrice {
+    fn from(p: dumpster_kit_tcgcsv::Price) -> Self {
+        Self {
+            product_id: p.product_id,
+            sub_type_name: p.sub_type_name,
+            low_price: p.low,
+            mid_price: p.mid,
+            high_price: p.high,
+            market_price: p.market,
+            direct_low_price: p.direct_low,
+        }
+    }
 }
 
 /// Whether a product is a single card (it carries a `Number` extendedData
@@ -1032,38 +1056,107 @@ impl TcgcsvClient {
         self.category_id
     }
 
-    fn get(&self, path: &str, dataset: Dataset) -> Result<Value> {
-        // See PokemonTcgClient::get — a replayed response reaches no upstream,
-        // and 450 Japanese groups at two requests each is 45s of pure sleep.
-        if !self.wire.is_replaying() {
-            std::thread::sleep(Duration::from_millis(50));
+    /// The kit client over this client's wire. The kit owns the URL layout and
+    /// the parsing; the wire (landing, replay, retry, pacing) stays ours.
+    fn kit<R>(
+        &self,
+        f: impl FnOnce(&dumpster_kit_tcgcsv::TcgcsvClient<'_>) -> dumpster_kit_tcgcsv::Result<R>,
+    ) -> Result<R> {
+        let wire = WireFetch {
+            client: self,
+            failure: std::cell::RefCell::new(None),
+        };
+        let kit = dumpster_kit_tcgcsv::TcgcsvClient::new(
+            &wire,
+            dumpster_kit_tcgcsv::DEFAULT_BASE,
+            self.category_id,
+        );
+        match f(&kit) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(wire.failure.into_inner().unwrap_or_else(|| match e {
+                dumpster_kit_tcgcsv::Error::Parse(e) => IngestError::Json(e),
+                e => IngestError::BadResponse(e.to_string()),
+            })),
         }
-        let category = self.category_id;
-        let base = &self.base_url;
-        let body = landing::fetch_bytes(
-            &self.http,
-            self.http.get(format!("{base}/{category}{path}")),
-            &self.wire,
-            Source::Tcgcsv,
-            dataset,
-            PartFormat::Json,
-        )?;
-        Ok(serde_json::from_slice(&body)?)
     }
 
     /// Every group (set) in this client's category.
     pub fn fetch_groups(&self) -> Result<Vec<TcgGroup>> {
-        parse_results(&self.get("/groups", Dataset::Groups)?)
+        Ok(self
+            .kit(|k| k.fetch_groups())?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     /// Every product (cards + sealed) in a group.
     pub fn fetch_products(&self, group_id: i64) -> Result<Vec<TcgProduct>> {
-        parse_results(&self.get(&format!("/{group_id}/products"), Dataset::Products)?)
+        Ok(self
+            .kit(|k| k.fetch_products(group_id))?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     /// Every spot price in a group.
     pub fn fetch_prices(&self, group_id: i64) -> Result<Vec<TcgPrice>> {
-        parse_results(&self.get(&format!("/{group_id}/prices"), Dataset::Prices)?)
+        Ok(self
+            .kit(|k| k.fetch_prices(group_id))?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+}
+
+/// The kit's [`Fetch`](dumpster_kit_tcgcsv::Fetch) over [`landing::fetch_bytes`].
+///
+/// The kit names every URL under `DEFAULT_BASE/tcgplayer`; this client's own
+/// origin (`PKDUMP_TCGCSV_BASE_URL`, `.base_url()`) replaces that prefix, so the
+/// URL requested, landed and replayed is byte-for-byte what it was before the
+/// kit. A failure keeps its [`IngestError`] here rather than passing through the
+/// kit's error type, so a caller sees the error it always saw.
+struct WireFetch<'a> {
+    client: &'a TcgcsvClient,
+    failure: std::cell::RefCell<Option<IngestError>>,
+}
+
+impl dumpster_kit_tcgcsv::Fetch for WireFetch<'_> {
+    fn get(&self, url: &str) -> dumpster_kit_tcgcsv::Result<Vec<u8>> {
+        let c = self.client;
+        let canonical = format!("{}/tcgplayer", dumpster_kit_tcgcsv::DEFAULT_BASE);
+        let path = url
+            .strip_prefix(&canonical)
+            .unwrap_or_else(|| panic!("kit URL {url} is not under {canonical}"));
+        let dataset = if path.ends_with("/groups") {
+            Dataset::Groups
+        } else if path.ends_with("/products") {
+            Dataset::Products
+        } else if path.ends_with("/prices") {
+            Dataset::Prices
+        } else {
+            panic!("kit asked for {url}, which is no dataset this client lands")
+        };
+        // See PokemonTcgClient::get — a replayed response reaches no upstream,
+        // and 450 Japanese groups at two requests each is 45s of pure sleep.
+        if !c.wire.is_replaying() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        landing::fetch_bytes(
+            &c.http,
+            c.http.get(format!("{}{path}", c.base_url)),
+            &c.wire,
+            Source::Tcgcsv,
+            dataset,
+            PartFormat::Json,
+        )
+        .map_err(|e| {
+            let message = e.to_string();
+            *self.failure.borrow_mut() = Some(e);
+            dumpster_kit_tcgcsv::Error::Fetch {
+                url: url.to_string(),
+                message,
+            }
+        })
     }
 }
 
@@ -1100,13 +1193,15 @@ mod tests {
 
     #[test]
     fn parses_groups_envelope() {
-        let env: Value = serde_json::from_str(
-            r#"{"success":true,"results":[
+        let groups: Vec<TcgGroup> = dumpster_kit_tcgcsv::parse_groups(
+            br#"{"success":true,"results":[
                  {"groupId":23237,"name":"151","abbreviation":"MEW",
                   "publishedOn":"2023-09-22T00:00:00"}]}"#,
         )
-        .unwrap();
-        let groups: Vec<TcgGroup> = parse_results(&env).unwrap();
+        .unwrap()
+        .into_iter()
+        .map(Into::into)
+        .collect();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].group_id, 23237);
         assert_eq!(groups[0].abbreviation.as_deref(), Some("MEW"));

@@ -22,7 +22,9 @@ use std::time::{Duration, Instant};
 use rusqlite::Connection;
 use rusqlite::backup::Backup;
 
-use crate::error::Result;
+use dumpster_kit_tenancy::{self as kit, TenancyError, TenantDbSpec};
+
+use crate::error::{DbError, Result};
 use crate::schema_version::{self, Database};
 
 /// How long an open in this crate waits for a lock before giving up. Every
@@ -32,7 +34,6 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) const SCHEMA_SHARED: &str = include_str!("schema_shared.sql");
 const SCHEMA_USER: &str = include_str!("schema_user.sql");
-const SCHEMA_REGISTRY: &str = include_str!("schema_registry.sql");
 
 /// How long a catalog open waits for another writer before giving up.
 ///
@@ -370,131 +371,66 @@ fn add_columns(conn: &Connection, columns: &[(&str, &str, &str)]) -> Result<()> 
     Ok(())
 }
 
-/// `ATTACH` the shared catalog read-only as `shared`, then create a
-/// `TEMP VIEW` for every catalog table and view so they are queryable
-/// unqualified alongside the user database's own tables.
+/// PokeDumpster's collection, as the tenancy kernel opens it: `schema_user.sql` re-applied on
+/// every open, the two versions this build understands, and — as `prepare` — what is PokeDumpster's
+/// own about a collection: columns added since a collection was created, and the default
+/// `conditions` (pd-s4c2).
 ///
-/// The catalog is version-gated here too. This is the path the *server*
-/// reaches it by — `open_shared` is `pkdump setup` / ingest — so without a
-/// check here a catalog from a newer build would be joined against
-/// silently on every request.
-///
-/// A catalog name that the collection itself already declares gets **no
-/// view**. SQLite resolves an unqualified name in `temp` before `main`, so a
-/// TEMP VIEW would not sit beside the collection's own table — it would
-/// shade it, and every join would silently read the catalog's rows instead.
-/// That is not hypothetical: `gate_attached` deliberately accepts a catalog
-/// that is *behind* this build, so a `shared.sqlite` that has not been opened
-/// read-write since `conditions` moved into the collection (pd-s4c2) still
-/// physically holds the old table. The collection's own tables win; the
-/// catalog fills in around them.
-pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<()> {
-    let uri = format!("file:{}?mode=ro", shared_path.display());
-    conn.execute("ATTACH DATABASE ?1 AS shared", [uri])?;
-    schema_version::gate_attached(conn, Database::Shared, "shared")?;
+/// One mechanism covers both cases the `conditions` move created: a brand-new collection is born
+/// with its multipliers, and one written before the table lived here grows them on its next open.
+/// Insert-if-absent, so an already-seeded collection is not written to at all.
+pub const TENANT_SPEC: TenantDbSpec = TenantDbSpec {
+    schema_sql: SCHEMA_USER,
+    collection: Database::User.spec(),
+    shared: Database::Shared.spec(),
+    prepare: prepare_collection,
+};
 
-    // Everything the catalog declares, minus SQLite's own internals and
-    // anything `main` already owns. Nothing else is named here: a table the
-    // catalog should not have is dropped by `schema_shared.sql`, not skipped
-    // by every reader of it (pd-yj40).
-    let names: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT name FROM shared.sqlite_master \
-             WHERE type IN ('table', 'view') \
-               AND name NOT LIKE 'sqlite_%' \
-               AND name NOT IN (SELECT name FROM main.sqlite_master \
-                                WHERE type IN ('table', 'view'))",
-        )?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        rows.collect::<rusqlite::Result<_>>()?
+fn prepare_collection(conn: &Connection) -> std::result::Result<(), TenancyError> {
+    let run = || -> Result<()> {
+        add_missing_user_columns(conn)?;
+        crate::conditions::seed_defaults(conn)?;
+        Ok(())
     };
-
-    for name in names {
-        conn.execute_batch(&format!(
-            "CREATE TEMP VIEW IF NOT EXISTS \"{name}\" \
-             AS SELECT * FROM shared.\"{name}\";"
-        ))?;
-    }
-    Ok(())
+    run().map_err(|e| match e {
+        DbError::Sqlite(e) => TenancyError::Sqlite(e),
+        other => TenancyError::Env(other.to_string()),
+    })
 }
 
-/// Open a per-user collection database — applying the user schema — without
-/// the shared catalog. For work that touches only user tables (the JSON
-/// backup), which must also run on a box where `pkdump setup` has not built
-/// a catalog yet.
-///
-/// Seeds the collection's `conditions` with the five defaults if they are
-/// absent (pd-s4c2). One mechanism covers both cases the move created: a
-/// brand-new collection is born with its multipliers, and one written before
-/// the table lived here grows them on its next open. Insert-if-absent, so an
-/// already-seeded collection is not written to at all.
+/// `ATTACH` the shared catalog read-only as `shared`, with its tables exposed as `TEMP VIEW`s,
+/// version-gated. The kernel's (`dumpster_kit_tenancy::attach_shared_readonly`); this binds the
+/// catalog's version.
+pub fn attach_shared_readonly(conn: &Connection, shared_path: &Path) -> Result<()> {
+    Ok(kit::attach_shared_readonly(
+        conn,
+        shared_path,
+        Database::Shared.spec(),
+    )?)
+}
+
+/// Open a per-user collection database — applying the user schema — without the shared catalog.
+/// For work that touches only user tables (the JSON backup), which must also run on a box where
+/// `pkdump setup` has not built a catalog yet.
 pub fn open_user(user_path: &Path) -> Result<Connection> {
-    if let Some(parent) = user_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let conn = Connection::open(user_path)?;
-    // Set the timeout BEFORE the WAL pragma: `PRAGMA journal_mode = WAL`
-    // needs a brief write lock even when WAL is already set, and two
-    // connections opening the same file simultaneously would fail
-    // immediately without it.
-    conn.busy_timeout(BUSY_TIMEOUT)?;
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
-    schema_version::gate(&conn, Database::User)?;
-    conn.execute_batch(SCHEMA_USER)?;
-    add_missing_user_columns(&conn)?;
-    crate::conditions::seed_defaults(&conn)?;
-    schema_version::stamp(&conn, Database::User)?;
-    Ok(conn)
+    Ok(kit::open_tenant(user_path, &TENANT_SPEC)?)
 }
 
-/// Open the user registry database, creating it if absent, and apply the
-/// registry schema (idempotent, like the other two).
-///
-/// Never attaches the catalog: the registry answers one question — which
-/// database file belongs to this handle — and joins nothing. WAL so a
-/// resolver reading it is not blocked by a `pkdump tenant create` writing
-/// it.
-///
-/// Gated and stamped exactly as [`open_user`] is, and for a sharper reason:
-/// this is the file that says whose database is whose. A build that did not
-/// understand its shape and wrote to it anyway would not corrupt a
-/// collection — it would corrupt the map, and an unattributable collection is
-/// the failure this whole layout exists to prevent (`deploy/TENANTS.md`).
-/// Every registry in existence is version 0, so the adoption path is the one
-/// that actually runs (pd-r60h).
+/// Open the user registry database, creating it if absent, and apply the registry schema.
 pub fn open_registry(path: &Path) -> Result<Connection> {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let conn = Connection::open(path)?;
-    conn.busy_timeout(BUSY_TIMEOUT)?;
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
-    schema_version::gate(&conn, Database::Registry)?;
-    conn.execute_batch(SCHEMA_REGISTRY)?;
-    schema_version::stamp(&conn, Database::Registry)?;
-    Ok(conn)
+    Ok(kit::open_registry(path)?)
 }
 
-/// Open a per-user collection database — applying the user schema — with
-/// the shared catalog attached read-only.
+/// Open a per-user collection database with the shared catalog attached read-only, refusing the
+/// result unless it is wired to exactly this tenant's file plus the catalog.
 pub fn connect_user(user_path: &Path, shared_path: &Path) -> Result<Connection> {
-    let conn = open_user(user_path)?;
-    attach_shared_readonly(&conn, shared_path)?;
-    Ok(conn)
+    Ok(kit::connect_tenant(user_path, shared_path, &TENANT_SPEC)?)
 }
 
-/// Apply the user schema to an arbitrary connection. Used by tests that
-/// open an in-memory user DB without going through `connect_user`.
-///
-/// Gates and stamps exactly as [`open_user`] does, so a test connection is
-/// not a second, laxer way into the user schema.
+/// Apply the user schema to an arbitrary connection. Used by tests that open an in-memory user
+/// DB without going through `connect_user`.
 pub fn init_user_schema(conn: &Connection) -> Result<()> {
-    schema_version::gate(conn, Database::User)?;
-    conn.execute_batch(SCHEMA_USER)?;
-    add_missing_user_columns(conn)?;
-    crate::conditions::seed_defaults(conn)?;
-    schema_version::stamp(conn, Database::User)?;
-    Ok(())
+    Ok(kit::init_tenant_schema(conn, &TENANT_SPEC)?)
 }
 
 /// What one truncating WAL checkpoint achieved.
@@ -1102,10 +1038,10 @@ mod tests {
     /// file and the epic that added the gate were separate branches, so there
     /// has never been a build that stamped one (pd-r60h).
     fn unversioned_registry(path: &Path) -> String {
-        let conn = Connection::open(path).unwrap();
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
-            .unwrap();
-        conn.execute_batch(SCHEMA_REGISTRY).unwrap();
+        // The schema is the kernel's, so applying it means opening the registry; un-stamping
+        // it afterwards leaves exactly the file the predecessor wrote.
+        let conn = open_registry(path).unwrap();
+        conn.execute_batch("PRAGMA user_version = 0").unwrap();
         let user = crate::registry::insert(&conn, "alice").unwrap();
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
             .unwrap();

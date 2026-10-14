@@ -255,7 +255,7 @@ pub struct ServeConfig {
     /// Cloudflare Access configuration. `None` when Access is not configured —
     /// the authentication layer is skipped and the server starts without it.
     /// When `Some`, all three fields are required and a JWKS fetch failure is a
-    /// startup failure. See `access::AccessConfig::from_env_if_configured`.
+    /// startup failure. See `access::config_if_configured`.
     pub access: Option<access::AccessConfig>,
 }
 
@@ -357,9 +357,9 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use access::test_support::TestAccessFixture;
     use axum::body::Body;
     use axum::http::{Request, header};
+    use dumpster_kit_tenancy::testing::TestAccessFixture;
     use tower::ServiceExt;
 
     /// A catalog holding one printing (`sv3pt5-1-normal`), plus the static

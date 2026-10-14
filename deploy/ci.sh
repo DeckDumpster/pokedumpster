@@ -837,7 +837,7 @@ if tier lint; then
     bash "$REPO_DIR/tests/lake/nessie_backup_test.sh"
 
     # The allow_proxmox dispatch input: default off; only true yields spill: ec2.
-    step "force_spill dispatch input shape (tests/ci/spill_input_test.sh)"
+    step "allow_proxmox dispatch input shape (tests/ci/spill_input_test.sh)"
     bash "$REPO_DIR/tests/ci/spill_input_test.sh"
 
     # A failed systemctl start used to exit silently, destroying the evidence

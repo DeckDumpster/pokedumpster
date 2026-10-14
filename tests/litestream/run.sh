@@ -702,6 +702,17 @@ podman run -d --name "$PROBE_CTR" --network "$NET" --user 0 \
 # this box was at load average 7-11 when the 15s form started failing (2026-08-08).
 SNAPSHOTS=0
 second_snapshot() {
+	# litestream scans tenants/ with a readdir followed by an lstat per entry,
+	# and `sq` creates and deletes echo.sqlite-shm on every open/close. When the
+	# -shm vanishes between the two, litestream exits ("failed to scan directory
+	# /data/tenants: lstat …-shm: no such file or directory") — seen on the EC2
+	# runner (run 38629067188), where it killed the probe and no second snapshot
+	# could ever appear. The deployed sidecar is restarted by its Quadlet unit
+	# (Restart=on-failure); the probe gets the same supervision here.
+	if [ "$(podman inspect -f '{{.State.Running}}' "$PROBE_CTR")" != true ]; then
+		echo "    probe sidecar exited (directory-scan race); restarting it like Restart=on-failure would" >&2
+		podman start "$PROBE_CTR" >/dev/null || return 1
+	fi
 	sq "$WORK/probe/tenants/echo.sqlite" "INSERT INTO collection (tenant) VALUES ('echo');"
 	local keys
 	# A listing that failed is not a bucket with no snapshot in it (pd-cxq4);

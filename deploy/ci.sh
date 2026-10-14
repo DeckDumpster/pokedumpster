@@ -836,7 +836,7 @@ if tier lint; then
     step "Nessie catalog backup: stale/corrupt alarm, restore-drill failures (tests/lake/nessie_backup_test.sh)"
     bash "$REPO_DIR/tests/lake/nessie_backup_test.sh"
 
-    # The force_spill dispatch input: default off, and only true yields ec2-only.
+    # The allow_proxmox dispatch input: default off; only true yields spill: ec2.
     step "force_spill dispatch input shape (tests/ci/spill_input_test.sh)"
     bash "$REPO_DIR/tests/ci/spill_input_test.sh"
 

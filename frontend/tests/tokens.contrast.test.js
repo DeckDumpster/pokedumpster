@@ -16,16 +16,13 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
+import { tokenFiles, tokensCss, contrastPairsPath } from './support/tokens.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const frontendRoot = join(here, '..');
 const srcRoot = join(frontendRoot, 'src');
-const tokensPath = join(srcRoot, 'lib/styles/tokens.css');
-const pairsPath = join(srcRoot, 'lib/styles/contrast-pairs.json');
-
-const tokensCss = readFileSync(tokensPath, 'utf8');
 /** @type {{ exempt: Record<string, string>, pairs: Array<Record<string, string>> }} */
-const manifest = JSON.parse(readFileSync(pairsPath, 'utf8'));
+const manifest = JSON.parse(readFileSync(contrastPairsPath, 'utf8'));
 
 /** @type {Record<string, number>} */
 const THRESHOLD = { normal: 4.5, large: 3.0, ui: 3.0 };
@@ -294,7 +291,7 @@ const srcFiles = walk(srcRoot);
 test('tokens.css is imported exactly once', () => {
 	const importers = srcFiles.filter(
 		(f) =>
-			f !== tokensPath &&
+			!tokenFiles.includes(f) &&
 			/\.(svelte|ts|js|css)$/.test(f) &&
 			/(^|\s)(import\s+['"][^'"]*tokens\.css['"]|@import\s+[^;]*tokens\.css)/m.test(
 				readFileSync(f, 'utf8')
@@ -322,7 +319,7 @@ test('every raw colour still in frontend/src maps to a semantic role', () => {
 
 	const found = new Set();
 	for (const file of srcFiles) {
-		if (file === tokensPath || !/\.(svelte|ts|js|css)$/.test(file)) continue;
+		if (tokenFiles.includes(file) || !/\.(svelte|ts|js|css)$/.test(file)) continue;
 		const text = decolour(readFileSync(file, 'utf8'));
 		for (const m of text.matchAll(/(?<![\w&])(#[0-9a-fA-F]{3,8})(?![\w-])/g)) {
 			found.add(m[1].toLowerCase());
@@ -351,7 +348,7 @@ test('components reference only the semantic layer', () => {
 	const offenders = srcFiles
 		.filter(
 			(f) =>
-				f !== tokensPath &&
+				!tokenFiles.includes(f) &&
 				/\.(svelte|ts|js|css)$/.test(f) &&
 				/var\(\s*--pd-/.test(readFileSync(f, 'utf8'))
 		)

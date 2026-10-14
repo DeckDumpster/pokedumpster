@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import SectionHeader from '../../src/lib/components/ui/SectionHeader.svelte';
+import SectionHeader from '../../src/lib/kit/components/SectionHeader.svelte';
 import { markup, styles, rootClass, slot, assertTokenOnly, assertTokensDeclared } from '../support/render.js';
 
 /** @param {Record<string, unknown>} [props] */

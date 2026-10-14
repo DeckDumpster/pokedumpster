@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import Segmented from '../../src/lib/components/ui/Segmented.svelte';
+import Segmented from '../../src/lib/kit/components/Segmented.svelte';
 import { markup, styles, rootClass, assertTokenOnly, assertTokensDeclared } from '../support/render.js';
 
 const VIEWS = [

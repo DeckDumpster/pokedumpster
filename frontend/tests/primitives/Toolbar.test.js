@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import Toolbar from '../../src/lib/components/ui/Toolbar.svelte';
+import Toolbar from '../../src/lib/kit/components/Toolbar.svelte';
 import { markup, styles, rootClass, slot, assertTokenOnly, assertTokensDeclared } from '../support/render.js';
 
 /** @param {Record<string, unknown>} [props] */

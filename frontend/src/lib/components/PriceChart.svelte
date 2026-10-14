@@ -2,7 +2,7 @@
 	import { Chart, registerables, type ChartConfiguration } from 'chart.js';
 	import { untrack } from 'svelte';
 	import { variantLabel } from '$lib/variants.svelte';
-	import { chartFill, chartPalette, token } from '$lib/styles/tokens';
+	import { chartFill, chartPalette, token } from '$lib/kit/tokens';
 	import { money } from '$lib/format';
 	import { EmptyState } from '$lib/components/ui';
 	import type { PriceSeries } from '$lib/types/PriceSeries';

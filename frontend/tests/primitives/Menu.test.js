@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import Menu from '../../src/lib/components/ui/Menu.svelte';
+import Menu from '../../src/lib/kit/components/Menu.svelte';
 import { markup, styles, rootClass, slot, assertTokenOnly, assertTokensDeclared } from '../support/render.js';
 
 const ITEMS = [

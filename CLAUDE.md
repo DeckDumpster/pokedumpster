@@ -2737,7 +2737,19 @@ ones — JP names collide hard on the era pattern ("SV11B: Black Bolt",
 
 ### Design tokens
 
-`frontend/src/lib/styles/tokens.css` is the only file in `frontend/src` that
+**The token file and the primitives are dumpster-kit's** (sp-indx8f). They are vendored,
+byte for byte, into `frontend/src/lib/kit/` at the revision `frontend/kit.lock` pins
+(`scripts/sync-kit.sh <kit-checkout> [rev]` writes both; `--check` re-verifies against the
+kit). Never edit a file under `kit/` — change the kit and re-sync;
+`frontend/tests/kit.pin.test.js` fails on a hand edit, a stray file, or a primitive declared
+in `components/ui/`, which is only a re-export of `$lib/kit/components`.
+
+`frontend/src/lib/styles/tokens.css` is PokeDumpster's **theme**: it `@import`s the kit's
+`tokens.css` and overrides the reference layer (`--pd-*`) with this site's ramp. It may not
+redefine a semantic role. Raw colour literals live in those two token files and nowhere else.
+It is imported once, from `+layout.svelte`. Everything below describes the combined layers.
+
+Original rule: `frontend/src/lib/styles/tokens.css` is the only file in `frontend/src` that
 may contain a raw colour literal. It is imported once, from `+layout.svelte`.
 
 Two layers, and the split is load-bearing:
@@ -2779,7 +2791,7 @@ deliberately not a migration — routes shed theirs as they get touched.
 
 ### UI primitives
 
-`frontend/src/lib/components/ui/` is the visual vocabulary — `Panel`, `Button`,
+`frontend/src/lib/kit/components/` (re-exported by `$lib/components/ui`) is the visual vocabulary — `Panel`, `Button`,
 `Field`, `Badge`, `ProgressBar`, `SectionHeader`, `EmptyState`, `Toolbar`,
 `SearchField`, `Segmented`, `Menu`, `Pager`, re-exported from
 `$lib/components/ui`.

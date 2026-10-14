@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Chart, registerables, type ChartConfiguration } from 'chart.js';
 	import { untrack } from 'svelte';
-	import { chartFill, chartPalette, token } from '$lib/styles/tokens';
+	import { chartFill, chartPalette, token } from '$lib/kit/tokens';
 	import { money } from '$lib/format';
 	import { EmptyState } from '$lib/components/ui';
 	import type { ValueSeries, ValuePoint } from '$lib/api';

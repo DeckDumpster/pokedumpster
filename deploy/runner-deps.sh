@@ -490,14 +490,27 @@ check_machine() {
     return $rc
 }
 
+# PKDUMP_RUNNER_DEPS_ONLY="base rust" checks just those groups (base podman
+# subid linger rust node chromium fonts machine). testenv runs the lint and rust
+# tiers in a bare rust image that has no podman, node or browser libraries and
+# never will; checking them there failed every run before the tier started.
+# Unset checks everything, which is what a CI runner needs.
 run_checks() {
     MISSING=()
-    check_base;   check_podman
-    check_subid;  check_linger
-    check_rust;   check_node
-    check_chromium_libs
-    check_fonts
-    check_machine
+    local g
+    for g in base podman subid linger rust node chromium fonts machine; do
+        case " ${PKDUMP_RUNNER_DEPS_ONLY:-$g} " in
+            *" $g "*) ;;
+            *) continue ;;
+        esac
+        case "$g" in
+            base) check_base ;;       podman) check_podman ;;
+            subid) check_subid ;;     linger) check_linger ;;
+            rust) check_rust ;;       node) check_node ;;
+            chromium) check_chromium_libs ;;
+            fonts) check_fonts ;;     machine) check_machine ;;
+        esac
+    done
 }
 
 if [ "$MODE" = check ]; then

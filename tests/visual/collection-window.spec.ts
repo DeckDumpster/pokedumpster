@@ -476,7 +476,12 @@ for (const [width, height] of [
 		await openCollection(page, 'grid');
 		await page.setViewportSize({ width, height });
 		await page.waitForTimeout(250);
-		const top = async (sel: string) => (await page.locator(sel).first().boundingBox())!.y;
+		// Vertical centre, not top: a 26px logo and a taller input share a row
+		// when they are centred on it, and their tops differ by design.
+		const top = async (sel: string) => {
+			const b = (await page.locator(sel).first().boundingBox())!;
+			return b.y + b.height / 2;
+		};
 		const logo = await top('.topbar a.brand');
 		const search = await top('[data-testid="search-input"]');
 		const help = await top('[data-testid="search-help-link"]');

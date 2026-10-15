@@ -114,7 +114,13 @@ pkdump_store_activate
 
 # Mark the latest confirmed-fresh time on the data volume so the app can surface
 # staleness in-app (Layer 3 / ivq.5) without needing S3 creds of its own.
-MOUNTPOINT="$(podman volume inspect -f '{{.Mountpoint}}' "$VOLUME" 2>/dev/null || true)"
+# Podman's own words are kept: "not found" used to be all a failure said, and it
+# reads the same for a missing volume as for a podman that could not look
+# (sp-crsh57: the same unit passed by hand and failed under systemd on EC2).
+MOUNTPOINT_ERR="$(mktemp)"
+MOUNTPOINT="$(podman volume inspect -f '{{.Mountpoint}}' "$VOLUME" 2>"$MOUNTPOINT_ERR" || true)"
+VOLUME_WHY="$(tr '\n' ' ' <"$MOUNTPOINT_ERR"; rm -f "$MOUNTPOINT_ERR")"
+VOLUME_WHY="podman said: ${VOLUME_WHY:-nothing} (HOME=${HOME:-unset} uid=$(id -u) XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset} store=${PKDUMP_STORE_ROOT:-default})"
 mark_fresh() {
     [ -n "$MOUNTPOINT" ] || return 0
     date +%s > "${MOUNTPOINT}/.backup-last-ok" 2>/dev/null || true
@@ -142,7 +148,7 @@ stale() {
 # restore drill can check one without waiting for the timer.
 TENANTS=("$@")
 if [ ${#TENANTS[@]} -eq 0 ]; then
-    [ -n "$MOUNTPOINT" ] || stale "data volume '${VOLUME}' not found — cannot enumerate tenants"
+    [ -n "$MOUNTPOINT" ] || stale "data volume '${VOLUME}' not found — cannot enumerate tenants; ${VOLUME_WHY}"
     mapfile -t TENANTS < <(tenants_on_volume "$MOUNTPOINT")
 fi
 [ ${#TENANTS[@]} -gt 0 ] || stale "no tenant databases found under ${MOUNTPOINT}/tenants/"
@@ -672,7 +678,7 @@ judge_freshness() {
 #
 # The TENANT databases keep freshness, below, and must. They change daily, so a
 # replica that stopped advancing IS the alarm there.
-[ -n "$MOUNTPOINT" ] || stale "data volume '${VOLUME}' not found — cannot check the user registry"
+[ -n "$MOUNTPOINT" ] || stale "data volume '${VOLUME}' not found — cannot check the user registry; ${VOLUME_WHY}"
 REGISTRY_FILE="${MOUNTPOINT}/registry.sqlite"
 REGISTRY_URL="$(registry_replica_url)" \
     || stale "could not derive the registry replica URL — run deploy/setup.sh ${INSTANCE} to backfill litestream.env"

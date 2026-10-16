@@ -1,3 +1,5 @@
+// covers: UC-ui-056
+// tier: T3
 /**
  * Hand-written fail-first regression for the "price chart refreshes on every
  * copy edit" bug (pokedumpster-i5d). Editing a copy's condition calls load(),

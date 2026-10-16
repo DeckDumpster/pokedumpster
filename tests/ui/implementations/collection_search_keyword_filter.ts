@@ -1,3 +1,5 @@
+// covers: UC-ui-105
+// tier: T3
 /**
  * Hand-written implementation for collection_search_keyword_filter.
  *

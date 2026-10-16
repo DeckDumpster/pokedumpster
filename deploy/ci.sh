@@ -820,6 +820,14 @@ if tier lint; then
     step "No pipeline into grep -q, which inverts under pipefail (tests/ci/grepq_test.sh)"
     bash "$REPO_DIR/tests/ci/grepq_test.sh"
 
+    # Use-case coverage: every intent in tests/ui/intents is a use case in
+    # docs/test-plan/ui.toml, and a deletion that leaves one with no covering
+    # suite fails naming it. Spira's `test-plan` mechanism; refuses (never
+    # passes) where the binary cannot be found. See tests/plan/gate.sh.
+    step "Use-case coverage: no orphaned use case (tests/plan/gate.sh)"
+    bash "$REPO_DIR/tests/plan/plan_test.sh"
+    bash "$REPO_DIR/tests/plan/gate.sh"
+
     step "Nessie catalog backup: stale/corrupt alarm, restore-drill failures (tests/lake/nessie_backup_test.sh)"
     bash "$REPO_DIR/tests/lake/nessie_backup_test.sh"
 

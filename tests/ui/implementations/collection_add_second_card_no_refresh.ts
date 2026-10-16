@@ -1,3 +1,5 @@
+// covers: UC-ui-080
+// tier: T3
 /**
  * Hand-written implementation for collection_add_second_card_no_refresh.
  *

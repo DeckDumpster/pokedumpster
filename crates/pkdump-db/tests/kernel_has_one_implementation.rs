@@ -87,34 +87,40 @@ fn no_crate_carries_its_own_copy_of_the_kernel() {
 #[test]
 fn every_marker_is_something_the_kernel_really_contains() {
     // Not `cargo metadata`: offline it must resolve every platform's dependencies, which a
-    // gate's cargo cache does not hold, and it took minutes even where it worked. The pinned
-    // revision is in the workspace manifest; cargo checks it out under `$CARGO_HOME`.
-    let root = std::fs::read_to_string(workspace_root().join("Cargo.toml")).unwrap();
-    let rev = root
-        .lines()
-        .find(|l| l.starts_with("dumpster-kit-tenancy"))
-        .and_then(|l| l.split("rev = \"").nth(1))
-        .and_then(|r| r.split('"').next())
-        .expect("the workspace pins dumpster-kit-tenancy by rev");
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cargo"));
-    let checkouts = cargo_home.join("git/checkouts");
-    let kit_src = std::fs::read_dir(&checkouts)
+    // gate's cargo cache does not hold, and it took minutes even where it worked. Not a path
+    // under `$CARGO_HOME` either: a canary builds against a kit that is a path or patched
+    // dependency and has no git checkout at all. The one place that is true wherever cargo found
+    // the kit is the dep-info it wrote when it compiled the crate, next to this test binary.
+    let deps = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let kit_src = std::fs::read_dir(&deps)
         .unwrap()
         .filter_map(|e| e.ok())
-        .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten())
         .map(|e| e.path())
         .filter(|p| {
             let n = p.file_name().unwrap().to_string_lossy().to_string();
-            rev.starts_with(&n) || n.starts_with(&rev[..7.min(rev.len())])
+            n.starts_with("dumpster_kit_tenancy-") && n.ends_with(".d")
         })
-        .map(|p| p.join("crates/dumpster-kit-tenancy/src"))
-        .find(|p| p.is_dir())
+        // A target dir keeps the dep-info of every revision it has built; the live one is newest.
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        .and_then(|p| {
+            let text = std::fs::read_to_string(p).ok()?;
+            let lib = text
+                .split_once(": ")?
+                .1
+                .split_whitespace()
+                .next()?
+                .to_string();
+            Path::new(&lib).parent().map(Path::to_path_buf)
+        })
+        .filter(|p| p.is_dir())
         .unwrap_or_else(|| {
             panic!(
-                "no checkout of dumpster-kit-tenancy {rev} under {}",
-                checkouts.display()
+                "no dep-info for dumpster-kit-tenancy under {}",
+                deps.display()
             )
         });
     let mut all = Vec::new();

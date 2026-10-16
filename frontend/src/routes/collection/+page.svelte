@@ -1135,7 +1135,7 @@
 	sticky
 	surface="panel"
 >
-	<Toolbar gap="md">
+	<Toolbar gap="md" wrap={false}>
 		<a class="brand" href="/" aria-label="Home" title="Home">
 			<span class="brandmark"><Pokeball size={26} /></span>
 		</a>
@@ -1192,20 +1192,12 @@
 				</ul>
 			{/if}
 		</div>
-		<label class="alltoggle" title="Search the full card catalog, not just your collection">
-			<input
-				type="checkbox"
-				data-testid="all-cards-toggle"
-				checked={allCards}
-				onchange={toggleAllCards}
-			/>
-			All cards
-		</label>
 		<a class="helplink" data-testid="search-help-link" href="/search-help" title="Search syntax help"
 			>?</a
 		>
+	</Toolbar>
+	<Toolbar gap="md" wrap={false} class="controlsrow">
 		{#if searchRows.length > 0}
-			<span class="bardiv" aria-hidden="true"></span>
 			<div class="viewtoggle" role="group" aria-label="View">
 				<button
 					class:on={view === 'grid'}
@@ -1249,6 +1241,15 @@
 				{/if}
 			</div>
 		{/if}
+		<label class="alltoggle" title="Search the full card catalog, not just your collection">
+			<input
+				type="checkbox"
+				data-testid="all-cards-toggle"
+				checked={allCards}
+				onchange={toggleAllCards}
+			/>
+			All cards
+		</label>
 		<!-- The count speaks for the whole result set, and so does the money
 		     beside it, because the endpoint answers both (pd-2g84). The money
 		     is the value of the OWNED copies among those rows — the same
@@ -1908,15 +1909,6 @@
 	}
 	.alltoggle input {
 		cursor: pointer;
-	}
-	/* A hairline between the search cluster and the view/menu controls, so
-	   one row still reads as two groups. Decorative, hence aria-hidden. */
-	.bardiv {
-		width: 1px;
-		align-self: stretch;
-		margin: var(--space-1) var(--space-1);
-		background: var(--color-border);
-		flex-shrink: 0;
 	}
 	.countline {
 		margin: var(--space-0) var(--space-0) var(--space-0) auto;

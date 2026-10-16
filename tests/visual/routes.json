@@ -11,6 +11,7 @@
 	},
 
 	"unrepresented": {
+		"routes/collection/+page.svelte": "Judged by its own property tests (collection-window.spec.ts: header alignment, two-row layout), not a pixel baseline; per Ryan 2026-10-16 the full-page pixel gate is being retired (sp-tk1oyu).",
 		"routes/bundles/[slug]/+page.svelte": "Redirect-only shim to /browse/[code] (pokedumpster-80q). It renders one line of placeholder text before navigating; the destination is already covered by browse-set."
 	},
 
@@ -55,13 +56,6 @@
 			"id": "card-detail-owned-vintage",
 			"path": "/card/base1/4",
 			"about": "Base Set Charizard — a card with an ordered copy in flight"
-		},
-		{
-			"id": "collection",
-			"path": "/collection",
-			"about": "Collection list — paints its own chrome, and renders a virtual window of the result",
-			"$fullPage": "The list is virtually scrolled (pd-7z4o): the document is as tall as every matching row, and only the rows under the viewport are in it. A full-page shot is therefore mostly the blank below the window, and its height moves with measured tile geometry — a baseline of that judges the scroller's arithmetic, not the design. The viewport is what a reader sees, so the viewport is what gets judged.",
-			"fullPage": false
 		},
 		{ "id": "sealed", "path": "/sealed", "about": "Sealed collection — paints its own chrome" },
 		{ "id": "wishlist", "path": "/wishlist", "about": "Wishlist with priorities and max prices" },

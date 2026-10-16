@@ -54,10 +54,6 @@
 	const crumbs = $derived<Crumb[]>(breadcrumbs.crumbs ?? derivedCrumbs);
 </script>
 
-<svelte:head>
-	<link rel="icon" href="/favicon.svg" />
-</svelte:head>
-
 {#if !flush && !isHome}
 	<header>
 		<a class="logo" href="/" aria-label="Home">

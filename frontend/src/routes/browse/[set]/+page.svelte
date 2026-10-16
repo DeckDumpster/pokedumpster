@@ -646,7 +646,7 @@
 				/>
 			{/if}
 		{:else}
-			<div class="grid" style:grid-template-columns="repeat({cols}, 1fr)">
+			<div class="grid" style:grid-template-columns="repeat({cols}, minmax(0, 1fr))">
 				{#each binder.slots as slot, i (slot.card_id)}
 					{@const prevSection = i > 0 ? binder.slots[i - 1].section : 'base'}
 					{#if slot.section !== prevSection && slot.section !== 'base'}
@@ -946,6 +946,7 @@
 		grid-column: 1 / -1;
 	}
 	.slotwrap {
+		min-width: 0;
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-1);

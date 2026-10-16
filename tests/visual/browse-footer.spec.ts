@@ -19,10 +19,12 @@ function svg(w: number, h: number): string {
 }
 
 async function stubArt(page: Page) {
+	const seen = new Map<string, number>();
 	await page.route(/\.(png|jpg|jpeg|webp)(\?.*)?$/, async (route) => {
 		const url = route.request().url();
 		if (!/images\.pokemontcg\.io/.test(url)) return route.continue();
-		const landscape = url.length % 2 === 0;
+		if (!seen.has(url)) seen.set(url, seen.size);
+		const landscape = seen.get(url)! % 2 === 0;
 		await route.fulfill({
 			contentType: 'image/svg+xml',
 			body: landscape ? svg(700, 500) : svg(500, 700),

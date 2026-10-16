@@ -134,13 +134,13 @@
 #                      passing is not known to prove anything. See
 #                      tests/lake/deletion.sh.
 #  15. Refresh gate:   the other half of that — a real `pkdump data refresh`,
-#                      through the shipped image, over a data directory with
+#                      (the built binary), over a data directory with
 #                      two provisioned tenants in it, must leave every tenant
 #                      database byte-identical. Since pd-lunn the refresh
 #                      LANDS and builds nothing, so shared.sqlite has to come
 #                      out byte-identical too: the same gate now covers item
 #                      6's acceptance criterion against the shipped binary.
-#                      See tests/refresh/tenant_bytes.sh.
+#                      See crates/pkdump-cli/tests/refresh_tenant_bytes.rs.
 #
 # Steps 5-9b and 11-15 do not run where they are written. Each one QUEUES itself
 # under its own tier guard and they are run together, two at a time, by step
@@ -1286,11 +1286,11 @@ fi
 
 # --- 15. The refresh writes no tenant bytes ---------------------------------
 # The transform tier above is only half the fix for pd-s5yn; this is the other
-# half. A real `pkdump data refresh` runs through the shipped image over a data
+# half. A real `pkdump data refresh` runs (the built binary) over a data
 # directory holding two provisioned tenants — one of them the handle
 # $PKDUMP_USER defaults to, which is the exact database the deleted step 7 used
 # to write — and every tenant database has to come out byte-identical. Its
-# upstream is a local fixture that publishes nothing, so the run completes in
+# upstream is an in-process Rust fixture that publishes nothing, so the run completes in
 # seconds and depends on nobody's uptime; §5 of the gate asserts it really ran
 # its phases rather than exiting early.
 #
@@ -1299,7 +1299,12 @@ fi
 # after the run. A binary that still derived inline fails there.
 
 if tier refresh; then
-    : # tests/refresh/tenant_bytes.sh was deleted with its Python upstream stub (2026-10-15, epic sp-7y6mzt)
+    # Restored without Python (sp-ohyp5m): crates/pkdump-cli/tests/refresh_tenant_bytes.rs
+    # drives the real `pkdump` binary against the in-process Rust fake upstream
+    # (pkdump_ingest::test_upstream). It runs the built binary on the host rather
+    # than the shipped image; the image carries the same binary.
+    step "Refresh — the catalog refresh writes zero bytes anywhere"
+    ( cd "$REPO_DIR" && cargo test -p pkdump-cli --test refresh_tenant_bytes )
 fi
 
 # --- 16. Run the queued gates -----------------------------------------------

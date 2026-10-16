@@ -1075,6 +1075,8 @@ if tier litestream; then
     # 127.0.0.1 — it touches no pkdump-*@prod unit and contacts no external
     # service.
 
+    step "Queueing: Backup alarming — every layer fires (tests/alarming/run.sh)"
+    pkdump_par_add alarming bash "$REPO_DIR/tests/alarming/run.sh"
 
     # --- 7. Recreated-handle proof ------------------------------------------
     # pd-pm7b as an executable statement rather than an argument: a handle is

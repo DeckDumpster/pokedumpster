@@ -18,6 +18,8 @@
 	import { variantColor, variantLabel, variantSortCmp } from '$lib/variants.svelte';
 	import type { BinderPage } from '$lib/types/BinderPage';
 	import type { BinderSlot } from '$lib/types/BinderSlot';
+	import type { ComponentProps } from 'svelte';
+	type TileRarity = ComponentProps<typeof CardTile>['rarity'];
 
 	let binder = $state<BinderPage | null>(null);
 	let loading = $state(true);
@@ -687,7 +689,7 @@
 						name={slot.name}
 						image={slot.image_large}
 						number={slot.number}
-						rarity={slot.rarity_grp ?? 'unranked'}
+						rarity={(slot.rarity_grp ?? 'unranked') as TileRarity}
 						foil={ownedFoil(slot)}
 						price={slotPrice(slot) !== null ? `$${slotPrice(slot)?.toFixed(2)}` : null}
 						rotate={turnLandscape && !!landscape[slot.card_id]}

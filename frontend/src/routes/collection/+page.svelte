@@ -366,6 +366,35 @@
 
 	// Burger menu (Export CSV, Select) lives in the sticky top bar.
 	let menuOpen = $state(false);
+
+	// The table's column chooser (deck's grid-of-squares button, far right).
+	// Which columns are shown is a view preference, kept in this browser.
+	// Name and Qty are not optional: a row with neither is not a row.
+	const TABLE_COLUMNS: { key: string; label: string }[] = [
+		{ key: 'class', label: 'Class' },
+		{ key: 'etype', label: 'Type' },
+		{ key: 'cost', label: 'Cost' },
+		{ key: 'rarity', label: 'Rarity' },
+		{ key: 'set', label: 'Set' },
+		{ key: 'number', label: '#' },
+		{ key: 'nm', label: 'Price' },
+		{ key: 'adj', label: 'Adj.' }
+	];
+	const HIDDEN_COLS_KEY = 'pkdump.collection.hiddenColumns';
+	function loadHiddenCols(): string[] {
+		if (typeof localStorage === 'undefined') return [];
+		const raw = localStorage.getItem(HIDDEN_COLS_KEY);
+		if (raw === null) return [];
+		return (JSON.parse(raw) as string[]).filter((k) => TABLE_COLUMNS.some((c) => c.key === k));
+	}
+	let hiddenCols = $state<string[]>(loadHiddenCols());
+	let colsOpen = $state(false);
+	function toggleCol(key: string) {
+		hiddenCols = hiddenCols.includes(key)
+			? hiddenCols.filter((k) => k !== key)
+			: [...hiddenCols, key];
+		localStorage.setItem(HIDDEN_COLS_KEY, JSON.stringify(hiddenCols));
+	}
 	// Collection value-over-time chart modal (pokedumpster-e1vo).
 	let valueOpen = $state(false);
 	function closeMenu() {
@@ -824,7 +853,7 @@
 	const tableWindow = $derived(windowOf(tableOffsets, 0, winTop, winBottom));
 	const tableVisible = $derived(displayRows.slice(tableWindow.start, tableWindow.end));
 	/** Columns a spacer row has to span. */
-	const tableCols = $derived(selectMode ? 11 : 10);
+	const tableCols = $derived((selectMode ? 11 : 10) - hiddenCols.length);
 
 	/** Read the geometry the window arithmetic needs out of the rendered DOM. */
 	function measure() {
@@ -1104,7 +1133,10 @@
 
 <svelte:window
 	onkeydown={(e) => {
-		if (e.key === 'Escape') menuOpen = false;
+		if (e.key === 'Escape') {
+			menuOpen = false;
+			colsOpen = false;
+		}
 	}}
 />
 
@@ -1268,6 +1300,16 @@
 			{count(searchTotal)}
 			cards{#if searchTotalValue !== null}, {money(searchTotalValue)}{/if}
 		</button>
+		<button
+			type="button"
+			class="colsbtn"
+			class:on={colsOpen}
+			data-testid="columns-button"
+			aria-label="Configure columns"
+			aria-expanded={colsOpen}
+			title="Configure columns"
+			onclick={() => (colsOpen = !colsOpen)}
+		><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M1 1h4v4H1zm5 0h4v4H6zm5 0h4v4H11zM1 6h4v4H1zm5 0h4v4H6zm5 0h4v4H11zM1 11h4v4H1zm5 0h4v4H6zm5 0h4v4H11z" /></svg></button>
 	</Toolbar>
 	{#if searchError}
 		<div class="searcherr" data-testid="search-error" role="alert">
@@ -1276,6 +1318,25 @@
 		</div>
 	{/if}
 </Toolbar>
+
+{#if colsOpen}
+	<div class="colsBackdrop" role="presentation" onclick={() => (colsOpen = false)}></div>
+{/if}
+<aside class="colsDrawer" class:open={colsOpen} data-testid="columns-drawer" aria-label="Columns" inert={!colsOpen}>
+	<h3>Columns</h3>
+	<div class="pillgroup">
+		{#each TABLE_COLUMNS as c (c.key)}
+			<label class="pill" class:on={!hiddenCols.includes(c.key)}>
+				<input
+					type="checkbox"
+					checked={!hiddenCols.includes(c.key)}
+					onchange={() => toggleCol(c.key)}
+				/>
+				{c.label}
+			</label>
+		{/each}
+	</div>
+</aside>
 
 {#if menuOpen}
 	<div
@@ -1398,7 +1459,7 @@
 			{@render sortBtn('rarity', 'Rarity')}
 			{@render sortBtn('set', 'Set')}
 			{@render sortBtn('number', '#')}
-			{@render sortBtn('price', 'NM')}
+			{@render sortBtn('price', 'Price')}
 		</div>
 		<!-- Sections are runs of `displayRows`, so tile order is exactly the
 		     server's sort order — owned and unowned printings still
@@ -1462,8 +1523,8 @@
 			{/if}
 		</div>
 	{:else}
-		{#snippet sortable(key: string, label: string, extra: string, title?: string)}
-			<th class="sortable {extra}" {title} onclick={() => sortBy(key)}>
+		{#snippet sortable(key: string, label: string, extra: string, title?: string, col?: string)}
+			<th class="sortable {extra}" data-col={col} {title} onclick={() => sortBy(key)}>
 				{label}
 				{#if sortKey === key}
 					<span class="caret">{sortDir === 'asc' ? '▲' : '▼'}</span>
@@ -1471,7 +1532,7 @@
 			</th>
 		{/snippet}
 		<div class="tableScroll">
-		<table class="dd" class:selecting={selectMode}>
+		<table class="dd" class:selecting={selectMode} data-hide={hiddenCols.join(' ')}>
 			<!-- Every column's width is DECLARED here, and `table-layout: fixed`
 			     (below) makes the browser believe it. It cannot be derived from
 			     content, because this table renders a virtual WINDOW of the
@@ -1486,14 +1547,14 @@
 				{#if selectMode}<col class="c-sel" />{/if}
 				<col class="c-qty" />
 				<col class="c-name" />
-				<col class="c-class" />
-				<col class="c-etype" />
-				<col class="c-cost" />
-				<col class="c-rarity" />
-				<col class="c-set" />
-				<col class="c-number" />
-				<col class="c-price" />
-				<col class="c-price" />
+				<col class="c-class" data-col="class" />
+				<col class="c-etype" data-col="etype" />
+				<col class="c-cost" data-col="cost" />
+				<col class="c-rarity" data-col="rarity" />
+				<col class="c-set" data-col="set" />
+				<col class="c-number" data-col="number" />
+				<col class="c-price" data-col="nm" />
+				<col class="c-price" data-col="adj" />
 			</colgroup>
 			<thead>
 				<tr>
@@ -1504,13 +1565,13 @@
 					{/if}
 					{@render sortable('qty', 'Qty', 'num qty')}
 					{@render sortable('name', 'Name', '')}
-					{@render sortable('type', 'Class', '')}
-					{@render sortable('etype', 'Type', 'center')}
-					<th>Cost</th>
-					{@render sortable('rarity', 'Rarity', 'center')}
-					{@render sortable('set', 'Set', 'center')}
-					{@render sortable('number', '#', 'num')}
-					{@render sortable('price', 'NM', 'num', 'Near Mint market price (per copy)')}
+					{@render sortable('type', 'Class', '', undefined, 'class')}
+					{@render sortable('etype', 'Type', 'center', undefined, 'etype')}
+					<th data-col="cost">Cost</th>
+					{@render sortable('rarity', 'Rarity', 'center', undefined, 'rarity')}
+					{@render sortable('set', 'Set', 'center', undefined, 'set')}
+					{@render sortable('number', '#', 'num', undefined, 'number')}
+					{@render sortable('price', 'Price', 'num', 'Near Mint market price (per copy)', 'nm')}
 					<!-- The one price column that does not sort. Adj. is the
 					     copy's condition-adjusted price — the collection's
 					     market price joined to the tenant's own conditions
@@ -1521,7 +1582,7 @@
 					     draws; it is a plain header rather than a dead
 					     `.sortable` one, because a header that looks clickable
 					     and isn't is worse than one that doesn't. -->
-					<th class="num" title="Condition-adjusted price (per copy)">Adj.</th>
+					<th class="num" data-col="adj" title="Condition-adjusted price (per copy)">Adj.</th>
 				</tr>
 			</thead>
 			<!-- Only the rows under the viewport, with a spacer row either side
@@ -1550,15 +1611,15 @@
 									<span class="namebody"><span class="cardname">{a.name}</span></span>
 								</div>
 							</td>
-							<td class="fac" title="Find all {a.supertype ?? ''} cards" onclick={(e) => facetCell(e, 'supertype', a.supertype)}>{a.supertype ?? ''}</td>
-							<td class="center fac" title="Find cards of this type" onclick={(e) => facetCell(e, 'type', parseJsonStrArr(a.types)[0])}>
+							<td class="fac" data-col="class" title="Find all {a.supertype ?? ''} cards" onclick={(e) => facetCell(e, 'supertype', a.supertype)}>{a.supertype ?? ''}</td>
+							<td class="center fac" data-col="etype" title="Find cards of this type" onclick={(e) => facetCell(e, 'type', parseJsonStrArr(a.types)[0])}>
 								<span class="etypes">
 									{#each parseJsonStrArr(a.types) as t (t)}
 										<img class="energy" src={energyIcon(t)} alt={t} title={t} />
 									{/each}
 								</span>
 							</td>
-							<td>
+							<td data-col="cost">
 								{#each parseAttacks(a.attack_costs) as att, i (i)}
 									<span class="attackline" title={att.name}>
 										{#each att.cost as cc, j (j)}
@@ -1567,7 +1628,7 @@
 									</span>
 								{/each}
 							</td>
-							<td class="center fac" title="Find all {a.rarity ?? ''} cards" onclick={(e) => facetCell(e, 'rarity', a.rarity)}>
+							<td class="center fac" data-col="rarity" title="Find all {a.rarity ?? ''} cards" onclick={(e) => facetCell(e, 'rarity', a.rarity)}>
 								{#if a.rarity}
 									{@const src = rarityIconSrc(a.rarity)}
 									{#if src}
@@ -1583,7 +1644,7 @@
 									{/if}
 								{/if}
 							</td>
-							<td class="center fac" title="Find all cards in this set" onclick={(e) => facetCell(e, 'set', a.set_code)}>
+							<td class="center fac" data-col="set" title="Find all cards in this set" onclick={(e) => facetCell(e, 'set', a.set_code)}>
 								{#if a.set_symbol_url}
 									<img
 										class="setsym"
@@ -1597,15 +1658,15 @@
 									</span>
 								{/if}
 							</td>
-							<td class="num">{a.number}</td>
-							<td class="num">
+							<td class="num" data-col="number">{a.number}</td>
+							<td class="num" data-col="nm">
 								{#if a.nm_unit != null}
 									<span class="pricebox">{money(a.nm_unit)}</span>
 								{:else}
 									<span class="pricedash">—</span>
 								{/if}
 							</td>
-							<td class="num">
+							<td class="num" data-col="adj">
 								{#if a.market_unit != null}
 									<span class="pricebox">{money(a.market_unit)}</span>
 								{:else}
@@ -1643,20 +1704,20 @@
 								>
 							</div>
 						</td>
-						<td class="fac" title="Find all {a.supertype ?? ''} cards" onclick={(e) => facetCell(e, 'supertype', a.supertype)}>
+						<td class="fac" data-col="class" title="Find all {a.supertype ?? ''} cards" onclick={(e) => facetCell(e, 'supertype', a.supertype)}>
 							<span class="typecell">
 								<span class="typeMain">{typeMain(a)}</span>
 								{#if typeSub(a)}<span class="typeSub">{typeSub(a)}</span>{/if}
 							</span>
 						</td>
-						<td class="center fac" title="Find cards of this type" onclick={(e) => facetCell(e, 'type', parseJsonStrArr(a.types)[0])}>
+						<td class="center fac" data-col="etype" title="Find cards of this type" onclick={(e) => facetCell(e, 'type', parseJsonStrArr(a.types)[0])}>
 							<span class="etypes">
 								{#each parseJsonStrArr(a.types) as t (t)}
 									<img class="energy" src={energyIcon(t)} alt={t} title={t} />
 								{/each}
 							</span>
 						</td>
-						<td>
+						<td data-col="cost">
 							{#each parseAttacks(a.attack_costs) as att, i (i)}
 								<span class="attackline" title={att.name}>
 									{#each att.cost as c, j (j)}
@@ -1665,7 +1726,7 @@
 								</span>
 							{/each}
 						</td>
-						<td class="center fac" title="Find all {a.rarity ?? ''} cards" onclick={(e) => facetCell(e, 'rarity', a.rarity)}>
+						<td class="center fac" data-col="rarity" title="Find all {a.rarity ?? ''} cards" onclick={(e) => facetCell(e, 'rarity', a.rarity)}>
 							{#if a.rarity}
 								{@const src = rarityIconSrc(a.rarity)}
 								{#if src}
@@ -1681,7 +1742,7 @@
 								{/if}
 							{/if}
 						</td>
-						<td class="center fac" title="Find all cards in this set" onclick={(e) => facetCell(e, 'set', a.set_code)}>
+						<td class="center fac" data-col="set" title="Find all cards in this set" onclick={(e) => facetCell(e, 'set', a.set_code)}>
 							{#if a.set_symbol_url}
 								<img
 									class="setsym"
@@ -1695,15 +1756,15 @@
 								</span>
 							{/if}
 						</td>
-						<td class="num">{a.number}</td>
-						<td class="num">
+						<td class="num" data-col="number">{a.number}</td>
+						<td class="num" data-col="nm">
 							{#if a.nm_unit != null}
 								<span class="pricebox">{money(a.nm_unit)}</span>
 							{:else}
 								<span class="pricedash">—</span>
 							{/if}
 						</td>
-						<td class="num">
+						<td class="num" data-col="adj">
 							{#if a.market_unit != null}
 								<span class="pricebox">{money(a.market_unit)}</span>
 							{:else}
@@ -1779,8 +1840,7 @@
 	   controls drop under it. The cap stops it from stretching into a
 	   1920-wide trough that no query ever fills. */
 	.searchwrap {
-		flex: 1 1 22rem;
-		max-width: 44rem;
+		flex: 1 1 0;
 		min-width: 0;
 		position: relative;
 		display: flex;
@@ -1791,7 +1851,7 @@
 		min-width: 0;
 		/* Extra right padding leaves room for the clear button without
 		   it overlapping typed text. */
-		padding: var(--space-2) var(--space-8) var(--space-2) var(--space-3);
+		padding: var(--space-3) var(--space-8) var(--space-3) var(--space-4);
 		background: var(--color-control-surface);
 		border: 1px solid var(--color-control-border);
 		border-radius: var(--radius-md);
@@ -1814,22 +1874,24 @@
 	.errpos {
 		color: var(--color-text-subtle);
 	}
+	/* Deck's: a square, accent border, accent glyph; fills on hover. */
 	.helplink {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 1.5rem;
-		height: 1.5rem;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-round);
-		color: var(--color-text-subtle);
+		width: 2.375rem;
+		height: 2.375rem;
+		background: var(--color-control-surface);
+		border: 1px solid var(--color-accent);
+		border-radius: var(--radius-md);
+		color: var(--color-text-accent);
 		text-decoration: none;
-		font-size: var(--text-md);
+		font-weight: 600;
 		flex-shrink: 0;
 	}
 	.helplink:hover {
-		color: var(--color-warning-text);
-		border-color: var(--color-warning);
+		background: var(--color-accent);
+		color: var(--color-text-strong);
 	}
 	.acmenu {
 		position: absolute;
@@ -1932,13 +1994,18 @@
 	.viewtoggle {
 		display: flex;
 	}
+	/* Every control on this row is 2.375rem tall, deck's 38px, so the toggle,
+	   the menu and the column chooser read as one row. The border is the
+	   control border (3:1 against the panel), not the quiet rule. */
 	.viewtoggle button {
 		display: inline-flex;
 		align-items: center;
-		background: none;
-		border: 1px solid var(--color-border);
+		justify-content: center;
+		height: 2.375rem;
+		background: var(--color-control-surface);
+		border: 1px solid var(--color-control-border);
 		color: var(--color-text-subtle);
-		padding: 0.25rem 0.55rem;
+		padding: var(--space-0) var(--space-3);
 		font-size: var(--text-xl);
 		line-height: 1;
 		cursor: pointer;
@@ -1952,21 +2019,109 @@
 	}
 	.viewtoggle button.on {
 		background: var(--color-info-surface);
+		border-color: var(--color-accent);
 		color: var(--color-text);
+		position: relative;
+	}
+	.colsbtn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2.375rem;
+		height: 2.375rem;
+		flex-shrink: 0;
+		padding: var(--space-0);
+		background: var(--color-control-surface);
+		border: 1px solid var(--color-control-border);
+		border-radius: var(--radius-md);
+		color: var(--color-text-subtle);
+		cursor: pointer;
+	}
+	.colsbtn:hover,
+	.colsbtn.on {
+		color: var(--color-text-accent);
+		border-color: var(--color-accent);
+	}
+	.colsBackdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 89;
+		background: var(--color-surface-shade);
+	}
+	.colsDrawer {
+		position: fixed;
+		top: 0;
+		right: -20rem;
+		width: 18.75rem;
+		height: 100vh;
+		overflow-y: auto;
+		z-index: 91;
+		padding: var(--space-4);
+		background: var(--color-surface-panel);
+		border-left: 2px solid var(--color-border);
+		box-shadow: var(--shadow-lg);
+		transition: right 0.25s ease;
+	}
+	.colsDrawer.open {
+		right: 0;
+	}
+	.colsDrawer h3 {
+		margin: var(--space-0) var(--space-0) var(--space-2);
+		font-size: var(--text-md);
+		color: var(--color-text-subtle);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+	.pillgroup {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1);
+	}
+	.pill {
+		display: inline-flex;
+		align-items: center;
+		padding: var(--space-1) var(--space-3);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-pill);
+		font-size: var(--text-sm);
+		cursor: pointer;
+		user-select: none;
+	}
+	.pill input {
+		display: none;
+	}
+	.pill:hover {
+		border-color: var(--color-accent);
+	}
+	.pill.on {
+		background: var(--color-accent-surface);
+		border-color: var(--color-accent);
+		color: var(--color-text-strong);
+	}
+	table.dd[data-hide~='class'] [data-col='class'],
+	table.dd[data-hide~='etype'] [data-col='etype'],
+	table.dd[data-hide~='cost'] [data-col='cost'],
+	table.dd[data-hide~='rarity'] [data-col='rarity'],
+	table.dd[data-hide~='set'] [data-col='set'],
+	table.dd[data-hide~='number'] [data-col='number'],
+	table.dd[data-hide~='nm'] [data-col='nm'],
+	table.dd[data-hide~='adj'] [data-col='adj'] {
+		display: none;
 	}
 	.burger {
-		background: none;
-		border: 1px solid var(--color-border);
+		height: 2.375rem;
+		background: var(--color-control-surface);
+		border: 1px solid var(--color-control-border);
 		color: var(--color-text-subtle);
 		font-size: 1.3rem;
 		line-height: 1;
-		padding: 0.25rem 0.55rem;
+		padding: var(--space-0) var(--space-3);
 		cursor: pointer;
 		border-radius: var(--radius-md);
 	}
 	.burger:hover {
 		color: var(--color-text);
-		border-color: var(--color-border);
+		border-color: var(--color-accent);
 	}
 
 	.menuBackdrop {

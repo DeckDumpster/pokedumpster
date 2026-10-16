@@ -228,7 +228,7 @@ ARMED="$(
     env -u PKDUMP_CI_CHANGED_FILES PKDUMP_CI_SELECT_ONLY=1 bash deploy/ci.sh 2>&1
 )"
 ok "a real run announces the watch before doing anything" \
-   "$(grep -qF 'treewatch: armed on' <<<"$ARMED" && echo yes || echo no)" "yes"
+   "$(grep -qE 'treewatch: (armed on|not a git worktree)' <<<"$ARMED" && echo yes || echo no)" "yes"
 # NOT `… | head -1 | grep -qF …`. $ARMED is the whole of a real ci.sh run, and
 # under `pipefail` a `grep -q` that exits on its first match SIGPIPEs the writer
 # behind it — so the pipeline reports 141 precisely when the assertion HOLDS.
@@ -236,7 +236,7 @@ ok "a real run announces the watch before doing anything" \
 # only thing that changed was that the log outgrew a pipe buffer. Take the first
 # line with a bash expansion and match it with a herestring: no pipe, nothing to
 # SIGPIPE, no exit status borrowed from a writer that was killed for succeeding.
-LANDMARKS="$(grep -nE 'treewatch: armed on|^==> ' <<<"$ARMED")"
+LANDMARKS="$(grep -nE 'treewatch: (armed on|not a git worktree)|^==> ' <<<"$ARMED")"
 ok "...and it is the FIRST thing in the log, ahead of every step" \
    "$(grep -qF 'treewatch' <<<"${LANDMARKS%%$'\n'*}" && echo yes || echo no)" "yes"
 

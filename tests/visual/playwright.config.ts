@@ -4,10 +4,9 @@ import { defineConfig } from '@playwright/test';
  * The deterministic browser tier — the safety net for the aesthetic
  * overhaul, and for anything else that needs a real DOM.
  *
- * A pure-aesthetic change is exactly the case unit tests cannot see. This
- * suite screenshots every route in `routes.json` at both breakpoints against
- * an isolated `--test` container instance and fails on any pixel drift until
- * a human approves the new baselines.
+ * This suite loads every route in `routes.json` at both breakpoints against
+ * an isolated `--test` container instance and asserts layout properties.
+ * There are no pixel baselines (sp-tk1oyu).
  *
  * `collection-window.spec.ts` runs in the same config without taking a
  * screenshot: some properties — "56,635 matches must not become 56,635 DOM
@@ -24,35 +23,12 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
 	testDir: '.',
 	testMatch: ['*.spec.ts'],
-	// Screenshots of a shared server instance: serialise, so nothing races on
-	// the fixture and so a diff is never a scheduling artefact.
+	// A shared server instance: serialise, so nothing races on the fixture.
 	fullyParallel: false,
 	workers: 1,
 	timeout: 90_000,
 	reporter: [['list'], ['html', { open: 'never', outputFolder: 'report' }]],
 	outputDir: 'test-results',
-	// One directory per viewport: baselines/desktop-1440/home.png.
-	snapshotPathTemplate: 'baselines/{projectName}/{arg}{ext}',
-
-	expect: {
-		toHaveScreenshot: {
-			// Per-pixel colour tolerance, for font antialiasing only. Measured:
-			// back-to-back runs against the same instance differ by zero pixels,
-			// so this is headroom, not a working allowance.
-			threshold: 0.05,
-			// An ABSOLUTE budget, deliberately not maxDiffPixelRatio: these are
-			// full-page shots, and a ratio scales with page height — 0.2% of a
-			// 2300px binder page is 6600 pixels, enough to swallow every accent
-			// pixel on the route. Measured against a whole-palette swap: at a
-			// ratio, 10 of 24 routes passed; at 100 absolute pixels, none do.
-			maxDiffPixels: 100,
-			animations: 'disabled',
-			caret: 'hide',
-			// Match the DOM's own pixel grid rather than the host display's.
-			scale: 'css'
-		}
-	},
-
 	use: {
 		baseURL: process.env.PKDUMP_BASE_URL ?? 'http://localhost:8080',
 		ignoreHTTPSErrors: true,

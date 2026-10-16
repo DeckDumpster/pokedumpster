@@ -1,24 +1,17 @@
 #!/usr/bin/env bash
 #
-# Run the visual-regression suite against a throwaway container instance.
+# Run the browser-tier suite against a throwaway container instance.
 #
 # Stands up an isolated `--test` instance seeded from the committed fixture,
-# screenshots every route in routes.json at both viewports, compares against
-# the committed baselines, and tears the instance down again.
+# loads every route in routes.json at both viewports, asserts layout
+# properties, and tears the instance down again.
 #
 # Usage:
-#   bash tests/visual/run.sh                     # check against the baselines
-#   bash tests/visual/run.sh --update            # APPROVE: rewrite them
+#   bash tests/visual/run.sh                     # run the property assertions
 #   bash tests/visual/run.sh --keep              # leave the instance running
 #   bash tests/visual/run.sh --instance vis2     # a different throwaway name
 #
-# Reviewing a failure:
-#   bash tests/visual/run.sh
-#   (cd tests/visual && npm run report)          # side-by-side actual/diff
-# and then, once the change is intended and reviewed, `--update` and commit
-# the new PNGs with the CSS that moved them, in a commit that says which
-# change moved which baselines. An approval covers every viewport; narrowing
-# one to a single `--project` is refused — see approval-guard.sh.
+# Reviewing a failure:  (cd tests/visual && npm run report)
 #
 # Already have an instance? Skip this script:
 #   PKDUMP_BASE_URL=http://localhost:8099 npx playwright test
@@ -38,19 +31,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --instance) INSTANCE="$2"; shift 2 ;;
         --keep)     KEEP=true; shift ;;
-        --update)   PW_ARGS+=(--update-snapshots); shift ;;
         *)          PW_ARGS+=("$1"); shift ;;
     esac
 done
-
-# An approval covers every viewport (pd-tf4h, pd-4tce). playwright.sh refuses it
-# too — it is the one place any harness here executes Playwright — but that is
-# three minutes and a container image downstream of here, and a refusal an
-# operator waits for a build to receive is one they learn to route around.
-# Same rule, one implementation, asked at the earliest point on this path.
-# shellcheck source=tests/visual/approval-guard.sh
-. "$SCRIPT_DIR/approval-guard.sh"
-pkdump_visual_approval_guard ${PW_ARGS[@]+"${PW_ARGS[@]}"}
 
 # PokeDumpster prod runs on this box. Instances are isolated by name, so the
 # only way to hurt it is to name one 'prod'.

@@ -1,208 +1,36 @@
-# Visual regression — the safety net for the aesthetic overhaul
+# Browser tier (`tests/visual`)
 
-A pure-aesthetic change is exactly the case unit tests cannot see. `cargo test`
-and `svelte-check` will happily pass while a token migration quietly loses a
-border, collapses a grid, or drops a page's spacing by 4px on every row.
-
-This suite screenshots **every route in the app at 1440 and 768** against an
-isolated container instance seeded from the committed fixture, and diffs the
-result against baselines in `baselines/`. A diff fails CI. Making it pass is an
-explicit, reviewed act — never an incidental one.
-
-## Running it
+Property assertions in a real browser, offline and deterministic, against a
+throwaway `--test` container instance seeded from the committed fixture.
+**There are no pixel baselines** (sp-tk1oyu): full-page screenshot comparison
+caught no real defect and failed on renderer differences and intended UI
+changes. `law-ui-changes-need-screenshots` still applies to PRs as review
+evidence (before/after images from the builder), not as a gate.
 
 ```bash
-bash tests/visual/run.sh              # check against the baselines
-bash tests/visual/run.sh --keep       # ...and leave the instance up to poke at
+bash tests/visual/run.sh              # stand up an instance, run, tear down
+(cd tests/visual && npm run report)   # HTML report of a failure
+PKDUMP_BASE_URL=http://localhost:8099 bash tests/visual/playwright.sh   # existing instance
 ```
 
-`run.sh` builds a `--test` instance (default name `visual`), waits for it,
-runs the suite, and tears the instance down again. It refuses to run against
-`prod`. Instances are isolated by name, so any other name is safe.
+## What it asserts
 
-Already have an instance running? Skip the setup cost:
-
-```bash
-PKDUMP_BASE_URL=http://localhost:8099 bash tests/visual/playwright.sh
-```
-
-`deploy/ci.sh` runs the suite this way, against the container it already
-started for the smoke test.
-
-## Reviewing a diff
-
-When a route fails, Playwright writes three images to `test-results/`:
-the baseline, what it actually rendered, and a diff with the changed pixels
-highlighted. Read them side by side:
-
-```bash
-(cd tests/visual && npm run report)
-```
-
-Then decide, and the decision is binary:
-
-- **The change is unintended** → it is a regression. Fix the CSS. Do not
-  approve.
-- **The change is intended** → approve it, below, and commit the new PNGs
-  with the code that moved them, in a commit whose message says which change
-  moved which baselines. A baseline commit with no style change next to it is
-  unreviewable.
-
-### "With the code that moved them" means the branch, not the SHA
-
-This used to read *the same commit*, and that criterion could not survive the
-tooling: `gt`'s safety net commits uncommitted work automatically at arbitrary
-points, so several of the changes this rule exists for landed in a
-`WIP: checkpoint (auto)` and could not have carried their baselines whatever
-anybody intended (pd-tf4h). Phrased against the SHA, the rule was violated by
-a machine and enforced against nobody.
-
-What is actually being bought is **reviewability**, and that is a property of
-the branch: the pixels and the code that moved them are read together, and the
-commit that records the pixels *says what moved them and why*. That much is
-worth insisting on, and it works — every one of the ten baselines re-recorded
-in `e37e2da` was attributed three weeks later purely from its commit message, which
-is how they were confirmed as eight fixture-date drifts (pd-w1dq) and two real
-`/collection` changes, with nothing unexplained riding along.
-
-The trap the SHA phrasing was reaching for is real, though, and it is
-mechanical: a re-record decoupled from the change gets done **by eye**, and by
-eye means one viewport. See the guard below.
-
-## Approving
-
-```bash
-bash tests/visual/run.sh --update     # rewrite the baselines
-git add tests/visual/baselines
-```
-
-Then — this is the part that matters — **read `git diff --stat` and account
-for every file in it**. If you changed the collection page's card spacing and
-17 baselines moved, that is the finding. `--update` is not a way to make the
-suite quiet; it is a way to record a change you have already looked at.
-
-### An approval covers every viewport
-
-Narrow an approval to a **route** and both viewports still move together:
-
-```bash
-bash tests/visual/run.sh --update -g collection
-```
-
-Narrowing it to a viewport is **refused**, by
-[`approval-guard.sh`](approval-guard.sh), which every path into Playwright in
-this repo passes through. This file used to recommend the opposite, and that
-recommendation is what pd-4tce cost: pd-0o5m turned the manual-price button
-into a spacer at both widths, only the 768 pair was re-recorded, and
-`desktop-1440/card-detail-owned-vintage.png` sat stale until another branch
-went red on it days later — 128 pixels, identical across Playwright's retry,
-so not even a flake anybody could dismiss.
-
-There is nothing to buy with a viewport filter. Baselines are deterministic —
-back-to-back runs against one instance differ by zero pixels — so a full
-`--update` rewrites the unmoved PNGs with the bytes they already hold and
-`git status` shows nothing for them. The filter saves no review and no diff.
-Its only effect is the half it leaves behind.
-
-`tests/visual/approval_test.sh` is the gate (lint tier, hermetic,
-sub-second). It drives the guard in both directions, asserts that every
-scripted approval in the tree arrives through it, and — the part that reads
-the tree rather than the code — fails on any line anywhere that spells an
-approval next to a viewport filter, documentation included, because a doc
-recipe is exactly what this was. It also checks the thing nothing checked: a
-route with a baseline at one viewport and not the other, and a PNG no route in
-`routes.json` claims.
-
-## What is covered
-
-`routes.json` is the manifest — data, not code. Every entry becomes one test
-per viewport (24 routes × 2 = 48 baselines). Adding a `+page.svelte` to the
-app without adding it here fails the `every route in the app has a baseline`
-test, so the list cannot silently fall behind. A route that genuinely needs no
-baseline goes in `unrepresented` with a reason.
-
-Viewports live in `playwright.config.ts`:
+- `routes.spec.ts` — every route in `routes.json`, at both viewports, renders
+  (status < 400), settles (two back-to-back captures agree on size) and does
+  not overflow horizontally. A `+page.svelte` with no entry in `routes.json`
+  (or in `unrepresented`, with a reason) fails the suite.
+- `collection-window.spec.ts` — `/collection` renders a viewport-sized WINDOW
+  of a 56,635-row result (synthesised by intercepting
+  `/api/collection/search`), the document stays as tall as the whole result,
+  scrolling moves the window instead of growing it, selection survives a row
+  leaving the window, the sort stays server-side, and there is no pager.
 
 | project | viewport | why |
 | --- | --- | --- |
 | `desktop-1440` | 1440×900 | the binder page at full width |
 | `mobile-768` | 768×1024 | the breakpoint where `/browse` switches to its bottom sheet |
 
-### Non-visual specs live here too
-
-`collection-window.spec.ts` takes no screenshots: it asserts that
-`/collection` renders a viewport-sized WINDOW of a 56,635-row result rather
-than the whole thing (pd-tsqd, pd-7z4o) — in both views — that the document
-stays as tall as the whole result while the reader moves through it, that
-scrolling moves the window instead of growing it, that a selection survives a
-row leaving the window, and that the sort stays server-side. It also asserts
-that there is no pager on the page in either view and that the far end of the
-result is reached by scrolling rather than by clicking (pd-65um, pd-lbei).
-
-It is here because what it needs is what this directory already has — the app
-served by a throwaway instance, driven by Playwright, offline and
-deterministic. What it does NOT need is the fixture's data: the result set is
-synthesised by intercepting `/api/collection/search`, because the property
-under test is the relationship between `total` and the node count, and no
-fixture is going to be 56,635 rows.
-
-So read this directory as the deterministic browser tier, not as "the
-screenshots". A gate that needs a real DOM in a real browser belongs here; one
-that needs a Vision call belongs in `tests/ui`.
-
-## What makes a failure mean something
-
-`stabilize.ts` pins everything that could churn pixels for reasons unrelated to
-the design system: a frozen clock, a stubbed backup-status response, card art
-replaced by a flat placeholder (the fixture points at `images.pokemontcg.io`,
-and a CDN is not the thing under test), no transitions, no caret, no
-scrollbar. Its header explains each one.
-
-The tolerances in `playwright.config.ts` are tight on purpose, and the numbers
-are measured rather than guessed:
-
-- Back-to-back runs against the same instance differ by **zero** pixels, so
-  `maxDiffPixels: 100` is headroom for font antialiasing, not a working
-  allowance.
-- The budget is **absolute**, not `maxDiffPixelRatio`. These are full-page
-  screenshots, so a ratio scales with page height: 0.2% of a 2300px binder
-  page is 6600 pixels — enough to swallow every accent-coloured pixel on the
-  route. Swapping the whole palette in the served CSS (`#e94560` → `#22cc88`)
-  failed 22 of the 24 desktop routes at the absolute budget, and only 14 at
-  the ratio.
-
-If you find yourself wanting to loosen these, the honest move is a `mask`
-entry in `routes.json` naming the specific element that is genuinely
-non-deterministic — not a wider tolerance for the whole app.
-
-Tolerances only matter once the page has stopped moving, and `toHaveScreenshot`
-cannot establish that: re-shooting until two frames match turns a page that
-settles late into a coin flip rather than a failure. So `routes.spec.ts` checks
-it directly — after `settle()`, two back-to-back captures must agree on size —
-and `settle()` earns that by taking one throwaway `fullPage` capture first.
-The throwaway is not superstition: reaching past the viewport makes Chromium
-override the device metrics and relay out the page, which on `/search-help`
-re-resolves its inline `<code>` to a monospace face a pixel shorter and grows
-the document by 4px, once. Left unpaid, that step landed on either side of the
-comparison depending on how loaded the box was, and `/search-help` alternated
-between 2557 and 2561px for a week (pd-832w).
-
-If the size guard fires on a route, it needs a `waitFor` in `routes.json`, or
-its own reason found and fixed. It never needs a re-recorded baseline —
-approving a height that arrives half the time just moves the coin flip.
-
-## Baselines are host-specific
-
-PNGs are rendered by the Chromium build in `~/.cache/ms-playwright` against the
-host's fonts. A different box will differ in antialiasing. Regenerate through
-`run.sh` on the box that runs CI — which today is the same box that runs
-everything else.
-
-## Not the intents harness
-
-`tests/ui` is the other UI suite: Claude Vision driving real interactions
-against `intents/*.yaml`. It needs an `ANTHROPIC_API_KEY` and is
-non-deterministic by design, which is why it is not in `deploy/ci.sh`. This
-suite is pure Playwright, offline, and deterministic — the two answer
-different questions. That one asks "does it still work"; this one asks "does
-it still look the way we agreed".
+`stabilize.ts` pins the clock, stubs the backup-status response, replaces card
+art with a flat placeholder, and disables transitions, so a failure is a
+property of the page. If the size guard fires on a route it needs a `waitFor`
+in `routes.json`, or its own reason found and fixed (pd-832w).

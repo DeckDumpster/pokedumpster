@@ -106,6 +106,7 @@ export async function steps(h: ReplayHarness) {
   await h.wait_for_visible('[data-testid="search-input"]');
 
   // Turn on All-cards so unowned printings render alongside owned ones.
+  await h.click_by_selector('.topbar button[aria-label="Menu"]');
   if (!(await h.page.getByTestId('all-cards-toggle').isChecked())) {
     await h.click_by_test_id('all-cards-toggle');
   }

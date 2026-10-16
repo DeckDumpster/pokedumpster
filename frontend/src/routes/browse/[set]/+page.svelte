@@ -7,6 +7,7 @@
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import {
 		Button,
+		CardTile,
 		EmptyState,
 		Field,
 		Panel,
@@ -51,10 +52,22 @@
 	// by default, like a physical binder; unchecked shows them as printed.
 	let turnLandscape = $state(urlBool('turn', true));
 	let landscape = $state<Record<string, boolean>>({});
-	function noteShape(id: string, img: HTMLImageElement) {
-		const wide = img.naturalWidth > img.naturalHeight;
-		if (landscape[id] !== wide) landscape[id] = wide;
+	// CardTile renders the image, so the page probes each one's shape itself.
+	const probed = new Set<string>();
+	function noteShape(id: string, url: string) {
+		if (probed.has(id)) return;
+		probed.add(id);
+		const img = new Image();
+		img.onload = () => {
+			const wide = img.naturalWidth > img.naturalHeight;
+			if (landscape[id] !== wide) landscape[id] = wide;
+		};
+		img.src = url;
 	}
+	$effect(() => {
+		if (!turnLandscape || !binder) return;
+		for (const s of binder.slots) if (s.image_large) noteShape(s.card_id, s.image_large);
+	});
 	const layout = $derived(cols * 3);
 	let includeSecret = $state(urlBool('secret', true));
 	let includeSubset = $state(urlBool('subset', true));
@@ -670,63 +683,28 @@
 							title={sectionLabel[slot.section]}
 						/>
 					{/if}
-					<!-- One colored pip per variant. The pip buttons live OUTSIDE the
-					     slot button so they don't produce nested-button invalid HTML. -->
-					{#snippet pips(slot: BinderSlot)}
-						<div class="vchips">
-							{#each slot.printings
-								.filter((p) => !p.deprecated)
-								.slice()
-								.sort((a, b) => variantSortCmp(a.variant, b.variant)) as p (p.printing_id)}
-								<button
-									class="vchip"
-									class:owned={p.owned_count > 0}
-									style:--c={variantColor(p.variant)}
-									title="{variantLabel(p.variant)}{p.owned_count > 0
-										? ` ×${p.owned_count}`
-										: ''} — click to add"
-									aria-label="Add one {variantLabel(p.variant)}{p.owned_count > 0
-										? ` (own ${p.owned_count})`
-										: ''}"
-									onclick={() => addToSlot(slot, p.printing_id)}
-								>
-									{#if p.owned_count > 1}<span class="vcount">{p.owned_count}</span>{/if}
-								</button>
-							{/each}
-						</div>
-					{/snippet}
-					<div class="slotwrap" class:missing={!ownedAny(slot)}>
-						<button class="slot" onclick={() => (selectedSlot = slot)}>
-							<!-- The rarity outline, the foil shimmer and the price all live ON
-							     the art box, so none of them takes a pixel of layout. -->
-							<div
-								class="art g-{slot.rarity_grp ?? 'unranked'}"
-								class:foil={ownedFoil(slot)}
-								data-rarity-grp={slot.rarity_grp ?? 'unranked'}
-							>
-								{#if slot.image_large}
-									<img
-										src={slot.image_large}
-										alt={slot.name}
-										loading="lazy"
-										class:turned={turnLandscape && landscape[slot.card_id]}
-										onload={(e) => noteShape(slot.card_id, e.currentTarget as HTMLImageElement)}
-									/>
-								{:else}
-									<div class="noart">{slot.name}</div>
-								{/if}
-								{#if slotPrice(slot) !== null}
-									<span class="price" title="Highest market price across printings"
-										>${slotPrice(slot)?.toFixed(2)}</span
-									>
-								{/if}
-							</div>
-						</button>
-						<div class="foot">
-							<span class="num">{slot.number}</span>
-							{@render pips(slot)}
-						</div>
-					</div>
+					<CardTile
+						name={slot.name}
+						image={slot.image_large}
+						number={slot.number}
+						rarity={slot.rarity_grp ?? 'unranked'}
+						foil={ownedFoil(slot)}
+						price={slotPrice(slot) !== null ? `$${slotPrice(slot)?.toFixed(2)}` : null}
+						rotate={turnLandscape && !!landscape[slot.card_id]}
+						missing={!ownedAny(slot)}
+						pips={slot.printings
+							.filter((p) => !p.deprecated)
+							.slice()
+							.sort((a, b) => variantSortCmp(a.variant, b.variant))
+							.map((p) => ({
+								id: p.printing_id,
+								label: variantLabel(p.variant),
+								color: variantColor(p.variant),
+								owned: p.owned_count
+							}))}
+						onselect={() => (selectedSlot = slot)}
+						onpip={(pip) => addToSlot(slot, pip.id)}
+					/>
 				{/each}
 			</div>
 
@@ -969,188 +947,6 @@
 	.grid :global(.sectionbreak) {
 		grid-column: 1 / -1;
 	}
-	.slotwrap {
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-1);
-	}
-	.slot {
-		display: block;
-		width: 100%;
-		padding: var(--space-0);
-		background: transparent;
-		border: none;
-		color: var(--color-text);
-		text-align: left;
-		cursor: pointer;
-	}
-	/* Cards the user owns no printing of read as greyed-out. */
-	.slotwrap.missing img,
-	.slotwrap.missing .noart {
-		filter: grayscale(0.9) brightness(0.62);
-	}
-	.slotwrap.missing {
-		opacity: 0.82;
-	}
-	/* The art box: outline coloured by rarity bucket (a --color-rarity-* role
-	   per `rarities.grp`, as the stats histogram does), foil shimmer and price
-	   badge layered inside it. The outline is drawn inset, so the tile is
-	   exactly as tall and wide as it was without it. */
-	.art.g-common { --rc: var(--color-rarity-common); }
-	.art.g-uncommon { --rc: var(--color-rarity-uncommon); }
-	.art.g-rare { --rc: var(--color-rarity-rare); }
-	.art.g-promo { --rc: var(--color-rarity-promo); }
-	.art.g-holo { --rc: var(--color-rarity-holo); }
-	.art.g-ultra { --rc: var(--color-rarity-ultra); }
-	.art.g-special { --rc: var(--color-rarity-special); }
-	.art.g-secret { --rc: var(--color-rarity-secret); }
-	.art.g-unranked { --rc: var(--color-rarity-unranked); }
-	.art.foil::after {
-		content: '';
-		position: absolute;
-		inset: 0;
-		pointer-events: none;
-		background: linear-gradient(
-			115deg,
-			transparent 35%,
-			color-mix(in srgb, var(--color-text-strong) 38%, transparent) 50%,
-			transparent 65%
-		);
-		background-size: 250% 100%;
-		animation: foil-sweep 3.2s linear infinite;
-	}
-	@keyframes foil-sweep {
-		from { background-position: 150% 0; }
-		to { background-position: -50% 0; }
-	}
-	@media (prefers-reduced-motion: reduce) {
-		.art.foil::after { animation: none; background-position: 50% 0; }
-	}
-	.price {
-		position: absolute;
-		right: var(--space-1);
-		bottom: var(--space-1);
-		padding: var(--space-px) var(--space-1);
-		border-radius: var(--radius-sm);
-		background: color-mix(in srgb, var(--color-surface-inset) 82%, transparent);
-		color: var(--color-text-strong);
-		font-size: var(--text-xs);
-		font-weight: var(--weight-semibold);
-		font-variant-numeric: tabular-nums;
-		line-height: var(--leading-tight);
-	}
-	.noart {
-		aspect-ratio: 5 / 7;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: var(--text-sm);
-		color: var(--color-text-subtle);
-		padding: var(--space-2);
-		text-align: center;
-	}
-	/* The art box is always 5:7, so every tile's image and footer sit at the
-	   same place whatever shape the card is. */
-	.art {
-		--rc: var(--color-rarity-unranked);
-		position: relative;
-		aspect-ratio: 5 / 7;
-		overflow: hidden;
-		border-radius: var(--radius-lg);
-		outline: 2px solid var(--rc);
-		outline-offset: -2px;
-	}
-	.art img {
-		position: absolute;
-		inset: 0;
-		width: 100%;
-		height: 100%;
-		object-fit: contain;
-	}
-	/* A landscape card turned 90deg to fill the portrait pocket. */
-	.art img.turned {
-		inset: auto;
-		top: 50%;
-		left: 50%;
-		width: 140%;
-		height: auto;
-		aspect-ratio: 7 / 5;
-		transform: translate(-50%, -50%) rotate(90deg);
-	}
-	/* Collector number and pips: one line, never wraps, fixed height. */
-	.foot {
-		display: flex;
-		flex-wrap: nowrap;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-1);
-		height: 24px;
-		overflow: hidden;
-		min-width: 0;
-		font-size: var(--text-sm);
-		color: var(--color-text-subtle);
-	}
-	.foot .num {
-		font-variant-numeric: tabular-nums;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		min-width: 0;
-		flex: 0 1 auto;
-	}
-	.turn {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1);
-		cursor: pointer;
-	}
-	/* Color-coded variant chips centered below the card. Empty (border-
-	   only) when unowned, filled with the variant's color when owned;
-	   count badge appears when owned > 1. The fill is per-variant data
-	   (the `variants` table), delivered as --c by the markup. */
-	.vchips {
-		display: flex;
-		justify-content: center;
-		align-items: center;
-		gap: var(--space-1);
-		flex-wrap: nowrap;
-		flex: 0 1 auto;
-		min-width: 0;
-	}
-	.vchip {
-		flex: 0 1 24px;
-		min-width: 6px;
-		width: 24px;
-		height: 24px;
-		border-radius: var(--radius-round);
-		border: 2px solid var(--c, var(--color-chart-unknown));
-		background: transparent;
-		color: var(--color-text-strong);
-		padding: var(--space-0);
-		cursor: pointer;
-		font: inherit;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		transition: transform var(--dur-fast) var(--ease-standard);
-	}
-	.vchip.owned {
-		background: var(--c);
-	}
-	.vchip:hover {
-		transform: scale(1.15);
-	}
-	.vcount {
-		font-size: var(--text-xs);
-		font-weight: var(--weight-bold);
-		line-height: 1;
-		/* Dark text on light fills (yellow/silver/light blue); white text
-		   on dark fills. Dark ink with a thin halo reads on both. */
-		color: var(--color-text-inverse);
-		text-shadow: var(--shadow-text-halo);
-	}
-
 	/* Larger tap targets on touch-sized viewports (PLAN §6.9). */
 	@media (max-width: 540px) {
 		.binderpage :global(.controls) {
@@ -1169,9 +965,6 @@
 		/* Tighter binder so a full page fits — small gaps, thin borders,
 		   no foot padding eating the card. */
 		.grid {
-			gap: var(--space-1);
-		}
-		.slotwrap {
 			gap: var(--space-1);
 		}
 	}

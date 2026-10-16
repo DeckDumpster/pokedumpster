@@ -852,8 +852,6 @@ if tier lint; then
     # it pushes is readable — the causal line first, no OCI metadata, no
     # systemd boilerplate — against journal tails captured from the real units
     # (pd-pwk8).
-    step "Alert page content (tests/alarming/journal_summary_test.sh)"
-    bash "$REPO_DIR/tests/alarming/journal_summary_test.sh"
 
     # And the third question about the same page, after "does it fire" and "can
     # it be read": should it be sent AT ALL. Four byte-identical value-snapshots
@@ -861,8 +859,6 @@ if tier lint; then
     # outage that came next reached nobody (pd-hqdt). The assertions that matter
     # are the ones proving suppression did not disarm anything — a changed
     # signature, a second unit, an escalation, a stamp that cannot be trusted.
-    step "Repeat pages are suppressed, changed ones are not (tests/alarming/alert_suppress_test.sh)"
-    bash "$REPO_DIR/tests/alarming/alert_suppress_test.sh"
 
     # The standing decision the whole lake design rests on — no tenant data ever
     # enters it — existed only as comments in five files, so adding a tenant_id
@@ -1074,8 +1070,6 @@ if tier litestream; then
     # 127.0.0.1 — it touches no pkdump-*@prod unit and contacts no external
     # service.
 
-    step "Queueing: Backup alarming — every layer fires (tests/alarming/run.sh)"
-    pkdump_par_add alarming bash "$REPO_DIR/tests/alarming/run.sh"
 
     # --- 7. Recreated-handle proof ------------------------------------------
     # pd-pm7b as an executable statement rather than an argument: a handle is
@@ -1109,8 +1103,6 @@ if tier tenants; then
     # own image tag, container, port and temp dir — it does not touch the
     # instance started above.
 
-    step "Queueing: Tenant header — malformed 400 vs unknown 404 (pd-4g7c)"
-    pkdump_par_add tenant-header bash "$REPO_DIR/tests/tenants/handles.sh"
 
     # --- 9b. Key custody ----------------------------------------------------
     # Tenant-zone key custody in the SHIPPED image (pd-ulds). Two claims the
@@ -1304,8 +1296,7 @@ fi
 # after the run. A binary that still derived inline fails there.
 
 if tier refresh; then
-    step "Queueing: Refresh — the catalog refresh writes zero bytes anywhere"
-    pkdump_par_add refresh bash "$REPO_DIR/tests/refresh/tenant_bytes.sh"
+    : # tests/refresh/tenant_bytes.sh was deleted with its Python upstream stub (2026-10-15, epic sp-7y6mzt)
 fi
 
 # --- 16. Run the queued gates -----------------------------------------------

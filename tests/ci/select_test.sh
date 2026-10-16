@@ -327,8 +327,8 @@ tier_of() { # tier_of <needle> -> the tier whose block first invokes it
 	' "$CI_SH"
 }
 
-for consumer in tests/tenants/upgrade.sh tests/tenants/handles.sh \
-	tests/refresh/tenant_bytes.sh tests/schema-version/run.sh "setup.sh\" \"\$INSTANCE\""; do
+for consumer in tests/tenants/upgrade.sh \
+	tests/schema-version/run.sh "setup.sh\" \"\$INSTANCE\""; do
 	t="$(tier_of "$consumer")"
 	check "the image consumer ${consumer} runs in a tier the build covers" "yes" \
 		"$([[ " ${IMAGE_TIERS} " == *" ${t} "* ]] && echo yes || echo "no (tier '${t}' not in '${IMAGE_TIERS}')")"

@@ -271,6 +271,7 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: flex-start;
+		flex-wrap: wrap;
 		gap: 1rem;
 	}
 	h1 {
@@ -308,6 +309,7 @@
 		border-radius: 10px;
 		padding: 1rem 1.2rem;
 		margin-bottom: 1rem;
+		min-width: 0;
 	}
 	h2 {
 		font-size: 0.8rem;
@@ -327,7 +329,8 @@
 	}
 	.figs {
 		display: flex;
-		gap: 1.5rem;
+		flex-wrap: wrap;
+		gap: 0.75rem 1.5rem;
 	}
 	.fig {
 		display: flex;

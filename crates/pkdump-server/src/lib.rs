@@ -226,6 +226,20 @@ fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
         // baked-in image static dir.
         .nest_service("/sym", ServeDir::new(data_dir.join("symbols")))
         .route_service("/robots.txt", ServeFile::new(static_dir.join("robots.txt")))
+        // Without these the SPA fallback answers with index.html and the tab
+        // icon is a broken HTML "image".
+        .route_service(
+            "/favicon.svg",
+            ServeFile::new(static_dir.join("favicon.svg")),
+        )
+        .route_service(
+            "/favicon-32.png",
+            ServeFile::new(static_dir.join("favicon-32.png")),
+        )
+        .route_service(
+            "/apple-touch-icon.png",
+            ServeFile::new(static_dir.join("apple-touch-icon.png")),
+        )
         .with_state(state)
         .fallback(get(spa))
         // Outermost, so it sees the final response of every route above.

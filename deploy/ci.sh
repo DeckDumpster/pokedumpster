@@ -855,6 +855,8 @@ if tier lint; then
     # it pushes is readable — the causal line first, no OCI metadata, no
     # systemd boilerplate — against journal tails captured from the real units
     # (pd-pwk8).
+    step "Alert page content (tests/alarming/journal_summary_test.sh)"
+    bash "$REPO_DIR/tests/alarming/journal_summary_test.sh"
 
     # And the third question about the same page, after "does it fire" and "can
     # it be read": should it be sent AT ALL. Four byte-identical value-snapshots

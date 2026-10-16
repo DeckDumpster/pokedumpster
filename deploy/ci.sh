@@ -823,8 +823,8 @@ if tier lint; then
     step "Nessie catalog backup: stale/corrupt alarm, restore-drill failures (tests/lake/nessie_backup_test.sh)"
     bash "$REPO_DIR/tests/lake/nessie_backup_test.sh"
 
-    # The allow_proxmox dispatch input: default off; only true yields spill: ec2.
-    step "allow_proxmox dispatch input shape (tests/ci/spill_input_test.sh)"
+    # Spill is ec2-only unconditionally; no allow_proxmox input.
+    step "spill is ec2-only (tests/ci/spill_input_test.sh)"
     bash "$REPO_DIR/tests/ci/spill_input_test.sh"
 
     # A failed systemctl start used to exit silently, destroying the evidence

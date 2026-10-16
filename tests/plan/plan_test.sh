@@ -12,7 +12,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO="$(cd "$HERE/../.." && pwd -P)"
 fails=0
-check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1 (expected $2, got $3)"; fails=1; fi; }
+check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1 (expected $2, got $3)"; printf "%s\n" "${out:-}" | sed "s/^/    | /"; fails=1; fi; }
 has() { if grep -qF -- "$2" <<<"$3"; then echo "ok   $1"; else echo "FAIL $1: output lacks '$2'"; fails=1; fi; }
 
 fresh() {

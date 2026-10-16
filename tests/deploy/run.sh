@@ -1712,7 +1712,7 @@ check "only image-lib.sh builds the shipped image" "" "$BUILDERS"
 # meant prod's rebuild path both leaked every layer it orphaned and compiled under
 # the `unscoped` cargo target-cache id, sharing it with every other unscoped build
 # on the box (pd-sjn7).
-for gate in tests/tenants/upgrade.sh \
+for gate in tests/tenants/upgrade.sh tests/tenants/handles.sh \
 	deploy/setup.sh deploy/deploy.sh deploy/seed.sh; do
 	check "${gate} tags rather than rebuilds" "1" \
 		"$(grep -c '^[[:space:]]*pkdump_image_ensure ' "${REPO_DIR}/${gate}" || true)"

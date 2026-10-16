@@ -1,3 +1,5 @@
+// covers: UC-ui-099
+// tier: T3
 /**
  * Hand-written implementation for collection_search_autocomplete_keywords.
  *

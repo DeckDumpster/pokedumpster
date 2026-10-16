@@ -1,3 +1,5 @@
+// covers: UC-ui-122
+// tier: T3
 /**
  * Hand-written implementation for collectr_export_menu_links.
  *

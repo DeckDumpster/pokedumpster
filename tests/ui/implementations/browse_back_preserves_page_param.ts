@@ -1,3 +1,5 @@
+// covers: UC-ui-019
+// tier: T3
 /**
  * Hand-written implementation for browse_back_preserves_page_param.
  *

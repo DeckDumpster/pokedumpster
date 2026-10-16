@@ -1,3 +1,5 @@
+// covers: UC-ui-118
+// tier: T3
 /**
  * Hand-written implementation for collection_value_history_breakdown_tabs.
  *

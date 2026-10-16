@@ -1,3 +1,5 @@
+// covers: UC-ui-032
+// tier: T3
 /**
  * Hand-written fail-first regression for pokedumpster-not: advancing a page in
  * binder browse should re-center the viewport at the top of the grid. The top

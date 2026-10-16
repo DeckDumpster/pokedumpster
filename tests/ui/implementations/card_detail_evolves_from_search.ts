@@ -1,3 +1,5 @@
+// covers: UC-ui-063
+// tier: T3
 /**
  * Hand-written implementation for card_detail_evolves_from_search.
  *

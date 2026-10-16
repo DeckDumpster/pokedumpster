@@ -1,3 +1,5 @@
+// covers: UC-ui-053
+// tier: T3
 /**
  * Hand-written test for pokedumpster-0qu: multi-select copies on the card page
  * and bulk-set their condition. Charizard (base1/4) has two copies in the

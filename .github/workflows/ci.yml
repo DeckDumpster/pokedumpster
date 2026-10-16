@@ -55,14 +55,8 @@ on:
       - 'integration/**'
   # The gate runs on EC2 by default (provision's `spill: ec2-only`), like
   # deckdumpster's: the Proxmox disk is contended and the serial tiers no longer
-  # fit the 90-minute timeout there (sp-crsh57). `allow_proxmox` is the escape
-  # hatch: true restores `spill: ec2` (EC2 only when the hypervisor is full).
+  # fit the 90-minute timeout there (sp-crsh57). There is no Proxmox fallback.
   workflow_dispatch:
-    inputs:
-      allow_proxmox:
-        description: 'Allow Proxmox (spill: ec2) instead of EC2 only'
-        type: boolean
-        default: false
 
 # NO `concurrency:` BLOCK — deliberately, and now for a second reason.
 #
@@ -111,7 +105,7 @@ jobs:
           pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
-          spill:              ${{ inputs.allow_proxmox && 'ec2' || 'ec2-only' }}
+          spill:              ec2-only
           spill-after-seconds: '60'
           spill-max-instances: 2
           aws-role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}

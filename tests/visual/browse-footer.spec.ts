@@ -95,16 +95,10 @@ test.describe('browse tile', () => {
 		expect(errors).toEqual([]);
 	});
 
-	test('the checkbox flips landscape cards between turned and as printed', async ({ page }) => {
+	test('no "Turn leaders and bases" control — Pokémon has none', async ({ page }) => {
 		await open(page, 'cols=3');
-		const box = page.getByLabel('Turn leaders and bases');
-		await expect(box).toBeChecked();
-		const turned = () => page.locator('.card-tile.rotate').count();
-		expect(await turned()).toBeGreaterThan(0);
-		await box.uncheck();
-		expect(await turned()).toBe(0);
-		await expect(page).toHaveURL(/turn=0/);
-		await box.check();
-		expect(await turned()).toBeGreaterThan(0);
+		await expect(page.getByLabel('Turn leaders and bases')).toHaveCount(0);
+		await expect(page.getByText('Turn leaders and bases')).toHaveCount(0);
+		await expect(page.locator('.card-tile.rotate')).toHaveCount(0);
 	});
 });

@@ -462,3 +462,39 @@ test('the endpoint refuses a sort it cannot satisfy, naming the ones it can', as
 	const ok = await page.request.get('/api/collection/search?sort=price&limit=1');
 	expect(ok.status()).toBe(200);
 });
+
+/* ── The header is two rows at every width (sp-xew39v) ─────────────────────
+ *
+ * Row 1 = logo + search (fills) + ?; row 2 = view toggle, All cards, the menu
+ * and the "N cards, $X" status right-aligned. Ported from deckdumpster, where
+ * nothing sits on a row of its own. */
+for (const [width, height] of [
+	[390, 844],
+	[1280, 800]
+]) {
+	test(`the header is two rows at ${width}x${height}`, async ({ page }, testInfo) => {
+		await openCollection(page, 'grid');
+		await page.setViewportSize({ width, height });
+		await page.waitForTimeout(250);
+		// Vertical centre, not top: a 26px logo and a taller input share a row
+		// when they are centred on it, and their tops differ by design.
+		const top = async (sel: string) => {
+			const b = (await page.locator(sel).first().boundingBox())!;
+			return b.y + b.height / 2;
+		};
+		const logo = await top('.topbar a.brand');
+		const search = await top('[data-testid="search-input"]');
+		const help = await top('[data-testid="search-help-link"]');
+		expect(Math.abs(logo - search)).toBeLessThanOrEqual(4);
+		expect(Math.abs(help - search)).toBeLessThanOrEqual(4);
+		const toggle = await top('[data-testid="view-grid"]');
+		const all = await top('[data-testid="all-cards-toggle"]');
+		const status = await top('[data-testid="collection-count"]');
+		expect(Math.abs(toggle - status)).toBeLessThanOrEqual(4);
+		expect(Math.abs(all - status)).toBeLessThanOrEqual(4);
+		expect(toggle).toBeGreaterThan(search + 10);
+		await page
+			.locator('.topbar')
+			.screenshot({ path: testInfo.outputPath(`header-${width}x${height}.png`) });
+	});
+}

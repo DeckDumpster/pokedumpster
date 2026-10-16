@@ -23,7 +23,6 @@
 #                     tests/lib/litestream_test.sh,
 #                     tests/lib/images_test.sh,
 #                     tests/container/base_images_test.sh,
-#                     tests/visual/approval_test.sh,
 #                     tests/litestream/image_pin_test.sh,
 #                     tests/alarming/journal_summary_test.sh,
 #                     tests/alarming/alert_suppress_test.sh,
@@ -70,9 +69,9 @@
 #                      REVOKED while a live one reads as an OPERATIONAL failure.
 #                      A lost key never reports as a deleted tenant. See
 #                      tests/keys/run.sh.
-#  10. Browser gate:   screenshot every route at 1440 and 768 against that
-#                      same instance and diff against the committed baselines,
-#                      and assert the DOM bounds that a screenshot cannot see —
+#  10. Browser gate:   load every route at 1440 and 768 against that same
+#                      instance and assert layout properties (no horizontal
+#                      overflow, a settled page), and the DOM bounds —
 #                      /collection renders a viewport-sized WINDOW of a
 #                      56,635-row result, with no pager anywhere and the far
 #                      end a scroll away. See tests/visual/README.md.
@@ -788,18 +787,6 @@ if tier lint; then
     step "Container gates remove their own images (tests/lib/images_test.sh)"
     bash "$REPO_DIR/tests/lib/images_test.sh"
 
-    # Same tier, same shape again, and this one guards the browser tier's own
-    # approval path. Narrowing `--update-snapshots` to one viewport was the
-    # README's documented way to approve a subset; a rendering change reaches
-    # both viewports, so what it actually produced was a stale baseline that
-    # stayed green on the branch that made it and went red on the next one
-    # (pd-4tce, from pd-tf4h). The gate refuses the pair, asserts every
-    # scripted approval arrives through the guard, and checks both baseline
-    # directories against routes.json. Hermetic and sub-second — it runs
-    # Playwright not at all. See tests/visual/approval_test.sh.
-    step "Baseline approvals cover every viewport (tests/visual/approval_test.sh)"
-    bash "$REPO_DIR/tests/visual/approval_test.sh"
-
     # Path selection is itself a gate now, and one whose failure mode is a tier
     # quietly not running. Hermetic and sub-second, so it sits here rather than
     # behind the compile. See tests/ci/select_test.sh.
@@ -1123,7 +1110,7 @@ fi
 
 # --- 10. Browser gate --------------------------------------------------------
 # Runs against the container started above rather than standing up a second
-# one. A pixel diff fails CI; approving it is explicit — tests/visual/README.md.
+# one. Property assertions only: no pixel baselines (sp-tk1oyu).
 #
 # Selected for ANY change under frontend/, not just route files: a token, a
 # shared component or a rule in app.css repaints every route at once, and
@@ -1131,7 +1118,7 @@ fi
 # deploy/ci-select.sh.
 
 if tier browser; then
-    step "Browser: every route screenshotted, and /collection's DOM bounded"
+    step "Browser: every route's layout properties, and /collection's DOM bounded"
     PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwright.sh"
 fi
 

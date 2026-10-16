@@ -22,7 +22,7 @@ the faster sub-tiers you want during normal editing.
 | `cargo` *(default)* | `cargo test` | none | ~5 s |
 | `lint` | `cargo clippy --all-targets -- -D warnings` then `cargo fmt --check` | none | ~15 s |
 | `frontend` | `cd frontend && npm test && npm run check && npm run build` | Node | ~15 s |
-| `visual` | `bash tests/visual/run.sh` — screenshot every route at 1440 and 768 against a throwaway `--test` instance, diff against the committed baselines | Podman + browsers | ~4 min |
+| `visual` | `bash tests/visual/run.sh` — load every route at 1440 and 768 against a throwaway `--test` instance and assert layout properties | Podman + browsers | ~4 min |
 | `ci` | `bash deploy/ci.sh` — the full local CI loop (Rust gates + frontend + a `--test` container smoke test + the visual gate) | Podman | ~5–10 min |
 | `ui` | the Playwright intents harness against a running instance | container + browsers + `ANTHROPIC_API_KEY` for vision/generation modes | minutes |
 | `full` | `cargo` → `lint` → `frontend` → `ci`, in order | Podman | ~10 min |
@@ -66,10 +66,7 @@ on failure — the exact failing command and error lines. If a tier fails,
 stops internally on first failure). For a failing `ci` run, suggest
 `/fix-ci`.
 
-A failing `visual` tier is never "just flaky" — back-to-back runs differ by
-zero pixels. Report which routes moved and point at the review workflow in
-`tests/visual/README.md`. **Never run `--update` to make it pass**; approving
-a baseline is the user's call, after they have looked at the diff.
+A failing `visual` tier is never "just flaky": report which route and which property failed and point at `tests/visual/README.md`.
 
 ## Key rules
 

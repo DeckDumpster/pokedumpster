@@ -1,5 +1,5 @@
 /**
- * Everything that has to be nailed down before a screenshot is a baseline
+ * Everything that has to be nailed down before a page is judged
  * rather than a photograph of one particular afternoon.
  *
  * A visual-regression suite is only worth having if a failure means "the UI

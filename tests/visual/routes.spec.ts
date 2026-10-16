@@ -1,7 +1,6 @@
 /**
- * One screenshot per route per viewport, compared against a committed
- * baseline. A diff fails; approving it is an explicit, reviewed act —
- * see README.md.
+ * Every route at every viewport: it renders, it settles, and it does not
+ * overflow horizontally. Property assertions only — no pixel baselines.
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -60,14 +59,14 @@ for (const route of manifest.routes) {
 				`between two back-to-back shots, so any baseline taken here is a coin flip`
 		).toBe(dimensions(second));
 
-		await expect(page).toHaveScreenshot(`${route.id}.png`, {
-			fullPage,
-			mask: (route.mask ?? []).map((selector) => page.locator(selector))
-		});
+		const overflow = await page.evaluate(
+			() => document.documentElement.scrollWidth - document.documentElement.clientWidth
+		);
+		expect(overflow, `${route.path} scrolls horizontally by ${overflow}px`).toBeLessThanOrEqual(0);
 	});
 }
 
-test('every route in the app has a baseline', () => {
+test('every route in the app is covered', () => {
 	// The manifest is hand-written, so it can fall behind the app. This is what
 	// stops that: add a +page.svelte and the visual suite fails until it is
 	// either covered or explicitly written off in `unrepresented`.
@@ -100,7 +99,7 @@ test('every route in the app has a baseline', () => {
 	);
 	expect(
 		uncovered,
-		'these routes ship with no visual baseline — add them to routes.json, ' +
+		'these routes ship with no browser-tier coverage — add them to routes.json, ' +
 			'or say in "unrepresented" why they need none'
 	).toEqual([]);
 

@@ -2,11 +2,10 @@
 	"name": "pkdump-visual-tests",
 	"version": "0.1.0",
 	"private": true,
-	"description": "PokeDumpster visual-regression baselines — every route, two viewports, against an isolated --test container instance.",
+	"description": "PokeDumpster browser-tier property assertions — every route, two viewports, against an isolated --test container instance.",
 	"type": "module",
 	"scripts": {
 		"test": "playwright test",
-		"approve": "bash ./playwright.sh --update-snapshots",
 		"report": "playwright show-report report",
 		"typecheck": "tsc --noEmit"
 	},

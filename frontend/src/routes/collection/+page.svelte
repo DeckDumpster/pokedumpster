@@ -1974,8 +1974,13 @@
 	.alltoggle input {
 		cursor: pointer;
 	}
+	/* The controls row does not wrap, so the count is the one item on it that
+	   gives: `min-width: 0` lets it shrink, and at phone width (below) it
+	   breaks onto two lines instead of pushing the column chooser off-screen
+	   and the page sideways. */
 	.countline {
 		margin: var(--space-0) var(--space-0) var(--space-0) auto;
+		min-width: 0;
 		white-space: nowrap;
 		font-size: var(--text-md);
 		background: none;
@@ -2829,6 +2834,10 @@
 			--col-number: 4.5rem;
 			--col-price: 5.5rem;
 			--col-name-min: 9rem;
+		}
+		.countline {
+			white-space: normal;
+			text-align: right;
 		}
 		.cardthumb {
 			width: 70px;

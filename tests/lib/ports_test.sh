@@ -69,18 +69,19 @@ check "in the unprivileged range" "yes" \
 
 log "2. the port it names is actually free"
 # The whole contract. Bind it the way a caller would.
-BOUND=$(python3 -c '
-import socket, sys
-s = socket.socket()
-try:
-    s.bind(("", int(sys.argv[1])))
-except OSError as e:
-    print("no: %s" % e)
-else:
-    print("yes")
-finally:
-    s.close()
-' "$PORT_A")
+# A listener bind through nc, then the kernel is asked whether it holds the port.
+timeout 5 nc -l "$PORT_A" &
+BIND_PID=$!
+BOUND=no
+for _ in $(seq 20); do
+	if grep -q ":${PORT_A}\$" <<<"$(ss -Htln | awk '{print $4}')"; then
+		BOUND=yes
+		break
+	fi
+	sleep 0.1
+done
+kill "$BIND_PID" 2>/dev/null
+wait "$BIND_PID" 2>/dev/null
 check "it binds" "yes" "$BOUND"
 
 log "3. it is outside the range the kernel hands out unasked"
@@ -97,26 +98,19 @@ fi
 
 log "4. it does not hand back a port something is already listening on"
 # A listener is held open for the duration, and free_port is asked repeatedly.
-# The bind inside free_port is what has to notice; nothing else would.
+# The ss listing inside free_port is what has to notice; nothing else would.
 LISTENER_OUT="$(mktemp "${TMPDIR:-/tmp}/pd-portstest.XXXXXX")"
 trap 'rm -f "$LISTENER_OUT"' EXIT
-python3 -c '
-import socket, sys, time
-s = socket.socket()
-s.bind(("", 0))
-s.listen(1)
-print(s.getsockname()[1], flush=True)
-time.sleep(30)
-' >"$LISTENER_OUT" &
+HELD="$(free_port)"
+timeout 30 nc -l "$HELD" >/dev/null &
 LISTENER_PID=$!
 trap 'kill "$LISTENER_PID" 2>/dev/null; rm -f "$LISTENER_OUT"' EXIT
 for _ in $(seq 50); do
-	[[ -s "$LISTENER_OUT" ]] && break
+	grep -q ":${HELD}\$" <<<"$(ss -Htln | awk '{print $4}')" && break
 	sleep 0.1
 done
-HELD="$(cat "$LISTENER_OUT")"
 check "the fixture is listening on a port" "yes" \
-	"$([[ $HELD =~ ^[0-9]+$ ]] && echo yes || echo no)"
+	"$(grep -q ":${HELD}\$" <<<"$(ss -Htln | awk '{print $4}')" && echo yes || echo no)"
 COLLISIONS=0
 for _ in $(seq 30); do
 	[[ "$(free_port)" == "$HELD" ]] && COLLISIONS=$((COLLISIONS + 1))

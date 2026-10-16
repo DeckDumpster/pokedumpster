@@ -164,6 +164,7 @@ struct BundleProductRow {
     home_set_code: Option<String>,
     home_set_name: Option<String>,
     owned_count: i64,
+    foil: bool,
 }
 
 /// Resolve a bundle's product rows in collector-number order.
@@ -179,7 +180,8 @@ fn fetch_bundle_products(conn: &Connection, group_id: i64) -> Result<Vec<BundleP
                 s.set_code, s.name, \
                 COALESCE( \
                   (SELECT COUNT(*) FROM collection co \
-                     WHERE co.printing_id = p.printing_id), 0) \
+                     WHERE co.printing_id = p.printing_id), 0), \
+                COALESCE((SELECT v.foil FROM variants v WHERE v.code = p.variant), 0) \
            FROM tcgcsv_products tp \
            LEFT JOIN printings p ON p.tcgplayer_product_id = tp.product_id \
            LEFT JOIN cards c ON c.card_id = p.card_id \
@@ -217,6 +219,7 @@ fn fetch_bundle_products(conn: &Connection, group_id: i64) -> Result<Vec<BundleP
             home_set_code: r.get(13)?,
             home_set_name: r.get(14)?,
             owned_count: r.get(15)?,
+            foil: r.get(16)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -227,7 +230,7 @@ fn fetch_bundle_products(conn: &Connection, group_id: i64) -> Result<Vec<BundleP
 /// `printings` list (the TTBB variant); unresolved slots fall back to
 /// the raw product fields and carry no printings, so the slot still
 /// renders but the "+" affordance is disabled in the modal.
-fn slot_from_product(row: BundleProductRow) -> BinderSlot {
+fn slot_from_product(row: BundleProductRow, tiers: &RarityLookup) -> BinderSlot {
     let mut printings = Vec::new();
     if let (Some(printing_id), Some(variant)) = (row.printing_id, row.variant) {
         printings.push(SlotPrinting {
@@ -236,6 +239,7 @@ fn slot_from_product(row: BundleProductRow) -> BinderSlot {
             deprecated: row.deprecated_at.is_some(),
             owned_count: row.owned_count,
             market_price: row.market_price,
+            foil: row.foil,
         });
     }
     let external_set = match (row.home_set_code, row.home_set_name) {
@@ -252,6 +256,7 @@ fn slot_from_product(row: BundleProductRow) -> BinderSlot {
             .card_number
             .unwrap_or_else(|| row.number_sortable.to_string()),
         name: row.card_name.unwrap_or(row.product_name),
+        rarity_grp: row.card_rarity.as_deref().and_then(|s| tiers.grp(s)),
         rarity: row.card_rarity,
         // Prefer the card's catalog image (the artwork the user expects to
         // recognize) over the product thumbnail — the TTBB variant pip
@@ -305,7 +310,11 @@ pub fn get_bundle_binder(
     };
 
     let rows = fetch_bundle_products(conn, bundle.tcgcsv_group_id)?;
-    let mut visible: Vec<BinderSlot> = rows.into_iter().map(slot_from_product).collect();
+    let tiers = RarityLookup::load(conn)?;
+    let mut visible: Vec<BinderSlot> = rows
+        .into_iter()
+        .map(|r| slot_from_product(r, &tiers))
+        .collect();
 
     // Master-set progress: every slot counts; "owned" = bridged + the
     // user has at least one copy of the bridged printing.

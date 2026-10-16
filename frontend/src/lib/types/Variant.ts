@@ -17,4 +17,9 @@ tiebreak: number, color: string,
  * "Trick or Trade BOOster Bundle"). NULL for variants without a
  * single canonical source. See pokedumpster-rlq.
  */
-provenance: string | null, };
+provenance: string | null, 
+/**
+ * Whether the finish is a foil treatment (holo, reverse, pattern holo).
+ * The browse tile shimmers an owned printing for which this is true.
+ */
+foil: boolean, };

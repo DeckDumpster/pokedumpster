@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::Result;
+use crate::search_meta::RarityLookup;
 
 /// Catalog offsets baked into `number_sortable` (PLAN.md §3.4): subset
 /// namespaces (Galarian/Trainer Gallery) start at 1000, promos at 9000.
@@ -40,6 +41,8 @@ pub struct SlotPrinting {
     #[ts(type = "number")]
     pub owned_count: i64,
     pub market_price: Option<f64>,
+    /// The variant is a foil treatment (`variants.foil`).
+    pub foil: bool,
 }
 
 /// Pointer to the home set of a slot's underlying card, when that set
@@ -61,6 +64,8 @@ pub struct BinderSlot {
     pub number: String,
     pub name: String,
     pub rarity: Option<String>,
+    /// The rarity's colour bucket (`rarities.grp`), `None` for an unranked tier.
+    pub rarity_grp: Option<String>,
     pub image_large: Option<String>,
     /// `base` | `secret` | `subset` | `promo`. Bundles use `base` for
     /// every slot since they have no rarity-tier sections.
@@ -297,7 +302,7 @@ pub fn get_binder_page(
                     (SELECT count(*) FROM collection c WHERE c.printing_id = p.printing_id), \
                     ",
             crate::market_price_expr!(),
-            " \
+            ", COALESCE((SELECT v.foil FROM variants v WHERE v.code = p.variant), 0) \
              FROM ( \
                 SELECT card_id, printing_id, variant, deprecated_at, \
                        tcgplayer_product_id, sub_type_name FROM printings \
@@ -319,6 +324,7 @@ pub fn get_binder_page(
                     deprecated: r.get::<_, Option<String>>(3)?.is_some(),
                     owned_count: r.get(4)?,
                     market_price: r.get(5)?,
+                    foil: r.get(6)?,
                 },
             ))
         })?;
@@ -327,6 +333,8 @@ pub fn get_binder_page(
             printings.entry(card_id).or_default().push(printing);
         }
     }
+
+    let tiers = RarityLookup::load(conn)?;
 
     // Build every visible slot (all sections the include flags allow).
     let mut visible: Vec<BinderSlot> = cards
@@ -347,6 +355,7 @@ pub fn get_binder_page(
                 card_id: card.card_id,
                 number: card.number,
                 name: card.name,
+                rarity_grp: card.rarity.as_deref().and_then(|s| tiers.grp(s)),
                 rarity: card.rarity,
                 image_large: card.image_large,
                 section: section.to_string(),
@@ -972,5 +981,43 @@ mod tests {
                 .is_none()
         );
         assert!(missing_for_export(&conn, "nope").unwrap().is_none());
+    }
+    #[test]
+    fn a_slot_carries_its_rarity_bucket_and_each_printings_foil_flag() {
+        let (dir, conn) = binder_conn();
+        drop(conn);
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "UPDATE cards SET rarity = 'Rare Holo' WHERE card_id = 'sv3pt5-1'",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO printings (printing_id, card_id, variant) \
+                 VALUES ('sv3pt5-1-holo', 'sv3pt5-1', 'holo')",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let page = get_binder_page(&conn, "sv3pt5", &BinderQuery::default())
+            .unwrap()
+            .unwrap();
+        let first = &page.slots[0];
+        assert_eq!(first.card_id, "sv3pt5-1");
+        assert_eq!(first.rarity_grp.as_deref(), Some("holo"));
+        let foil = |id: &str| {
+            first
+                .printings
+                .iter()
+                .find(|p| p.printing_id == id)
+                .unwrap()
+                .foil
+        };
+        assert!(foil("sv3pt5-1-holo"), "holo is a foil treatment");
+        assert!(!foil("sv3pt5-1-normal"), "normal is not");
+        assert_eq!(page.slots[1].rarity_grp, None, "no rarity, no bucket");
     }
 }

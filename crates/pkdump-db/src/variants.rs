@@ -38,6 +38,10 @@ pub struct Variant {
     /// single canonical source. See pokedumpster-rlq.
     #[serde(default)]
     pub provenance: Option<String>,
+    /// Whether the finish is a foil treatment (holo, reverse, pattern holo).
+    /// The browse tile shimmers an owned printing for which this is true.
+    #[serde(default)]
+    pub foil: bool,
 }
 
 /// Re-seed `variants` from `data/variants.json` and synthesize rows for
@@ -109,7 +113,7 @@ pub fn ensure_code(conn: &Connection, code: &str) -> Result<()> {
 /// Read the full variants table — backs the `/api/variants` endpoint.
 pub fn list_all(conn: &Connection) -> Result<Vec<Variant>> {
     let mut stmt = conn.prepare(
-        "SELECT code, label, short, rank, tiebreak, color, provenance \
+        "SELECT code, label, short, rank, tiebreak, color, provenance, foil \
            FROM variants ORDER BY rank, tiebreak, code",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -121,6 +125,7 @@ pub fn list_all(conn: &Connection) -> Result<Vec<Variant>> {
             tiebreak: r.get(4)?,
             color: r.get(5)?,
             provenance: r.get(6)?,
+            foil: r.get(7)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -128,12 +133,13 @@ pub fn list_all(conn: &Connection) -> Result<Vec<Variant>> {
 
 fn upsert(conn: &Connection, v: &Variant) -> Result<()> {
     conn.execute(
-        "INSERT INTO variants (code, label, short, rank, tiebreak, color, provenance) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+        "INSERT INTO variants (code, label, short, rank, tiebreak, color, provenance, foil) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
          ON CONFLICT(code) DO UPDATE SET \
            label = excluded.label, short = excluded.short, \
            rank = excluded.rank, tiebreak = excluded.tiebreak, \
-           color = excluded.color, provenance = excluded.provenance",
+           color = excluded.color, provenance = excluded.provenance, \
+           foil = excluded.foil",
         params![
             v.code,
             v.label,
@@ -141,7 +147,8 @@ fn upsert(conn: &Connection, v: &Variant) -> Result<()> {
             v.rank,
             v.tiebreak,
             v.color,
-            v.provenance
+            v.provenance,
+            v.foil
         ],
     )?;
     Ok(())
@@ -177,6 +184,7 @@ fn synthesize(code: &str) -> Variant {
         tiebreak: 0,
         color: "#b88cc0".to_string(),
         provenance: None,
+        foil: false,
     }
 }
 

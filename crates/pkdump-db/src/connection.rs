@@ -308,6 +308,13 @@ pub(crate) const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
         "ptcgio_covered",
         "ALTER TABLE sets ADD COLUMN ptcgio_covered INTEGER NOT NULL DEFAULT 1",
     ),
+    // Seeded from data/variants.json on every convergence, so the 0 is only ever
+    // read between the ALTER and the seed in the same open.
+    (
+        "variants",
+        "foil",
+        "ALTER TABLE variants ADD COLUMN foil INTEGER NOT NULL DEFAULT 0",
+    ),
 ];
 
 /// The same convergence for `schema_user.sql`. A collection created between

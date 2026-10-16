@@ -20,6 +20,7 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ValueHistoryModal from '$lib/components/ValueHistoryModal.svelte';
 	import Pokeball from '$lib/components/Pokeball.svelte';
+	import { COLUMNS, DESKTOP_COLUMNS, PHONE_COLUMNS, PHONE_QUERY, type ColumnKey } from '$lib/collectionColumns';
 	import { Button, EmptyState, SectionHeader, Toolbar } from '$lib/components/ui';
 	import type { CollectionRow } from '$lib/types/CollectionRow';
 	import type { SearchRow } from '$lib/types/SearchRow';
@@ -363,6 +364,52 @@
 		}
 	});
 	let selectedCard = $state<{ set: string; number: string } | null>(null);
+
+	// Table columns — the chooser, as DeckDumpster's collection page has it
+	// (ALL_COLUMNS / enabledCols). The definitions are data in
+	// `$lib/collectionColumns`; this is only the reader's choice, persisted in
+	// localStorage. The first visit gets the set for its width: a phone gets
+	// Card and Type and nothing else, and the rest is one tap away.
+	function readStoredColumns(): ColumnKey[] {
+		if (typeof window === 'undefined') return DESKTOP_COLUMNS;
+		try {
+			const raw = JSON.parse(localStorage.getItem('collection.cols') ?? 'null');
+			if (Array.isArray(raw)) {
+				const known = raw.filter((k): k is ColumnKey => COLUMNS.some((c) => c.key === k));
+				if (known.length > 0) return known;
+			}
+		} catch {
+			// A stored value that is not JSON is a stale one; take the defaults.
+		}
+		return window.matchMedia(PHONE_QUERY).matches ? PHONE_COLUMNS : DESKTOP_COLUMNS;
+	}
+	let enabledCols = $state<ColumnKey[]>(readStoredColumns());
+	$effect(() => {
+		if (typeof window !== 'undefined') {
+			localStorage.setItem('collection.cols', JSON.stringify(enabledCols));
+		}
+	});
+	/** Card is the row's handle and cannot be switched off. */
+	const show = $derived(
+		Object.fromEntries(COLUMNS.map((c) => [c.key, enabledCols.includes(c.key)])) as Record<
+			ColumnKey,
+			boolean
+		>
+	);
+	const visibleCols = $derived(COLUMNS.filter((c) => c.key === 'name' || show[c.key]));
+	/** The narrowest the table may be squeezed to before `.tableScroll`
+	    scrolls: the sum of the columns that are actually there. */
+	const tableMinWidth = $derived(
+		'calc(' +
+			['var(--col-sel-used)', ...visibleCols.map((c) => `var(${c.width})`)].join(' + ') +
+			')'
+	);
+	let colsOpen = $state(false);
+	function toggleColumn(key: ColumnKey) {
+		enabledCols = enabledCols.includes(key)
+			? enabledCols.filter((k) => k !== key)
+			: [...enabledCols, key];
+	}
 
 	// Burger menu (Export CSV, Select) lives in the sticky top bar.
 	let menuOpen = $state(false);
@@ -824,7 +871,7 @@
 	const tableWindow = $derived(windowOf(tableOffsets, 0, winTop, winBottom));
 	const tableVisible = $derived(displayRows.slice(tableWindow.start, tableWindow.end));
 	/** Columns a spacer row has to span. */
-	const tableCols = $derived(selectMode ? 11 : 10);
+	const tableCols = $derived(visibleCols.length + (selectMode ? 1 : 0));
 
 	/** Read the geometry the window arithmetic needs out of the rendered DOM. */
 	function measure() {
@@ -1252,6 +1299,33 @@
 				</div>
 			{/if}
 		</div>
+		{#if searchRows.length > 0 && view === 'table'}
+			<div class="burgerWrap">
+				<button
+					class="burger"
+					data-testid="columns-button"
+					onclick={() => (colsOpen = !colsOpen)}
+					aria-label="Choose columns"
+					aria-expanded={colsOpen}
+					title="Columns"
+				>▥</button>
+				{#if colsOpen}
+					<div class="menu colmenu" role="group" aria-label="Columns" data-testid="columns-menu">
+						{#each COLUMNS as c (c.key)}
+							<label class="menuItem colitem">
+								<input
+									type="checkbox"
+									checked={c.key === 'name' || show[c.key]}
+									disabled={c.key === 'name'}
+									onchange={() => toggleColumn(c.key)}
+								/>
+								{c.label}
+							</label>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
 		<!-- The count speaks for the whole result set, and so does the money
 		     beside it, because the endpoint answers both (pd-2g84). The money
 		     is the value of the OWNED copies among those rows — the same
@@ -1277,11 +1351,14 @@
 	{/if}
 </Toolbar>
 
-{#if menuOpen}
+{#if menuOpen || colsOpen}
 	<div
 		class="menuBackdrop"
 		role="presentation"
-		onclick={closeMenu}
+		onclick={() => {
+			closeMenu();
+			colsOpen = false;
+		}}
 	></div>
 {/if}
 
@@ -1471,7 +1548,7 @@
 			</th>
 		{/snippet}
 		<div class="tableScroll">
-		<table class="dd" class:selecting={selectMode}>
+		<table class="dd" class:selecting={selectMode} style:min-width={tableMinWidth}>
 			<!-- Every column's width is DECLARED here, and `table-layout: fixed`
 			     (below) makes the browser believe it. It cannot be derived from
 			     content, because this table renders a virtual WINDOW of the
@@ -1484,16 +1561,16 @@
 			     are what auto layout settled on across the WHOLE result. -->
 			<colgroup>
 				{#if selectMode}<col class="c-sel" />{/if}
-				<col class="c-qty" />
+				{#if show.qty}<col class="c-qty" />{/if}
 				<col class="c-name" />
-				<col class="c-class" />
-				<col class="c-etype" />
-				<col class="c-cost" />
-				<col class="c-rarity" />
-				<col class="c-set" />
-				<col class="c-number" />
-				<col class="c-price" />
-				<col class="c-price" />
+				{#if show.class}<col class="c-class" />{/if}
+				{#if show.etype}<col class="c-etype" />{/if}
+				{#if show.cost}<col class="c-cost" />{/if}
+				{#if show.rarity}<col class="c-rarity" />{/if}
+				{#if show.set}<col class="c-set" />{/if}
+				{#if show.number}<col class="c-number" />{/if}
+				{#if show.nm}<col class="c-price" />{/if}
+				{#if show.adj}<col class="c-price" />{/if}
 			</colgroup>
 			<thead>
 				<tr>
@@ -1502,15 +1579,15 @@
 							<input type="checkbox" checked={tableAllSelected} onchange={toggleTableAll} />
 						</th>
 					{/if}
-					{@render sortable('qty', 'Qty', 'num qty')}
-					{@render sortable('name', 'Name', '')}
-					{@render sortable('type', 'Class', '')}
-					{@render sortable('etype', 'Type', 'center')}
-					<th>Cost</th>
-					{@render sortable('rarity', 'Rarity', 'center')}
-					{@render sortable('set', 'Set', 'center')}
-					{@render sortable('number', '#', 'num')}
-					{@render sortable('price', 'NM', 'num', 'Near Mint market price (per copy)')}
+					{#if show.qty}{@render sortable('qty', 'Qty', 'num qty')}{/if}
+					{@render sortable('name', 'Card', '')}
+					{#if show.class}{@render sortable('type', 'Type', '')}{/if}
+					{#if show.etype}{@render sortable('etype', 'Energy', 'center')}{/if}
+					{#if show.cost}<th>Cost</th>{/if}
+					{#if show.rarity}{@render sortable('rarity', 'Rarity', 'center')}{/if}
+					{#if show.set}{@render sortable('set', 'Set', 'center')}{/if}
+					{#if show.number}{@render sortable('number', '#', 'num')}{/if}
+					{#if show.nm}{@render sortable('price', 'NM', 'num', 'Near Mint market price (per copy)')}{/if}
 					<!-- The one price column that does not sort. Adj. is the
 					     copy's condition-adjusted price — the collection's
 					     market price joined to the tenant's own conditions
@@ -1521,7 +1598,7 @@
 					     draws; it is a plain header rather than a dead
 					     `.sortable` one, because a header that looks clickable
 					     and isn't is worse than one that doesn't. -->
-					<th class="num" title="Condition-adjusted price (per copy)">Adj.</th>
+					{#if show.adj}<th class="num" title="Condition-adjusted price (per copy)">Adj.</th>{/if}
 				</tr>
 			</thead>
 			<!-- Only the rows under the viewport, with a spacer row either side
@@ -1537,7 +1614,10 @@
 					{#if a.ids.length === 0}
 						<tr class="missing">
 							{#if selectMode}<td class="cbcol"></td>{/if}
+							{#if show.qty}
 							<td class="num qty"><span class="pricedash">—</span></td>
+							{/if}
+							{#if show.name}
 							<td class="namecol" title="Open card" onclick={(e) => openCardCell(e, a)}>
 								<!-- Same shape as the owned row's name cell below, tags
 								     aside: the `.namebody` wrapper is what keeps the name
@@ -1550,7 +1630,11 @@
 									<span class="namebody"><span class="cardname">{a.name}</span></span>
 								</div>
 							</td>
+							{/if}
+							{#if show.class}
 							<td class="fac" title="Find all {a.supertype ?? ''} cards" onclick={(e) => facetCell(e, 'supertype', a.supertype)}>{a.supertype ?? ''}</td>
+							{/if}
+							{#if show.etype}
 							<td class="center fac" title="Find cards of this type" onclick={(e) => facetCell(e, 'type', parseJsonStrArr(a.types)[0])}>
 								<span class="etypes">
 									{#each parseJsonStrArr(a.types) as t (t)}
@@ -1558,6 +1642,8 @@
 									{/each}
 								</span>
 							</td>
+							{/if}
+							{#if show.cost}
 							<td>
 								{#each parseAttacks(a.attack_costs) as att, i (i)}
 									<span class="attackline" title={att.name}>
@@ -1567,6 +1653,8 @@
 									</span>
 								{/each}
 							</td>
+							{/if}
+							{#if show.rarity}
 							<td class="center fac" title="Find all {a.rarity ?? ''} cards" onclick={(e) => facetCell(e, 'rarity', a.rarity)}>
 								{#if a.rarity}
 									{@const src = rarityIconSrc(a.rarity)}
@@ -1583,6 +1671,8 @@
 									{/if}
 								{/if}
 							</td>
+							{/if}
+							{#if show.set}
 							<td class="center fac" title="Find all cards in this set" onclick={(e) => facetCell(e, 'set', a.set_code)}>
 								{#if a.set_symbol_url}
 									<img
@@ -1597,7 +1687,11 @@
 									</span>
 								{/if}
 							</td>
+							{/if}
+							{#if show.number}
 							<td class="num">{a.number}</td>
+							{/if}
+							{#if show.nm}
 							<td class="num">
 								{#if a.nm_unit != null}
 									<span class="pricebox">{money(a.nm_unit)}</span>
@@ -1605,6 +1699,8 @@
 									<span class="pricedash">—</span>
 								{/if}
 							</td>
+							{/if}
+							{#if show.adj}
 							<td class="num">
 								{#if a.market_unit != null}
 									<span class="pricebox">{money(a.market_unit)}</span>
@@ -1612,6 +1708,7 @@
 									<span class="pricedash">—</span>
 								{/if}
 							</td>
+							{/if}
 						</tr>
 					{:else}
 					<tr class:picked={selectMode && groupChecked(a.ids)} onclick={() => { if (selectMode) toggleGroup(a); }}>
@@ -1624,7 +1721,10 @@
 								/>
 							</td>
 						{/if}
+						{#if show.qty}
 						<td class="num qty">{a.qty}</td>
+						{/if}
+						{#if show.name}
 						<td class="namecol" title="Open card" onclick={(e) => openCardCell(e, a)}>
 							<div class="namecell">
 								{#if a.image_small}
@@ -1643,12 +1743,16 @@
 								>
 							</div>
 						</td>
+						{/if}
+						{#if show.class}
 						<td class="fac" title="Find all {a.supertype ?? ''} cards" onclick={(e) => facetCell(e, 'supertype', a.supertype)}>
 							<span class="typecell">
 								<span class="typeMain">{typeMain(a)}</span>
 								{#if typeSub(a)}<span class="typeSub">{typeSub(a)}</span>{/if}
 							</span>
 						</td>
+						{/if}
+						{#if show.etype}
 						<td class="center fac" title="Find cards of this type" onclick={(e) => facetCell(e, 'type', parseJsonStrArr(a.types)[0])}>
 							<span class="etypes">
 								{#each parseJsonStrArr(a.types) as t (t)}
@@ -1656,6 +1760,8 @@
 								{/each}
 							</span>
 						</td>
+						{/if}
+						{#if show.cost}
 						<td>
 							{#each parseAttacks(a.attack_costs) as att, i (i)}
 								<span class="attackline" title={att.name}>
@@ -1665,6 +1771,8 @@
 								</span>
 							{/each}
 						</td>
+						{/if}
+						{#if show.rarity}
 						<td class="center fac" title="Find all {a.rarity ?? ''} cards" onclick={(e) => facetCell(e, 'rarity', a.rarity)}>
 							{#if a.rarity}
 								{@const src = rarityIconSrc(a.rarity)}
@@ -1681,6 +1789,8 @@
 								{/if}
 							{/if}
 						</td>
+						{/if}
+						{#if show.set}
 						<td class="center fac" title="Find all cards in this set" onclick={(e) => facetCell(e, 'set', a.set_code)}>
 							{#if a.set_symbol_url}
 								<img
@@ -1695,7 +1805,11 @@
 								</span>
 							{/if}
 						</td>
+						{/if}
+						{#if show.number}
 						<td class="num">{a.number}</td>
+						{/if}
+						{#if show.nm}
 						<td class="num">
 							{#if a.nm_unit != null}
 								<span class="pricebox">{money(a.nm_unit)}</span>
@@ -1703,6 +1817,8 @@
 								<span class="pricedash">—</span>
 							{/if}
 						</td>
+						{/if}
+						{#if show.adj}
 						<td class="num">
 							{#if a.market_unit != null}
 								<span class="pricebox">{money(a.market_unit)}</span>
@@ -1710,6 +1826,7 @@
 								<span class="pricedash">—</span>
 							{/if}
 						</td>
+						{/if}
 					</tr>
 					{/if}
 				{/each}
@@ -2323,11 +2440,7 @@
 		   the same behaviour auto layout already had at 768 and narrower,
 		   except that it now happens at ONE width instead of a width that
 		   changed with whichever rows were rendered. */
-		min-width: calc(
-			var(--col-sel-used) + var(--col-qty) + var(--col-name-min) + var(--col-class) +
-				var(--col-etype) + var(--col-cost) + var(--col-rarity) + var(--col-set) +
-				var(--col-number) + var(--col-price) * 2
-		);
+		/* min-width is inline (`tableMinWidth`): the sum of the columns shown. */
 		/* The point of the exercise: widths come from the declarations above,
 		   not from the handful of rows the virtual scroller happens to have in
 		   the DOM. See the <colgroup> comment in the markup. */
@@ -2528,9 +2641,12 @@
 	.namebody {
 		min-width: 0;
 		line-height: 1.25;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		/* Wraps, never truncates (sp-in6ned) — DeckDumpster's .card-name. The
+		   row is tall enough for the lines a name takes in practice and the
+		   cell clips beyond that, which is what keeps the scroller's one row
+		   height. `anywhere` so one long unbroken word wraps rather than
+		   pushing the cell wider than its column. */
+		overflow-wrap: anywhere;
 	}
 	/* Type cell: main type on top, subtypes on a smaller second line —
 	   matching DeckDumpster's .type-cell / .type-sub split. */
@@ -2546,19 +2662,16 @@
 	.typeMain {
 		color: var(--color-text-muted);
 		font-size: var(--text-md);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		overflow-wrap: anywhere;
 	}
 	.typeSub {
 		color: var(--color-text-subtle);
 		font-size: var(--text-xs);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		overflow-wrap: anywhere;
 	}
 	.attackline {
 		display: flex;
+		flex-wrap: wrap;
 		gap: 3px;
 		align-items: center;
 		line-height: 1;
@@ -2653,15 +2766,23 @@
 		height: 11px;
 	}
 
-	/* On a phone the table is just a denser version of itself — no row
-	   reflow yet (it would clash with click-to-sort headers). */
+	.colitem {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		cursor: pointer;
+	}
+	/* On a phone the table is DeckDumpster's: two columns by default (Card
+	   with its thumbnail, Type with the subtype beneath), names wrapping onto
+	   a second line, thin separators. Everything else is in the column
+	   chooser. */
 	@media (max-width: 540px) {
 		.content {
 			padding: var(--space-3) var(--space-3) var(--space-8);
 		}
 		table.dd {
 			font-size: var(--text-sm);
-			--row-content: 26px;
+			--row-content: 40px;
 			/* The declared widths shrink with the type and the padding, or the
 			   table would keep its desktop total on a 360px screen and scroll
 			   further than it used to. Re-declared rather than derived: they
@@ -2670,7 +2791,7 @@
 			   drops with it. */
 			--col-sel: 1.75rem;
 			--col-qty: 2rem;
-			--col-class: 5.5rem;
+			--col-class: 7rem;
 			--col-etype: 2.75rem;
 			--col-cost: 4.75rem;
 			--col-rarity: 3.25rem;
@@ -2680,8 +2801,8 @@
 			--col-name-min: 9rem;
 		}
 		.cardthumb {
-			width: 70px;
-			height: 26px;
+			width: 72px;
+			height: 40px;
 		}
 		.typecell {
 			font-size: 0.75rem;

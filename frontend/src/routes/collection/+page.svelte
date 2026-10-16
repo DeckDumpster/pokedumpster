@@ -1200,30 +1200,41 @@
 		{#if searchRows.length > 0}
 			<div class="viewtoggle" role="group" aria-label="View">
 				<button
-					class:on={view === 'grid'}
-					data-testid="view-grid"
-					onclick={() => (view = 'grid')}
-					aria-label="Grid view"
-					title="Grid"
-				>▦</button>
-				<button
 					class:on={view === 'table'}
 					data-testid="view-table"
 					onclick={() => (view = 'table')}
 					aria-label="Table view"
 					title="Table"
-				>≡</button>
-			</div>
-			<div class="burgerWrap">
+				><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="2" width="14" height="2" rx=".5" /><rect x="1" y="7" width="14" height="2" rx=".5" /><rect x="1" y="12" width="14" height="2" rx=".5" /></svg></button>
 				<button
-					class="burger"
-					onclick={() => (menuOpen = !menuOpen)}
-					aria-label="Menu"
-					aria-expanded={menuOpen}
-					title="Menu"
-				>⋯</button>
-				{#if menuOpen}
-					<div class="menu" role="menu">
+					class:on={view === 'grid'}
+					data-testid="view-grid"
+					onclick={() => (view = 'grid')}
+					aria-label="Grid view"
+					title="Grid"
+				><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="6" height="6" rx="1" /><rect x="9" y="1" width="6" height="6" rx="1" /><rect x="1" y="9" width="6" height="6" rx="1" /><rect x="9" y="9" width="6" height="6" rx="1" /></svg></button>
+			</div>
+		{/if}
+		<div class="burgerWrap">
+			<button
+				class="burger"
+				onclick={() => (menuOpen = !menuOpen)}
+				aria-label="Menu"
+				aria-expanded={menuOpen}
+				title="More options"
+			>&#8942;</button>
+			{#if menuOpen}
+				<div class="menu" role="menu">
+					<label class="menuItem alltoggle" title="Search the full card catalog, not just your collection">
+						<input
+							type="checkbox"
+							data-testid="all-cards-toggle"
+							checked={allCards}
+							onchange={toggleAllCards}
+						/>
+						All cards
+					</label>
+					{#if searchRows.length > 0}
 						<a class="menuItem" href="/api/export/csv" download onclick={closeMenu}>Export CSV (ManaBox)</a>
 						<a class="menuItem" href="/api/export/collectr/singles.csv" download onclick={closeMenu}>Export cards (Collectr)</a>
 						<a class="menuItem" href="/api/export/collectr/sealed.csv" download onclick={closeMenu}>Export sealed (Collectr)</a>
@@ -1237,19 +1248,10 @@
 						>
 							{selectMode ? 'Cancel select' : 'Select'}
 						</button>
-					</div>
-				{/if}
-			</div>
-		{/if}
-		<label class="alltoggle" title="Search the full card catalog, not just your collection">
-			<input
-				type="checkbox"
-				data-testid="all-cards-toggle"
-				checked={allCards}
-				onchange={toggleAllCards}
-			/>
-			All cards
-		</label>
+					{/if}
+				</div>
+			{/if}
+		</div>
 		<!-- The count speaks for the whole result set, and so does the money
 		     beside it, because the endpoint answers both (pd-2g84). The money
 		     is the value of the OWNED copies among those rows — the same
@@ -1899,7 +1901,7 @@
 		background: var(--color-surface-selected);
 	}
 	.alltoggle {
-		display: inline-flex;
+		display: flex;
 		align-items: center;
 		gap: 0.3rem;
 		color: var(--color-text-subtle);
@@ -1912,6 +1914,7 @@
 	}
 	.countline {
 		margin: var(--space-0) var(--space-0) var(--space-0) auto;
+		white-space: nowrap;
 		font-size: var(--text-md);
 		background: none;
 		border: none;
@@ -1930,6 +1933,8 @@
 		display: flex;
 	}
 	.viewtoggle button {
+		display: inline-flex;
+		align-items: center;
 		background: none;
 		border: 1px solid var(--color-border);
 		color: var(--color-text-subtle);
@@ -1951,7 +1956,7 @@
 	}
 	.burger {
 		background: none;
-		border: 1px solid transparent;
+		border: 1px solid var(--color-border);
 		color: var(--color-text-subtle);
 		font-size: 1.3rem;
 		line-height: 1;

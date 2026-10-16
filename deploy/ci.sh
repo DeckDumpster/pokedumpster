@@ -862,6 +862,8 @@ if tier lint; then
     # outage that came next reached nobody (pd-hqdt). The assertions that matter
     # are the ones proving suppression did not disarm anything — a changed
     # signature, a second unit, an escalation, a stamp that cannot be trusted.
+    step "Repeat pages are suppressed, changed ones are not (tests/alarming/alert_suppress_test.sh)"
+    bash "$REPO_DIR/tests/alarming/alert_suppress_test.sh"
 
     # The standing decision the whole lake design rests on — no tenant data ever
     # enters it — existed only as comments in five files, so adding a tenant_id

@@ -50,26 +50,6 @@
 	// sizes. The backend's `layout` (cards per page) derives from cols:
 	// always 3 rows per page so denser grids → bigger pages.
 	let cols = $state(Math.min(10, Math.max(1, urlNum('cols', 3))));
-	// Landscape cards (BREAK, LEGEND, …) are turned into the portrait pocket
-	// by default, like a physical binder; unchecked shows them as printed.
-	let turnLandscape = $state(urlBool('turn', true));
-	let landscape = $state<Record<string, boolean>>({});
-	// CardTile renders the image, so the page probes each one's shape itself.
-	const probed = new Set<string>();
-	function noteShape(id: string, url: string) {
-		if (probed.has(id)) return;
-		probed.add(id);
-		const img = new Image();
-		img.onload = () => {
-			const wide = img.naturalWidth > img.naturalHeight;
-			if (landscape[id] !== wide) landscape[id] = wide;
-		};
-		img.src = url;
-	}
-	$effect(() => {
-		if (!turnLandscape || !binder) return;
-		for (const s of binder.slots) if (s.image_large) noteShape(s.card_id, s.image_large);
-	});
 	const layout = $derived(cols * 3);
 	let includeSecret = $state(urlBool('secret', true));
 	let includeSubset = $state(urlBool('subset', true));
@@ -274,7 +254,6 @@
 		set('sort', sort, 'number');
 		set('q', search, '');
 		set('missing', missingOnly ? '1' : '0', '0');
-		set('turn', turnLandscape ? '1' : '0', '1');
 		// Persist via goto(replaceState:true), NOT $app/navigation's
 		// replaceState. replaceState(url, …) only repaints the address bar;
 		// it stashes page.url.href (SvelteKit's *current* URL, still stale)
@@ -301,13 +280,6 @@
 		void missingOnly;
 		syncUrl();
 		load();
-	});
-
-	// Turning landscape cards is a pure UI choice — persist it in the URL but
-	// don't refetch the binder data when it flips.
-	$effect(() => {
-		void turnLandscape;
-		syncUrl();
 	});
 
 	// Best market price across a slot's printings — the one the Price sort uses.
@@ -554,10 +526,6 @@
 				{@render sortBtn('number', '#')}
 				{@render sortBtn('price', 'Price')}
 			</Toolbar>
-			<label class="turn">
-				<input type="checkbox" bind:checked={turnLandscape} />
-				Turn leaders and bases
-			</label>
 			<!-- Cards per row stepper. Pure UI choice (1..10) — page size
 			     derives from it (cols × 3 rows per page) so the backend's
 			     pagination stays consistent at 3 visible rows. -->
@@ -692,7 +660,6 @@
 						rarity={(slot.rarity_grp ?? 'unranked') as TileRarity}
 						foil={ownedFoil(slot)}
 						price={slotPrice(slot) !== null ? `$${slotPrice(slot)?.toFixed(2)}` : null}
-						rotate={turnLandscape && !!landscape[slot.card_id]}
 						missing={!ownedAny(slot)}
 						pips={slot.printings
 							.filter((p) => !p.deprecated)

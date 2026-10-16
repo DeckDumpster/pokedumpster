@@ -3,4 +3,8 @@
 /**
  * One printing within a slot.
  */
-export type SlotPrinting = { printing_id: string, variant: string, deprecated: boolean, owned_count: number, market_price: number | null, };
+export type SlotPrinting = { printing_id: string, variant: string, deprecated: boolean, owned_count: number, market_price: number | null, 
+/**
+ * The variant is a foil treatment (`variants.foil`).
+ */
+foil: boolean, };

@@ -295,6 +295,19 @@
 		syncUrl();
 	});
 
+	// Best market price across a slot's printings — the one the Price sort uses.
+	function slotPrice(slot: BinderSlot): number | null {
+		const prices = slot.printings
+			.map((p) => p.market_price)
+			.filter((v): v is number => v !== null && v > 0);
+		return prices.length ? Math.max(...prices) : null;
+	}
+	// Shimmer only what the user actually holds in a foil treatment
+	// (`variants.foil`, data — not a list of codes here).
+	function ownedFoil(slot: BinderSlot): boolean {
+		return slot.printings.some((p) => p.foil && p.owned_count > 0);
+	}
+
 	// Add a copy of a printing — the binder modal's "+". Optimistic: the pip
 	// and the modal's count update at once; a failure reverts.
 	async function addCopy(printingId: string) {
@@ -684,7 +697,13 @@
 					{/snippet}
 					<div class="slotwrap" class:missing={!ownedAny(slot)}>
 						<button class="slot" onclick={() => (selectedSlot = slot)}>
-							<div class="art">
+							<!-- The rarity outline, the foil shimmer and the price all live ON
+							     the art box, so none of them takes a pixel of layout. -->
+							<div
+								class="art g-{slot.rarity_grp ?? 'unranked'}"
+								class:foil={ownedFoil(slot)}
+								data-rarity-grp={slot.rarity_grp ?? 'unranked'}
+							>
 								{#if slot.image_large}
 									<img
 										src={slot.image_large}
@@ -695,6 +714,11 @@
 									/>
 								{:else}
 									<div class="noart">{slot.name}</div>
+								{/if}
+								{#if slotPrice(slot) !== null}
+									<span class="price" title="Highest market price across printings"
+										>${slotPrice(slot)?.toFixed(2)}</span
+									>
 								{/if}
 							</div>
 						</button>
@@ -969,6 +993,53 @@
 	.slotwrap.missing {
 		opacity: 0.82;
 	}
+	/* The art box: outline coloured by rarity bucket (a --color-rarity-* role
+	   per `rarities.grp`, as the stats histogram does), foil shimmer and price
+	   badge layered inside it. The outline is drawn inset, so the tile is
+	   exactly as tall and wide as it was without it. */
+	.art.g-common { --rc: var(--color-rarity-common); }
+	.art.g-uncommon { --rc: var(--color-rarity-uncommon); }
+	.art.g-rare { --rc: var(--color-rarity-rare); }
+	.art.g-promo { --rc: var(--color-rarity-promo); }
+	.art.g-holo { --rc: var(--color-rarity-holo); }
+	.art.g-ultra { --rc: var(--color-rarity-ultra); }
+	.art.g-special { --rc: var(--color-rarity-special); }
+	.art.g-secret { --rc: var(--color-rarity-secret); }
+	.art.g-unranked { --rc: var(--color-rarity-unranked); }
+	.art.foil::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		background: linear-gradient(
+			115deg,
+			transparent 35%,
+			color-mix(in srgb, var(--color-text-strong) 38%, transparent) 50%,
+			transparent 65%
+		);
+		background-size: 250% 100%;
+		animation: foil-sweep 3.2s linear infinite;
+	}
+	@keyframes foil-sweep {
+		from { background-position: 150% 0; }
+		to { background-position: -50% 0; }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.art.foil::after { animation: none; background-position: 50% 0; }
+	}
+	.price {
+		position: absolute;
+		right: var(--space-1);
+		bottom: var(--space-1);
+		padding: var(--space-px) var(--space-1);
+		border-radius: var(--radius-sm);
+		background: color-mix(in srgb, var(--color-surface-inset) 82%, transparent);
+		color: var(--color-text-strong);
+		font-size: var(--text-xs);
+		font-weight: var(--weight-semibold);
+		font-variant-numeric: tabular-nums;
+		line-height: var(--leading-tight);
+	}
 	.noart {
 		aspect-ratio: 5 / 7;
 		display: flex;
@@ -982,9 +1053,13 @@
 	/* The art box is always 5:7, so every tile's image and footer sit at the
 	   same place whatever shape the card is. */
 	.art {
+		--rc: var(--color-rarity-unranked);
 		position: relative;
 		aspect-ratio: 5 / 7;
 		overflow: hidden;
+		border-radius: var(--radius-lg);
+		outline: 2px solid var(--rc);
+		outline-offset: -2px;
 	}
 	.art img {
 		position: absolute;

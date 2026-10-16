@@ -125,7 +125,7 @@ log "2. the ratchet is seen red"
 # pattern that matches nothing passes §1 forever.
 RED="$(mktemp -d "${TMPDIR:-/tmp}/pd-images-red.XXXXXX")"
 trap 'rm -rf "$RED"' EXIT
-grep -v 'podman rmi' "${REPO_DIR}/tests/tenants/handles.sh" >"${RED}/leaky.sh"
+grep -v 'podman rmi' "${REPO_DIR}/tests/tenants/upgrade.sh" >"${RED}/leaky.sh"
 check "a gate with its rmi line removed creates a tag" "IMAGE" "$(tags_created_in "${RED}/leaky.sh")"
 check "…and removes none" "" "$(tags_removed_in "${RED}/leaky.sh")"
 

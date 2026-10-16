@@ -116,8 +116,7 @@ none "no approval reaches Playwright except through playwright.sh" "$invocations
 # And the entry point that used to: `npm run approve` was `playwright test
 # --update-snapshots`, undocumented, reachable from the same directory, and
 # past the guard by construction.
-approve=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['scripts'].get('approve',''))" \
-	"$SCRIPT_DIR/package.json")
+approve=$(jq -r '.scripts.approve // ""' "$SCRIPT_DIR/package.json")
 case "$approve" in
 	*playwright.sh*) ok "npm run approve goes through playwright.sh" ;;
 	*) bad "npm run approve goes through playwright.sh" "approve = $approve" ;;
@@ -184,8 +183,7 @@ if [ -z "$projects" ]; then
 else
 	ok "viewports: $(echo "$projects" | tr '\n' ' ')"
 	missing=""
-	ids=$(python3 -c "import json,sys; print('\n'.join(r['id'] for r in json.load(open(sys.argv[1]))['routes']))" \
-		"$SCRIPT_DIR/routes.json")
+	ids=$(jq -r '.routes[].id' "$SCRIPT_DIR/routes.json")
 	for p in $projects; do
 		for id in $ids; do
 			[ -f "$SCRIPT_DIR/baselines/$p/$id.png" ] || missing="${missing}${missing:+$'\n'}$p/$id.png"

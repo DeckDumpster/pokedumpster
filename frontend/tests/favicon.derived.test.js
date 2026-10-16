@@ -34,7 +34,9 @@ test('every committed icon equals what the generator derives from the header art
 });
 
 test('PNG fallbacks have the required dimensions', () => {
-	for (const [path, n] of [['static/favicon-32.png', 32], ['static/apple-touch-icon.png', 180]]) {
+	/** @type {[string, number][]} */
+	const icons = [['static/favicon-32.png', 32], ['static/apple-touch-icon.png', 180]];
+	for (const [path, n] of icons) {
 		const b = read(path);
 		assert.equal(b.readUInt32BE(16), n);
 		assert.equal(b.readUInt32BE(20), n);

@@ -1,3 +1,5 @@
+// covers: UC-ui-079
+// tier: T3
 /**
  * Hand-written implementation for collection_add_from_modal.
  *

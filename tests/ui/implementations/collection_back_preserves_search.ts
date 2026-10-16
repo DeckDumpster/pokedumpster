@@ -1,3 +1,5 @@
+// covers: UC-ui-082
+// tier: T3
 /**
  * Hand-written implementation for collection_back_preserves_search.
  *

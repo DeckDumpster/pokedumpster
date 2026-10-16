@@ -1,3 +1,5 @@
+// covers: UC-ui-114
+// tier: T3
 /**
  * Hand-written implementation for collection_table_column_facets.
  *

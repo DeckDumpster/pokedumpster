@@ -2632,14 +2632,10 @@
 	   name shrinks to fill the remaining width, pushing the tags to the
 	   right edge of the cell instead of abutting the name.
 
-	   One line, and truncated rather than wrapped, because the virtual
-	   scroller's geometry is arithmetic over ONE row height (pd-7z4o): a name
-	   that wrapped made its row 3px taller than its neighbours, and 3px times
-	   56,635 rows is a scrollbar that lies about where you are. Every other
-	   cell already fits inside the thumbnail's height — this was the only one
-	   that could outgrow it. The column flexes to all leftover width, so an
-	   ellipsis is a narrow-viewport event, and the type cell either side of it
-	   ellipsises on the same reasoning. */
+	   Wraps rather than truncates (sp-in6ned), but the scroller's geometry is
+	   arithmetic over ONE row height (pd-7z4o): `table.dd tbody td > *` caps
+	   every cell at `--row-content`, so a name that would take a third line is
+	   clipped there and the row never grows. */
 	.namebody {
 		min-width: 0;
 		line-height: 1.25;

@@ -13,7 +13,9 @@ use tokio::net::{TcpListener, TcpStream};
 #[tokio::main]
 async fn main() {
     let mut args = std::env::args().skip(1);
-    let out = args.next().expect("usage: access_fixture <outdir> <email>...");
+    let out = args
+        .next()
+        .expect("usage: access_fixture <outdir> <email>...");
     let emails: Vec<String> = args.collect();
 
     let fx = TestAccessFixture::new().await;

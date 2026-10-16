@@ -16,8 +16,10 @@ test('/browse wraps chips, titles and tiles at 390px', async ({ page }) => {
 	await settle(page, '.grid .tile');
 
 	// Expand every collapsed section.
-	for (const hdr of await page.locator('.grouphdr[aria-expanded="false"]').all()) {
-		await hdr.click();
+	// Each click removes its header from the selector, so always take the first.
+	const collapsed = page.locator('.grouphdr[aria-expanded="false"]');
+	while ((await collapsed.count()) > 0) {
+		await collapsed.first().click();
 	}
 
 	const report = await page.evaluate(() => {

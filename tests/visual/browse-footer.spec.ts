@@ -33,10 +33,12 @@ async function stubArt(page: Page) {
 }
 
 async function open(page: Page, qs: string) {
-	await stubArt(page);
 	await page.setViewportSize({ width: 390, height: 844 });
-	await page.goto(`${SET}?${qs}`);
+	// Playwright tries the newest route first: stabilize()'s catch-all would
+	// answer every card image with a portrait placeholder if it came last.
 	await stabilize(page);
+	await stubArt(page);
+	await page.goto(`${SET}?${qs}`);
 	await page.locator('.slotwrap').first().waitFor();
 	await page.waitForLoadState('networkidle');
 }

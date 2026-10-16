@@ -12,6 +12,7 @@
 
 	"unrepresented": {
 		"routes/collection/+page.svelte": "Judged by its own property tests (collection-window.spec.ts: header alignment, two-row layout), not a pixel baseline; per Ryan 2026-10-16 the full-page pixel gate is being retired (sp-tk1oyu).",
+		"routes/browse/[set]/+page.svelte": "Judged by its own property tests (browse-footer.spec.ts: one-line footer, aligned pips, turn checkbox), not a pixel baseline; the full-page pixel gate is being retired (sp-tk1oyu).",
 		"routes/bundles/[slug]/+page.svelte": "Redirect-only shim to /browse/[code] (pokedumpster-80q). It renders one line of placeholder text before navigating; the destination is /browse/[code]."
 	},
 

@@ -1,3 +1,5 @@
+// covers: UC-ui-125
+// tier: T3
 /**
  * Hand-written implementation for collectr_import_split_preview.
  *

@@ -1,3 +1,5 @@
+// covers: UC-ui-025
+// tier: T3
 /**
  * Hand-written implementation for browse_japanese_set_tile_not_provisional.
  *

@@ -1,3 +1,5 @@
+// covers: UC-ui-081
+// tier: T3
 /**
  * Hand-written implementation for collection_all_cards_sort_interleaves.
  *

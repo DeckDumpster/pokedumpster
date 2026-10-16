@@ -1,0 +1,2916 @@
+{
+  "api_version": "test-plan-matrix/v1",
+  "areas": [
+    {
+      "area": "ui",
+      "use_cases": [
+        {
+          "id": "UC-ui-001",
+          "tier": "T3",
+          "statement": "batches_already_assigned_view: When I open the order-created batch \"TCG-100001\" from the batches list, the detail page shows the batch name as the heading and a metadata line identifying it as an order-tcgplayer batch with its timestamp and card count.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-002",
+          "tier": "T3",
+          "statement": "batches_assign_unassigned_to_deck: When I open the batch \"151 binder page-through\" from the batches list, the detail page shows the batch name as the heading and a metadata line marking it as a binder-click batch with its timestamp and an \"8 cards\" count.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-003",
+          "tier": "T3",
+          "statement": "batches_deck_label_in_list: In the batches list view, each batch appears as a table row showing its Type, Name, Cards count, and When timestamp.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-004",
+          "tier": "T3",
+          "statement": "batches_detail_addressable_url: When I navigate directly to /batches/{id} for a specific batch, I see a standalone, bookmarkable detail page — not an in-app modal.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-005",
+          "tier": "T3",
+          "statement": "batches_detail_back_preserves_filter: On the batches list I choose \"binder_click\" from the Type filter and see the list narrow to just the binder-click batch.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-006",
+          "tier": "T3",
+          "statement": "batches_detail_view_and_metadata: I can click a batch's Type link in the list to open its detail view.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-007",
+          "tier": "T3",
+          "statement": "batches_filter_empty_result: When I choose \"manual_id\" from the Type filter on the batches page, the table narrows to show only the manual-entry batch \"Vintage holo entry\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-008",
+          "tier": "T3",
+          "statement": "batches_homepage_nav_link: When I navigate to /batches, I land on the Batches page showing the \"Batches\" heading and a muted line describing it as every ingestion run — manual entry, binder clicks, imports, and orders.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-009",
+          "tier": "T3",
+          "statement": "batches_type_filter_bar: I can navigate to the Batches page and see a labelled \"Type\" select with an \"All\" option plus one option per distinct batch type present in the data (order_tcgplayer, order_ebay, manual_id, binder_click, csv_manabox).",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-010",
+          "tier": "T3",
+          "statement": "binders_add_cards_full_flow: From the \"Trade Binder\" detail view, I click \"+ Add cards\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-011",
+          "tier": "T3",
+          "statement": "binders_create_and_manage: I can create a new binder from the binders list, see it appear in the binder grid, open it, and add cards to it from my collection.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-012",
+          "tier": "T3",
+          "statement": "binders_create_with_all_fields: From the binders list view, I type a name (\"Rare Binder\") into the \"New binder name…\" input and click \"Create\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-013",
+          "tier": "T3",
+          "statement": "binders_delete_returns_to_list: From a binder's detail view, I click \"Delete binder\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-014",
+          "tier": "T3",
+          "statement": "binders_detail_view_empty_card_list: After creating a new binder from the binders list, I open its detail view.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-015",
+          "tier": "T3",
+          "statement": "binders_edit_binder: From the binders list I click the \"Trade Binder\" tile and land on its detail view.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-016",
+          "tier": "T3",
+          "statement": "binders_list_view_populated: When I navigate to /binders, I see the three existing binders (\"Trade Binder\", \"Master Set: 151\", and \"Vintage Vault\") rendered as tiles in the binder grid.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-017",
+          "tier": "T3",
+          "statement": "binders_manage_from_card_modal: From the card detail page for a card with an unassigned copy, I use the Location dropdown in that copy's row in the Copies table and choose a binder (\"Trade Binder\").",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-018",
+          "tier": "T3",
+          "statement": "binders_remove_cards: From a binder's detail view with cards present (\"Master Set: 151\"), I click the \"Remove\" link in the action cell of the first card row.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-019",
+          "tier": "T3",
+          "statement": "browse_back_preserves_page_param: I page through a set's binder with the pager until I'm on a deeper page (page 3), open a card's variant modal, and follow its \"Full card details\" link to the card page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/browse_back_preserves_page_param.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-020",
+          "tier": "T3",
+          "statement": "browse_include_promos_toggle: On a binder browse page the \"Promos\" checkbox is unchecked by default, so promo cards are excluded from the binder and no \"Promos\" section is shown.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-021",
+          "tier": "T3",
+          "statement": "browse_include_secret_rares_toggle: On the \"151\" binder browse page the \"Secret\" checkbox is checked by default, so the trailing \"Secret Rares\" section is visible and the Mew ex hyper-rare slot (#201) appears after the numbered cards.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-022",
+          "tier": "T3",
+          "statement": "browse_include_subset_toggle: On a binder browse page the \"Subset\" checkbox is checked by default.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-023",
+          "tier": "T3",
+          "statement": "browse_incomplete_only_filter: On the \"151\" binder browse page there is an \"Incomplete only\" filter pill.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-024",
+          "tier": "T3",
+          "statement": "browse_japanese_set_add_first_copy: Starting from \"Browse sets\" I expand the \"Pokémon JP — Original Era\" series and open its one set, \"Mystery of the Fossils\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/browse_japanese_set_add_first_copy.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-025",
+          "tier": "T3",
+          "statement": "browse_japanese_set_tile_not_provisional: On the \"Browse sets\" page the Japanese era \"Pokémon JP — Original Era\" is listed as its own series and starts collapsed, because I own nothing in it.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/browse_japanese_set_tile_not_provisional.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-026",
+          "tier": "T3",
+          "statement": "browse_layout_toggle_9_to_4: On the \"151\" binder browse page the Layout selector defaults to \"9-pocket\" and the slot grid shows three columns.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-027",
+          "tier": "T3",
+          "statement": "browse_loads_set_first_page: From the \"Browse sets\" page I click the tile for the \"151\" set.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-028",
+          "tier": "T3",
+          "statement": "browse_master_set_completion_stats_visible: On the \"151\" binder browse page the header shows two completion stats side by side.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-029",
+          "tier": "T3",
+          "statement": "browse_mobile_bottom_sheet: On a narrow phone-width viewport I open the variant modal from a binder slot.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-030",
+          "tier": "T3",
+          "statement": "browse_mobile_breakpoints: On the \"151\" binder browse page with the default 9-pocket layout, a wide desktop viewport shows the slot grid in three columns.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-031",
+          "tier": "T3",
+          "statement": "browse_optimistic_ui_undo_toast: On the \"151\" binder browse page I open the variant modal for Charmander #4 and click \"+ Add\" on the \"Normal\" printing.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-032",
+          "tier": "T3",
+          "statement": "browse_pager_scrolls_to_top: When I advance from one page to the next in the binder/set browse view — including via the top pager — the viewport re-centers near the top of the card grid, so I go visually from the bottom row back to the top row rather than staying scrolled at the bottom of the new page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/browse_pager_scrolls_to_top.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-033",
+          "tier": "T3",
+          "statement": "browse_pagination_next_prev: On the \"151\" binder browse page the indicator reads \"Page 1 of N\" and the \"← Prev\" button is disabled.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-034",
+          "tier": "T3",
+          "statement": "browse_secret_rares_appended_after_numbered: On the \"151\" binder browse page, with the \"Secret\" checkbox on, the numbered cards (#1 through #165) come first in set-number order.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-035",
+          "tier": "T3",
+          "statement": "browse_session_creates_batch: When I open the \"151\" binder browse page and merely look around — paging, toggling sections — no batch is created.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-036",
+          "tier": "T3",
+          "statement": "browse_set_stats_progress_bars_are_accessible: On the \"151\" set stats page every progress meter announces itself as a progress bar.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-037",
+          "tier": "T3",
+          "statement": "browse_set_stats_rarity_split_order: On the \"151\" set stats page the Rarity split table lists tiers from commonest to rarest — Common, Uncommon, Rare, Double Rare, Illustration Rare, Special Illustration Rare, Hyper Rare — not alphabetically and not in whatever order the cards happened to be catalogued.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-038",
+          "tier": "T3",
+          "statement": "browse_slot_click_opens_variant_modal: On the \"151\" binder browse page I click the body of the Bulbasaur #1 slot.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-039",
+          "tier": "T3",
+          "statement": "browse_slot_inline_checkbox_holo_rh: On the Base Set binder browse page the slot for a Rare Holo card such as Charizard #4 carries two inline quick-toggle checkboxes labelled \"Holo\" and \"RH\" — the two common variants for a holo rare.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-040",
+          "tier": "T3",
+          "statement": "browse_slot_inline_checkbox_reg_rh: On the \"151\" binder browse page the slot for a Common card such as Bulbasaur #1 carries two inline quick-toggle checkboxes in its footer, labelled \"Reg\" and \"RH\" — the two most common variants for that rarity.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-041",
+          "tier": "T3",
+          "statement": "browse_slot_pips_reflect_ownership: On the \"151\" binder browse page each slot's pip row shows my ownership at a glance.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-042",
+          "tier": "T3",
+          "statement": "browse_slot_renders_image_number_pips: On the \"151\" binder browse page each slot in the grid is a clickable button that shows the card's image at the top, and a footer row with the card number on the left and a row of pips on the right.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-043",
+          "tier": "T3",
+          "statement": "browse_sort_mode_change: On the \"151\" binder browse page the slots are ordered by set number by default — Bulbasaur #1, then Charmander #4, then Charizard ex #6, and so on in ascending numeric order.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-044",
+          "tier": "T3",
+          "statement": "browse_subset_section_appended: On a binder browse page, with the \"Subset\" checkbox on, cards flagged as a subset (such as a Galaxy or Trainer Gallery sub-collection) render as a separate appended section.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-045",
+          "tier": "T3",
+          "statement": "browse_url_state_persists: The binder browse page is addressable by set: navigating directly to /browse/sv3pt5 loads the \"151\" binder, while /browse/base1 loads the \"Base Set\" binder.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-046",
+          "tier": "T3",
+          "statement": "browse_variant_modal_add_increments_count: I open the variant modal for Charmander #4 in the \"151\" set.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-047",
+          "tier": "T3",
+          "statement": "browse_variant_modal_edit_copies: In the variant modal for a card I own, each printing row offers an \"Edit copies…\" affordance.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-048",
+          "tier": "T3",
+          "statement": "browse_variant_modal_lists_all_variants: I open the variant modal for Bulbasaur #1 in the \"151\" set.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-049",
+          "tier": "T3",
+          "statement": "browse_variant_modal_remove_decrements_count: I open the variant modal for a printing I already own and use the modal's per-variant remove control to take one copy off.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-050",
+          "tier": "T3",
+          "statement": "card_detail_add_copy: On the card detail page, the Printings table lists each variant of the card with a \"+ Add\" button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-051",
+          "tier": "T3",
+          "statement": "card_detail_add_form_toggle: On the card detail page, adding a copy is a single click on a variant's \"+ Add\" button — there is no expandable purchase form to toggle.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-052",
+          "tier": "T3",
+          "statement": "card_detail_binder_assign: On the card detail page, an unassigned copy's Location cell is a `<select>` that lists every binder, every deck, and an \"Unassigned\" option.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-053",
+          "tier": "T3",
+          "statement": "card_detail_bulk_condition_for_copies: On a card's detail page, when I own more than one copy the \"Your copies\" table lets me multi-select copies (a checkbox per row plus a select-all) and bulk-set their condition (and status / location) in one action — instead of editing each copy's dropdown one row at a time, which is tedious when grading a stack of the same card.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_bulk_condition_for_copies.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-054",
+          "tier": "T3",
+          "statement": "card_detail_change_variant_execute: On the card detail page, picking a different variant from a copy's Variant `<select>` re-points that copy at the new variant of the same card.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-055",
+          "tier": "T3",
+          "statement": "card_detail_change_variant_picker: On the card detail page for a card with multiple variants, a copy's Variant `<select>` lists every variant of that card.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-056",
+          "tier": "T3",
+          "statement": "card_detail_condition_edit_no_chart_rebuild: On the card detail page, editing an owned copy's condition updates the copy but must NOT rebuild/refresh the price chart — the catalog price history is unchanged, so destroying and recreating the chart (which replays its entry animation) is jarring and wrong.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_condition_edit_no_chart_rebuild.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-057",
+          "tier": "T3",
+          "statement": "card_detail_copy_history: On the card detail page, a copy in the \"Your copies\" section exposes a \"History\" toggle.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-058",
+          "tier": "T3",
+          "statement": "card_detail_deck_assign: On the card detail page, an unassigned copy's Location `<select>` lists every deck alongside the binders and \"Unassigned\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-059",
+          "tier": "T3",
+          "statement": "card_detail_delete_copy: On the card detail page, a copy's Status `<select>` includes a \"removed\" option.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-060",
+          "tier": "T3",
+          "statement": "card_detail_direct_navigation: I can navigate directly to a card's detail page at /card/:set/:number and see the card image on the left and an info panel on the right showing the card name, the \"{set} · #{number} · {rarity}\" subtitle, and the card's optional metadata (Type, HP, Energy, Artist).",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-061",
+          "tier": "T3",
+          "statement": "card_detail_dispose_copy: On the card detail page, a copy's Status `<select>` lets me dispose of the copy by picking a disposition such as \"sold\", \"traded\", \"gifted\", or \"lost\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-062",
+          "tier": "T3",
+          "statement": "card_detail_dispose_listed_unlist: On the card detail page, I can set an owned copy's Status `<select>` to \"listed\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-063",
+          "tier": "T3",
+          "statement": "card_detail_evolves_from_search: A Stage card shows an \"Evolves from\" link naming its pre-evolution.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_evolves_from_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-064",
+          "tier": "T3",
+          "statement": "card_detail_evolves_into_search: A card that evolves shows an \"Evolves into\" link — the correct grammar, not \"Evolves to\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_evolves_into_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-065",
+          "tier": "T3",
+          "statement": "card_detail_facet_ability_search: When I click a Pokémon's ability name on the card page, the browser navigates to the collection search filtered to that ability across the whole catalog — an `ability:` DSL query.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_facet_ability_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-066",
+          "tier": "T3",
+          "statement": "card_detail_facet_artist_search: When I click a card's artist name on the card page, the browser navigates to the collection search pre-filtered to that artist across the whole catalog — an `artist:` DSL query, not a bare card-name search.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_facet_artist_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-067",
+          "tier": "T3",
+          "statement": "card_detail_facet_attack_search: When I click one of a Pokémon's attacks on the card page, the browser navigates to the collection search filtered to that attack across the whole catalog — an `attack:` DSL query.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_facet_attack_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-068",
+          "tier": "T3",
+          "statement": "card_detail_facet_rarity_search: When I click a card's rarity on the card page, the browser navigates to the collection search filtered to that rarity across the whole catalog — a `rarity:` DSL query, not a card-name search for the rarity text.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_facet_rarity_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-069",
+          "tier": "T3",
+          "statement": "card_detail_facet_retreat_search: When I click a card's Retreat cost on the card page, the browser navigates to the collection search filtered to cards with the same retreat cost across the whole catalog — a `retreat:` DSL query.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_facet_retreat_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-070",
+          "tier": "T3",
+          "statement": "card_detail_facet_type_search: When I click a card's energy type on the card page, the browser navigates to the collection search filtered to that type across the whole catalog — a `type:` DSL query.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_facet_type_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-071",
+          "tier": "T3",
+          "statement": "card_detail_facet_weakness_search: When I click a card's Weakness type on the card page, the browser navigates to the collection search filtered to cards sharing that type weakness across the whole catalog — a `weakness:` DSL query.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_facet_weakness_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-072",
+          "tier": "T3",
+          "statement": "card_detail_from_collection_modal: From the collection page, I can open a card's variant modal and click its \"Full card details\" link to navigate to the standalone card detail page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-073",
+          "tier": "T3",
+          "statement": "card_detail_move_deck_to_binder: On the card detail page, when a copy is assigned to a deck its Location `<select>` shows that deck selected.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-074",
+          "tier": "T3",
+          "statement": "card_detail_not_found: When I navigate to a card detail URL with an invalid set code or collector number, the page shows an error message instead of card details.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-075",
+          "tier": "T3",
+          "statement": "card_detail_pokedex_search: The card page shows the Pokémon's National Pokédex number.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_pokedex_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-076",
+          "tier": "T3",
+          "statement": "card_detail_price_chart: When I view a card's detail page, the Printings table shows a Market column with the latest market price for each variant that has price data.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-077",
+          "tier": "T3",
+          "statement": "card_detail_receive_copy: On the card detail page, an ordered copy's Status `<select>` shows \"ordered\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-078",
+          "tier": "T3",
+          "statement": "card_detail_want_toggle: On the card detail page, I can click the \"Want\" control to add the card to my wishlist.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-079",
+          "tier": "T3",
+          "statement": "collection_add_from_modal: Starting from the Collection page, I can click a card's Name link to open its card detail page, then add a new copy of that card by clicking the \"+ Add\" button on a variant row.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_add_from_modal.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-080",
+          "tier": "T3",
+          "statement": "collection_add_second_card_no_refresh: After adding a copy from one card's detail page (reached from the Collection page), I can navigate back to the Collection page, open a different card's detail page, and successfully add a copy of that second card with the same \"+ Add\" button workflow — without needing a full browser refresh.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_add_second_card_no_refresh.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-081",
+          "tier": "T3",
+          "statement": "collection_all_cards_sort_interleaves: With \"All cards\" turned on, the collection shows every catalog printing — the ones I own as normal rows and the ones I don't as dimmed \"missing\" rows.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_all_cards_sort_interleaves.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-082",
+          "tier": "T3",
+          "statement": "collection_back_preserves_search: I type a query into the collection search box so the URL reflects it as ?q=.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_back_preserves_search.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-083",
+          "tier": "T3",
+          "statement": "collection_brand_logo_links_home: When I am on the Collection page, the global header shows the PokeDumpster brand link.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-084",
+          "tier": "T3",
+          "statement": "collection_card_modal_detail: From the Collection table I can click a card's Name link to open its card detail page, which shows the card image, name, the \"{set_code} · #{number} · {rarity}\" subtitle, and the card metadata.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-085",
+          "tier": "T3",
+          "statement": "collection_facet_from_modal_widens_to_catalog: When I open a card's modal on the collection page and click a facet link that carries \"All cards\" (e.g.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_facet_from_modal_widens_to_catalog.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-086",
+          "tier": "T3",
+          "statement": "collection_filter_rarity: I can narrow the collection table by Pokémon rarity.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-087",
+          "tier": "T3",
+          "statement": "collection_header_sticky_on_scroll: When I am on the Collection page and I scroll the long card table down, the global header bar stays pinned to the top of the viewport.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-088",
+          "tier": "T3",
+          "statement": "collection_inline_deck_creation: In multi-select mode on the Collection page I can select one or more copies and use the bulk \"Assign to deck…\" dropdown to move every selected copy into an existing deck.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-089",
+          "tier": "T3",
+          "statement": "collection_modal_change_variant: Starting from the Collection page, I can click a card's Name link to open its card detail page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-090",
+          "tier": "T3",
+          "statement": "collection_modal_close: When I open a card's detail page by clicking its Name link in the Collection table, I can use the global header's \"Collection\" nav link to navigate back to the Collection page and see the table again.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-091",
+          "tier": "T3",
+          "statement": "collection_modal_overlays_sticky_header: When I enter multi-select mode on the Collection page and check at least one row, the bulk-action bar appears between the toolbar and the table.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-092",
+          "tier": "T3",
+          "statement": "collection_more_menu_in_viewport: When I am on the Collection page, the sidebar renders within the viewport with its stacked sections fully readable — Saved views, the search input, and the \"Rarity\", \"Set\", and \"Variant\" facet sections.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-093",
+          "tier": "T3",
+          "statement": "collection_multiselect_delete: I can click \"Select\" to enter multi-select mode, check one or more copy rows, click the bulk \"Delete\" button, accept the browser confirm dialog, and the selected copies are removed from the collection.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-094",
+          "tier": "T3",
+          "statement": "collection_multiselect_delete_individual_copies: When I open the Collection page and enter multi-select mode, a card I own more than once shows one row per physical copy because PokeDumpster keeps strictly one row per card.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-095",
+          "tier": "T3",
+          "statement": "collection_multiselect_individual_copies: When I enter multi-select mode on the Collection page, the table still shows one row per physical copy, so a card I own twice appears as two separate selectable rows.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-096",
+          "tier": "T3",
+          "statement": "collection_multiselect_new_deck: I can click \"Select\" to enter multi-select mode, check one or more copy rows, and use the bulk \"Assign to deck…\" dropdown to assign every selected copy to a deck.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-097",
+          "tier": "T3",
+          "statement": "collection_multiselect_toggle: I can click the \"Select\" button to enter multi-select mode: a checkbox column appears in the table and the toolbar button switches to \"Cancel\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-098",
+          "tier": "T3",
+          "statement": "collection_price_chart: When I open a card's detail page from the Collection table, the Printings table shows a \"Market\" column with the latest market price for each variant.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-099",
+          "tier": "T3",
+          "statement": "collection_search_autocomplete_keywords: As I type in the Collection search bar, a dropdown suggests completions from the query vocabulary.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_search_autocomplete_keywords.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-100",
+          "tier": "T3",
+          "statement": "collection_search_debounced: I can type a card name into the sidebar search input and, after the 200 ms debounce idle, the table filters to rows whose card name contains what I typed.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-101",
+          "tier": "T3",
+          "statement": "collection_search_deck_filter: I can tick a value in the sidebar \"Set\" facet to narrow the collection table to only the copies from that set.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-102",
+          "tier": "T3",
+          "statement": "collection_search_error_handling: When I type a query the parser can't understand — like \"xyz:1\" with an unknown keyword — the Collection page shows an inline error beneath the search box naming the problem (\"unknown keyword\") and the character position, instead of silently returning nothing.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_search_error_handling.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-103",
+          "tier": "T3",
+          "statement": "collection_search_help_page: Next to the Collection search bar is a \"?\" help link.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_search_help_page.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-104",
+          "tier": "T3",
+          "statement": "collection_search_is_missing: Searching the collection for \"is:missing\" lists every printing I don't own as a dimmed \"missing\" tile.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_search_is_missing.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-105",
+          "tier": "T3",
+          "statement": "collection_search_keyword_filter: On the Collection page I can type a Scryfall-style query like \"t:fire\" into the search bar.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_search_keyword_filter.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-106",
+          "tier": "T3",
+          "statement": "collection_search_status_default: When I load the Collection page with no filters, the table shows every physical copy I own or have owned, and the Status column reflects each copy's lifecycle status — owned, ordered, listed, or sold.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-107",
+          "tier": "T3",
+          "statement": "collection_search_unowned: With the \"All cards\" toggle on, a query like \"t:water\" returns both the Water cards I own and the ones I'm missing.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_search_unowned.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-108",
+          "tier": "T3",
+          "statement": "collection_shared_card_list: The Collection toolbar shows an \"Export CSV\" link when my collection is non-empty.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-109",
+          "tier": "T3",
+          "statement": "collection_shared_card_list_empty: When my collection has no copies, the Collection page still renders the sidebar and toolbar, but the content area shows the empty message \"Your collection is empty.\" above a line naming a set's binder view as where cards come from, and a Browse sets button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-110",
+          "tier": "T3",
+          "statement": "collection_skeleton_loading_state: When I first open the Collection page, I briefly see a muted \"Loading…\" message while the page's parallel mount fetches run, with no layout shown.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-111",
+          "tier": "T3",
+          "statement": "collection_stats_modal_reflects_filter: When I narrow the collection with a search term or a facet checkbox, the toolbar \"{filtered} of {total} cards\" count updates so the first number matches only the currently-visible rows while the second stays at the full collection size.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-112",
+          "tier": "T3",
+          "statement": "collection_stats_modal_shows_breakdown: When I'm on the Collection page with no filters applied, the toolbar shows a \"{filtered} of {total} cards\" count where both numbers equal the full collection size.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-113",
+          "tier": "T3",
+          "statement": "collection_syntax_help_pill: When I am on the Collection page, the sidebar's Saved views section shows a \"Save current…\" button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-114",
+          "tier": "T3",
+          "statement": "collection_table_column_facets: In the collection table view, clicking a row's Name cell opens that card's detail modal, but clicking any other column runs the matching catalog facet search instead of opening the card.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_table_column_facets.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-115",
+          "tier": "T3",
+          "statement": "collection_table_row_opens_modal: When I click a card's Name link in a Collection table row, the browser navigates to that card's detail page at /card/{set}/{number}, showing the card image, name, and metadata.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-116",
+          "tier": "T3",
+          "statement": "collection_table_scroll_reveals_more_cards: When I scroll the Collection table down, rows further down the list come into view while the rows that were at the top scroll out of sight.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-117",
+          "tier": "T3",
+          "statement": "collection_table_virtual_scroll_renders_cards: When I navigate to the Collection page, the content area shows the collection table with its column headers — Name, Set, #, Variant, Rarity, Condition, Status, Paid — and one row per physical copy I own.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-118",
+          "tier": "T3",
+          "statement": "collection_value_history_breakdown_tabs: Inside the \"Collection value over time\" dialog I can switch from the single Total line to a \"By set\" or \"By binder\" breakdown, and the chart redraws with one line per set or per binder.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_value_history_breakdown_tabs.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-119",
+          "tier": "T3",
+          "statement": "collection_value_history_chart: When I click the \"{N} cards, {$X}\" total in the Collection page header, a \"Collection value over time\" dialog opens showing my collection's value plotted against time, with a market-value line and a cost-basis line.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collection_value_history_chart.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-120",
+          "tier": "T3",
+          "statement": "collection_view_toggle: On the Collection page I can click the \"Select\" button to switch into multi-select mode, which adds a checkbox column to the table and changes the toolbar button to \"Cancel\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-121",
+          "tier": "T3",
+          "statement": "collection_wishlist_panel: In multi-select mode on the Collection page I can check one or more copy rows and click the bulk \"Add to wishlist\" button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-122",
+          "tier": "T3",
+          "statement": "collectr_export_menu_links: When I open the overflow menu on the collection page, I see two distinct Collectr export downloads — \"Export cards (Collectr)\" and \"Export sealed (Collectr)\" — alongside the ManaBox export, so cards and sealed can each be taken out to Collectr as their own file.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collectr_export_menu_links.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-123",
+          "tier": "T3",
+          "statement": "collectr_import_commit_both_sides: After previewing a Collectr export, when I click Import the matched single cards and sealed products are both committed, and I see a confirmation banner reporting how many cards and how many sealed products were added (with the non-Pokémon rows counted as skipped) and a link to view the card batch.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collectr_import_commit_both_sides.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-124",
+          "tier": "T3",
+          "statement": "collectr_import_format_option: When I open the CSV Import page and choose \"Collectr\" from the Format dropdown, I see a note explaining that a Collectr export mixes single cards and sealed products and that they'll be imported separately, with non-Pokémon rows skipped.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collectr_import_format_option.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-125",
+          "tier": "T3",
+          "statement": "collectr_import_split_preview: When I paste a Collectr export that mixes single cards, sealed products, and a non-Pokémon row and click Preview, the result is shown as three separate sections — Single cards, Sealed products, and Skipped — each reporting its own matched/unmatched counts.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/collectr_import_split_preview.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-126",
+          "tier": "T3",
+          "statement": "csv_import_assign_to_deck: After previewing a ManaBox CSV on the CSV Import page, I click \"Import\" to commit.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-127",
+          "tier": "T3",
+          "statement": "csv_import_batch_metadata_in_commit: On the CSV Import page, I choose the ManaBox format, paste a valid CSV, click \"Preview\" to see the resolution report, and click \"Import\" to commit.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-128",
+          "tier": "T3",
+          "statement": "csv_import_cancel_after_resolve: After previewing a CSV on the CSV Import page, I edit the paste textarea.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-129",
+          "tier": "T3",
+          "statement": "csv_import_commit_to_collection: After previewing a ManaBox CSV on the CSV Import page, I click \"Import\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-130",
+          "tier": "T3",
+          "statement": "csv_import_failed_cards_display: When I preview a ManaBox CSV that mixes valid cards with rows that cannot be resolved, the preview summary shows both a matched count and an unmatched count.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-131",
+          "tier": "T3",
+          "statement": "csv_import_page_structure: When I navigate to the CSV Import page, I see the correct initial state: the \"Import CSV\" heading, a Format select offering ManaBox and TCGplayer, a \"CSV file\" file input, a \"…or paste CSV text\" textarea, and \"Preview\" and \"Import\" buttons that are both disabled until content and a preview exist.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-132",
+          "tier": "T3",
+          "statement": "csv_import_parse_and_resolve_decklist: I paste a ManaBox CSV into the CSV Import textarea and click \"Preview\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-133",
+          "tier": "T3",
+          "statement": "csv_import_parse_empty_input: When I navigate to the CSV Import page without supplying a file or pasting any text, the \"Preview\" button stays disabled, so no preview request can be made.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-134",
+          "tier": "T3",
+          "statement": "csv_import_with_batch_metadata: When I visit the CSV Import page, the Format select offers both ManaBox and TCGplayer parsers.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-135",
+          "tier": "T3",
+          "statement": "deck_builder_add_and_remove_cards: On a deck's detail page, I can click \"+ Add cards\" to open the collection picker modal.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-136",
+          "tier": "T3",
+          "statement": "deck_builder_create_and_view: After creating a deck from the /decks create form, I can open its tile to reach the deck detail page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-137",
+          "tier": "T3",
+          "statement": "deck_builder_homepage_nav_link: I can see a \"Decks\" link in the homepage navigation.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-138",
+          "tier": "T3",
+          "statement": "deck_builder_page_initial_state: When I navigate to /decks, I see a \"Decks\" heading, the inline create form with a \"New deck name…\" text input and an \"Owner (optional)\" text input, and a \"Create\" submit button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-139",
+          "tier": "T3",
+          "statement": "deck_builder_swap_unavailable_built: When viewing a built deck (cards mapped to physical collection entries), the swap button (⇄) does not appear on card rows.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-140",
+          "tier": "T3",
+          "statement": "deck_builder_swap_variant_execution: In the swap variant modal, I click on a different variant of the same card.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-141",
+          "tier": "T3",
+          "statement": "deck_builder_swap_variant_modal: When viewing an idea deck's card table, I hover over a card row to reveal the swap button (⇄).",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-142",
+          "tier": "T3",
+          "statement": "deck_create_redirects_to_detail: When I create a new deck from the /decks page by filling in the name and owner in the inline create form and clicking \"Create\", the deck appears in the grid as a tile.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-143",
+          "tier": "T3",
+          "statement": "deck_detail_add_cards_from_collection: When I navigate to deck 2 (Pikachu ex Aggro) at /decks/2 and click \"+ Add cards\", the collection picker modal opens with a search field.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-144",
+          "tier": "T3",
+          "statement": "deck_detail_add_cards_hides_assigned: When I navigate to deck 2 (Pikachu ex Aggro) at /decks/2 and open the \"+ Add cards\" picker, the picker lists collection copies as checkbox rows.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-145",
+          "tier": "T3",
+          "statement": "deck_detail_add_individual_copy: When I navigate to deck 2 (Pikachu ex Aggro) at /decks/2 and click \"+ Add cards\", the picker modal opens.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-146",
+          "tier": "T3",
+          "statement": "deck_detail_card_links_to_card_page: When I view a deck's detail page and click a card's name in the card table, the browser navigates to that card's detail page at /card/:set/:number, where I see that card's image and details.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-147",
+          "tier": "T3",
+          "statement": "deck_detail_card_row_opens_modal: When I view a deck's card table on the detail page and click on a card row (not on the name link or the \"Remove\" link), a card detail modal opens showing the card image and a details panel.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-148",
+          "tier": "T3",
+          "statement": "deck_detail_delete_redirects_to_list: When I open a deck's detail page and click the \"Delete deck\" button, a confirmation dialog appears noting the cards stay in the collection.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-149",
+          "tier": "T3",
+          "statement": "deck_detail_direct_navigation: I can navigate directly to a deck's detail page at /decks/:id.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-150",
+          "tier": "T3",
+          "statement": "deck_detail_edit_properties: When I navigate to deck 2 (Pikachu ex Aggro) and use the \"Lifecycle\" select in the header to change the deck's state from \"ready\" to \"built\", the change is saved and the deck reloads showing the new state.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-151",
+          "tier": "T3",
+          "statement": "deck_detail_list_view_no_overflow: When I view a deck's detail page, the supertype-grouped card table fits entirely within the viewport.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-152",
+          "tier": "T3",
+          "statement": "deck_detail_rich_card_table: When I view a deck's detail page, the card table displays content in each row: the card name (linking to the card detail page), the set, the collector number, the variant, and the condition.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-153",
+          "tier": "T3",
+          "statement": "deck_detail_select_and_remove_cards: When I navigate to deck 1 (Charizard ex Control) and click the \"Remove\" link on each card row, the cards are un-assigned from the deck one by one.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-154",
+          "tier": "T3",
+          "statement": "deck_list_links_to_standalone_detail: When I visit the decks list page at /decks, each deck is rendered as a clickable tile that links to /decks/:id.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-155",
+          "tier": "T3",
+          "statement": "decks_create_and_add_cards: I can create a new deck with a name and owner, see it in the deck list, open it to see an empty card list, and add cards to it from my collection.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-156",
+          "tier": "T3",
+          "statement": "decks_create_minimal: When I enter only a deck name in the create form (the sole required field), leave the owner field blank, and click \"Create\", the deck is created and appears in the deck grid.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-157",
+          "tier": "T3",
+          "statement": "decks_create_modal_backdrop_close: When I open the \"+ Add cards\" picker modal on a deck detail page and dismiss it with the \"×\" button without selecting anything, the modal closes and the deck's card table is unchanged.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-158",
+          "tier": "T3",
+          "statement": "decks_create_modal_opens: When I open a deck's detail page and click \"+ Add cards\", the CollectionPicker modal opens titled \"Add cards to {deck name}\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-159",
+          "tier": "T3",
+          "statement": "decks_create_modal_validation: When I click \"Create\" on the deck create form without entering a name, nothing happens — the whitespace/empty name is silently ignored and no deck is created.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-160",
+          "tier": "T3",
+          "statement": "decks_delete_keeps_cards: When I delete the deck Charizard ex Control, its cards remain in my collection.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-161",
+          "tier": "T3",
+          "statement": "decks_exclusivity_enforcement: A copy of Charizard ex that is assigned to deck Charizard ex Control can be moved to binder Trade Binder from the card detail modal.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-162",
+          "tier": "T3",
+          "statement": "decks_list_card_content: When I visit /decks with existing decks, each deck tile in the grid displays the deck name as a heading, a lifecycle state badge (e.g.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-163",
+          "tier": "T3",
+          "statement": "decks_list_empty_state: When I visit /decks on an instance with no decks, I see the message \"No decks yet.\" instead of a deck grid, with a line explaining what a deck is and to name one above.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-164",
+          "tier": "T3",
+          "statement": "decks_manage_from_card_modal: I can assign an unassigned copy to a deck from the card detail modal's Copies section.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-165",
+          "tier": "T3",
+          "statement": "edit_order_inline_edit_card: On the EBAY-55012 order detail page, the one card row shows Status ordered and the header offers a \"Receive 1 card(s)\" button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-166",
+          "tier": "T3",
+          "statement": "edit_order_load_and_view: When I open the detail page for the received TCG-100001 order, I see a header with the title \"{source} · {seller}\" and a sub-line showing the order number, date, card count, and money-formatted total.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-167",
+          "tier": "T3",
+          "statement": "edit_order_remove_card: On the EBAY-55012 order detail page the header shows a \"Receive 1 card(s)\" button because exactly one of the order's cards still has status ordered.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-168",
+          "tier": "T3",
+          "statement": "edit_order_replace_card: On the TCG-100001 order detail page, each card row's Name cell is a link.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-169",
+          "tier": "T3",
+          "statement": "edit_order_save_metadata: When I open the TCG-100001 order detail — an order whose three cards are all already owned — the header shows no \"Receive\" button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-170",
+          "tier": "T3",
+          "statement": "homepage_image_display_setting: When I navigate away from the homepage to another section and then click the red \"PokeDumpster\" brand link in the header, the browser returns to the homepage and the title heading and description are shown again.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-171",
+          "tier": "T3",
+          "statement": "homepage_nav_links_analysis_and_addcards: When I click each of the remaining links in the global header (Browse, Wishlist, Orders, Recent, Import), each navigates to the correct destination page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-172",
+          "tier": "T3",
+          "statement": "homepage_nav_links_collection: When I click each collection-related link in the global header (Collection, Binders, Decks, Sealed), the browser navigates to the correct destination page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-173",
+          "tier": "T3",
+          "statement": "homepage_page_structure: When I visit the homepage, I can see the \"PokeDumpster\" title heading, a one-line description telling me to choose a section from the navigation, and the global header with its full set of navigation links.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-174",
+          "tier": "T3",
+          "statement": "homepage_price_source_setting: When I navigate away from the homepage to another section and then click the \"Home\" link in the global navigation, the browser returns to the homepage and the title heading and description are shown again.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-175",
+          "tier": "T3",
+          "statement": "homepage_recent_badge_absent_when_idle: When I visit the homepage, the \"Recent\" link in the global navigation is a plain text link with no count or status badge next to it, and clicking it navigates to the Recent page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-176",
+          "tier": "T3",
+          "statement": "manual_id_add_and_resolve: I can manually enter cards by set code and collector number on the Manual Entry page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-177",
+          "tier": "T3",
+          "statement": "manual_id_cancel_after_resolve: After looking up a card on the Manual Entry page, I change the set code and number and click \"Look up\" again.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-178",
+          "tier": "T3",
+          "statement": "manual_id_failed_resolution: When I enter an invalid set code or collector number and click \"Look up\", a red inline error line appears and no resolved-card section is shown.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-179",
+          "tier": "T3",
+          "statement": "manual_id_foil_toggle_in_results: After looking up a card on the Manual Entry page, the variants table lists each variant of the card with its own \"+ Add\" button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-180",
+          "tier": "T3",
+          "statement": "manual_id_keyboard_rapid_entry: I can rapidly look up cards using the keyboard: type a set code in the Set code input, type a collector number in the Number input, and press Enter to submit the lookup without clicking the button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-181",
+          "tier": "T3",
+          "statement": "manual_id_page_initial_state: When I navigate to the Manual Entry page, I see the correct initial state: the \"Manual entry\" heading, a lookup form with a \"Set code\" input, a \"Number\" input, and a \"Condition\" select, plus a \"Look up\" button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-182",
+          "tier": "T3",
+          "statement": "manual_id_rarity_mismatch: When I click \"Look up\" with a blank set code or a blank collector number, an inline error line reads \"Enter a set code and collector number.\" and no request is sent.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-183",
+          "tier": "T3",
+          "statement": "manual_id_remove_entry: After looking up a card and clicking \"+ Add\" on a variant, a \"This session\" log appears listing the added card as \"Added {name} · {variant} · {condition}\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-184",
+          "tier": "T3",
+          "statement": "manual_id_resolve_and_commit: I look up a known fixture card by set code and number, choose a condition from the Condition select, and click \"+ Add\" on a variant.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-185",
+          "tier": "T3",
+          "statement": "order_assign_to_deck: After I look up a card line on the Import order page, the line shows a variant dropdown defaulted to the card's first printing.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-186",
+          "tier": "T3",
+          "statement": "order_cancel_after_resolve: After I add and resolve a card line on the Import order page, I click that line's \"✕\" remove button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-187",
+          "tier": "T3",
+          "statement": "order_commit_ordered_guidance: When I resolve a card line and click \"Commit order\", the app creates the order and navigates to /orders/{id}.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-188",
+          "tier": "T3",
+          "statement": "order_import_parse_and_review: I can paste order text into the Import order page, click Parse, and see the recognized lines appended to the Cards section.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-189",
+          "tier": "T3",
+          "statement": "order_import_unresolved_cards: When I add a card line, enter a set and number that do not exist in the catalog, and click that line's \"Look up\" button, the lookup fails: a red per-line error message appears under the line, the line gets no green border, and it does not count toward the ready total.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-190",
+          "tier": "T3",
+          "statement": "order_no_input_error: When I click \"Commit order\" on the Import order page without resolving any card line, a validation message \"Resolve at least one line (look up its card) before committing.\" appears and no order is created.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-191",
+          "tier": "T3",
+          "statement": "order_no_orders_found: When I paste random text that is not a recognized order format into the paste textarea and click Parse, the regex matches nothing, no card lines are appended, and the \"No cards on this order yet.\" empty message still shows.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-192",
+          "tier": "T3",
+          "statement": "order_page_initial_state: When I navigate to the Import order page, I see the correct initial state: an \"Import order\" heading, an order-metadata section with a Source select (tcgplayer, ebay, pokemoncenter, lgs, other) and Seller, Order date, Total, and Notes inputs, a paste textarea with a Parse button, a \"Cards (0/0 ready)\" header with a \"+ Add line\" button, the \"No cards on this order yet.\" empty state, and a disabled \"Commit order\" button.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-193",
+          "tier": "T3",
+          "statement": "order_parse_and_commit: I paste valid order text into the Import order page and click Parse, which appends the card lines.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-194",
+          "tier": "T3",
+          "statement": "order_status_toggle: On the Import order page I can pick a different value from the Source dropdown.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-195",
+          "tier": "T3",
+          "statement": "orders_list_pending_summary_and_badge: When I navigate to /orders I can see every imported order in the table.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-196",
+          "tier": "T3",
+          "statement": "orders_receive_all_from_list_row: When I open the EBAY-55012 order detail and click its \"Receive 1 card(s)\" button, the one still-pending card is bulk-flipped from ordered to owned.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-197",
+          "tier": "T3",
+          "statement": "recent_accordion_open_close: On the Recent page, I click a batch row to expand it.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-198",
+          "tier": "T3",
+          "statement": "recent_assign_target_dropdown: On the Recent page, when I expand a batch and click a card's name link inside the indented card list, I navigate to that card's detail page at /card/{set}/{number}.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-199",
+          "tier": "T3",
+          "statement": "recent_batch_ingest: On the Recent page, the \"ManaBox export 2024-01\" CSV import batch appears in the timeline with its \"4 cards\" count.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-200",
+          "tier": "T3",
+          "statement": "recent_card_status_borders: On the Recent page, when I expand a batch the indented card list shows each card with a name link and a meta line reading \"{set_code} · {variant} · {status}\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-201",
+          "tier": "T3",
+          "statement": "recent_column_adjust: On the Recent page, the first time I expand a batch its cards are fetched and shown.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-202",
+          "tier": "T3",
+          "statement": "recent_empty_state: When the user has no ingestion batches, the Recent page shows the \"Recent activity\" heading and instruction line but the timeline is replaced with a \"No activity yet.\" message.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-203",
+          "tier": "T3",
+          "statement": "recent_navigation_header: The global header includes a \"Recent\" navigation link.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-204",
+          "tier": "T3",
+          "statement": "recent_page_overview: When I navigate to the Recent page, I see an \"Recent activity\" heading and a muted instruction line telling me these are my most recent ingestion batches.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-205",
+          "tier": "T3",
+          "statement": "recent_status_summary_counts: On the Recent page, every batch row in the timeline shows how many cards that batch added as an \"{n} cards\" count in the row header.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-206",
+          "tier": "T3",
+          "statement": "recent_view_toggle: On the Recent page, expanding one batch row does not collapse another already-expanded batch — each row's expansion is tracked independently.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-207",
+          "tier": "T3",
+          "statement": "recents_single_card_ingest: When an order is received, PokeDumpster auto-creates an ingestion batch for it and registers one collection copy per card in the order.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-208",
+          "tier": "T3",
+          "statement": "sealed_add_and_table_view: I can add a Base Set Booster Box to my sealed collection and then see it in the sealed table.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-209",
+          "tier": "T3",
+          "statement": "sealed_default_filter_hides_opened: When I load the sealed collection page, only entries with status \"owned\" or \"listed\" are visible.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-210",
+          "tier": "T3",
+          "statement": "sealed_delete_entry: I can click the \"Remove\" link on a sealed product row, confirm the browser dialog, and the entry is removed.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-211",
+          "tier": "T3",
+          "statement": "sealed_dispose_entry: I can change the Status select on an owned sealed product row to \"sold\" and verify the row's status updates to \"sold\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-212",
+          "tier": "T3",
+          "statement": "sealed_disposed_entries_dimmed: When I check the \"Show opened / disposed\" checkbox on the sealed collection page, non-active entries appear in the table but are visually dimmed compared to owned entries.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-213",
+          "tier": "T3",
+          "statement": "sealed_edit_entry: I can change the Status select on a sealed product row from \"owned\" to \"listed\" and verify the updated status appears on the row after the table reloads.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-214",
+          "tier": "T3",
+          "statement": "sealed_multi_order_aggregation: When I add the same sealed product twice with different purchase prices, the sealed table shows both entries as separate rows for that product, each with its own quantity and paid price.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-215",
+          "tier": "T3",
+          "statement": "sealed_open_modal_navigation: I can open the add-sealed modal, search for a sealed product, see results appear, select a product to advance to the confirm step, then click \"← Back\" to return to the search results.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-216",
+          "tier": "T3",
+          "statement": "sealed_open_no_contents: When I type a single character into the add-sealed modal's search input, no results are requested or shown.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-217",
+          "tier": "T3",
+          "statement": "sealed_open_product: I can add a sealed product by clicking \"+ Add sealed\", searching for a product, selecting it to reach the confirm step, entering a purchase price, and clicking \"Add to collection\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-218",
+          "tier": "T3",
+          "statement": "sealed_open_second_product_no_refresh: After adding one sealed product via the \"+ Add sealed\" modal on the sealed collection page, I can click \"+ Add sealed\" again and the modal reopens in search mode with an empty search input — so I can search for and add a second product without needing a page refresh.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-219",
+          "tier": "T3",
+          "statement": "sealed_partial_dispose_qty: When I change the Status select on the Surging Sparks Booster Pack row (quantity 6) to \"opened\", the whole entry's status changes to \"opened\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-220",
+          "tier": "T3",
+          "statement": "sealed_search_and_filter: I can open the add-sealed modal and type \"151\" into the search input to see the 151 sealed products.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-221",
+          "tier": "T3",
+          "statement": "set_value_filter_card_type_and_owned: On the Set Stats page for Base Set, the Completion card's \"Master set\" bar (owned variants / total variants) reads a different total than the \"Numbered set\" bar (owned cards / total cards), because commons carry both a normal and a reverse-holo variant.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-222",
+          "tier": "T3",
+          "statement": "set_value_filter_rarity: On the Set Stats page for 151, the \"Rarity split\" table's Hyper Rare row shows an Owned count of 1 — the Mew ex secret rare is registered in the collection — out of a Total of 1.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-223",
+          "tier": "T3",
+          "statement": "set_value_initial_state: When I load the Set Stats page for a set, I see the set name as the page heading with its series below, and a \"Binder view →\" link.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-224",
+          "tier": "T3",
+          "statement": "set_value_remove_set_pill: The Set Stats page re-fetches its analytics whenever the set route param changes.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-225",
+          "tier": "T3",
+          "statement": "set_value_select_set_and_analyze: From a set's binder browse page I click the \"Set stats →\" link and land on that set's Set Stats page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-226",
+          "tier": "T3",
+          "statement": "set_value_split_by_rarity: On the Set Stats page, the \"Rarity split\" card shows a table with one row per rarity in the set.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-227",
+          "tier": "T3",
+          "statement": "set_value_summary_stats: On the Set Stats page, the Completion card shows two labelled progress bars — \"Numbered set\" (owned cards / total cards) and \"Master set\" (owned variants / total variants) — each reading \"{owned} / {total} · {pct}%\".",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        },
+        {
+          "id": "UC-ui-228",
+          "tier": "T3",
+          "statement": "views_save_and_load: On the Collection page I can pick the saved view \"Vintage Holos\" from the Saved views dropdown in the sidebar.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

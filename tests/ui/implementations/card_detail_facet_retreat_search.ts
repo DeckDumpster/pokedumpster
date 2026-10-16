@@ -1,3 +1,5 @@
+// covers: UC-ui-069
+// tier: T3
 /**
  * Hand-written implementation for card_detail_facet_retreat_search.
  *

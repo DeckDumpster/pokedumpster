@@ -47,11 +47,14 @@
 	// sizes. The backend's `layout` (cards per page) derives from cols:
 	// always 3 rows per page so denser grids → bigger pages.
 	let cols = $state(Math.min(10, Math.max(1, urlNum('cols', 3))));
-	// 'binder' = image + pips only, mimics a physical binder page.
-	// 'card'   = adds a metadata footer (collector #, name, rarity, owned).
-	type ViewMode = 'binder' | 'card';
-	const initialView = (urlStr('view', 'binder') === 'card' ? 'card' : 'binder') as ViewMode;
-	let view = $state<ViewMode>(initialView);
+	// Landscape cards (BREAK, LEGEND, …) are turned into the portrait pocket
+	// by default, like a physical binder; unchecked shows them as printed.
+	let turnLandscape = $state(urlBool('turn', true));
+	let landscape = $state<Record<string, boolean>>({});
+	function noteShape(id: string, img: HTMLImageElement) {
+		const wide = img.naturalWidth > img.naturalHeight;
+		if (landscape[id] !== wide) landscape[id] = wide;
+	}
 	const layout = $derived(cols * 3);
 	let includeSecret = $state(urlBool('secret', true));
 	let includeSubset = $state(urlBool('subset', true));
@@ -256,7 +259,7 @@
 		set('sort', sort, 'number');
 		set('q', search, '');
 		set('missing', missingOnly ? '1' : '0', '0');
-		set('view', view, 'binder');
+		set('turn', turnLandscape ? '1' : '0', '1');
 		// Persist via goto(replaceState:true), NOT $app/navigation's
 		// replaceState. replaceState(url, …) only repaints the address bar;
 		// it stashes page.url.href (SvelteKit's *current* URL, still stale)
@@ -285,10 +288,10 @@
 		load();
 	});
 
-	// View mode is a pure UI choice — persist it in the URL but don't
-	// refetch the binder data when it flips.
+	// Turning landscape cards is a pure UI choice — persist it in the URL but
+	// don't refetch the binder data when it flips.
 	$effect(() => {
-		void view;
+		void turnLandscape;
 		syncUrl();
 	});
 
@@ -396,11 +399,6 @@
 	/** Whether the user owns at least one printing of this slot's card. */
 	function ownedAny(slot: BinderSlot): boolean {
 		return slot.printings.some((p) => p.owned_count > 0);
-	}
-
-	/** Total copies the user owns across all printings of this slot. */
-	function ownedTotal(slot: BinderSlot): number {
-		return slot.printings.reduce((s, p) => s + p.owned_count, 0);
 	}
 </script>
 
@@ -528,20 +526,10 @@
 				{@render sortBtn('number', '#')}
 				{@render sortBtn('price', 'Price')}
 			</Toolbar>
-			<!-- Binder view = image + pips only (mimics a physical binder).
-			     Card view = adds a metadata footer (#, name, rarity, owned). -->
-			<div class="viewtoggle" role="group" aria-label="View mode">
-				<button
-					class:active={view === 'binder'}
-					onclick={() => (view = 'binder')}
-					title="Binder view — image + variant pips only"
-				>Binder</button>
-				<button
-					class:active={view === 'card'}
-					onclick={() => (view = 'card')}
-					title="Card view — image + #, name, rarity, owned"
-				>Card</button>
-			</div>
+			<label class="turn">
+				<input type="checkbox" bind:checked={turnLandscape} />
+				Turn leaders and bases
+			</label>
 			<!-- Cards per row stepper. Pure UI choice (1..10) — page size
 			     derives from it (cols × 3 rows per page) so the backend's
 			     pagination stays consistent at 3 visible rows. -->
@@ -669,11 +657,8 @@
 							title={sectionLabel[slot.section]}
 						/>
 					{/if}
-					<!-- One colored pip per variant. In binder view pips sit alone
-					     below the image; in card view they share a row with the
-					     metadata (#, name, ×owned). The pip buttons live OUTSIDE
-					     the slot button so they don't produce nested-button
-					     invalid HTML. -->
+					<!-- One colored pip per variant. The pip buttons live OUTSIDE the
+					     slot button so they don't produce nested-button invalid HTML. -->
 					{#snippet pips(slot: BinderSlot)}
 						<div class="vchips">
 							{#each slot.printings
@@ -699,31 +684,24 @@
 					{/snippet}
 					<div class="slotwrap" class:missing={!ownedAny(slot)}>
 						<button class="slot" onclick={() => (selectedSlot = slot)}>
-							{#if slot.image_large}
-								<img src={slot.image_large} alt={slot.name} loading="lazy" />
-							{:else}
-								<div class="noart">{slot.name}</div>
-							{/if}
-						</button>
-						{#if view === 'card'}
-							<div class="meta">
-								<span class="num">#{slot.number}</span>
-								<span class="name" title={slot.name}>{slot.name}</span>
-								{#if ownedTotal(slot) > 0}
-									<span class="own" title="Owned copies">×{ownedTotal(slot)}</span>
+							<div class="art">
+								{#if slot.image_large}
+									<img
+										src={slot.image_large}
+										alt={slot.name}
+										loading="lazy"
+										class:turned={turnLandscape && landscape[slot.card_id]}
+										onload={(e) => noteShape(slot.card_id, e.currentTarget)}
+									/>
+								{:else}
+									<div class="noart">{slot.name}</div>
 								{/if}
-								{@render pips(slot)}
 							</div>
-							{#if slot.external_set}
-								<!-- Bundle slot: the underlying card lives in another set.
-								     Link out so the user can land on the home-set's binder. -->
-								<a class="extset" href="/browse/{slot.external_set.set_code}"
-									>{slot.external_set.name}</a
-								>
-							{/if}
-						{:else}
+						</button>
+						<div class="foot">
+							<span class="num">{slot.number}</span>
 							{@render pips(slot)}
-						{/if}
+						</div>
 					</div>
 				{/each}
 			</div>
@@ -780,7 +758,7 @@
 		exists to be that ancestor for the page's top-level rows. Never a bare
 		`:global(.controls)` — that leaks the rule to every route.
 
-		The segmented view toggle and the search field's clear-X are shapes the
+		The search field's clear-X are shapes the
 		primitive set does not have yet, and are shared verbatim with
 		/collection and /sealed; filed as pd-5fki rather than grown into a
 		private variant here.
@@ -877,33 +855,6 @@
 		position: relative;
 		display: flex;
 		align-items: center;
-	}
-	/* Binder/Card view-mode segmented control. */
-	.viewtoggle {
-		display: inline-flex;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		overflow: hidden;
-	}
-	.viewtoggle button {
-		background: var(--color-surface-panel);
-		border: none;
-		color: var(--color-text-subtle);
-		padding: var(--space-1) var(--space-2);
-		font: inherit;
-		font-size: var(--text-md);
-		cursor: pointer;
-		border-radius: 0;
-	}
-	.viewtoggle button + button {
-		border-left: 1px solid var(--color-border);
-	}
-	.viewtoggle button:hover {
-		color: var(--color-text);
-	}
-	.viewtoggle button.active {
-		background: var(--color-accent);
-		color: var(--color-on-accent);
 	}
 	/* Cards-per-row stepper. */
 	.cpr {
@@ -1017,15 +968,6 @@
 	.slotwrap.missing {
 		opacity: 0.82;
 	}
-	.slot img {
-		width: 100%;
-		display: block;
-		aspect-ratio: 5 / 7;
-		object-fit: contain;
-		/* Card images have transparent rounded corners — let the body
-		   color show through instead of painting black behind them. */
-		background: transparent;
-	}
 	.noart {
 		aspect-ratio: 5 / 7;
 		display: flex;
@@ -1036,54 +978,56 @@
 		padding: var(--space-2);
 		text-align: center;
 	}
-	/* 'Card view' metadata row: collector #, name, owned count, pips —
-	   all on one line. The pips snippet drops in at the right edge as
-	   a flex-end cluster so taller tiles still feel binder-like. */
-	.meta {
+	/* The art box is always 5:7, so every tile's image and footer sit at the
+	   same place whatever shape the card is. */
+	.art {
+		position: relative;
+		aspect-ratio: 5 / 7;
+		overflow: hidden;
+	}
+	.art img {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: contain;
+	}
+	/* A landscape card turned 90deg to fill the portrait pocket. */
+	.art img.turned {
+		inset: auto;
+		top: 50%;
+		left: 50%;
+		width: 140%;
+		height: auto;
+		aspect-ratio: 7 / 5;
+		transform: translate(-50%, -50%) rotate(90deg);
+	}
+	/* Collector number and pips: one line, never wraps, fixed height. */
+	.foot {
 		display: flex;
+		flex-wrap: nowrap;
 		align-items: center;
-		gap: var(--space-2);
-		font-size: var(--text-sm);
-		line-height: var(--leading-tight);
-		color: var(--color-text-muted);
+		justify-content: space-between;
+		gap: var(--space-1);
+		height: 24px;
+		overflow: hidden;
 		min-width: 0;
-	}
-	.meta .num {
+		font-size: var(--text-sm);
 		color: var(--color-text-subtle);
-		font-variant-numeric: tabular-nums;
-		flex-shrink: 0;
 	}
-	.meta .name {
-		color: var(--color-text);
+	.foot .num {
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		white-space: nowrap;
 		min-width: 0;
-		flex: 1;
+		flex: 0 1 auto;
 	}
-	.meta .own {
-		color: var(--color-success-text);
-		font-variant-numeric: tabular-nums;
-		font-weight: var(--weight-semibold);
-		flex-shrink: 0;
-	}
-	/* When pips share the meta row, anchor them to the right edge so
-	   the name column gets all available slack. */
-	.meta .vchips {
-		flex-shrink: 0;
-	}
-	.slotwrap.missing .meta .name,
-	.slotwrap.missing .meta .num {
-		color: var(--color-text-subtle);
-	}
-	/* Bundle-slot home-set link, sits under the meta row in card view. */
-	.extset {
-		font-size: var(--text-xs);
-		color: var(--color-text-subtle);
-		text-decoration: none;
-	}
-	.extset:hover {
-		color: var(--color-text-accent);
+	.turn {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		cursor: pointer;
 	}
 	/* Color-coded variant chips centered below the card. Empty (border-
 	   only) when unowned, filled with the variant's color when owned;
@@ -1094,11 +1038,15 @@
 		justify-content: center;
 		align-items: center;
 		gap: var(--space-1);
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
+		flex: 0 1 auto;
+		min-width: 0;
 	}
 	.vchip {
-		width: 20px;
-		height: 20px;
+		flex: 0 1 24px;
+		min-width: 6px;
+		width: 24px;
+		height: 24px;
 		border-radius: var(--radius-round);
 		border: 2px solid var(--c, var(--color-chart-unknown));
 		background: transparent;

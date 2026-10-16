@@ -1321,8 +1321,7 @@
 
 {#if colsOpen}
 	<div class="colsBackdrop" role="presentation" onclick={() => (colsOpen = false)}></div>
-{/if}
-<aside class="colsDrawer" class:open={colsOpen} data-testid="columns-drawer" aria-label="Columns" inert={!colsOpen}>
+<aside class="colsDrawer" data-testid="columns-drawer" aria-label="Columns">
 	<h3>Columns</h3>
 	<div class="pillgroup">
 		{#each TABLE_COLUMNS as c (c.key)}
@@ -1337,6 +1336,7 @@
 		{/each}
 	</div>
 </aside>
+{/if}
 
 {#if menuOpen}
 	<div
@@ -1840,7 +1840,7 @@
 	   controls drop under it. The cap stops it from stretching into a
 	   1920-wide trough that no query ever fills. */
 	.searchwrap {
-		flex: 1 1 0;
+		flex: 1 1 12rem;
 		min-width: 0;
 		position: relative;
 		display: flex;
@@ -2051,8 +2051,8 @@
 	.colsDrawer {
 		position: fixed;
 		top: 0;
-		right: -20rem;
-		width: 18.75rem;
+		right: 0;
+		width: min(18.75rem, 100vw);
 		height: 100vh;
 		overflow-y: auto;
 		z-index: 91;
@@ -2060,10 +2060,6 @@
 		background: var(--color-surface-panel);
 		border-left: 2px solid var(--color-border);
 		box-shadow: var(--shadow-lg);
-		transition: right 0.25s ease;
-	}
-	.colsDrawer.open {
-		right: 0;
 	}
 	.colsDrawer h3 {
 		margin: var(--space-0) var(--space-0) var(--space-2);

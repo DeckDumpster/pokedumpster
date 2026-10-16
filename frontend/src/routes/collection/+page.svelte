@@ -391,12 +391,14 @@
 	});
 	/** Card is the row's handle and cannot be switched off. */
 	const show = $derived(
-		Object.fromEntries(COLUMNS.map((c) => [c.key, enabledCols.includes(c.key)])) as Record<
+		Object.fromEntries(
+			COLUMNS.map((c) => [c.key, c.key === 'name' || enabledCols.includes(c.key)])
+		) as Record<
 			ColumnKey,
 			boolean
 		>
 	);
-	const visibleCols = $derived(COLUMNS.filter((c) => c.key === 'name' || show[c.key]));
+	const visibleCols = $derived(COLUMNS.filter((c) => show[c.key]));
 	/** The narrowest the table may be squeezed to before `.tableScroll`
 	    scrolls: the sum of the columns that are actually there. */
 	const tableMinWidth = $derived(
@@ -1315,7 +1317,7 @@
 							<label class="menuItem colitem">
 								<input
 									type="checkbox"
-									checked={c.key === 'name' || show[c.key]}
+									checked={show[c.key]}
 									disabled={c.key === 'name'}
 									onchange={() => toggleColumn(c.key)}
 								/>

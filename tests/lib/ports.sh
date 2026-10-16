@@ -40,7 +40,7 @@
 # the box. A gate holds its port for minutes, and any curl, podman pull or
 # unrelated process that opens a socket in the meantime can be handed the same
 # number; a listener bind against a live 4-tuple then fails EADDRINUSE. So take
-# a random port from OUTSIDE that range and confirm it is free (via `ss`, no Python). The window
+# a random port from OUTSIDE that range and confirm it is free (via /proc/net/tcp, no Python). The window
 # between the confirmation and the caller's own bind is unavoidable in shell,
 # but outside the ephemeral range nothing is going to wander into it.
 #
@@ -48,6 +48,17 @@
 # tests/tenants/handles.sh uses, `-p 127.0.0.1::8080` then read it back) is not:
 # tests/alarming/run.sh stops and starts its MinIO mid-run and every URL built
 # before that has to still work afterwards.
+# Local port (decimal) of every TCP socket in any state, from the kernel's own
+# tables. /proc needs no iproute2, which a slim CI image does not have.
+_local_ports_in_use() {
+	local f hex
+	for f in /proc/net/tcp /proc/net/tcp6; do
+		[[ -r $f ]] || continue
+		awk 'NR > 1 { n = split($2, a, ":"); print a[n] }' "$f" || return 1
+	done | while read -r hex; do echo $((16#$hex)); done
+	[[ -r /proc/net/tcp ]]
+}
+
 free_port() {
 	local eph_lo=32768 eph_hi=60999 used lo hi i port band
 	# The kernel's own answer to "which ports do I hand out unasked".
@@ -58,11 +69,10 @@ free_port() {
 	# state (listeners, established, TIME_WAIT), by local port. A failed `ss` is
 	# fatal rather than read as "nothing is in use" — the same trade
 	# tests/lib/objects.sh makes for an `mc ls` that died.
-	used="$(ss -Htan)" || {
-		echo "free_port: ss failed; cannot say which ports are in use" >&2
+	used="$(_local_ports_in_use)" || {
+		echo "free_port: cannot read /proc/net/tcp; cannot say which ports are in use" >&2
 		return 1
 	}
-	used="$(awk '{ n = split($4, a, ":"); print a[n] }' <<<"$used")"
 	# Above the ephemeral range by preference (61000-65535 on a default box),
 	# below it if some box has been configured to hand out everything up to
 	# 65535, and only then the whole unprivileged range — a narrow band beats no

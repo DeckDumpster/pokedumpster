@@ -74,7 +74,7 @@ timeout 5 nc -l "$PORT_A" &
 BIND_PID=$!
 BOUND=no
 for _ in $(seq 20); do
-	if grep -q ":${PORT_A}\$" <<<"$(ss -Htln | awk '{print $4}')"; then
+	if grep -qx "$PORT_A" <<<"$(_local_ports_in_use)"; then
 		BOUND=yes
 		break
 	fi
@@ -106,11 +106,11 @@ timeout 30 nc -l "$HELD" >/dev/null &
 LISTENER_PID=$!
 trap 'kill "$LISTENER_PID" 2>/dev/null; rm -f "$LISTENER_OUT"' EXIT
 for _ in $(seq 50); do
-	grep -q ":${HELD}\$" <<<"$(ss -Htln | awk '{print $4}')" && break
+	grep -qx "$HELD" <<<"$(_local_ports_in_use)" && break
 	sleep 0.1
 done
 check "the fixture is listening on a port" "yes" \
-	"$(grep -q ":${HELD}\$" <<<"$(ss -Htln | awk '{print $4}')" && echo yes || echo no)"
+	"$(grep -qx "$HELD" <<<"$(_local_ports_in_use)" && echo yes || echo no)"
 COLLISIONS=0
 for _ in $(seq 30); do
 	[[ "$(free_port)" == "$HELD" ]] && COLLISIONS=$((COLLISIONS + 1))

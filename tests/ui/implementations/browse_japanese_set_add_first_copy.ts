@@ -1,3 +1,5 @@
+// covers: UC-ui-024
+// tier: T3
 /**
  * Hand-written implementation for browse_japanese_set_add_first_copy.
  *

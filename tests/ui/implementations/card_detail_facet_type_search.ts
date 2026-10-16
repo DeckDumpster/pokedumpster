@@ -1,3 +1,5 @@
+// covers: UC-ui-070
+// tier: T3
 /**
  * Hand-written implementation for card_detail_facet_type_search.
  *

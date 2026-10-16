@@ -1,3 +1,5 @@
+// covers: UC-ui-065
+// tier: T3
 /**
  * Hand-written implementation for card_detail_facet_ability_search.
  *

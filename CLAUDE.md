@@ -2959,3 +2959,13 @@ artifact produced this bead's own first false finding.
   snapshots). To recover, follow `deploy/RESTORE.md` (or
   `deploy/restore-litestream.sh <instance>`). The schema init runs on first open
   and is a no-op against an already-shaped restored DB.
+
+### Use-case coverage
+
+`docs/test-plan/ui.toml` is the typed use-case catalogue (one `UC-ui-NNN` per intent in
+`tests/ui/intents/`), read by Spira's `test-plan`. A suite declares what it covers with a
+`covers: UC-…` line (`tests/ui/implementations/*.ts` do); `tests/ui/test_scenarios.ts`
+covers every intent whose file exists. `tests/plan/gate.sh` (lint tier) fails on a use case with
+no covering suite, one orphaned since `origin/master`, an intent with no catalogue row, or a
+stale `docs/test-plan/ui-coverage.{json,md}` (the per-intent report; `gate.sh --write`
+regenerates it). A new intent needs a `[[use_case]]` whose statement begins `<intent-name>: `.

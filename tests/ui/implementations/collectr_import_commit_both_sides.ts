@@ -1,3 +1,5 @@
+// covers: UC-ui-123
+// tier: T3
 /**
  * Hand-written implementation for collectr_import_commit_both_sides.
  *

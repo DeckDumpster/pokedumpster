@@ -1,3 +1,5 @@
+// covers: UC-ui-075
+// tier: T3
 /**
  * Hand-written implementation for card_detail_pokedex_search.
  *

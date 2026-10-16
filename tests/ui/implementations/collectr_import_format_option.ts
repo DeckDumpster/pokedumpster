@@ -1,3 +1,5 @@
+// covers: UC-ui-124
+// tier: T3
 /**
  * Hand-written implementation for collectr_import_format_option.
  *

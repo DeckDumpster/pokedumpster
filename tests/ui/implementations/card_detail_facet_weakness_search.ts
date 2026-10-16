@@ -1,3 +1,5 @@
+// covers: UC-ui-071
+// tier: T3
 /**
  * Hand-written implementation for card_detail_facet_weakness_search.
  *

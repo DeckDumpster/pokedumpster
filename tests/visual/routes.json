@@ -11,7 +11,7 @@
 	},
 
 	"unrepresented": {
-		"routes/bundles/[slug]/+page.svelte": "Redirect-only shim to /browse/[code] (pokedumpster-80q). It renders one line of placeholder text before navigating; the destination is already covered by browse-set."
+		"routes/bundles/[slug]/+page.svelte": "Redirect-only shim to /browse/[code] (pokedumpster-80q). It renders one line of placeholder text before navigating; the destination is /browse/[code]."
 	},
 
 	"routes": [
@@ -25,21 +25,6 @@
 			"id": "browse",
 			"path": "/browse",
 			"about": "Set index — the tile grid, incl. the synthesized-set badge"
-		},
-		{
-			"id": "browse-set",
-			"path": "/browse/sv3pt5",
-			"about": "Binder-page grid for 151 — the headline feature"
-		},
-		{
-			"id": "browse-set-vintage",
-			"path": "/browse/base1",
-			"about": "Binder page for a 1999 set — different rarity mix and pip states"
-		},
-		{
-			"id": "browse-set-japanese",
-			"path": "/browse/jp-23723",
-			"about": "Binder page for the Japanese set — the render a NULL printed_total and TCGCSV-only art produce: every card filed as base rather than as a secret rare, two print runs per slot, and one slot with no art at all (pd-zonm)"
 		},
 		{
 			"id": "browse-set-stats",

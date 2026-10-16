@@ -691,7 +691,7 @@
 										alt={slot.name}
 										loading="lazy"
 										class:turned={turnLandscape && landscape[slot.card_id]}
-										onload={(e) => noteShape(slot.card_id, e.currentTarget)}
+										onload={(e) => noteShape(slot.card_id, e.currentTarget as HTMLImageElement)}
 									/>
 								{:else}
 									<div class="noart">{slot.name}</div>

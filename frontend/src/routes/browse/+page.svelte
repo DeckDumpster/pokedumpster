@@ -351,7 +351,7 @@
 	   collapses to a horizontal chip row on narrow viewports. */
 	.layout {
 		display: grid;
-		grid-template-columns: 200px 1fr;
+		grid-template-columns: 200px minmax(0, 1fr);
 		gap: var(--space-5);
 		align-items: start;
 	}
@@ -567,10 +567,14 @@
 		margin-top: auto;
 	}
 
-	/* Mobile: sidebar becomes a horizontal scrollable chip row above the main. */
+	/* Mobile: the sidebar becomes a WRAPPING chip row above the main — never a
+	   sideways scroller. `minmax(0, 1fr)`, not `1fr`: a bare 1fr track's
+	   automatic minimum is its content's min-content, which would let any
+	   unbreakable run widen the whole page. Section titles and counts wrap,
+	   and tiles are two to a row at phone widths. */
 	@media (max-width: 720px) {
 		.layout {
-			grid-template-columns: 1fr;
+			grid-template-columns: minmax(0, 1fr);
 		}
 		.navcol {
 			position: static;
@@ -580,17 +584,36 @@
 		}
 		.navcol ul {
 			flex-direction: row;
-			overflow-x: auto;
+			flex-wrap: wrap;
 			gap: var(--space-1);
 		}
 		.navlink {
-			flex: 0 0 auto;
+			flex: 0 1 auto;
+			width: auto;
+			max-width: 100%;
 			padding: var(--space-1) var(--space-2);
 			border: 1px solid var(--color-border);
 			border-radius: var(--radius-pill);
 		}
+		.navlink .name {
+			white-space: normal;
+			overflow-wrap: anywhere;
+		}
 		.navlink .setn {
 			display: none;
+		}
+		.grouphdr {
+			flex-wrap: wrap;
+			min-width: 0;
+		}
+		.ghname,
+		.ghmeta {
+			min-width: 0;
+			overflow-wrap: anywhere;
+		}
+		.grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			column-gap: var(--space-2);
 		}
 	}
 </style>

@@ -1112,6 +1112,8 @@ if tier tenants; then
     # own image tag, container, port and temp dir — it does not touch the
     # instance started above.
 
+    step "Queueing: Tenant header — malformed 400 vs unknown 404 (pd-4g7c)"
+    pkdump_par_add tenant-header bash "$REPO_DIR/tests/tenants/handles.sh"
 
     # --- 9b. Key custody ----------------------------------------------------
     # Tenant-zone key custody in the SHIPPED image (pd-ulds). Two claims the

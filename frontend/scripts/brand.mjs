@@ -10,8 +10,11 @@ import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
+/** @typedef {{ tag: string, kind: string, a: Record<string, any> }} Shape */
+
+/** @param {string} svelte @returns {Shape[]} */
 export function shapes(svelte) {
-	const body = svelte.match(/<svg[\s\S]*?>([\s\S]*?)<\/svg>/)[1];
+	const body = /** @type {RegExpMatchArray} */ (svelte.match(/<svg[\s\S]*?>([\s\S]*?)<\/svg>/))[1];
 	return [...body.matchAll(/<(circle|line)\b([^>]*?)\/>/g)].map(([tag, kind, attrs]) => ({
 		tag: tag.replace(/\s+/g, ' '),
 		kind,
@@ -19,12 +22,14 @@ export function shapes(svelte) {
 	}));
 }
 
+/** @returns {{ crimson: string, ink: string }} */
 export function readTheme() {
 	const t = readFileSync(join(root, 'src/lib/styles/tokens.css'), 'utf8');
-	const hex = (n) => t.match(new RegExp(`--${n}:\\s*(#[0-9a-fA-F]{6})\\s*;`))[1];
+	const hex = (/** @type {string} */ n) => /** @type {RegExpMatchArray} */ (t.match(new RegExp(`--${n}:\\s*(#[0-9a-fA-F]{6})\\s*;`)))[1];
 	return { crimson: hex('pd-crimson-500'), ink: hex('pd-ink-800') };
 }
 
+/** @param {Shape[]} shapeList @param {string} crimson */
 export function svg(shapeList, crimson) {
 	const els = shapeList.map((s) => '\t' + s.tag.replace(/\s*\/>$/, ' />')).join('\n');
 	return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${crimson}" stroke-width="2">
@@ -35,9 +40,10 @@ ${els}
 `;
 }
 
-const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const rgb = (/** @type {string} */ h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 
 // Distance-field coverage of the mark at point (x,y) in the 24-unit box.
+/** @param {Shape[]} shapeList @param {number} x @param {number} y */
 function covered(shapeList, x, y) {
 	for (const { kind, a } of shapeList) {
 		const hw = (a['stroke-width'] ?? 2) / 2;
@@ -53,18 +59,19 @@ function covered(shapeList, x, y) {
 	return false;
 }
 
+/** @param {number} w @param {number} h @param {Buffer} rgba */
 function png(w, h, rgba) {
 	const crcT = Array.from({ length: 256 }, (_, n) => {
 		let c = n;
 		for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
 		return c >>> 0;
 	});
-	const crc = (b) => {
+	const crc = (/** @type {Uint8Array} */ b) => {
 		let c = 0xffffffff;
 		for (const x of b) c = crcT[(c ^ x) & 255] ^ (c >>> 8);
 		return (c ^ 0xffffffff) >>> 0;
 	};
-	const chunk = (type, data) => {
+	const chunk = (/** @type {string} */ type, /** @type {Buffer} */ data) => {
 		const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
 		const td = Buffer.concat([Buffer.from(type), data]);
 		const c = Buffer.alloc(4); c.writeUInt32BE(crc(td));
@@ -84,6 +91,7 @@ function png(w, h, rgba) {
 }
 
 // `pad` is the fraction of the canvas left empty on each side; `bg` null = transparent.
+/** @param {Shape[]} shapeList @param {number} size @param {{ fg: string, bg?: string | null, pad?: number }} opts */
 export function render(shapeList, size, { fg, bg = null, pad = 0 }) {
 	const SS = 8, out = Buffer.alloc(size * size * 4);
 	const scale = 24 / (size * (1 - 2 * pad));
@@ -127,6 +135,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 	for (const [p, buf] of Object.entries(files)) {
 		const full = join(root, p);
 		if (process.argv.includes('--check')) {
+			/** @type {Buffer | null} */
 			let cur = null;
 			try { cur = readFileSync(full); } catch {}
 			if (!cur || !cur.equals(buf)) { console.error(`stale: ${p}`); stale = true; }

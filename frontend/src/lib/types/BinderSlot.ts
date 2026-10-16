@@ -5,7 +5,11 @@ import type { SlotPrinting } from "./SlotPrinting";
 /**
  * One binder slot — a single card number and all its printings.
  */
-export type BinderSlot = { card_id: string, number: string, name: string, rarity: string | null, image_large: string | null, 
+export type BinderSlot = { card_id: string, number: string, name: string, rarity: string | null, 
+/**
+ * The rarity's colour bucket (`rarities.grp`), `None` for an unranked tier.
+ */
+rarity_grp: string | null, image_large: string | null, 
 /**
  * `base` | `secret` | `subset` | `promo`. Bundles use `base` for
  * every slot since they have no rarity-tier sections.

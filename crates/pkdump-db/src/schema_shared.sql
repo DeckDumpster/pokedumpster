@@ -137,7 +137,8 @@ CREATE TABLE IF NOT EXISTS variants (
     rank        INTEGER NOT NULL,           -- 3        (UI sort order, low first)
     color       TEXT NOT NULL,              -- '#e94560' (browse-slot chip pip)
     provenance  TEXT,                       -- human-readable origin
-    tiebreak    INTEGER NOT NULL DEFAULT 0  -- intra-rank sort key
+    tiebreak    INTEGER NOT NULL DEFAULT 0, -- intra-rank sort key
+    foil        INTEGER NOT NULL DEFAULT 0  -- 1 = a foil treatment (browse tile shimmers it)
 );
 
 CREATE TABLE IF NOT EXISTS printings (

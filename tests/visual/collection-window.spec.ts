@@ -488,10 +488,10 @@ for (const [width, height] of [
 		expect(Math.abs(logo - search)).toBeLessThanOrEqual(4);
 		expect(Math.abs(help - search)).toBeLessThanOrEqual(4);
 		const toggle = await top('[data-testid="view-grid"]');
-		const all = await top('[data-testid="all-cards-toggle"]');
+		const menu = await top('.topbar button[aria-label="Menu"]');
 		const status = await top('[data-testid="collection-count"]');
 		expect(Math.abs(toggle - status)).toBeLessThanOrEqual(4);
-		expect(Math.abs(all - status)).toBeLessThanOrEqual(4);
+		expect(Math.abs(menu - status)).toBeLessThanOrEqual(4);
 		expect(toggle).toBeGreaterThan(search + 10);
 		await page
 			.locator('.topbar')

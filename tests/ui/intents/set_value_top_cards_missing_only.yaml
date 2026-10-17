@@ -1,0 +1,10 @@
+# Scenario: Most valuable cards on the Set Stats page, with a Missing only toggle
+#
+# Related:
+#   pages: [set-stats]
+
+description: >
+  On the Set Stats page, a "Most valuable" card lists the set's ten most
+  valuable cards, highest per-card value first, each with a thumbnail, name,
+  number, rarity and price. Ticking "Missing only" re-renders the list with
+  only cards I own no printing of; unticking it brings the whole set back.

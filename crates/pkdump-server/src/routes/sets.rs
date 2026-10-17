@@ -13,7 +13,7 @@ use serde::Deserialize;
 use pkdump_db::DbError;
 use pkdump_db::binder::{self, BinderPage, BinderQuery, MissingExport};
 use pkdump_db::bundles;
-use pkdump_db::sets::{self, SetAnalytics, SetSummary};
+use pkdump_db::sets::{self, SetAnalytics, SetSummary, TopCard};
 
 use crate::{AppError, AppState, blocking};
 
@@ -23,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/sets", get(list))
         .route("/sets/{code}/binder", get(binder_page))
         .route("/sets/{code}/analytics", get(analytics))
+        .route("/sets/{code}/top-cards", get(top_cards))
         .route("/sets/{code}/tcg-export", get(tcg_export))
 }
 
@@ -51,6 +52,34 @@ async fn analytics(
     })
     .await?;
     Ok(Json(stats))
+}
+
+#[derive(Deserialize)]
+struct TopCardsParams {
+    /// How many cards to list (default 10, capped at 100).
+    n: Option<i64>,
+    /// Only cards the viewer owns no printing of.
+    missing: Option<bool>,
+}
+
+/// The set's most valuable cards. A bundle has no per-card value of its own
+/// (its slots are reprints priced in their home sets), so it answers an empty list.
+async fn top_cards(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+    Query(p): Query<TopCardsParams>,
+) -> Result<Json<Vec<TopCard>>, AppError> {
+    let n = p.n.unwrap_or(10).clamp(1, 100);
+    let missing = p.missing.unwrap_or(false);
+    let cards = blocking(&state, move |c| {
+        if bundles::is_bundle(c, &code)? {
+            return Ok(Vec::new());
+        }
+        sets::top_cards(c, &code, n, missing)?
+            .ok_or_else(|| DbError::NotFound(format!("set {code}")))
+    })
+    .await?;
+    Ok(Json(cards))
 }
 
 /// Every missing card in a set as TCGplayer Mass Entry lines. Bundles are

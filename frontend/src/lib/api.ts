@@ -10,6 +10,7 @@ import type { NewCopy } from './types/NewCopy';
 import type { CopyEdit } from './types/CopyEdit';
 import type { SetSummary } from './types/SetSummary';
 import type { SetAnalytics } from './types/SetAnalytics';
+import type { TopCard } from './types/TopCard';
 import type { BinderPage } from './types/BinderPage';
 import type { MissingExport } from './types/MissingExport';
 import type { Binder } from './types/Binder';
@@ -159,6 +160,12 @@ export const api = {
 	/** Analytical breakdown for one set: completion, rarity split, value. */
 	setAnalytics: (code: string) =>
 		getJson<SetAnalytics>(`/api/sets/${encodeURIComponent(code)}/analytics`),
+
+	/** The set's most valuable cards, optionally only those not yet owned. */
+	setTopCards: (code: string, n: number, missingOnly: boolean) =>
+		getJson<TopCard[]>(
+			`/api/sets/${encodeURIComponent(code)}/top-cards?n=${n}&missing=${missingOnly}`
+		),
 
 	/** A binder page for a set. */
 	binder: (setCode: string, params: Record<string, string | number | boolean>) => {

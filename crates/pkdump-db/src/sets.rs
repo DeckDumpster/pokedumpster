@@ -431,6 +431,77 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
     }))
 }
 
+/// One row of the stats page's "Most valuable" list.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct TopCard {
+    pub card_id: String,
+    pub number: String,
+    pub name: String,
+    pub rarity: Option<String>,
+    pub image_small: Option<String>,
+    /// The card's value: its cheapest priced printing, the same per-card
+    /// figure the set's full-set total sums.
+    pub price: f64,
+    /// The viewer owns at least one printing of the card.
+    pub owned: bool,
+    /// Letter-numbered chase cards ("TG01", "GG05") sit outside the
+    /// numbered set and count toward the master set only.
+    pub master_only: bool,
+}
+
+/// The `limit` most valuable cards of a set by per-card value (cheapest
+/// priced printing — the unit `analytics().market_value` sums), most
+/// valuable first. `missing_only` drops cards the viewer owns any printing of.
+/// Cards with no price are not ranked. `None` if no such set.
+pub fn top_cards(
+    conn: &Connection,
+    set_code: &str,
+    limit: i64,
+    missing_only: bool,
+) -> Result<Option<Vec<TopCard>>> {
+    let exists: i64 = conn.query_row(
+        "SELECT count(*) FROM sets WHERE set_code = ?1",
+        [set_code],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        return Ok(None);
+    }
+    let price_expr = crate::prices::MARKET_PRICE_EXPR;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT c.card_id, c.number, c.name, c.rarity, c.image_small, v.price, \
+                EXISTS (SELECT 1 FROM printings op \
+                          JOIN collection col ON col.printing_id = op.printing_id \
+                         WHERE op.card_id = c.card_id) AS owned, \
+                c.number NOT GLOB '[0-9]*' AS master_only \
+         FROM (SELECT p.card_id, MIN({price_expr}) AS price \
+                 FROM printings p JOIN cards c ON p.card_id = c.card_id \
+                WHERE c.set_code = ?1 AND p.deprecated_at IS NULL \
+                GROUP BY p.card_id) v \
+         JOIN cards c ON c.card_id = v.card_id \
+         WHERE v.price IS NOT NULL AND (?2 = 0 OR owned = 0) \
+         ORDER BY v.price DESC, c.number_sortable, c.card_id \
+         LIMIT ?3"
+    ))?;
+    let rows = stmt.query_map(
+        rusqlite::params![set_code, missing_only as i64, limit],
+        |r| {
+            Ok(TopCard {
+                card_id: r.get(0)?,
+                number: r.get(1)?,
+                name: r.get(2)?,
+                rarity: r.get(3)?,
+                image_small: r.get(4)?,
+                price: r.get(5)?,
+                owned: r.get(6)?,
+                master_only: r.get(7)?,
+            })
+        },
+    )?;
+    Ok(Some(rows.collect::<rusqlite::Result<_>>()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,5 +939,74 @@ mod tests {
         let a = analytics(&conn, "me55").unwrap().unwrap();
         assert_eq!(a.market_value, 6.0);
         assert_eq!(a.master_market_value, 6.0 + 6000.0 + 3700.0 + 50.0);
+    }
+
+    #[test]
+    fn top_cards_rank_by_per_card_value_and_missing_only_drops_owned() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series) VALUES ('t1', 'T', 'S')",
+                [],
+            )
+            .unwrap();
+            // (card, number, cheapest-printing price, dearer-printing price)
+            let cards = [
+                ("t1-1", "1", 5.0, 50.0),
+                ("t1-2", "2", 400.0, 900.0),
+                ("t1-3", "3", 20.0, 20.0),
+                ("t1-TG01", "TG01", 100.0, 100.0),
+            ];
+            let mut product = 100;
+            for (id, number, lo, hi) in cards {
+                c.execute(
+                    "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+                     VALUES (?1, 't1', ?2, 1, ?1, 'Rare')",
+                    rusqlite::params![id, number],
+                )
+                .unwrap();
+                for (variant, price) in [("normal", lo), ("reverse_holo", hi)] {
+                    product += 1;
+                    c.execute(
+                        "INSERT INTO printings \
+                           (printing_id, card_id, variant, tcgplayer_product_id, sub_type_name) \
+                         VALUES (?1, ?2, ?3, ?4, 'Normal')",
+                        rusqlite::params![format!("{id}-{variant}"), id, variant, product],
+                    )
+                    .unwrap();
+                    c.execute(
+                        "INSERT INTO prices \
+                           (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+                         VALUES (?1, 'Normal', 'tcgplayer', 'market', ?2, '2026-06-01')",
+                        rusqlite::params![product, price],
+                    )
+                    .unwrap();
+                }
+            }
+            crate::latest_prices::refresh_latest_prices(&c).unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+
+        let all = top_cards(&conn, "t1", 3, false).unwrap().unwrap();
+        let got: Vec<(&str, f64)> = all.iter().map(|t| (t.card_id.as_str(), t.price)).collect();
+        // Cheapest printing per card, highest first, limited to N.
+        assert_eq!(got, [("t1-2", 400.0), ("t1-TG01", 100.0), ("t1-3", 20.0)]);
+        assert!(all[1].master_only && !all[0].master_only);
+
+        // Own the top card (its dearer printing): it leaves the missing list.
+        conn.execute(
+            "INSERT INTO collection (printing_id, acquired_at, source) VALUES ('t1-2-reverse_holo', '2026-01-01', 'manual_id')",
+            [],
+        )
+        .unwrap();
+        let all = top_cards(&conn, "t1", 3, false).unwrap().unwrap();
+        assert!(all[0].owned);
+        let missing = top_cards(&conn, "t1", 3, true).unwrap().unwrap();
+        let ids: Vec<&str> = missing.iter().map(|t| t.card_id.as_str()).collect();
+        assert_eq!(ids, ["t1-TG01", "t1-3", "t1-1"]);
+
+        assert!(top_cards(&conn, "nope", 3, false).unwrap().is_none());
     }
 }

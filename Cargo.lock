@@ -3941,6 +3941,7 @@ dependencies = [
  "futures",
  "iceberg",
  "image",
+ "parquet 58.4.0",
  "pkdump-db",
  "pkdump-derive",
  "pkdump-ingest",
@@ -3951,6 +3952,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "uuid",
  "zstd",
 ]
 

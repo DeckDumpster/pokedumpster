@@ -39,6 +39,8 @@ rusqlite.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
+parquet = "58"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 # row_identical.rs pulls in pkdump-ingest/tests/support/mod.rs by path, which

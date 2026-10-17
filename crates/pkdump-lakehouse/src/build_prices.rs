@@ -6,16 +6,15 @@
 //! the Python's recorded output by `tests/prices_parity.rs`; both tables come from ONE read of
 //! the partition and carry the same `pkdump.raw-runs`, so they cannot be different nights.
 //!
-//! ## What differs from the Python, and why it is said out loud
+//! ## Replacing a day
 //!
-//! iceberg-rust 0.10 can append but not overwrite, so the Python's one-commit **replacement** of
-//! a day is not available. A day that already holds rows is REFUSED, before either table is
-//! written, rather than doubled. The nightly timer builds a new date and is unaffected; a
-//! rebuild of an existing date stays with the Python job until the kit's client grows the
-//! action. `--table` / `--sealed-table` are gone: the kit names exactly these two tables.
+//! A date that already holds rows is replaced in one Iceberg `overwrite` commit per table, as
+//! the Python job does (see [`replace`]). `--table` / `--sealed-table` are gone: the kit names
+//! exactly these two tables.
 
 #[path = "prices_core.rs"]
 mod prices_core;
+mod replace;
 
 use anyhow::{Context, bail};
 use clap::Parser;
@@ -117,44 +116,37 @@ async fn write(
     let cat = dumpster_kit_iceberg::open(&config).await?;
     let (prices_table, sealed_table) = prices::ensure_tables(&cat).await?;
 
-    // Both days checked before either is written: the client can only append, and a
-    // half-built night (prices in, sealed refused) is the one outcome worse than refusing.
-    for (name, table) in [("prices", &prices_table), ("sealed_prices", &sealed_table)] {
-        let existing = prices::count_day(table, observed).await?;
-        if existing > 0 {
-            bail!(
-                "catalog.{name} already holds {existing} row(s) for observed_date={observed}; \
-                 this client can only append, so refusing to double the day (replace it with \
-                 the Python lake job)"
-            );
-        }
-    }
-
+    // A day that already holds rows is REPLACED, as the Python job's overwrite does: one
+    // commit per table, the rows of that observed_date swapped for the new ones, every other
+    // day untouched. The first build of a date is the same call with nothing to remove.
+    let days = replace::days_since_epoch(observed)?;
     let sealed_provenance = {
         let mut p = provenance.clone();
         p.insert("pkdump.raw-products-runs".into(), product_runs.join(","));
         p
     };
+    let batch = replace::prices_batch(&prices_table, &rows, days)?;
     let n = rows.len();
-    prices::append_prices_day(
-        &cat,
-        prices_table,
-        observed,
-        &rows,
+    let replaced = replace::replace_day(
+        &config,
+        &prices_table,
+        days,
+        batch,
         provenance.clone().into_iter().collect(),
     )
     .await?;
-    println!("==> wrote {n} rows to catalog.prices");
+    println!("==> wrote {n} rows to catalog.prices (replaced {replaced})");
+    let batch = replace::sealed_batch(&sealed_table, &sealed, days)?;
     let m = sealed.len();
-    prices::append_sealed_day(
-        &cat,
-        sealed_table,
-        observed,
-        &sealed,
+    let replaced = replace::replace_day(
+        &config,
+        &sealed_table,
+        days,
+        batch,
         sealed_provenance.into_iter().collect(),
     )
     .await?;
-    println!("==> wrote {m} rows to catalog.sealed_prices");
+    println!("==> wrote {m} rows to catalog.sealed_prices (replaced {replaced})");
 
     println!(
         "    nessie commit {}   (ref {})",

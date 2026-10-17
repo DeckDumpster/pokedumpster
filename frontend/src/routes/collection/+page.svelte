@@ -1875,7 +1875,7 @@
 	   comes back here, where the content is. */
 	.content {
 		/* DeckDumpster's `.main` gutter: 4px all round, measured. */
-		padding: 4px 4px var(--space-10);
+		padding: var(--space-1) var(--space-1) var(--space-10);
 	}
 	.brand {
 		display: inline-flex;
@@ -2582,8 +2582,8 @@
 	/* Body cells carry deck's 2px vertical padding (`.collection-table td`);
 	   the thumbnail, not the padding, sets the row height. */
 	table.dd td {
-		padding-top: 2px;
-		padding-bottom: 2px;
+		padding-top: var(--space-0-5);
+		padding-bottom: var(--space-0-5);
 	}
 	/* One row height for every row, because the virtual scroller's geometry is
 	   arithmetic over a single one (pd-7z4o) — a row 3px out of step is a
@@ -2863,7 +2863,7 @@
 	   chooser. */
 	@media (max-width: 540px) {
 		.content {
-			padding: 4px 4px var(--space-8);
+			padding: var(--space-1) var(--space-1) var(--space-8);
 		}
 		table.dd {
 			font-size: var(--text-sm);
@@ -2898,11 +2898,7 @@
 		}
 		table.dd th,
 		table.dd td {
-			padding: 0.3rem 0.35rem;
-		}
-		table.dd td {
-			padding-top: 2px;
-			padding-bottom: 2px;
+			padding: var(--space-0-5) 0.35rem;
 		}
 	}
 </style>

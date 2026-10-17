@@ -3998,6 +3998,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pkdump-value-snapshots"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "chrono",
+ "clap",
+ "dumpster-kit-iceberg",
+ "futures",
+ "iceberg",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"

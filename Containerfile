@@ -81,7 +81,7 @@ COPY data/ data/
 # — it is both what is hashed and what is touched, and tests/deploy/run.sh
 # requires every COPY into this stage to appear in it.
 #
-# FOUR binaries, built in one invocation so they share the compile:
+# FIVE binaries, built in one invocation so they share the compile:
 #
 #   pkdump             the app. `serve` is the entrypoint; `data refresh` is
 #                      what the nightly LANDING unit runs. Reads no raw/.
@@ -97,6 +97,11 @@ COPY data/ data/
 #                      the same two reasons the shipper is — it needs the tenant
 #                      credentials and the master key, and neither belongs on a
 #                      process that answers requests.
+#   pkdump-value-snapshots  the per-tenant value snapshot (sp-4k7mxi.5): the Rust
+#                      form of pkdump-lake-value-snapshots, reading the lake
+#                      through the kit's Iceberg client. Offline; it holds no
+#                      lake write path and is run beside the Python job until
+#                      the timer is switched.
 #
 # They ship in ONE image deliberately, even though the whole point of the crate
 # split is that the halves can eventually run on different machines. The image
@@ -119,6 +124,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cargo build --release --locked --bin pkdump --bin pkdump-lake-derive \
         --bin pkdump-ship --bin pkdump-erase \
         --bin pkdump-lake-build-prices --bin pkdump-lake-verify-prices \
+        --bin pkdump-value-snapshots \
  && printf '%s\n' "$stamp" > target/.pkdump-source-stamp \
  && mkdir -p /out \
  && cp target/release/pkdump /out/pkdump \
@@ -126,7 +132,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cp target/release/pkdump-ship /out/pkdump-ship \
  && cp target/release/pkdump-erase /out/pkdump-erase \
  && cp target/release/pkdump-lake-build-prices /out/pkdump-lake-build-prices \
- && cp target/release/pkdump-lake-verify-prices /out/pkdump-lake-verify-prices
+ && cp target/release/pkdump-lake-verify-prices /out/pkdump-lake-verify-prices \
+ && cp target/release/pkdump-value-snapshots /out/pkdump-value-snapshots
 
 # Every image this build produces carries this label, stage images included.
 # It is what confines the orphan collection in deploy/image-lib.sh to layers
@@ -166,6 +173,7 @@ COPY --from=builder /out/pkdump-ship /usr/local/bin/pkdump-ship
 COPY --from=builder /out/pkdump-erase /usr/local/bin/pkdump-erase
 COPY --from=builder /out/pkdump-lake-build-prices /usr/local/bin/pkdump-lake-build-prices
 COPY --from=builder /out/pkdump-lake-verify-prices /usr/local/bin/pkdump-lake-verify-prices
+COPY --from=builder /out/pkdump-value-snapshots /usr/local/bin/pkdump-value-snapshots
 COPY --from=frontend /app/frontend/build /srv/pkdump/static
 
 # Catalog + per-user databases live on a mounted volume.

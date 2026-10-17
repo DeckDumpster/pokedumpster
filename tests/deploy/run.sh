@@ -3628,5 +3628,14 @@ check "a second deploy does not overwrite access.env" "1" \
 reset_store
 
 # ---------------------------------------------------------------------------
+# §20 (sp-090v9u): the Rust lake jobs read PKDUMP_LAKE_S3_PROFILE, the Python jobs
+# PKDUMP_LAKE_S3_BASE_PROFILE. Every wrapper that forwards the latter to a lake job
+# must also hand the former the same value, or the Rust job cannot sign.
+for w in prices value-snapshots nessie-backup; do
+	f="${REPO_DIR}/deploy/${w}.sh"
+	check "$w.sh forwards PKDUMP_LAKE_S3_PROFILE from the base profile" "1" 		"$(grep -c 'ENV_ARGS+=(-e "PKDUMP_LAKE_S3_PROFILE=${PKDUMP_LAKE_S3_BASE_PROFILE}")' "$f" || true)"
+done
+
+# ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

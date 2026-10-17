@@ -116,3 +116,66 @@ pkdump_lake_job_image_ensure() {
     fi
     podman tag "$prebuilt" "$tag"
 }
+
+# --- Which implementation the nightly jobs run (sp-utga27) ------------------
+#
+# build-prices, prices-age and value-snapshots exist twice: the Python jobs in the
+# lake image (`localhost/pkdump-lake:<inst>`) and their Rust twins in the APP image
+# (`localhost/pkdump:<inst>`), certified row for row against prod on 2026-10-17
+# (sp-4k7mxi.4/.5/.6). The Rust jobs are the default. `PKDUMP_LAKE_JOBS=python` in
+# ~/.config/pkdump/lake.env is the whole rollback: the Python image stays built and
+# the wrappers still use it for the catalog-answering probe either way. nessie-backup
+# and the roundtrip are NOT switched — they stay on Python until certified.
+pkdump_lake_jobs_runtime() {
+    case "${PKDUMP_LAKE_JOBS:-rust}" in
+    rust | python) printf '%s' "${PKDUMP_LAKE_JOBS:-rust}" ;;
+    *)
+        echo "PKDUMP_LAKE_JOBS=${PKDUMP_LAKE_JOBS} — expected 'rust' or 'python' (lake.env)" >&2
+        return 1
+        ;;
+    esac
+}
+
+# The image the Rust twins run from: the app image, which ships them.
+pkdump_lake_rust_image() {
+    printf '%s' "${PKDUMP_LAKE_RUST_IMAGE:-localhost/pkdump:${1}}"
+}
+
+# The Rust jobs read `raw/` through the AWS SDK's default chain, which knows
+# AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY and AWS_PROFILE but not the
+# PKDUMP_LAKE_S3_* static keys the Python jobs and the Iceberg catalog take. Where
+# lake.env gives static keys (the MinIO substrate), forward them under the SDK's
+# names too, or the raw read dies with "no credentials found in chain". Prod uses
+# the mounted role profile and sets no static keys, so this adds nothing there.
+# Appends to ENV_ARGS; an explicit AWS_ACCESS_KEY_ID in lake.env wins.
+pkdump_lake_rust_credential_env() {
+    if [ -n "${PKDUMP_LAKE_S3_ACCESS_KEY_ID:-}" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+        ENV_ARGS+=(-e "AWS_ACCESS_KEY_ID=${PKDUMP_LAKE_S3_ACCESS_KEY_ID}")
+    fi
+    if [ -n "${PKDUMP_LAKE_S3_SECRET_ACCESS_KEY:-}" ] && [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+        ENV_ARGS+=(-e "AWS_SECRET_ACCESS_KEY=${PKDUMP_LAKE_S3_SECRET_ACCESS_KEY}")
+    fi
+}
+
+# pkdump_lake_job_select <instance> <python-name> <rust-name>
+# Sets RUN_IMAGE, RUN_EP (podman args placing the binary) and RUN_CMD (the
+# program words that follow the image). The app image's ENTRYPOINT is
+# `pkdump serve`, so the Rust binary is named with --entrypoint.
+pkdump_lake_job_select() {
+    local rt
+    rt="$(pkdump_lake_jobs_runtime)" || return 1
+    if [ "$rt" = rust ]; then
+        RUN_IMAGE="$(pkdump_lake_rust_image "$1")"
+        RUN_EP=(--entrypoint "$3")
+        RUN_CMD=()
+        pkdump_lake_rust_credential_env
+        if ! podman image exists "$RUN_IMAGE" 2>/dev/null; then
+            echo "no app image ${RUN_IMAGE} to run ${3} from; deploy it (deploy/deploy.sh ${1}) or set PKDUMP_LAKE_JOBS=python in lake.env" >&2
+            return 1
+        fi
+    else
+        RUN_IMAGE="${JOB_IMAGE}"
+        RUN_EP=()
+        RUN_CMD=("$2")
+    fi
+}

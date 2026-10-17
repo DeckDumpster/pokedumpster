@@ -148,6 +148,10 @@
 					<span class="figlabel">Full set</span>
 				</div>
 				<div class="fig">
+					<span class="figval">{money(stats.master_market_value)}</span>
+					<span class="figlabel">Master set</span>
+				</div>
+				<div class="fig">
 					<span class="figval">{pct(stats.owned_value_unique, stats.market_value)}%</span>
 					<span class="figlabel">of set value</span>
 				</div>

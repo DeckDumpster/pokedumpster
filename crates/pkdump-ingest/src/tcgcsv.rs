@@ -791,6 +791,19 @@ pub(crate) fn synthesize_cards_for_group(
         )?;
         n += tx.changes() as usize;
 
+        // An upstream-sourced row (raw_json set) is never rewritten here,
+        // except for one disagreement: pokemontcg.io carries the chase cards
+        // TCGplayer calls "RGB Rare" as "Common" (or nothing). A source rarity
+        // more specific than Common is not defaulted away.
+        if let Some(r) = rarity.filter(|r| !r.eq_ignore_ascii_case("common")) {
+            tx.execute(
+                "UPDATE cards SET rarity = ?2 \
+                  WHERE card_id = ?1 AND raw_json IS NOT NULL \
+                    AND (rarity IS NULL OR rarity = 'Common')",
+                rusqlite::params![card_id, r],
+            )?;
+        }
+
         // Heal a synth-owned row whose image/rarity needs updating
         // (the canonical or fallback may have changed since last
         // refresh, or the previous run wrote a now-known-broken
@@ -2468,6 +2481,56 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rarity.as_deref(), Some("Promo"));
+    }
+
+    #[test]
+    fn an_rgb_rare_source_rarity_is_not_stored_as_common() {
+        let (_d, mut conn) = shared_db();
+        conn.execute(
+            "INSERT INTO sets (set_code, ptcgo_code, name, series) \
+             VALUES ('mep', 'MEP', 'ME Black Star Promos', 'Mega Evolution')",
+            [],
+        )
+        .unwrap();
+        // The upstream row (raw_json set) says Common; the synthesized one
+        // has no upstream at all. TCGplayer says RGB Rare for both.
+        conn.execute(
+            "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity, raw_json) \
+             VALUES ('mep-r', 'mep', 'r', 900000, 'Mew', 'Common', '{}')",
+            [],
+        )
+        .unwrap();
+        let products: Vec<TcgProduct> = [(717607, "R/RGB"), (717608, "G/RGB")]
+            .into_iter()
+            .map(|(id, number)| TcgProduct {
+                product_id: id,
+                group_id: 24451,
+                name: format!("Mew - {number}"),
+                image_url: None,
+                url: None,
+                image_count: 0,
+                extended_data: vec![
+                    ExtendedDatum {
+                        name: "Number".into(),
+                        value: number.into(),
+                    },
+                    ExtendedDatum {
+                        name: "Rarity".into(),
+                        value: "RGB Rare".into(),
+                    },
+                ],
+            })
+            .collect();
+        import_products(&mut conn, &products, "2026-10-17").unwrap();
+        synthesize_cards_for_group(&conn, 24451, "mep", None).unwrap();
+        for id in ["mep-r", "mep-g"] {
+            let rarity: Option<String> = conn
+                .query_row("SELECT rarity FROM cards WHERE card_id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(rarity.as_deref(), Some("RGB Rare"), "{id}");
+        }
     }
 
     #[test]

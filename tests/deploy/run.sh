@@ -2512,9 +2512,9 @@ check "the freshness check runs even when the build succeeded" "1" \
 # The date the jobs refuse to default from the clock is supplied by the
 # scheduler. UTC, because that is what a raw/ ingest_date partition is named in.
 check "the wrapper names today's UTC date to the build" "1" \
-	"$(grep -c -- "pkdump-lake-build-prices --ingest-date $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+	"$(grep -cE -- "pkdump-lake-build-prices( [^ ]+)? --ingest-date $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
 check "…and measures age against the same day" "1" \
-	"$(grep -c -- "pkdump-lake-prices-age --as-of $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+	"$(grep -cE -- "pkdump-lake-prices-age( [^ ]+)? --as-of $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
 # The decision this bead had to make, spelled into the command line: build the
 # day even when its landing run did not finish, and let the snapshot record it.
 check "the build is allowed an incomplete day" "1" \

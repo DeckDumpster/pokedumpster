@@ -239,6 +239,37 @@ wait_for_server() { # wait_for_server <seconds> -> prints the port, or fails
 	return 1
 }
 
+# Wait for a start that is EXPECTED to be refused, on the signal the refusal
+# emits rather than for the whole bound. A refusing server never answers, so
+# `wait_for_server N` could only ever say "no" by sitting out all N seconds
+# (twice in this gate); the refusal is in the journal within a second of the
+# start. Returns 0 on the refusal line, 1 if the server came up instead (the
+# failure under test), 2 if neither happened inside the bound. The journal is
+# read --since the start, so an earlier section's refusal cannot satisfy it.
+wait_refusal() { # wait_refusal <seconds> <since> <pattern>
+	local deadline=$((SECONDS + $1)) port
+	while ((SECONDS < deadline)); do
+		port=$(published_port)
+		if [[ -n "$port" ]] && curl -sf -o /dev/null "http://localhost:${port}/"; then
+			printf '%s' "$port"
+			return 1
+		fi
+		if journalctl --user -u "$SERVICE_NAME" --since "$2" --no-pager 2>/dev/null | grep -qF -- "$3"; then
+			return 0
+		fi
+		sleep 0.25
+	done
+	return 2
+}
+
+# Per-section timing, so the next person shortening this gate can see where its
+# minutes are (docs/ci-timing-2026-10-17.md, sp-e41bsi).
+LAP=$SECONDS
+lap() { # lap <section> — says how long the previous one took
+	echo "    [previous section $((SECONDS - LAP))s, run ${SECONDS}s] -> $1"
+	LAP=$SECONDS
+}
+
 echo "==> Schema-version container gate (instance '${INSTANCE}')"
 
 # Anything an interrupted previous run of THIS checkout left behind — and then
@@ -271,6 +302,7 @@ fi
 # verification that took prod down.
 
 echo ""
+lap "setup"
 echo "==> Building the image and seeding an UNVERSIONED data volume..."
 bash "$REPO_DIR/deploy/setup.sh" "$INSTANCE" --test >/dev/null
 
@@ -278,6 +310,7 @@ write_version "$CATALOG_DB" 0
 write_version "$COLLECTION_DB" 0
 
 echo ""
+lap "§1"
 echo "--- §1 Adoption: an unversioned volume boots and serves ---"
 check "catalog starts unversioned" "0" "$(read_version "$CATALOG_DB")"
 check "collection starts unversioned" "0" "$(read_version "$COLLECTION_DB")"
@@ -316,6 +349,7 @@ echo "        (catalog v${CATALOG_V}, collection v${COLLECTION_V})"
 AHEAD=$((COLLECTION_V + 1))
 
 echo ""
+lap "§2"
 echo "--- §2 Refusal: a collection from the future stops the server ---"
 write_version "$COLLECTION_DB" "$AHEAD"
 check "collection now claims a future version" "$AHEAD" "$(read_version "$COLLECTION_DB")"
@@ -323,10 +357,16 @@ check "collection now claims a future version" "$AHEAD" "$(read_version "$COLLEC
 # The unit is Restart=on-failure, so the container keeps retrying behind this.
 # `|| true` because `systemctl start` on a unit whose start job fails is itself
 # an error — which is the expected outcome here.
+SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 systemctl --user start "$SERVICE_NAME" 2>/dev/null || true
-if PORT=$(wait_for_server 20); then
+REFUSAL=0
+PORT=$(wait_refusal 60 "$SINCE" "refusing to open it") || REFUSAL=$?
+if ((REFUSAL == 1)); then
 	echo "  FAIL  server came up on port ${PORT} against a database from the future"
 	echo "        A rollback onto this volume would silently corrupt it."
+	fail=$((fail + 1))
+elif ((REFUSAL == 2)); then
+	echo "  FAIL  server neither refused nor served against a database from the future"
 	fail=$((fail + 1))
 else
 	echo "  PASS  server refused to serve"
@@ -365,6 +405,7 @@ check "the refused database is untouched" "$AHEAD" "$(read_version "$COLLECTION_
 # mean that check was wrong, and `created_id` says which handle and why.
 
 echo ""
+lap "§3"
 echo "--- §3 Reporting: tenant list names each user's own version ---"
 
 # Both run through the shipped image against the real volume, the same one-off
@@ -454,6 +495,7 @@ check "reporting left the current database alone" "$PROBE_V" \
 REGISTRY_DB=/data/registry.sqlite
 
 echo ""
+lap "§4"
 echo "--- §4 The registry is gated too: adoption ---"
 REGISTRY_V=$(read_version "$REGISTRY_DB")
 check "the registry carries a version at all" "stamped" \
@@ -471,6 +513,7 @@ contains "and its rows survived the adoption" "drift-probe" "$ADOPTED"
 check "and it comes out stamped" "$REGISTRY_V" "$(read_version "$REGISTRY_DB")"
 
 echo ""
+lap "§4"
 echo "--- §4 The registry is gated too: refusal ---"
 REGISTRY_AHEAD=$((REGISTRY_V + 1))
 write_version "$REGISTRY_DB" "$REGISTRY_AHEAD"
@@ -490,10 +533,16 @@ check "the refused registry is untouched" "$REGISTRY_AHEAD" "$(read_version "$RE
 # just the CLI. The collection is put back to a version this build accepts
 # first, so the refusal below can only be the registry's.
 write_version "$COLLECTION_DB" "$COLLECTION_V"
+SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 systemctl --user start "$SERVICE_NAME" 2>/dev/null || true
-if PORT=$(wait_for_server 20); then
+REFUSAL=0
+PORT=$(wait_refusal 60 "$SINCE" "tenant registry") || REFUSAL=$?
+if ((REFUSAL == 1)); then
 	echo "  FAIL  server came up on port ${PORT} against a registry from the future"
 	echo "        It would apply its own schema to the map of who owns what."
+	fail=$((fail + 1))
+elif ((REFUSAL == 2)); then
+	echo "  FAIL  server neither refused nor served against a registry from the future"
 	fail=$((fail + 1))
 else
 	echo "  PASS  server refused to serve"

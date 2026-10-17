@@ -1012,6 +1012,18 @@ if [ "$NEEDS_IMAGE" = yes ]; then
     pkdump_image_ensure "$BUILD_IMAGE" "$REPO_DIR"
     export PKDUMP_PREBUILT_IMAGE="$BUILD_IMAGE"
     echo "    ${BUILD_IMAGE} ($(podman image inspect --format '{{.Id}}' "$BUILD_IMAGE" | cut -c1-12))"
+
+    # Hand the tested image to the deploy (sp-0ypc3x). The workflow uploads this
+    # directory only after the whole suite is green, keyed by the tree hash, and
+    # deploy/ship-image.sh loads it on the prod host instead of compiling there.
+    # `image.id` is re-checked after `podman load`, so "prod runs the image the
+    # gate tested" is asserted rather than assumed.
+    if [ -n "${PKDUMP_CI_IMAGE_OUT:-}" ]; then
+        mkdir -p "$PKDUMP_CI_IMAGE_OUT"
+        podman image inspect --format '{{.Id}}' "$BUILD_IMAGE" > "$PKDUMP_CI_IMAGE_OUT/image.id"
+        podman save "$BUILD_IMAGE" | zstd -q -3 -T0 -o "$PKDUMP_CI_IMAGE_OUT/image.tar.zst"
+        echo "    exported to ${PKDUMP_CI_IMAGE_OUT} ($(du -h "$PKDUMP_CI_IMAGE_OUT/image.tar.zst" | cut -f1))"
+    fi
 else
     echo ""
     echo "==> (skipped: no selected tier needs the container image)"

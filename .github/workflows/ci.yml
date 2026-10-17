@@ -244,6 +244,27 @@ jobs:
       # skipped and why.
       - name: deploy/ci.sh
         run: bash deploy/ci.sh
+        env:
+          # The image this run tests is exported here for the deploy (sp-0ypc3x).
+          PKDUMP_CI_IMAGE_OUT: ${{ runner.temp }}/pkdump-image
+
+      # The tested image, keyed by TREE so the queue's merge commit finds the
+      # artifact its batch PR produced. Runs only when ci.sh succeeded (default
+      # `if: success()`): an artifact is a claim that the gate passed on it.
+      # deploy.yml loads it on the prod host rather than compiling there. Tiers
+      # that build no image (docs-only) leave nothing to upload.
+      - name: Name the tree this run tested
+        id: tree
+        run: echo "hash=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the tested image for the deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkdump-image-${{ steps.tree.outputs.hash }}
+          path: ${{ runner.temp }}/pkdump-image/
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 0
 
       # BELT AND BRACES: report this run as commit statuses, whatever triggered it.
       #

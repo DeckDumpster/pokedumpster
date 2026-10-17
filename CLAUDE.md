@@ -26,7 +26,7 @@ bd close <id>         # Complete work
 
 Run the CI tiers your change touches, before `work submit`:
 `testenv --suites <lint|rust|deploy|frontend|container|litestream|tenants|browser|schema|lake|refresh> spira/<bead> pokedumpster`
-(declared in `.spira/testenv.toml`, mirroring `deploy/ci.sh`; with no `--suites` it runs `lint` and `rust`).
+(declared in `.spira/testenv.toml`, mirroring `deploy/ci.sh`; with no `--suites` it runs `lint` alone; the rust tier is certified by forge CI, ask for it with `--suites rust`).
 Commit first: it tests the committed branch.
 
 ## Session Completion

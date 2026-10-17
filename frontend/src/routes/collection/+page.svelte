@@ -2534,7 +2534,7 @@
 		--col-cost: 6rem;
 		--col-rarity: 4.25rem;
 		--col-set: 4.25rem;
-		--col-number: 5.75rem;
+		--col-number: 3rem;
 		--col-price: 6.75rem;
 		/* Not a column width — the narrowest the flex column may be squeezed
 		   to before the table stops shrinking and `.tableScroll` scrolls
@@ -2905,11 +2905,11 @@
 			--col-sel: 1.75rem;
 			--col-qty: 2rem;
 			--col-class: 6rem;
-			--col-etype: 2.75rem;
+			--col-etype: 3.5rem;
 			--col-cost: 4.75rem;
 			--col-rarity: 3.25rem;
 			--col-set: 3.25rem;
-			--col-number: 4.5rem;
+			--col-number: 2.35rem;
 			--col-price: 5.5rem;
 			--col-name-min: 9rem;
 		}

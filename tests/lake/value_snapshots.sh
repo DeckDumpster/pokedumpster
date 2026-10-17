@@ -171,6 +171,21 @@ snapshot() {
 	run_job pkdump-lake-value-snapshots --data-dir /fixture/home "$@"
 }
 
+# The Rust form of the same transform (sp-4k7mxi.5), out of the SHIPPED image:
+# the same lake environment `run_job` hands the Python, the same mount.
+rust_snapshot() {
+	netrun podman run --rm --network "$NET" --pull=never \
+		-v "$FIXTURE:/fixture:Z" \
+		-e PKDUMP_LAKE_NESSIE_URI="http://${NESSIE_CTR}:19120/iceberg/" \
+		-e PKDUMP_LAKE_S3_BUCKET="$BUCKET" \
+		-e PKDUMP_LAKE_S3_REGION=us-west-2 \
+		-e PKDUMP_LAKE_S3_ENDPOINT="http://${MINIO_CTR}:9000" \
+		-e PKDUMP_LAKE_S3_ACCESS_KEY_ID="$AKID" \
+		-e PKDUMP_LAKE_S3_SECRET_ACCESS_KEY="$SECRET" \
+		-e PKDUMP_LAKE_S3_PATH_STYLE=1 \
+		--entrypoint pkdump-value-snapshots "$APP_IMAGE" --data-dir /fixture/home "$@"
+}
+
 # The shipper and the zone reader, out of the SHIPPED image — the master key
 # and the tenant profile, which the lake image above holds neither of and must
 # not. Same split as tests/lake/phase3.sh and deploy/ship.sh: the zone side is
@@ -406,6 +421,44 @@ ALICE_VALUE=$(tenant_query "$ALICE" "SELECT market_value FROM collection_value_s
 [ "$BOB_VALUE" != "$ALICE_VALUE" ] ||
 	die "bob and alice have the same total (${BOB_VALUE}) — one collection was valued twice"
 echo "    ok   bob ${BOB_ROWS} row(s), total ${BOB_VALUE} (alice ${ALICE_VALUE})"
+
+echo "==> §5a-rs  The Rust transform writes the Python's rows exactly"
+# sp-4k7mxi.5. The timer is not switched to the Rust job until it has been seen
+# to produce the rows the Python job produces, from the same lake, at the same
+# pinned commit. Stated the only way it can be across two languages: the
+# Python's rows are captured, DELETED, the Rust job is run, and its rows are
+# diffed as text. Deleting first is what makes the diff mean "Rust wrote these"
+# rather than "Rust left the Python's rows alone".
+PY_ALICE=$(dump "$ALICE" "$DATE_NEW")
+PY_BOB=$(dump "$BOB" "$DATE_NEW")
+[ -n "$PY_ALICE" ] && [ -n "$PY_BOB" ] || die "the Python run left no rows to compare against"
+for T in "$ALICE" "$BOB"; do
+	run_job python -c "
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1], isolation_level=None)
+conn.execute('DELETE FROM collection_value_snapshot WHERE date = ?', (sys.argv[2],))
+conn.execute('DELETE FROM collection_value_snapshot_run WHERE date = ?', (sys.argv[2],))
+" "/fixture/home/tenants/${T}.sqlite" "$DATE_NEW" || die "could not clear ${T}'s ${DATE_NEW} rows"
+done
+[ -z "$(dump "$ALICE" "$DATE_NEW")" ] || die "alice still has rows after the delete — the comparison would be vacuous"
+
+RS_RC=0
+RS_OUT=$(rust_snapshot --date "$DATE_NEW" 2>&1) || RS_RC=$?
+echo "$RS_OUT" | sed 's/^/    | /'
+[ "$RS_RC" -eq 2 ] || die "the Rust run exited ${RS_RC}, not 2 — ghost has no database, so it must skip exactly one tenant and say so"
+case "$RS_OUT" in
+*"ghost"*"SKIPPED"*) ;;
+*) die "the Rust run did not name the tenant it skipped" ;;
+esac
+[ "$(dump "$ALICE" "$DATE_NEW")" = "$PY_ALICE" ] ||
+	die "alice: the Rust transform's rows differ from the Python's"
+[ "$(dump "$BOB" "$DATE_NEW")" = "$PY_BOB" ] ||
+	die "bob: the Rust transform's rows differ from the Python's"
+RS_REF=$(tenant_query "$ALICE" "SELECT lake_ref FROM collection_value_snapshot_run WHERE date = '${DATE_NEW}'")
+case "$RS_REF" in
+*@*) echo "    ok   alice and bob row-identical to the Python job, derived from ${RS_REF}" ;;
+*) die "the Rust run recorded lake_ref='${RS_REF}' — a bare branch is not a version" ;;
+esac
 
 echo "==> §5b THE HARD GATE: sealed does not move the cards"
 # pd-bbv7. `dimension='all'` means the LOOSE CARDS and must keep meaning it to

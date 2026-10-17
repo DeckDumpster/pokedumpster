@@ -1,0 +1,29 @@
+[package]
+name = "pkdump-value-snapshots"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The per-tenant collection value snapshot, in Rust: catalog.prices read through the kit's Iceberg client, written into each tenant's own database"
+
+[[bin]]
+name = "pkdump-value-snapshots"
+path = "src/main.rs"
+
+[dependencies]
+dumpster-kit-iceberg.workspace = true
+iceberg.workspace = true
+arrow-array.workspace = true
+futures.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -38,6 +38,9 @@ env:
 jobs:
   deploy:
     runs-on: [self-hosted, deploy]
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Pull latest code
         run: git -C "$CHECKOUT" pull --ff-only origin ${{ github.ref_name }}
@@ -48,8 +51,12 @@ jobs:
         # Same class of bug as the shared CI instance name fixed in pd-yhzn.
         run: podman image prune -f --filter "until=24h"
 
-      - name: Build and restart
-        run: bash "$CHECKOUT/deploy/deploy.sh" "$INSTANCE"
+      # Ships the image CI built and tested for this tree; nothing compiles on
+      # the prod host (sp-0ypc3x). See deploy/ship-image.sh.
+      - name: Load the tested image and restart
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash "$CHECKOUT/deploy/ship-image.sh" "$INSTANCE" "${{ github.sha }}" "${{ github.event.before }}"
 
       - name: Health check
         # A deploy that starts a broken image must fail loudly. Without this the

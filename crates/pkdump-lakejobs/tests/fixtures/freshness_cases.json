@@ -1,0 +1,50 @@
+[
+ {
+  "newest": "2026-08-13",
+  "stdout": "==> catalog.prices at main: newest partition vs 2026-08-13\n    newest observed_date=2026-08-13 (0 day(s) behind 2026-08-13)\nprices-age: FRESH \u2014 catalog.prices is 0 day(s) behind (limit 2)\n",
+  "stderr": "",
+  "code": 0
+ },
+ {
+  "newest": "2026-08-12",
+  "stdout": "==> catalog.prices at main: newest partition vs 2026-08-13\n    newest observed_date=2026-08-12 (1 day(s) behind 2026-08-13)\nprices-age: FRESH \u2014 catalog.prices is 1 day(s) behind (limit 2)\n",
+  "stderr": "",
+  "code": 0
+ },
+ {
+  "newest": "2026-08-11",
+  "stdout": "==> catalog.prices at main: newest partition vs 2026-08-13\n    newest observed_date=2026-08-11 (2 day(s) behind 2026-08-13)\nprices-age: FRESH \u2014 catalog.prices is 2 day(s) behind (limit 2)\n",
+  "stderr": "",
+  "code": 0
+ },
+ {
+  "newest": "2026-08-10",
+  "stdout": "==> catalog.prices at main: newest partition vs 2026-08-13\n    newest observed_date=2026-08-10 (3 day(s) behind 2026-08-13)\n",
+  "stderr": "prices-age: STALE \u2014 the newest catalog.prices partition is 2026-08-10, 3 days behind 2026-08-13 (limit 2). Collections are still being valued nightly, from prices that stopped arriving.\n",
+  "code": 3
+ },
+ {
+  "newest": "2026-08-03",
+  "stdout": "==> catalog.prices at main: newest partition vs 2026-08-13\n    newest observed_date=2026-08-03 (10 day(s) behind 2026-08-13)\n",
+  "stderr": "prices-age: STALE \u2014 the newest catalog.prices partition is 2026-08-03, 10 days behind 2026-08-13 (limit 2). Collections are still being valued nightly, from prices that stopped arriving.\n",
+  "code": 3
+ },
+ {
+  "newest": "2026-08-14",
+  "stdout": "==> catalog.prices at main: newest partition vs 2026-08-13\n    newest observed_date=2026-08-14 (-1 day(s) behind 2026-08-13)\nprices-age: FRESH \u2014 catalog.prices holds 2026-08-14, which is AFTER 2026-08-13. Nothing is stale; something dated a partition ahead of the caller.\n",
+  "stderr": "",
+  "code": 0
+ },
+ {
+  "newest": "none",
+  "stdout": "==> catalog.prices at main: newest partition vs 2026-08-13\n",
+  "stderr": "prices-age: STALE \u2014 catalog.prices at main holds no price partition at all\n",
+  "code": 3
+ },
+ {
+  "newest": "missing",
+  "stdout": "==> catalog.prices at main: newest partition vs 2026-08-13\n",
+  "stderr": "prices-age: STALE \u2014 there is no catalog.prices at main. Nothing has ever built it: bash deploy/prices.sh <instance> (deploy/LAKE.md \u00a76)\n",
+  "code": 3
+ }
+]

@@ -7,6 +7,7 @@ members = [
     "crates/pkdump-derive",
     "crates/pkdump-erase",
     "crates/pkdump-ingest",
+    "crates/pkdump-lakejobs",
     "crates/pkdump-lakehouse",
     "crates/pkdump-server",
     "crates/pkdump-ship",

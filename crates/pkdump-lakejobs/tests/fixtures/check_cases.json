@@ -1,0 +1,12 @@
+{
+ "fresh": {
+  "now": "2026-10-11T09:15:00+00:00",
+  "code": 0,
+  "why": "newest backup 20261011T071500Z is 2.0h old and verifies"
+ },
+ "stale": {
+  "now": "2026-10-13T09:15:00+00:00",
+  "code": 3,
+  "why": "newest backup 20261011T071500Z is 50.0h old (limit 26h)"
+ }
+}

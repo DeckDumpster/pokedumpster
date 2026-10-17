@@ -1,0 +1,24 @@
+{
+ "export": {
+  "bytes": 148,
+  "key": "nessie/20261011T071500Z/export.zip",
+  "sha256": "d6647a2efdcb7337cc7b84ab670d73e8451d08f4baec1b2796c4d31ed69cb82b"
+ },
+ "format": 1,
+ "id": "20261011T071500Z",
+ "nessie_version": "0.104.3",
+ "tables": [
+  {
+   "identifier": "catalog.prices",
+   "metadata_location": "s3://w/catalog/prices_0123456789abcdef0123456789abcdef/metadata/00003-aaaa.metadata.json",
+   "rows": 12,
+   "snapshot_id": 42
+  },
+  {
+   "identifier": "catalog.sealed_prices",
+   "metadata_location": "s3://w/catalog/sealed_prices_0123456789abcdef0123456789abcdef/metadata/00001-bbbb.metadata.json",
+   "rows": 0,
+   "snapshot_id": null
+  }
+ ]
+}

@@ -231,7 +231,7 @@ cd tests/ui && npm test
 
 ## Architecture Overview
 
-Cargo workspace, nine crates (`crates/`) over **dumpster-kit** — see "The kit's
+Cargo workspace, ten crates (`crates/`) over **dumpster-kit** — see "The kit's
 lakehouse" below for what is the kit's and what stays here:
 
 - **pkdump-core** — domain types + pure logic (variant code parsing,
@@ -272,6 +272,15 @@ lakehouse" below for what is the kit's and what stays here:
   this site's key custody. Offline and its own crate for the same reason the
   shipper is — it needs the tenant credentials and the master key, and
   `pkdump-cli` must not link either. See "The deletion path" below.
+- **pkdump-lakejobs** — the lake's operational jobs in Rust over `dumpster-kit-iceberg`
+  (sp-4k7mxi.6): `pkdump-lake-prices-age`, `pkdump-lake-nessie-backup` and
+  `pkdump-lake-roundtrip`, twins of the Python modules of the same names with the
+  same flags, messages, exit statuses and backup/manifest bytes.
+  `cargo test -p pkdump-lakejobs` holds them to output the Python recorded
+  (`tests/fixtures/`, `tests/parity.rs`). The timers still run the Python until the
+  prod certification: run both against prod and compare (`prices-age --as-of <today>`
+  verdict and newest `observed_date`; `nessie-backup check --now <now>` against the
+  newest bucket backup; `inventory` against the Python's JSON; then `roundtrip`).
 - **pkdump-server** — Axum HTTP app; JSON API under `/api` + serves the
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).

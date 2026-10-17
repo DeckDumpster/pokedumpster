@@ -2062,6 +2062,13 @@
 	.viewtoggle {
 		display: flex;
 	}
+	/* Two scale steps the kit's tokens lack (a 16px size, a 10px gap), scoped to
+	   the bar that needs them until the kit grows them — the theme may not
+	   declare non-reference tokens (kit.pin.test.js). */
+	:global(.topbar) {
+		--text-base: 1rem;
+		--space-2-5: 0.625rem;
+	}
 	/* Deck's rows: 12px between search controls (8 on a phone), 10px on the
 	   row beneath. Toolbar's own gap is a scoped class, hence the specificity. */
 	:global(.topbar > .controlsrow.toolbar) {

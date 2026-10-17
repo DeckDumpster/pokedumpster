@@ -118,12 +118,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && rm -f target/.pkdump-source-stamp \
  && cargo build --release --locked --bin pkdump --bin pkdump-lake-derive \
         --bin pkdump-ship --bin pkdump-erase \
+        --bin pkdump-lake-build-prices --bin pkdump-lake-verify-prices \
  && printf '%s\n' "$stamp" > target/.pkdump-source-stamp \
  && mkdir -p /out \
  && cp target/release/pkdump /out/pkdump \
  && cp target/release/pkdump-lake-derive /out/pkdump-lake-derive \
  && cp target/release/pkdump-ship /out/pkdump-ship \
- && cp target/release/pkdump-erase /out/pkdump-erase
+ && cp target/release/pkdump-erase /out/pkdump-erase \
+ && cp target/release/pkdump-lake-build-prices /out/pkdump-lake-build-prices \
+ && cp target/release/pkdump-lake-verify-prices /out/pkdump-lake-verify-prices
 
 # Every image this build produces carries this label, stage images included.
 # It is what confines the orphan collection in deploy/image-lib.sh to layers
@@ -161,6 +164,8 @@ COPY --from=builder /out/pkdump /usr/local/bin/pkdump
 COPY --from=builder /out/pkdump-lake-derive /usr/local/bin/pkdump-lake-derive
 COPY --from=builder /out/pkdump-ship /usr/local/bin/pkdump-ship
 COPY --from=builder /out/pkdump-erase /usr/local/bin/pkdump-erase
+COPY --from=builder /out/pkdump-lake-build-prices /usr/local/bin/pkdump-lake-build-prices
+COPY --from=builder /out/pkdump-lake-verify-prices /usr/local/bin/pkdump-lake-verify-prices
 COPY --from=frontend /app/frontend/build /srv/pkdump/static
 
 # Catalog + per-user databases live on a mounted volume.

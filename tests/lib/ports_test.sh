@@ -53,6 +53,20 @@ none() { # none <label> <lines>
 }
 log() { printf '\n=== %s ===\n' "$*"; }
 
+# A listener fixture that cannot hang the suite (sp-a19kb6). It gets its own
+# session so a kill reaches nc itself and not only the timeout wrapping it, no
+# stdin (a listener reading a tty or an inherited pipe can block forever), and
+# every inherited fd closed so the caller's output pipe is never held open by a
+# survivor. Teardown signals the whole group and does not `wait` on it.
+listen_fixture() { # listen_fixture <port> <seconds>  -> sets LISTEN_PID
+	setsid timeout "$2" nc -l "$1" </dev/null >/dev/null 2>&1 &
+	LISTEN_PID=$!
+}
+stop_fixture() { # stop_fixture <pid>
+	kill -TERM -- "-$1" 2>/dev/null || kill "$1" 2>/dev/null
+	return 0
+}
+
 # The shell harnesses, minus this file — its detector patterns are written to
 # look like the thing they detect.
 harnesses() {
@@ -70,8 +84,8 @@ check "in the unprivileged range" "yes" \
 log "2. the port it names is actually free"
 # The whole contract. Bind it the way a caller would.
 # A listener bind through nc, then the kernel is asked whether it holds the port.
-timeout 5 nc -l "$PORT_A" &
-BIND_PID=$!
+listen_fixture "$PORT_A" 5
+BIND_PID=$LISTEN_PID
 BOUND=no
 for _ in $(seq 20); do
 	if grep -qx "$PORT_A" <<<"$(_local_ports_in_use)"; then
@@ -80,8 +94,7 @@ for _ in $(seq 20); do
 	fi
 	sleep 0.1
 done
-kill "$BIND_PID" 2>/dev/null
-wait "$BIND_PID" 2>/dev/null
+stop_fixture "$BIND_PID"
 check "it binds" "yes" "$BOUND"
 
 log "3. it is outside the range the kernel hands out unasked"
@@ -102,9 +115,9 @@ log "4. it does not hand back a port something is already listening on"
 LISTENER_OUT="$(mktemp "${TMPDIR:-/tmp}/pd-portstest.XXXXXX")"
 trap 'rm -f "$LISTENER_OUT"' EXIT
 HELD="$(free_port)"
-timeout 30 nc -l "$HELD" >/dev/null &
-LISTENER_PID=$!
-trap 'kill "$LISTENER_PID" 2>/dev/null; rm -f "$LISTENER_OUT"' EXIT
+listen_fixture "$HELD" 30
+LISTENER_PID=$LISTEN_PID
+trap 'stop_fixture "$LISTENER_PID"; rm -f "$LISTENER_OUT"' EXIT
 for _ in $(seq 50); do
 	grep -qx "$HELD" <<<"$(_local_ports_in_use)" && break
 	sleep 0.1
@@ -116,8 +129,7 @@ for _ in $(seq 30); do
 	[[ "$(free_port)" == "$HELD" ]] && COLLISIONS=$((COLLISIONS + 1))
 done
 check "30 calls never returned it" "0" "$COLLISIONS"
-kill "$LISTENER_PID" 2>/dev/null
-wait "$LISTENER_PID" 2>/dev/null
+stop_fixture "$LISTENER_PID"
 trap 'rm -f "$LISTENER_OUT"' EXIT
 
 log "5. successive calls do not repeat"

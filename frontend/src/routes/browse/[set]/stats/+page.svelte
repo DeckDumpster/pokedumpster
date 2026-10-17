@@ -213,12 +213,16 @@
 						{:else}
 							<span class="thumb"></span>
 						{/if}
-						<a class="topname" href="/card/{stats.set_code}/{t.number}">{t.name}</a>
-						<span class="topnum">#{t.number}</span>
-						<span class="toprarity">{t.rarity ?? ''}</span>
-						{#if t.master_only}
-							<span class="toptag" title="Counts toward the master set only">master only</span>
-						{/if}
+						<div class="topmain">
+							<a class="topname" href="/card/{stats.set_code}/{t.number}">{t.name}</a>
+							<div class="topmeta">
+								<span class="topnum">#{t.number}</span>
+								<span class="toprarity">{t.rarity ?? ''}</span>
+								{#if t.master_only}
+									<span class="toptag" title="Counts toward the master set only">master only</span>
+								{/if}
+							</div>
+						</div>
 						<span class="topprice">{money(t.price)}</span>
 					</li>
 				{/each}
@@ -415,7 +419,7 @@
 	}
 	.toprow {
 		display: grid;
-		grid-template-columns: 36px 1fr auto auto auto auto;
+		grid-template-columns: 36px minmax(0, 1fr) auto;
 		align-items: center;
 		gap: var(--space-3);
 		padding: var(--space-1) 0;
@@ -427,12 +431,17 @@
 		height: 50px;
 		object-fit: contain;
 	}
+	.topmain {
+		min-width: 0;
+	}
 	.topname {
 		color: var(--color-text);
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		overflow-wrap: anywhere;
+	}
+	.topmeta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0 var(--space-3);
 	}
 	.topname:hover {
 		color: var(--color-text-accent);

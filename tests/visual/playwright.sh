@@ -16,6 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 : "${PKDUMP_BASE_URL:?PKDUMP_BASE_URL must point at a running instance}"
+# Optional: PKDUMP_BASE_URLS=<url0>,<url1>,... runs one worker per instance.
 
 if [ ! -d node_modules ]; then
     echo "==> Installing visual-suite dependencies..."

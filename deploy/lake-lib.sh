@@ -97,3 +97,22 @@ pkdump_lake_job_image_build() {
     pkdump_image_build_collecting -t "$(pkdump_lake_job_image "$1")" \
         -f "${2}/lake/Containerfile" "${2}/lake"
 }
+
+# Leave <tag> naming the lake job image. With PKDUMP_PREBUILT_LAKE_IMAGE set
+# (deploy/ci.sh builds it once per run, sp-4akezo) <tag> becomes another name for
+# that image and nothing is built; otherwise it is built from <repo_dir>/lake.
+# Same contract as pkdump_image_ensure, for the same reason: four lake gates each
+# built an identical image.
+pkdump_lake_job_image_ensure() {
+    local tag="$1" repo_dir="$2" prebuilt="${PKDUMP_PREBUILT_LAKE_IMAGE:-}"
+    if [ -z "$prebuilt" ]; then
+        pkdump_image_build_collecting -t "$tag" \
+            -f "${repo_dir}/lake/Containerfile" "${repo_dir}/lake"
+        return
+    fi
+    if ! podman image exists "$prebuilt"; then
+        echo "ERROR: PKDUMP_PREBUILT_LAKE_IMAGE=${prebuilt} names no image in this store." >&2
+        return 1
+    fi
+    podman tag "$prebuilt" "$tag"
+}

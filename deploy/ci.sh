@@ -29,7 +29,7 @@
 #                     tests/ci/treewatch_test.sh and
 #                     tests/ci/unit_diagnostics_test.sh.
 #   2. Rust gates:     cargo test, cargo clippy --all-targets, cargo fmt --check.
-#   3. Frontend gate:  npm ci && npm test && npm run check && npm run build.
+#   3. Frontend gate:  npm ci && npm test && npm run check.
 #  3b. The image:      built ONCE, here. Five gates below need the shipped image
 #                      and each wants its own tag; they tag this one rather than
 #                      each running a builder over identical content. See
@@ -969,7 +969,7 @@ fi
 # --- 1c. Frontend gate (ahead of cargo test: ~18 s, a fast-fail) -------------------------------------------------------
 
 if tier frontend; then
-    step "Frontend: npm ci && npm test && npm run check && npm run build"
+    step "Frontend: npm ci && npm test && npm run check"
     (
         cd "$REPO_DIR/frontend"
         npm ci
@@ -979,7 +979,9 @@ if tier frontend; then
         # the token layer. Node's built-in runner, no extra deps.
         npm test
         npm run check
-        npm run build
+        # No `npm run build` here: the image's node stage builds frontend/build
+        # and nothing on the host reads it (sp-4akezo, law-a-pipeline-builds-each-
+        # artifact-once).
     )
 fi
 
@@ -1042,6 +1044,27 @@ if tier deploy; then
     # unique to the run and removed on the way out.
     step "Container store: the image ships the binaries its own sources build"
     bash "$REPO_DIR/tests/store/cargo_cache.sh"
+fi
+
+# --- 3a. The gate binaries and the lake image, once (sp-4akezo) -------------
+# recreate.sh and drill.sh built `pkdump`, handles.sh built the access_fixture
+# example, and four lake gates each built lake/Containerfile. Built here, the
+# gates find the binaries (PKDUMP_BIN exists / PKDUMP_ACCESS_FIXTURE is set) and
+# tag the exported lake image instead of building their own.
+if tier -q litestream || tier -q tenants; then
+    step "Gate binaries, once: pkdump + access_fixture"
+    ( cd "$REPO_DIR" && cargo build -p pkdump-cli --bin pkdump && cargo build -p pkdump-server --example access_fixture )
+    _tgt="$(cd "$REPO_DIR" && cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+    export PKDUMP_BIN="$_tgt/debug/pkdump"
+    export PKDUMP_ACCESS_FIXTURE="$_tgt/debug/examples/access_fixture"
+fi
+if tier -q lake; then
+    step "Building the lake job image (once — the lake gates tag this one)"
+    # shellcheck source=deploy/lake-lib.sh
+    . "$SCRIPT_DIR/lake-lib.sh"
+    LAKE_BUILD_IMAGE="localhost/pkdump-lake:build-${INSTANCE}"
+    pkdump_lake_job_image_ensure "$LAKE_BUILD_IMAGE" "$REPO_DIR"
+    export PKDUMP_PREBUILT_LAKE_IMAGE="$LAKE_BUILD_IMAGE"
 fi
 
 # --- 3b. The image, once (built from t=0, joined here) -----------------------

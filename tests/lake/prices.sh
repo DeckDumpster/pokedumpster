@@ -71,6 +71,8 @@ die() {
 
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
+# shellcheck source=deploy/lake-lib.sh
+. "${REPO_DIR}/deploy/lake-lib.sh"
 pkdump_store_load_config
 pkdump_store_activate
 
@@ -169,7 +171,7 @@ PKDUMP_PRICES_FIXTURE_OUT="$FIXTURE" \
 echo "    $(find "$FIXTURE/raw-zone" -name 'part-*.zst' | wc -l) part(s), $(find "$FIXTURE/raw-zone" -name '_manifest.json' | wc -l) manifest(s)"
 
 echo "==> §1  Build the lake job image"
-podman build -t "$JOB_IMAGE" -f "${REPO_DIR}/lake/Containerfile" "${REPO_DIR}/lake" >/dev/null
+pkdump_lake_job_image_ensure "$JOB_IMAGE" "$REPO_DIR" >/dev/null
 echo "    ${JOB_IMAGE}"
 
 # The same, for the sealed table this run also writes.

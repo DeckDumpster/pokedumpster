@@ -436,9 +436,12 @@
 	.topmain {
 		min-width: 0;
 	}
+	/* The priority cell (sp-q01et5): a block, so it owns the column's whole
+	   width rather than shrinking to its text, and wraps between words. */
 	.topname {
+		display: block;
 		color: var(--color-text);
-		overflow-wrap: anywhere;
+		overflow-wrap: break-word;
 	}
 	.topmeta {
 		display: flex;
@@ -462,6 +465,7 @@
 		color: var(--color-text-accent);
 		min-width: 4.5rem;
 		text-align: right;
+		white-space: nowrap;
 	}
 	.figs {
 		display: flex;

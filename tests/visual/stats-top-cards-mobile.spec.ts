@@ -30,9 +30,13 @@ const TOP = [
 	}
 ];
 
+// A phone, whichever project runs this: both projects configure a wider
+// viewport, and the page must be created at 390px rather than resized to it.
+const width = 390;
+test.use({ viewport: { width, height: 844 } });
+
 test('Most valuable rows show the full name at 390px', async ({ page }) => {
-	const width = 390;
-	await page.setViewportSize({ width, height: 844 });
+	expect(page.viewportSize()?.width).toBe(width);
 	await stabilize(page);
 	await page.route('**/api/sets/*/top-cards*', (route) => route.fulfill({ json: TOP }));
 	const response = await page.goto('/browse/sv3pt5/stats', { waitUntil: 'domcontentloaded' });

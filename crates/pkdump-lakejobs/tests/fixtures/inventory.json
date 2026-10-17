@@ -1,0 +1,14 @@
+[
+ {
+  "identifier": "catalog.prices",
+  "metadata_location": "s3://w/catalog/prices_0123456789abcdef0123456789abcdef/metadata/00003-aaaa.metadata.json",
+  "snapshot_id": 42,
+  "rows": 12
+ },
+ {
+  "identifier": "catalog.sealed_prices",
+  "metadata_location": "s3://w/catalog/sealed_prices_0123456789abcdef0123456789abcdef/metadata/00001-bbbb.metadata.json",
+  "snapshot_id": null,
+  "rows": 0
+ }
+]

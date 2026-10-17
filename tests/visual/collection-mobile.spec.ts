@@ -124,3 +124,44 @@ test('the column chooser brings the rest back, and still nothing overflows', asy
 	expect(o.overflowing, 'cells wider than their column').toBe(0);
 	expect(o.ellipsised, 'ellipsised names').toBe(0);
 });
+
+/**
+ * Density, against DeckDumpster's collection table as measured in its
+ * collection.html / shared-card-table.css (sp-rkx1zi): `.main` gutter 4px,
+ * `td` padding 2px 12px, a one-line row = 44px thumbnail + 4px padding + 1px
+ * rule = 49px. Poke may be as dense or denser, never looser (within 2px).
+ */
+const DECK = { gutter: 4, tdPadY: 2, tdPadX: 12, rowOneLine: 49, tolerance: 2 };
+
+test('the list is as dense as deckdumpster: gutter, cell padding, one-line row', async ({ page }) => {
+	await open(page);
+	const m = await page.evaluate(() => {
+		const px = (v: string) => parseFloat(v);
+		const table = document.querySelector<HTMLElement>('table.dd')!;
+		const scroller = table.closest<HTMLElement>('.tableScroll') ?? table.parentElement!;
+		const gutter = table.getBoundingClientRect().left;
+		const td = document.querySelector<HTMLElement>('table.dd tbody tr:not(.vspace) td')!;
+		const cs = getComputedStyle(td);
+		const heights = [...document.querySelectorAll<HTMLElement>('table.dd tbody tr:not(.vspace)')].map(
+			(r) => r.getBoundingClientRect().height
+		);
+		return {
+			gutter,
+			rightGutter: window.innerWidth - table.getBoundingClientRect().right,
+			scrollerLeft: scroller.getBoundingClientRect().left,
+			padTop: px(cs.paddingTop),
+			padBottom: px(cs.paddingBottom),
+			padLeft: px(cs.paddingLeft),
+			padRight: px(cs.paddingRight),
+			shortestRow: Math.min(...heights)
+		};
+	});
+	const tol = DECK.tolerance;
+	expect(m.gutter, 'left gutter').toBeLessThanOrEqual(DECK.gutter + tol);
+	expect(m.rightGutter, 'right gutter').toBeLessThanOrEqual(DECK.gutter + tol);
+	expect(m.padTop, 'td padding-top').toBeLessThanOrEqual(DECK.tdPadY + tol);
+	expect(m.padBottom, 'td padding-bottom').toBeLessThanOrEqual(DECK.tdPadY + tol);
+	expect(m.padLeft, 'td padding-left').toBeLessThanOrEqual(DECK.tdPadX + tol);
+	expect(m.padRight, 'td padding-right').toBeLessThanOrEqual(DECK.tdPadX + tol);
+	expect(m.shortestRow, 'one-line row height').toBeLessThanOrEqual(DECK.rowOneLine + tol);
+});

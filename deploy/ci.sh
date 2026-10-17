@@ -1049,7 +1049,7 @@ fi
 # tag the exported lake image instead of building their own.
 if tier -q litestream || tier -q tenants; then
     step "Gate binaries, once: pkdump + access_fixture"
-    ( cd "$REPO_DIR" && cargo build --bin pkdump -p pkdump-server --example access_fixture )
+    ( cd "$REPO_DIR" && cargo build -p pkdump-cli --bin pkdump && cargo build -p pkdump-server --example access_fixture )
     _tgt="$(cd "$REPO_DIR" && cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
     export PKDUMP_BIN="$_tgt/debug/pkdump"
     export PKDUMP_ACCESS_FIXTURE="$_tgt/debug/examples/access_fixture"

@@ -22,7 +22,7 @@ function row(i: number) {
 		set_name: 'Base Set',
 		set_ptcgo_code: 'BS',
 		set_symbol_url: null,
-		number: String(i + 1),
+		number: String(101 + i),
 		name: `${NAMES[i % NAMES.length]} ${i}`,
 		rarity: 'Common',
 		supertype: 'Pokémon',
@@ -164,4 +164,61 @@ test('the list is as dense as deckdumpster: gutter, cell padding, one-line row',
 	expect(m.padLeft, 'td padding-left').toBeLessThanOrEqual(DECK.tdPadX + tol);
 	expect(m.padRight, 'td padding-right').toBeLessThanOrEqual(DECK.tdPadX + tol);
 	expect(m.shortestRow, 'one-line row height').toBeLessThanOrEqual(DECK.rowOneLine + tol);
+});
+
+/**
+ * Columns size to content (sp-pddr2o): Energy and # are each no wider than
+ * their widest cell content + 2x the td padding + 2px, and the name column
+ * takes the rest, so "Psychic Energy" stays on one line.
+ */
+test('Energy and # shrink to their content and short names do not wrap', async ({ page }) => {
+	await open(page);
+	await page.route('**/api/collection/search*', (route) =>
+		route.fulfill({
+			json: {
+				rows: Array.from({ length: 40 }, (_, i) => ({ ...row(i), name: 'Psychic Energy', supertype: 'Energy', subtypes: '["Basic"]' })),
+				total: 40,
+				total_value: 60,
+				limit: 40,
+				offset: 0
+			}
+		})
+	);
+	await page.reload();
+	await page.locator('table.dd tbody tr:not(.vspace)').first().waitFor();
+	await page.getByTestId('columns-button').click();
+	for (const label of ['Energy', '#']) {
+		await page.getByTestId('columns-drawer').locator('label.pill', { hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
+	}
+	await page.mouse.click(5, 400);
+	const m = await page.evaluate(() => {
+		const ths = [...document.querySelectorAll<HTMLElement>('table.dd thead th')];
+		const out: Record<string, { width: number; content: number; pad: number }> = {};
+		ths.forEach((th, idx) => {
+			const label = th.innerText.trim().toUpperCase().replace(/[▲▼\s]/g, '');
+			if (label !== 'ENERGY' && label !== '#') return;
+			const cells = [th, ...document.querySelectorAll<HTMLElement>(`table.dd tbody tr:not(.vspace) td:nth-child(${idx + 1})`)];
+			let content = 0;
+			for (const c of cells) {
+				const r = document.createRange();
+				r.selectNodeContents(c);
+				content = Math.max(content, r.getBoundingClientRect().width);
+			}
+			const cs = getComputedStyle(cells[1]);
+			out[label] = {
+				width: th.getBoundingClientRect().width,
+				content,
+				pad: parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight)
+			};
+		});
+		const name = document.querySelector<HTMLElement>('table.dd tbody .cardname')!;
+		const lh = parseFloat(getComputedStyle(name).lineHeight);
+		return { out, lines: Math.round(name.getBoundingClientRect().height / lh) };
+	});
+	for (const k of ['ENERGY', '#']) {
+		const c = m.out[k];
+		expect(c, `${k} column present`).toBeTruthy();
+		expect(c.width, `${k} column width`).toBeLessThanOrEqual(c.content + c.pad + 2);
+	}
+	expect(m.lines, 'Psychic Energy lines').toBe(1);
 });

@@ -176,6 +176,10 @@ pub struct SetAnalytics {
     /// printing the user owns, and the all-physical-copies sum (counts
     /// duplicates).
     pub market_value: f64,
+    /// Market value of the master set: the cheapest printing of EVERY card,
+    /// chase and out-of-numbering cards included. `market_value` counts only
+    /// the numbered cards.
+    pub master_market_value: f64,
     pub owned_value_unique: f64,
     pub owned_value: f64,
     pub rarities: Vec<RarityCount>,
@@ -287,18 +291,35 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
     // off the 1st-Edition holos). Taking the per-card minimum collapses to
     // the Unlimited run for WOTC and the base printing for modern sets —
     // the run a set collector actually completes. (pokedumpster)
-    let market_value: f64 = conn.query_row(
-        &format!(
-            "SELECT COALESCE(SUM(card_min), 0) FROM ( \
-               SELECT MIN({price_expr}) AS card_min \
-               FROM printings p JOIN cards c ON p.card_id = c.card_id \
-               WHERE c.set_code = ?1 AND p.deprecated_at IS NULL \
-               GROUP BY p.card_id \
-             )"
-        ),
-        [set_code],
-        |r| r.get(0),
-    )?;
+    //
+    // "Full set" is the NUMBERED set — the same population as the "Base x/N"
+    // progress (`number_sortable <= printed_total`). Letter-numbered chase
+    // cards (ME55's R/G/B Mews, $13.5k between them) and cards numbered past
+    // the printed total are not part of what a set collector completes; they
+    // count toward `master_market_value` only. A set with no printed total
+    // has no numbered population to name, so every card counts.
+    let full_set_value = |numbered_only: bool| -> Result<f64> {
+        let scope = if numbered_only {
+            " AND (s.printed_total IS NULL OR c.number_sortable <= s.printed_total)"
+        } else {
+            ""
+        };
+        Ok(conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(card_min), 0) FROM ( \
+                   SELECT MIN({price_expr}) AS card_min \
+                   FROM printings p JOIN cards c ON p.card_id = c.card_id \
+                   JOIN sets s ON s.set_code = c.set_code \
+                   WHERE c.set_code = ?1 AND p.deprecated_at IS NULL{scope} \
+                   GROUP BY p.card_id \
+                 )"
+            ),
+            [set_code],
+            |r| r.get(0),
+        )?)
+    };
+    let market_value = full_set_value(true)?;
+    let master_market_value = full_set_value(false)?;
     let owned_value: f64 = conn.query_row(
         &format!(
             "SELECT COALESCE(SUM({price_expr}), 0) \
@@ -402,6 +423,7 @@ pub fn analytics(conn: &Connection, set_code: &str) -> Result<Option<SetAnalytic
         owned_printings,
         owned_copies,
         market_value,
+        master_market_value,
         owned_value_unique,
         owned_value,
         rarities,
@@ -794,5 +816,57 @@ mod tests {
         assert_eq!(a.total_printings, 3);
         // Cheapest run only, not 300 + 800 + 10000 = 11100.
         assert_eq!(a.market_value, 300.0);
+    }
+
+    #[test]
+    fn full_set_value_counts_numbered_cards_and_master_value_adds_the_chase_cards() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        {
+            let c = open_shared(&shared).unwrap();
+            c.execute(
+                "INSERT INTO sets (set_code, name, series, printed_total) \
+                 VALUES ('me55', 'Fixture', 'Mega Evolution', 3)",
+                [],
+            )
+            .unwrap();
+            // Three numbered cards at $1/$2/$3, plus letter-numbered chase
+            // cards and one numbered past the printed total.
+            for (n, price) in [
+                ("1", 1.0),
+                ("2", 2.0),
+                ("3", 3.0),
+                ("R", 6000.0),
+                ("G", 3700.0),
+                ("4", 50.0),
+            ] {
+                let product = 500 + price as i64;
+                c.execute(
+                    "INSERT INTO cards (card_id, set_code, number, number_sortable, name, rarity) \
+                     VALUES (?1, 'me55', ?2, ?3, 'Card', 'Common')",
+                    rusqlite::params![format!("me55-{n}"), n, pkdump_core::number_sortable(n)],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO printings \
+                       (printing_id, card_id, variant, tcgplayer_product_id, sub_type_name) \
+                     VALUES (?1, ?2, 'normal', ?3, 'Normal')",
+                    rusqlite::params![format!("me55-{n}-normal"), format!("me55-{n}"), product],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO prices \
+                       (tcgplayer_product_id, sub_type_name, source, price_type, price, observed_at) \
+                     VALUES (?1, 'Normal', 'tcgplayer', 'market', ?2, '2026-06-01')",
+                    rusqlite::params![product, price],
+                )
+                .unwrap();
+            }
+            crate::latest_prices::refresh_latest_prices(&c).unwrap();
+        }
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        let a = analytics(&conn, "me55").unwrap().unwrap();
+        assert_eq!(a.market_value, 6.0);
+        assert_eq!(a.master_market_value, 6.0 + 6000.0 + 3700.0 + 50.0);
     }
 }

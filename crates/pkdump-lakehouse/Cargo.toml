@@ -9,6 +9,17 @@ authors.workspace = true
 name = "pkdump-lake-derive"
 path = "src/main.rs"
 
+# catalog.prices + catalog.sealed_prices, from raw/, on the kit's Iceberg crate
+# (sp-4k7mxi.4). These replace pkdump-lake-build-prices / -verify-prices in the
+# Python lake; the timer is switched by the operator once prod is certified.
+[[bin]]
+name = "pkdump-lake-build-prices"
+path = "src/build_prices.rs"
+
+[[bin]]
+name = "pkdump-lake-verify-prices"
+path = "src/verify_prices.rs"
+
 [dependencies]
 pkdump-db.workspace = true
 pkdump-derive.workspace = true
@@ -17,6 +28,13 @@ pkdump-site.workspace = true
 dumpster-kit-derive.workspace = true
 dumpster-kit-lake.workspace = true
 dumpster-kit-lakehouse.workspace = true
+dumpster-kit-iceberg.workspace = true
+iceberg.workspace = true
+arrow-array.workspace = true
+futures.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
 rusqlite.workspace = true
 clap.workspace = true
 anyhow.workspace = true
@@ -30,7 +48,5 @@ pkdump-ingest = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 image.workspace = true
 zstd.workspace = true
-serde_json.workspace = true
-reqwest.workspace = true
 tar.workspace = true
 flate2.workspace = true

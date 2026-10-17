@@ -80,6 +80,8 @@ die() {
 # lands in the same store as running it through CI.
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
+# shellcheck source=deploy/lake-lib.sh
+. "${REPO_DIR}/deploy/lake-lib.sh"
 pkdump_store_load_config
 pkdump_store_activate
 
@@ -134,7 +136,7 @@ mc() { podman run --rm --network "$NET" -e MC_HOST_m="http://${AKID}:${SECRET}@$
 echo "==> §0  Build the lake job image (PyIceberg, no JVM)"
 # The job runtime is a container like everything else here. pd-1ojt's table
 # build gets the same image; this gate is what keeps it buildable.
-podman build -t "$JOB_IMAGE" -f "${REPO_DIR}/lake/Containerfile" "${REPO_DIR}/lake" >/dev/null
+pkdump_lake_job_image_ensure "$JOB_IMAGE" "$REPO_DIR" >/dev/null
 echo "    ${JOB_IMAGE}"
 
 echo "==> §1  Object store (MinIO stands in for the lake bucket)"

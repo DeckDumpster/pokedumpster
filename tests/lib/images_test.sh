@@ -106,13 +106,15 @@ done < <(harnesses)
 
 none "no gate leaves its image tag behind" "${leaks%$'\n'}"
 
+# Floor is 8, not 9: sp-4akezo builds the lake job image once in ci.sh instead of
+# once per lake gate, so four creating tags are gone. Do not loosen further.
 # The detector has to have found something, or the assertion above is vacuous —
 # a typo in either pattern would report a clean tree over zero files.
-if ((created_total >= 9)); then
+if ((created_total >= 8)); then
 	echo "  PASS  the scan found image-creating gates to check ($created_total)"
 	pass=$((pass + 1))
 else
-	echo "  FAIL  the scan found only $created_total image-creating tags — expected >= 9;"
+	echo "  FAIL  the scan found only $created_total image-creating tags — expected >= 8;"
 	echo "        tags_created_in has almost certainly stopped matching."
 	fail=$((fail + 1))
 fi

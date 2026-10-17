@@ -189,9 +189,14 @@ log "3. JWKS server started; alice's email bound in the registry"
 # host.containers.internal (set by Podman in the container's /etc/hosts), and
 # writes the port, aud, issuer and the two tokens to fixture.env.
 mkdir -p "$JWKS_DIR"
-CARGO_TARGET="$(cd "$REPO_DIR" && cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
-(cd "$REPO_DIR" && cargo build -q -p pkdump-server --example access_fixture)
-"${CARGO_TARGET}/debug/examples/access_fixture" "$JWKS_DIR" alice@example.com unbound@example.com &
+# deploy/ci.sh builds it once and hands the path in; standalone, build it here.
+ACCESS_FIXTURE="${PKDUMP_ACCESS_FIXTURE:-}"
+if [[ -z "$ACCESS_FIXTURE" ]]; then
+	CARGO_TARGET="$(cd "$REPO_DIR" && cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+	(cd "$REPO_DIR" && cargo build -q -p pkdump-server --example access_fixture)
+	ACCESS_FIXTURE="${CARGO_TARGET}/debug/examples/access_fixture"
+fi
+"${ACCESS_FIXTURE}" "$JWKS_DIR" alice@example.com unbound@example.com &
 JWKS_PID=$!
 for i in $(seq 1 100); do
 	[[ -f "$JWKS_DIR/fixture.env" ]] && break

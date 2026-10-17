@@ -1874,7 +1874,8 @@
 	   padding for this route so the bar can pin edge to edge; the gutter
 	   comes back here, where the content is. */
 	.content {
-		padding: var(--space-5) var(--space-6) var(--space-10);
+		/* DeckDumpster's `.main` gutter: 4px all round, measured. */
+		padding: var(--space-1) var(--space-1) var(--space-10);
 	}
 	.brand {
 		display: inline-flex;
@@ -2578,6 +2579,12 @@
 		border-bottom: 1px solid var(--color-border);
 		vertical-align: middle;
 	}
+	/* Body cells carry deck's 2px vertical padding (`.collection-table td`);
+	   the thumbnail, not the padding, sets the row height. */
+	table.dd td {
+		padding-top: var(--space-0-5);
+		padding-bottom: var(--space-0-5);
+	}
 	/* One row height for every row, because the virtual scroller's geometry is
 	   arithmetic over a single one (pd-7z4o) — a row 3px out of step is a
 	   scrollbar 3px × 56,635 rows out of step. The thumbnail is what sets the
@@ -2856,11 +2863,11 @@
 	   chooser. */
 	@media (max-width: 540px) {
 		.content {
-			padding: var(--space-3) var(--space-3) var(--space-8);
+			padding: var(--space-1) var(--space-1) var(--space-8);
 		}
 		table.dd {
 			font-size: var(--text-sm);
-			--row-content: 54px; /* three lines of a wrapped name */
+			--row-content: 44px; /* deck's thumbnail: a one-line row is 49px (sp-rkx1zi); a wrapped name shows two lines */
 			/* The declared widths shrink with the type and the padding, or the
 			   table would keep its desktop total on a 360px screen and scroll
 			   further than it used to. Re-declared rather than derived: they
@@ -2891,7 +2898,7 @@
 		}
 		table.dd th,
 		table.dd td {
-			padding: 0.3rem 0.35rem;
+			padding: var(--space-0-5) 0.35rem;
 		}
 	}
 </style>

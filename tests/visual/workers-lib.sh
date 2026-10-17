@@ -12,7 +12,10 @@
 # run.sh's). Instances 1..N-1 are `<instance>-w<i>`. Under deploy/ci.sh
 # PKDUMP_PREBUILT_IMAGE is set, so they re-tag the one image built that run.
 #
-# Source after deploy/store-lib.sh and tests/lib/wait.sh.
+# Source after deploy/store-lib.sh. It sources tests/lib/wait.sh itself.
+
+# shellcheck source=tests/lib/wait.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/lib/wait.sh"
 
 VISUAL_WORKERS="${PKDUMP_VISUAL_WORKERS:-2}"
 VISUAL_EXTRA=()

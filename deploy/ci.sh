@@ -710,7 +710,7 @@ if tier lint; then
     bash "$REPO_DIR/deploy/alert-gate.sh" --self-test
 
     step "Harness host-port self-test (tests/lib/ports_test.sh)"
-    bash "$REPO_DIR/tests/lib/ports_test.sh"
+    timeout 120 bash "$REPO_DIR/tests/lib/ports_test.sh" || { rc=$?; [[ $rc -eq 124 ]] && echo "ports_test.sh timed out after 120s (sp-a19kb6)"; exit $rc; }
 
     # Same tier, same shape of ratchet: the harnesses used to spend about two
     # minutes a run on fixed sleeps that asserted nothing except how fast this

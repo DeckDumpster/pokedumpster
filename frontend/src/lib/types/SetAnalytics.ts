@@ -31,7 +31,13 @@ owned_copies: number,
  * printing the user owns, and the all-physical-copies sum (counts
  * duplicates).
  */
-market_value: number, owned_value_unique: number, owned_value: number, rarities: Array<RarityCount>, 
+market_value: number, 
+/**
+ * Market value of the master set: the cheapest printing of EVERY card,
+ * chase and out-of-numbering cards included. `market_value` counts only
+ * the numbered cards.
+ */
+master_market_value: number, owned_value_unique: number, owned_value: number, rarities: Array<RarityCount>, 
 /**
  * One entry per card in the set, ordered by collector number —
  * drives the stats-page copy-count histogram.

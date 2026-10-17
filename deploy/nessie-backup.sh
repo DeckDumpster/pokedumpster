@@ -106,6 +106,13 @@ for VAR in PKDUMP_LAKE_REF PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION PKDUMP_LA
     PKDUMP_NESSIE_BACKUP_S3_ENDPOINT AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION; do
     [ -n "${!VAR:-}" ] && ENV_ARGS+=(-e "${VAR}=${!VAR}")
 done
+# The Rust lake jobs (kit sp-3yxvq1) assume from PKDUMP_LAKE_S3_PROFILE and ignore
+# the BASE_PROFILE the Python jobs read: without it they sign with the ROLE profile
+# AWS_PROFILE names and fail with "failed to load signing credential" (sp-090v9u).
+# Same profile, same lake.env source; an explicit PKDUMP_LAKE_S3_PROFILE wins.
+if [ -n "${PKDUMP_LAKE_S3_BASE_PROFILE:-}" ] && [ -z "${PKDUMP_LAKE_S3_PROFILE:-}" ]; then
+    ENV_ARGS+=(-e "PKDUMP_LAKE_S3_PROFILE=${PKDUMP_LAKE_S3_BASE_PROFILE}")
+fi
 CRED_ARGS=()
 if [ -f "${CONF_DIR}/aws/config" ] && podman secret inspect "pkdump-${INSTANCE}-s3-bootstrap" >/dev/null 2>&1; then
     CRED_ARGS=(-v "${CONF_DIR}/aws/config:/aws/config:ro"

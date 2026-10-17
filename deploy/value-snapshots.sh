@@ -192,10 +192,12 @@ RC=0
 # --pull=never: the job image is built locally by deploy/setup-lake.sh and named
 # localhost/…, so a pull attempt can only ever be podman treating `localhost` as
 # a registry. There is nothing to fetch and nothing to fall back to.
+# Rust by default, Python behind PKDUMP_LAKE_JOBS=python (deploy/lake-lib.sh).
+pkdump_lake_job_select "$INSTANCE" pkdump-lake-value-snapshots pkdump-value-snapshots || exit 1
 podman run --rm --pull=never --network "$NETWORK" \
     -v "${DATA}:/data:Z" \
     "${ENV_ARGS[@]}" ${CRED_ARGS[@]+"${CRED_ARGS[@]}"} \
-    "$JOB_IMAGE" pkdump-lake-value-snapshots --data-dir /data "${ARGS[@]}" 2>&1 |
+    ${RUN_EP[@]+"${RUN_EP[@]}"} "$RUN_IMAGE" ${RUN_CMD[@]+"${RUN_CMD[@]}"} --data-dir /data "${ARGS[@]}" 2>&1 |
     tee "$LOG" || RC=$?
 OUT="$(cat "$LOG")"
 

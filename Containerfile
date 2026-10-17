@@ -125,6 +125,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         --bin pkdump-ship --bin pkdump-erase \
         --bin pkdump-lake-build-prices --bin pkdump-lake-verify-prices \
         --bin pkdump-value-snapshots \
+        --bin pkdump-lake-prices-age --bin pkdump-lake-nessie-backup \
+        --bin pkdump-lake-roundtrip \
  && printf '%s\n' "$stamp" > target/.pkdump-source-stamp \
  && mkdir -p /out \
  && cp target/release/pkdump /out/pkdump \
@@ -133,7 +135,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cp target/release/pkdump-erase /out/pkdump-erase \
  && cp target/release/pkdump-lake-build-prices /out/pkdump-lake-build-prices \
  && cp target/release/pkdump-lake-verify-prices /out/pkdump-lake-verify-prices \
- && cp target/release/pkdump-value-snapshots /out/pkdump-value-snapshots
+ && cp target/release/pkdump-value-snapshots /out/pkdump-value-snapshots \
+ && cp target/release/pkdump-lake-prices-age /out/pkdump-lake-prices-age \
+ && cp target/release/pkdump-lake-nessie-backup /out/pkdump-lake-nessie-backup \
+ && cp target/release/pkdump-lake-roundtrip /out/pkdump-lake-roundtrip
 
 # Every image this build produces carries this label, stage images included.
 # It is what confines the orphan collection in deploy/image-lib.sh to layers
@@ -174,6 +179,9 @@ COPY --from=builder /out/pkdump-erase /usr/local/bin/pkdump-erase
 COPY --from=builder /out/pkdump-lake-build-prices /usr/local/bin/pkdump-lake-build-prices
 COPY --from=builder /out/pkdump-lake-verify-prices /usr/local/bin/pkdump-lake-verify-prices
 COPY --from=builder /out/pkdump-value-snapshots /usr/local/bin/pkdump-value-snapshots
+COPY --from=builder /out/pkdump-lake-prices-age /usr/local/bin/pkdump-lake-prices-age
+COPY --from=builder /out/pkdump-lake-nessie-backup /usr/local/bin/pkdump-lake-nessie-backup
+COPY --from=builder /out/pkdump-lake-roundtrip /usr/local/bin/pkdump-lake-roundtrip
 COPY --from=frontend /app/frontend/build /srv/pkdump/static
 
 # Catalog + per-user databases live on a mounted volume.

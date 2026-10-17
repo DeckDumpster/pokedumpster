@@ -769,6 +769,11 @@ if tier lint; then
     step "Container base-image pins (tests/container/base_images_test.sh)"
     bash "$REPO_DIR/tests/container/base_images_test.sh"
 
+    # Every Rust bin a deploy script or unit names must be built AND shipped
+    # in the image (sp-vxa4l8: the .6 lake jobs landed but never shipped).
+    step "Image ships every named lake binary (tests/container/image_bins_test.sh)"
+    bash "$REPO_DIR/tests/container/image_bins_test.sh"
+
     # Same rule, the OTHER image this repo runs. `litestream:latest` moved
     # 0.5.16 -> 0.5.17 under this box, 0.5.17 downgraded the one log message
     # deploy/backup-check.sh judges every tenant from to DEBUG, and the litestream,

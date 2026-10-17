@@ -9,7 +9,6 @@
 //! Run it against a COPY of a real catalog. The connection is `query_only` and issues nothing
 //! but `SELECT`, but SQLite still opens a WAL database at file level.
 
-#[cfg(test)]
 #[allow(dead_code)]
 #[path = "prices_core.rs"]
 mod prices_core;
@@ -48,9 +47,41 @@ struct Cli {
     /// YYYY-MM-DD.
     #[arg(long)]
     observed_date: String,
+    /// The raw/ partition whose products listing classifies sealed product
+    /// (default: --observed-date).
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    ingest_date: Option<String>,
     /// How many matched rows to print as evidence.
     #[arg(long, default_value_t = 10)]
     sample: usize,
+}
+
+/// The sealed product ids the night's own raw products listing classifies (sp-gc251u).
+/// Incomplete runs are read, as the Python did: this only decides which rows are history.
+fn night_sealed_ids(ingest: &str) -> Result<BTreeSet<i64>> {
+    use pkdump_site::{PRODUCTS, TCGCSV};
+    let zone = dumpster_kit_lake::open_reader(&pkdump_site::lake_env())?;
+    let runs = prices_core::select_runs(&zone.runs(TCGCSV, PRODUCTS, ingest)?, true)?;
+    let mut fetch = |p: &dumpster_kit_lake::PartRecord| -> Result<Vec<u8>> { Ok(zone.payload(p)?) };
+    let (ids, _runs) = prices_core::sealed_product_ids(&runs, ingest, &mut fetch)?;
+    Ok(ids.into_iter().collect())
+}
+
+/// Sealed rows only SQLite holds, split into `(defects, history_only)`.
+///
+/// `shared.sealed_products` accumulates across nights (upsert, never delete) while
+/// `catalog.sealed_prices` is classified from one night's listing, so a product sealed on an
+/// earlier night and absent from tonight's listing is in SQLite and cannot be in the lake. Those
+/// are history, reported not failed. A row for a product the night DOES list stays a defect.
+/// `None` means no classification: everything is a defect.
+fn split_unclassifiable(
+    missing: BTreeSet<Sealed>,
+    night: Option<&BTreeSet<i64>>,
+) -> (BTreeSet<Sealed>, BTreeSet<Sealed>) {
+    let Some(night) = night else {
+        return (missing, BTreeSet::new());
+    };
+    missing.into_iter().partition(|k| night.contains(&k.0))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -61,6 +92,7 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let (lake, lake_sealed_table) = rt.block_on(lake_sides(&day))?;
     let (singles, sealed, sealed_ids) = sqlite_sides(&cli.sqlite, &day)?;
+    let night = night_sealed_ids(cli.ingest_date.as_deref().unwrap_or(&day))?;
     let code = compare(
         &day,
         &lake,
@@ -68,6 +100,7 @@ fn main() -> anyhow::Result<()> {
         &singles,
         &sealed,
         &sealed_ids,
+        Some(&night),
         cli.sample,
     );
     std::process::exit(code);
@@ -199,6 +232,7 @@ fn report(differences: &[String], label: &str) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// The comparison. Pure over the four maps, so the tests drive it without a lake. Returns the
 /// exit status.
 fn compare(
@@ -208,6 +242,7 @@ fn compare(
     singles: &BTreeMap<Single, f64>,
     sealed: &BTreeMap<Sealed, f64>,
     sealed_ids: &BTreeSet<i64>,
+    night_sealed: Option<&BTreeSet<i64>>,
     sample: usize,
 ) -> i32 {
     println!("==> observed_date={day}");
@@ -287,12 +322,36 @@ fn compare(
         "catalog.sealed_prices",
         lake_sealed_table.len()
     );
-    if !exact(sealed, lake_sealed_table, "sqlite", "lake") {
+    let only_sqlite: BTreeSet<Sealed> = sealed
+        .keys()
+        .filter(|k| !lake_sealed_table.contains_key(*k))
+        .cloned()
+        .collect();
+    let (_defects, history) = split_unclassifiable(only_sqlite, night_sealed);
+    if !history.is_empty() {
+        let products: BTreeSet<i64> = history.iter().map(|k| k.0).collect();
+        let shown: Vec<_> = products.iter().take(20).collect();
+        println!(
+            "    note {} sealed row(s) over {} product(s) exist only in sqlite: \
+             shared.sealed_products is accumulated across nights and these products are not \
+             sealed in tonight's raw products listing, so the lake (built from that listing \
+             alone) does not classify them. Products: {shown:?}{}",
+            history.len(),
+            products.len(),
+            if products.len() > 20 { " …" } else { "" }
+        );
+    }
+    let comparable: BTreeMap<Sealed, f64> = sealed
+        .iter()
+        .filter(|(k, _)| !history.contains(*k))
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+    if !exact(&comparable, lake_sealed_table, "sqlite", "lake") {
         failures += 1;
     } else {
         println!(
             "    ok   {} sealed rows identical, value for value",
-            sealed.len()
+            comparable.len()
         );
     }
 
@@ -368,7 +427,7 @@ mod tests {
         let run = |lake: &BTreeMap<Single, f64>,
                    ls: &BTreeMap<Sealed, f64>,
                    sealed: &BTreeMap<Sealed, f64>| {
-            compare("2026-08-11", lake, ls, &singles, sealed, &ids, 1)
+            compare("2026-08-11", lake, ls, &singles, sealed, &ids, None, 1)
         };
         // The lake keeping the Foil sub-type row beside the one SQLite kept is expected.
         assert_eq!(run(&lake, &sealed, &sealed), 0);
@@ -387,5 +446,35 @@ mod tests {
         gone.remove(&s(9, "Normal", "market"));
         gone.remove(&s(9, "Foil", "market"));
         assert_eq!(run(&gone, &sealed, &sealed), 1);
+    }
+
+    #[test]
+    fn history_only_sealed_rows_are_reported_not_failed() {
+        let ids = BTreeSet::from([1, 900]);
+        let singles = BTreeMap::new();
+        let sealed = BTreeMap::from([
+            ((1, "market".to_string()), 1.0),
+            ((1, "low".to_string()), 1.0),
+            ((900, "low".to_string()), 2.0),
+        ]);
+        let lake_sealed = BTreeMap::from([
+            ((1, "market".to_string()), 1.0),
+            ((1, "low".to_string()), 1.0),
+        ]);
+        let lake: BTreeMap<Single, f64> = sealed
+            .iter()
+            .map(|((p, t), v)| (s(*p, "Normal", t), *v))
+            .collect();
+        let run = |ls: &BTreeMap<Sealed, f64>, night: Option<&BTreeSet<i64>>| {
+            compare("2026-10-16", &lake, ls, &singles, &sealed, &ids, night, 1)
+        };
+        // 900 is not sealed tonight: history, passes.
+        assert_eq!(run(&lake_sealed, Some(&BTreeSet::from([1]))), 0);
+        // Without a classification the same gap is a defect.
+        assert_eq!(run(&lake_sealed, None), 1);
+        // A listed product missing from the lake still fails.
+        let mut short = lake_sealed.clone();
+        short.remove(&(1, "low".to_string()));
+        assert_eq!(run(&short, Some(&BTreeSet::from([1]))), 1);
     }
 }

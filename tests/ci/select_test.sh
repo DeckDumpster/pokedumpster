@@ -378,6 +378,11 @@ check "PKDUMP_CI_TIERS and PKDUMP_CI_CHANGED_FILES both set -> exit 1" "1" "$?"
 DECLARED="$(sed -n 's/^\[tier\.\([a-z]*\)\]$/\1/p' "${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}/.spira/testenv.toml" | tr '\n' ' ' | sed 's/ $//')"
 check ".spira/testenv.toml declares exactly the canonical tiers, in order" "$ALL" "$DECLARED"
 
+# The host-local default (what a landing round runs with no --suites) is lint alone: forge CI
+# certifies the rust tier, and an empty default would mean every tier (sp-yez4rh).
+DEFAULT="$(sed -n 's/^default = \[\(.*\)\]$/\1/p' "${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}/.spira/testenv.toml")"
+check ".spira/testenv.toml default is the lint tier alone (no local rust tier)" '"lint"' "$DEFAULT"
+
 # ---------------------------------------------------------------------------
 printf '\n=== %d passed, %d failed ===\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

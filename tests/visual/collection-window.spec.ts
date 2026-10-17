@@ -28,7 +28,8 @@
  * no Vision call, but it asserts on the DOM rather than on pixels.
  */
 
-import { test, expect, type Page, type Locator } from '@playwright/test';
+import { test, expect } from './fixtures';
+import type { Page, Locator } from '@playwright/test';
 import { stabilize } from './stabilize';
 
 /** Far more than any browser will render, and not a round number. */

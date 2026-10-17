@@ -78,6 +78,8 @@ diag_init
 . "${REPO_DIR}/tests/lib/objects.sh"
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
+# shellcheck source=deploy/lake-lib.sh
+. "${REPO_DIR}/deploy/lake-lib.sh"
 # shellcheck source=deploy/image-lib.sh
 . "${REPO_DIR}/deploy/image-lib.sh"
 pkdump_store_load_config
@@ -261,7 +263,7 @@ GHOST=$(awk -F'\t' '$1 == "ghost" {print $2}' "$FIXTURE/tenants.tsv")
 echo "  alice=${ALICE} bob=${BOB} ghost=${GHOST} (no database, on purpose)"
 
 log "1. both images"
-podman build -t "$JOB_IMAGE" -f "${REPO_DIR}/lake/Containerfile" "${REPO_DIR}/lake" >/dev/null ||
+pkdump_lake_job_image_ensure "$JOB_IMAGE" "$REPO_DIR" >/dev/null ||
 	die "the lake image build failed"
 pkdump_image_ensure "$APP_IMAGE" "$REPO_DIR" >"${WORK}/build.log" 2>&1 || {
 	tail -40 "${WORK}/build.log"

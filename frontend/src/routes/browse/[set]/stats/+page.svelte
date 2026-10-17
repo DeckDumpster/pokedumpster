@@ -291,6 +291,7 @@
 				description="This set has no cards in the shared catalog, so there is nothing to break down."
 			/>
 		{:else}
+			<div class="tablewrap">
 			<table>
 				<thead>
 					<tr>
@@ -337,6 +338,7 @@
 					{/each}
 				</tbody>
 			</table>
+			</div>
 		{/if}
 	</section>
 {/if}
@@ -479,6 +481,11 @@
 		font-size: 0.75rem;
 		text-transform: uppercase;
 		color: var(--color-text-subtle);
+	}
+	/* A five-column table can be a few px wider than a phone's card; it scrolls
+	   inside its own panel rather than widening the page (sp-q01et5). */
+	.tablewrap {
+		overflow-x: auto;
 	}
 	table {
 		width: 100%;

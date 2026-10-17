@@ -44,6 +44,10 @@ test('Most valuable rows show the full name at 390px', async ({ page }) => {
 		const rows = [...document.querySelectorAll<HTMLElement>('[data-testid="top-cards"] .toprow')];
 		return {
 			scrollWidth: document.documentElement.scrollWidth,
+			wide: [...document.querySelectorAll<HTMLElement>('body *')]
+				.filter((e) => e.getBoundingClientRect().right > window.innerWidth + 0.5)
+				.map((e) => e.tagName + '.' + e.className)
+				.slice(0, 8),
 			rows: rows.map((r) => {
 				const n = r.querySelector<HTMLElement>('.topname')!;
 				const box = r.getBoundingClientRect();
@@ -59,7 +63,7 @@ test('Most valuable rows show the full name at 390px', async ({ page }) => {
 		};
 	});
 
-	expect(report.scrollWidth, 'page scrolls sideways').toBeLessThanOrEqual(width);
+	expect(report.scrollWidth, `page scrolls sideways: ${report.wide.join(' ')}`).toBeLessThanOrEqual(width);
 	for (const r of report.rows) {
 		expect(r.clipped, 'name clipped').toBe(false);
 		expect(r.nameWidth, 'name collapsed').toBeGreaterThan(100);

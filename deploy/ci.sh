@@ -351,9 +351,24 @@ CURRENT_STEP="startup"
 step() {
     pkdump_treewatch_check "at the start of step: $*" || exit "$PKDUMP_TREEWATCH_EXIT"
     CURRENT_STEP="$*"
+    # Per-step timing (sp-n1bfe4): the log's own timestamps are GitHub's, so a
+    # local run and a gate buffered through ci-parallel.sh had none. The "==>"
+    # line is unchanged — everything that greps for it keeps working — and the
+    # line under it carries the wall clock and the offset from the run's start.
+    local now
+    now=$(date +%s)
+    if [ -n "${STEP_PREV_NAME:-}" ]; then
+        STEP_TIMES+=("$(( now - STEP_PREV_START ))s	${STEP_PREV_NAME}")
+    fi
+    STEP_PREV_NAME="$*"
+    STEP_PREV_START="$now"
     echo ""
     echo "==> $*"
+    echo "    [step-time] $(date -u +%H:%M:%SZ) t+$(( now - START_TIME ))s"
 }
+STEP_TIMES=()
+STEP_PREV_NAME=""
+STEP_PREV_START=0
 
 # Capture the unit journal before a teardown destroys it. Shared with
 # deploy/deploy.sh — one definition in one place (db-g6ku).
@@ -1365,5 +1380,11 @@ echo ""
 echo "==> Disk holding \$HOME (prod's):"
 echo "    before: ${DF_BEFORE}"
 echo "    after:  $(df -h "$HOME" | tail -n1)"
+echo ""
+# Every step's own wall time, longest first, so the number a reader wants is the
+# last thing in the log rather than a subtraction across 90 timestamps.
+STEP_TIMES+=("$(( $(date +%s) - STEP_PREV_START ))s	${STEP_PREV_NAME}")
+echo "==> Step timings (longest first; the queued gates' own times are in the parallel summary above):"
+printf '%s\n' "${STEP_TIMES[@]}" | sort -nr | head -15 | sed 's/^/    /'
 echo ""
 echo "==> CI passed in ${ELAPSED}s."

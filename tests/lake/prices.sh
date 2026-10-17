@@ -73,6 +73,8 @@ die() {
 . "${REPO_DIR}/deploy/store-lib.sh"
 # shellcheck source=deploy/lake-lib.sh
 . "${REPO_DIR}/deploy/lake-lib.sh"
+# shellcheck source=deploy/image-lib.sh
+. "${REPO_DIR}/deploy/image-lib.sh"
 pkdump_store_load_config
 pkdump_store_activate
 
@@ -83,6 +85,8 @@ NET=pdprices-net-${SUFFIX}
 MINIO_CTR=pdprices-minio-${SUFFIX}
 NESSIE_CTR=pdprices-nessie-${SUFFIX}
 JOB_IMAGE=pkdump-lake:prices-${SUFFIX}
+# The Rust jobs the wrapper runs by default ship in the app image (sp-utga27).
+APP_IMAGE=localhost/pkdump:prices-${SUFFIX}
 BUCKET=pdprices-${SUFFIX}
 AKID=pdpricestestroot
 SECRET=pdpricestestsecret123
@@ -117,7 +121,7 @@ cleanup() {
 	fi
 	podman rm -f "$MINIO_CTR" "$NESSIE_CTR" >/dev/null 2>&1 || true
 	podman network rm "$NET" >/dev/null 2>&1 || true
-	podman rmi -f "$JOB_IMAGE" >/dev/null 2>&1 || true
+	podman rmi -f "$JOB_IMAGE" "$APP_IMAGE" >/dev/null 2>&1 || true
 	# Nessie writes its version store as a SUBUID the invoking user cannot
 	# unlink; a plain rm -rf leaves the whole work dir behind, every run.
 	podman unshare rm -rf "$WORK" 2>/dev/null || rm -rf "$WORK" 2>/dev/null || true
@@ -173,6 +177,11 @@ echo "    $(find "$FIXTURE/raw-zone" -name 'part-*.zst' | wc -l) part(s), $(find
 echo "==> §1  Build the lake job image"
 pkdump_lake_job_image_ensure "$JOB_IMAGE" "$REPO_DIR" >/dev/null
 echo "    ${JOB_IMAGE}"
+pkdump_image_ensure "$APP_IMAGE" "$REPO_DIR" >"${WORK}/build.log" 2>&1 || {
+	tail -40 "${WORK}/build.log"
+	die "the app image build failed"
+}
+echo "    ${APP_IMAGE}"
 
 # The same, for the sealed table this run also writes.
 sealed_day_digest() {
@@ -517,6 +526,7 @@ wrapper() { # wrapper <max-age-days> [args...] — prints output, returns its st
 		PUSHOVER_TOKEN= PUSHOVER_USER= \
 		PKDUMP_LAKE_NETWORK="$NET" \
 		PKDUMP_LAKE_JOB_IMAGE="$JOB_IMAGE" \
+		PKDUMP_LAKE_RUST_IMAGE="$APP_IMAGE" \
 		PKDUMP_LAKE_PRICES_MAX_AGE_DAYS="$max_age" \
 		bash "${REPO_DIR}/deploy/prices.sh" "pdprices-${SUFFIX}" "$@" 2>&1
 }

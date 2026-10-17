@@ -213,12 +213,16 @@
 						{:else}
 							<span class="thumb"></span>
 						{/if}
-						<a class="topname" href="/card/{stats.set_code}/{t.number}">{t.name}</a>
-						<span class="topnum">#{t.number}</span>
-						<span class="toprarity">{t.rarity ?? ''}</span>
-						{#if t.master_only}
-							<span class="toptag" title="Counts toward the master set only">master only</span>
-						{/if}
+						<div class="topmain">
+							<a class="topname" href="/card/{stats.set_code}/{t.number}">{t.name}</a>
+							<div class="topmeta">
+								<span class="topnum">#{t.number}</span>
+								<span class="toprarity">{t.rarity ?? ''}</span>
+								{#if t.master_only}
+									<span class="toptag" title="Counts toward the master set only">master only</span>
+								{/if}
+							</div>
+						</div>
 						<span class="topprice">{money(t.price)}</span>
 					</li>
 				{/each}
@@ -287,6 +291,7 @@
 				description="This set has no cards in the shared catalog, so there is nothing to break down."
 			/>
 		{:else}
+			<div class="tablewrap">
 			<table>
 				<thead>
 					<tr>
@@ -333,6 +338,7 @@
 					{/each}
 				</tbody>
 			</table>
+			</div>
 		{/if}
 	</section>
 {/if}
@@ -415,7 +421,7 @@
 	}
 	.toprow {
 		display: grid;
-		grid-template-columns: 36px 1fr auto auto auto auto;
+		grid-template-columns: 36px minmax(0, 1fr) auto;
 		align-items: center;
 		gap: var(--space-3);
 		padding: var(--space-1) 0;
@@ -427,12 +433,20 @@
 		height: 50px;
 		object-fit: contain;
 	}
-	.topname {
-		color: var(--color-text);
+	.topmain {
 		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+	}
+	/* The priority cell (sp-q01et5): a block, so it owns the column's whole
+	   width rather than shrinking to its text, and wraps between words. */
+	.topname {
+		display: block;
+		color: var(--color-text);
+		overflow-wrap: break-word;
+	}
+	.topmeta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0 var(--space-3);
 	}
 	.topname:hover {
 		color: var(--color-text-accent);
@@ -451,6 +465,7 @@
 		color: var(--color-text-accent);
 		min-width: 4.5rem;
 		text-align: right;
+		white-space: nowrap;
 	}
 	.figs {
 		display: flex;
@@ -470,6 +485,11 @@
 		font-size: 0.75rem;
 		text-transform: uppercase;
 		color: var(--color-text-subtle);
+	}
+	/* A five-column table can be a few px wider than a phone's card; it scrolls
+	   inside its own panel rather than widening the page (sp-q01et5). */
+	.tablewrap {
+		overflow-x: auto;
 	}
 	table {
 		width: 100%;

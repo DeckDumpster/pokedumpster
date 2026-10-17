@@ -23,9 +23,14 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
 	testDir: '.',
 	testMatch: ['*.spec.ts'],
-	// A shared server instance: serialise, so nothing races on the fixture.
+	// Isolation, not discipline: every worker owns a whole server instance and
+	// fixture database (PKDUMP_BASE_URLS, one URL per worker; see fixtures.ts and
+	// workers-lib.sh), so nothing is shared to race on and the specs need not be
+	// proven read-only. Files are not split across workers' instances: a file's
+	// tests stay in order on one worker (fullyParallel false). Without
+	// PKDUMP_BASE_URLS it is one instance and one worker, as before.
 	fullyParallel: false,
-	workers: 1,
+	workers: process.env.PKDUMP_BASE_URLS ? process.env.PKDUMP_BASE_URLS.split(',').length : 1,
 	timeout: 90_000,
 	reporter: [['list'], ['html', { open: 'never', outputFolder: 'report' }]],
 	outputDir: 'test-results',

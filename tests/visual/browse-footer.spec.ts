@@ -9,7 +9,8 @@
  * URL) so the landscape arm has something to act on whatever the fixture holds.
  */
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+import type { Page } from '@playwright/test';
 import { stabilize } from './stabilize';
 
 const SET = '/browse/base1';

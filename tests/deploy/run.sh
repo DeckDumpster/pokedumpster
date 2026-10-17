@@ -2654,6 +2654,22 @@ check "the Rust jobs get the signing profile (sp-090v9u)" "2" \
 	"$(printf '%s\n' "$PX_RUST" | grep -c -- '-e PKDUMP_LAKE_S3_PROFILE=pkdump-base' || true)"
 check "the Rust jobs get the catalog URL and bucket" "2" \
 	"$(printf '%s\n' "$PX_RUST" | grep -c -- '-e PKDUMP_LAKE_NESSIE_URI=.* -e PKDUMP_LAKE_S3_BUCKET=pdtest' || true)"
+# The Rust raw reader signs through the SDK chain (AWS_ACCESS_KEY_ID/SECRET), not
+# the PKDUMP_LAKE_S3_* names the Python path forwards: a static-key lake.env (the
+# MinIO substrate) must reach it under BOTH spellings (PR 294: "no credentials
+# found in chain").
+run_px_jobs "PKDUMP_LAKE_S3_ACCESS_KEY_ID=AKIDTEST
+PKDUMP_LAKE_S3_SECRET_ACCESS_KEY=SECRETTEST"
+PX_KEYS="$(grep -E 'build-prices|prices-age' "${WORK}/prices-jobs.log")"
+check "Rust jobs still get the PKDUMP_LAKE_S3 static keys" "2" \
+	"$(printf '%s\n' "$PX_KEYS" | grep -c -- '-e PKDUMP_LAKE_S3_ACCESS_KEY_ID=AKIDTEST.*-e PKDUMP_LAKE_S3_SECRET_ACCESS_KEY=SECRETTEST' || true)"
+check "Rust jobs get the same keys as AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY" "2" \
+	"$(printf '%s\n' "$PX_KEYS" | grep -c -- '-e AWS_ACCESS_KEY_ID=AKIDTEST.*-e AWS_SECRET_ACCESS_KEY=SECRETTEST' || true)"
+run_px_jobs "PKDUMP_LAKE_JOBS=python
+PKDUMP_LAKE_S3_ACCESS_KEY_ID=AKIDTEST
+PKDUMP_LAKE_S3_SECRET_ACCESS_KEY=SECRETTEST"
+check "the Python path forwards no AWS_ACCESS_KEY_ID it never read" "0" \
+	"$(grep -E 'build-prices|prices-age' "${WORK}/prices-jobs.log" | grep -c -- 'AWS_ACCESS_KEY_ID' || true)"
 run_px_jobs "PKDUMP_LAKE_JOBS=python"
 PX_PY="$(grep -E 'build-prices|prices-age' "${WORK}/prices-jobs.log")"
 check "PKDUMP_LAKE_JOBS=python rolls back to the lake image" "2" \

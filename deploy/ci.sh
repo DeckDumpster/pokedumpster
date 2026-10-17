@@ -858,6 +858,8 @@ if tier lint; then
 
     step "Nessie catalog backup: stale/corrupt alarm, restore-drill failures (tests/lake/nessie_backup_test.sh)"
     bash "$REPO_DIR/tests/lake/nessie_backup_test.sh"
+    step "verify-prices: sealed history-only rows reported, listed-product gaps fail (tests/lake/verify_prices_test.py)"
+    python3 -I "$REPO_DIR/tests/lake/verify_prices_test.py"
 
     # Spill is ec2-only unconditionally; no allow_proxmox input.
     step "spill is ec2-only (tests/ci/spill_input_test.sh)"

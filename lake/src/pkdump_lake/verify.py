@@ -48,7 +48,8 @@ import sys
 from pyiceberg.expressions import EqualTo
 
 from .catalog import catalog
-from .prices import DEFAULT_TABLE, PRICE_TYPES, SEALED_TABLE
+from .prices import DEFAULT_TABLE, PRICE_TYPES, SEALED_TABLE, sealed_product_ids
+from .raw import open_raw
 
 #: How many matched rows to print as evidence. The bead asks for "a sampled
 #: set of prices", so the sample is shown rather than merely counted.
@@ -124,6 +125,31 @@ def sqlite_sides(
     return singles, sealed, sealed_ids
 
 
+def split_unclassifiable(
+    missing: set[tuple[int, str]], night_sealed_ids: set[int] | None
+) -> tuple[set[tuple[int, str]], set[tuple[int, str]]]:
+    """Sealed rows only SQLite holds, split into ``(defects, history_only)``.
+
+    ``catalog.sealed_prices`` is classified from the products the night's own
+    ``raw/`` partition lists (``prices.sealed_product_ids``), so it can be
+    rebuilt from that partition alone. ``shared.sealed_products`` is not: the
+    derive upserts into it in place and never deletes, so a product that was
+    sealed on an earlier night and is absent from (or a card in) tonight's
+    listing is still "sealed" there, and its price lands in
+    ``shared.sealed_prices``. The lake cannot reproduce that, and must not —
+    it would stop being a function of one partition. Such rows are the
+    catalog's accumulated history (sp-gc251u), reported, not failed.
+
+    A row whose product IS in tonight's sealed set but is missing from the
+    lake is a real defect and stays one. ``None`` means no classification was
+    available: everything is a defect, as before.
+    """
+    if night_sealed_ids is None:
+        return set(missing), set()
+    history = {key for key in missing if key[0] not in night_sealed_ids}
+    return set(missing) - history, history
+
+
 def report(differences: list[str], label: str, limit: int = 10) -> None:
     print(f"    {len(differences)} {label}")
     for line in differences[:limit]:
@@ -138,6 +164,7 @@ def verify(
     observed_date: dt.date,
     sample: int = DEFAULT_SAMPLE,
     sealed_identifier: str = SEALED_TABLE,
+    night_sealed_ids: set[int] | None = None,
 ) -> int:
     lake = lake_rows(identifier, observed_date)
     singles, sealed, sealed_ids = sqlite_sides(sqlite_path, observed_date)
@@ -202,9 +229,19 @@ def verify(
     # defect in one of them — which is the whole reason it can be valued from.
     lake_sealed_table = lake_sealed_rows(sealed_identifier, observed_date)
     print(f"    lake  {sealed_identifier:<24} {len(lake_sealed_table):>9} rows")
-    missing = [
-        f"{key} in sqlite, not in the lake" for key in sealed.keys() - lake_sealed_table.keys()
-    ]
+    defects, history_only = split_unclassifiable(
+        sealed.keys() - lake_sealed_table.keys(), night_sealed_ids
+    )
+    missing = [f"{key} in sqlite, not in the lake" for key in sorted(defects)]
+    if history_only:
+        products = sorted({pid for pid, _ in history_only})
+        print(
+            f"    note {len(history_only)} sealed row(s) over {len(products)} product(s) exist "
+            "only in sqlite: shared.sealed_products is accumulated across nights and these "
+            "products are not sealed in tonight's raw products listing, so the lake (built "
+            f"from that listing alone) does not classify them. Products: {products[:20]}"
+            + (" …" if len(products) > 20 else "")
+        )
     extra = [
         f"{key} in the lake, not in sqlite" for key in lake_sealed_table.keys() - sealed.keys()
     ]
@@ -219,7 +256,7 @@ def verify(
         report(extra, "row(s) only in the lake")
         report(differing, "row(s) whose price differs")
     else:
-        print(f"    ok   {len(sealed)} sealed rows identical, value for value")
+        print(f"    ok   {len(sealed) - len(history_only)} sealed rows identical, value for value")
 
     print(f"==> sample of {sample} matched rows")
     for key in sorted(singles)[:sample]:
@@ -242,14 +279,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--observed-date", required=True, help="YYYY-MM-DD")
     parser.add_argument("--table", default=DEFAULT_TABLE)
     parser.add_argument("--sealed-table", default=SEALED_TABLE)
+    parser.add_argument(
+        "--ingest-date",
+        help="the raw/ partition whose products listing classifies sealed product "
+        "(default: --observed-date)",
+    )
     parser.add_argument("--sample", type=int, default=DEFAULT_SAMPLE)
     args = parser.parse_args(argv)
+    ingest_date = args.ingest_date or args.observed_date
+    night_sealed_ids, _runs = sealed_product_ids(open_raw(), ingest_date, allow_incomplete=True)
     return verify(
         args.table,
         args.sqlite,
         dt.date.fromisoformat(args.observed_date),
         sample=args.sample,
         sealed_identifier=args.sealed_table,
+        night_sealed_ids=night_sealed_ids,
     )
 
 

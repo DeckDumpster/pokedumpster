@@ -1464,3 +1464,16 @@ manifest. Run it once after enabling, and after any Nessie upgrade.
 * A project's job containers join `pkdump-lake-<instance>` and set
   `PKDUMP_LAKE_NESSIE_URI` to the endpoint above; the warehouse and S3 settings
   are vended by the server.
+
+## Which implementation the nightly timers run (sp-utga27)
+
+`deploy/prices.sh` (build-prices + prices-age) and `deploy/value-snapshots.sh` run the
+certified **Rust** jobs from the app image (`localhost/pkdump:<inst>`, `--entrypoint`),
+certified against prod 2026-10-17. The Python jobs stay built in the lake image as the
+rollback for one release.
+
+**Revert (single config switch):** add `PKDUMP_LAKE_JOBS=python` to
+`~/.config/pkdump/lake.env`; the next timer run uses the Python jobs. Remove it to return
+to Rust. `nessie-backup` and `roundtrip` are not switched (uncertified; always Python).
+The Rust jobs sign with `PKDUMP_LAKE_S3_PROFILE`, which the wrappers derive from
+`PKDUMP_LAKE_S3_BASE_PROFILE` (sp-090v9u). Gate: `tests/deploy/run.sh` §13/§14.

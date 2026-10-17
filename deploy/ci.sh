@@ -646,6 +646,7 @@ cleanup() {
     # each gate's own EXIT trap gets to remove the containers it created. A
     # cancelled run would otherwise leave a MinIO and a Nessie behind per gate.
     pkdump_par_kill_all
+    [ -z "${IMAGE_BUILD_PID:-}" ] || kill "$IMAGE_BUILD_PID" 2>/dev/null || true
     bash "$SCRIPT_DIR/teardown.sh" "$INSTANCE" --purge 2>/dev/null || true
     # The one name this run added purely to hand the image to the gates. Every
     # tier tagged the same image under its own name, and untagging one name of a
@@ -672,6 +673,48 @@ cleanup() {
     [[ $rc -eq 0 ]] || diag "!! CI FAILED during step: ${CURRENT_STEP} (status ${rc})"
 }
 trap cleanup EXIT
+
+# --- 1a. The image build starts at t=0 ----------------------------------------
+# The image needs only the source tree, yet it used to start after lint, cargo
+# test, clippy, the store gates and the frontend -- 252 s of a strictly serial
+# run (docs/ci-timing-2026-10-17.md, sp-0j7h3c). It now starts here, in the
+# background, and is JOINED (pkdump_image_join) where the first gate needs it.
+# Still one build per run (law-a-pipeline-builds-each-artifact-once): the same
+# pkdump_image_ensure, the same tag, only earlier. Its output goes to a file and
+# is printed whole at the join, for the reason ci-parallel.sh buffers per gate.
+# A failed build fails the run AT the join, with the builder's output above it.
+
+# Through `tier -q`, so a typo in this list is the same fatal error it is
+# anywhere else rather than reading as "not selected".
+NEEDS_IMAGE=no
+for _t in container tenants schema refresh; do
+    if tier -q "$_t"; then NEEDS_IMAGE=yes; fi
+done
+
+IMAGE_BUILD_PID=""
+IMAGE_BUILD_LOG=""
+# shellcheck source=deploy/image-lib.sh
+. "$SCRIPT_DIR/image-lib.sh"
+pkdump_image_join() {
+    local rc=0
+    wait "$IMAGE_BUILD_PID" || rc=$?
+    IMAGE_BUILD_PID=""
+    echo "    [step-time] $(date -u +%H:%M:%SZ) t+$(( $(date +%s) - START_TIME ))s (image build finished; its output follows)"
+    cat "$IMAGE_BUILD_LOG"
+    rm -f "$IMAGE_BUILD_LOG"
+    if [ "$rc" -ne 0 ]; then
+        echo "ERROR: the container image build failed (status ${rc})." >&2
+        exit "$rc"
+    fi
+}
+if [ "$NEEDS_IMAGE" = yes ]; then
+    IMAGE_BUILD_LOG="$(mktemp)"
+    echo ""
+    echo "==> Starting the container image build in the background (joined later)"
+    echo "    [step-time] $(date -u +%H:%M:%SZ) t+$(( $(date +%s) - START_TIME ))s"
+    pkdump_image_ensure "$BUILD_IMAGE" "$REPO_DIR" >"$IMAGE_BUILD_LOG" 2>&1 &
+    IMAGE_BUILD_PID=$!
+fi
 
 # --- 1b. Lint tier ------------------------------------------------------------
 # Hermetic and sub-second: proves the diagnostics above actually report a
@@ -917,6 +960,23 @@ if tier lint; then
     ( cd "$REPO_DIR" && cargo fmt --check )
 fi
 
+# --- 1c. Frontend gate (ahead of cargo test: ~18 s, a fast-fail) -------------------------------------------------------
+
+if tier frontend; then
+    step "Frontend: npm ci && npm test && npm run check && npm run build"
+    (
+        cd "$REPO_DIR/frontend"
+        npm ci
+        # Design-token gates: WCAG AA contrast for every declared pairing, the
+        # reference/semantic layer split, and the two ratchets — raw colour and
+        # raw dimension — which fail on any INCREASE in values chosen outside
+        # the token layer. Node's built-in runner, no extra deps.
+        npm test
+        npm run check
+        npm run build
+    )
+fi
+
 # --- 2. Rust gates ----------------------------------------------------------
 
 if tier rust; then
@@ -978,24 +1038,7 @@ if tier deploy; then
     bash "$REPO_DIR/tests/store/cargo_cache.sh"
 fi
 
-# --- 3. Frontend gate -------------------------------------------------------
-
-if tier frontend; then
-    step "Frontend: npm ci && npm test && npm run check && npm run build"
-    (
-        cd "$REPO_DIR/frontend"
-        npm ci
-        # Design-token gates: WCAG AA contrast for every declared pairing, the
-        # reference/semantic layer split, and the two ratchets — raw colour and
-        # raw dimension — which fail on any INCREASE in values chosen outside
-        # the token layer. Node's built-in runner, no extra deps.
-        npm test
-        npm run check
-        npm run build
-    )
-fi
-
-# --- 3b. The image, once ----------------------------------------------------
+# --- 3b. The image, once (built from t=0, joined here) -----------------------
 # Five gates below need the shipped image: the container gate and the
 # schema-version gate through deploy/setup.sh, and the upgrade, tenant-header
 # and refresh gates directly. Each used to run its own `podman build` over
@@ -1015,21 +1058,14 @@ fi
 # just because the build moved up here. `tier` prints a skip line per call, so
 # the question is asked through the raw predicate and answered once.
 
-# Through `tier -q`, so a typo in this list is the same fatal error it is
-# anywhere else rather than reading as "not selected" and quietly never
-# building. No `break`: every name is put to the library.
-NEEDS_IMAGE=no
-for _t in container tenants schema refresh; do
-    if tier -q "$_t"; then NEEDS_IMAGE=yes; fi
-done
-
-if [ "$NEEDS_IMAGE" = yes ]; then
-    step "Building the container image (once — every gate below tags this one)"
-    # Through the same helper the gates use, so a caller who already has the
-    # image (PKDUMP_PREBUILT_IMAGE set in the environment) skips even this build.
-    # shellcheck source=deploy/image-lib.sh
-    . "$SCRIPT_DIR/image-lib.sh"
-    pkdump_image_ensure "$BUILD_IMAGE" "$REPO_DIR"
+# The build itself started at t=0 (see "The image build starts at t=0" above);
+# this is where the first thing that needs it waits for it.
+if [ "$NEEDS_IMAGE" != yes ]; then
+    echo ""
+    echo "==> (skipped: no selected tier needs the container image)"
+else
+    step "Joining the container image build (started at t=0; every gate below tags this one)"
+    pkdump_image_join
     export PKDUMP_PREBUILT_IMAGE="$BUILD_IMAGE"
     echo "    ${BUILD_IMAGE} ($(podman image inspect --format '{{.Id}}' "$BUILD_IMAGE" | cut -c1-12))"
 
@@ -1044,9 +1080,6 @@ if [ "$NEEDS_IMAGE" = yes ]; then
         podman save "$BUILD_IMAGE" | zstd -q -3 -T0 -o "$PKDUMP_CI_IMAGE_OUT/image.tar.zst"
         echo "    exported to ${PKDUMP_CI_IMAGE_OUT} ($(du -h "$PKDUMP_CI_IMAGE_OUT/image.tar.zst" | cut -f1))"
     fi
-else
-    echo ""
-    echo "==> (skipped: no selected tier needs the container image)"
 fi
 
 # --- 4. Container gate ------------------------------------------------------

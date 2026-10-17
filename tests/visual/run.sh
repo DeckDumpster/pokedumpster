@@ -60,8 +60,11 @@ pkdump_store_activate
 # Bounded condition polling, in one place for every harness (pd-86er).
 # shellcheck source=tests/lib/wait.sh
 . "$REPO_DIR/tests/lib/wait.sh"
+# shellcheck source=tests/visual/workers-lib.sh
+. "$SCRIPT_DIR/workers-lib.sh"
 
 cleanup() {
+    visual_workers_stop "$REPO_DIR"
     if [ "$KEEP" = true ]; then
         echo "==> Leaving '${INSTANCE}' running (--keep). Tear down with:"
         echo "    bash deploy/teardown.sh ${INSTANCE} --purge"
@@ -98,6 +101,8 @@ if [ -z "$PORT" ]; then
     journalctl --user -u "$SERVICE_NAME" --no-pager -n 40 2>/dev/null || true
     exit 1
 fi
+
+visual_workers_start "$REPO_DIR" "$INSTANCE" "http://localhost:${PORT}"
 
 PKDUMP_BASE_URL="http://localhost:${PORT}" \
     bash "$SCRIPT_DIR/playwright.sh" "${PW_ARGS[@]}"

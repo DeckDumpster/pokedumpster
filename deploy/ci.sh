@@ -639,6 +639,9 @@ bash "$SCRIPT_DIR/teardown.sh" "$INSTANCE" --purge 2>/dev/null || true
 # the housekeeping without reaching into another run's build.
 podman image prune -f --filter "until=24h" >/dev/null 2>&1 || true
 
+# shellcheck source=tests/visual/workers-lib.sh
+. "$REPO_DIR/tests/visual/workers-lib.sh"
+
 # Tear the ci instance down again on exit, whatever happens.
 cleanup() {
     local rc=$?
@@ -647,6 +650,7 @@ cleanup() {
     # cancelled run would otherwise leave a MinIO and a Nessie behind per gate.
     pkdump_par_kill_all
     [ -z "${IMAGE_BUILD_PID:-}" ] || kill "$IMAGE_BUILD_PID" 2>/dev/null || true
+    visual_workers_stop "$REPO_DIR"
     bash "$SCRIPT_DIR/teardown.sh" "$INSTANCE" --purge 2>/dev/null || true
     # The one name this run added purely to hand the image to the gates. Every
     # tier tagged the same image under its own name, and untagging one name of a
@@ -1233,6 +1237,9 @@ fi
 
 if tier browser; then
     step "Browser: every route's layout properties, and /collection's DOM bounded"
+    # One server instance per Playwright worker (sp-lwr1fk): the extra ones
+    # re-tag the image built above, so this is not a second build.
+    visual_workers_start "$REPO_DIR" "$INSTANCE" "http://localhost:${PORT}"
     PKDUMP_BASE_URL="http://localhost:${PORT}" bash "$REPO_DIR/tests/visual/playwright.sh"
 fi
 

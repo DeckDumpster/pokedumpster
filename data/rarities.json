@@ -53,5 +53,6 @@
   {"name":"Mega Attack Rare","rank":5,"grp":"special"},
   {"name":"Special Art Rare","rank":6,"grp":"special"},
   {"name":"Character Super Rare","rank":6,"grp":"special"},
-  {"name":"Shiny Secret Rare","rank":7,"grp":"secret"}
+  {"name":"Shiny Secret Rare","rank":7,"grp":"secret"},
+  {"name":"RGB Rare","rank":7,"grp":"secret"}
 ]

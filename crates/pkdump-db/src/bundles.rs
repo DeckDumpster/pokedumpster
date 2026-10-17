@@ -488,6 +488,7 @@ pub fn analytics(conn: &Connection, slug: &str) -> Result<Option<SetAnalytics>> 
         owned_printings,
         owned_copies,
         market_value,
+        master_market_value: market_value,
         owned_value_unique,
         owned_value,
         rarities,

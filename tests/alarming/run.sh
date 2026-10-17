@@ -153,7 +153,14 @@ check() { # check <label> <expected> <actual>
 		fail=$((fail + 1))
 	fi
 }
-log() { printf '\n=== %s ===\n' "$*"; }
+# Each banner also says how long the PREVIOUS section took: a gate that costs
+# minutes cannot be shortened until someone can see which section the minutes
+# are in (docs/ci-timing-2026-10-17.md, sp-e41bsi).
+LOG_LAP=$SECONDS
+log() {
+	printf '\n=== %s === [previous section %ss, run %ss]\n' "$*" "$((SECONDS - LOG_LAP))" "$SECONDS"
+	LOG_LAP=$SECONDS
+}
 
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {

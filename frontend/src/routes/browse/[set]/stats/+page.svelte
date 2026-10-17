@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
-	import { EmptyState, ProgressBar } from '$lib/components/ui';
+	import { EmptyState, Field, ProgressBar } from '$lib/components/ui';
 	import { money, count } from '$lib/format';
 	import type { SetAnalytics } from '$lib/types/SetAnalytics';
+	import type { TopCard } from '$lib/types/TopCard';
 
 	let stats = $state<SetAnalytics | null>(null);
 	let loading = $state(true);
@@ -20,6 +22,35 @@
 			.then((s) => (stats = s))
 			.catch((e) => (error = e instanceof Error ? e.message : String(e)))
 			.finally(() => (loading = false));
+	});
+
+	// "Most valuable": top N cards by per-card value. The checkbox is kept in
+	// the URL (`?missing=1`) like the binder page's toggles, so Back and
+	// reloads restore it.
+	const TOP_N = 10;
+	let missingOnly = $state(
+		typeof window !== 'undefined' && page.url.searchParams.get('missing') === '1'
+	);
+	let topCards = $state<TopCard[]>([]);
+	let topError = $state<string | null>(null);
+
+	$effect(() => {
+		const set = page.params.set;
+		if (!set) return;
+		const missing = missingOnly;
+		let stale = false;
+		topError = null;
+		api
+			.setTopCards(set, TOP_N, missing)
+			.then((t) => !stale && (topCards = t))
+			.catch((e) => !stale && (topError = e instanceof Error ? e.message : String(e)));
+		const url = new URL(window.location.href);
+		if (missing) url.searchParams.set('missing', '1');
+		else url.searchParams.delete('missing');
+		if (url.href !== window.location.href) {
+			void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
+		}
+		return () => (stale = true);
 	});
 
 	// Keep the breadcrumb fresh — use the URL-param set code as a
@@ -158,6 +189,42 @@
 			</div>
 		</section>
 	</div>
+
+	<section class="card" data-testid="top-cards">
+		<div class="tophead">
+			<h2>Most valuable</h2>
+			<Field
+				inline
+				type="checkbox"
+				label="Missing only"
+				bind:checked={missingOnly}
+			/>
+		</div>
+		{#if topError}
+			<p class="error">Failed to load top cards: {topError}</p>
+		{:else if topCards.length === 0}
+			<p class="muted">{missingOnly ? 'No priced cards missing.' : 'No priced cards.'}</p>
+		{:else}
+			<ol class="toplist">
+				{#each topCards as t (t.card_id)}
+					<li class="toprow" class:owned={t.owned}>
+						{#if t.image_small}
+							<img class="thumb" src={t.image_small} alt="" loading="lazy" />
+						{:else}
+							<span class="thumb"></span>
+						{/if}
+						<a class="topname" href="/card/{stats.set_code}/{t.number}">{t.name}</a>
+						<span class="topnum">#{t.number}</span>
+						<span class="toprarity">{t.rarity ?? ''}</span>
+						{#if t.master_only}
+							<span class="toptag" title="Counts toward the master set only">master only</span>
+						{/if}
+						<span class="topprice">{money(t.price)}</span>
+					</li>
+				{/each}
+			</ol>
+		{/if}
+	</section>
 
 	{#if duplicates}
 		<section class="card">
@@ -330,6 +397,60 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-3);
+	}
+	.tophead {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: var(--space-3);
+		margin-bottom: var(--space-3);
+	}
+	.tophead h2 {
+		margin: 0;
+	}
+	.toplist {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+	.toprow {
+		display: grid;
+		grid-template-columns: 36px 1fr auto auto auto auto;
+		align-items: center;
+		gap: var(--space-3);
+		padding: var(--space-1) 0;
+		border-bottom: 1px solid var(--color-border);
+		font-size: var(--text-lg);
+	}
+	.thumb {
+		width: 36px;
+		height: 50px;
+		object-fit: contain;
+	}
+	.topname {
+		color: var(--color-text);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.topname:hover {
+		color: var(--color-text-accent);
+	}
+	.topnum,
+	.toprarity,
+	.toptag {
+		color: var(--color-text-subtle);
+		font-size: var(--text-sm);
+	}
+	.toptag {
+		text-transform: uppercase;
+	}
+	.topprice {
+		font-weight: 700;
+		color: var(--color-text-accent);
+		min-width: 4.5rem;
+		text-align: right;
 	}
 	.figs {
 		display: flex;

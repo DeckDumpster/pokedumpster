@@ -1,0 +1,10 @@
+start_page: /browse/sv3pt5/stats
+involves:
+  - "'Most valuable' card, rows .toprow, 'Missing only' checkbox"
+fixture_data:
+  set: "sv3pt5"
+  owned_cards: "8 sv3pt5 copies registered via the 151 binder page-through"
+notes: >
+  1. Navigate to /browse/sv3pt5/stats. 2. Wait for the Most valuable rows.
+  3. Tick Missing only. 4. No row is marked owned any more and the URL
+  carries missing=1.

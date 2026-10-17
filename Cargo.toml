@@ -11,6 +11,7 @@ members = [
     "crates/pkdump-server",
     "crates/pkdump-ship",
     "crates/pkdump-site",
+    "crates/pkdump-value-snapshots",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ pkdump-ingest = { path = "crates/pkdump-ingest" }
 pkdump-server = { path = "crates/pkdump-server" }
 pkdump-ship = { path = "crates/pkdump-ship" }
 pkdump-site = { path = "crates/pkdump-site" }
+pkdump-value-snapshots = { path = "crates/pkdump-value-snapshots" }
 
 # Shared kit (one implementation of the tcgcsv client and of the lakehouse, used by dumpstar
 # too). ONE revision for every kit crate: two revisions would put two copies of the

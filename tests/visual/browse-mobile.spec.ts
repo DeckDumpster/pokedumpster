@@ -4,7 +4,7 @@
  * title lies inside the viewport with every section expanded.
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { stabilize, settle } from './stabilize';
 
 test('/browse wraps chips, titles and tiles at 390px', async ({ page }) => {

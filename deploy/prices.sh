@@ -196,6 +196,13 @@ for VAR in PKDUMP_LAKE_REF PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION \
     PKDUMP_LAKE_S3_ROLE_ARN PKDUMP_LAKE_S3_BASE_PROFILE; do
     [ -n "${!VAR:-}" ] && ENV_ARGS+=(-e "${VAR}=${!VAR}")
 done
+# The Rust lake jobs (kit sp-3yxvq1) assume from PKDUMP_LAKE_S3_PROFILE and ignore
+# the BASE_PROFILE the Python jobs read: without it they sign with the ROLE profile
+# AWS_PROFILE names and fail with "failed to load signing credential" (sp-090v9u).
+# Same profile, same lake.env source; an explicit PKDUMP_LAKE_S3_PROFILE wins.
+if [ -n "${PKDUMP_LAKE_S3_BASE_PROFILE:-}" ] && [ -z "${PKDUMP_LAKE_S3_PROFILE:-}" ]; then
+    ENV_ARGS+=(-e "PKDUMP_LAKE_S3_PROFILE=${PKDUMP_LAKE_S3_BASE_PROFILE}")
+fi
 
 # Credentials, the same assume-role path the Litestream sidecar, Nessie and the
 # transform tier use: a non-secret role profile as a file, the bootstrap key as

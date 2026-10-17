@@ -254,7 +254,7 @@ wait_refusal() { # wait_refusal <seconds> <since> <pattern>
 			printf '%s' "$port"
 			return 1
 		fi
-		if journalctl --user -u "$SERVICE_NAME" --since "$2" --no-pager 2>/dev/null | grep -qF -- "$3"; then
+		if grep -qF -- "$3" <<<"$(journalctl --user -u "$SERVICE_NAME" --since "$2" --no-pager 2>/dev/null)"; then
 			return 0
 		fi
 		sleep 0.25

@@ -700,6 +700,7 @@ wrapper() {
 		PKDUMP_ALERTS_ENV="$VS_HOME/.config/pkdump/no-alerts.env" \
 		PKDUMP_LAKE_NETWORK="$NET" \
 		PKDUMP_LAKE_JOB_IMAGE="$JOB_IMAGE" \
+		PKDUMP_LAKE_RUST_IMAGE="$APP_IMAGE" \
 		PKDUMP_LAKE_DATA="$FIXTURE/home" \
 		bash "${REPO_DIR}/deploy/value-snapshots.sh" "$INST" "$@"
 }

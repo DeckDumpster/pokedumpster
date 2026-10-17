@@ -223,10 +223,16 @@ fi
 # --pull=never: the job image is built locally by deploy/setup-lake.sh and named
 # localhost/…, so a pull attempt can only ever be podman treating `localhost` as
 # a registry. There is nothing to fetch and nothing to fall back to.
+# $1 is the Python job's name; the Rust twin of build-prices and prices-age
+# carries the same name, so both implementations are reached through it.
+# Rust by default, Python behind PKDUMP_LAKE_JOBS=python (deploy/lake-lib.sh).
 lake_job() {
+    local job="$1"
+    shift
+    pkdump_lake_job_select "$INSTANCE" "$job" "$job" || return 1
     podman run --rm --pull=never --network "$NETWORK" \
         "${ENV_ARGS[@]}" ${CRED_ARGS[@]+"${CRED_ARGS[@]}"} \
-        "$JOB_IMAGE" "$@"
+        ${RUN_EP[@]+"${RUN_EP[@]}"} "$RUN_IMAGE" ${RUN_CMD[@]+"${RUN_CMD[@]}"} "$@"
 }
 
 # --- Build the day ----------------------------------------------------------

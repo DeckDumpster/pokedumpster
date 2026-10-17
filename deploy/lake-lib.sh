@@ -116,3 +116,49 @@ pkdump_lake_job_image_ensure() {
     fi
     podman tag "$prebuilt" "$tag"
 }
+
+# --- Which implementation the nightly jobs run (sp-utga27) ------------------
+#
+# build-prices, prices-age and value-snapshots exist twice: the Python jobs in the
+# lake image (`localhost/pkdump-lake:<inst>`) and their Rust twins in the APP image
+# (`localhost/pkdump:<inst>`), certified row for row against prod on 2026-10-17
+# (sp-4k7mxi.4/.5/.6). The Rust jobs are the default. `PKDUMP_LAKE_JOBS=python` in
+# ~/.config/pkdump/lake.env is the whole rollback: the Python image stays built and
+# the wrappers still use it for the catalog-answering probe either way. nessie-backup
+# and the roundtrip are NOT switched — they stay on Python until certified.
+pkdump_lake_jobs_runtime() {
+    case "${PKDUMP_LAKE_JOBS:-rust}" in
+    rust | python) printf '%s' "${PKDUMP_LAKE_JOBS:-rust}" ;;
+    *)
+        echo "PKDUMP_LAKE_JOBS=${PKDUMP_LAKE_JOBS} — expected 'rust' or 'python' (lake.env)" >&2
+        return 1
+        ;;
+    esac
+}
+
+# The image the Rust twins run from: the app image, which ships them.
+pkdump_lake_rust_image() {
+    printf '%s' "${PKDUMP_LAKE_RUST_IMAGE:-localhost/pkdump:${1}}"
+}
+
+# pkdump_lake_job_select <instance> <python-name> <rust-name>
+# Sets RUN_IMAGE, RUN_EP (podman args placing the binary) and RUN_CMD (the
+# program words that follow the image). The app image's ENTRYPOINT is
+# `pkdump serve`, so the Rust binary is named with --entrypoint.
+pkdump_lake_job_select() {
+    local rt
+    rt="$(pkdump_lake_jobs_runtime)" || return 1
+    if [ "$rt" = rust ]; then
+        RUN_IMAGE="$(pkdump_lake_rust_image "$1")"
+        RUN_EP=(--entrypoint "$3")
+        RUN_CMD=()
+        if ! podman image exists "$RUN_IMAGE" 2>/dev/null; then
+            echo "no app image ${RUN_IMAGE} to run ${3} from; deploy it (deploy/deploy.sh ${1}) or set PKDUMP_LAKE_JOBS=python in lake.env" >&2
+            return 1
+        fi
+    else
+        RUN_IMAGE="${JOB_IMAGE}"
+        RUN_EP=()
+        RUN_CMD=("$2")
+    fi
+}

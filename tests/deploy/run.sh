@@ -1528,6 +1528,7 @@ case "$1 $2" in
 "image exists" | "network exists") exit "${PKDUMP_TEST_NO_LAKEHOUSE:-0}" ;;
 esac
 if [ "$1" = run ]; then
+	[ -n "${PKDUMP_TEST_VS_LOG:-}" ] && echo "JOB: $*" >> "$PKDUMP_TEST_VS_LOG"
 	printf '==> 2026-08-11: 1 tenant(s) snapshotted, 1 skipped\n    skipped ghost: no database at /data/tenants/01J.sqlite\n'
 	exit "${PKDUMP_TEST_JOB_RC:-0}"
 fi
@@ -1605,6 +1606,27 @@ set -e
 check "no job image -> fails (a timer armed at nothing must page)" "1" "$VS_NOLAKEHOUSE_RC"
 check "and names the command that installs it" "1" \
 	"$(printf '%s' "$VS_NOLAKEHOUSE" | grep -c 'deploy/setup-lake.sh vstest' || true)"
+# sp-utga27: the transform execs the certified Rust binary by default, Python
+# behind PKDUMP_LAKE_JOBS=python.
+run_vs_cmd() { # run_vs_cmd <lake.env extra line>
+	printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_BASE_PROFILE=pkdump-base\n%s\n' "$1" \
+		> "${VS_HOME}/.config/pkdump/lake.env"
+	: > "${WORK}/vs-jobs.log"
+	PATH="${WORK}/vsbin:${ORIG_PATH}" HOME="$VS_HOME" \
+		PKDUMP_LAKE_ENV="${VS_HOME}/.config/pkdump/lake.env" \
+		PKDUMP_ALERTS_ENV="${VS_HOME}/.config/pkdump/nonexistent.env" \
+		PKDUMP_TEST_VS_LOG="${WORK}/vs-jobs.log" \
+		bash "${REPO_DIR}/deploy/value-snapshots.sh" vstest >/dev/null 2>&1 || true
+}
+run_vs_cmd ""
+check "value-snapshots execs the Rust binary from the app image" "1" \
+	"$(grep -c -- '--entrypoint pkdump-value-snapshots localhost/pkdump:vstest --data-dir /data' "${WORK}/vs-jobs.log" || true)"
+check "…with the signing profile (sp-090v9u)" "1" \
+	"$(grep -c -- '-e PKDUMP_LAKE_S3_PROFILE=pkdump-base' "${WORK}/vs-jobs.log" || true)"
+run_vs_cmd "PKDUMP_LAKE_JOBS=python"
+check "PKDUMP_LAKE_JOBS=python rolls the transform back" "1" \
+	"$(grep -c -- 'localhost/pkdump-lake:vstest pkdump-lake-value-snapshots --data-dir /data' "${WORK}/vs-jobs.log" || true)"
+
 # And the job image is local-only, so a pull can only ever be podman mistaking
 # `localhost` for a registry.
 check "never pulls the job image" "1" \
@@ -2490,9 +2512,9 @@ check "the freshness check runs even when the build succeeded" "1" \
 # The date the jobs refuse to default from the clock is supplied by the
 # scheduler. UTC, because that is what a raw/ ingest_date partition is named in.
 check "the wrapper names today's UTC date to the build" "1" \
-	"$(grep -c -- "pkdump-lake-build-prices --ingest-date $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+	"$(grep -cE -- "pkdump-lake-build-prices( [^ ]+)? --ingest-date $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
 check "…and measures age against the same day" "1" \
-	"$(grep -c -- "pkdump-lake-prices-age --as-of $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
+	"$(grep -cE -- "pkdump-lake-prices-age( [^ ]+)? --as-of $(date -u +%F)" "${WORK}/prices-jobs.log" || true)"
 # The decision this bead had to make, spelled into the command line: build the
 # day even when its landing run did not finish, and let the snapshot record it.
 check "the build is allowed an incomplete day" "1" \
@@ -2605,6 +2627,43 @@ check "never pulls the job image" "1" \
 # Iceberg, and mounts no data volume at all.
 check "no tenant data is mounted into the job" "0" \
 	"$(grep -c '^\s*-v "\${DATA}' "${REPO_DIR}/deploy/prices.sh" || true)"
+
+# --- sp-utga27: the nightly jobs exec the certified RUST binaries -----------
+# Driven through the real wrappers with a fake podman that records the command
+# line. Default = Rust, from the app image, entrypoint named, and prod's lake env
+# (the sp-090v9u signing profile) forwarded; PKDUMP_LAKE_JOBS=python in lake.env is
+# the one-switch rollback; nessie-backup is untouched.
+run_px_jobs() { # run_px_jobs <lake.env extra line>
+	printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_BASE_PROFILE=pkdump-base\nAWS_PROFILE=pkdump-role\n%s\n' "$1" \
+		> "${PX_HOME}/.config/pkdump/lake.env"
+	: > "${WORK}/prices-jobs.log"
+	PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
+		PKDUMP_LAKE_ENV="${PX_HOME}/.config/pkdump/lake.env" \
+		PKDUMP_ALERTS_ENV="${PX_HOME}/.config/pkdump/nonexistent.env" \
+		PUSHOVER_TOKEN= PUSHOVER_USER= \
+		PKDUMP_TEST_PRICES_LOG="${WORK}/prices-jobs.log" \
+		bash "${REPO_DIR}/deploy/prices.sh" pxtest --ingest-date 2026-08-09 >/dev/null 2>&1 || true
+}
+run_px_jobs ""
+PX_RUST="$(grep -E 'build-prices|prices-age' "${WORK}/prices-jobs.log")"
+check "prices.sh execs the Rust build-prices from the app image" "1" \
+	"$(printf '%s\n' "$PX_RUST" | grep -c -- '--entrypoint pkdump-lake-build-prices localhost/pkdump:pxtest ' || true)"
+check "prices.sh execs the Rust prices-age from the app image" "1" \
+	"$(printf '%s\n' "$PX_RUST" | grep -c -- '--entrypoint pkdump-lake-prices-age localhost/pkdump:pxtest ' || true)"
+check "the Rust jobs get the signing profile (sp-090v9u)" "2" \
+	"$(printf '%s\n' "$PX_RUST" | grep -c -- '-e PKDUMP_LAKE_S3_PROFILE=pkdump-base' || true)"
+check "the Rust jobs get the catalog URL and bucket" "2" \
+	"$(printf '%s\n' "$PX_RUST" | grep -c -- '-e PKDUMP_LAKE_NESSIE_URI=.* -e PKDUMP_LAKE_S3_BUCKET=pdtest' || true)"
+run_px_jobs "PKDUMP_LAKE_JOBS=python"
+PX_PY="$(grep -E 'build-prices|prices-age' "${WORK}/prices-jobs.log")"
+check "PKDUMP_LAKE_JOBS=python rolls back to the lake image" "2" \
+	"$(printf '%s\n' "$PX_PY" | grep -c -- 'localhost/pkdump-lake:pxtest pkdump-lake-\(build-prices\|prices-age\) ' || true)"
+check "…with no entrypoint override" "0" "$(printf '%s\n' "$PX_PY" | grep -c -- '--entrypoint' || true)"
+run_px_jobs "PKDUMP_LAKE_JOBS=bogus"
+check "an unknown PKDUMP_LAKE_JOBS runs nothing" "0" \
+	"$(grep -c -E 'build-prices|prices-age' "${WORK}/prices-jobs.log" || true)"
+check "nessie-backup stays on the Python job" "0" \
+	"$(grep -c 'pkdump_lake_job_select' "${REPO_DIR}/deploy/nessie-backup.sh" || true)"
 
 reset_store
 

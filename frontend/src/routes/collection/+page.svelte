@@ -1188,7 +1188,7 @@
 	sticky
 	surface="panel"
 >
-	<Toolbar gap="md" wrap={false}>
+	<Toolbar gap="md" wrap={false} class="searchrow">
 		<a class="brand" href="/" aria-label="Home" title="Home">
 			<span class="brandmark"><Pokeball size={26} /></span>
 		</a>
@@ -1907,13 +1907,17 @@
 		flex: 1;
 		min-width: 0;
 		/* Extra right padding leaves room for the clear button without
-		   it overlapping typed text. */
-		padding: var(--space-3) var(--space-8) var(--space-3) var(--space-4);
+		   it overlapping typed text. Height is declared, not summed from
+		   padding and line-height: deck's box is 42px (sp-9s33g3). */
+		box-sizing: border-box;
+		height: 2.625rem;
+		padding: var(--space-0) var(--space-8) var(--space-0) var(--space-4);
 		background: var(--color-control-surface);
 		border: 1px solid var(--color-control-border);
 		border-radius: var(--radius-md);
 		color: var(--color-control-text);
 		font: inherit;
+		font-size: var(--text-base);
 	}
 	/* An invalid control reddens on the danger ramp, not the brand one —
 	   the same answer the Field primitive gives for `error`. Crimson here
@@ -1933,6 +1937,7 @@
 	}
 	/* Deck's: a square, accent border, accent glyph; fills on hover. */
 	.helplink {
+		box-sizing: border-box;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -1944,6 +1949,7 @@
 		color: var(--color-text-accent);
 		text-decoration: none;
 		font-weight: 600;
+		font-size: var(--text-base);
 		flex-shrink: 0;
 	}
 	.helplink:hover {
@@ -2056,18 +2062,30 @@
 	.viewtoggle {
 		display: flex;
 	}
-	/* Every control on this row is 2.375rem tall, deck's 38px, so the toggle,
-	   the menu and the column chooser read as one row. The border is the
-	   control border (3:1 against the panel), not the quiet rule. */
+	/* Deck's rows: 12px between search controls (8 on a phone), 10px on the
+	   row beneath. Toolbar's own gap is a scoped class, hence the specificity. */
+	:global(.topbar > .controlsrow.toolbar) {
+		gap: var(--space-2-5);
+	}
+	@media (max-width: 768px) {
+		:global(.topbar > .searchrow.toolbar) {
+			gap: var(--space-2);
+		}
+	}
+	/* Sizes are deck's measured boxes (sp-9s33g3): help and columns 38x38, the
+	   view toggle's buttons 46x34, the menu 31x33, the search 42 tall. The
+	   border is the control border (3:1 against the panel), not the quiet rule. */
 	.viewtoggle button {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		height: 2.375rem;
+		box-sizing: border-box;
+		width: 2.875rem;
+		height: 2.125rem;
 		background: var(--color-control-surface);
 		border: 1px solid var(--color-control-border);
 		color: var(--color-text-subtle);
-		padding: var(--space-0) var(--space-3);
+		padding: var(--space-0);
 		font-size: var(--text-xl);
 		line-height: 1;
 		cursor: pointer;
@@ -2086,6 +2104,7 @@
 		position: relative;
 	}
 	.colsbtn {
+		box-sizing: border-box;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -2157,13 +2176,15 @@
 		color: var(--color-text-strong);
 	}
 	.burger {
-		height: 2.375rem;
+		box-sizing: border-box;
+		width: 1.95rem;
+		height: 2.05rem;
 		background: var(--color-control-surface);
 		border: 1px solid var(--color-control-border);
 		color: var(--color-text-subtle);
 		font-size: 1.3rem;
 		line-height: 1;
-		padding: var(--space-0) var(--space-3);
+		padding: var(--space-0);
 		cursor: pointer;
 		border-radius: var(--radius-md);
 	}

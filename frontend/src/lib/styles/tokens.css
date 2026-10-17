@@ -125,3 +125,14 @@
 	);
 }
 
+
+/* ==========================================================================
+   SCALE STEPS THE KIT LACKS — dimensions only, no colour. Both exist so that
+   /collection's header can match deckdumpster's measured controls (sp-9s33g3):
+   a 16px input/glyph size and a 10px gap.
+   ========================================================================== */
+
+:root {
+	--text-base: 1rem;
+	--space-2-5: 0.625rem;
+}

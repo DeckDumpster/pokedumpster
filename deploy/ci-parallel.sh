@@ -22,7 +22,7 @@
 #
 # ── THE CAP IS A RESOURCE DECISION, NOT A TUNING KNOB ───────────────────────
 #
-# Three at a time by default, four at the very most. Each of these gates stands
+# Four at a time by default (sp-gik339), four at the very most. Each of these gates stands
 # up two or three containers — a MinIO, sometimes a JVM (Nessie), sometimes a
 # whole pkdump instance with a Litestream sidecar. Above four the failures stop
 # looking like resource exhaustion and start looking like flaky gates, which is
@@ -110,7 +110,10 @@ PKDUMP_PAR_DISK_PATHS=("$HOME")
 # REAL script against an impossible floor, so both halves are covered.
 PKDUMP_PAR_DISKCHECK="${PKDUMP_PAR_DISKCHECK:-${_PKDUMP_PAR_LIB_DIR}/diskcheck.sh}"
 
-# How many gates at once. See the header: 3 by default, 4 is the ceiling.
+# How many gates at once. See the header: 4 by default (sp-gik339, raised from
+# 2 on the dedicated 8-core / 15.3 GiB ephemeral VM; the phase was cap-bound:
+# docs/ci-timing-2026-10-17.md), 4 is also the ceiling.
+PKDUMP_PAR_JOBS_DEFAULT=4
 PKDUMP_PAR_JOBS_CEILING=4
 
 pkdump_par_reset() {
@@ -252,7 +255,7 @@ pkdump_par_run() {
 	# On the ephemeral VM the same gates ran 17 in 964s at two (2026-09-15). Whether
 	# three fits in 8 GiB without prod beside it is unmeasured; the ~13 min is why
 	# it is worth measuring rather than assuming.
-	local cap="${PKDUMP_CI_JOBS:-2}"
+	local cap="${PKDUMP_CI_JOBS:-$PKDUMP_PAR_JOBS_DEFAULT}"
 	case "$cap" in
 	'' | *[!0-9]*)
 		echo "ERROR: PKDUMP_CI_JOBS='${cap}' is not a positive integer." >&2

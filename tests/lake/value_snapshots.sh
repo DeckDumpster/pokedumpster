@@ -96,6 +96,8 @@ die() {
 
 # shellcheck source=deploy/store-lib.sh
 . "${REPO_DIR}/deploy/store-lib.sh"
+# shellcheck source=deploy/lake-lib.sh
+. "${REPO_DIR}/deploy/lake-lib.sh"
 # shellcheck source=deploy/image-lib.sh
 . "${REPO_DIR}/deploy/image-lib.sh"
 pkdump_store_load_config
@@ -275,7 +277,7 @@ GHOST=$(awk -F'\t' '$1 == "ghost" {print $2}' "$FIXTURE/tenants.tsv")
 echo "    alice=${ALICE} bob=${BOB} ghost=${GHOST} (missing, on purpose)"
 
 echo "==> §1  Build both images"
-podman build -t "$JOB_IMAGE" -f "${REPO_DIR}/lake/Containerfile" "${REPO_DIR}/lake" >/dev/null
+pkdump_lake_job_image_ensure "$JOB_IMAGE" "$REPO_DIR" >/dev/null
 echo "    ${JOB_IMAGE}"
 # The app image carries the shipper and the zone reader. Through
 # pkdump_image_ensure so a CI run that already built it (pd-5l2e) re-tags

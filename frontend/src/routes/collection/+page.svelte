@@ -2867,7 +2867,7 @@
 		}
 		table.dd {
 			font-size: var(--text-sm);
-			--row-content: 54px; /* three lines of a wrapped name */
+			--row-content: 44px; /* deck's thumbnail: a one-line row is 49px (sp-rkx1zi); a wrapped name shows two lines */
 			/* The declared widths shrink with the type and the padding, or the
 			   table would keep its desktop total on a 360px screen and scroll
 			   further than it used to. Re-declared rather than derived: they

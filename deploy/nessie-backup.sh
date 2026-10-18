@@ -110,7 +110,8 @@ while IFS= read -r line; do
     esac
 done <"$QUADLET"
 
-# --- the lake job container (PyIceberg + the backup module) ------------------
+# --- the lake job container: the Rust job in the app image by default,
+# the Python lake image under PKDUMP_LAKE_JOBS=python (deploy/lake-lib.sh) ----
 ENV_ARGS=(-e "PKDUMP_LAKE_NESSIE_URI=${CATALOG_URI}" -e "PKDUMP_NESSIE_BACKUP_URL=${PKDUMP_NESSIE_BACKUP_URL}")
 for VAR in PKDUMP_LAKE_REF PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION PKDUMP_LAKE_S3_PREFIX \
     PKDUMP_LAKE_S3_ENDPOINT PKDUMP_LAKE_S3_ACCESS_KEY_ID PKDUMP_LAKE_S3_SECRET_ACCESS_KEY \
@@ -136,8 +137,10 @@ lake_job() { # lake_job <network-uri-override|-> args...
     local uri="$1"; shift
     local env=("${ENV_ARGS[@]}")
     [ "$uri" != - ] && env+=(-e "PKDUMP_LAKE_NESSIE_URI=${uri}")
+    pkdump_lake_job_select "$INSTANCE" pkdump-lake-nessie-backup pkdump-lake-nessie-backup || return 1
     podman run --rm --pull=never --network "$NETWORK" "${env[@]}" \
-        ${CRED_ARGS[@]+"${CRED_ARGS[@]}"} -v "${WORK}:/work:Z" "$JOB_IMAGE" "$@"
+        ${CRED_ARGS[@]+"${CRED_ARGS[@]}"} -v "${WORK}:/work:Z" \
+        ${RUN_EP[@]+"${RUN_EP[@]}"} "$RUN_IMAGE" ${RUN_CMD[@]+"${RUN_CMD[@]}"} "$@"
 }
 # backup_job: the store-facing modes, signed ONLY by the backup credential when one is named.
 backup_job() {
@@ -152,9 +155,11 @@ backup_job() {
     for var in PKDUMP_NESSIE_BACKUP_S3_ENDPOINT AWS_REGION AWS_DEFAULT_REGION; do
         [ -n "${!var:-}" ] && env+=(-e "${var}=${!var}")
     done
+    pkdump_lake_job_select "$INSTANCE" pkdump-lake-nessie-backup pkdump-lake-nessie-backup || return 1
     podman run --rm --pull=never --network "$NETWORK" "${env[@]}" \
         -v "${PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE}:/backup-aws/credentials:ro,Z" \
-        -v "${WORK}:/work:Z" "$JOB_IMAGE" "$@"
+        -v "${WORK}:/work:Z" \
+        ${RUN_EP[@]+"${RUN_EP[@]}"} "$RUN_IMAGE" ${RUN_CMD[@]+"${RUN_CMD[@]}"} "$@"
 }
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -221,7 +226,7 @@ registry_login_check() {
 
 do_check() {
     local rc=0
-    backup_job pkdump-lake-nessie-backup check --now "$(now_utc)" --max-age-hours "$MAX_AGE_HOURS" || rc=$?
+    backup_job check --now "$(now_utc)" --max-age-hours "$MAX_AGE_HOURS" || rc=$?
     case "$rc" in
     0) return 0 ;;
     3) alarm "PokeDumpster Nessie backup is STALE (${INSTANCE})" "No verified Nessie catalog backup newer than ${MAX_AGE_HOURS}h. Losing the catalog disk now strands every lake table. See journalctl --user -u pkdump-nessie-backup@${INSTANCE}.service" ;;
@@ -239,7 +244,7 @@ backup)
     pull_public "$ADMIN_IMAGE"
     echo "==> nessie-backup ${INSTANCE}: ${ID} (nessie ${NESSIE_VERSION})"
     # 1. Inventory the live catalog while it is up.
-    lake_job - pkdump-lake-nessie-backup inventory --out /work/inventory.json
+    lake_job - inventory --out /work/inventory.json
     # 2. Stop Nessie; the trap restarts it however this ends.
     systemctl --user stop "$UNIT"
     NESSIE_STOPPED=1
@@ -253,7 +258,7 @@ backup)
     NESSIE_STOPPED=0
     wait_answering "$CATALOG_HEALTH_URL" || die "${UNIT} did not answer after the export — it is running but unverified"
     # 4. Verify and ship it, then re-verify from the bucket.
-    backup_job pkdump-lake-nessie-backup put --export /work/export.zip --inventory /work/inventory.json \
+    backup_job put --export /work/export.zip --inventory /work/inventory.json \
         --backup-id "$ID" --nessie-version "$NESSIE_VERSION" --keep "$KEEP"
     do_check
     ;;
@@ -262,7 +267,7 @@ drill)
     echo "==> nessie-backup drill ${INSTANCE}: restore the newest backup into a scratch Nessie"
     pull_public "$ADMIN_IMAGE"
     pull_public "$SERVER_IMAGE"
-    backup_job pkdump-lake-nessie-backup fetch --out-dir /work/fetched
+    backup_job fetch --out-dir /work/fetched
     mkdir -p "${WORK}/rocks"
     # Import into an EMPTY scratch version store, never the live one.
     podman run --rm --user 0 --network none "${SERVER_ARGS[@]}" \
@@ -276,7 +281,7 @@ drill)
     NS_ARGS=()
     for ns in ${PKDUMP_NESSIE_DRILL_NAMESPACES:-catalog}; do NS_ARGS+=(--require-namespace "$ns"); done
     # Exit 5 if ANY table cannot be read back through the restored catalog.
-    lake_job "$SCRATCH_URI" pkdump-lake-nessie-backup drill --manifest /work/fetched/manifest.json "${NS_ARGS[@]}"
+    lake_job "$SCRATCH_URI" drill --manifest /work/fetched/manifest.json "${NS_ARGS[@]}"
     ;;
 
 *) die "unknown mode '${MODE}' (backup|check|drill)" ;;

@@ -2678,8 +2678,8 @@ check "…with no entrypoint override" "0" "$(printf '%s\n' "$PX_PY" | grep -c -
 run_px_jobs "PKDUMP_LAKE_JOBS=bogus"
 check "an unknown PKDUMP_LAKE_JOBS runs nothing" "0" \
 	"$(grep -c -E 'build-prices|prices-age' "${WORK}/prices-jobs.log" || true)"
-check "nessie-backup stays on the Python job" "0" \
-	"$(grep -c 'pkdump_lake_job_select' "${REPO_DIR}/deploy/nessie-backup.sh" || true)"
+check "nessie-backup selects the Rust job through pkdump_lake_job_select" "1" \
+	"$(grep -c 'pkdump_lake_job_select "$INSTANCE" pkdump-lake-nessie-backup pkdump-lake-nessie-backup' "${REPO_DIR}/deploy/nessie-backup.sh" | awk '{print ($1>0)?1:0}')"
 
 reset_store
 

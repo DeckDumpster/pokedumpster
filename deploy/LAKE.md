@@ -472,8 +472,8 @@ That is a claim, so it is a test — see §7 — and the first table to make it 
 podman run --rm --network pkdump-lake-<inst> \
   -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-<inst>:19120/iceberg/ \
   -e PKDUMP_LAKE_S3_BUCKET=<bucket> -e PKDUMP_LAKE_S3_REGION=us-west-2 \
-  localhost/pkdump-lake:<inst> \
-  pkdump-lake-build-prices --ingest-date 2026-08-11
+  --entrypoint pkdump-lake-build-prices localhost/pkdump:<inst> \
+  --ingest-date 2026-08-11
 ```
 
 `--ingest-date` is **required and never defaulted from the clock**: rebuilding
@@ -646,8 +646,8 @@ podman run --rm --network pkdump-lake-<inst> \
   -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-<inst>:19120/iceberg/ \
   -e PKDUMP_LAKE_S3_BUCKET=<bucket> -e PKDUMP_LAKE_S3_REGION=us-west-2 \
   -v /path/to/pkdump/data:/data \
-  localhost/pkdump-lake:<inst> \
-  pkdump-lake-value-snapshots --date 2026-08-11 --data-dir /data
+  --entrypoint pkdump-value-snapshots localhost/pkdump:<inst> \
+  --date 2026-08-11 --data-dir /data
 ```
 
 **Two halves, two dimensions (`pd-bbv7`).** A collection is its loose cards
@@ -1211,40 +1211,27 @@ finished; there is nothing to repair.
 | the one place a response becomes bytes | `crates/pkdump-ingest/src/landing.rs` |
 | flag → landing zone (the WRITING half only) | `crates/pkdump-cli/src/landing.rs` |
 | the acquisition phase it brackets | `acquire()` in `crates/pkdump-derive/src/lib.rs` and `crates/pkdump-cli/src/setup.rs` |
-| reading `raw/` back — runs, manifests, payloads | `lake/src/pkdump_lake/raw.py` |
-| `catalog.prices` + `catalog.sealed_prices`, and only those | `lake/src/pkdump_lake/prices.py` |
-| the check against `shared.sqlite` | `lake/src/pkdump_lake/verify.py` |
-| per-tenant value snapshots (the transform tier) | `lake/src/pkdump_lake/value_snapshots.py` |
+| reading `raw/` back — runs, manifests, payloads | `dumpster-kit-lake`'s `src/reader.rs` |
+| `catalog.prices` + `catalog.sealed_prices`, and only those | `crates/pkdump-lakehouse/src/{build_prices,prices_core}.rs` over `dumpster-kit-iceberg` |
+| the check against `shared.sqlite` | `crates/pkdump-lakehouse/src/verify_prices.rs` |
+| per-tenant value snapshots (the transform tier) | `crates/pkdump-value-snapshots/` |
 | what the timer runs it as | `deploy/value-snapshots.sh` + `deploy/pkdump-value-snapshots.{service,timer}` |
-| reading `raw/` back, in Rust — the twin of `raw.py` | `dumpster-kit-lake`'s `src/reader.rs` |
 | the catalog derivation itself, both callers share it | `crates/pkdump-derive/` |
 | the offline derive: partition choice, replay, the diff | `crates/pkdump-lakehouse/` |
 | what its timer runs it as | `deploy/derive.sh` + `deploy/pkdump-derive.{service,timer}` |
 | the provenance table | `crates/pkdump-db/src/raw_derivation.rs` |
 | the aggregate it must reproduce | `crates/pkdump-db/src/value_history.rs` |
 | the test-tier upstream override | `crates/pkdump-ingest/src/upstream.rs` |
-| the job image: named and built in ONE place | `deploy/lake-lib.sh` |
+| which image and credentials the jobs run with | `deploy/lake-lib.sh` |
 
-### Shipping a change to `lake/` (`pd-rn4c`)
+### Shipping a change to the lake jobs
 
-`bash deploy/deploy.sh <inst>` — the ordinary deploy — **rebuilds the job image
-too**, for any instance that has a lakehouse installed. Nothing needs
-restarting: the lake jobs are one-off containers their timers start, so the next
-scheduled run is the one that picks the new image up.
-
-That was not always true, and the gap was expensive. `deploy/setup-lake.sh` is
-an *installer*; while it was the only thing that ever built
-`localhost/pkdump-lake:<inst>`, a change under `lake/` reached a box only if an
-operator remembered a second command. The stale half gives no signal at all —
-the jobs keep exiting 0 over yesterday's code. On 2026-08-26 prod's job image
-predated `pd-bbv7` by six hours while its checkout did not:
-`catalog.sealed_prices` was never written and the transform recorded no
-`dimension='sealed'` row, so three real runs each reported "1 tenant(s)
-snapshotted, 0 skipped" while the chart showed $10,636.81 of cards with
-$10,351.47 of sealed product beside it and no line for it.
-
-If you ever need to rebuild the image alone — after a `podman rmi`, or to check
-a build without touching the running app:
+`bash deploy/deploy.sh <inst>` — the ordinary deploy — ships them, because every
+lake job is a Rust binary in the app image (sp-4k7mxi.7 deleted the Python lake and
+the second image it needed, `localhost/pkdump-lake:<inst>`, the pd-rn4c failure
+shape: a deploy that shipped the app and left the jobs on yesterday's code).
+Nothing needs restarting: the jobs are one-off containers their timers start, so
+the next scheduled run picks the new image up.
 
 ```bash
 bash deploy/setup-lake.sh <inst>   # idempotent: image + network + unit
@@ -1292,7 +1279,7 @@ landing is a tee, not a transform.
 
 `prices.sh` is the one that answers "is `raw/` sufficient, or decorative?".
 Its podman network is **`--internal`**, and §2 proves that by trying to reach
-the internet from the job image and requiring the attempt to fail — a build
+the internet from the app image and requiring the attempt to fail — a build
 that needed an upstream could not hide. What it builds is then compared row
 for row against a `shared.sqlite` produced from the same upstream responses in
 the same pass, so "the lake and SQLite disagree" and "the upstream answered
@@ -1453,7 +1440,7 @@ manifest. Run it once after enabling, and after any Nessie upgrade.
 1. New box: restore the *lake.env*, AWS config and bootstrap secret first.
 2. **Restore Nessie before any job runs** (do not enable the chain timers yet):
    `bash deploy/setup-lake.sh <inst>`; stop the unit; fetch the newest backup
-   (`pkdump-lake-nessie-backup fetch`, in the job image, `--out-dir`);
+   (`pkdump-lake-nessie-backup fetch`, in the app image, `--out-dir`);
    `nessie-server-admin import --path export.zip` into the empty data dir; start
    Nessie; run `drill`.
 3. **No usable backup:** re-register from S3 —
@@ -1475,15 +1462,13 @@ manifest. Run it once after enabling, and after any Nessie upgrade.
   `PKDUMP_LAKE_NESSIE_URI` to the endpoint above; the warehouse and S3 settings
   are vended by the server.
 
-## Which implementation the nightly timers run (sp-utga27)
+## Which implementation the nightly timers run (sp-utga27, sp-4k7mxi.7)
 
-`deploy/prices.sh` (build-prices + prices-age) and `deploy/value-snapshots.sh` run the
-certified **Rust** jobs from the app image (`localhost/pkdump:<inst>`, `--entrypoint`),
-certified against prod 2026-10-17. The Python jobs stay built in the lake image as the
-rollback for one release.
-
-**Revert (single config switch):** add `PKDUMP_LAKE_JOBS=python` to
-`~/.config/pkdump/lake.env`; the next timer run uses the Python jobs. Remove it to return
-to Rust. `nessie-backup` and `roundtrip` are not switched (uncertified; always Python).
+`deploy/prices.sh` (build-prices + prices-age), `deploy/value-snapshots.sh` and
+`deploy/nessie-backup.sh` run the **Rust** jobs from the app image
+(`localhost/pkdump:<inst>`, `--entrypoint`). The Python lake, its `localhost/pkdump-lake`
+image and the `PKDUMP_LAKE_JOBS=python` rollback were deleted in sp-4k7mxi.7 after every
+Rust job was certified on prod; a lake.env that still sets `PKDUMP_LAKE_JOBS` is ignored.
+Rolling back now means deploying an earlier checkout of the app image.
 The Rust jobs sign with `PKDUMP_LAKE_S3_PROFILE`, which the wrappers derive from
 `PKDUMP_LAKE_S3_BASE_PROFILE` (sp-090v9u). Gate: `tests/deploy/run.sh` §13/§14.

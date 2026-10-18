@@ -72,9 +72,8 @@ PRISTINE="${WORK}/pristine"
 TREE="${WORK}/tree"
 build_tree() {
 	rm -rf "$TREE"
-	mkdir -p "$TREE/tests/lake" "$TREE/lake"
+	mkdir -p "$TREE/tests/lake"
 	cp -r "${REPO_DIR}/crates" "$TREE/crates"
-	cp -r "${REPO_DIR}/lake/src" "$TREE/lake/src"
 	cp "${REPO_DIR}/${GUARD_REL}" "$TREE/${GUARD_REL}"
 }
 build_tree
@@ -126,9 +125,10 @@ add() { # add <repo-relative-path> <text>
 
 SITE_TOML=crates/pkdump-site/Cargo.toml
 SITE_RS=crates/pkdump-site/src/lib.rs
-CATALOG_PY=lake/src/pkdump_lake/catalog.py
-PRICES_PY=lake/src/pkdump_lake/prices.py
-VS_PY=lake/src/pkdump_lake/value_snapshots.py
+SCHEMA_RS=crates/pkdump-lakejobs/src/roundtrip.rs
+LAKEJOBS_TOML=crates/pkdump-lakejobs/Cargo.toml
+FRESH_RS=crates/pkdump-lakejobs/src/freshness.rs
+VS_RS=crates/pkdump-value-snapshots/src/lib.rs
 SHIP_RS=crates/pkdump-ship/src/lib.rs
 SHIP_BIN=crates/pkdump-ship/src/bin/pkdump-ship.rs
 ERASE_RS=crates/pkdump-erase/src/lib.rs
@@ -143,15 +143,15 @@ log "1. THE ONE THE DESIGN NAMES: a tenant column on a CATALOG table"
 # "add a tenant-keyed column to a catalog table in a test fixture, assert the
 # gate goes RED" — the requirement this file exists for, first because it is
 # the literal half of the epic brief's assertion 3.
-add "$PRICES_PY" '# selftest: NestedField(99, "database_id", StringType(), required=False)'
-expect_red "a database_id column on catalog.prices is refused" \
+add "$SCHEMA_RS" '// selftest: NestedField::required(99, "database_id", Type::Primitive(PrimitiveType::String))'
+expect_red "a database_id column on an Iceberg table is refused" \
 	"every Iceberg schema field is catalog-scoped"
-restore "$PRICES_PY"
+restore "$SCHEMA_RS"
 
-add "$CATALOG_PY" '# selftest: pa.field("tenant_handle", pa.string())'
+add "$SCHEMA_RS" '// selftest: NestedField::optional(98, "tenant_handle", Type::Primitive(PrimitiveType::String))'
 expect_red "a tenant_handle column anywhere in the catalog schema is refused" \
 	"every Iceberg schema field is catalog-scoped"
-restore "$CATALOG_PY"
+restore "$SCHEMA_RS"
 
 log "2. the catalog zone's other rules still bite"
 add "$SITE_TOML" 'rusqlite.workspace = true'
@@ -174,23 +174,21 @@ expect_red "the offline derive naming the registry is refused" \
 	"no pkdump-lakehouse source names a tenant or the registry"
 restore crates/pkdump-lakehouse/src/main.rs
 
-add "$CATALOG_PY" 'import sqlite3'
-expect_red "a write-path module importing sqlite3 is refused" \
-	"no write-path module imports sqlite3"
-restore "$CATALOG_PY"
+add "$LAKEJOBS_TOML" 'rusqlite.workspace = true'
+expect_red "a lake job linking SQLite is refused" \
+	"the lake jobs depend on no SQLite crate and not pkdump-db"
+restore "$LAKEJOBS_TOML"
 
-add "$VS_PY" 'def selftest_oops(cat): return cat.create_table("x", schema=None)'
+add "$VS_RS" 'pub fn selftest_oops(cat: &Cat) { cat.create_table(); }'
 expect_red "the transform tier writing to Iceberg is refused" \
 	"it makes no Iceberg write call"
-restore "$VS_PY"
+restore "$VS_RS"
 
-# The reader half. freshness.py is the module that made this a hole rather
-# than a hypothetical: it landed after the guard, in none of its lists, and
-# was scanned by nothing.
-add lake/src/pkdump_lake/freshness.py 'def selftest_oops(registry): return registry'
-expect_red "a catalog-zone reader naming the registry is refused" \
-	"no catalog-zone reader reaches the registry or the tenants dir"
-restore lake/src/pkdump_lake/freshness.py
+# The reader half: a catalog-zone job naming the registry.
+add "$FRESH_RS" 'fn selftest_oops(registry: &str) -> &str { registry }'
+expect_red "a catalog-zone lake job naming the registry is refused" \
+	"no lake-job source names a tenant or the registry"
+restore "$FRESH_RS"
 
 log "3. the shipper and the eraser stay inside the tenant zone (pd-dxn3)"
 add "$SHIP_RS" 'pub const OOPS: &str = "raw/source=tcgcsv/holdings.parquet";'
@@ -293,9 +291,9 @@ expect_red "the site's declarations disappearing is refused" \
 	"pkdump-site has Rust sources"
 build_tree
 
-rm -f "${TREE}/lake/src/pkdump_lake/raw.py"
-expect_red "a write-path module that has moved away is refused" \
-	"every write-path python module was found"
+rm -rf "${TREE}/crates/pkdump-lakejobs/src"
+expect_red "the lake jobs' corpus disappearing is refused" \
+	"pkdump-lakejobs has Rust sources"
 build_tree
 
 # The one the classification introduces, and the reason it is a list that must
@@ -304,12 +302,6 @@ printf 'pub fn oops(registry: &str) -> &str { registry }\n' \
 	>"${TREE}/crates/pkdump-site/src/unclassified.rs"
 expect_red "a new site-crate source in no list is refused" \
 	"every site-crate source is classified"
-build_tree
-
-printf 'def oops(registry):\n    return registry\n' \
-	>"${TREE}/lake/src/pkdump_lake/unclassified.py"
-expect_red "a new lake python module in no zone is refused" \
-	"every lake python module is classified into exactly one zone"
 build_tree
 
 mkdir -p "${TREE}/crates/pkdump-site/src/nested"
@@ -352,9 +344,9 @@ restore "$SHIP_RS"
 
 # The transform tier opens every tenant database on purpose, and says so all
 # over its own source. Nothing here may object to that.
-add "$VS_PY" 'def selftest_reads_a_tenant(database_id): return f"tenants/{database_id}.sqlite"'
+add "$VS_RS" 'pub fn selftest_reads_a_tenant(database_id: &str) -> String { format!("tenants/{database_id}.sqlite") }'
 expect_green "the transform tier opening a tenant database is fine"
-restore "$VS_PY"
+restore "$VS_RS"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"

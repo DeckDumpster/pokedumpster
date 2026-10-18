@@ -274,13 +274,13 @@ lakehouse" below for what is the kit's and what stays here:
   `pkdump-cli` must not link either. See "The deletion path" below.
 - **pkdump-lakejobs** — the lake's operational jobs in Rust over `dumpster-kit-iceberg`
   (sp-4k7mxi.6): `pkdump-lake-prices-age`, `pkdump-lake-nessie-backup` and
-  `pkdump-lake-roundtrip`, twins of the Python modules of the same names with the
-  same flags, messages, exit statuses and backup/manifest bytes.
-  `cargo test -p pkdump-lakejobs` holds them to output the Python recorded
-  (`tests/fixtures/`, `tests/parity.rs`). The timers still run the Python until the
-  prod certification: run both against prod and compare (`prices-age --as-of <today>`
-  verdict and newest `observed_date`; `nessie-backup check --now <now>` against the
-  newest bucket backup; `inventory` against the Python's JSON; then `roundtrip`).
+  `pkdump-lake-roundtrip`, plus `pkdump-lake-probe` (sp-4k7mxi.7), the read-only
+  questions the container gates ask of the lake (`tables`, `rows`, `summary`, `get`,
+  `reachable`, plus `create-tables`, which lays `catalog.prices`/`sealed_prices` on a fresh lake because the kit's `ensure_tables` is refused by Nessie 0.104.3) now that no Python image exists to ask them. The first three keep the
+  flags, messages, exit statuses and backup/manifest bytes of the Python modules they
+  replaced; `cargo test -p pkdump-lakejobs` holds them to the output the Python
+  recorded (`tests/fixtures/`, `tests/parity.rs`). Every lake job runs from the app
+  image; there is no second image and no `PKDUMP_LAKE_JOBS` switch.
 - **pkdump-server** — Axum HTTP app; JSON API under `/api` + serves the
   SvelteKit static build. One route module per resource
   (`routes/{sets,card,collection,binders,decks,sealed,wishlist,orders,batches,import,export,variants}.rs`).
@@ -393,31 +393,19 @@ deploy/restore-litestream.sh prod   # restore the collection from S3 (see deploy
 deploy/teardown.sh prod [--purge]
 ```
 
-**This checkout ships TWO images, and a deploy ships both** (pd-rn4c). The app
-image is `pkdump:<inst>`; `lake/` builds `localhost/pkdump-lake:<inst>`, the
-PyIceberg runtime the nightly price build and the value-snapshots transform run
-in. Until pd-rn4c only the one-time installer `deploy/setup-lake.sh` ever built
-the second one, so a change under `lake/` reached a box only if an operator
-remembered a second command — and the stale half is **invisible**, because the
-jobs go on exiting 0 over yesterday's code. Prod ran a transform six hours older
-than its own checkout for a day: `catalog.sealed_prices` was never written and no
-`dimension='sealed'` row was recorded, so the chart reported $10,636.81 of cards
-with $10,351.47 of sealed product beside it and no line for it, over three real
-runs each saying "1 tenant(s) snapshotted, 0 skipped".
-
-Three things about the rebuild are decisions. It happens **after** the app is
-restarted — the app serves requests, and a lake build that fails must not be
-able to leave the new binary built and not running. It is skipped for an
-instance with **no lakehouse**, which is the ordinary case (every `--test`
-instance CI throws away has none) — installing one needs a bucket name that is
-host config and `deploy.sh` has no business inventing one. And the marker for
-"has a lakehouse" is the **Nessie Quadlet unit**, not the image: `setup-lake.sh
---remove` deletes that unit and deliberately keeps the image, so an
-image-exists test would go on rebuilding for a lakehouse that was uninstalled.
-Nothing is restarted — the lake jobs are one-off containers their timers start,
-so the next scheduled run is the one that picks the new image up.
-`deploy/lake-lib.sh` is the one place the image is named and built, shared by
-both scripts; `tests/deploy/run.sh` §7 is the gate.
+**This checkout ships ONE image** (retired pd-rn4c, sp-4k7mxi.7). The app image
+is `pkdump:<inst>`, and every lake job — `pkdump-lake-build-prices`,
+`pkdump-lake-prices-age`, `pkdump-value-snapshots`, `pkdump-lake-nessie-backup`,
+`pkdump-lake-roundtrip` — is a Rust binary in it, so a deploy ships them by
+construction. Until the Python lake was deleted `lake/` built a second image,
+`localhost/pkdump-lake:<inst>`, that only the one-time installer ever built; a
+change under `lake/` reached a box only if an operator remembered a second
+command, and the stale half was invisible because the jobs went on exiting 0
+(prod ran a transform six hours older than its checkout and the chart omitted
+$10,351.47 of sealed product). The failure cannot recur because the second image
+does not exist; `tests/deploy/run.sh` §7 asserts a deploy builds the app image
+and nothing else. The jobs are one-off containers their timers start, so nothing
+is restarted: the next scheduled run picks the new image up.
 
 Non-prod container storage does not belong on the disk prod runs from.
 `PKDUMP_STORE_ROOT=<dir>` puts an instance's image, layers, volume and
@@ -1016,7 +1004,7 @@ decisions:
   is LOUD: a retry that happened is printed, because a network really failing
   must not be quietly absorbed into a passing run.
 - **stdout and stderr are kept apart.** Callers capture stdout
-  (`TABLES=$(run_job python -c …)`) and some merge the streams themselves at
+  (`TABLES=$(run_job pkdump-lake-probe tables)`) and some merge the streams themselves at
   the call site (`OUT=$(snapshot … 2>&1)`); a wrapper that merged them for
   everybody would put diagnostics inside a value the gate goes on to compare.
 
@@ -1471,8 +1459,8 @@ decisions:
 
 - **The catalog zone keeps every assertion it had** — except one, which the
   kit cutover (sp-2x82v8) weakened and the guard's header says so rather than
-  dropping it quietly. No Iceberg field is tenant-identifying, the Python
-  write path imports no `sqlite3`, the derive resolves no tenant. What does
+  dropping it quietly. No Iceberg field is tenant-identifying, the Rust
+  lake jobs (`pkdump-lakejobs`) link no SQLite, the derive resolves no tenant. What does
   NOT survive is "the lake crate links no SQLite at all": `dumpster-kit-lake`
   depends on `dumpster-kit-tenancy` (for `AppPrefix`), which links rusqlite,
   so that claim now rests on the kit's source, which this repository pins by
@@ -1837,7 +1825,7 @@ unopenable, and `deploy/erase.sh`'s three exit statuses). Runbook:
 
 ### The transform tier
 
-`lake/src/pkdump_lake/value_snapshots.py` is the first job that *reads* the
+`crates/pkdump-value-snapshots` (`pkdump-value-snapshots`) is the first job that *reads* the
 lake: it values **every registered tenant's** collection from `catalog.prices`
 and `catalog.sealed_prices` at a pinned Nessie commit and writes
 `collection_value_snapshot` into that tenant's own database. Three rules hold
@@ -1859,8 +1847,8 @@ it in shape:
   That is the runtime half. The static half is
   `tests/lake/tenant_isolation_test.sh` (lint tier, hermetic, pd-cgi9): no
   Iceberg schema field name is tenant-identifying, and no lake write path *can*
-  open a tenant database — the Python write-path modules import no `sqlite3`
-  (the lake crate's half of this moved to the kit with the crate; see the
+  open a tenant database — the Rust lake-job crates link no SQLite beyond an
+  allowlist of two (the lake crate's half of this moved to the kit with the crate; see the
   guard's header), so it holds by construction rather than by review, the way
   the site's list of upstreams holds "images are never landed". Adding a tenant column or a tenant DB open now fails in a
   second instead of nothing at all. The transform tier is the deliberate

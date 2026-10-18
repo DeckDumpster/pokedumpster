@@ -242,7 +242,7 @@ container gate below it unrunnable (pd-h3wy).
 
 `pkdump_image_build_collecting` in `deploy/image-lib.sh` is the builder
 invocation every path on this box goes through — `ci.sh`'s single build,
-`setup.sh`, `deploy.sh`, `seed.sh` and the lake job image — and the rule is one
+`setup.sh`, `deploy.sh` and `seed.sh` — and the rule is one
 sentence: **a build collects what the build BEFORE it orphaned.** (The macOS
 scripts still build bare; they run against a podman machine rather than against
 the store prod shares, and §11 has always excluded them.)
@@ -260,7 +260,7 @@ The collection is confined **by label**, which is what makes it safe to run in
 prod's store at all. That store is shared — another project's images and another
 project's litter live in it — so `podman image prune` is not ours to run there.
 Every image this repo builds carries `pkdump.build=1`, stage images included
-(`Containerfile`, `lake/Containerfile`); a dangling image without it is somebody
+(`Containerfile`); a dangling image without it is somebody
 else's and is never touched. `-f` is never passed either: an image something
 still holds refuses to go, and that refusal is the right answer.
 
@@ -642,7 +642,7 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `seed.sh <instance>` | Populate one instance's catalog in place |
 | `seed.sh --volume [--force]` | Build the reusable `pkdump-seed-data` volume |
 | `setup.sh <name> [port] [--init] [--test]` | Create an instance. `--test` seeds from the committed fixture; `--init` clones the seed volume |
-| `deploy.sh <name>` | Rebuild **both** images (the app, and the lake job image when the instance has a lakehouse), reinstall the unit files from this checkout, and restart one instance |
+| `deploy.sh <name>` | Rebuild the app image (it carries every lake job), reinstall the unit files from this checkout, and restart one instance |
 | `teardown.sh <name> [--purge]` | Stop and remove an instance; `--purge` deletes the data volume |
 | `restore-litestream.sh [--yes] [--at=<RFC3339>] [--unattributed] <inst> [database-id]` | Restore ONE collection from the S3 backup (latest or point-in-time). Addressed by the database's file stem, not by a handle — `pkdump tenant list` says which is whose. **Refuses a database the registry cannot name** (restore `--registry` first; `--unattributed` for a purged one). See [RESTORE.md](RESTORE.md) |
 | `backup-check.sh <inst> [user]` | Layer 1 — verify every S3 replica (tenants on freshness, the registry on correspondence), ping the off-box monitor (run by the `pkdump-backup-check@` timer). The verification always runs; the ping URL controls only the ping |
@@ -650,8 +650,8 @@ bash deploy/teardown.sh feature-xyz --purge     # removes everything
 | `diskcheck.sh` | Layer 4 — push a Pushover alert when the disk crosses the threshold (run by `pkdump-diskcheck.timer`) |
 | `diskcheck.sh --floor [path...]` | Gate — exit non-zero under `PKDUMP_DISK_FLOOR_GB` free; run by `ci.sh` before it builds |
 | `tmpreap.sh [--dry-run]` | Layer 4b — remove abandoned Claude session scratchpads under `$TMPDIR` (run by `pkdump-tmpreap.timer`). Exit 1 = it refused, because it could not tell a live session from a dead one |
-| `setup-lake.sh <inst> [--port N] [--remove]` | Install the offline lakehouse — the Nessie catalog's Quadlet units and the PyIceberg job image. Refuses to run without `~/.config/pkdump/lake.env`. See [Offline lakehouse](#offline-lakehouse--nessie--iceberg) |
-| `lake-lib.sh` | Sourced — the lake network as seen from outside a job (catalog URI, health URL, readiness probe), and the one place `localhost/pkdump-lake:<inst>` is named and built. Shared by `setup-lake.sh` and `deploy.sh` so a deploy cannot ship the app image and leave the job image behind (pd-rn4c) |
+| `setup-lake.sh <inst> [--port N] [--remove]` | Install the offline lakehouse — the Nessie catalog's Quadlet units and network. Refuses to run without `~/.config/pkdump/lake.env`. See [Offline lakehouse](#offline-lakehouse--nessie--iceberg) |
+| `lake-lib.sh` | Sourced — the lake network as seen from outside a job (catalog URI, health URL, readiness probe), and the one place the lake jobs' image and credentials are chosen. Shared by `setup-lake.sh` and `deploy.sh` so a deploy cannot ship the app image and leave the job image behind (pd-rn4c) |
 | `store-lib.sh` | Sourced — resolves which Podman store an instance's image and volume live in (`PKDUMP_STORE_ROOT`) |
 | `units-lib.sh` | Sourced — renders every unit template this checkout ships into `~/.config`, preserving the instance's published port. Shared by `setup.sh` and `deploy.sh` so a deploy cannot ship a binary and leave the units behind (pd-2t6u) |
 | `alert.sh "<title>" ["<msg>"]` | Shared Pushover sender used by every alarming layer (message also accepted on stdin); trims to the first 900 bytes, and sends an unchanged alert once per 24h ([the same page, twice](#the-same-page-twice)) |
@@ -845,25 +845,21 @@ Two pieces, both instance-scoped:
   REST API to it at `/iceberg/`. Version store is **ROCKSDB on a host
   directory**, not a podman volume: a rootless volume lives in the container
   store, and this box's default store is the 98 G disk prod runs from.
-- **`localhost/pkdump-lake:<inst>`** — the job runtime, `lake/` in this repo.
-  PyIceberg, no JVM. Installed by `setup-lake.sh` and **rebuilt by every
-  `deploy.sh <inst>`** thereafter (pd-rn4c). It is a second image this checkout
-  ships, and while only the installer built it, a change under `lake/` reached a
-  box only if an operator remembered a second command — invisibly, because the
-  stale jobs go on exiting 0. Prod ran a value-snapshots transform six hours
-  older than its own checkout for a day, recording no sealed value series at
-  all.
+- **the job runtime** is the app image, `localhost/pkdump:<inst>`: every lake job
+  is a Rust binary in it, run with `--entrypoint`. There is no second image
+  (the PyIceberg `localhost/pkdump-lake:<inst>` was deleted in sp-4k7mxi.7), so a
+  `deploy.sh <inst>` ships the jobs with the app by construction.
 
 ```bash
-bash deploy/setup-lake.sh prod                 # unit + network + job image (install)
-bash deploy/deploy.sh prod                     # ...and every deploy rebuilds the job image
+bash deploy/setup-lake.sh prod                 # unit + network (install)
+bash deploy/deploy.sh prod                     # ...every deploy ships the jobs in the app image
 systemctl --user start pkdump-nessie-prod
 journalctl --user -u pkdump-nessie-prod -f
 
 # The round trip, against the live catalog (writes to the `proof` namespace only):
 podman run --rm --network pkdump-lake-prod \
   -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-prod:19120/iceberg/ \
-  localhost/pkdump-lake:prod pkdump-lake-roundtrip
+  --entrypoint pkdump-lake-roundtrip localhost/pkdump:prod
 
 bash deploy/setup-lake.sh prod --remove        # unit + network; state is kept
 ```
@@ -907,8 +903,8 @@ Measured on this box by `tests/lake/run.sh` (Nessie 0.104.3, PyIceberg 0.11.1):
 podman run --rm --network pkdump-lake-prod \
   -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-prod:19120/iceberg/ \
   -e PKDUMP_LAKE_S3_BUCKET=<bucket> -e PKDUMP_LAKE_S3_REGION=us-west-2 \
-  localhost/pkdump-lake:prod \
-  pkdump-lake-build-prices --ingest-date 2026-08-11
+  --entrypoint pkdump-lake-build-prices localhost/pkdump:prod \
+  --ingest-date 2026-08-11
 ```
 
 One row per price actually quoted, at grain `(tcgplayer_product_id,

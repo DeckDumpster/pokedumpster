@@ -109,7 +109,6 @@ SUFFIX="${PDPHASE3_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-6)}"
 NET=pdphase3-net-${SUFFIX}
 MINIO_CTR=pdphase3-minio-${SUFFIX}
 NESSIE_CTR=pdphase3-nessie-${SUFFIX}
-JOB_IMAGE=pkdump-lake:phase3-${SUFFIX}
 APP_IMAGE=localhost/pkdump:phase3-${SUFFIX}
 BUCKET=pdphase3-${SUFFIX}
 AKID=pdphase3root
@@ -127,12 +126,11 @@ chmod 777 "$WORK/nessie" "$WORK/minio"
 DATE_NEW=2026-08-10
 
 # The staging table the zone is read into. Named in Rust
-# (`pkdump_db::outbox::ZONE_HOLDINGS_TABLE`, `pkdump_ship::zone`) and in Python
-# (`pkdump_lake.value_snapshots.ZONE_HOLDINGS`); this gate is the fourth place
-# and the one that holds them together.
+# (`pkdump_db::outbox::ZONE_HOLDINGS_TABLE`, `pkdump_ship::zone`) and in the
+# transform (`pkdump_value_snapshots`); this gate is the third place and the one
+# that holds them together.
 ZONE_TABLE=zone_holdings
-# The sealed half of the same read-back (pd-bbv7), named in the same three
-# places plus this one.
+# The sealed half of the same read-back (pd-bbv7), named in the same places.
 ZONE_SEALED_TABLE=zone_sealed_holdings
 
 # shellcheck disable=SC2329  # invoked via trap
@@ -147,7 +145,7 @@ cleanup() {
 	fi
 	podman rm -f "$MINIO_CTR" "$NESSIE_CTR" >/dev/null 2>&1 || true
 	podman network rm "$NET" >/dev/null 2>&1 || true
-	podman rmi -f "$JOB_IMAGE" "$APP_IMAGE" >/dev/null 2>&1 || true
+	podman rmi -f "$APP_IMAGE" >/dev/null 2>&1 || true
 	# Nessie writes its version store as a SUBUID the invoking user cannot
 	# unlink; a plain rm -rf leaves the whole work dir behind, every run.
 	podman unshare rm -rf "$WORK" 2>/dev/null || rm -rf "$WORK" 2>/dev/null || true
@@ -160,11 +158,13 @@ mc() {
 		-v "$FIXTURE:/fixture:ro,Z" "$MC_IMAGE" "$@"
 }
 
-# A lake (Python) job: prices out of Iceberg, and the transform itself.
-# The data directory is read-WRITE — the transform's output is a write into
-# each tenant's database, and these are WAL files besides.
-run_job() {
-	podman run --rm --network "$NET" \
+# A lake job: a Rust binary of the app image — prices out of Iceberg, and the
+# transform itself. The data directory is read-WRITE — the transform's output is
+# a write into each tenant's database, and these are WAL files besides.
+run_job() { # run_job <binary> [args...]
+	local bin="$1"
+	shift
+	podman run --rm --network "$NET" --pull=never \
 		-v "$FIXTURE:/fixture:Z" \
 		-e PKDUMP_LAKE_NESSIE_URI="http://${NESSIE_CTR}:19120/iceberg/" \
 		-e PKDUMP_LAKE_S3_BUCKET="$BUCKET" \
@@ -173,10 +173,12 @@ run_job() {
 		-e PKDUMP_LAKE_S3_ACCESS_KEY_ID="$AKID" \
 		-e PKDUMP_LAKE_S3_SECRET_ACCESS_KEY="$SECRET" \
 		-e PKDUMP_LAKE_S3_PATH_STYLE=1 \
-		"$JOB_IMAGE" "$@"
+		-e AWS_ACCESS_KEY_ID="$AKID" -e AWS_SECRET_ACCESS_KEY="$SECRET" \
+		-e AWS_REGION=us-west-2 \
+		--entrypoint "$bin" "$APP_IMAGE" "$@"
 }
 
-snapshot() { run_job pkdump-lake-value-snapshots --data-dir /fixture/home "$@"; }
+snapshot() { run_job pkdump-value-snapshots --data-dir /fixture/home "$@"; }
 
 # The shipper and the zone reader, out of the SHIPPED image — the tenant
 # profile and the master key, and nothing the app container ever holds.
@@ -219,17 +221,10 @@ pkdump_cli() {
 		--entrypoint pkdump "$APP_IMAGE" "$@"
 }
 
-# Arbitrary SQL against one tenant's database, through the lake image (which
-# has a python3 and is already on the network). The SQL travels as an
-# ARGUMENT, never interpolated into the source.
+# Arbitrary SQL against one tenant's database, from the host: the fixture is
+# the gate's own directory and no container holds a database while it runs.
 tenant_exec() { # tenant_exec <database_id> <sql>
-	run_job python -c "
-import sqlite3, sys
-conn = sqlite3.connect(sys.argv[1], isolation_level=None)
-cur = conn.execute(sys.argv[2])
-row = cur.fetchone()
-print(row[0] if row else '')
-" "/fixture/home/tenants/${1}.sqlite" "$2" | tail -1
+	sqlite3 -batch "${FIXTURE}/home/tenants/${1}.sqlite" "$2" | tail -1
 }
 
 # One tenant's snapshot rows for one date, in the SAME text form
@@ -239,14 +234,10 @@ print(row[0] if row else '')
 # very file that gate diffs against, so "the zone valuation" and "the online
 # valuation Rust computed" are held to one expected output rather than two.
 dump() { # dump <database_id> <date>
-	run_job python -c "
-import sqlite3
-conn = sqlite3.connect('/fixture/home/tenants/${1}.sqlite')
-for dim, bucket, mv, cb, cc in conn.execute('''
-    SELECT dimension, bucket, market_value, cost_basis, card_count
-      FROM collection_value_snapshot WHERE date = ? ORDER BY dimension, bucket''', ('${2}',)):
-    print(dim, bucket if bucket is not None else '-', f'{mv:.10f}', f'{cb:.10f}', cc, sep='\t')
-"
+	sqlite3 -batch -separator $'\t' "${FIXTURE}/home/tenants/${1}.sqlite" \
+		"SELECT dimension, COALESCE(bucket, '-'), printf('%.10f', market_value),
+		        printf('%.10f', cost_basis), card_count
+		   FROM collection_value_snapshot WHERE date = '${2}' ORDER BY dimension, bucket"
 }
 
 # ---------------------------------------------------------------------------
@@ -262,9 +253,7 @@ GHOST=$(awk -F'\t' '$1 == "ghost" {print $2}' "$FIXTURE/tenants.tsv")
 [ -n "$ALICE" ] && [ -n "$BOB" ] && [ -n "$GHOST" ] || die "the fixture wrote no tenant map"
 echo "  alice=${ALICE} bob=${BOB} ghost=${GHOST} (no database, on purpose)"
 
-log "1. both images"
-pkdump_lake_job_image_ensure "$JOB_IMAGE" "$REPO_DIR" >/dev/null ||
-	die "the lake image build failed"
+log "1. the app image (it carries every lake job)"
 pkdump_image_ensure "$APP_IMAGE" "$REPO_DIR" >"${WORK}/build.log" 2>&1 || {
 	tail -40 "${WORK}/build.log"
 	die "the app image build failed"
@@ -277,14 +266,7 @@ check "the image carries the zone reader" "ok" \
 
 log "2. an INTERNAL network, MinIO and Nessie"
 podman network create --internal "$NET" >/dev/null
-EGRESS=$(podman run --rm --network "$NET" "$JOB_IMAGE" python -c "
-import socket
-try:
-    socket.create_connection(('1.1.1.1', 443), timeout=5)
-    print('REACHABLE')
-except OSError:
-    print('blocked')
-")
+EGRESS=$(podman run --rm --network "$NET" --pull=never --entrypoint pkdump-lake-probe "$APP_IMAGE" reachable 1.1.1.1:443)
 [ "$EGRESS" = "blocked" ] ||
 	die "the job container can reach the internet (${EGRESS}) — an offline Phase 3 proves nothing"
 
@@ -318,16 +300,11 @@ podman run -d --name "$NESSIE_CTR" --network "$NET" \
 	-e nessie.catalog.secrets.access-key.name="$AKID" \
 	-e nessie.catalog.secrets.access-key.secret="$SECRET" \
 	"$NESSIE_IMAGE" >/dev/null
-podman run --rm --network "$NET" "$JOB_IMAGE" python -c "
-import sys, time, urllib.request
-for _ in range(90):
-    try:
-        urllib.request.urlopen('http://${NESSIE_CTR}:19120/api/v2/config', timeout=3)
-        sys.exit(0)
-    except Exception:
-        time.sleep(1)
-sys.exit(1)
-" || {
+nessie_up() {
+	podman run --rm --network "$NET" --pull=never --entrypoint pkdump-lake-probe "$APP_IMAGE" \
+		get "http://${NESSIE_CTR}:19120/api/v2/config" >/dev/null 2>&1
+}
+wait_until 90 1 nessie_up || {
 	podman logs "$NESSIE_CTR" 2>&1 | tail -40
 	die "Nessie never answered on ${NET}"
 }

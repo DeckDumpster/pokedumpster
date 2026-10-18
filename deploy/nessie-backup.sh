@@ -43,7 +43,7 @@ CONF_DIR="${HOME}/.config/pkdump/${INSTANCE}"
 LAKE_ENV="${PKDUMP_LAKE_ENV:-${HOME}/.config/pkdump/lake.env}"
 ALERTS_ENV="${PKDUMP_ALERTS_ENV:-${HOME}/.config/pkdump/alerts.env}"
 NETWORK="${PKDUMP_LAKE_NETWORK:-pkdump-lake-${INSTANCE}}"
-JOB_IMAGE="${PKDUMP_LAKE_JOB_IMAGE:-localhost/pkdump-lake:${INSTANCE}}"
+JOB_IMAGE="${PKDUMP_LAKE_RUST_IMAGE:-localhost/pkdump:${INSTANCE}}"
 QUADLET="${PKDUMP_NESSIE_QUADLET:-${HOME}/.config/containers/systemd/pkdump-nessie-${INSTANCE}.container}"
 UNIT="pkdump-nessie-${INSTANCE}.service"
 MAX_AGE_HOURS="${PKDUMP_NESSIE_BACKUP_MAX_AGE_HOURS:-26}"
@@ -76,7 +76,7 @@ pkdump_store_activate
 # shellcheck source=deploy/lake-lib.sh
 . "$SCRIPT_DIR/lake-lib.sh"
 
-podman image exists "$JOB_IMAGE" 2>/dev/null || die "no lake job image ${JOB_IMAGE} (bash deploy/setup-lake.sh ${INSTANCE})"
+podman image exists "$JOB_IMAGE" 2>/dev/null || die "no app image ${JOB_IMAGE} (bash deploy/deploy.sh ${INSTANCE})"
 podman network exists "$NETWORK" 2>/dev/null || die "no lake network ${NETWORK} (bash deploy/setup-lake.sh ${INSTANCE})"
 [ -f "$QUADLET" ] || die "no Nessie unit at ${QUADLET} (bash deploy/setup-lake.sh ${INSTANCE})"
 
@@ -105,8 +105,7 @@ while IFS= read -r line; do
     esac
 done <"$QUADLET"
 
-# --- the lake job container: the Rust job in the app image by default,
-# the Python lake image under PKDUMP_LAKE_JOBS=python (deploy/lake-lib.sh) ----
+# --- the lake job container: the Rust job, in the app image ----
 ENV_ARGS=(-e "PKDUMP_LAKE_NESSIE_URI=${CATALOG_URI}" -e "PKDUMP_NESSIE_BACKUP_URL=${PKDUMP_NESSIE_BACKUP_URL}")
 for VAR in PKDUMP_LAKE_REF PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION PKDUMP_LAKE_S3_PREFIX \
     PKDUMP_LAKE_S3_ENDPOINT PKDUMP_LAKE_S3_ACCESS_KEY_ID PKDUMP_LAKE_S3_SECRET_ACCESS_KEY \
@@ -115,7 +114,7 @@ for VAR in PKDUMP_LAKE_REF PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION PKDUMP_LA
     [ -n "${!VAR:-}" ] && ENV_ARGS+=(-e "${VAR}=${!VAR}")
 done
 # The Rust lake jobs (kit sp-3yxvq1) assume from PKDUMP_LAKE_S3_PROFILE and ignore
-# the BASE_PROFILE the Python jobs read: without it they sign with the ROLE profile
+# the BASE_PROFILE: without it they sign with the ROLE profile
 # AWS_PROFILE names and fail with "failed to load signing credential" (sp-090v9u).
 # Same profile, same lake.env source; an explicit PKDUMP_LAKE_S3_PROFILE wins.
 if [ -n "${PKDUMP_LAKE_S3_BASE_PROFILE:-}" ] && [ -z "${PKDUMP_LAKE_S3_PROFILE:-}" ]; then
@@ -132,7 +131,7 @@ lake_job() { # lake_job <network-uri-override|-> args...
     local uri="$1"; shift
     local env=("${ENV_ARGS[@]}")
     [ "$uri" != - ] && env+=(-e "PKDUMP_LAKE_NESSIE_URI=${uri}")
-    pkdump_lake_job_select "$INSTANCE" pkdump-lake-nessie-backup pkdump-lake-nessie-backup || return 1
+    pkdump_lake_job_select "$INSTANCE" pkdump-lake-nessie-backup || return 1
     podman run --rm --pull=never --network "$NETWORK" "${env[@]}" \
         ${CRED_ARGS[@]+"${CRED_ARGS[@]}"} -v "${WORK}:/work:Z" \
         ${RUN_EP[@]+"${RUN_EP[@]}"} "$RUN_IMAGE" ${RUN_CMD[@]+"${RUN_CMD[@]}"} "$@"
@@ -150,7 +149,7 @@ backup_job() {
     for var in PKDUMP_NESSIE_BACKUP_S3_ENDPOINT AWS_REGION AWS_DEFAULT_REGION; do
         [ -n "${!var:-}" ] && env+=(-e "${var}=${!var}")
     done
-    pkdump_lake_job_select "$INSTANCE" pkdump-lake-nessie-backup pkdump-lake-nessie-backup || return 1
+    pkdump_lake_job_select "$INSTANCE" pkdump-lake-nessie-backup || return 1
     podman run --rm --pull=never --network "$NETWORK" "${env[@]}" \
         -v "${PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE}:/backup-aws/credentials:ro,Z" \
         -v "${WORK}:/work:Z" \
@@ -210,7 +209,7 @@ pull_public() { # pull_public <image> — a no-op when the image is already in t
 registry_login_check() {
     local af="${REGISTRY_AUTH_FILE:-${XDG_RUNTIME_DIR}/containers/auth.json}" auth rc
     [ -f "$af" ] || return 0
-    auth="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("auths",{}).get("ghcr.io",{}).get("auth",""))' "$af")" || return 1
+    auth="$(jq -r '.auths["ghcr.io"].auth // ""' "$af")" || return 1
     [ -n "$auth" ] || return 0
     rc="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H "Authorization: Basic ${auth}" \
         'https://ghcr.io/token?service=ghcr.io&scope=repository:projectnessie/nessie:pull')" || rc=000

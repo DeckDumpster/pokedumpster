@@ -58,7 +58,7 @@ ALERTS_ENV="${PKDUMP_ALERTS_ENV:-${HOME}/.config/pkdump/alerts.env}"
 # against its own throwaway network, image and fixture directory instead of an
 # instance's volume. Production sets none of them.
 NETWORK="${PKDUMP_LAKE_NETWORK:-pkdump-lake-${INSTANCE}}"
-JOB_IMAGE="${PKDUMP_LAKE_JOB_IMAGE:-localhost/pkdump-lake:${INSTANCE}}"
+JOB_IMAGE="${PKDUMP_LAKE_RUST_IMAGE:-localhost/pkdump:${INSTANCE}}"
 # A podman volume name or a host path — `-v` takes either.
 DATA="${PKDUMP_LAKE_DATA:-pkdump-${INSTANCE}-data}"
 
@@ -94,8 +94,8 @@ pkdump_store_activate
 # It is a FAILURE (1), not a skip: a timer armed at nothing is a value history
 # that never advances, which is the exact silence this whole bead exists to end.
 if ! podman image exists "$JOB_IMAGE" 2>/dev/null; then
-    echo "value-snapshots: no lake job image ${JOB_IMAGE}." >&2
-    echo "  The lakehouse is not installed for '${INSTANCE}': bash deploy/setup-lake.sh ${INSTANCE}" >&2
+    echo "value-snapshots: no app image ${JOB_IMAGE}." >&2
+    echo "  The app image is not built for '${INSTANCE}': bash deploy/deploy.sh ${INSTANCE}" >&2
     exit 1
 fi
 if ! podman network exists "$NETWORK" 2>/dev/null; then
@@ -140,8 +140,7 @@ esac
 # Nessie vends the warehouse location, the S3 endpoint and the region through
 # /iceberg/v1/config, so the job needs the catalog URL and nothing else against a
 # real deployment. The PKDUMP_LAKE_S3_* names are forwarded when lake.env sets
-# them because the test substrate (MinIO) takes static keys — see
-# lake/src/pkdump_lake/catalog.py.
+# them because the test substrate (MinIO) takes static keys.
 ENV_ARGS=(-e "PKDUMP_LAKE_NESSIE_URI=${CATALOG_URI}")
 for VAR in PKDUMP_LAKE_REF PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION \
     PKDUMP_LAKE_S3_ENDPOINT PKDUMP_LAKE_S3_ACCESS_KEY_ID \
@@ -150,7 +149,7 @@ for VAR in PKDUMP_LAKE_REF PKDUMP_LAKE_S3_BUCKET PKDUMP_LAKE_S3_REGION \
     [ -n "${!VAR:-}" ] && ENV_ARGS+=(-e "${VAR}=${!VAR}")
 done
 # The Rust lake jobs (kit sp-3yxvq1) assume from PKDUMP_LAKE_S3_PROFILE and ignore
-# the BASE_PROFILE the Python jobs read: without it they sign with the ROLE profile
+# the BASE_PROFILE: without it they sign with the ROLE profile
 # AWS_PROFILE names and fail with "failed to load signing credential" (sp-090v9u).
 # Same profile, same lake.env source; an explicit PKDUMP_LAKE_S3_PROFILE wins.
 if [ -n "${PKDUMP_LAKE_S3_BASE_PROFILE:-}" ] && [ -z "${PKDUMP_LAKE_S3_PROFILE:-}" ]; then
@@ -189,11 +188,10 @@ LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
 
 RC=0
-# --pull=never: the job image is built locally by deploy/setup-lake.sh and named
+# --pull=never: the app image is built locally by deploy/deploy.sh and named
 # localhost/…, so a pull attempt can only ever be podman treating `localhost` as
 # a registry. There is nothing to fetch and nothing to fall back to.
-# Rust by default, Python behind PKDUMP_LAKE_JOBS=python (deploy/lake-lib.sh).
-pkdump_lake_job_select "$INSTANCE" pkdump-lake-value-snapshots pkdump-value-snapshots || exit 1
+pkdump_lake_job_select "$INSTANCE" pkdump-value-snapshots || exit 1
 podman run --rm --pull=never --network "$NETWORK" \
     -v "${DATA}:/data:Z" \
     "${ENV_ARGS[@]}" ${CRED_ARGS[@]+"${CRED_ARGS[@]}"} \

@@ -713,7 +713,7 @@ CREATE TABLE IF NOT EXISTS collection_value_snapshot (
 );
 
 -- Where one day's snapshot rows came from (pd-ruwh). The lake transform
--- (lake/src/pkdump_lake/value_snapshots.py) computes the rows above from
+-- (crates/pkdump-value-snapshots) computes the rows above from
 -- `catalog.prices` at a PINNED Nessie commit, and a value derived from a
 -- versioned catalog is only worth as much as the record of which version.
 -- One row per (date, artefact), rewritten with the snapshot rows it explains,

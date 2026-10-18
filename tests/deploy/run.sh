@@ -1296,7 +1296,7 @@ check "the health URL follows the catalog" "http://nessie-x:19120/api/v2/config"
 # Asked from a container ON the network, not from the host: the published-port
 # path can answer yes about a network the job itself cannot use.
 check "asked from where the job will ask" "1" \
-	"$(grep -c 'podman run --rm --network "\$1" "\$2"' \
+	"$(grep -c 'podman run --rm --network "\$1" --entrypoint pkdump-lake-probe "\$2"' \
 		"${REPO_DIR}/deploy/lake-lib.sh" || true)"
 
 unset NS_NETNS_FILE NS_STATE PKDUMP_NETNS_READY_TIMEOUT PKDUMP_NETNS_READY_INTERVAL

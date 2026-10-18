@@ -698,32 +698,22 @@ while IFS= read -r f; do
 		"$(printf '%s' "$UPGRADE_OUT" | grep -c "${fname}" || true)"
 done <<< "$UPGRADE_MISSING"
 
-# --- The OTHER image this checkout ships (pd-rn4c) --------------------------
+# --- There is no OTHER image any more (pd-rn4c, retired by sp-4k7mxi.7) ----
 #
-# `lake/` builds a second image — the PyIceberg runtime the nightly price build
-# and the value-snapshots transform run in — and only deploy/setup-lake.sh, the
-# ONE-TIME installer, ever built it. So `deploy/deploy.sh prod` shipped the new
-# binary and left the job image at whatever version the lakehouse was installed
-# with, which is pd-2t6u's bug again against a different image.
-#
-# It is invisible from outside: the stale jobs keep exiting 0. Prod ran a
-# transform six hours older than its own checkout for a day, recording no
-# dimension='sealed' row at all — $10,351.47 of sealed product missing from a
-# chart that reported a plausible $10,636.81, over "1 tenant(s) snapshotted, 0
-# skipped".
-
-# One: a box with no lakehouse must not grow one. Installing one needs a bucket
-# name that lives in host config, and most instances — every `--test` one CI
-# throws away — have none. Asserted on the runs above, which had no Nessie unit.
-check "no lakehouse -> no lake job image built" "0" \
+# `lake/` used to build a second image — the PyIceberg runtime the nightly price
+# build and the value-snapshots transform ran in — and the bug was that only the
+# one-time installer ever built it, so a deploy shipped a new binary beside stale
+# jobs that kept exiting 0 (pd-2t6u's shape). Every lake job is now a Rust binary
+# in the APP image, so a deploy ships them by construction, and what is left to
+# hold is that nobody puts a second image back: a deploy builds the app image and
+# only the app image, with or without a lakehouse installed.
+check "a deploy builds no lake job image" "0" \
 	"$(grep -c 'PODMAN: build .*lake/Containerfile' "$PODMAN_LOG" || true)"
-check "and it says the lake image was skipped" "1" \
-	"$(printf '%s' "$DEPLOY_OUT" | grep -c 'No lakehouse installed' || true)"
+check "and the checkout has no lake/Containerfile" "0" \
+	"$([ -e "${REPO_DIR}/lake/Containerfile" ] && echo 1 || echo 0)"
 
-# Two: with a lakehouse installed, a deploy rebuilds its job image. The Nessie
-# Quadlet unit is the marker rather than the image, because `setup-lake.sh
-# --remove` deletes that unit and deliberately keeps the image — so an
-# image-exists test would go on rebuilding for an uninstalled lakehouse.
+# With a lakehouse installed (the Nessie Quadlet unit is the marker) it is the
+# same deploy: one image, the app's.
 printf '[Unit]\nDescription=nessie\n\n[Container]\nImage=ghcr.io/projectnessie/nessie\n' \
 	> "${QUADLET}/pkdump-nessie-prod.container"
 : > "$PODMAN_LOG"
@@ -735,41 +725,21 @@ DEPLOY_OUT3="$(
 		PKDUMP_TEST_DEPLOY_PODMAN_LOG="$PODMAN_LOG" \
 		bash "${REPO_DIR}/deploy/deploy.sh" prod 2>&1
 )"
-check "a lakehouse -> the job image is rebuilt" "1" \
-	"$(grep -c "PODMAN: build -t localhost/pkdump-lake:prod -f ${REPO_DIR}/lake/Containerfile ${REPO_DIR}/lake" "$PODMAN_LOG" || true)"
+check "a lakehouse -> still no lake job image is built" "0" \
+	"$(grep -c 'PODMAN: build .*lake/Containerfile' "$PODMAN_LOG" || true)"
 # Built at the INSTANCE tag and through pkdump_image_ensure since pd-h3wy — the
 # bare `podman build -t pkdump:latest` this used to assert collected none of the
 # ~2 GB of layers it orphaned and passed no CARGO_TARGET_CACHE_SCOPE, so prod's
 # own rebuild was the box's biggest leak and shared the `unscoped` target cache
 # with every other unscoped build on it.
 DEPLOY_SCOPE="$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-8)"
-check "and the app image is still built too" "1" \
+check "and the app image is built" "1" \
 	"$(grep -c "PODMAN: build -t pkdump:prod --build-arg CARGO_TARGET_CACHE_SCOPE=${DEPLOY_SCOPE} -f ${REPO_DIR}/Containerfile ${REPO_DIR}" "$PODMAN_LOG" || true)"
 check "...and pkdump:latest still names it afterwards" "1" \
 	"$(grep -c "PODMAN: tag pkdump:prod pkdump:latest" "$PODMAN_LOG" || true)"
-check "and it names what it rebuilt" "1" \
-	"$(printf '%s' "$DEPLOY_OUT3" | grep -c 'Rebuilding the lake job image localhost/pkdump-lake:prod' || true)"
-
-# Three: the ORDER. The app is what serves requests; a lake build that fails
-# must never be able to leave the new binary built and not running. So the
-# restart happens first, and this is the assertion that keeps it there when
-# somebody tidies the file.
-check "the app restarts BEFORE the lake image is built" "yes" \
-	"$(printf '%s' "$DEPLOY_OUT3" | awk '
-		/restarted\. Port:/ { app = NR }
-		/Rebuilding the lake job image/ { lake = NR }
-		END { print (app && lake && app < lake) ? "yes" : "no" }')"
-
-# Four: one builder. setup-lake.sh installs a lakehouse and deploy.sh ships a
-# change to one; the day those two build the image differently is the day a
-# deploy produces an image the installer would not have.
-check "setup-lake.sh builds it through the helper" "1" \
-	"$(grep -c '^pkdump_lake_job_image_build ' "${REPO_DIR}/deploy/setup-lake.sh" || true)"
-check "deploy.sh builds it through the same helper" "1" \
-	"$(grep -c 'pkdump_lake_job_image_build ' "${REPO_DIR}/deploy/deploy.sh" || true)"
-check "and setup-lake.sh no longer runs the builder itself" "0" \
-	"$(grep -c 'podman build' "${REPO_DIR}/deploy/setup-lake.sh" || true)"
-check "and deploy.sh runs it only for the app image" "1" \
+check "setup-lake.sh builds no image" "0" \
+	"$(grep -c 'podman build\|pkdump_lake_job_image_build' "${REPO_DIR}/deploy/setup-lake.sh" || true)"
+check "and deploy.sh runs the builder only for the app image" "1" \
 	"$(grep -c 'podman build' "${REPO_DIR}/deploy/deploy.sh" || true)"
 
 reset_store
@@ -1603,11 +1573,11 @@ VS_NOLAKEHOUSE="$(PATH="${WORK}/vsbin:${ORIG_PATH}" HOME="$VS_HOME" \
 	bash "${REPO_DIR}/deploy/value-snapshots.sh" vstest 2>&1)"
 VS_NOLAKEHOUSE_RC=$?
 set -e
-check "no job image -> fails (a timer armed at nothing must page)" "1" "$VS_NOLAKEHOUSE_RC"
-check "and names the command that installs it" "1" \
-	"$(printf '%s' "$VS_NOLAKEHOUSE" | grep -c 'deploy/setup-lake.sh vstest' || true)"
-# sp-utga27: the transform execs the certified Rust binary by default, Python
-# behind PKDUMP_LAKE_JOBS=python.
+check "no app image -> fails (a timer armed at nothing must page)" "1" "$VS_NOLAKEHOUSE_RC"
+check "and names the command that builds it" "1" \
+	"$(printf '%s' "$VS_NOLAKEHOUSE" | grep -c 'deploy/deploy.sh vstest' || true)"
+# The transform execs the Rust binary from the app image (sp-4k7mxi.7: the Python
+# job and its PKDUMP_LAKE_JOBS rollback are gone).
 run_vs_cmd() { # run_vs_cmd <lake.env extra line>
 	printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_BASE_PROFILE=pkdump-base\n%s\n' "$1" \
 		> "${VS_HOME}/.config/pkdump/lake.env"
@@ -1624,10 +1594,10 @@ check "value-snapshots execs the Rust binary from the app image" "1" \
 check "…with the signing profile (sp-090v9u)" "1" \
 	"$(grep -c -- '-e PKDUMP_LAKE_S3_PROFILE=pkdump-base' "${WORK}/vs-jobs.log" || true)"
 run_vs_cmd "PKDUMP_LAKE_JOBS=python"
-check "PKDUMP_LAKE_JOBS=python rolls the transform back" "1" \
-	"$(grep -c -- 'localhost/pkdump-lake:vstest pkdump-lake-value-snapshots --data-dir /data' "${WORK}/vs-jobs.log" || true)"
+check "a leftover PKDUMP_LAKE_JOBS=python rolls nothing back" "0" \
+	"$(grep -c -- 'pkdump-lake:' "${WORK}/vs-jobs.log" || true)"
 
-# And the job image is local-only, so a pull can only ever be podman mistaking
+# And the app image is local-only, so a pull can only ever be podman mistaking
 # `localhost` for a registry.
 check "never pulls the job image" "1" \
 	"$(grep -c '^podman run --rm --pull=never' "${REPO_DIR}/deploy/value-snapshots.sh" || true)"
@@ -2618,21 +2588,20 @@ PX_NOLAKEHOUSE="$(PATH="${WORK}/pxbin:${ORIG_PATH}" HOME="$PX_HOME" \
 	bash "${REPO_DIR}/deploy/prices.sh" pxtest 2>&1)"
 PX_NOLAKEHOUSE_RC=$?
 set -e
-check "no job image -> fails" "1" "$PX_NOLAKEHOUSE_RC"
-check "and names the command that installs it" "1" \
-	"$(printf '%s' "$PX_NOLAKEHOUSE" | grep -c 'deploy/setup-lake.sh pxtest' || true)"
-check "never pulls the job image" "1" \
+check "no app image -> fails" "1" "$PX_NOLAKEHOUSE_RC"
+check "and names the command that builds it" "1" \
+	"$(printf '%s' "$PX_NOLAKEHOUSE" | grep -c 'deploy/deploy.sh pxtest' || true)"
+check "never pulls the app image" "1" \
 	"$(grep -c '^[[:space:]]*podman run --rm --pull=never' "${REPO_DIR}/deploy/prices.sh" || true)"
 # Nothing keyed by a tenant is within this job's reach: it reads raw/ and writes
 # Iceberg, and mounts no data volume at all.
 check "no tenant data is mounted into the job" "0" \
 	"$(grep -c '^\s*-v "\${DATA}' "${REPO_DIR}/deploy/prices.sh" || true)"
 
-# --- sp-utga27: the nightly jobs exec the certified RUST binaries -----------
+# --- the nightly jobs exec the RUST binaries (sp-utga27, sp-4k7mxi.7) ------
 # Driven through the real wrappers with a fake podman that records the command
-# line. Default = Rust, from the app image, entrypoint named, and prod's lake env
-# (the sp-090v9u signing profile) forwarded; PKDUMP_LAKE_JOBS=python in lake.env is
-# the one-switch rollback; nessie-backup is untouched.
+# line: from the app image, entrypoint named, and prod's lake env (the sp-090v9u
+# signing profile) forwarded.
 run_px_jobs() { # run_px_jobs <lake.env extra line>
 	printf 'PKDUMP_LAKE_S3_BUCKET=pdtest\nPKDUMP_LAKE_S3_BASE_PROFILE=pkdump-base\nAWS_PROFILE=pkdump-role\n%s\n' "$1" \
 		> "${PX_HOME}/.config/pkdump/lake.env"
@@ -2655,7 +2624,7 @@ check "the Rust jobs get the signing profile (sp-090v9u)" "2" \
 check "the Rust jobs get the catalog URL and bucket" "2" \
 	"$(printf '%s\n' "$PX_RUST" | grep -c -- '-e PKDUMP_LAKE_NESSIE_URI=.* -e PKDUMP_LAKE_S3_BUCKET=pdtest' || true)"
 # The Rust raw reader signs through the SDK chain (AWS_ACCESS_KEY_ID/SECRET), not
-# the PKDUMP_LAKE_S3_* names the Python path forwards: a static-key lake.env (the
+# the PKDUMP_LAKE_S3_* names: a static-key lake.env (the
 # MinIO substrate) must reach it under BOTH spellings (PR 294: "no credentials
 # found in chain").
 run_px_jobs "PKDUMP_LAKE_S3_ACCESS_KEY_ID=AKIDTEST
@@ -2665,21 +2634,16 @@ check "Rust jobs still get the PKDUMP_LAKE_S3 static keys" "2" \
 	"$(printf '%s\n' "$PX_KEYS" | grep -c -- '-e PKDUMP_LAKE_S3_ACCESS_KEY_ID=AKIDTEST.*-e PKDUMP_LAKE_S3_SECRET_ACCESS_KEY=SECRETTEST' || true)"
 check "Rust jobs get the same keys as AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY" "2" \
 	"$(printf '%s\n' "$PX_KEYS" | grep -c -- '-e AWS_ACCESS_KEY_ID=AKIDTEST.*-e AWS_SECRET_ACCESS_KEY=SECRETTEST' || true)"
-run_px_jobs "PKDUMP_LAKE_JOBS=python
-PKDUMP_LAKE_S3_ACCESS_KEY_ID=AKIDTEST
-PKDUMP_LAKE_S3_SECRET_ACCESS_KEY=SECRETTEST"
-check "the Python path forwards no AWS_ACCESS_KEY_ID it never read" "0" \
-	"$(grep -E 'build-prices|prices-age' "${WORK}/prices-jobs.log" | grep -c -- 'AWS_ACCESS_KEY_ID' || true)"
+# The Python lake and its PKDUMP_LAKE_JOBS switch were deleted (sp-4k7mxi.7): a
+# lake.env that still sets it neither rolls back to an image that is gone nor
+# refuses — the Rust job runs exactly as it did.
 run_px_jobs "PKDUMP_LAKE_JOBS=python"
-PX_PY="$(grep -E 'build-prices|prices-age' "${WORK}/prices-jobs.log")"
-check "PKDUMP_LAKE_JOBS=python rolls back to the lake image" "2" \
-	"$(printf '%s\n' "$PX_PY" | grep -c -- 'localhost/pkdump-lake:pxtest pkdump-lake-\(build-prices\|prices-age\) ' || true)"
-check "…with no entrypoint override" "0" "$(printf '%s\n' "$PX_PY" | grep -c -- '--entrypoint' || true)"
-run_px_jobs "PKDUMP_LAKE_JOBS=bogus"
-check "an unknown PKDUMP_LAKE_JOBS runs nothing" "0" \
-	"$(grep -c -E 'build-prices|prices-age' "${WORK}/prices-jobs.log" || true)"
+check "a leftover PKDUMP_LAKE_JOBS=python still runs the Rust jobs" "2" \
+	"$(grep -E 'build-prices|prices-age' "${WORK}/prices-jobs.log" | grep -c -- '--entrypoint pkdump-lake-\(build-prices\|prices-age\) localhost/pkdump:pxtest ' || true)"
+check "…and never names the lake image" "0" \
+	"$(grep -c -- 'pkdump-lake:' "${WORK}/prices-jobs.log" || true)"
 check "nessie-backup selects the Rust job through pkdump_lake_job_select" "1" \
-	"$(grep -c 'pkdump_lake_job_select "$INSTANCE" pkdump-lake-nessie-backup pkdump-lake-nessie-backup' "${REPO_DIR}/deploy/nessie-backup.sh" | awk '{print ($1>0)?1:0}')"
+	"$(grep -c 'pkdump_lake_job_select "$INSTANCE" pkdump-lake-nessie-backup' "${REPO_DIR}/deploy/nessie-backup.sh" | awk '{print ($1>0)?1:0}')"
 
 reset_store
 

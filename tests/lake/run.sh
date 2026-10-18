@@ -15,8 +15,9 @@
 #
 #   * §3 writes, reads, writes again, and reads the table AS OF the first
 #     commit — both by Nessie ref (the whole catalog at a commit) and by
-#     Iceberg snapshot id (one table's history). See lake/src/pkdump_lake/
-#     roundtrip.py; the assertions live there, in the job, not here.
+#     Iceberg snapshot id (one table's history). See
+#     crates/pkdump-lakejobs/src/roundtrip.rs; the assertions live there, in
+#     the job, not here.
 #   * §4 RESTARTS Nessie and re-reads. The version store is configured ROCKSDB
 #     on a host directory, and the difference between that and Nessie's default
 #     IN_MEMORY store is invisible until something restarts — at which point
@@ -92,7 +93,7 @@ SUFFIX="${PDLAKE_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-6)}"
 NET=pdlake-test-net-${SUFFIX}
 MINIO_CTR=pdlake-test-minio-${SUFFIX}
 NESSIE_CTR=pdlake-test-nessie-${SUFFIX}
-JOB_IMAGE=pkdump-lake:test-${SUFFIX}
+APP_IMAGE=localhost/pkdump:lake-${SUFFIX}
 BUCKET=pdlake-test-${SUFFIX}
 MINIO_PORT=${MINIO_PORT:-$(free_port)}
 NESSIE_PORT=${NESSIE_PORT:-$(free_port)}
@@ -123,7 +124,7 @@ cleanup() {
 	fi
 	podman rm -f "$MINIO_CTR" "$NESSIE_CTR" >/dev/null 2>&1 || true
 	podman network rm "$NET" >/dev/null 2>&1 || true
-	podman rmi -f "$JOB_IMAGE" >/dev/null 2>&1 || true
+	podman rmi -f "$APP_IMAGE" >/dev/null 2>&1 || true
 	# Nessie writes its version store as the image's own uid, which rootless
 	# podman maps to a SUBUID — the invoking user cannot unlink those files. A
 	# plain `rm -rf` leaves the whole work dir behind, silently, every run.
@@ -133,11 +134,15 @@ trap cleanup EXIT
 
 mc() { podman run --rm --network "$NET" -e MC_HOST_m="http://${AKID}:${SECRET}@${MINIO_CTR}:9000" "$MC_IMAGE" "$@"; }
 
-echo "==> §0  Build the lake job image (PyIceberg, no JVM)"
-# The job runtime is a container like everything else here. pd-1ojt's table
-# build gets the same image; this gate is what keeps it buildable.
-pkdump_lake_job_image_ensure "$JOB_IMAGE" "$REPO_DIR" >/dev/null
-echo "    ${JOB_IMAGE}"
+echo "==> §0  Build the app image (the lake jobs are Rust binaries in it)"
+# The job runtime is a container like everything else here. Through
+# pkdump_image_ensure so a CI run that already built it re-tags rather than
+# rebuilding.
+pkdump_image_ensure "$APP_IMAGE" "$REPO_DIR" >"${WORK}/build.log" 2>&1 || {
+	tail -40 "${WORK}/build.log"
+	die "the app image build failed"
+}
+echo "    ${APP_IMAGE}"
 
 echo "==> §1  Object store (MinIO stands in for the lake bucket)"
 # The real bucket's name is host config — ~/.config/pkdump/lake.env, created by
@@ -199,19 +204,24 @@ case "$ADVERTISED" in
 *) die "Nessie advertises the wrong warehouse: ${ADVERTISED}" ;;
 esac
 
-run_job() {
-	podman run --rm --network "$NET" \
+run_job() { # run_job <binary> [args...]
+	local bin="$1"
+	shift
+	podman run --rm --network "$NET" --pull=never \
+		-e PKDUMP_LAKE_S3_BUCKET="$BUCKET" \
+		-e AWS_ACCESS_KEY_ID="$AKID" -e AWS_SECRET_ACCESS_KEY="$SECRET" \
+		-e AWS_REGION=us-west-2 \
 		-e PKDUMP_LAKE_NESSIE_URI="$ICEBERG_URI" \
 		-e PKDUMP_LAKE_S3_ENDPOINT="http://${MINIO_CTR}:9000" \
 		-e PKDUMP_LAKE_S3_ACCESS_KEY_ID="$AKID" \
 		-e PKDUMP_LAKE_S3_SECRET_ACCESS_KEY="$SECRET" \
 		-e PKDUMP_LAKE_S3_REGION=us-west-2 \
 		-e PKDUMP_LAKE_S3_PATH_STYLE=1 \
-		"$JOB_IMAGE" "$@"
+		--entrypoint "$bin" "$APP_IMAGE" "$@"
 }
 
 echo "==> §3  Round trip: create, write, read, commit again, TIME TRAVEL"
-# The assertions are in the job (lake/src/pkdump_lake/roundtrip.py), not here:
+# The assertions are in the job (crates/pkdump-lakejobs/src/roundtrip.rs), not here:
 # it is the documented proof an operator runs against a live instance, so it has
 # to fail on its own rather than depend on a harness reading its output.
 run_job pkdump-lake-roundtrip
@@ -220,12 +230,7 @@ echo "==> §4  Restart Nessie — the version store must be durable"
 # ROCKSDB vs Nessie's default IN_MEMORY store is invisible until this moment.
 podman restart "$NESSIE_CTR" >/dev/null
 nessie_wait
-SURVIVED=$(run_job python -c '
-from pkdump_lake.catalog import catalog
-c = catalog()
-t = c.load_table("proof.roundtrip")
-print(len(t.scan().to_arrow()))
-' | tail -1)
+SURVIVED=$(run_job pkdump-lake-probe rows --table proof.roundtrip | grep -c . || true)
 [ "$SURVIVED" = "2" ] ||
 	die "after restart the table had ${SURVIVED} rows, expected 2 — the version store is not durable"
 echo "    ok   proof.roundtrip survived a catalog restart with both rows"

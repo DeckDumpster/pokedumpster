@@ -174,6 +174,35 @@ fn sha256_hex(data: &[u8]) -> String {
         .collect()
 }
 
+/// Live data rows of a snapshot, summed from its manifests: metadata only, no
+/// data file is opened. A delete manifest would make the sum wrong, so one is
+/// an error rather than a guess.
+async fn manifest_row_count(
+    table: &iceberg::table::Table,
+    snap: &iceberg::spec::SnapshotRef,
+    name: &str,
+) -> Result<i64, BackupError> {
+    let ic = |e: iceberg::Error| BackupError(format!("{name}: iceberg: {e}"));
+    let list = table.manifest_list_reader(snap).load().await.map_err(ic)?;
+    let mut rows: u64 = 0;
+    for mf in list.entries() {
+        if mf.content != iceberg::spec::ManifestContentType::Data {
+            return err(format!(
+                "{name}: snapshot {} carries no total-records and has delete manifests",
+                snap.snapshot_id()
+            ));
+        }
+        let manifest = mf.load_manifest(table.file_io()).await.map_err(ic)?;
+        rows += manifest
+            .entries()
+            .iter()
+            .filter(|e| e.is_alive())
+            .map(|e| e.record_count())
+            .sum::<u64>();
+    }
+    i64::try_from(rows).map_err(|_| BackupError(format!("{name}: row count {rows} overflows")))
+}
+
 /// Every table the live catalog holds: where its metadata is, and how big. Row
 /// counts come from the snapshot summary — metadata only.
 pub async fn inventory(cat: &dyn Catalog) -> Result<Vec<TableEntry>, BackupError> {
@@ -191,12 +220,9 @@ pub async fn inventory(cat: &dyn Catalog) -> Result<Vec<TableEntry>, BackupError
                     Some(t) => t.parse::<i64>().map_err(|_| {
                         BackupError(format!("{name}: total-records {t:?} is not a number"))
                     })?,
-                    None => {
-                        return err(format!(
-                            "{name}: snapshot {} carries no total-records",
-                            snap.snapshot_id()
-                        ));
-                    }
+                    // Writers that omit the summary count (iceberg-rust) leave
+                    // the manifests as the only record of it.
+                    None => manifest_row_count(&table, snap, &name).await?,
                 };
             }
             out.push(TableEntry {

@@ -332,6 +332,9 @@ wait_until 90 1 nessie_up || {
 echo "    Nessie up, warehouse ${WAREHOUSE}"
 
 echo "==> §4  catalog.prices and catalog.sealed_prices, both days, from raw/"
+# The kit's ensure_tables cannot create a table on Nessie 0.104.3 (it sends the
+# partition field without an id), so the gate lays the two tables itself.
+run_job pkdump-lake-probe create-tables >/dev/null || die "could not create the price tables"
 run_job pkdump-lake-build-prices --ingest-date "$DATE_OLD" >/dev/null || die "the ${DATE_OLD} build failed"
 run_job pkdump-lake-build-prices --ingest-date "$DATE_NEW" >/dev/null || die "the ${DATE_NEW} build failed"
 echo "    ok   ${DATE_OLD} and ${DATE_NEW} in the lake"

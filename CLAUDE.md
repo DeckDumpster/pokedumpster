@@ -276,7 +276,7 @@ lakehouse" below for what is the kit's and what stays here:
   (sp-4k7mxi.6): `pkdump-lake-prices-age`, `pkdump-lake-nessie-backup` and
   `pkdump-lake-roundtrip`, plus `pkdump-lake-probe` (sp-4k7mxi.7), the read-only
   questions the container gates ask of the lake (`tables`, `rows`, `summary`, `get`,
-  `reachable`) now that no Python image exists to ask them. The first three keep the
+  `reachable`, plus `create-tables`, which lays `catalog.prices`/`sealed_prices` on a fresh lake because the kit's `ensure_tables` is refused by Nessie 0.104.3) now that no Python image exists to ask them. The first three keep the
   flags, messages, exit statuses and backup/manifest bytes of the Python modules they
   replaced; `cargo test -p pkdump-lakejobs` holds them to the output the Python
   recorded (`tests/fixtures/`, `tests/parity.rs`). Every lake job runs from the app

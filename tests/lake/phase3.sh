@@ -309,7 +309,10 @@ wait_until 90 1 nessie_up || {
 	die "Nessie never answered on ${NET}"
 }
 echo "  Nessie up, warehouse ${WAREHOUSE}"
-run_job pkdump-lake-build-prices --ingest-date "$DATE_NEW" >"${WORK}/prices.log" 2>&1 || {
+# The kit's ensure_tables cannot create a table on Nessie 0.104.3 (it sends the
+# partition field without an id), so the gate lays the two tables itself.
+run_job pkdump-lake-probe create-tables >"${WORK}/prices.log" 2>&1 || die "could not create the price tables"
+run_job pkdump-lake-build-prices --ingest-date "$DATE_NEW" >>"${WORK}/prices.log" 2>&1 || {
 	tail -30 "${WORK}/prices.log"
 	podman logs "$NESSIE_CTR" 2>&1 | tail -30
 	die "the ${DATE_NEW} price build failed"

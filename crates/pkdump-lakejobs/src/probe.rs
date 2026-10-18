@@ -4,7 +4,8 @@
 //! The gates used to ask these through `python -c` in the PyIceberg job image.
 //! With that image gone, the answers come from the same Iceberg client the jobs
 //! use, printed as plain text a shell can compare: one row per line, columns
-//! tab-separated, sorted. Nothing here writes, and nothing runs on a timer.
+//! tab-separated, sorted. Only `create-tables` writes (two empty tables, for a gate's fresh
+//! lake), and nothing runs on a timer.
 
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
@@ -13,8 +14,12 @@ use anyhow::{Context, Result, bail};
 use arrow_array::RecordBatch;
 use arrow_cast::display::array_value_to_string;
 use dumpster_kit_iceberg::LakeCatalogConfig;
+use dumpster_kit_iceberg::prices::{
+    NAMESPACE, prices_ident, prices_schema, sealed_ident, sealed_schema,
+};
 use futures::TryStreamExt;
-use iceberg::Catalog;
+use iceberg::spec::{Transform, UnboundPartitionField, UnboundPartitionSpec};
+use iceberg::{Catalog, NamespaceIdent, TableCreation};
 
 use crate::freshness::parse_ident;
 
@@ -132,4 +137,43 @@ pub fn reachable(addr: &str) -> Result<&'static str> {
             "blocked"
         },
     )
+}
+
+/// Create `catalog.prices` and `catalog.sealed_prices` when absent, with the
+/// partition field id written out (1000) — the one thing a gate cannot leave to
+/// the kit's `ensure_tables`, which sends the partition field without an id and
+/// is refused by Nessie 0.104.3 ("some of required attributes are not set
+/// [fieldId]"). Production's tables already exist, so only a fresh lake — every
+/// container gate — reaches the refusal. Not a probe in the read-only sense:
+/// it writes the two empty tables and nothing else.
+pub async fn create_tables() -> Result<()> {
+    let cat = catalog().await?;
+    let ns = NamespaceIdent::new(NAMESPACE.into());
+    if !cat.namespace_exists(&ns).await? {
+        cat.create_namespace(&ns, Default::default()).await?;
+    }
+    for (ident, schema, observed_id) in [
+        (prices_ident(), prices_schema()?, 5),
+        (sealed_ident(), sealed_schema()?, 4),
+    ] {
+        if cat.table_exists(&ident).await? {
+            continue;
+        }
+        let spec = UnboundPartitionSpec::builder()
+            .with_spec_id(0)
+            .add_partition_fields([UnboundPartitionField {
+                source_id: observed_id,
+                field_id: Some(1000),
+                name: "observed_date".into(),
+                transform: Transform::Identity,
+            }])?
+            .build();
+        let creation = TableCreation::builder()
+            .name(ident.name().to_string())
+            .schema(schema)
+            .partition_spec(spec)
+            .build();
+        cat.create_table(&ns, creation).await?;
+    }
+    Ok(())
 }

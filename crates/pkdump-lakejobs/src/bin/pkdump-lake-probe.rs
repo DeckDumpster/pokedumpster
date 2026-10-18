@@ -32,6 +32,8 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         columns: Vec<String>,
     },
+    /// Create catalog.prices and catalog.sealed_prices when absent (a gate's fresh lake)
+    CreateTables,
     /// Exit 0 when the URL answers 2xx
     Get { url: String },
     /// Print REACHABLE or blocked for a TCP connect to host:port
@@ -52,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{line}");
             }
         }
+        Cmd::CreateTables => probe::create_tables().await?,
         Cmd::Get { url } => probe::get(&url).await?,
         Cmd::Reachable { addr } => println!("{}", probe::reachable(&addr)?),
     }

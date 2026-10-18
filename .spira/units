@@ -1,0 +1,8 @@
+# Unit-file name globs this repository's own deploy installs (deploy/setup.sh,
+# deploy/setup-lake.sh) into ~/.config/systemd/user. Spira's `drift.sh units`
+# accepts a file matching one of these as owned by this repo, not as drift.
+# One glob per line; blank lines and # comments are ignored.
+pkdump-*@*
+pkdump*.service
+pkdump*.timer
+pkdump*.container

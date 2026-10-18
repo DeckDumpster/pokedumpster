@@ -109,8 +109,6 @@ SUFFIX="${PDVALUE_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-6)}"
 NET=pdvalue-net-${SUFFIX}
 MINIO_CTR=pdvalue-minio-${SUFFIX}
 NESSIE_CTR=pdvalue-nessie-${SUFFIX}
-LOCK_CTR=pdvalue-lock-${SUFFIX}
-JOB_IMAGE=pkdump-lake:value-${SUFFIX}
 APP_IMAGE=localhost/pkdump:value-${SUFFIX}
 BUCKET=pdvalue-${SUFFIX}
 AKID=pdvaluetestroot
@@ -131,7 +129,7 @@ DATE_OLD=2026-08-09
 DATE_NEW=2026-08-10
 
 cleanup() {
-	podman rm -f "$LOCK_CTR" >/dev/null 2>&1 || true
+	release_lock
 	if [ -n "${KEEP:-}" ]; then
 		echo ""
 		echo "KEEP=1 — leaving everything up:"
@@ -142,7 +140,7 @@ cleanup() {
 	fi
 	podman rm -f "$MINIO_CTR" "$NESSIE_CTR" >/dev/null 2>&1 || true
 	podman network rm "$NET" >/dev/null 2>&1 || true
-	podman rmi -f "$JOB_IMAGE" "$APP_IMAGE" >/dev/null 2>&1 || true
+	podman rmi -f "$APP_IMAGE" >/dev/null 2>&1 || true
 	# Nessie writes its version store as a SUBUID the invoking user cannot
 	# unlink; a plain rm -rf leaves the whole work dir behind, every run.
 	podman unshare rm -rf "$WORK" 2>/dev/null || rm -rf "$WORK" 2>/dev/null || true
@@ -151,31 +149,14 @@ trap cleanup EXIT
 
 mc() { podman run --rm --network "$NET" -e MC_HOST_m="http://${AKID}:${SECRET}@${MINIO_CTR}:9000" -v "$FIXTURE:/fixture:ro,Z" "$MC_IMAGE" "$@"; }
 
-# A lake job. The fixture's whole data directory is mounted read-WRITE: the
-# transform's output IS a write into each tenant's database, which is the one
-# thing this gate is here to observe. Not `:ro` for the catalog either — these
-# are WAL databases and SQLite cannot open one through a read-only mount.
-run_job() {
-	netrun podman run --rm --network "$NET" \
-		-v "$FIXTURE:/fixture:Z" \
-		-e PKDUMP_LAKE_NESSIE_URI="http://${NESSIE_CTR}:19120/iceberg/" \
-		-e PKDUMP_LAKE_S3_BUCKET="$BUCKET" \
-		-e PKDUMP_LAKE_S3_REGION=us-west-2 \
-		-e PKDUMP_LAKE_S3_ENDPOINT="http://${MINIO_CTR}:9000" \
-		-e PKDUMP_LAKE_S3_ACCESS_KEY_ID="$AKID" \
-		-e PKDUMP_LAKE_S3_SECRET_ACCESS_KEY="$SECRET" \
-		-e PKDUMP_LAKE_S3_PATH_STYLE=1 \
-		"$JOB_IMAGE" "$@"
-}
-
-# The transform, over the fixture's data directory.
-snapshot() {
-	run_job pkdump-lake-value-snapshots --data-dir /fixture/home "$@"
-}
-
-# The Rust form of the same transform (sp-4k7mxi.5), out of the SHIPPED image:
-# the same lake environment `run_job` hands the Python, the same mount.
-rust_snapshot() {
+# A lake job: a Rust binary of the app image. The fixture's whole data directory
+# is mounted read-WRITE: the transform's output IS a write into each tenant's
+# database, which is the one thing this gate is here to observe. Not `:ro` for
+# the catalog either — these are WAL databases and SQLite cannot open one through
+# a read-only mount.
+run_job() { # run_job <binary> [args...]
+	local bin="$1"
+	shift
 	netrun podman run --rm --network "$NET" --pull=never \
 		-v "$FIXTURE:/fixture:Z" \
 		-e PKDUMP_LAKE_NESSIE_URI="http://${NESSIE_CTR}:19120/iceberg/" \
@@ -185,11 +166,18 @@ rust_snapshot() {
 		-e PKDUMP_LAKE_S3_ACCESS_KEY_ID="$AKID" \
 		-e PKDUMP_LAKE_S3_SECRET_ACCESS_KEY="$SECRET" \
 		-e PKDUMP_LAKE_S3_PATH_STYLE=1 \
-		--entrypoint pkdump-value-snapshots "$APP_IMAGE" --data-dir /fixture/home "$@"
+		-e AWS_ACCESS_KEY_ID="$AKID" -e AWS_SECRET_ACCESS_KEY="$SECRET" \
+		-e AWS_REGION=us-west-2 \
+		--entrypoint "$bin" "$APP_IMAGE" "$@"
+}
+
+# The transform, over the fixture's data directory.
+snapshot() {
+	run_job pkdump-value-snapshots --data-dir /fixture/home "$@"
 }
 
 # The shipper and the zone reader, out of the SHIPPED image — the master key
-# and the tenant profile, which the lake image above holds neither of and must
+# and the tenant profile, which the lake jobs above hold neither of and must
 # not. Same split as tests/lake/phase3.sh and deploy/ship.sh: the zone side is
 # Rust because the envelope, the key derivation and `outbox::project` have one
 # implementation each, and it is not this one.
@@ -233,6 +221,11 @@ expect_rc() { # expect_rc <ok-codes,…> <logfile> <cmd…>
 	die "$1 exited ${rc}; expected one of ${ok}"
 }
 
+# One tenant's database, on the host. The fixture directory is the gate's own,
+# and no container is using a database while the host reads it (the locker below
+# is the one deliberate exception, and it holds a different tenant).
+tenant_db() { printf '%s/home/tenants/%s.sqlite' "$FIXTURE" "$1"; }
+
 # One tenant's snapshot rows for one date, in the SAME text form
 # `value_snapshot_fixture.rs::dump_snapshot` writes: same columns, same NULL
 # placeholder, same ordering, same ten decimal places. Diffing formatted text
@@ -240,25 +233,31 @@ expect_rc() { # expect_rc <ok-codes,…> <logfile> <cmd…>
 # can be made across the two implementations at all.
 dump() {
 	local db="$1" date="$2"
-	run_job python -c "
-import sqlite3
-conn = sqlite3.connect('/fixture/home/tenants/${db}.sqlite')
-for dim, bucket, mv, cb, cc in conn.execute('''
-    SELECT dimension, bucket, market_value, cost_basis, card_count
-      FROM collection_value_snapshot WHERE date = ? ORDER BY dimension, bucket''', ('${date}',)):
-    print(dim, bucket if bucket is not None else '-', f'{mv:.10f}', f'{cb:.10f}', cc, sep='\t')
-"
+	sqlite3 -batch -separator $'\t' "$(tenant_db "$db")" \
+		"SELECT dimension, COALESCE(bucket, '-'), printf('%.10f', market_value),
+		        printf('%.10f', cost_basis), card_count
+		   FROM collection_value_snapshot WHERE date = '${date}' ORDER BY dimension, bucket"
 }
 
-# A scalar out of a tenant's database. The SQL travels as an ARGUMENT rather
-# than interpolated into the Python source: every query below ends in a quoted
-# date, and `'...'` pasted inside `'''...'''` closes the wrong quote.
+# A scalar out of a tenant's database.
 tenant_query() {
-	local db="$1" sql="$2"
-	run_job python -c "
-import sqlite3, sys
-print(sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()[0])
-" "/fixture/home/tenants/${db}.sqlite" "$sql" | tail -1
+	sqlite3 -batch "$(tenant_db "$1")" "$2"
+}
+
+# A statement against a tenant's database that changes it.
+tenant_exec() {
+	sqlite3 -batch "$(tenant_db "$1")" "$2"
+}
+
+# The EXCLUSIVE writer lock §8 holds on one tenant, from a host process that
+# blocks reading a fifo and so holds the lock until the fifo closes.
+LOCK_PID=""
+release_lock() {
+	exec 9>&- 2>/dev/null || true
+	if [ -n "$LOCK_PID" ]; then
+		wait "$LOCK_PID" 2>/dev/null || true
+		LOCK_PID=""
+	fi
 }
 
 echo "==> §0  Build the data directory, and the snapshot Rust computes from it"
@@ -276,10 +275,8 @@ GHOST=$(awk -F'\t' '$1 == "ghost" {print $2}' "$FIXTURE/tenants.tsv")
 [ -n "$ALICE" ] && [ -n "$BOB" ] && [ -n "$GHOST" ] || die "the fixture wrote no tenant map"
 echo "    alice=${ALICE} bob=${BOB} ghost=${GHOST} (missing, on purpose)"
 
-echo "==> §1  Build both images"
-pkdump_lake_job_image_ensure "$JOB_IMAGE" "$REPO_DIR" >/dev/null
-echo "    ${JOB_IMAGE}"
-# The app image carries the shipper and the zone reader. Through
+echo "==> §1  Build the app image"
+# The app image carries every lake job, the shipper and the zone reader. Through
 # pkdump_image_ensure so a CI run that already built it (pd-5l2e) re-tags
 # rather than rebuilding.
 pkdump_image_ensure "$APP_IMAGE" "$REPO_DIR" >"${WORK}/build.log" 2>&1 || {
@@ -290,17 +287,10 @@ echo "    ${APP_IMAGE}"
 
 echo "==> §2  An INTERNAL network: the transform tier is offline infrastructure"
 podman network create --internal "$NET" >/dev/null
-EGRESS=$(podman run --rm --network "$NET" "$JOB_IMAGE" python -c "
-import socket
-try:
-    socket.create_connection(('1.1.1.1', 443), timeout=5)
-    print('REACHABLE')
-except OSError:
-    print('blocked')
-")
+EGRESS=$(podman run --rm --network "$NET" --entrypoint pkdump-lake-probe "$APP_IMAGE" reachable 1.1.1.1:443)
 [ "$EGRESS" = "blocked" ] ||
 	die "the job container can reach the internet (${EGRESS}) — an offline transform proves nothing"
-echo "    ok   egress from the job image is blocked"
+echo "    ok   egress from the app image is blocked"
 
 echo "==> §3  The lake (MinIO) and the catalog (Nessie)"
 podman run -d --name "$MINIO_CTR" --network "$NET" \
@@ -331,22 +321,20 @@ podman run -d --name "$NESSIE_CTR" --network "$NET" \
 	-e nessie.catalog.secrets.access-key.secret="$SECRET" \
 	"$NESSIE_IMAGE" >/dev/null
 
-podman run --rm --network "$NET" "$JOB_IMAGE" python -c "
-import sys, time, urllib.request
-for _ in range(90):
-    try:
-        urllib.request.urlopen('http://${NESSIE_CTR}:19120/api/v2/config', timeout=3)
-        sys.exit(0)
-    except Exception:
-        time.sleep(1)
-sys.exit(1)
-" || {
+nessie_up() {
+	podman run --rm --network "$NET" --entrypoint pkdump-lake-probe "$APP_IMAGE" \
+		get "http://${NESSIE_CTR}:19120/api/v2/config" >/dev/null 2>&1
+}
+wait_until 90 1 nessie_up || {
 	podman logs "$NESSIE_CTR" 2>&1 | tail -40
 	die "Nessie never answered on ${NET}"
 }
 echo "    Nessie up, warehouse ${WAREHOUSE}"
 
 echo "==> §4  catalog.prices and catalog.sealed_prices, both days, from raw/"
+# The kit's ensure_tables cannot create a table on Nessie 0.104.3 (it sends the
+# partition field without an id), so the gate lays the two tables itself.
+run_job pkdump-lake-probe create-tables >/dev/null || die "could not create the price tables"
 run_job pkdump-lake-build-prices --ingest-date "$DATE_OLD" >/dev/null || die "the ${DATE_OLD} build failed"
 run_job pkdump-lake-build-prices --ingest-date "$DATE_NEW" >/dev/null || die "the ${DATE_NEW} build failed"
 echo "    ok   ${DATE_OLD} and ${DATE_NEW} in the lake"
@@ -424,44 +412,6 @@ ALICE_VALUE=$(tenant_query "$ALICE" "SELECT market_value FROM collection_value_s
 	die "bob and alice have the same total (${BOB_VALUE}) — one collection was valued twice"
 echo "    ok   bob ${BOB_ROWS} row(s), total ${BOB_VALUE} (alice ${ALICE_VALUE})"
 
-echo "==> §5a-rs  The Rust transform writes the Python's rows exactly"
-# sp-4k7mxi.5. The timer is not switched to the Rust job until it has been seen
-# to produce the rows the Python job produces, from the same lake, at the same
-# pinned commit. Stated the only way it can be across two languages: the
-# Python's rows are captured, DELETED, the Rust job is run, and its rows are
-# diffed as text. Deleting first is what makes the diff mean "Rust wrote these"
-# rather than "Rust left the Python's rows alone".
-PY_ALICE=$(dump "$ALICE" "$DATE_NEW")
-PY_BOB=$(dump "$BOB" "$DATE_NEW")
-[ -n "$PY_ALICE" ] && [ -n "$PY_BOB" ] || die "the Python run left no rows to compare against"
-for T in "$ALICE" "$BOB"; do
-	run_job python -c "
-import sqlite3, sys
-conn = sqlite3.connect(sys.argv[1], isolation_level=None)
-conn.execute('DELETE FROM collection_value_snapshot WHERE date = ?', (sys.argv[2],))
-conn.execute('DELETE FROM collection_value_snapshot_run WHERE date = ?', (sys.argv[2],))
-" "/fixture/home/tenants/${T}.sqlite" "$DATE_NEW" || die "could not clear ${T}'s ${DATE_NEW} rows"
-done
-[ -z "$(dump "$ALICE" "$DATE_NEW")" ] || die "alice still has rows after the delete — the comparison would be vacuous"
-
-RS_RC=0
-RS_OUT=$(rust_snapshot --date "$DATE_NEW" 2>&1) || RS_RC=$?
-echo "$RS_OUT" | sed 's/^/    | /'
-[ "$RS_RC" -eq 2 ] || die "the Rust run exited ${RS_RC}, not 2 — ghost has no database, so it must skip exactly one tenant and say so"
-case "$RS_OUT" in
-*"ghost"*"SKIPPED"*) ;;
-*) die "the Rust run did not name the tenant it skipped" ;;
-esac
-[ "$(dump "$ALICE" "$DATE_NEW")" = "$PY_ALICE" ] ||
-	die "alice: the Rust transform's rows differ from the Python's"
-[ "$(dump "$BOB" "$DATE_NEW")" = "$PY_BOB" ] ||
-	die "bob: the Rust transform's rows differ from the Python's"
-RS_REF=$(tenant_query "$ALICE" "SELECT lake_ref FROM collection_value_snapshot_run WHERE date = '${DATE_NEW}'")
-case "$RS_REF" in
-*@*) echo "    ok   alice and bob row-identical to the Python job, derived from ${RS_REF}" ;;
-*) die "the Rust run recorded lake_ref='${RS_REF}' — a bare branch is not a version" ;;
-esac
-
 echo "==> §5b THE HARD GATE: sealed does not move the cards"
 # pd-bbv7. `dimension='all'` means the LOOSE CARDS and must keep meaning it to
 # the cent — every row ever written under it was computed over cards alone, and
@@ -486,14 +436,10 @@ echo "    alice sealed row: ${SEALED_ROW}"
 # materialised no sealed lots is what this is standing in for — and the
 # transform refuses a staging table whose count disagrees with the read that
 # filled it (that mismatch is a rollback's fingerprint, not a fixture's).
-run_job python -c "
-import sqlite3, sys
-conn = sqlite3.connect(sys.argv[1], isolation_level=None)
-conn.execute('BEGIN IMMEDIATE')
-conn.execute('DELETE FROM zone_sealed_holdings')
-conn.execute('UPDATE zone_holdings_run SET per_source = json_set(per_source, \\'$.sealed_collection\\', 0)')
-conn.execute('COMMIT')
-" "/fixture/home/tenants/${ALICE}.sqlite" || die "could not empty the sealed staging table"
+tenant_exec "$ALICE" "BEGIN IMMEDIATE;
+DELETE FROM zone_sealed_holdings;
+UPDATE zone_holdings_run SET per_source = json_set(per_source, '\$.sealed_collection', 0);
+COMMIT;" || die "could not empty the sealed staging table"
 
 snapshot --date "$DATE_NEW" --tenant alice >/dev/null ||
 	die "the cards-only run failed"
@@ -511,12 +457,8 @@ echo "==> §5c A half-materialised zone is refused, and a real read restores it"
 # leaves zone_sealed_holdings alone, so the staging table holds an EARLIER
 # read's sealed lots beside this read's cards. Nothing else can see that, and
 # valued it would be a plausible wrong number.
-run_job python -c "
-import sqlite3, sys
-conn = sqlite3.connect(sys.argv[1], isolation_level=None)
-conn.execute(\"INSERT INTO zone_sealed_holdings (id, product_id, quantity, status, added_at) \
-               VALUES (99, 201, 1, 'owned', '2026-01-01T00:00:00Z')\")
-" "/fixture/home/tenants/${ALICE}.sqlite" || die "could not stage a mismatched sealed lot"
+tenant_exec "$ALICE" "INSERT INTO zone_sealed_holdings (id, product_id, quantity, status, added_at)
+	VALUES (99, 201, 1, 'owned', '2026-01-01T00:00:00Z')" || die "could not stage a mismatched sealed lot"
 HALF_RC=0
 HALF_OUT=$(snapshot --date "$DATE_NEW" --tenant alice 2>&1) || HALF_RC=$?
 [ "$HALF_RC" -eq 1 ] ||
@@ -572,25 +514,23 @@ diff <(dump "$ALICE" "$DATE_NEW") "$FIXTURE/expected-alice-${DATE_NEW}.tsv" ||
 echo "==> §8  A tenant nobody can write to is skipped, and the run finishes"
 # A real SQLite writer lock, held from another process, is the failure the
 # nightly run will actually meet: a tenant mid-import, or a restore in flight.
-podman run -d --name "$LOCK_CTR" --network "$NET" -v "$FIXTURE:/fixture:Z" "$JOB_IMAGE" python -c "
-import sqlite3, time
-conn = sqlite3.connect('/fixture/home/tenants/${BOB}.sqlite', isolation_level=None)
-conn.execute('BEGIN EXCLUSIVE')
-print('LOCK HELD', flush=True)
-time.sleep(120)
-" >/dev/null
+LOCK_FIFO="$WORK/lock.fifo"
+mkfifo "$LOCK_FIFO"
+sqlite3 -batch "$(tenant_db "$BOB")" <"$LOCK_FIFO" >"$WORK/lock.log" 2>&1 &
+LOCK_PID=$!
+exec 9>"$LOCK_FIFO"
+printf 'BEGIN EXCLUSIVE;\n.print LOCK HELD\n' >&9
 # WAIT for the lock, rather than sleeping long enough that it has probably been
-# taken (pd-86er). The old form polled until the container's logs were readable
-# and then slept 3s on top — and the whole of §8 is vacuous if the lock is not
-# actually held when the job asks for it, so this is a condition worth being
-# certain of rather than one worth guessing at. The locker says when it has it.
-locker_ready() { logs_match "$LOCK_CTR" 'LOCK HELD'; }
+# taken (pd-86er). The whole of §8 is vacuous if the lock is not actually held
+# when the job asks for it, so this is a condition worth being certain of rather
+# than one worth guessing at. The locker says when it has it.
+locker_ready() { grep -qF 'LOCK HELD' "$WORK/lock.log"; }
 wait_until 60 0.25 locker_ready ||
 	die "the locker never took an EXCLUSIVE lock on ${BOB} — §8 would prove nothing"
 
 LOCK_RC=0
 LOCK_OUT=$(snapshot --date "$DATE_NEW" --tenant alice --tenant bob 2>&1) || LOCK_RC=$?
-podman rm -f "$LOCK_CTR" >/dev/null 2>&1 || true
+release_lock
 echo "$LOCK_OUT" | sed 's/^/    | /'
 [ "$LOCK_RC" -eq 2 ] ||
 	die "a locked tenant produced exit ${LOCK_RC}, not 2"
@@ -614,14 +554,7 @@ echo "==> §9  The lake still holds no tenant data"
 # tenant-keyed by construction and lives under `tenant/`. So the Iceberg check
 # below is joined by the prefix check beside it, which is the half that would
 # notice the two zones bleeding into each other.
-TABLES=$(run_job python -c "
-from pkdump_lake.catalog import catalog
-cat = catalog()
-print(' '.join(sorted(
-    '.'.join(ns) + '.' + name
-    for ns in cat.list_namespaces()
-    for _, name in cat.list_tables(ns))))
-" | tail -1)
+TABLES=$(run_job pkdump-lake-probe tables)
 [ "$TABLES" = "catalog.prices catalog.sealed_prices" ] ||
 	die "the lake holds '${TABLES}' — tenant data NEVER enters the lake, and neither does anything else this bead adds"
 echo "    ok   ${TABLES}"
@@ -677,8 +610,8 @@ EOF
 # exists` in deploy/value-snapshots.sh then reports the lakehouse is not
 # installed for an instance whose image this gate built four hundred lines ago:
 #
-#     value-snapshots: no lake job image pkdump-lake:value-2a3005.
-#       The lakehouse is not installed for 'pdvalue-2a3005': bash deploy/setup-lake.sh …
+#     value-snapshots: no app image localhost/pkdump:value-2a3005.
+#       The app image is not built for 'pdvalue-2a3005': bash deploy/deploy.sh …
 #
 # An ALTERNATE store hides this completely: pkdump_store_stamp_unit then writes
 # a GlobalArgs line naming the store explicitly, so podman never consults $HOME.
@@ -699,7 +632,6 @@ wrapper() {
 		XDG_DATA_HOME="$VS_REAL_XDG_DATA_HOME" \
 		PKDUMP_ALERTS_ENV="$VS_HOME/.config/pkdump/no-alerts.env" \
 		PKDUMP_LAKE_NETWORK="$NET" \
-		PKDUMP_LAKE_JOB_IMAGE="$JOB_IMAGE" \
 		PKDUMP_LAKE_RUST_IMAGE="$APP_IMAGE" \
 		PKDUMP_LAKE_DATA="$FIXTURE/home" \
 		bash "${REPO_DIR}/deploy/value-snapshots.sh" "$INST" "$@"
@@ -751,20 +683,20 @@ echo "==> §11 The readiness probe a netns repair waits on, against the real cat
 # whole deployment: a typo in it would surface at 07:00 on the one morning it was
 # needed, as the same false page it exists to prevent. tests/deploy/run.sh §8c
 # drives the waiting around it against a fake podman; this drives the probe
-# itself against the real thing, on a real network, with the real job image.
+# itself against the real thing, on a real network, with the real app image.
 # shellcheck source=deploy/lake-lib.sh
 . "${REPO_DIR}/deploy/lake-lib.sh"
 
 PROBE_HEALTH="$(pkdump_lake_health_url "http://${NESSIE_CTR}:19120/iceberg/")"
 [ "$PROBE_HEALTH" = "http://${NESSIE_CTR}:19120/api/v2/config" ] ||
 	die "the health URL derived from the catalog is '${PROBE_HEALTH}'"
-pkdump_lake_catalog_answering "$NET" "$JOB_IMAGE" "$PROBE_HEALTH" ||
+pkdump_lake_catalog_answering "$NET" "$APP_IMAGE" "$PROBE_HEALTH" ||
 	die "the probe says a Nessie that has been serving this whole file is not answering"
 echo "    ok   a live catalog answers, asked from a container on the network"
 
 # And it is a real check, not a rubber stamp. A probe that cannot fail would make
 # the wait return on its first ask, which is the bug with more code in it.
-if pkdump_lake_catalog_answering "$NET" "$JOB_IMAGE" "http://${NESSIE_CTR}:19121/api/v2/config"; then
+if pkdump_lake_catalog_answering "$NET" "$APP_IMAGE" "http://${NESSIE_CTR}:19121/api/v2/config"; then
 	die "the probe answered yes about a port nothing is listening on"
 fi
 echo "    ok   and says no when nothing is listening"

@@ -13,6 +13,7 @@ dumpster-kit-lake.workspace = true
 iceberg = "0.10.1"
 iceberg-catalog-rest = "0.10.1"
 arrow-array = "58"
+arrow-cast = "58"
 parquet = "58"
 futures = "0.3"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }

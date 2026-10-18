@@ -107,7 +107,7 @@ pkdump_image_ensure() {
 # store. That store is shared — another project's images and another project's
 # dangling layers live in it — so `podman image prune` is not ours to run there.
 # Every image this repo builds carries `pkdump.build=1` (Containerfile,
-# lake/Containerfile, stage images included); a dangling image without it is
+# stage images included); a dangling image without it is
 # somebody else's and is never touched.
 
 # The label every image built from this repo carries. One spelling, spent by the

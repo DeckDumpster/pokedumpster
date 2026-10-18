@@ -124,6 +124,55 @@ class Backup(unittest.TestCase):
         self.assertEqual(nb.check(self.store, NOW, 26)[0], nb.EXIT_CORRUPT)
 
 
+class SnapTable:
+    metadata_location = "s3://b/m.json"
+    io = object()
+
+    def __init__(self, summary, manifests):
+        self._snap = NS(snapshot_id=7, summary=summary, manifests=lambda io: manifests)
+
+    def current_snapshot(self):
+        return self._snap
+
+
+class InvCatalog:
+    def __init__(self, t):
+        self.t = t
+
+    def list_namespaces(self):
+        return [("catalog",)]
+
+    def list_tables(self, ns):
+        return [("catalog", "prices")]
+
+    def load_table(self, ident):
+        return self.t
+
+
+def man(added, existing, deleted=0, content=0):
+    return NS(manifest_path="m.avro", content=content, added_rows_count=added,
+              existing_rows_count=existing, deleted_rows_count=deleted)
+
+
+class Inventory(unittest.TestCase):
+    def test_summary_total_wins_when_present(self):
+        t = SnapTable({"total-records": "42"}, [man(1, 1)])
+        self.assertEqual(nb.inventory(InvCatalog(t))[0]["rows"], 42)
+
+    def test_missing_total_records_counts_from_manifests(self):  # sp-igyows
+        t = SnapTable({}, [man(5, 3, deleted=2), man(4, 0), man(9, 9, content=1)])
+        self.assertEqual(nb.inventory(InvCatalog(t))[0]["rows"], 12)
+
+    def test_no_summary_at_all(self):
+        t = SnapTable(None, [man(2, 0)])
+        self.assertEqual(nb.inventory(InvCatalog(t))[0]["rows"], 2)
+
+    def test_neither_source_is_an_error(self):
+        t = SnapTable({}, [man(None, None)])
+        with self.assertRaises(nb.BackupError):
+            nb.inventory(InvCatalog(t))
+
+
 class Drill(unittest.TestCase):
     M = {"tables": TABLES}
 

@@ -28,6 +28,12 @@
 # spelling follows the 0.104 docs. The first run on prod is the proof — do
 # `drill` straight after, and do not trust the backup until it has passed.
 #
+# The backup bucket may live in a DIFFERENT AWS account from the lake (sp-77eatm), so
+# the three modes that touch it (put, check, fetch) sign with a credential of their own:
+# PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE (a shared-credentials file, mounted read-only)
+# + PKDUMP_NESSIE_BACKUP_PROFILE. Those containers get NONE of the lake's identity, and
+# the lake reads (inventory, drill) get none of the backup's. Unset, both use the lake's.
+#
 # Host config (lake.env): PKDUMP_NESSIE_BACKUP_URL=s3://<bucket>/<prefix> — NO
 # default, and it must not be the lake bucket (the lake has no retention rule we
 # would want applied to backups, and a lake-scoped credential must not be what
@@ -55,6 +61,12 @@ die() { echo "nessie-backup: $*" >&2; exit 1; }
 { set -a; . "$LAKE_ENV"; set +a; }
 [ -f "$ALERTS_ENV" ] && { set -a; . "$ALERTS_ENV"; set +a; }
 
+if [ -n "${PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE:-}" ]; then
+    [ -n "${PKDUMP_NESSIE_BACKUP_PROFILE:-}" ] ||
+        die "PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE is set without PKDUMP_NESSIE_BACKUP_PROFILE in ${LAKE_ENV}"
+    [ -r "$PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE" ] ||
+        die "PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE ${PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE} is not a readable file"
+fi
 [ -n "${PKDUMP_NESSIE_BACKUP_URL:-}" ] ||
     die "PKDUMP_NESSIE_BACKUP_URL is not set in ${LAKE_ENV} — name the backup bucket (s3://bucket/prefix); there is no default"
 BACKUP_BUCKET="${PKDUMP_NESSIE_BACKUP_URL#s3://}"; BACKUP_BUCKET="${BACKUP_BUCKET%%/*}"
@@ -127,6 +139,23 @@ lake_job() { # lake_job <network-uri-override|-> args...
     podman run --rm --pull=never --network "$NETWORK" "${env[@]}" \
         ${CRED_ARGS[@]+"${CRED_ARGS[@]}"} -v "${WORK}:/work:Z" "$JOB_IMAGE" "$@"
 }
+# backup_job: the store-facing modes, signed ONLY by the backup credential when one is named.
+backup_job() {
+    if [ -z "${PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE:-}" ]; then
+        lake_job - "$@"
+        return
+    fi
+    local env=(-e "PKDUMP_NESSIE_BACKUP_URL=${PKDUMP_NESSIE_BACKUP_URL}"
+        -e AWS_SHARED_CREDENTIALS_FILE=/backup-aws/credentials
+        -e "AWS_PROFILE=${PKDUMP_NESSIE_BACKUP_PROFILE}")
+    local var
+    for var in PKDUMP_NESSIE_BACKUP_S3_ENDPOINT AWS_REGION AWS_DEFAULT_REGION; do
+        [ -n "${!var:-}" ] && env+=(-e "${var}=${!var}")
+    done
+    podman run --rm --pull=never --network "$NETWORK" "${env[@]}" \
+        -v "${PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE}:/backup-aws/credentials:ro,Z" \
+        -v "${WORK}:/work:Z" "$JOB_IMAGE" "$@"
+}
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 wait_answering() { # wait_answering <health-url> — 120s, failing rather than proceeding
@@ -164,7 +193,7 @@ alarm() { # alarm <title> <body>
 
 do_check() {
     local rc=0
-    lake_job - pkdump-lake-nessie-backup check --now "$(now_utc)" --max-age-hours "$MAX_AGE_HOURS" || rc=$?
+    backup_job pkdump-lake-nessie-backup check --now "$(now_utc)" --max-age-hours "$MAX_AGE_HOURS" || rc=$?
     case "$rc" in
     0) return 0 ;;
     3) alarm "PokeDumpster Nessie backup is STALE (${INSTANCE})" "No verified Nessie catalog backup newer than ${MAX_AGE_HOURS}h. Losing the catalog disk now strands every lake table. See journalctl --user -u pkdump-nessie-backup@${INSTANCE}.service" ;;
@@ -195,14 +224,14 @@ backup)
     NESSIE_STOPPED=0
     wait_answering "$CATALOG_HEALTH_URL" || die "${UNIT} did not answer after the export — it is running but unverified"
     # 4. Verify and ship it, then re-verify from the bucket.
-    lake_job - pkdump-lake-nessie-backup put --export /work/export.zip --inventory /work/inventory.json \
+    backup_job pkdump-lake-nessie-backup put --export /work/export.zip --inventory /work/inventory.json \
         --backup-id "$ID" --nessie-version "$NESSIE_VERSION" --keep "$KEEP"
     do_check
     ;;
 
 drill)
     echo "==> nessie-backup drill ${INSTANCE}: restore the newest backup into a scratch Nessie"
-    lake_job - pkdump-lake-nessie-backup fetch --out-dir /work/fetched
+    backup_job pkdump-lake-nessie-backup fetch --out-dir /work/fetched
     mkdir -p "${WORK}/rocks"
     # Import into an EMPTY scratch version store, never the live one.
     podman run --rm --user 0 --network none "${SERVER_ARGS[@]}" \

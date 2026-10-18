@@ -9,10 +9,23 @@
 # that identity. --with-credential also writes the dedicated user's key pair (read from
 # Secrets Manager); that overrides AWS_PROFILE for every job sourcing lake.env, so it is
 # REFUSED when lake.env selects a profile or role.
+# --with-credential-file <path> [--profile NAME] records PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE
+# and PKDUMP_NESSIE_BACKUP_PROFILE (default pkdump-lake-backup) instead: the backup signs
+# with that file alone and nothing else sourcing lake.env changes identity (sp-77eatm).
 set -euo pipefail
 
-INSTANCE="${1:?usage: nessie-backup-config.sh <instance> [--with-credential]}"
-WITH_CRED=0; [ "${2:-}" = "--with-credential" ] && WITH_CRED=1
+INSTANCE="${1:?usage: nessie-backup-config.sh <instance> [--with-credential | --with-credential-file <path> [--profile NAME]]}"
+shift
+WITH_CRED=0; CRED_FILE=""; PROFILE="pkdump-lake-backup"
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --with-credential) WITH_CRED=1 ;;
+    --with-credential-file) CRED_FILE="${2:?--with-credential-file needs a path}"; shift ;;
+    --profile) PROFILE="${2:?--profile needs a name}"; shift ;;
+    *) echo "nessie-backup-config: unknown argument '$1'" >&2; exit 1 ;;
+    esac
+    shift
+done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAKE_ENV="${PKDUMP_LAKE_ENV:-${HOME}/.config/pkdump/lake.env}"
 INFRA="${PKDUMP_INFRA_DIR:-${HERE}/../infra}"
@@ -39,6 +52,13 @@ if [ "$WITH_CRED" = 1 ]; then
         --query SecretString --output text)"
     set_var AWS_ACCESS_KEY_ID "$(jq -er .AWS_ACCESS_KEY_ID <<<"$SECRET")"
     set_var AWS_SECRET_ACCESS_KEY "$(jq -er .AWS_SECRET_ACCESS_KEY <<<"$SECRET")"
+fi
+if [ -n "$CRED_FILE" ]; then
+    [ "$WITH_CRED" = 0 ] || die "--with-credential and --with-credential-file are exclusive"
+    [ -r "$CRED_FILE" ] || die "${CRED_FILE} is not a readable file"
+    grep -q "^\[${PROFILE}\]" "$CRED_FILE" || die "${CRED_FILE} has no [${PROFILE}] profile"
+    set_var PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE "$CRED_FILE"
+    set_var PKDUMP_NESSIE_BACKUP_PROFILE "$PROFILE"
 fi
 set_var PKDUMP_NESSIE_BACKUP_URL "$URL"
 set_var AWS_REGION "$REGION"

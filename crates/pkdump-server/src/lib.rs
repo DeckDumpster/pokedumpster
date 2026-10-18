@@ -26,6 +26,7 @@ use pkdump_db::DbError;
 use pkdump_db::search_meta::SearchFlag;
 
 pub mod access;
+pub mod oidc;
 mod routes;
 pub mod tenant;
 
@@ -182,7 +183,12 @@ fn compression() -> CompressionLayer<impl Predicate + 'static> {
 /// SvelteKit bundle under `/_app` and `/robots.txt` are served as files;
 /// every other path returns the SPA's `index.html` so SvelteKit handles
 /// client-side routing.
-fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
+fn app(
+    state: AppState,
+    static_dir: PathBuf,
+    data_dir: PathBuf,
+    oidc: Option<Arc<dumpster_kit_oidc::Oidc>>,
+) -> Router {
     let index_html = std::fs::read_to_string(static_dir.join("index.html")).unwrap_or_else(|_| {
         "<!doctype html><title>PokeDumpster</title><body>\
              Frontend not built — run <code>npm run build</code> in frontend/.\
@@ -208,7 +214,7 @@ fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), tenant::layer))
         .route_layer(middleware::from_fn_with_state(state.clone(), access::layer));
     let public_api = routes::public_api_router();
-    Router::new()
+    let router = Router::new()
         .route("/health", get(|| async { "ok" }))
         .nest("/api", authenticated_api)
         .nest("/api", public_api)
@@ -241,9 +247,21 @@ fn app(state: AppState, static_dir: PathBuf, data_dir: PathBuf) -> Router {
             ServeFile::new(static_dir.join("apple-touch-icon.png")),
         )
         .with_state(state)
-        .fallback(get(spa))
-        // Outermost, so it sees the final response of every route above.
-        .layer(compression())
+        .fallback(get(spa));
+    // Native sign-in, when configured: a session for every path but `oidc::MACHINE_PATHS`
+    // (and `/auth/*`, which the module mounts). Wrapped around everything above, the SPA and
+    // its assets included, so a signed-out browser never sees the app — only the redirect.
+    let router = match oidc {
+        Some(o) => router
+            .layer(middleware::from_fn_with_state(
+                o.clone(),
+                dumpster_kit_oidc::Oidc::layer,
+            ))
+            .merge(o.router()),
+        None => router,
+    };
+    // Outermost, so it sees the final response of every route above.
+    router.layer(compression())
 }
 
 /// Everything `pkdump serve` needs to stand the HTTP app up.
@@ -271,6 +289,10 @@ pub struct ServeConfig {
     /// When `Some`, all three fields are required and a JWKS fetch failure is a
     /// startup failure. See `access::config_if_configured`.
     pub access: Option<access::AccessConfig>,
+    /// Pocket ID sign-in. `None` when no `PKDUMP_OIDC_*` variable is set. Independent of
+    /// `access`: both may be on (the app keeps working behind its Access app until that is
+    /// removed). See `oidc::config_if_configured`.
+    pub oidc: Option<dumpster_kit_oidc::OidcConfig>,
 }
 
 /// Refuse multi-tenant mode when Cloudflare Access is not configured.
@@ -345,6 +367,19 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
             None
         }
     };
+    let oidc = match cfg.oidc {
+        Some(c) => {
+            println!(
+                "pkdump: OIDC sign-in is ON — group {} required",
+                c.required_group
+            );
+            Some(oidc::connect(c).await?)
+        }
+        None => {
+            println!("pkdump: OIDC sign-in is NOT configured — no app-level sign-in");
+            None
+        }
+    };
     let tenants = if cfg.multi_tenant {
         println!(
             "pkdump: MULTI-TENANT resolution is ON — every request must carry a valid \
@@ -364,7 +399,7 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
     let addr = SocketAddr::new(cfg.host, cfg.port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("pkdump serving on http://{addr}");
-    axum::serve(listener, app(state, cfg.static_dir, cfg.data_dir)).await?;
+    axum::serve(listener, app(state, cfg.static_dir, cfg.data_dir, oidc)).await?;
     Ok(())
 }
 
@@ -417,6 +452,16 @@ mod tests {
         tenants: Tenants,
         access: Option<Arc<access::AccessState>>,
     ) -> Router {
+        router_with(dir, shared, tenants, access, None)
+    }
+
+    fn router_with(
+        dir: &std::path::Path,
+        shared: &std::path::Path,
+        tenants: Tenants,
+        access: Option<Arc<access::AccessState>>,
+        oidc: Option<Arc<dumpster_kit_oidc::Oidc>>,
+    ) -> Router {
         let registry = {
             let c = pkdump_db::open_shared(shared).unwrap();
             Arc::new(pkdump_db::search_meta::load_registry(&c).unwrap())
@@ -433,7 +478,7 @@ mod tests {
             data_dir: Arc::new(data_dir.clone()),
             access,
         };
-        app(state, dir.join("static"), data_dir)
+        app(state, dir.join("static"), data_dir, oidc)
     }
 
     /// A single-tenant test router — the production shape.
@@ -1396,5 +1441,162 @@ mod tests {
         )
         .await;
         assert_eq!(scoped.unwrap(), 0);
+    }
+
+    // ---- native OIDC sign-in (sp-v3pohe) ---------------------------------------------------
+
+    mod signin {
+        use super::*;
+        use dumpster_kit_oidc::testing::{FakeProvider, TokenSpec};
+        use tower::ServiceExt;
+
+        /// A browser with a cookie jar over the real router, single-tenant, no Access — the
+        /// production shape — with sign-in on against a fake Pocket ID.
+        struct Browser {
+            app: Router,
+            jar: Vec<(String, String)>,
+            p: FakeProvider,
+            _dir: tempfile::TempDir,
+        }
+
+        impl Browser {
+            async fn new() -> Self {
+                let p = FakeProvider::start().await;
+                let mut cfg = p.config();
+                cfg.required_group = dumpster_kit_oidc::testing::GROUP.into();
+                // The same machine paths production adds.
+                cfg.bypass_paths = oidc::MACHINE_PATHS.iter().map(|s| s.to_string()).collect();
+                let o = oidc::connect(cfg).await.unwrap();
+                let dir = tempfile::tempdir().unwrap();
+                let shared = seed(dir.path());
+                let tenants = Tenants::single(
+                    "collection",
+                    dir.path().join("tenants").join("collection.sqlite"),
+                    shared.clone(),
+                )
+                .unwrap();
+                let app = router_with(dir.path(), &shared, tenants, None, Some(o));
+                Browser {
+                    app,
+                    jar: vec![],
+                    p,
+                    _dir: dir,
+                }
+            }
+
+            async fn get(&mut self, uri: &str) -> axum::response::Response {
+                let cookies: Vec<String> =
+                    self.jar.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                let mut rb = Request::get(uri);
+                if !cookies.is_empty() {
+                    rb = rb.header(header::COOKIE, cookies.join("; "));
+                }
+                let r = self
+                    .app
+                    .clone()
+                    .oneshot(rb.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                for sc in r.headers().get_all(header::SET_COOKIE) {
+                    let (nv, _) = sc.to_str().unwrap().split_once(';').unwrap();
+                    let (n, v) = nv.split_once('=').unwrap();
+                    self.jar.retain(|(k, _)| k != n);
+                    if !v.is_empty() {
+                        self.jar.push((n.into(), v.into()));
+                    }
+                }
+                r
+            }
+
+            async fn sign_in(&mut self, spec: TokenSpec) -> axum::response::Response {
+                let r = self.get("/auth/login?return_to=/").await;
+                assert_eq!(r.status(), StatusCode::SEE_OTHER);
+                let loc = r.headers()[header::LOCATION].to_str().unwrap().to_string();
+                let state = loc
+                    .split_once('?')
+                    .unwrap()
+                    .1
+                    .split('&')
+                    .find_map(|kv| kv.strip_prefix("state="))
+                    .unwrap()
+                    .to_string();
+                let code = self.p.authorize(&loc, spec);
+                self.get(&format!("/auth/callback?code={code}&state={state}"))
+                    .await
+            }
+        }
+
+        fn location(r: &axum::response::Response) -> &str {
+            r.headers()[header::LOCATION].to_str().unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_signed_out_browser_is_sent_to_sign_in_and_never_sees_the_app() {
+            let mut b = Browser::new().await;
+            for path in ["/", "/collection", "/api/conditions"] {
+                let r = b.get(path).await;
+                assert_eq!(r.status(), StatusCode::SEE_OTHER, "{path}");
+                assert!(location(&r).starts_with("/auth/login"), "{path}");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_member_of_the_required_group_signs_in_and_reaches_the_main_page_and_the_api() {
+            let mut b = Browser::new().await;
+            let r = b.sign_in(TokenSpec::default()).await;
+            assert_eq!(r.status(), StatusCode::SEE_OTHER);
+            assert_eq!(location(&r), "/");
+            let r = b.get("/").await;
+            assert_eq!(r.status(), StatusCode::OK);
+            let html = String::from_utf8(
+                axum::body::to_bytes(r.into_body(), 1 << 20)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap();
+            assert!(html.contains("PokeDumpster"), "{html}");
+            assert_eq!(b.get("/api/conditions").await.status(), StatusCode::OK);
+            let r = b.get("/api/session").await;
+            let v: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap(),
+            )
+            .unwrap();
+            assert_eq!(v["signed_in_as"], "alice@example.com");
+        }
+
+        #[tokio::test]
+        async fn a_user_outside_the_group_gets_403_and_no_session() {
+            let mut b = Browser::new().await;
+            let r = b
+                .sign_in(TokenSpec {
+                    groups: vec!["someone-elses-users".into()],
+                    ..Default::default()
+                })
+                .await;
+            assert_eq!(r.status(), StatusCode::FORBIDDEN);
+            let r = b.get("/api/conditions").await;
+            assert_eq!(r.status(), StatusCode::SEE_OTHER, "still signed out");
+        }
+
+        #[tokio::test]
+        async fn the_automation_paths_work_with_no_session() {
+            let mut b = Browser::new().await;
+            assert_eq!(b.get("/health").await.status(), StatusCode::OK);
+            assert_eq!(b.get("/api/backup-status").await.status(), StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn sign_out_ends_the_session() {
+            let mut b = Browser::new().await;
+            b.sign_in(TokenSpec::default()).await;
+            assert_eq!(b.get("/api/conditions").await.status(), StatusCode::OK);
+            let r = b.get("/auth/logout").await;
+            assert_eq!(r.status(), StatusCode::SEE_OTHER);
+            assert_eq!(
+                b.get("/api/conditions").await.status(),
+                StatusCode::SEE_OTHER
+            );
+        }
     }
 }

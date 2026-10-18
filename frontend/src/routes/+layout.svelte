@@ -9,6 +9,14 @@
 
 	let { children } = $props();
 
+	// Native sign-in (Pocket ID): offer "Sign out" only when the server signed this browser in.
+	let signedInAs = $state<string | null>(null);
+	$effect(() => {
+		api.session()
+			.then((s) => (signedInAs = s.signed_in_as))
+			.catch(() => (signedInAs = null));
+	});
+
 	// NO BACKUP BANNER HERE. Backup staleness is OPERATOR information and this is a
 	// tenant-facing, multi-tenant page (per Ryan, 2026-08-16: "having this on a banner
 	// on a multi-tenant site makes absolutely no sense … there's no reason i would want
@@ -76,6 +84,10 @@
 	{@render children()}
 </main>
 
+{#if signedInAs}
+	<a class="signout" href="/auth/logout" data-sveltekit-reload>Sign out ({signedInAs})</a>
+{/if}
+
 <style>
 	:global(body) {
 		margin: 0;
@@ -117,6 +129,17 @@
 	}
 	.crumbs .sep {
 		color: var(--color-text-decorative);
+	}
+	.signout {
+		position: fixed;
+		right: var(--space-3);
+		bottom: var(--space-2);
+		color: var(--color-text-muted);
+		font-size: var(--text-sm);
+		z-index: 1;
+	}
+	.signout:hover {
+		color: var(--color-text-accent);
 	}
 	main {
 		padding: 1.5rem;

@@ -9,6 +9,7 @@ authors.workspace = true
 pkdump-core.workspace = true
 pkdump-db.workspace = true
 dumpster-kit-tenancy.workspace = true
+dumpster-kit-oidc.workspace = true
 rusqlite.workspace = true
 axum.workspace = true
 tokio.workspace = true
@@ -28,3 +29,4 @@ flate2.workspace = true
 brotli.workspace = true
 # The in-process RS256 JWKS server and token minters (valid and every negative case).
 dumpster-kit-tenancy = { workspace = true, features = ["testing"] }
+dumpster-kit-oidc = { workspace = true, features = ["testing"] }

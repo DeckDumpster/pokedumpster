@@ -32,7 +32,13 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Sub-second: the window this library exists for is an aardvark-dns reload, and
 # the test has no interest in waiting out the real budget.
-NETRUN_TIMEOUT=2
+#
+# The budget is wall-clock, so it is generous everywhere a retry must SUCCEED: a
+# loaded box (lint tier, after apt-get, beside a round) can spend more than two
+# seconds on one fork, and a spent budget after the first attempt looks exactly
+# like "the retry never happened". Only §5, which waits the budget out, uses a
+# short one.
+NETRUN_TIMEOUT=30
 NETRUN_INTERVAL=0
 
 pass=0
@@ -150,7 +156,7 @@ check "…and was not asked twice" "1" "$(wc -l <"$CALLS")"
 # ---------------------------------------------------------------------------
 log "5. the retry is BOUNDED, then the command's own failure propagates"
 script "*:1:err:${GAIERROR}"
-netrun stub >/dev/null 2>"${WORK}/e"
+NETRUN_TIMEOUT=3 netrun stub >/dev/null 2>"${WORK}/e"
 RC=$?
 check "a name that never resolves FAILS" "1" "$RC"
 GAVE_UP="$(grep -c 'still unresolved after' "${WORK}/e")"

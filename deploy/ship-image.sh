@@ -10,7 +10,7 @@
 # the batch PR passed. This script finds that artifact, loads it, checks the
 # loaded image id against the one the gate recorded, and hands it to
 # the deploy script as PKDUMP_PREBUILT_IMAGE — so unit files, restart, sidecar
-# and the lake job image go through the one path they always did, minus the
+# go through the one path they always did, minus the
 # compile.
 #
 # No artifact for the tree is a FAILURE, not a quiet rebuild: a fallback to

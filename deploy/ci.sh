@@ -1243,8 +1243,8 @@ if tier schema; then
 fi
 
 # --- 12. Lakehouse gate -----------------------------------------------------
-# The offline lakehouse substrate (pd-fzeb), end to end: the PyIceberg job image
-# builds, Nessie serves an Iceberg REST catalog over a durable version store,
+# The offline lakehouse substrate (pd-fzeb), end to end: the app image's lake
+# jobs run, Nessie serves an Iceberg REST catalog over a durable version store,
 # and a table can be written, committed twice and read back AS OF the first
 # commit. Its own network, MinIO, Nessie, image tag and temp dir — it touches no
 # pkdump-* unit, no real bucket, and no tenant database.
@@ -1348,7 +1348,7 @@ if tier lake; then
     # not a beautiful number about last week.
     #
     # It needs both images — the app image for the shipper and the zone reader,
-    # the lake image for prices out of Iceberg — which is why it is the
+    # the lake jobs for prices out of Iceberg — which is why it is the
     # longest gate in this tier.
 
     step "Queueing: Lakehouse — Phase 3 valuation from the tenant zone, the only path"

@@ -67,9 +67,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # instance's store would arm that trap (pd-yfev).
 # shellcheck source=deploy/store-lib.sh
 . "$SCRIPT_DIR/store-lib.sh"
-# ...and where the job image is named and built, shared with deploy/deploy.sh so
-# that installing a lakehouse and shipping a change to one build the same image
-# the same way (pd-rn4c).
+# ...and which image the jobs run from, shared with the wrappers.
 # shellcheck source=deploy/lake-lib.sh
 . "$SCRIPT_DIR/lake-lib.sh"
 

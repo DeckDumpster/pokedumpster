@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 # catalog.prices + catalog.sealed_prices, from raw/, on the kit's Iceberg crate
 # (sp-4k7mxi.4). These replace pkdump-lake-build-prices / -verify-prices in the
-# Python lake; the timer is switched by the operator once prod is certified.
+# Python lake, since deleted (sp-4k7mxi.7).
 [[bin]]
 name = "pkdump-lake-build-prices"
 path = "src/build_prices.rs"

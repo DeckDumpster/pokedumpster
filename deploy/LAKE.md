@@ -1416,6 +1416,14 @@ The bucket, its write credential and the URL come from `infra/` (Terraform);
 Enable: `systemctl --user enable --now pkdump-nessie-backup@prod.timer
 pkdump-nessie-backup-check@prod.timer`.
 
+**The backup bucket may be in another AWS account** (pokedumpster's is in the CI account,
+sp-77eatm). Then `lake.env` also names `PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE` (a
+shared-credentials file, mode 600) and `PKDUMP_NESSIE_BACKUP_PROFILE`;
+`bash deploy/nessie-backup-config.sh <instance> --with-credential-file <path> [--profile NAME]`
+records both. The `put`/`check`/`fetch` containers are mounted that file read-only and
+carry none of the lake's identity; `inventory` and `drill` (the catalog/lake reads) keep
+the lake's and never see the backup credential. Nothing else sourcing `lake.env` changes.
+
 > The `export --path` / `import --path` spelling of `nessie-server-admin` follows
 > the 0.104 docs and has **not** been run against the real image (the authoring
 > box had no registry access). The first run on prod is the proof: run `drill`

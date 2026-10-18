@@ -355,7 +355,7 @@ rejects_flag() { # rejects_flag <flag…>
 	local out
 	out=$(snapshot --date "$DATE_NEW" "$@" 2>&1) || true
 	case "$out" in
-	*"unrecognized arguments"*) echo gone ;;
+	*"unrecognized arguments"* | *"unexpected argument"*) echo gone ;;
 	*) echo present ;;
 	esac
 }

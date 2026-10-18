@@ -1411,6 +1411,8 @@ runs `deploy/nessie-backup.sh <instance> backup`:
 Host config in `lake.env`: `PKDUMP_NESSIE_BACKUP_URL=s3://<backup-bucket>/<prefix>`
 — **no default**, and refused if it is the lake bucket. The lake credential
 needs no access to it beyond put/get/list/delete under that prefix.
+The bucket, its write credential and the URL come from `infra/` (Terraform);
+`bash deploy/nessie-backup-config.sh <instance>` writes them into `lake.env`.
 Enable: `systemctl --user enable --now pkdump-nessie-backup@prod.timer
 pkdump-nessie-backup-check@prod.timer`.
 

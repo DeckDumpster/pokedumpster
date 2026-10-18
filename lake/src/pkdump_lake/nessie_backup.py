@@ -169,11 +169,37 @@ def verify_export(data: bytes) -> int:
     return len(names)
 
 
+def snapshot_rows(snap: Any, io_: Any, name: str) -> int:
+    """A snapshot's live row count without scanning data.
+
+    ``total-records`` in the summary is optional in the Iceberg spec and the Rust
+    writer omits it, so it is read when present and otherwise derived from the
+    snapshot's data manifests: rows added plus rows carried over. Entries that
+    were deleted are counted in ``deleted_rows_count`` and are in neither of the
+    other two, so nothing is subtracted. Delete-file manifests hold no rows of
+    the table and are skipped. If neither source answers, that is an error.
+    """
+    total = (snap.summary or {}).get("total-records")
+    if total is not None:
+        return int(total)
+    rows = 0
+    for m in snap.manifests(io_):
+        if int(getattr(m, "content", 0) or 0) != 0:
+            continue
+        if m.added_rows_count is None or m.existing_rows_count is None:
+            raise BackupError(
+                f"{name}: snapshot {snap.snapshot_id} has no total-records and "
+                f"manifest {m.manifest_path} carries no row counts"
+            )
+        rows += int(m.added_rows_count) + int(m.existing_rows_count)
+    return rows
+
+
 def inventory(catalog: Any) -> list[dict[str, Any]]:
     """Every table the live catalog holds: where its metadata is, and how big.
 
-    Row counts come from the snapshot summary — metadata only, so the backup of
-    a large lake does not scan it. A table with a snapshot and no count is an
+    Row counts come from metadata only, so the backup of a large lake does not
+    scan it (see ``snapshot_rows``). A table with a snapshot and no count is an
     error rather than a null: the drill would have nothing to hold it to.
     """
     out: list[dict[str, Any]] = []
@@ -185,12 +211,7 @@ def inventory(catalog: Any) -> list[dict[str, Any]]:
             snap_id = None
             if snap is not None:
                 snap_id = snap.snapshot_id
-                total = (snap.summary or {}).get("total-records")
-                if total is None:
-                    raise BackupError(
-                        f"{'.'.join(ident)}: snapshot {snap_id} carries no total-records"
-                    )
-                rows = int(total)
+                rows = snapshot_rows(snap, tbl.io, ".".join(ident))
             out.append(
                 {
                     "identifier": ".".join(ident),

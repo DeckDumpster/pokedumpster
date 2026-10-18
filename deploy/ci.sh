@@ -905,8 +905,6 @@ if tier lint; then
 
     step "Nessie catalog backup: stale/corrupt alarm, restore-drill failures (tests/lake/nessie_backup_test.sh)"
     bash "$REPO_DIR/tests/lake/nessie_backup_test.sh"
-    step "verify-prices: sealed history-only rows reported, listed-product gaps fail (tests/lake/verify_prices_test.py)"
-    python3 -I "$REPO_DIR/tests/lake/verify_prices_test.py"
 
     # Spill is ec2-only unconditionally; no allow_proxmox input.
     step "spill is ec2-only (tests/ci/spill_input_test.sh)"
@@ -1046,25 +1044,16 @@ if tier deploy; then
     bash "$REPO_DIR/tests/store/cargo_cache.sh"
 fi
 
-# --- 3a. The gate binaries and the lake image, once (sp-4akezo) -------------
+# --- 3a. The gate binaries, once (sp-4akezo) -------------
 # recreate.sh and drill.sh built `pkdump`, handles.sh built the access_fixture
-# example, and four lake gates each built lake/Containerfile. Built here, the
-# gates find the binaries (PKDUMP_BIN exists / PKDUMP_ACCESS_FIXTURE is set) and
-# tag the exported lake image instead of building their own.
+# example. Built here, the gates find the binaries (PKDUMP_BIN exists /
+# PKDUMP_ACCESS_FIXTURE is set) instead of building their own.
 if tier -q litestream || tier -q tenants; then
     step "Gate binaries, once: pkdump + access_fixture"
     ( cd "$REPO_DIR" && cargo build -p pkdump-cli --bin pkdump && cargo build -p pkdump-server --example access_fixture )
     _tgt="$(cd "$REPO_DIR" && cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
     export PKDUMP_BIN="$_tgt/debug/pkdump"
     export PKDUMP_ACCESS_FIXTURE="$_tgt/debug/examples/access_fixture"
-fi
-if tier -q lake; then
-    step "Building the lake job image (once — the lake gates tag this one)"
-    # shellcheck source=deploy/lake-lib.sh
-    . "$SCRIPT_DIR/lake-lib.sh"
-    LAKE_BUILD_IMAGE="localhost/pkdump-lake:build-${INSTANCE}"
-    pkdump_lake_job_image_ensure "$LAKE_BUILD_IMAGE" "$REPO_DIR"
-    export PKDUMP_PREBUILT_LAKE_IMAGE="$LAKE_BUILD_IMAGE"
 fi
 
 # --- 3b. The image, once (built from t=0, joined here) -----------------------

@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# sp-87nj2v: hermetic gate for the Nessie backup — the Python logic (stale /
-# corrupt / drill-failure positive controls) and the shell wiring. No podman.
+# sp-87nj2v: hermetic gate for the Nessie backup's shell wiring. No podman. The
+# stale / corrupt / drill-failure positive controls are `cargo test -p pkdump-lakejobs`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 fail=0
-python3 -I "$ROOT/tests/lake/nessie_backup_test.py" || fail=1
-
 bash -n "$ROOT/deploy/nessie-backup.sh" || fail=1
 # Every unit installed, declared host-wide, and torn down.
 for u in nessie-backup nessie-backup-check; do

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
 # Install the offline lakehouse for an instance (pd-fzeb): the Nessie catalog's
-# Quadlet unit, its podman network, and the PyIceberg job image.
+# Quadlet unit and its podman network. The jobs run from the app image.
 #
 # Deliberately NOT part of deploy/setup.sh. The lakehouse is offline
 # infrastructure — nothing on the serving path touches it — and a box can run
 # the app perfectly well without it. Folding it into the app's setup would mean
 # every instance, including the `--test` ones CI throws away, standing up a JVM.
 #
-#   bash deploy/setup-lake.sh prod              # install + build the job image
+#   bash deploy/setup-lake.sh prod              # install the Nessie unit
 #   bash deploy/setup-lake.sh prod --port 19120 # pin the loopback debug port
 #   bash deploy/setup-lake.sh prod --remove     # uninstall (keeps the data dir)
 #   bash deploy/setup-lake.sh prod --arm-shipper  # enable the nightly shipment
@@ -110,7 +110,7 @@ LAKE_ENV="${HOME}/.config/pkdump/lake.env"
 QUADLET_DIR="${HOME}/.config/containers/systemd"
 NESSIE_UNIT="${QUADLET_DIR}/pkdump-nessie-${INSTANCE}.container"
 NETWORK="pkdump-lake-${INSTANCE}"
-JOB_IMAGE="$(pkdump_lake_job_image "$INSTANCE")"
+APP_IMAGE="$(pkdump_lake_rust_image "$INSTANCE")"
 
 if [ -n "$REMOVE" ]; then
     echo "==> Removing the lakehouse units for '${INSTANCE}'"
@@ -337,9 +337,6 @@ fi
 pkdump_store_adopt_instance "$INSTANCE"
 pkdump_store_activate
 
-echo "==> Building the PyIceberg job image"
-pkdump_lake_job_image_build "$INSTANCE" "$REPO_DIR"
-
 echo "==> Installing the Quadlet unit"
 # The network is created here rather than as a .network unit, on purpose: a
 # Quadlet unit would be generated into whatever store systemd's generator finds,
@@ -362,13 +359,13 @@ cat <<EOF
 ==> Installed.
     ${NESSIE_UNIT}
     network ${NETWORK}
-    ${JOB_IMAGE}
+    jobs run from ${APP_IMAGE} (bash deploy/deploy.sh ${INSTANCE} builds it)
 
     Start it:   systemctl --user start pkdump-nessie-${INSTANCE}
     Watch it:   journalctl --user -u pkdump-nessie-${INSTANCE} -f
     Prove it:   podman run --rm --network pkdump-lake-${INSTANCE} \\
                   -e PKDUMP_LAKE_NESSIE_URI=http://pkdump-nessie-${INSTANCE}:19120/iceberg/ \\
-                  ${JOB_IMAGE} pkdump-lake-roundtrip
+                  --entrypoint pkdump-lake-roundtrip ${APP_IMAGE}
 
     Then arm the nightly chain. Both halves, in this order — the transform
     values collections from the table the price build writes, so arming only

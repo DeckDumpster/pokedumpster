@@ -100,8 +100,7 @@ COPY data/ data/
 #   pkdump-value-snapshots  the per-tenant value snapshot (sp-4k7mxi.5): the Rust
 #                      form of pkdump-lake-value-snapshots, reading the lake
 #                      through the kit's Iceberg client. Offline; it holds no
-#                      lake write path and is run beside the Python job until
-#                      the timer is switched.
+#                      lake write path.
 #
 # They ship in ONE image deliberately, even though the whole point of the crate
 # split is that the halves can eventually run on different machines. The image
@@ -126,7 +125,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         --bin pkdump-lake-build-prices --bin pkdump-lake-verify-prices \
         --bin pkdump-value-snapshots \
         --bin pkdump-lake-prices-age --bin pkdump-lake-nessie-backup \
-        --bin pkdump-lake-roundtrip \
+        --bin pkdump-lake-roundtrip --bin pkdump-lake-probe \
  && printf '%s\n' "$stamp" > target/.pkdump-source-stamp \
  && mkdir -p /out \
  && cp target/release/pkdump /out/pkdump \
@@ -138,7 +137,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cp target/release/pkdump-value-snapshots /out/pkdump-value-snapshots \
  && cp target/release/pkdump-lake-prices-age /out/pkdump-lake-prices-age \
  && cp target/release/pkdump-lake-nessie-backup /out/pkdump-lake-nessie-backup \
- && cp target/release/pkdump-lake-roundtrip /out/pkdump-lake-roundtrip
+ && cp target/release/pkdump-lake-roundtrip /out/pkdump-lake-roundtrip \
+ && cp target/release/pkdump-lake-probe /out/pkdump-lake-probe
 
 # Every image this build produces carries this label, stage images included.
 # It is what confines the orphan collection in deploy/image-lib.sh to layers
@@ -182,6 +182,7 @@ COPY --from=builder /out/pkdump-value-snapshots /usr/local/bin/pkdump-value-snap
 COPY --from=builder /out/pkdump-lake-prices-age /usr/local/bin/pkdump-lake-prices-age
 COPY --from=builder /out/pkdump-lake-nessie-backup /usr/local/bin/pkdump-lake-nessie-backup
 COPY --from=builder /out/pkdump-lake-roundtrip /usr/local/bin/pkdump-lake-roundtrip
+COPY --from=builder /out/pkdump-lake-probe /usr/local/bin/pkdump-lake-probe
 COPY --from=frontend /app/frontend/build /srv/pkdump/static
 
 # Catalog + per-user databases live on a mounted volume.

@@ -150,8 +150,7 @@
 # so deploy/ci.sh runs it in the lint tier beside
 # tests/container/base_images_test.sh (~2s), and NOT in the two-minute lake tier
 # it is named after. A docs-only PR runs it too. python3 is used as a parser (Rust
-# comment stripping, Python tokenization); it is already a hard requirement of
-# lake/ itself.
+# comment stripping).
 #
 # The credential half of the boundary — that the catalog role cannot READ
 # `tenant/` and the tenant role cannot read `raw/` — is not here and cannot be:
@@ -359,40 +358,18 @@ strip_rust() { # strip_rust <mode> <in> <out> [<in> <out>...]
 	PY
 }
 
-# Python as tokens, with COMMENT and STRING dropped — which is what removes
-# every docstring, and the docstrings are where this codebase states the rule.
-# One token per line, prefixed with its real line number.
-py_code() { # py_code <file>
-	python3 - "$1" <<-'PY'
-		import sys, tokenize
-		path = sys.argv[1]
-		try:
-		    with open(path, "rb") as fh:
-		        for tok in tokenize.tokenize(fh.readline):
-		            if tok.type in (tokenize.COMMENT, tokenize.STRING):
-		                continue
-		            if tok.string.strip():
-		                print(f"{tok.start[0]}:{tok.string}")
-		except (tokenize.TokenError, IndentationError, SyntaxError) as exc:
-		    print(f"TOKENIZE-FAILED: {exc}", file=sys.stderr)
-		    sys.exit(3)
-	PY
-}
-
-# Every Iceberg field name declared in the CATALOG zone's Python, as
-# `<file>:<line>:<name>`. Two spellings, because both are used: pyiceberg's
-# NestedField(id, "name", …) and pyarrow's pa.field("name", …).
-#
-# The corpus is named rather than `lake/src` wholesale, and that is the one
-# place the re-cut had to touch this section: `pa.field` is a pyarrow spelling,
-# and the tenant zone is pyarrow Parquet. A tenant-zone module under lake/ that
-# declared `pa.field("database_id")` would be doing its job, and a guard that
-# reddened on it would be a guard people start adding exceptions to.
+# Every Iceberg field name this repository declares, as `<file>:<name>`. The
+# price schemas themselves are the kit's now (`dumpster-kit-iceberg`); what is
+# declared here is the round-trip proof's table, and any schema a job adds. The
+# declaration spans lines under rustfmt, hence -z.
 iceberg_fields() { # iceberg_fields <file>...
-	grep -HnoE 'NestedField\([0-9]+,[[:space:]]*"[^"]+"|pa\.field\([[:space:]]*"[^"]+"' \
-		"$@" |
-		sed -E 's/.*"([^"]+)"$/\0/' |
-		sed -E 's/(NestedField\([0-9]+,[[:space:]]*|pa\.field\([[:space:]]*)"([^"]+)"/\2/'
+	local f
+	for f in "$@"; do
+		[[ -f "$f" ]] || continue
+		grep -Pzo 'NestedField::(required|optional)\(\s*[0-9]+,\s*"[^"]+"' "$f" |
+			tr '\0' '\n' | grep -oE '"[^"]+"$' | tr -d '"' |
+			sed "s|^|${f#"$REPO_DIR"/}:|"
+	done
 }
 
 # ── the corpora ─────────────────────────────────────────────────────────────
@@ -400,7 +377,8 @@ SITE_CRATE="${REPO_DIR}/crates/pkdump-site"
 LAKEHOUSE_CRATE="${REPO_DIR}/crates/pkdump-lakehouse"
 SHIP_CRATE="${REPO_DIR}/crates/pkdump-ship"
 ERASE_CRATE="${REPO_DIR}/crates/pkdump-erase"
-PYLAKE="${REPO_DIR}/lake/src/pkdump_lake"
+LAKEJOBS_CRATE="${REPO_DIR}/crates/pkdump-lakejobs"
+VALUE_CRATE="${REPO_DIR}/crates/pkdump-value-snapshots"
 
 # ── the site's declarations over the kit's lake ─────────────────────────────
 # crates/pkdump-site routes to BOTH zones — it states the upstreams the catalog
@@ -409,28 +387,6 @@ PYLAKE="${REPO_DIR}/lake/src/pkdump_lake"
 # exactly, so a new file there is a decision this gate makes somebody take
 # rather than an omission it misses.
 ZONE_ROOT_RS=(lib.rs)
-
-# ── the Python side: classified by zone ─────────────────────────────────────
-# Classified for the same reason and checked for totality (§12).
-# The hole this closes is not hypothetical: freshness.py landed after the
-# original guard, and no section scanned it — it was in no list, so it could
-# have named a tenant and nothing would have fired.
-#
-# The catalog write path. verify.py and value_snapshots.py are deliberately
-# absent — they have their own sections.
-WRITE_PATH_PY=(catalog.py prices.py raw.py roundtrip.py __init__.py)
-# Catalog-zone modules that READ. Same rule as the write path — a reader that
-# resolved a tenant would be reading one zone with the other's business.
-CATALOG_READ_PY=(verify.py freshness.py nessie_backup.py)
-# The one job that opens tenant databases on purpose (§7 is its rule).
-TRANSFORM_PY=(value_snapshots.py)
-# Tenant-zone Python: none today, and that is the honest entry. The tenant zone
-# is written by crates/pkdump-ship and is plain Parquet, not Iceberg. A module
-# added here is what would make §6's corpus need a carve-out, and §12 is what
-# stops one arriving unclassified.
-TENANT_ZONE_PY=()
-# The only modules allowed to import sqlite3, and why.
-SQLITE_ALLOWED=(value_snapshots.py verify.py)
 
 # The crates that serve requests and record holdings changes. None of them may
 # link a zone. pkdump-cli is deliberately NOT here: it is the one binary that
@@ -482,6 +438,8 @@ zone_files() { # zone_files <name-of-array>
 
 mapfile -t ROOT_RS_FILES < <(zone_files ZONE_ROOT_RS)
 mapfile -t LAKEHOUSE_RS_FILES < <(rust_sources "$LAKEHOUSE_CRATE")
+mapfile -t LAKEJOBS_RS_FILES < <(rust_sources "$LAKEJOBS_CRATE")
+mapfile -t VALUE_RS_FILES < <(rust_sources "$VALUE_CRATE")
 mapfile -t SHIP_RS_FILES < <(rust_sources "$SHIP_CRATE")
 mapfile -t ERASE_RS_FILES < <(rust_sources "$ERASE_CRATE")
 mapfile -t BUILD_RS_FILES < <(for c in "${CATALOG_BUILD_CRATES[@]}"; do rust_sources "${REPO_DIR}/crates/${c}"; done)
@@ -491,7 +449,7 @@ mapfile -t BUILD_RS_FILES < <(for c in "${CATALOG_BUILD_CRATES[@]}"; do rust_sou
 # the runtime does.
 prime_strip_cache code \
 	"${ROOT_RS_FILES[@]}" "${LAKEHOUSE_RS_FILES[@]}" "${SHIP_RS_FILES[@]}" \
-	"${ERASE_RS_FILES[@]}" "${BUILD_RS_FILES[@]}"
+	"${ERASE_RS_FILES[@]}" "${BUILD_RS_FILES[@]}" "${LAKEJOBS_RS_FILES[@]}" "${VALUE_RS_FILES[@]}"
 prime_strip_cache keep-strings "${ROOT_RS_FILES[@]}" "${SHIP_RS_FILES[@]}" "${ERASE_RS_FILES[@]}"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -529,82 +487,51 @@ log "3. the offline derive calls no tenant-resolving API (pd-1uem's crate)"
 none "no pkdump-lakehouse source names a tenant or the registry" \
 	"$(scan "${IDENT_RX}|tenant_db_file|tenant_db_path|tenants_dir" "${LAKEHOUSE_RS_FILES[@]}")"
 
-log "4. the Python write path cannot open a database at all (structural)"
-# Same argument as §1, one tier up: a module that never imports sqlite3 cannot
-# open a tenant database however it assembles the path. This is what makes the
-# string-stripping in §5's grep safe.
-PY_SQLITE=""
-PY_TENANT=""
-for m in "${WRITE_PATH_PY[@]}"; do
-	f="${PYLAKE}/${m}"
-	[[ -f "$f" ]] || continue
-	hits="$(grep -nE '^[[:space:]]*(import[[:space:]]+sqlite3|from[[:space:]]+sqlite3)' "$f" |
-		sed "s|^|lake/src/pkdump_lake/${m}:|")"
-	[[ -n "$hits" ]] && PY_SQLITE+="${hits}"$'\n'
-	hits="$(py_code "$f" | grep -inE "${IDENT_RX}" |
-		sed "s|^|lake/src/pkdump_lake/${m}:|")"
-	[[ -n "$hits" ]] && PY_TENANT+="${hits}"$'\n'
-done
-none "no write-path module imports sqlite3" "${PY_SQLITE%$'\n'}"
-none "no write-path module names a tenant in code" "${PY_TENANT%$'\n'}"
+log "4. the Rust lake jobs cannot open a database at all (structural)"
+# crates/pkdump-lakejobs is the catalog zone's operational jobs (prices-age, the
+# Nessie backup, the round trip, the probe). A crate that links no SQLite and not
+# pkdump-db cannot open a tenant database however it assembles the path, which
+# is what makes the grep below safe to run over comment-stripped code.
+LJ_TOML="${LAKEJOBS_CRATE}/Cargo.toml"
+check "crates/pkdump-lakejobs/Cargo.toml exists" "yes" \
+	"$([[ -f "$LJ_TOML" ]] && echo yes || echo no)"
+none "the lake jobs depend on no SQLite crate and not pkdump-db" \
+	"$(grep -nE '^[[:space:]]*(rusqlite|pkdump-db|libsqlite3-sys|sqlx|diesel)[[:space:]]*[.=]' "$LJ_TOML")"
+none "no lake-job source names a tenant or the registry" \
+	"$(scan "${IDENT_RX}" "${LAKEJOBS_RS_FILES[@]}")"
 
-log "5. the modules that may open a database are exactly the allowlist"
-# A new sqlite3 importer under lake/ is a decision about tenant isolation, and
-# it should have to be argued for here rather than merged as an import line.
-ACTUAL_SQLITE="$(grep -lE '^[[:space:]]*(import[[:space:]]+sqlite3|from[[:space:]]+sqlite3)' \
-	"${PYLAKE}"/*.py 2>/dev/null | xargs -r -n1 basename | sort | tr '\n' ' ')"
-EXPECTED_SQLITE="$(printf '%s\n' "${SQLITE_ALLOWED[@]}" | sort | tr '\n' ' ')"
-check "sqlite3 importers under lake/src/pkdump_lake" \
-	"$EXPECTED_SQLITE" "$ACTUAL_SQLITE"
-
-# verify.py is on that list for ONE database — the shared catalog, opened
-# query_only on a verification path. It has no business reaching the registry or
-# the tenants directory, and that is what separates it from the transform tier.
-PY_READ=""
-for m in "${CATALOG_READ_PY[@]}"; do
-	f="${PYLAKE}/${m}"
-	[[ -f "$f" ]] || continue
-	hits="$(py_code "$f" | grep -inE "${IDENT_RX}" |
-		sed "s|^|lake/src/pkdump_lake/${m}:|")"
-	[[ -n "$hits" ]] && PY_READ+="${hits}"$'\n'
+log "5. the lake-job crates that may open a database are exactly the allowlist"
+# A new SQLite-linking crate in the lake's job set is a decision about tenant
+# isolation and should have to be argued for here. pkdump-lakehouse derives and
+# verifies the shared catalog; pkdump-value-snapshots is the transform tier.
+SQLITE_ALLOWED=(pkdump-lakehouse pkdump-value-snapshots)
+ACTUAL_SQLITE=""
+for c in pkdump-lakejobs pkdump-lakehouse pkdump-value-snapshots; do
+	grep -qE '^[[:space:]]*(rusqlite|pkdump-db)[[:space:]]*[.=]' "${REPO_DIR}/crates/${c}/Cargo.toml" &&
+		ACTUAL_SQLITE+="${c} "
 done
-none "no catalog-zone reader reaches the registry or the tenants dir" "${PY_READ%$'\n'}"
+check "lake-job crates linking SQLite" "$(printf '%s ' "${SQLITE_ALLOWED[@]}")" "$ACTUAL_SQLITE"
 
 log "6. no Iceberg table carries a tenant-identifying column"
-# The literal first half of assertion 3. catalog.prices is five fields —
-# tcgplayer_product_id, sub_type_name, price_type, price, observed_date — and
-# catalog.sealed_prices (pd-bbv7) is the same four without the sub-type. None
-# of them says which collection the row belongs to, because none of them can:
-# the catalog zone holds catalog data only, and a SEALED price is a catalog
-# fact about a product exactly as a card price is — what a tenant OWNS lives in
-# the tenant zone and is valued against these.
-#
-# Unchanged by the re-cut, and it must stay that way: the tenant zone is plain
-# partitioned Parquet, NOT Iceberg (crates/pkdump-lake/src/tenant.rs), so every
-# Iceberg schema in the tree is a catalog schema and this corpus needs no
-# carve-out. §11 is what notices if that ever stops being true.
-CATALOG_PY_FILES=()
-for m in "${WRITE_PATH_PY[@]}" "${CATALOG_READ_PY[@]}" "${TRANSFORM_PY[@]}"; do
-	[[ -f "${PYLAKE}/${m}" ]] && CATALOG_PY_FILES+=("${PYLAKE}/${m}")
-done
-FIELDS="$(iceberg_fields "${CATALOG_PY_FILES[@]}")"
+# The literal first half of assertion 3. catalog.prices and catalog.sealed_prices
+# (pd-bbv7) carry no column saying which collection a row belongs to, because
+# none can: the catalog zone holds catalog data only, and what a tenant OWNS
+# lives in the tenant zone and is valued against these. Their schemas live in
+# the kit (dumpster-kit-iceberg) and are held by the kit's tests; what this
+# repository declares is scanned here. The tenant zone is plain partitioned
+# Parquet, NOT Iceberg, so every Iceberg schema is a catalog schema and this
+# corpus needs no carve-out.
+FIELDS="$(iceberg_fields "${LAKEJOBS_RS_FILES[@]}" "${LAKEHOUSE_RS_FILES[@]}" "${VALUE_RS_FILES[@]}")"
 BAD_FIELDS="$(grep -iE ":(${FIELD_RX})$|:[a-z0-9_]*(${FIELD_RX})[a-z0-9_]*$" <<<"$FIELDS")"
 none "every Iceberg schema field is catalog-scoped" "$BAD_FIELDS"
 
 log "7. the transform tier reads the lake and never writes to it"
-# value_snapshots.py is the one job allowed to open tenant databases, so the
-# rule for it runs the other way: prices come OUT of Iceberg, and nothing about
-# a tenant goes back IN. It uses load_table + scan; a write would be
-# create_table, append/overwrite on a table, or add_files.
-#
-# `.append(` alone would match `outcomes.append(...)` — a Python list — so the
-# pattern is the table-receiver and pyarrow spellings, not the bare method.
-VS="${PYLAKE}/value_snapshots.py"
-check "the transform tier is present to check" "yes" \
-	"$([[ -f "$VS" ]] && echo yes || echo no)"
-WRITES="$(grep -nE 'create_table|create_namespace|add_files|\.overwrite\(|table\.append\(|\.append\(pa\.' \
-	"$VS" | sed 's|^|lake/src/pkdump_lake/value_snapshots.py:|')"
-none "it makes no Iceberg write call" "$WRITES"
+# pkdump-value-snapshots is the one job allowed to open tenant databases, so its
+# rule runs the other way: prices come OUT of Iceberg, and nothing about a tenant
+# goes back IN. It reads through the kit's client; a write would be a table or
+# namespace creation, a transaction, or an append.
+none "it makes no Iceberg write call" \
+	"$(scan 'create_table|create_namespace|fast_append|Transaction::new|update_table|drop_table|add_data_files' "${VALUE_RS_FILES[@]}")"
 
 # ════════════════════════════════════════════════════════════════════════════
 #   PART B — THE TENANT ZONE.  `tenant/`: tenant-keyed on purpose, contained.
@@ -741,32 +668,19 @@ none "the site crate's sources are all at the top of src/" \
 	"$(find "${SITE_CRATE}/src" -mindepth 2 -name '*.rs' -type f 2>/dev/null |
 		sed "s|^${REPO_DIR}/||")"
 
-FOUND_PY=0
-for m in "${WRITE_PATH_PY[@]}"; do [[ -f "${PYLAKE}/${m}" ]] && FOUND_PY=$((FOUND_PY + 1)); done
-check "every write-path python module was found" "${#WRITE_PATH_PY[@]}" "$FOUND_PY"
-
-# The Python side of the same totality argument, and it closes a hole rather
-# than guarding against a future one: freshness.py landed after this gate did,
-# in none of the lists, scanned by no section. A module nobody classified is a
-# module nobody checks, and the only symptom is a corpus one file short.
-ACTUAL_PY="$(find "$PYLAKE" -maxdepth 1 -name '*.py' -type f 2>/dev/null |
-	xargs -r -n1 basename | sort | tr '\n' ' ')"
-CLASSIFIED_PY="$(printf '%s\n' "${WRITE_PATH_PY[@]}" "${CATALOG_READ_PY[@]}" \
-	"${TRANSFORM_PY[@]}" ${TENANT_ZONE_PY+"${TENANT_ZONE_PY[@]}"} |
-	sort | tr '\n' ' ')"
-check "every lake python module is classified into exactly one zone" \
-	"$ACTUAL_PY" "$CLASSIFIED_PY"
+check "pkdump-lakejobs has Rust sources" "yes" \
+	"$([[ ${#LAKEJOBS_RS_FILES[@]} -gt 0 ]] && echo yes || echo no)"
+check "pkdump-value-snapshots has Rust sources" "yes" \
+	"$([[ ${#VALUE_RS_FILES[@]} -gt 0 ]] && echo yes || echo no)"
 check "Iceberg schema fields were found to check" "yes" \
 	"$([[ -n "$FIELDS" ]] && echo yes || echo no)"
-# The parsers themselves: if python3 stopped emitting anything, §1-§5 go green
+# The parsers themselves: if python3 stopped emitting anything, the scans go green
 # by producing no lines to grep.
 check "the Rust comment stripper produced output" "yes" \
 	"$([[ -n "$(rust_code "${SITE_CRATE}/src/lib.rs")" ]] && echo yes || echo no)"
 KEPT="$(rust_code "${SITE_CRATE}/src/lib.rs" keep-strings)"
 check "the Rust stripper keeps strings when asked" "yes" \
 	"$([ "$(grep -cE '"pokemontcgio"' <<<"$KEPT" || true)" != 0 ] && echo yes || echo no)"
-check "the Python tokenizer produced output" "yes" \
-	"$([[ -n "$(py_code "${PYLAKE}/prices.py")" ]] && echo yes || echo no)"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"

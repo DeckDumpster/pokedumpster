@@ -23,11 +23,6 @@
 # The table INVENTORY (where each table's metadata is, its row count) is taken
 # from the live catalog BEFORE the stop; it is what the drill holds a restore to.
 #
-# NOT YET EXERCISED AGAINST THE REAL nessie-server-admin IMAGE (the box that
-# wrote this had no registry access): the `export --path` / `import --path`
-# spelling follows the 0.104 docs. The first run on prod is the proof — do
-# `drill` straight after, and do not trust the backup until it has passed.
-#
 # The backup bucket may live in a DIFFERENT AWS account from the lake (sp-77eatm), so
 # the three modes that touch it (put, check, fetch) sign with a credential of their own:
 # PKDUMP_NESSIE_BACKUP_CREDENTIALS_FILE (a shared-credentials file, mounted read-only)

@@ -191,6 +191,34 @@ alarm() { # alarm <title> <body>
     "${SCRIPT_DIR}/alert.sh" "$1" "$2" || echo "nessie-backup: the alert reached nobody (no Pushover channel configured)" >&2
 }
 
+# --- public images are pulled WITHOUT the saved registry login (sp-3679yx) --------------
+# Every image this script runs from ghcr.io is public. A saved ghcr.io login that GitHub
+# has since revoked turns an anonymous-OK pull into a 403 ("Requesting bearer token"), so
+# a public pull is made with an empty authfile and cannot inherit a stale credential.
+pull_public() { # pull_public <image> — a no-op when the image is already in the store
+    podman image exists "$1" 2>/dev/null && return 0
+    local af
+    af="$(mktemp "${TMPDIR:-/tmp}/pkdump-noauth.XXXXXX")"
+    echo '{}' >"$af"
+    podman pull --authfile "$af" "$1" >/dev/null || { rm -f "$af"; die "cannot pull public image $1"; }
+    rm -f "$af"
+}
+
+# The alarm for a stale registry login: every ghcr.io credential in the saved authfile must
+# still get a pull token. Nothing here uses one, so a dead one is noise to remove, but it
+# breaks any pull that inherits it — and nothing else would say so.
+registry_login_check() {
+    local af="${REGISTRY_AUTH_FILE:-${XDG_RUNTIME_DIR}/containers/auth.json}" auth rc
+    [ -f "$af" ] || return 0
+    auth="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("auths",{}).get("ghcr.io",{}).get("auth",""))' "$af")" || return 1
+    [ -n "$auth" ] || return 0
+    rc="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H "Authorization: Basic ${auth}" \
+        'https://ghcr.io/token?service=ghcr.io&scope=repository:projectnessie/nessie:pull')" || rc=000
+    [ "$rc" = 200 ] && return 0
+    alarm "PokeDumpster host's saved ghcr.io login is STALE (${INSTANCE})" "ghcr.io refused the login saved in ${af} (HTTP ${rc}). Pulls that inherit it get 403. Fix: podman logout ghcr.io (nothing here needs a login) or re-login with a current read-only token."
+    return 1
+}
+
 do_check() {
     local rc=0
     backup_job pkdump-lake-nessie-backup check --now "$(now_utc)" --max-age-hours "$MAX_AGE_HOURS" || rc=$?
@@ -204,10 +232,11 @@ do_check() {
 }
 
 case "$MODE" in
-check) do_check ;;
+check) rc=0; registry_login_check || rc=$?; do_check || rc=$?; exit "$rc" ;;
 
 backup)
     ID="$(date -u +%Y%m%dT%H%M%SZ)"
+    pull_public "$ADMIN_IMAGE"
     echo "==> nessie-backup ${INSTANCE}: ${ID} (nessie ${NESSIE_VERSION})"
     # 1. Inventory the live catalog while it is up.
     lake_job - pkdump-lake-nessie-backup inventory --out /work/inventory.json
@@ -231,6 +260,8 @@ backup)
 
 drill)
     echo "==> nessie-backup drill ${INSTANCE}: restore the newest backup into a scratch Nessie"
+    pull_public "$ADMIN_IMAGE"
+    pull_public "$SERVER_IMAGE"
     backup_job pkdump-lake-nessie-backup fetch --out-dir /work/fetched
     mkdir -p "${WORK}/rocks"
     # Import into an EMPTY scratch version store, never the live one.

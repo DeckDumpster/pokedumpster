@@ -125,7 +125,7 @@ pkdump_lake_job_image_ensure() {
 # (sp-4k7mxi.4/.5/.6). The Rust jobs are the default. `PKDUMP_LAKE_JOBS=python` in
 # ~/.config/pkdump/lake.env is the whole rollback: the Python image stays built and
 # the wrappers still use it for the catalog-answering probe either way. nessie-backup
-# and the roundtrip are NOT switched — they stay on Python until certified.
+# (backup, check, drill) runs the Rust job too (sp-jz1ws9); the roundtrip stays on Python.
 pkdump_lake_jobs_runtime() {
     case "${PKDUMP_LAKE_JOBS:-rust}" in
     rust | python) printf '%s' "${PKDUMP_LAKE_JOBS:-rust}" ;;

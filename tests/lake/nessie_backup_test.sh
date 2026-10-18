@@ -46,13 +46,13 @@ run_mode() { PATH="$HOME_T/bin:$PATH" HOME="$HOME_T/home" TMPDIR="$HOME_T" PKDUM
     PKDUMP_ALERTS_ENV=/nonexistent PKDUMP_NESSIE_QUADLET="$HOME_T/n.container" \
     bash "$ROOT/deploy/nessie-backup.sh" x "$1" >/dev/null 2>&1 || true; }
 run_mode check
-store_run="$(grep 'nessie-backup check' "$FAKE_LOG" || true)"
+store_run="$(grep -E 'nessie-backup .* check( |$)' "$FAKE_LOG" || true)"
 case "$store_run" in *"AWS_PROFILE=pkdump-lake-backup"*"/backup-aws/credentials:ro"*) ;; *) echo "backup job lacks its own credential: $store_run" >&2; fail=1 ;; esac
 case "$store_run" in *LAKEPROFILE*|*LAKEROLE*|*lake-bucket*) echo "backup job carries the lake identity: $store_run" >&2; fail=1 ;; esac
 # the lake read keeps the lake identity and never sees the backup credential
 PATH="$HOME_T/bin:$PATH" HOME="$HOME_T/home" TMPDIR="$HOME_T" PKDUMP_LAKE_ENV="$HOME_T/lake2.env" PKDUMP_ALERTS_ENV=/nonexistent \
     PKDUMP_NESSIE_QUADLET="$HOME_T/n.container" bash "$ROOT/deploy/nessie-backup.sh" x backup >/dev/null 2>&1 || true
-lake_run="$(grep 'nessie-backup inventory' "$FAKE_LOG" || true)"
+lake_run="$(grep -E 'nessie-backup .* inventory( |$)' "$FAKE_LOG" || true)"
 case "$lake_run" in *"AWS_PROFILE=LAKEPROFILE"*) ;; *) echo "lake read lost the lake identity: $lake_run" >&2; fail=1 ;; esac
 case "$lake_run" in *pkdump-lake-backup*|*backup.credentials*) echo "lake read carries the backup credential: $lake_run" >&2; fail=1 ;; esac
 exit "$fail"

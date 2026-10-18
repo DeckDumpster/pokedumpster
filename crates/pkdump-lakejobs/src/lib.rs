@@ -13,4 +13,5 @@
 
 pub mod freshness;
 pub mod nessie_backup;
+pub mod probe;
 pub mod roundtrip;

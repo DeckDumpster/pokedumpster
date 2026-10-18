@@ -112,22 +112,11 @@ check "a non-md file under docs/ is still docs -> lint only" \
 	"lint" "$(select_for "docs/diagram.svg")"
 check "several docs at once -> lint only" \
 	"lint" "$(select_for "README.md" "CLAUDE.md" "deep-dives/x.md")"
-# The Python lakehouse tree builds its own job image and nothing outside it
-# consumes it, so it runs the lake gates and the always-on lint tier — and NOT the
-# browser or frontend tiers it used to drag in. The near-misses above keep the
-# prefix honest.
-LAKE="lint lake"
-check "lake/ python -> lint + lake only" "$LAKE" "$(select_for "lake/src/pkdump_lake/raw.py")"
-check "several lake files at once -> still lint + lake" "$LAKE" \
-	"$(select_for "lake/src/pkdump_lake/raw.py" "lake/pyproject.toml")"
-check "lake/ plus a rust change -> everything, the union is conservative" \
-	"$ALL" "$(select_for "lake/src/pkdump_lake/raw.py" "crates/pkdump-db/src/lib.rs")"
-check "a .md under lake/ is still docs -> lint only" \
-	"lint" "$(select_for "lake/README.md")"
-# The Rust crate is NOT the Python tree: the app Containerfile builds and ships
-# pkdump-lake-derive, and pkdump-cli depends on the pkdump-lake crate, so a change
-# there reaches the app image and must still run everything.
-check "crates/pkdump-lakehouse is not lake/ -> everything" \
+# lake/ no longer exists (the Python lake is gone, sp-4k7mxi.7), so a path under
+# it is unrecognised and runs everything. The Rust crate is not special either.
+check "a path under the deleted lake/ -> everything" \
+	"$ALL" "$(select_for "lake/src/pkdump_lake/raw.py")"
+check "crates/pkdump-lakehouse -> everything" \
 	"$ALL" "$(select_for "crates/pkdump-lakehouse/src/main.rs")"
 
 # A .md under frontend/ is read by people, not by vite.

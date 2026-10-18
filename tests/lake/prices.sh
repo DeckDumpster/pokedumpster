@@ -62,6 +62,8 @@ MC_IMAGE=${MC_IMAGE:-$PKDUMP_MC_IMAGE}
 . "${REPO_DIR}/tests/lib/diagnostics.sh"
 # shellcheck source=tests/lib/objects.sh
 . "${REPO_DIR}/tests/lib/objects.sh"
+# shellcheck source=tests/lib/wait.sh
+. "${REPO_DIR}/tests/lib/wait.sh"
 diag_init
 
 die() {
@@ -84,8 +86,7 @@ SUFFIX="${PDPRICES_SUFFIX:-$(printf '%s' "$REPO_DIR" | sha1sum | cut -c1-6)}"
 NET=pdprices-net-${SUFFIX}
 MINIO_CTR=pdprices-minio-${SUFFIX}
 NESSIE_CTR=pdprices-nessie-${SUFFIX}
-JOB_IMAGE=pkdump-lake:prices-${SUFFIX}
-# The Rust jobs the wrapper runs by default ship in the app image (sp-utga27).
+# Every lake job is a Rust binary in the app image (sp-4k7mxi.7).
 APP_IMAGE=localhost/pkdump:prices-${SUFFIX}
 BUCKET=pdprices-${SUFFIX}
 AKID=pdpricestestroot
@@ -121,7 +122,7 @@ cleanup() {
 	fi
 	podman rm -f "$MINIO_CTR" "$NESSIE_CTR" >/dev/null 2>&1 || true
 	podman network rm "$NET" >/dev/null 2>&1 || true
-	podman rmi -f "$JOB_IMAGE" "$APP_IMAGE" >/dev/null 2>&1 || true
+	podman rmi -f "$APP_IMAGE" >/dev/null 2>&1 || true
 	# Nessie writes its version store as a SUBUID the invoking user cannot
 	# unlink; a plain rm -rf leaves the whole work dir behind, every run.
 	podman unshare rm -rf "$WORK" 2>/dev/null || rm -rf "$WORK" 2>/dev/null || true
@@ -135,9 +136,14 @@ mc() { podman run --rm --network "$NET" -e MC_HOST_m="http://${AKID}:${SECRET}@$
 # a WAL database and SQLite cannot open one through a read-only mount at all;
 # the verifier's connection is `query_only` instead. It is a throwaway fixture
 # either way.
-run_job() {
+run_job() { # run_job <binary> [args...] — a Rust binary of the app image
+	local bin="$1"
+	shift
 	podman run --rm --network "$NET" \
 		-v "$FIXTURE:/fixture:Z" \
+		-e AWS_ACCESS_KEY_ID="$AKID" \
+		-e AWS_SECRET_ACCESS_KEY="$SECRET" \
+		-e AWS_REGION=us-west-2 \
 		-e PKDUMP_LAKE_NESSIE_URI="http://${NESSIE_CTR}:19120/iceberg/" \
 		-e PKDUMP_LAKE_S3_BUCKET="$BUCKET" \
 		-e PKDUMP_LAKE_S3_REGION=us-west-2 \
@@ -145,24 +151,19 @@ run_job() {
 		-e PKDUMP_LAKE_S3_ACCESS_KEY_ID="$AKID" \
 		-e PKDUMP_LAKE_S3_SECRET_ACCESS_KEY="$SECRET" \
 		-e PKDUMP_LAKE_S3_PATH_STYLE=1 \
-		"$JOB_IMAGE" "$@"
+		--entrypoint "$bin" "$APP_IMAGE" "$@"
 }
 
-# A stable fingerprint of one day of the table: row count and a digest over
-# the sorted rows. Two builds of the same day must produce the same string.
-day_digest() {
-	run_job python -c "
-import hashlib, sys
-from pyiceberg.expressions import EqualTo
-from pkdump_lake.catalog import catalog
-rows = catalog().load_table('catalog.prices').scan(
-    row_filter=EqualTo('observed_date', '$1')).to_arrow().to_pylist()
-keyed = sorted(
-    (r['tcgplayer_product_id'], r['sub_type_name'], r['price_type'], r['price'])
-    for r in rows)
-print(len(keyed), hashlib.sha256(repr(keyed).encode()).hexdigest()[:16])
-" | tail -1
+# A stable fingerprint of one day of a table: row count and a digest over the
+# sorted rows. Two builds of the same day must produce the same string.
+day_digest_of() { # day_digest_of <table> <date>
+	local rows
+	rows="$(run_job pkdump-lake-probe rows --table "$1" --where "observed_date=$2")" ||
+		die "could not read $1 for $2"
+	printf '%s %s\n' "$(grep -c . <<<"$rows" || true)" "$(sha256sum <<<"$rows" | cut -c1-16)"
 }
+day_digest() { day_digest_of catalog.prices "$1"; }
+sealed_day_digest() { day_digest_of catalog.sealed_prices "$1"; }
 
 echo "==> §0  Land raw and build shared.sqlite from the SAME upstream bytes"
 # Produced by the real TcgcsvClient through the real RawLanding, on the host,
@@ -174,44 +175,22 @@ PKDUMP_PRICES_FIXTURE_OUT="$FIXTURE" \
 [ -f "$FIXTURE/shared.sqlite" ] || die "the fixture produced no shared.sqlite"
 echo "    $(find "$FIXTURE/raw-zone" -name 'part-*.zst' | wc -l) part(s), $(find "$FIXTURE/raw-zone" -name '_manifest.json' | wc -l) manifest(s)"
 
-echo "==> §1  Build the lake job image"
-pkdump_lake_job_image_ensure "$JOB_IMAGE" "$REPO_DIR" >/dev/null
-echo "    ${JOB_IMAGE}"
+echo "==> §1  Build the app image (it carries every lake job)"
 pkdump_image_ensure "$APP_IMAGE" "$REPO_DIR" >"${WORK}/build.log" 2>&1 || {
 	tail -40 "${WORK}/build.log"
 	die "the app image build failed"
 }
 echo "    ${APP_IMAGE}"
 
-# The same, for the sealed table this run also writes.
-sealed_day_digest() {
-	run_job python -c "
-import hashlib, sys
-from pyiceberg.expressions import EqualTo
-from pkdump_lake.catalog import catalog
-rows = catalog().load_table('catalog.sealed_prices').scan(
-    row_filter=EqualTo('observed_date', '$1')).to_arrow().to_pylist()
-keyed = sorted((r['tcgplayer_product_id'], r['price_type'], r['price']) for r in rows)
-print(len(keyed), hashlib.sha256(repr(keyed).encode()).hexdigest()[:16])
-" | tail -1
-}
-
 echo "==> §2  An INTERNAL network: there is no upstream to call"
 podman network create --internal "$NET" >/dev/null
 # The assertion the whole bead turns on, made mechanically rather than by
 # convention. If this ever starts succeeding, the network stopped being
 # internal and every "built from raw alone" claim below is unproven.
-EGRESS=$(podman run --rm --network "$NET" "$JOB_IMAGE" python -c "
-import socket
-try:
-    socket.create_connection(('1.1.1.1', 443), timeout=5)
-    print('REACHABLE')
-except OSError:
-    print('blocked')
-")
+EGRESS=$(podman run --rm --network "$NET" --entrypoint pkdump-lake-probe "$APP_IMAGE" reachable 1.1.1.1:443)
 [ "$EGRESS" = "blocked" ] ||
 	die "the job container can reach the internet (${EGRESS}) — 'built from raw alone' would prove nothing"
-echo "    ok   egress from the job image is blocked"
+echo "    ok   egress from the app image is blocked"
 
 echo "==> §3  The lake (MinIO) and the catalog (Nessie)"
 podman run -d --name "$MINIO_CTR" --network "$NET" \
@@ -249,16 +228,11 @@ podman run -d --name "$NESSIE_CTR" --network "$NET" \
 	-e nessie.catalog.secrets.access-key.secret="$SECRET" \
 	"$NESSIE_IMAGE" >/dev/null
 
-podman run --rm --network "$NET" "$JOB_IMAGE" python -c "
-import sys, time, urllib.request
-for _ in range(90):
-    try:
-        urllib.request.urlopen('http://${NESSIE_CTR}:19120/api/v2/config', timeout=3)
-        sys.exit(0)
-    except Exception:
-        time.sleep(1)
-sys.exit(1)
-" || {
+nessie_up() {
+	podman run --rm --network "$NET" --entrypoint pkdump-lake-probe "$APP_IMAGE" \
+		get "http://${NESSIE_CTR}:19120/api/v2/config" >/dev/null 2>&1
+}
+wait_until 90 1 nessie_up || {
 	podman logs "$NESSIE_CTR" 2>&1 | tail -40
 	die "Nessie never answered on ${NET}"
 }
@@ -288,13 +262,8 @@ echo "==> §5b catalog.sealed_prices: the same night's bytes, and only sealed"
 # classifier that had it backwards, or that classified nothing, shows up here
 # as the wrong product ids rather than as a smaller number somebody has to
 # recognise.
-SEALED_IDS=$(run_job python -c "
-from pyiceberg.expressions import EqualTo
-from pkdump_lake.catalog import catalog
-rows = catalog().load_table('catalog.sealed_prices').scan(
-    row_filter=EqualTo('observed_date', '$DATE_OLD')).to_arrow().to_pylist()
-print(' '.join(str(i) for i in sorted({r['tcgplayer_product_id'] for r in rows})))
-" | tail -1)
+SEALED_IDS=$(run_job pkdump-lake-probe rows --table catalog.sealed_prices \
+	--where "observed_date=$DATE_OLD" --columns tcgplayer_product_id | sort -un | paste -sd' ')
 [ "$SEALED_IDS" = "201 202" ] ||
 	die "catalog.sealed_prices holds products '${SEALED_IDS}' — the sealed ones are 201 and 202, \
 and 101/102 are single cards that must never appear in it"
@@ -305,68 +274,19 @@ echo "    ok   sealed products ${SEALED_IDS}, and no single card"
 # rather than assuming. The day somebody splits the job in two, a sealed feed
 # quietly one night behind the card feed values every collection's two halves
 # at two different catalogs, and nothing else here would notice.
-RUNS=$(run_job python -c "
-from pkdump_lake.catalog import catalog
-cat = catalog()
-for name in ('catalog.prices', 'catalog.sealed_prices'):
-    print(cat.load_table(name).current_snapshot().summary['pkdump.raw-runs'])
-" | tail -2)
+RUNS="$(run_job pkdump-lake-probe summary --table catalog.prices --key pkdump.raw-runs)
+$(run_job pkdump-lake-probe summary --table catalog.sealed_prices --key pkdump.raw-runs)"
 CARD_RUNS=$(printf '%s\n' "$RUNS" | head -1)
 SEALED_RUNS=$(printf '%s\n' "$RUNS" | tail -1)
 [ -n "$CARD_RUNS" ] && [ "$CARD_RUNS" = "$SEALED_RUNS" ] ||
 	die "the two price tables name different raw runs: '${CARD_RUNS}' vs '${SEALED_RUNS}'"
 echo "    ok   both tables built from run(s) ${CARD_RUNS}"
 
-# Three: the classifier itself, over BOTH TCGplayer categories. The fixture is
-# category 3 only, and the Japanese rule (`japan.rs::is_card` — a card carries
-# `CardType`, because ~40% of vintage Japanese products carry no `Number` at
-# all) would therefore never be exercised by the data above. Applying the
-# English rule to category 85 files 450 groups of Japanese SINGLES as sealed
-# product, which is a wrong number nothing else here would notice. So the pure
-# functions are driven directly, in the shipped job image, in both directions.
-#
-# CAPTURED, not piped into `grep -q`. Under `pipefail` a `grep -q` that exits on
-# its first match SIGPIPEs the job behind it, so the pipeline reports 141 exactly
-# when the classifier PASSED — a false red that only appears once the job talks
-# enough to fill a pipe buffer. stderr is deliberately left on the console, so a
-# traceback is still read where it happens.
-CLASSIFIER_OUT="$(run_job python -c "
-from pkdump_lake.prices import CATEGORY_POKEMON_JAPAN, category_of, is_sealed
-
-def card(**kw): return {'extendedData': [{'name': k, 'value': v} for k, v in kw.items()]}
-
-# Category 3: a Number makes it a card; nothing makes it sealed.
-assert not is_sealed(card(Number='4/102'), 3), 'an English single was called sealed'
-assert is_sealed({'extendedData': []}, 3), 'an English sealed product was called a card'
-assert is_sealed({}, 3), 'a product with no extendedData at all must be sealed'
-# Case-insensitively, the way both Rust importers compare the field name.
-assert not is_sealed(card(number='4/102'), 3), 'the field name is matched case-sensitively'
-
-# Category 85: CardType makes it a card, and a Japanese vintage card with NO
-# number must NOT be filed as sealed product.
-jp = CATEGORY_POKEMON_JAPAN
-assert not is_sealed(card(CardType='Pokemon'), jp), 'a Japanese single was called sealed'
-assert is_sealed(card(Number='001/102'), jp), 'a Japanese product without CardType is sealed'
-assert is_sealed({'extendedData': []}, jp), 'a Japanese sealed product was called a card'
-
-# And the category is READ, not assumed: the same product classifies both ways.
-vintage = card(CardType='Trainer')
-assert is_sealed(vintage, 3) and not is_sealed(vintage, jp),     'the rule does not vary by category — one of the two importers is being ignored'
-
-# The category comes off the part URL the manifest recorded.
-assert category_of('https://tcgcsv.com/tcgplayer/85/1234/products', 'k') == 85
-assert category_of('http://127.0.0.1:8080/3/1/products', 'k') == 3
-for bad in ('https://tcgcsv.com/tcgplayer/3/1/prices', 'https://x/products', 'https://x/a/b/products'):
-    try:
-        category_of(bad, 'k')
-    except Exception:
-        continue
-    raise AssertionError(f'{bad!r} was accepted as a products URL')
-print('CLASSIFIER OK')
-")" || true
-grep -q 'CLASSIFIER OK' <<<"$CLASSIFIER_OUT" ||
-	die "the sealed classifier does not follow the two Rust importers — see pkdump_lake.prices.is_sealed"
-echo "    ok   the classifier matches is_single_card (cat 3) and japan::is_card (cat 85)"
+# Three, the classifier over BOTH TCGplayer categories (English `Number`,
+# Japanese `CardType`), is held by the unit tests in
+# crates/pkdump-lakehouse/src/prices_core.rs (`the_sealed_discriminator_...`),
+# which drive the pure functions in both directions. The fixture here is
+# category 3 only.
 
 echo "==> §6  Re-running the build is idempotent"
 # Same input, same table STATE. The Nessie commit is new either way — a build
@@ -390,15 +310,9 @@ run_job pkdump-lake-build-prices --ingest-date "$DATE_NEW" ||
 NEW_STATE=$(day_digest "$DATE_NEW")
 [ "${NEW_STATE%% *}" = "$ROWS_PER_DAY" ] ||
 	die "${DATE_NEW}: expected ${ROWS_PER_DAY} rows, got ${NEW_STATE%% *}"
-MARKET=$(run_job python -c "
-from pyiceberg.expressions import And, EqualTo
-from pkdump_lake.catalog import catalog
-rows = catalog().load_table('catalog.prices').scan(row_filter=And(
-    EqualTo('observed_date', '$DATE_NEW'), EqualTo('tcgplayer_product_id', 101),
-    EqualTo('price_type', 'market'), EqualTo('sub_type_name', 'Normal'),
-)).to_arrow().to_pylist()
-print(rows[0]['price'])
-" | tail -1)
+MARKET=$(run_job pkdump-lake-probe rows --table catalog.prices \
+	--where "observed_date=$DATE_NEW" --where tcgplayer_product_id=101 \
+	--where price_type=market --where sub_type_name=Normal --columns price)
 # 27.5 is the complete run's price; 34.5 is the failed retry's.
 [ "$MARKET" = "27.5" ] ||
 	die "${DATE_NEW} took the wrong run: product 101 market is ${MARKET}, expected 27.5"
@@ -436,11 +350,7 @@ esac
 # Opting in builds it and the table has to SAY it is not a whole day.
 run_job pkdump-lake-build-prices --ingest-date "$DATE_INCOMPLETE" --allow-incomplete >/dev/null ||
 	die "--allow-incomplete did not build"
-COMPLETE_PROP=$(run_job python -c "
-from pkdump_lake.catalog import catalog
-t = catalog().load_table('catalog.prices')
-print(t.current_snapshot().summary['pkdump.raw-complete'])
-" | tail -1)
+COMPLETE_PROP=$(run_job pkdump-lake-probe summary --table catalog.prices --key pkdump.raw-complete)
 [ "$COMPLETE_PROP" = "false" ] ||
 	die "the partial day's snapshot claims pkdump.raw-complete=${COMPLETE_PROP}"
 echo "    ok   --allow-incomplete builds it and records pkdump.raw-complete=false"
@@ -525,7 +435,6 @@ wrapper() { # wrapper <max-age-days> [args...] — prints output, returns its st
 		PKDUMP_ALERTS_ENV="$WORK/no-such-alerts.env" \
 		PUSHOVER_TOKEN= PUSHOVER_USER= \
 		PKDUMP_LAKE_NETWORK="$NET" \
-		PKDUMP_LAKE_JOB_IMAGE="$JOB_IMAGE" \
 		PKDUMP_LAKE_RUST_IMAGE="$APP_IMAGE" \
 		PKDUMP_LAKE_PRICES_MAX_AGE_DAYS="$max_age" \
 		bash "${REPO_DIR}/deploy/prices.sh" "pdprices-${SUFFIX}" "$@" 2>&1

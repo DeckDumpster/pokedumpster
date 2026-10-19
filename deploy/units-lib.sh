@@ -121,17 +121,40 @@ pkdump_units_host_owners() {
 # The checkout pkdump_units_host_entitled refused in favour of. Empty otherwise.
 PKDUMP_UNITS_HOST_OWNER=""
 
+# Why pkdump_units_host_entitled refused when no other checkout owns the units.
+PKDUMP_UNITS_HOST_REFUSAL=""
+
+# pkdump_units_in_aeon <repo_dir> — is this checkout an aeon's worktree?
+# Aeons run under the Spira host's sanctioned worktree root with the operator's
+# REAL $HOME. A unit baked with such a path is dead the moment the worktree is
+# cleaned up, and law-no-product-service-runs-on-the-spira-host forbids product
+# units there at all. On 2026-10-15 an aeon (sp-xew39v) left 23 of them in the
+# real ~/.config/systemd/user, and the "nobody owns them yet" rule below was
+# what let it. Only an explicit PKDUMP_INSTALL_HOST_UNITS=1 overrides.
+pkdump_units_in_aeon() {
+    case "$1" in
+        */spira/run/worktree/*) return 0 ;;
+    esac
+    return 1
+}
+
 # pkdump_units_host_entitled <instance> — may this install rewrite the units
 # there is one of per box? See the header for the four ways to be entitled.
 pkdump_units_host_entitled() {
     local instance="$1" repo_dir owner
     repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     PKDUMP_UNITS_HOST_OWNER=""
+    PKDUMP_UNITS_HOST_REFUSAL=""
 
     case "${PKDUMP_INSTALL_HOST_UNITS:-}" in
         1) return 0 ;;
         0) return 1 ;;
     esac
+
+    if pkdump_units_in_aeon "$repo_dir"; then
+        PKDUMP_UNITS_HOST_REFUSAL="this checkout is an aeon worktree (${repo_dir})"
+        return 1
+    fi
 
     pkdump_units_alerting "$instance" && return 0
 
@@ -368,6 +391,10 @@ pkdump_units_install() {
         echo "      There is one copy of each on this box, shared by every instance"
         echo "      including prod, and this checkout is not the one that deploys it."
         echo "      Force with PKDUMP_INSTALL_HOST_UNITS=1 (pd-onyd)."
+    elif [ -n "$PKDUMP_UNITS_HOST_REFUSAL" ]; then
+        echo "    Host-wide units NOT rewritten — ${PKDUMP_UNITS_HOST_REFUSAL}."
+        echo "      An aeon never installs product units into the host's real unit"
+        echo "      directory. Force with PKDUMP_INSTALL_HOST_UNITS=1 (sp-0mrf4l)."
     else
         echo "    Host-wide units NOT rewritten — PKDUMP_INSTALL_HOST_UNITS=0."
     fi

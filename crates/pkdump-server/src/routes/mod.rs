@@ -13,6 +13,7 @@ pub mod manual_prices;
 pub mod orders;
 pub mod sealed;
 pub mod search;
+pub mod session;
 pub mod sets;
 pub mod user_printings;
 pub mod variants;
@@ -46,6 +47,7 @@ pub fn authenticated_api_router() -> Router<AppState> {
         .merge(user_printings::routes())
         .merge(import::routes())
         .merge(export::routes())
+        .merge(session::routes())
 }
 
 /// `/api` routes that are exempt from authentication.

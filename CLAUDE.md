@@ -1278,6 +1278,25 @@ What stays here, because the kernel has no such mode: single-tenant serving
 (`access::layer`). The registry schema is applied only by opening the registry
 (`pkdump_db::open_registry`, `":memory:"` in tests) — there is no copy of the SQL file.
 
+### Native sign-in (Pocket ID) — sp-v3pohe
+
+`pkdump serve` signs users in itself through dumpster-kit's `dumpster-kit-oidc` (authorization
+code + PKCE against Pocket ID, `groups` claim, signed session cookie), in `pkdump-server/src/oidc.rs`.
+**Opt-in by configuration**, like Access: any `PKDUMP_OIDC_*` variable enables it and an incomplete
+set refuses to start (`ISSUER`, `CLIENT_ID`, `CLIENT_SECRET`, `REDIRECT_URL`, `REQUIRED_GROUP` =
+`poke-users`, `COOKIE_KEY`, optional `SESSION_TTL_SECS`) — supplied from the 0600 env file on the
+prod host, never git. It is independent of Cloudflare Access, so the app keeps working behind its
+Access app until that is removed. Unconfigured, nothing changes (CI, tests, local).
+
+Every human path (SPA, assets, `/api`) needs a session in the group; outside it is a 403 page. The
+**automation paths** — `/health` and `/api/backup-status` (read by `alarm-status.sh` from localhost)
+— are served without one: they expose no tenant data and were already unauthenticated, and nothing
+here uses a Cloudflare service token, so there is no narrow Access app or bearer token to keep.
+`oidc::MACHINE_PATHS` is that list. Once sign-in is on, `/` redirects to sign-in, so
+`PKDUMP_HEARTBEAT_URL` (host config) must name `/health`. "Sign out" is `/auth/logout`, shown by the
+layout when `/api/session` reports a signed-in user. Gate: `tests/signin` in `pkdump-server`'s lib
+tests, against the kit's fake provider.
+
 ## Conventions & Patterns
 
 ### The data model IS the product

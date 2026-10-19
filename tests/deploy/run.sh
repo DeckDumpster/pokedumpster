@@ -3397,6 +3397,22 @@ check "=0 forces the skip, even for prod" "$OTHER" "$(owners_of)"
 check "and says which reason it skipped for" "1" \
 	"$(printf '%s' "$OFF_OUT" | grep -c 'PKDUMP_INSTALL_HOST_UNITS=0' || true)"
 
+# --- An aeon's worktree never installs them, even onto an empty box (sp-0mrf4l)
+# "Nobody owns them yet" entitles anyone, which let an aeon write 23 units
+# pointing into its own worktree into the host's real unit directory.
+AEON_REPO="${WORK}/aeonroot/spira/run/worktree/sp-fake"
+rm -rf "$HOSTHOME" "$WORK/aeonroot"; mkdir -p "$HOST_UNITS" "$HOST_QUADLET" "$AEON_REPO"
+cp -r "${REPO_DIR}/deploy" "$AEON_REPO/deploy"
+AEON_OUT="$(env HOME="$HOSTHOME" bash -c '
+	. "$1/deploy/store-lib.sh"; . "$1/deploy/units-lib.sh"
+	pkdump_units_install ci-aeon 0
+' _ "$AEON_REPO" 2>&1)"
+check "an aeon worktree writes no host-wide unit to an empty box" "0" \
+	"$(ls "$HOST_UNITS" | wc -l)"
+check "and says it is an aeon worktree" "1" \
+	"$(printf '%s' "$AEON_OUT" | grep -c 'aeon worktree' || true)"
+rm -rf "$WORK/aeonroot"
+
 # --- The owner is read out of the unit, so it cannot disagree with systemd ---
 # There is no marker file to drift: what the probe reports is the directory the
 # ExecStart will actually execute.

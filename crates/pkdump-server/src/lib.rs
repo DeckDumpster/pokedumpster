@@ -981,6 +981,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_cursor_is_accepted_and_totals_are_timed_on_the_first_page_only() {
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
+        let get = |uri: &'static str| {
+            let router = router.clone();
+            let tok = tok.clone();
+            async move {
+                router
+                    .oneshot(request("GET", uri, Some(&tok), None))
+                    .await
+                    .unwrap()
+            }
+        };
+        let first = get("/api/collection/search?include_unowned=1&limit=0").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert!(first.headers().contains_key("server-timing"));
+        // A malformed cursor is a 400, and cursor + offset is refused.
+        let bad = get("/api/collection/search?include_unowned=1&cursor=zz").await;
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        let both = get("/api/collection/search?cursor=00&offset=1").await;
+        assert_eq!(both.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn search_honours_limit_and_offset() {
         let (_d, router, fx) = test_app().await;
         let tok = fx.valid_token("u@example.com");

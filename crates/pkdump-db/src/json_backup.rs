@@ -81,7 +81,11 @@ impl ImportSummary {
 
 /// Every user table in the connection's `main` database, alphabetically.
 ///
-/// Skips SQLite's own internals and nothing else. A table the collection
+/// Skips SQLite's own internals and Litestream's (`_litestream_seq`,
+/// `_litestream_lock`, ...), which the replicator adds to every replicated
+/// tenant database and which are not the user's data: counting them refused
+/// every production clone target, and wiping them on import would rewrite
+/// the replicator's state under it. A table the collection
 /// should not carry is dropped by `schema_user.sql` on open, not named here
 /// — an exclusion list in the exporter is a second, quieter description of
 /// the schema, and it drifts (pd-yj40).
@@ -90,6 +94,7 @@ pub fn user_tables(conn: &Connection) -> Result<Vec<String>> {
         "SELECT name FROM main.sqlite_master \
          WHERE type = 'table' \
            AND name NOT LIKE 'sqlite_%' \
+           AND substr(name, 1, 12) != '_litestream_' \
          ORDER BY name",
     )?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
@@ -829,6 +834,47 @@ mod tests {
             matches!(err, DbError::Conflict(_)),
             "expected a conflict, got {err:?}"
         );
+    }
+
+    /// Litestream keeps its own bookkeeping tables in every replicated
+    /// tenant database. They are not the user's data: they must not make an
+    /// otherwise empty target look occupied, and an import must neither
+    /// export, wipe nor rewrite them under the replicator.
+    #[test]
+    fn litestream_tables_are_not_user_data() {
+        let fx = Fixture::new();
+        let json = export(&fx.seeded("source.sqlite")).unwrap();
+
+        let mut target = fx.user("target.sqlite");
+        target
+            .execute_batch(
+                "CREATE TABLE _litestream_seq (id INTEGER PRIMARY KEY, seq INTEGER);
+                 INSERT INTO _litestream_seq VALUES (1, 7);
+                 CREATE TABLE _litestream_lock (id INTEGER);
+                 INSERT INTO _litestream_lock VALUES (1);",
+            )
+            .unwrap();
+
+        assert!(!export(&target).unwrap().contains("_litestream"));
+        import(&mut target, &json, OnExisting::Fail).unwrap();
+        let seq: i64 = target
+            .query_row("SELECT seq FROM _litestream_seq", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(seq, 7, "the import must leave Litestream's rows alone");
+
+        // ...while a real collection row still refuses.
+        let mut occupied = fx.user("occupied.sqlite");
+        occupied
+            .execute_batch(
+                "CREATE TABLE _litestream_seq (id INTEGER PRIMARY KEY, seq INTEGER);
+                 INSERT INTO _litestream_seq VALUES (1, 7);
+                 INSERT INTO conditions (name, multiplier, rank) VALUES ('Graded', 1.5, 9);",
+            )
+            .unwrap();
+        assert!(matches!(
+            import(&mut occupied, &json, OnExisting::Fail).unwrap_err(),
+            DbError::Conflict(_)
+        ));
     }
 
     /// An envelope written before `conditions` lived in the collection

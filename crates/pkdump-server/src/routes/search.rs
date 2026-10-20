@@ -24,12 +24,14 @@
 //! DOM rather than all of it (pd-7z4o). See [`search::Slice`].
 
 use axum::extract::{Query, State};
+use axum::http::header;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use pkdump_core::query::parse;
-use pkdump_db::search::{self, SearchPage};
+use pkdump_db::search;
 
 use crate::{AppError, AppState, blocking};
 
@@ -60,6 +62,11 @@ struct SearchParams {
     /// Rows to skip. Absent means 0. An offset past the end is an empty page
     /// with an honest `total`, not an error.
     offset: Option<String>,
+    /// Opaque token from a previous response's `next_cursor`: the page after
+    /// it, seeking rather than skipping. Must come with the same `q`, `sort`,
+    /// `dir` and `include_unowned`; combined with `offset` or `limit=all` it is
+    /// refused.
+    cursor: Option<String>,
 }
 
 /// A paging complaint: HTTP 400 with `error` and no `position`.
@@ -135,7 +142,13 @@ fn slice_from(p: &SearchParams) -> Result<search::Slice, AppError> {
 async fn collection_search(
     State(state): State<AppState>,
     Query(p): Query<SearchParams>,
-) -> Result<Json<SearchPage>, AppError> {
+) -> Result<impl IntoResponse, AppError> {
+    let walking = p.cursor.is_some();
+    if walking && (p.offset.is_some() || p.limit.as_deref() == Some(LIMIT_ALL)) {
+        return Err(paging_error(
+            "cursor cannot be combined with offset or limit=all".to_string(),
+        ));
+    }
     let slice = slice_from(&p)?;
     let sort = sort_key(p.sort.as_deref())?;
     let q = p.q.trim();
@@ -154,8 +167,23 @@ async fn collection_search(
     }
     compiled.override_order(sort, p.dir.as_deref());
 
-    let page = blocking(&state, move |c| search::search_page(c, &compiled, slice)).await?;
-    Ok(Json(page))
+    let cursor = p.cursor;
+    let page = blocking(&state, move |c| match (&slice, &cursor) {
+        (search::Slice::Page { limit, .. }, Some(_)) => {
+            search::search_page_after(c, &compiled, *limit, cursor.as_deref())
+        }
+        _ => search::search_page(c, &compiled, slice),
+    })
+    .await?;
+    // `totals_ms` is present only when the totals were computed for this
+    // response: a cursor page carries them from the first page.
+    let timing = page.totals_ms.map(|ms| {
+        [(
+            header::HeaderName::from_static("server-timing"),
+            format!("totals_ms;dur={ms:.1}"),
+        )]
+    });
+    Ok((timing, Json(page)))
 }
 
 /// One keyword, for autocomplete + the help page.

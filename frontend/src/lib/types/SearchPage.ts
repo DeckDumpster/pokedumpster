@@ -34,4 +34,12 @@ total: number,
  * different question — what completing the set would cost — which is a
  * figure worth having and is not this one.
  */
-total_value: number | null, limit: number, offset: number, };
+total_value: number | null, limit: number, offset: number, 
+/**
+ * Opaque token that resumes the walk after this page's last row; `None`
+ * when this page reached the end of the result or was not a cursor walk
+ * (`offset`/`limit=all`). Hand it back as `cursor` with the SAME query
+ * and sort: it is refused otherwise. It carries `total`/`total_value`, so
+ * later pages do not recount.
+ */
+next_cursor: string | null, };

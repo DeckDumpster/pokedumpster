@@ -79,6 +79,20 @@ enum TenantCommand {
     Unmigrate,
     /// Manage verified-identity bindings for a tenant.
     Identity(IdentityArgs),
+    /// Copy one tenant's collection into an existing, empty tenant.
+    Clone(CloneArgs),
+}
+
+#[derive(clap::Args)]
+pub struct CloneArgs {
+    /// Tenant to read. Never written.
+    from: String,
+    /// Existing empty tenant to fill (`pkdump tenant create` it first).
+    to: String,
+    /// Also copy decks and the reservations in them. By default every copy
+    /// arrives free.
+    #[arg(long)]
+    include_decks: bool,
 }
 
 #[derive(clap::Args)]
@@ -243,6 +257,14 @@ pub fn run(args: TenantArgs) -> anyhow::Result<()> {
         TenantCommand::Migrate(a) => migrate(a.dry_run)?,
         TenantCommand::Unmigrate => unmigrate()?,
         TenantCommand::Identity(a) => identity(a)?,
+        TenantCommand::Clone(a) => {
+            let r = tenants::clone_collection(&a.from, &a.to, a.include_decks)?;
+            println!("{:<28} {:>8} {:>8}", "table", &a.from, &a.to);
+            for (t, s, d) in &r.tables {
+                println!("{t:<28} {s:>8} {d:>8}");
+            }
+            println!("Cloned {} -> {}; digest {} matches", a.from, a.to, r.digest);
+        }
     }
     Ok(())
 }

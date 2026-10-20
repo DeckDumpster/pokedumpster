@@ -2926,6 +2926,23 @@
               "over_budget": false
             }
           ]
+        },
+        {
+          "id": "UC-ui-230",
+          "tier": "T3",
+          "statement": "card_detail_shows_copy_acquired_date: Every owned copy listed under \"Your copies\" shows when it was acquired, in an Acquired column beside its condition, location and price — on the full card page and in the card modal opened from the Collection page.",
+          "covering_suites": [
+            {
+              "path": "tests/ui/implementations/card_detail_shows_copy_acquired_date.ts",
+              "tier": "T3",
+              "over_budget": false
+            },
+            {
+              "path": "tests/ui/test_scenarios.ts",
+              "tier": "T3",
+              "over_budget": false
+            }
+          ]
         }
       ]
     }

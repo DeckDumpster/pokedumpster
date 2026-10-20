@@ -1,0 +1,10 @@
+# Scenario: An owned copy's acquisition date is shown on the card page and the card modal
+#
+# Related:
+#   issues: [sp-py17wh]
+#   pull_requests: []
+
+description: >
+  Every owned copy listed under "Your copies" shows when it was acquired,
+  in an Acquired column beside its condition, location and price — on the
+  full card page and in the card modal opened from the Collection page.

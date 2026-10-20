@@ -1145,3 +1145,8 @@ statement = "views_save_and_load: On the Collection page I can pick the saved vi
 id = "UC-ui-229"
 tier = "T3"
 statement = "set_value_top_cards_missing_only: On the Set Stats page, a \"Most valuable\" card lists the set's ten most valuable cards, highest per-card value first, each with a thumbnail, name, number, rarity and price. Ticking \"Missing only\" re-renders the list with only cards I own no printing of; unticking it brings the whole set back."
+
+[[use_case]]
+id = "UC-ui-230"
+tier = "T3"
+statement = "card_detail_shows_copy_acquired_date: Every owned copy listed under \"Your copies\" shows when it was acquired, in an Acquired column beside its condition, location and price — on the full card page and in the card modal opened from the Collection page."

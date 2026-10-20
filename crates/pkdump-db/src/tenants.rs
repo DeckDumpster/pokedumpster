@@ -360,11 +360,15 @@ pub struct CloneReport {
 ///
 /// The target is read back and compared to what was meant to be written; a
 /// mismatch is an error, not a warning. Only `to`'s database is written.
-pub fn clone_collection(from: &str, to: &str, include_decks: bool) -> Result<CloneReport> {
+pub fn clone_collection(
+    from: &str,
+    to: &str,
+    include_decks: bool,
+    replace: bool,
+) -> Result<CloneReport> {
     use crate::json_backup::{self, OnExisting};
     use rusqlite::OpenFlags;
     use serde_json::Value;
-    use sha2::{Digest, Sha256};
 
     if from == to {
         return Err(DbError::Invalid(format!(
@@ -426,45 +430,108 @@ pub fn clone_collection(from: &str, to: &str, include_decks: bool) -> Result<Clo
     let envelope_json = serde_json::to_string(&envelope).map_err(DbError::Seed)?;
 
     let mut target = open_user(&dst.path)?;
-    json_backup::import(&mut target, &envelope_json, OnExisting::Fail)?;
-
-    // Read the target back. `conditions` is seeded in a newborn, so compare the
-    // copied state as a whole rather than trusting the importer's own counts.
-    let mut back = json_backup::export_value(&target)?;
-    let digest_of = |v: &Value| -> Result<(String, Vec<(String, usize)>)> {
-        let obj = v
-            .as_object()
-            .ok_or_else(|| DbError::Import("envelope is not an object".into()))?;
-        let mut h = Sha256::new();
-        let mut counts = Vec::new();
-        for (k, rows) in obj {
-            if matches!(k.as_str(), "format" | "version" | "exported_at") {
-                continue;
-            }
-            h.update(k.as_bytes());
-            h.update(serde_json::to_vec(rows).map_err(DbError::Seed)?);
-            counts.push((k.clone(), rows.as_array().map_or(0, Vec::len)));
-        }
-        let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
-        Ok((hex, counts))
+    // Loaded and proven inside ONE transaction: a verification failure rolls
+    // the target back to exactly what it was, so a failed clone is retryable.
+    let mut report: Option<Verified> = None;
+    let mode = if replace {
+        OnExisting::Replace
+    } else {
+        OnExisting::Fail
     };
-    let (want, want_counts) = digest_of(&envelope)?;
-    let (got, got_counts) = digest_of(&back)?;
-    back = Value::Null;
-    drop(back);
-    if want != got || want_counts != got_counts {
-        return Err(DbError::Import(format!(
-            "clone verification failed: source digest {want}, target digest {got}"
-        )));
+    json_backup::import_checked(&mut target, &envelope_json, mode, |tx| {
+        let back = json_backup::export_value(tx)?;
+        report = Some(verify_clone(&envelope, &back)?);
+        Ok(())
+    })?;
+    let (digest, tables) = report.expect("verify ran before commit");
+    Ok(CloneReport { tables, digest })
+}
+
+/// A clone's digest and `(table, source rows, target rows)`.
+type Verified = (String, Vec<(String, usize, usize)>);
+
+/// Compare what was meant to be written (`want`) with what the target now
+/// holds (`back`), table by table and field by field. Returns the digest and
+/// `(table, source rows, target rows)`, or an error naming the first
+/// difference.
+///
+/// Only the tables and columns the source envelope carries are compared. The
+/// source is opened read-only and never converged, so it can predate columns
+/// this build adds; the target, opened through `open_user`, has them with
+/// their defaults, which is the correct result rather than a corruption. For
+/// `conditions` the target is also seeded, so only rows named by the source
+/// are compared.
+fn verify_clone(want: &serde_json::Value, back: &serde_json::Value) -> Result<Verified> {
+    use serde_json::Value;
+    use sha2::{Digest, Sha256};
+
+    let (want, back) = match (want.as_object(), back.as_object()) {
+        (Some(w), Some(b)) => (w, b),
+        _ => return Err(DbError::Import("envelope is not an object".into())),
+    };
+    let mut h = Sha256::new();
+    let mut tables = Vec::new();
+    for (k, wrows) in want {
+        if matches!(k.as_str(), "format" | "version" | "exported_at") {
+            continue;
+        }
+        let wrows = wrows.as_array().map(Vec::as_slice).unwrap_or_default();
+        let brows = back.get(k).and_then(Value::as_array).ok_or_else(|| {
+            DbError::Import(format!(
+                "clone verification failed: target has no table {k:?}"
+            ))
+        })?;
+        let key = |r: &Value| r.get("name").cloned();
+        let projected: Vec<Value> = brows
+            .iter()
+            .filter(|r| {
+                k != "conditions" || wrows.iter().any(|w| key(w).is_some() && key(w) == key(r))
+            })
+            .map(
+                |r| match (r.as_object(), wrows.first().and_then(Value::as_object)) {
+                    (Some(r), Some(w0)) => Value::Object(
+                        r.iter()
+                            .filter(|(c, _)| w0.contains_key(*c))
+                            .map(|(c, v)| (c.clone(), v.clone()))
+                            .collect(),
+                    ),
+                    _ => Value::Null,
+                },
+            )
+            .collect();
+        if projected.len() != wrows.len() {
+            return Err(DbError::Import(format!(
+                "clone verification failed: table {k:?} has {} rows in the source, {} in the target",
+                wrows.len(),
+                projected.len()
+            )));
+        }
+        for (i, (w, b)) in wrows.iter().zip(&projected).enumerate() {
+            if w != b {
+                let fields: Vec<String> = w
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter(|(c, v)| b.get(c.as_str()) != Some(*v))
+                    .map(|(c, v)| {
+                        format!(
+                            "{c}: source {v}, target {}",
+                            b.get(c.as_str()).unwrap_or(&Value::Null)
+                        )
+                    })
+                    .collect();
+                return Err(DbError::Import(format!(
+                    "clone verification failed: {k}[{i}] differs ({})",
+                    fields.join("; ")
+                )));
+            }
+        }
+        h.update(k.as_bytes());
+        h.update(serde_json::to_vec(&projected).map_err(DbError::Seed)?);
+        tables.push((k.clone(), wrows.len(), projected.len()));
     }
-    Ok(CloneReport {
-        tables: want_counts
-            .into_iter()
-            .zip(got_counts)
-            .map(|((t, a), (_, b))| (t, a, b))
-            .collect(),
-        digest: got,
-    })
+    let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    Ok((hex, tables))
 }
 
 /// One database moved between the two ways of naming it.
@@ -1900,7 +1967,7 @@ mod tests {
             let third_before = std::fs::read(&third.path).unwrap();
             let src_before = std::fs::read(&src).unwrap();
 
-            let r = clone_collection("src", "dst", false).unwrap();
+            let r = clone_collection("src", "dst", false, false).unwrap();
             assert!(r.tables.iter().all(|(t, s, d)| s == d || t == "decks"));
             let get = |t: &str| r.tables.iter().find(|x| x.0 == t).unwrap().2;
             assert_eq!(get("collection"), 2);
@@ -1938,7 +2005,7 @@ mod tests {
     fn clone_can_include_decks() {
         with_home(|_| {
             let (_, dst) = seed_clone_source();
-            let r = clone_collection("src", "dst", true).unwrap();
+            let r = clone_collection("src", "dst", true, false).unwrap();
             assert_eq!(r.tables.iter().find(|x| x.0 == "decks").unwrap().2, 1);
             let c = open_user(&dst).unwrap();
             let reserved: i64 = c
@@ -1949,6 +2016,88 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(reserved, 1);
+        })
+    }
+
+    #[test]
+    fn clone_from_a_source_that_predates_a_column() {
+        // The source is read raw and never converged, so it can lack a column
+        // the target (opened through open_user) has with its default. That is
+        // not a corruption and must not fail verification.
+        with_home(|_| {
+            let (src, dst) = seed_clone_source();
+            let c = open_user(&src).unwrap();
+            c.execute_batch(
+                "DROP TRIGGER collection_outbox_insert;
+                 DROP TRIGGER collection_outbox_update;
+                 DROP TRIGGER collection_outbox_delete;
+                 ALTER TABLE collection DROP COLUMN notes;",
+            )
+            .unwrap();
+            drop(c);
+            let r = clone_collection("src", "dst", false, false).unwrap();
+            assert_eq!(r.tables.iter().find(|x| x.0 == "collection").unwrap().2, 2);
+            let n: i64 = open_user(&dst)
+                .unwrap()
+                .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 2);
+        })
+    }
+
+    #[test]
+    fn verification_failure_names_the_differing_field() {
+        let want = serde_json::json!({"format": "f", "collection": [{"id": 1, "notes": "a"}]});
+        let back = serde_json::json!({"collection": [{"id": 1, "notes": "b"}]});
+        let err = verify_clone(&want, &back).unwrap_err().to_string();
+        assert!(
+            err.contains("collection[0]") && err.contains("notes"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_failed_verification_leaves_the_target_as_it_was() {
+        with_home(|_| {
+            let (src, dst) = seed_clone_source();
+            let env = crate::json_backup::export(&open_user(&src).unwrap()).unwrap();
+            let mut target = open_user(&dst).unwrap();
+            let err = crate::json_backup::import_checked(
+                &mut target,
+                &env,
+                crate::json_backup::OnExisting::Fail,
+                |_| Err(DbError::Import("forced".into())),
+            );
+            assert!(err.is_err());
+            let n: i64 = target
+                .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0);
+            let b: i64 = target
+                .query_row("SELECT count(*) FROM binders", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(b, 0);
+            // and a retry now succeeds, which the old non-atomic clone refused
+            clone_collection("src", "dst", false, false).unwrap();
+        })
+    }
+
+    #[test]
+    fn replace_resets_a_populated_target() {
+        with_home(|_| {
+            let (_, dst) = seed_clone_source();
+            clone_collection("src", "dst", false, false).unwrap();
+            assert!(matches!(
+                clone_collection("src", "dst", false, false),
+                Err(DbError::Conflict(_))
+            ));
+            let r = clone_collection("src", "dst", false, true).unwrap();
+            assert_eq!(r.tables.iter().find(|x| x.0 == "collection").unwrap().2, 2);
+            let n: i64 = open_user(&dst)
+                .unwrap()
+                .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 2);
         })
     }
 
@@ -1964,7 +2113,7 @@ mod tests {
                 )
                 .unwrap();
             assert!(matches!(
-                clone_collection("src", "dst", false),
+                clone_collection("src", "dst", false, false),
                 Err(DbError::Conflict(_))
             ));
             let n: i64 = open_user(&dst)
@@ -1972,8 +2121,8 @@ mod tests {
                 .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
                 .unwrap();
             assert_eq!(n, 1);
-            assert!(clone_collection("src", "src", false).is_err());
-            assert!(clone_collection("src", "nobody", false).is_err());
+            assert!(clone_collection("src", "src", false, false).is_err());
+            assert!(clone_collection("src", "nobody", false, false).is_err());
         })
     }
 }

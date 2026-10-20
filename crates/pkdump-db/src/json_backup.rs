@@ -207,6 +207,19 @@ fn to_json(value: ValueRef<'_>, table: &str, col: &str) -> Result<Value> {
 /// tables can be written in any order and every foreign key is still checked
 /// at COMMIT — a bad envelope leaves the database untouched.
 pub fn import(conn: &mut Connection, json: &str, on_existing: OnExisting) -> Result<ImportSummary> {
+    import_checked(conn, json, on_existing, |_| Ok(()))
+}
+
+/// [`import`], with `verify` run over the loaded state BEFORE the commit. An
+/// error from it rolls the whole load back, so a caller that wants "loaded and
+/// proven, or untouched" gets exactly that (the conditions seed is inside the
+/// same transaction).
+pub fn import_checked(
+    conn: &mut Connection,
+    json: &str,
+    on_existing: OnExisting,
+    verify: impl FnOnce(&Connection) -> Result<()>,
+) -> Result<ImportSummary> {
     let parsed: Value =
         serde_json::from_str(json).map_err(|e| DbError::Import(format!("malformed JSON: {e}")))?;
     let envelope = parsed
@@ -310,14 +323,15 @@ pub fn import(conn: &mut Connection, json: &str, on_existing: OnExisting) -> Res
         }
     }
 
-    tx.commit()?;
-
     // The envelope is the complete state, so an envelope written before
     // `conditions` moved into the collection (pd-s4c2) leaves the table
     // emptied — and an empty `conditions` is not a loud failure, it is every
     // multiplier silently defaulting to 1.0. Re-seeding fills only what the
-    // envelope did not carry, exactly as the next open would.
-    crate::conditions::seed_defaults(conn)?;
+    // envelope did not carry, exactly as the next open would. Inside the
+    // transaction, so the verifier sees the state that will be committed.
+    crate::conditions::seed_defaults_in(&tx)?;
+    verify(&tx)?;
+    tx.commit()?;
 
     // Counted off the database rather than off the payload. Every table was
     // emptied above, so what each one holds now *is* what this import put

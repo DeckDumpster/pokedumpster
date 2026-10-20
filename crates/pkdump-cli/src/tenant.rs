@@ -93,6 +93,10 @@ pub struct CloneArgs {
     /// arrives free.
     #[arg(long)]
     include_decks: bool,
+    /// Overwrite a target that already holds data. Takes the target's handle
+    /// and refuses unless it is exactly `<to>`: a reset names what it resets.
+    #[arg(long, value_name = "TO_HANDLE")]
+    replace: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -258,7 +262,16 @@ pub fn run(args: TenantArgs) -> anyhow::Result<()> {
         TenantCommand::Unmigrate => unmigrate()?,
         TenantCommand::Identity(a) => identity(a)?,
         TenantCommand::Clone(a) => {
-            let r = tenants::clone_collection(&a.from, &a.to, a.include_decks)?;
+            if let Some(h) = &a.replace
+                && h != &a.to
+            {
+                anyhow::bail!(
+                    "--replace {h:?} does not name the target {:?}; refusing to overwrite",
+                    a.to
+                );
+            }
+            let r =
+                tenants::clone_collection(&a.from, &a.to, a.include_decks, a.replace.is_some())?;
             println!("{:<28} {:>8} {:>8}", "table", &a.from, &a.to);
             for (t, s, d) in &r.tables {
                 println!("{t:<28} {s:>8} {d:>8}");

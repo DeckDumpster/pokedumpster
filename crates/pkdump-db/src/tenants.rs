@@ -337,6 +337,136 @@ pub fn purge(database_id: &str) -> Result<User> {
     Ok(registry::delete(&conn, database_id)?)
 }
 
+/// What [`clone_collection`] copied, per table, and the digest both sides agree on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloneReport {
+    /// `(table, source rows, target rows)` for every envelope table. Source
+    /// counts are of what was meant to be copied, so with decks left out the
+    /// `decks` row reads 0 on both sides.
+    pub tables: Vec<(String, usize, usize)>,
+    /// SHA-256 over the copied tables, identical on both sides or the clone
+    /// would have failed.
+    pub digest: String,
+}
+
+/// Copy `from`'s collection into `to`, an existing empty tenant.
+///
+/// The source is read through SQLite's backup API into memory, from a
+/// read-only handle, so it sees one consistent snapshot and is never written.
+/// The snapshot goes through the portable envelope ([`crate::json_backup`]), so
+/// the copy is every user table and the refusal of a non-empty target is the
+/// importer's own. Decks and the reservations that point at them are left out
+/// unless `include_decks`, so the target starts with every copy free.
+///
+/// The target is read back and compared to what was meant to be written; a
+/// mismatch is an error, not a warning. Only `to`'s database is written.
+pub fn clone_collection(from: &str, to: &str, include_decks: bool) -> Result<CloneReport> {
+    use crate::json_backup::{self, OnExisting};
+    use rusqlite::OpenFlags;
+    use serde_json::Value;
+    use sha2::{Digest, Sha256};
+
+    if from == to {
+        return Err(DbError::Invalid(format!(
+            "cannot clone {from:?} into itself"
+        )));
+    }
+    let src =
+        lookup(from)?.ok_or_else(|| DbError::NotFound(format!("no active tenant {from:?}")))?;
+    let dst = lookup(to)?.ok_or_else(|| {
+        DbError::NotFound(format!(
+            "no active tenant {to:?} — `pkdump tenant create {to}` first"
+        ))
+    })?;
+    for t in [&src, &dst] {
+        if !t.present {
+            return Err(DbError::NotFound(format!(
+                "database for {:?} is not on this box: {}",
+                t.user.handle,
+                t.path.display()
+            )));
+        }
+    }
+
+    let snapshot = {
+        let live = Connection::open_with_flags(&src.path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        live.busy_timeout(Duration::from_secs(10))?;
+        let mut mem = Connection::open_in_memory()?;
+        rusqlite::backup::Backup::new(&live, &mut mem)?.run_to_completion(
+            256,
+            Duration::from_millis(50),
+            None,
+        )?;
+        mem
+    };
+    let mut envelope = json_backup::export_value(&snapshot)?;
+    drop(snapshot);
+
+    if !include_decks {
+        let obj = envelope
+            .as_object_mut()
+            .ok_or_else(|| DbError::Import("envelope is not an object".into()))?;
+        let null_cols = |obj: &mut serde_json::Map<String, Value>, table: &str, cols: &[&str]| {
+            if let Some(Value::Array(rows)) = obj.get_mut(table) {
+                for row in rows.iter_mut().filter_map(Value::as_object_mut) {
+                    for c in cols {
+                        if row.contains_key(*c) {
+                            row.insert((*c).to_string(), Value::Null);
+                        }
+                    }
+                }
+            }
+        };
+        null_cols(obj, "collection", &["deck_id"]);
+        null_cols(obj, "movement_log", &["from_deck_id", "to_deck_id"]);
+        if obj.contains_key("decks") {
+            obj.insert("decks".into(), Value::Array(Vec::new()));
+        }
+    }
+    let envelope_json = serde_json::to_string(&envelope).map_err(DbError::Seed)?;
+
+    let mut target = open_user(&dst.path)?;
+    json_backup::import(&mut target, &envelope_json, OnExisting::Fail)?;
+
+    // Read the target back. `conditions` is seeded in a newborn, so compare the
+    // copied state as a whole rather than trusting the importer's own counts.
+    let mut back = json_backup::export_value(&target)?;
+    let digest_of = |v: &Value| -> Result<(String, Vec<(String, usize)>)> {
+        let obj = v
+            .as_object()
+            .ok_or_else(|| DbError::Import("envelope is not an object".into()))?;
+        let mut h = Sha256::new();
+        let mut counts = Vec::new();
+        for (k, rows) in obj {
+            if matches!(k.as_str(), "format" | "version" | "exported_at") {
+                continue;
+            }
+            h.update(k.as_bytes());
+            h.update(serde_json::to_vec(rows).map_err(DbError::Seed)?);
+            counts.push((k.clone(), rows.as_array().map_or(0, Vec::len)));
+        }
+        let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        Ok((hex, counts))
+    };
+    let (want, want_counts) = digest_of(&envelope)?;
+    let (got, got_counts) = digest_of(&back)?;
+    back = Value::Null;
+    drop(back);
+    if want != got || want_counts != got_counts {
+        return Err(DbError::Import(format!(
+            "clone verification failed: source digest {want}, target digest {got}"
+        )));
+    }
+    Ok(CloneReport {
+        tables: want_counts
+            .into_iter()
+            .zip(got_counts)
+            .map(|((t, a), (_, b))| (t, a, b))
+            .collect(),
+        digest: got,
+    })
+}
+
 /// One database moved between the two ways of naming it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Moved {
@@ -1744,5 +1874,106 @@ mod tests {
             assert!(resolve("../escape").is_err());
             assert!(!home.join("escape.sqlite").exists());
         });
+    }
+
+    fn seed_clone_source() -> (PathBuf, PathBuf) {
+        let a = create("src").unwrap();
+        let b = create("dst").unwrap();
+        let c = open_user(&a.path).unwrap();
+        c.execute_batch(
+            "INSERT INTO binders (name, created_at, updated_at) VALUES ('B', 't', 't');
+             INSERT INTO decks (name, created_at, updated_at) VALUES ('D', 't', 't');
+             INSERT INTO collection (printing_id, acquired_at, source, purchase_price, binder_id)
+               VALUES ('sv3pt5-1-normal', '2024-01-01', 'manual_id', 1.5, 1);
+             INSERT INTO collection (printing_id, acquired_at, source, deck_id)
+               VALUES ('sv3pt5-1-normal', '2024-02-01', 'manual_id', 1);",
+        )
+        .unwrap();
+        (a.path, b.path)
+    }
+
+    #[test]
+    fn clone_copies_collection_leaves_decks_and_never_writes_the_source() {
+        with_home(|_| {
+            let (src, dst) = seed_clone_source();
+            let third = create("other").unwrap();
+            let third_before = std::fs::read(&third.path).unwrap();
+            let src_before = std::fs::read(&src).unwrap();
+
+            let r = clone_collection("src", "dst", false).unwrap();
+            assert!(r.tables.iter().all(|(t, s, d)| s == d || t == "decks"));
+            let get = |t: &str| r.tables.iter().find(|x| x.0 == t).unwrap().2;
+            assert_eq!(get("collection"), 2);
+            assert_eq!(get("binders"), 1);
+            assert_eq!(get("decks"), 0);
+
+            let c = open_user(&dst).unwrap();
+            let reserved: i64 = c
+                .query_row(
+                    "SELECT count(*) FROM collection WHERE deck_id IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(reserved, 0);
+            let price: f64 = c
+                .query_row(
+                    "SELECT purchase_price FROM collection WHERE binder_id = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(price, 1.5);
+
+            assert_eq!(
+                std::fs::read(&src).unwrap(),
+                src_before,
+                "source bytes changed"
+            );
+            assert_eq!(std::fs::read(&third.path).unwrap(), third_before);
+        })
+    }
+
+    #[test]
+    fn clone_can_include_decks() {
+        with_home(|_| {
+            let (_, dst) = seed_clone_source();
+            let r = clone_collection("src", "dst", true).unwrap();
+            assert_eq!(r.tables.iter().find(|x| x.0 == "decks").unwrap().2, 1);
+            let c = open_user(&dst).unwrap();
+            let reserved: i64 = c
+                .query_row(
+                    "SELECT count(*) FROM collection WHERE deck_id IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(reserved, 1);
+        })
+    }
+
+    #[test]
+    fn clone_into_a_non_empty_tenant_is_refused() {
+        with_home(|_| {
+            let (_, dst) = seed_clone_source();
+            open_user(&dst)
+                .unwrap()
+                .execute(
+                    "INSERT INTO collection (printing_id, acquired_at, source) VALUES ('x', 't', 's')",
+                    [],
+                )
+                .unwrap();
+            assert!(matches!(
+                clone_collection("src", "dst", false),
+                Err(DbError::Conflict(_))
+            ));
+            let n: i64 = open_user(&dst)
+                .unwrap()
+                .query_row("SELECT count(*) FROM collection", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1);
+            assert!(clone_collection("src", "src", false).is_err());
+            assert!(clone_collection("src", "nobody", false).is_err());
+        })
     }
 }

@@ -51,20 +51,27 @@ pub struct Condition {
 /// seed file over them would be this build deciding it knows the multipliers
 /// better than the collection does.
 pub fn seed_defaults(conn: &Connection) -> Result<usize> {
-    let seed: Vec<Condition> = serde_json::from_str(CONDITIONS_SEED)?;
     // `unchecked_transaction` so this can run on the shared `&Connection`
     // that `init_user_schema` is handed — the five inserts are one commit
     // either way, and nothing else holds a transaction open here.
     let tx = conn.unchecked_transaction()?;
+    let inserted = seed_defaults_in(&tx)?;
+    tx.commit()?;
+    Ok(inserted)
+}
+
+/// [`seed_defaults`] without its own transaction, for a caller that already
+/// holds one and must see the seed commit or roll back with its own writes.
+pub fn seed_defaults_in(conn: &Connection) -> Result<usize> {
+    let seed: Vec<Condition> = serde_json::from_str(CONDITIONS_SEED)?;
     let mut inserted = 0;
     for c in &seed {
-        inserted += tx.execute(
+        inserted += conn.execute(
             "INSERT INTO conditions (name, multiplier, rank) VALUES (?1, ?2, ?3) \
              ON CONFLICT(name) DO NOTHING",
             params![c.name, c.multiplier, c.rank],
         )?;
     }
-    tx.commit()?;
     Ok(inserted)
 }
 

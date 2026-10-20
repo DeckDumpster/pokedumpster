@@ -1,0 +1,8 @@
+start_page: /card/base1/2
+involves:
+  - "card detail page for Blastoise (base1 #2), owned with one copy acquired 2024-01-10"
+  - "per-copy Acquired cell: td[data-label='Acquired']"
+  - "the card modal opened from a /collection tile renders the same table"
+fixture_data:
+  start_card: Blastoise
+  acquired: "2024-01-10"

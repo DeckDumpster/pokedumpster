@@ -469,7 +469,7 @@ no local snapshots). Nightly catalog refresh comes from
 
 Every base image in the `Containerfile` **names its Debian release**, and the
 builder's release is the runtime's. A moving tag is not a pin: upstream retagged
-`rust:1.94-slim` from bookworm to trixie, the builder started linking against
+`rust:1.99.1-slim` from bookworm to trixie, the builder started linking against
 glibc 2.39, and every image built after that shipped a binary the bookworm
 runtime could not exec (`pd-pejn`). The target cache mount carries an `id=`
 naming that same release, because cargo fingerprints do not record which base

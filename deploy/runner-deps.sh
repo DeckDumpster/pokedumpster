@@ -143,7 +143,7 @@ apt_install() {
 #
 # which reads as a broken Rust toolchain and is a missing Debian package. It was
 # on the old runner because somebody had put it there; nothing said so. The
-# Containerfile's builder stage is `rust:1.94-slim-bookworm`, whose only build
+# Containerfile's builder stage is `rust:1.99.1-slim-bookworm`, whose only build
 # tooling is gcc and libc6-dev — so that set is provably sufficient for
 # everything the release build compiles, and build-essential is a superset.
 #

@@ -272,7 +272,7 @@ pub fn run(args: TenantArgs) -> anyhow::Result<()> {
             }
             let r =
                 tenants::clone_collection(&a.from, &a.to, a.include_decks, a.replace.is_some())?;
-            println!("{:<28} {:>8} {:>8}", "table", &a.from, &a.to);
+            println!("{:<28} {:>8} {:>8}", "table", a.from, a.to);
             for (t, s, d) in &r.tables {
                 println!("{t:<28} {s:>8} {d:>8}");
             }

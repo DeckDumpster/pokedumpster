@@ -10,7 +10,7 @@
 # (and node, chromium, systemd) which this image does not carry, so they are
 # declared — CI runs them — but only work where those are reachable; they are not
 # in `default`.
-image = "docker.io/library/rust:1.94-slim-bookworm"
+image = "docker.io/library/rust:1.99.1-slim-bookworm"
 workdir = "/work"
 timeout = 1800
 # The rust tier is NOT in the default (sp-yez4rh): forge CI runs the same `cargo test` on a

@@ -4,14 +4,14 @@
 # The image runs `pkdump serve`; populate the catalog with deploy/seed.sh.
 
 # --- Stage 1: Rust build ----------------------------------------------------
-# The Debian release is pinned, not inherited. `rust:1.94-slim` is a MOVING
+# The Debian release is pinned, not inherited. `rust:1.99.1-slim` is a MOVING
 # tag: upstream retagged it from bookworm to trixie, the builder started
 # linking against glibc 2.39, and every image built after that shipped a
 # binary the bookworm runtime stage below cannot exec (pd-pejn). The invariant
 # is builder glibc <= runtime glibc, and the only thing that holds it is these
 # two FROM lines naming the same release. Change one, change the other — and
 # the target cache id below with them.
-FROM docker.io/library/rust:1.94-slim-bookworm AS builder
+FROM docker.io/library/rust:1.99.1-slim-bookworm AS builder
 
 WORKDIR /app
 

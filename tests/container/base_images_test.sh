@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Unit test for the Containerfile's base-image pins (pd-pejn).
 #
-# The bug: stage 1 was `FROM docker.io/library/rust:1.94-slim`, which does not
+# The bug: stage 1 was `FROM docker.io/library/rust:1.99.1-slim`, which does not
 # name a Debian release. Upstream retagged it from bookworm to trixie, so the
 # builder began linking against glibc 2.39 while the runtime stage stayed on
 # bookworm's 2.36, and every image built after that point shipped a binary that
@@ -100,7 +100,7 @@ check "the shipped Containerfile is one of them" "yes" \
 	"$(grep -qxF "$CONTAINERFILE" <<<"$FILES" && echo yes || echo no)"
 
 log "1. every base image names a Debian release (pd-pejn)"
-# `rust:1.94-slim` is the exact shape that drifted. Scratch and a stage
+# `rust:1.99.1-slim` is the exact shape that drifted. Scratch and a stage
 # referring to an earlier stage by name are not base images from a registry.
 UNPINNED=""
 while IFS= read -r f; do

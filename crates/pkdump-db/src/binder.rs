@@ -395,8 +395,8 @@ pub fn get_binder_page(
         }),
         "price" => visible.sort_by(|a, b| slot_price(b).total_cmp(&slot_price(a))),
         "price_asc" => visible.sort_by(|a, b| slot_price(a).total_cmp(&slot_price(b))),
-        "rarity" => visible.sort_by(|a, b| rarity_rank(&b.rarity).cmp(&rarity_rank(&a.rarity))),
-        "rarity_asc" => visible.sort_by(|a, b| rarity_rank(&a.rarity).cmp(&rarity_rank(&b.rarity))),
+        "rarity" => visible.sort_by_key(|a| std::cmp::Reverse(rarity_rank(&a.rarity))),
+        "rarity_asc" => visible.sort_by_key(|a| rarity_rank(&a.rarity)),
         _ => {} // "number" — already collector-number ascending.
     }
 

@@ -3,7 +3,7 @@
 /**
  * Hand-written implementation for card_detail_facet_retreat_search.
  *
- * Guards pokedumpster-cww: the Retreat icons now link to retreat:<n>&all=1
+ * Guards pokedumpster-cww: the Retreat icons now link to retreat:<n>
  * (cards with the same retreat-cost count). Charizard (base1/4) retreats for
  * 3, as does Blastoise — so retreat:3 surfaces Blastoise.
  */
@@ -17,7 +17,7 @@ export async function steps(h: ReplayHarness) {
   await h.page.waitForURL(/\/collection\?/, { timeout: 6000 });
   const url = h.page.url();
   if (!url.includes('q=retreat')) throw new Error(`expected a retreat: DSL query, got: ${url}`);
-  if (url.includes('all=1')) throw new Error(`facet link must not carry all=1, got: ${url}`);
+  if (new URL(url).searchParams.has('all')) throw new Error(`facet link must not carry an all param, got: ${url}`);
   await h.wait_for_visible('.cardtile[title^="Blastoise"]', 6000);
   await h.screenshot('final_state');
 }

@@ -97,11 +97,14 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Binder>> {
         .optional()?)
 }
 
-/// List binders, alphabetically.
+/// List binders in natural name order.
 pub fn list(conn: &Connection) -> Result<Vec<Binder>> {
-    let mut stmt = conn.prepare(&format!("SELECT {COLS} FROM binders b ORDER BY b.name"))?;
+    let mut stmt = conn.prepare(&format!("SELECT {COLS} FROM binders b ORDER BY b.id"))?;
     let rows = stmt.query_map([], from_row)?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut all: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+    // Natural order ("Pack 2" before "Pack 10"); the stable sort keeps id order on ties.
+    all.sort_by(|a, b| pkdump_core::natural::natural_cmp(&a.name, &b.name));
+    Ok(all)
 }
 
 /// Update editable fields. Returns whether a row changed.

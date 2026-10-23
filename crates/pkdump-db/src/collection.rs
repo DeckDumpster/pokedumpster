@@ -225,6 +225,10 @@ pub struct CollectionRow {
     /// the printing isn't linked to a product, or no snapshot exists).
     pub market_price: Option<f64>,
     pub image_small: Option<String>,
+    pub image_large: Option<String>,
+    /// Hit points; NULL for Trainer and Energy cards.
+    #[ts(type = "number | null")]
+    pub hp: Option<i64>,
     /// Free-text description carried by user_printings rows (the
     /// "Missing Variant" escape hatch). NULL for catalog printings.
     pub variant_description: Option<String>,
@@ -241,7 +245,7 @@ const ROW_COLUMNS_SQL: &str = concat!(
      ",
     crate::market_price_expr!(),
     " AS market_price, \
-     cd.image_small, p.variant_description"
+     cd.image_small, cd.image_large, cd.hp, p.variant_description"
 );
 
 // `p` is a UNION of shared.printings and the user-DB user_printings
@@ -296,7 +300,9 @@ fn collection_row_from_row(r: &rusqlite::Row) -> rusqlite::Result<CollectionRow>
         attacks: r.get(26)?,
         market_price: r.get(27)?,
         image_small: r.get(28)?,
-        variant_description: r.get(29)?,
+        image_large: r.get(29)?,
+        hp: r.get(30)?,
+        variant_description: r.get(31)?,
     })
 }
 

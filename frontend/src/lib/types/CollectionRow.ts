@@ -39,7 +39,11 @@ attacks: string | null,
  * Latest TCGplayer market price for this exact printing (NULL when
  * the printing isn't linked to a product, or no snapshot exists).
  */
-market_price: number | null, image_small: string | null, 
+market_price: number | null, image_small: string | null, image_large: string | null, 
+/**
+ * Hit points; NULL for Trainer and Energy cards.
+ */
+hp: number | null, 
 /**
  * Free-text description carried by user_printings rows (the
  * "Missing Variant" escape hatch). NULL for catalog printings.

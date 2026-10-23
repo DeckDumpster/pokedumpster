@@ -336,6 +336,12 @@ pub(crate) const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
 /// broken for a column that costs nothing to ignore — the same reasoning
 /// `schema_user.sql` records for dropping `refinery_schema_history`.
 const USER_ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    // Deck groups. A deck predating them belongs to none, which NULL says exactly.
+    (
+        "decks",
+        "group_id",
+        "ALTER TABLE decks ADD COLUMN group_id INTEGER REFERENCES deck_groups(id) ON DELETE SET NULL",
+    ),
     (
         "ownership_outbox",
         "source",

@@ -7,4 +7,8 @@ export type Deck = { id: number, name: string, description: string | null, forma
 /**
  * `idea` | `ready` | `built`.
  */
-state: string, sleeve_color: string | null, storage_location: string | null, notes: string | null, created_at: string, updated_at: string, card_count: number, };
+state: string, sleeve_color: string | null, storage_location: string | null, notes: string | null, created_at: string, updated_at: string, 
+/**
+ * The deck group this deck belongs to, if any.
+ */
+group_id: number | null, card_count: number, };

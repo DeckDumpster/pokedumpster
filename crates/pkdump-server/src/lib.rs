@@ -1623,4 +1623,269 @@ mod tests {
             );
         }
     }
+
+    // ---- deck groups ------------------------------------------------------
+
+    async fn call(
+        router: &Router,
+        tok: &str,
+        method: &str,
+        uri: &str,
+        body: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let resp = router
+            .clone()
+            .oneshot(request(method, uri, Some(tok), body))
+            .await
+            .unwrap();
+        let status = resp.status();
+        let text = body_string(resp).await;
+        let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// Two decks in a group, `n` cards in each, plus one ungrouped deck holding one.
+    async fn grouped_decks(router: &Router, tok: &str, n: usize) -> (i64, i64, i64, i64) {
+        let (s, g) = call(
+            router,
+            tok,
+            "POST",
+            "/api/deck-groups",
+            Some(r#"{"name":"Cube","format":"cube"}"#),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED);
+        let gid = g["id"].as_i64().unwrap();
+        let mut ids = vec![];
+        for (name, group) in [
+            ("Pack 10", Some(gid)),
+            ("Pack 2", Some(gid)),
+            ("Loose", None),
+        ] {
+            let body = serde_json::json!({"name": name, "group_id": group}).to_string();
+            let (s, d) = call(router, tok, "POST", "/api/decks", Some(&body)).await;
+            assert_eq!(s, StatusCode::CREATED);
+            let did = d["id"].as_i64().unwrap();
+            let cards = if group.is_some() { n } else { 1 };
+            for _ in 0..cards {
+                let (s, c) = call(router, tok, "POST", "/api/collection", Some(ADD_CARD)).await;
+                assert_eq!(s, StatusCode::CREATED, "{c}");
+                let (s, _) = call(
+                    router,
+                    tok,
+                    "PUT",
+                    &format!("/api/collection/{}/move", c["id"]),
+                    Some(&format!(r#"{{"deck_id":{did}}}"#)),
+                )
+                .await;
+                assert_eq!(s, StatusCode::OK);
+            }
+            ids.push(did);
+        }
+        (gid, ids[0], ids[1], ids[2])
+    }
+
+    #[tokio::test]
+    async fn deck_groups_crudl_through_the_api() {
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
+        for name in ["Pack 10", "Pack 2"] {
+            let body = serde_json::json!({"name": name}).to_string();
+            let (s, _) = call(&router, &tok, "POST", "/api/deck-groups", Some(&body)).await;
+            assert_eq!(s, StatusCode::CREATED);
+        }
+        let (s, dup) = call(
+            &router,
+            &tok,
+            "POST",
+            "/api/deck-groups",
+            Some(r#"{"name":"Pack 2"}"#),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{dup}");
+
+        let (_, list) = call(&router, &tok, "GET", "/api/deck-groups", None).await;
+        let names: Vec<_> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["Pack 2", "Pack 10"], "natural order");
+
+        let id = list[0]["id"].as_i64().unwrap();
+        let (s, g) = call(
+            &router,
+            &tok,
+            "PUT",
+            &format!("/api/deck-groups/{id}"),
+            Some(r#"{"name":"Pack 3","description":"d"}"#),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(
+            (g["name"].as_str(), g["description"].as_str()),
+            (Some("Pack 3"), Some("d"))
+        );
+        let (s, _) = call(
+            &router,
+            &tok,
+            "GET",
+            &format!("/api/deck-groups/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = call(
+            &router,
+            &tok,
+            "DELETE",
+            &format!("/api/deck-groups/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        let (s, _) = call(
+            &router,
+            &tok,
+            "GET",
+            &format!("/api/deck-groups/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_deck_moves_into_and_out_of_a_group_and_totals_follow() {
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
+        let (gid, a, _b, loose) = grouped_decks(&router, &tok, 2).await;
+        let (_, detail) = call(
+            &router,
+            &tok,
+            "GET",
+            &format!("/api/deck-groups/{gid}"),
+            None,
+        )
+        .await;
+        assert_eq!(detail["group"]["deck_count"], 2);
+        assert_eq!(detail["group"]["card_count"], 4);
+        let names: Vec<_> = detail["decks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["Pack 2", "Pack 10"]);
+
+        let (s, d) = call(
+            &router,
+            &tok,
+            "PUT",
+            &format!("/api/decks/{loose}/group"),
+            Some(&format!(r#"{{"group_id":{gid}}}"#)),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(d["group_id"], gid);
+        let (s, d) = call(
+            &router,
+            &tok,
+            "PUT",
+            &format!("/api/decks/{a}/group"),
+            Some(r#"{"group_id":null}"#),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(d["group_id"].is_null());
+        let (s, _) = call(
+            &router,
+            &tok,
+            "PUT",
+            &format!("/api/decks/{a}/group"),
+            Some(r#"{"group_id":9999}"#),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn release_all_returns_the_groups_cards_to_the_collection() {
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
+        let (gid, a, _b, loose) = grouped_decks(&router, &tok, 2).await;
+        let (s, r) = call(
+            &router,
+            &tok,
+            "POST",
+            &format!("/api/deck-groups/{gid}/release"),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(r["released"], 4);
+        let (_, d) = call(&router, &tok, "GET", &format!("/api/decks/{a}"), None).await;
+        assert_eq!(d["cards"].as_array().unwrap().len(), 0);
+        let (_, d) = call(&router, &tok, "GET", &format!("/api/decks/{loose}"), None).await;
+        assert_eq!(
+            d["cards"].as_array().unwrap().len(),
+            1,
+            "an ungrouped deck is untouched"
+        );
+        let (_, g) = call(
+            &router,
+            &tok,
+            "GET",
+            &format!("/api/deck-groups/{gid}"),
+            None,
+        )
+        .await;
+        assert_eq!(g["group"]["deck_count"], 2, "release keeps the decks");
+    }
+
+    #[tokio::test]
+    async fn deleting_a_group_can_ungroup_or_take_its_decks_with_it() {
+        let (_d, router, fx) = test_app().await;
+        let tok = fx.valid_token("u@example.com");
+        let (gid, a, b, loose) = grouped_decks(&router, &tok, 1).await;
+        let (s, _) = call(
+            &router,
+            &tok,
+            "DELETE",
+            &format!("/api/deck-groups/{gid}?mode=ungroup"),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        let (_, d) = call(&router, &tok, "GET", &format!("/api/decks/{a}"), None).await;
+        assert!(d["deck"]["group_id"].is_null());
+        assert_eq!(
+            d["cards"].as_array().unwrap().len(),
+            1,
+            "ungrouping keeps the cards in their deck"
+        );
+
+        let (gid, a, b2, _) = {
+            let _ = b;
+            grouped_decks(&router, &tok, 1).await
+        };
+        let (s, _) = call(
+            &router,
+            &tok,
+            "DELETE",
+            &format!("/api/deck-groups/{gid}?mode=decks"),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        for d in [a, b2] {
+            let (s, _) = call(&router, &tok, "GET", &format!("/api/decks/{d}"), None).await;
+            assert_eq!(s, StatusCode::NOT_FOUND);
+        }
+        let (s, _) = call(&router, &tok, "GET", &format!("/api/decks/{loose}"), None).await;
+        assert_eq!(s, StatusCode::OK);
+        let (_, all) = call(&router, &tok, "GET", "/api/collection", None).await;
+        assert!(!all.to_string().is_empty());
+    }
 }

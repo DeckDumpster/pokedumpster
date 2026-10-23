@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS binders (
     updated_at        TEXT NOT NULL
 );
 
+-- A deck group: a first-class container for related decks (a cube's packs).
+-- A deck belongs to at most one. Name is unique per tenant (this database).
+CREATE TABLE IF NOT EXISTS deck_groups (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT NOT NULL UNIQUE,
+    description       TEXT,
+    format            TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS decks (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     name              TEXT NOT NULL,
@@ -84,6 +95,9 @@ CREATE TABLE IF NOT EXISTS decks (
     sleeve_color      TEXT,
     storage_location  TEXT,
     notes             TEXT,
+    -- Deleting a group ungroups its decks; deleting them with it is the API's act.
+    -- Added to existing collections by `connection.rs::USER_ADDED_COLUMNS`.
+    group_id          INTEGER REFERENCES deck_groups(id) ON DELETE SET NULL,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );

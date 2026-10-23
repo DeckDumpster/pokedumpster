@@ -6,12 +6,14 @@
 	import CollectionPicker from '$lib/components/CollectionPicker.svelte';
 	import { Button, EmptyState } from '$lib/components/ui';
 	import type { DeckDetail } from '$lib/types/DeckDetail';
+	import type { DeckGroup } from '$lib/types/DeckGroup';
 
 	let detail = $state<DeckDetail | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let picking = $state(false);
 	let busy = $state(false);
+	let groups = $state<DeckGroup[]>([]);
 
 	const states = ['idea', 'ready', 'built'];
 
@@ -19,7 +21,7 @@
 		const id = Number(page.params.id);
 		if (!id) return;
 		try {
-			detail = await api.deckDetail(id);
+			[detail, groups] = await Promise.all([api.deckDetail(id), api.deckGroups()]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -38,6 +40,20 @@
 		error = null;
 		try {
 			await api.updateDeck(detail.deck.id, { state });
+			await load();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function changeGroup(value: string) {
+		if (!detail) return;
+		busy = true;
+		error = null;
+		try {
+			await api.setDeckGroup(detail.deck.id, value === '' ? null : Number(value));
 			await load();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -92,6 +108,17 @@
 						onchange={(e) => changeState(e.currentTarget.value)}
 					>
 						{#each states as s (s)}<option value={s}>{s}</option>{/each}
+					</select>
+				</label>
+				<label>
+					Group
+					<select
+						value={detail.deck.group_id == null ? '' : String(detail.deck.group_id)}
+						disabled={busy}
+						onchange={(e) => changeGroup(e.currentTarget.value)}
+					>
+						<option value="">None</option>
+						{#each groups as g (g.id)}<option value={String(g.id)}>{g.name}</option>{/each}
 					</select>
 				</label>
 			</p>

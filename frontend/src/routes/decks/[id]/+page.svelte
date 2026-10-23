@@ -123,7 +123,7 @@
 					label="Lifecycle"
 					value={detail.deck.state}
 					disabled={busy}
-					onchange={(e) => changeState((e.currentTarget as HTMLSelectElement).value)}
+					onchange={(e) => changeState((e.currentTarget as unknown as HTMLSelectElement).value)}
 				>
 					{#each states as s (s)}<option value={s}>{s}</option>{/each}
 				</Field>
@@ -132,7 +132,7 @@
 					label="Group"
 					value={detail.deck.group_id == null ? '' : String(detail.deck.group_id)}
 					disabled={busy}
-					onchange={(e) => changeGroup((e.currentTarget as HTMLSelectElement).value)}
+					onchange={(e) => changeGroup((e.currentTarget as unknown as HTMLSelectElement).value)}
 				>
 					<option value="">None</option>
 					{#each groups as g (g.id)}<option value={String(g.id)}>{g.name}</option>{/each}

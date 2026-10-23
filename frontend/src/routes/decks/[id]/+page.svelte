@@ -2,7 +2,8 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
-	import { variantLabel } from '$lib/variants.svelte';
+	import { groupDeck } from '$lib/deckLines';
+	import type { DeckLine } from '$lib/deckLines';
 	import CollectionPicker from '$lib/components/CollectionPicker.svelte';
 	import { Button, EmptyState } from '$lib/components/ui';
 	import type { DeckDetail } from '$lib/types/DeckDetail';
@@ -14,6 +15,17 @@
 	let picking = $state(false);
 	let busy = $state(false);
 	let groups = $state<DeckGroup[]>([]);
+	let preview = $state<string | null>(null);
+	const typeGroups = $derived(detail ? groupDeck(detail.cards) : []);
+
+	// Touch has no hover: the first tap previews, a second tap on the same line follows the link.
+	function touchPreview(e: MouseEvent, l: DeckLine) {
+		if (!window.matchMedia('(hover: none)').matches) return;
+		if (preview !== l.image) {
+			e.preventDefault();
+			preview = l.image;
+		}
+	}
 
 	const states = ['idea', 'ready', 'built'];
 
@@ -141,23 +153,37 @@
 			{/snippet}
 		</EmptyState>
 	{:else}
-		<table>
-			<thead>
-				<tr><th>Name</th><th>Set</th><th>#</th><th>Variant</th><th>Condition</th><th></th></tr>
-			</thead>
-			<tbody>
-				{#each detail.cards as card (card.id)}
-					<tr>
-						<td><a href="/card/{card.set_code}/{card.number}">{card.name}</a></td>
-						<td><a href="/browse/{card.set_code}">{card.set_name}</a></td>
-						<td>{card.number}</td>
-						<td>{variantLabel(card.variant)}</td>
-						<td>{card.condition}</td>
-						<td><button class="link" disabled={busy} onclick={() => remove(card.id)}>Remove</button></td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
+		<div class="deck">
+			{#each typeGroups as g (g.supertype)}
+				<section>
+					<h2>{g.supertype} <span class="count">{g.count}</span></h2>
+					<ul>
+						{#each g.lines as l (l.key)}
+							<li
+								onmouseenter={() => (preview = l.image)}
+								onmouseleave={() => (preview = null)}
+							>
+								<span class="qty">{l.quantity}×</span>
+								<a
+									href={l.href}
+									onclick={(e) => touchPreview(e, l)}
+									onfocus={() => (preview = l.image)}
+									onblur={() => (preview = null)}>{l.name}</a
+								>
+								<span class="attrs">
+									{#if l.types.length}{l.types.join('/')}{/if}
+									{#if l.hp}{l.hp} HP{/if}
+								</span>
+								<button class="link" disabled={busy} onclick={() => remove(l.copyIds[0])}>Remove</button>
+							</li>
+						{/each}
+					</ul>
+				</section>
+			{/each}
+			{#if preview}
+				<img class="preview" src={preview} alt="" />
+			{/if}
+		</div>
 	{/if}
 {/if}
 
@@ -222,23 +248,54 @@
 	button.link:hover {
 		color: var(--color-text-accent);
 	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.9rem;
-		margin-top: 1rem;
+	.deck {
+		margin-top: var(--space-4);
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+		gap: var(--space-4) var(--space-8);
+		align-items: start;
 	}
-	th {
-		text-align: left;
-		padding: 0.4rem 0.6rem;
+	h2 {
+		font-size: var(--text-md);
+		margin: 0 0 var(--space-1);
 		border-bottom: 2px solid var(--color-border);
-		color: var(--color-text-subtle);
-		font-size: 0.75rem;
-		text-transform: uppercase;
+		padding-bottom: var(--space-1);
 	}
-	td {
-		padding: 0.4rem 0.6rem;
+	.count {
+		color: var(--color-text-subtle);
+		font-weight: normal;
+	}
+	ul {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+	li {
+		display: flex;
+		gap: var(--space-2);
+		align-items: baseline;
+		padding: var(--space-1) 0;
 		border-bottom: 1px solid var(--color-border);
+		min-width: 0;
+	}
+	li a {
+		flex: 1;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.qty,
+	.attrs {
+		color: var(--color-text-subtle);
+		font-size: var(--text-sm);
+	}
+	.preview {
+		position: fixed;
+		top: var(--space-16, 5rem);
+		right: var(--space-4);
+		width: min(14rem, 45vw);
+		border-radius: var(--radius-lg);
+		pointer-events: none;
+		z-index: 10;
 	}
 	a {
 		color: var(--color-text);

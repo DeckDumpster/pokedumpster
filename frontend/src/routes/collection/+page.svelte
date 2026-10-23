@@ -76,7 +76,7 @@
 	// claiming that shape here would promise `attacks`/`artist` the server
 	// no longer sends. Anchored to CollectionRow by Omit so a field added
 	// there still has to be answered for here.
-	type ListRow = Omit<CollectionRow, 'artist' | 'attacks' | 'variant_description'> & {
+	type ListRow = Omit<CollectionRow, 'artist' | 'attacks' | 'variant_description' | 'hp' | 'image_large'> & {
 		attack_costs: string | null;
 	};
 

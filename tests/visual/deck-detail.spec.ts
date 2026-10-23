@@ -39,6 +39,15 @@ for (const [label, width, height] of [
 
 		await page.locator('.deck li a').first().hover();
 		await expect(page.locator('.deck .preview')).toBeVisible();
+
+		// Crumb ends in the deck's name, never its id.
+		const name = (await page.locator('h1').innerText()).trim();
+		await expect(page.locator('nav.crumbs .current')).toHaveText(name);
+		expect(name).not.toMatch(/^\d+$/);
+		const head = page.locator('header', { has: page.locator('h1') });
+		// No unstyled anchor or raw button in the header: all go through the kit's .btn / Field.
+		expect(await head.locator('a:not(.btn)').count()).toBe(0);
+		expect(await head.locator('button:not(.btn)').count()).toBe(0);
 		await page.screenshot({ path: `test-results/deck-detail-${label}.png`, fullPage: true });
 	});
 }

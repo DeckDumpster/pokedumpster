@@ -5,7 +5,8 @@
 	import { groupDeck } from '$lib/deckLines';
 	import type { DeckLine } from '$lib/deckLines';
 	import CollectionPicker from '$lib/components/CollectionPicker.svelte';
-	import { Button, EmptyState } from '$lib/components/ui';
+	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
+	import { Button, EmptyState, Field } from '$lib/components/ui';
 	import type { DeckDetail } from '$lib/types/DeckDetail';
 	import type { DeckGroup } from '$lib/types/DeckGroup';
 
@@ -26,6 +27,11 @@
 			preview = l.image;
 		}
 	}
+
+	// Name once loaded, a placeholder before that so the crumb never flashes the numeric id.
+	$effect.pre(() => {
+		breadcrumbs.set([{ label: 'Decks', href: '/decks' }, { label: detail?.deck.name ?? 'Deck' }]);
+	});
 
 	const states = ['idea', 'ready', 'built'];
 
@@ -109,35 +115,36 @@
 	<header>
 		<div>
 			<h1>{detail.deck.name}</h1>
-			<p class="sub">
-				{#if detail.deck.owner}{detail.deck.owner} · {/if}
-				{#if detail.deck.format}{detail.deck.format} · {/if}
-				<label>
-					Lifecycle
-					<select
-						value={detail.deck.state}
-						disabled={busy}
-						onchange={(e) => changeState(e.currentTarget.value)}
-					>
-						{#each states as s (s)}<option value={s}>{s}</option>{/each}
-					</select>
-				</label>
-				<label>
-					Group
-					<select
-						value={detail.deck.group_id == null ? '' : String(detail.deck.group_id)}
-						disabled={busy}
-						onchange={(e) => changeGroup(e.currentTarget.value)}
-					>
-						<option value="">None</option>
-						{#each groups as g (g.id)}<option value={String(g.id)}>{g.name}</option>{/each}
-					</select>
-				</label>
-			</p>
+			<div class="sub">
+				{#if detail.deck.owner}<span>{detail.deck.owner}</span>{/if}
+				{#if detail.deck.format}<span>{detail.deck.format}</span>{/if}
+				<Field
+					as="select"
+					label="Lifecycle"
+					value={detail.deck.state}
+					disabled={busy}
+					onchange={(e) => changeState((e.currentTarget as HTMLSelectElement).value)}
+				>
+					{#each states as s (s)}<option value={s}>{s}</option>{/each}
+				</Field>
+				<Field
+					as="select"
+					label="Group"
+					value={detail.deck.group_id == null ? '' : String(detail.deck.group_id)}
+					disabled={busy}
+					onchange={(e) => changeGroup((e.currentTarget as HTMLSelectElement).value)}
+				>
+					<option value="">None</option>
+					{#each groups as g (g.id)}<option value={String(g.id)}>{g.name}</option>{/each}
+				</Field>
+				{#if detail.deck.group_id != null}
+					<Button variant="link" href="/deck-groups/{detail.deck.group_id}">Open group</Button>
+				{/if}
+			</div>
 		</div>
 		<div class="actions">
-			<button onclick={() => (picking = true)}>+ Add cards</button>
-			<button class="danger" onclick={removeDeck}>Delete deck</button>
+			<Button onclick={() => (picking = true)}>Add cards</Button>
+			<Button variant="danger" onclick={removeDeck}>Delete deck</Button>
 		</div>
 	</header>
 
@@ -174,7 +181,7 @@
 									{#if l.types.length}{l.types.join('/')}{/if}
 									{#if l.hp}{l.hp} HP{/if}
 								</span>
-								<button class="link" disabled={busy} onclick={() => remove(l.copyIds[0])}>Remove</button>
+								<Button variant="link" disabled={busy} onclick={() => remove(l.copyIds[0])}>Remove</Button>
 							</li>
 						{/each}
 					</ul>
@@ -208,9 +215,13 @@
 		margin: 0;
 	}
 	.sub {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-end;
+		gap: var(--space-2) var(--space-4);
 		color: var(--color-text-subtle);
-		font-size: 0.85rem;
-		margin: 0.25rem 0 0;
+		font-size: var(--text-sm);
+		margin: var(--space-1) 0 0;
 	}
 	.muted {
 		color: var(--color-text-subtle);
@@ -221,32 +232,6 @@
 	.actions {
 		display: flex;
 		gap: 0.5rem;
-	}
-	select {
-		background: var(--color-surface-page);
-		border: 1px solid var(--color-border);
-		color: var(--color-text);
-		border-radius: 6px;
-		padding: 0.15rem;
-	}
-	button {
-		background: var(--color-accent);
-		border: none;
-		color: var(--color-on-accent);
-		padding: 0.4rem 0.8rem;
-		border-radius: 6px;
-		cursor: pointer;
-	}
-	button.danger {
-		background: var(--color-danger);
-	}
-	button.link {
-		background: none;
-		color: var(--color-text-subtle);
-		padding: 0;
-	}
-	button.link:hover {
-		color: var(--color-text-accent);
 	}
 	.deck {
 		margin-top: var(--space-4);

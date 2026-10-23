@@ -3,4 +3,4 @@
 /**
  * Fields for creating a deck.
  */
-export type NewDeck = { name: string, description: string | null, format: string | null, owner: string | null, state: string | null, sleeve_color: string | null, storage_location: string | null, notes: string | null, };
+export type NewDeck = { name: string, description: string | null, format: string | null, owner: string | null, state: string | null, sleeve_color: string | null, storage_location: string | null, notes: string | null, group_id: number | null, };

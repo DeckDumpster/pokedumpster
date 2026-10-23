@@ -17,6 +17,7 @@ pub mod clock;
 pub mod collection;
 pub mod collectr_export;
 pub mod conditions;
+pub mod deck_groups;
 pub mod decks;
 pub mod export;
 pub mod import;

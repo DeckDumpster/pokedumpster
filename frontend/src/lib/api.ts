@@ -21,6 +21,11 @@ import type { Deck } from './types/Deck';
 import type { DeckDetail } from './types/DeckDetail';
 import type { NewDeck } from './types/NewDeck';
 import type { DeckEdit } from './types/DeckEdit';
+import type { DeckGroup } from './types/DeckGroup';
+import type { DeckGroupDetail } from './types/DeckGroupDetail';
+import type { DeckGroupEdit } from './types/DeckGroupEdit';
+import type { NewDeckGroup } from './types/NewDeckGroup';
+import type { ReleaseResult } from './types/ReleaseResult';
 import type { SealedEntry } from './types/SealedEntry';
 import type { SealedProduct } from './types/SealedProduct';
 import type { NewSealed } from './types/NewSealed';
@@ -226,6 +231,22 @@ export const api = {
 	createDeck: (d: Partial<NewDeck> & { name: string }) => send<Deck>('POST', '/api/decks', d),
 	updateDeck: (id: number, e: Partial<DeckEdit>) => send<Deck>('PUT', `/api/decks/${id}`, e),
 	deleteDeck: (id: number) => send<void>('DELETE', `/api/decks/${id}`),
+	/** Move a deck into a group, or out of any (null). */
+	setDeckGroup: (id: number, groupId: number | null) =>
+		send<Deck>('PUT', `/api/decks/${id}/group`, { group_id: groupId }),
+
+	// --- Deck groups ---
+	deckGroups: () => getJson<DeckGroup[]>('/api/deck-groups'),
+	deckGroup: (id: number) => getJson<DeckGroupDetail>(`/api/deck-groups/${id}`),
+	createDeckGroup: (g: Partial<NewDeckGroup> & { name: string }) =>
+		send<DeckGroup>('POST', '/api/deck-groups', g),
+	updateDeckGroup: (id: number, e: Partial<DeckGroupEdit>) =>
+		send<DeckGroup>('PUT', `/api/deck-groups/${id}`, e),
+	/** Return every card in the group's decks to the collection; the decks stay. */
+	releaseDeckGroup: (id: number) => send<ReleaseResult>('POST', `/api/deck-groups/${id}/release`),
+	/** `ungroup` keeps the decks; `decks` deletes them with the group. */
+	deleteDeckGroup: (id: number, mode: 'ungroup' | 'decks') =>
+		send<void>('DELETE', `/api/deck-groups/${id}?mode=${mode}`),
 
 	// --- Sealed products ---
 	sealedCollection: () => getJson<SealedEntry[]>('/api/sealed/collection'),

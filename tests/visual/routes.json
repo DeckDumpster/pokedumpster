@@ -49,6 +49,7 @@
 		{ "id": "binders", "path": "/binders", "about": "Binder list" },
 		{ "id": "binder-detail", "path": "/binders/2", "about": "Master Set: 151 — a populated 12-pocket binder" },
 		{ "id": "decks", "path": "/decks", "about": "Deck list across all three lifecycle states" },
+		{ "id": "deck-group-detail", "path": "/deck-groups/1", "about": "Starter Decks — a deck group with its totals and member decks" },
 		{ "id": "deck-detail", "path": "/decks/1", "about": "Charizard ex Control — a built deck" },
 		{ "id": "batches", "path": "/batches", "about": "Batch list with the type filter bar" },
 		{ "id": "batch-detail", "path": "/batches/4", "about": "151 binder page-through — a binder_click batch" },

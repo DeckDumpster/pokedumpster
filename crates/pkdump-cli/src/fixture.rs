@@ -23,6 +23,7 @@ use pkdump_db::{
     batches::{self, NewBatch},
     binders::{self, NewBinder},
     collection::{self, NewCopy},
+    deck_groups::{self, NewDeckGroup},
     decks::{self, NewDeck},
     orders::{self, NewOrder, OrderLine},
     sealed::{self, NewSealed},
@@ -1442,6 +1443,14 @@ fn seed_user(conn: &mut Connection) -> anyhow::Result<()> {
     )?;
 
     // --- Decks (idea / ready / built) ----------------------------------
+    let starter_group = deck_groups::create(
+        conn,
+        &NewDeckGroup {
+            name: "Starter Decks".into(),
+            description: Some("Decks to build up from the basics.".into()),
+            format: "casual".into_some(),
+        },
+    )?;
     let charizard_deck = decks::create(
         conn,
         &NewDeck {
@@ -1453,6 +1462,7 @@ fn seed_user(conn: &mut Connection) -> anyhow::Result<()> {
             sleeve_color: "black".into_some(),
             storage_location: "Deck Box 1".into_some(),
             notes: "Tournament-ready.".into_some(),
+            group_id: None,
         },
     )?;
     let _pikachu_deck = decks::create(
@@ -1466,6 +1476,7 @@ fn seed_user(conn: &mut Connection) -> anyhow::Result<()> {
             sleeve_color: "yellow".into_some(),
             storage_location: "Deck Box 2".into_some(),
             notes: None,
+            group_id: Some(starter_group),
         },
     )?;
     let _vintage_deck = decks::create(
@@ -1479,6 +1490,7 @@ fn seed_user(conn: &mut Connection) -> anyhow::Result<()> {
             sleeve_color: None,
             storage_location: None,
             notes: "Needs more energy.".into_some(),
+            group_id: Some(starter_group),
         },
     )?;
 

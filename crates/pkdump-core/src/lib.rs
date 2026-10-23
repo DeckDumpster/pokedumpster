@@ -6,6 +6,7 @@
 
 pub mod card;
 pub mod import;
+pub mod natural;
 pub mod query;
 pub mod variant;
 

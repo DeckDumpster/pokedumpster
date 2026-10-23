@@ -30,9 +30,9 @@ for (const [label, width, height] of [
 			await expect(li.locator('a')).toHaveAttribute('href', /^\/card\/[^/]+\/[^?]+\?printing=.+&condition=.+/);
 		}
 
-		const text = await page.locator('.deck').innerText();
+		const text = (await page.locator('.deck').innerText()).replace(/\d+ HP/g, '');
 		expect(text).not.toMatch(/\b(Near Mint|Lightly Played|Moderately Played|Heavily Played|Damaged)\b/i);
-		expect(text).not.toMatch(/\b(NM|LP|MP|HP|DMG)\b(?!\s*$)(?<!\d\s*HP)/);
+		expect(text).not.toMatch(/\b(NM|LP|MP|HP|DMG)\b/);
 		expect(await page.locator('.deck table, .deck th').count()).toBe(0);
 
 		expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);

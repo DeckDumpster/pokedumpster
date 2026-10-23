@@ -3,7 +3,7 @@
 /**
  * Hand-written regression: a facet click inside the card modal stays
  * in-collection. The query alone decides results, so the link carries no
- * all=1 and the unowned dex-6 Charizard ex (sv3pt5/199) does NOT surface.
+ * all param and the unowned dex-6 Charizard ex (sv3pt5/199) does NOT surface.
  */
 import type { ReplayHarness } from '../replay';
 
@@ -20,7 +20,7 @@ export async function steps(h: ReplayHarness) {
   await h.wait_for_visible(DEX, 6000);
   await h.click_by_selector(DEX);
   await h.page.waitForURL(/\/collection\?q=pokedex/, { timeout: 6000 });
-  if (h.page.url().includes('all=1')) throw new Error('facet nav must not carry all=1');
+  if (new URL(h.page.url()).searchParams.has('all')) throw new Error('facet nav must not carry an all param');
 
   // Stays owned-only: the owned Charizard is listed, no missing tile.
   await h.wait_for_visible('.cardtile', 6000);

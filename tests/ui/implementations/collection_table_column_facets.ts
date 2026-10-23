@@ -24,7 +24,7 @@ export async function steps(h: ReplayHarness) {
   await h.page.waitForURL(/\/collection\?/, { timeout: 6000 });
   const url = h.page.url();
   if (!url.includes('q=set')) throw new Error(`expected a set: DSL query, got: ${url}`);
-  if (url.includes('all=1')) throw new Error(`facet link must not carry all=1, got: ${url}`);
+  if (new URL(url).searchParams.has('all')) throw new Error(`facet link must not carry an all param, got: ${url}`);
   if ((await h.page.locator('[role="dialog"]').count()) > 0) {
     throw new Error('clicking a non-Name column wrongly opened the card modal');
   }

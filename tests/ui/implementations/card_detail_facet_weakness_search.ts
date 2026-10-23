@@ -3,7 +3,7 @@
 /**
  * Hand-written implementation for card_detail_facet_weakness_search.
  *
- * Guards pokedumpster-cww: the Weakness icon now links to weakness:<T>&all=1
+ * Guards pokedumpster-cww: the Weakness icon now links to weakness:<T>
  * (cards sharing that type weakness). Charizard (base1/4) is weak to Water,
  * as are the fixture's other Fire cards — so Charmander appears too.
  */
@@ -17,7 +17,7 @@ export async function steps(h: ReplayHarness) {
   await h.page.waitForURL(/\/collection\?/, { timeout: 6000 });
   const url = h.page.url();
   if (!url.includes('q=weakness')) throw new Error(`expected a weakness: DSL query, got: ${url}`);
-  if (url.includes('all=1')) throw new Error(`facet link must not carry all=1, got: ${url}`);
+  if (new URL(url).searchParams.has('all')) throw new Error(`facet link must not carry an all param, got: ${url}`);
   await h.wait_for_visible('.cardtile[title^="Charmander"]', 6000);
   await h.screenshot('final_state');
 }

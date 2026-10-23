@@ -4,7 +4,7 @@
  * Hand-written implementation for card_detail_facet_attack_search.
  *
  * Guards pokedumpster-cww: a Pokémon's attack name now links to
- * attack:"<name>"&all=1. Charizard (base1/4) has the Fire Spin attack; the
+ * attack:"<name>". Charizard (base1/4) has the Fire Spin attack; the
  * search returns Charizard.
  */
 import type { ReplayHarness } from '../replay';
@@ -18,7 +18,7 @@ export async function steps(h: ReplayHarness) {
   await h.page.waitForURL(/\/collection\?/, { timeout: 6000 });
   const url = h.page.url();
   if (!url.includes('q=attack')) throw new Error(`expected an attack: DSL query, got: ${url}`);
-  if (url.includes('all=1')) throw new Error(`facet link must not carry all=1, got: ${url}`);
+  if (new URL(url).searchParams.has('all')) throw new Error(`facet link must not carry an all param, got: ${url}`);
   await h.wait_for_visible('.cardtile[title^="Charizard"]', 6000);
   await h.screenshot('final_state');
 }

@@ -1,7 +1,7 @@
 /**
  * /collection must not put the whole result set in the DOM (pd-tsqd, pd-7z4o).
  *
- * The reported case is `?q=supertype:Pokémon&all=1` on the real catalog:
+ * The reported case is `?q=supertype:Pokémon` on the real catalog:
  * 56,635 matching printings, and a tab that died rendering them — 289,612 DOM
  * nodes and a 457 MB heap (pd-5vgp). The client holds every one of those rows
  * as a JS object now and renders only the slice under the viewport, so this
@@ -124,7 +124,7 @@ async function openCollection(
 		localStorage.setItem('collection.sortDir', 'asc');
 		sessionStorage.clear();
 	}, view);
-	await page.goto('/collection?q=supertype%3APok%C3%A9mon&all=1');
+	await page.goto('/collection?q=supertype%3APok%C3%A9mon');
 	await page.locator(view === 'grid' ? '[data-testid="collection-grid"]' : 'table.dd').waitFor();
 	return asked;
 }

@@ -74,7 +74,7 @@ async function open(page: Page) {
 		localStorage.setItem('collection.sortDir', 'asc');
 		sessionStorage.clear();
 	});
-	await page.goto('/collection?q=supertype%3APok%C3%A9mon&all=1');
+	await page.goto('/collection?q=supertype%3APok%C3%A9mon');
 	await page.locator('table.dd tbody tr:not(.vspace)').first().waitFor();
 }
 

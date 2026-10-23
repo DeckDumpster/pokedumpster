@@ -4,8 +4,11 @@
 	import { count } from '$lib/format';
 	import { EmptyState } from '$lib/components/ui';
 	import type { Deck } from '$lib/types/Deck';
+	import type { DeckGroup } from '$lib/types/DeckGroup';
 
 	let decks = $state<Deck[]>([]);
+	let groups = $state<DeckGroup[]>([]);
+	let newGroup = $state('');
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let newName = $state('');
@@ -14,7 +17,7 @@
 
 	async function load() {
 		try {
-			decks = await api.decks();
+			[decks, groups] = await Promise.all([api.decks(), api.deckGroups()]);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -41,6 +44,24 @@
 			busy = false;
 		}
 	}
+
+	async function createGroup() {
+		if (!newGroup.trim()) return;
+		busy = true;
+		error = null;
+		try {
+			await api.createDeckGroup({ name: newGroup.trim() });
+			newGroup = '';
+			await load();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			busy = false;
+		}
+	}
+
+	const ungrouped = $derived(decks.filter((d) => d.group_id == null));
+	const inGroup = (id: number) => decks.filter((d) => d.group_id === id);
 </script>
 
 <svelte:head><title>Decks — PokeDumpster</title></svelte:head>
@@ -59,29 +80,65 @@
 	<button type="submit" disabled={busy}>Create</button>
 </form>
 
+<form
+	class="groupform"
+	onsubmit={(e) => {
+		e.preventDefault();
+		createGroup();
+	}}
+>
+	<input type="text" placeholder="New deck group name…" bind:value={newGroup} />
+	<button type="submit" disabled={busy}>Create group</button>
+</form>
+
 {#if error}<p class="error">{error}</p>{/if}
 
 {#if loading}
 	<p class="muted">Loading…</p>
-{:else if decks.length === 0}
+{:else if decks.length === 0 && groups.length === 0}
 	<EmptyState
 		title="No decks yet."
 		description="A deck holds the copies you've committed to a list, so they stop counting as loose collection. Name one above to create your first."
 	/>
 {:else}
-	<div class="grid">
-		{#each decks as deck (deck.id)}
-			<a class="tile" href="/decks/{deck.id}">
-				<div class="name">{deck.name}</div>
-				<div class="meta">
-					<span class="state state-{deck.state}">{deck.state}</span>
-					{#if deck.owner}· {deck.owner}{/if}
+	{#each groups as group (group.id)}
+		<details class="group" open>
+			<summary>
+				<a class="groupname" href="/deck-groups/{group.id}">{group.name}</a>
+				<span class="groupmeta">
+					{#if group.format}{group.format} ·{/if}
+					{count(group.deck_count)} decks · {count(group.card_count)} cards
+				</span>
+			</summary>
+			{#if inGroup(group.id).length === 0}
+				<p class="muted">No decks in this group yet.</p>
+			{:else}
+				<div class="grid">
+					{#each inGroup(group.id) as deck (deck.id)}
+						{@render tile(deck)}
+					{/each}
 				</div>
-				<div class="count">{count(deck.card_count)} cards</div>
-			</a>
+			{/if}
+		</details>
+	{/each}
+	{#if groups.length > 0 && ungrouped.length > 0}<h2 class="ungrouped">Ungrouped</h2>{/if}
+	<div class="grid">
+		{#each ungrouped as deck (deck.id)}
+			{@render tile(deck)}
 		{/each}
 	</div>
 {/if}
+
+{#snippet tile(deck: Deck)}
+	<a class="tile" href="/decks/{deck.id}">
+		<div class="name">{deck.name}</div>
+		<div class="meta">
+			<span class="state state-{deck.state}">{deck.state}</span>
+			{#if deck.owner}· {deck.owner}{/if}
+		</div>
+		<div class="count">{count(deck.card_count)} cards</div>
+	</a>
+{/snippet}
 
 <style>
 	h1 {
@@ -161,5 +218,35 @@
 	.count {
 		font-size: 0.85rem;
 		color: var(--color-text-subtle);
+	}
+	.groupform {
+		display: flex;
+		gap: var(--space-2);
+		margin-bottom: var(--space-4);
+		flex-wrap: wrap;
+	}
+	.group {
+		margin-bottom: var(--space-4);
+	}
+	.group summary {
+		display: flex;
+		gap: var(--space-3);
+		align-items: baseline;
+		flex-wrap: wrap;
+		cursor: pointer;
+		margin-bottom: var(--space-2);
+	}
+	.groupname {
+		font-weight: 700;
+		font-size: var(--text-xl);
+		color: var(--color-text-accent);
+	}
+	.groupmeta {
+		color: var(--color-text-subtle);
+		font-size: var(--text-md);
+	}
+	.ungrouped {
+		color: var(--color-text-subtle);
+		font-size: var(--text-lg);
 	}
 </style>

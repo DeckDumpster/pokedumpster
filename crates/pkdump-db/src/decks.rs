@@ -7,7 +7,7 @@ use crate::error::Result;
 
 const COLS: &str = "d.id, d.name, d.description, d.format, d.owner, d.state, \
      d.sleeve_color, d.storage_location, d.notes, d.created_at, d.updated_at, \
-     (SELECT count(*) FROM collection c WHERE c.deck_id = d.id)";
+     d.group_id, (SELECT count(*) FROM collection c WHERE c.deck_id = d.id)";
 
 /// A deck, with the count of cards assigned to it.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
@@ -26,6 +26,9 @@ pub struct Deck {
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// The deck group this deck belongs to, if any.
+    #[ts(type = "number | null")]
+    pub group_id: Option<i64>,
     #[ts(type = "number")]
     pub card_count: i64,
 }
@@ -42,6 +45,8 @@ pub struct NewDeck {
     pub sleeve_color: Option<String>,
     pub storage_location: Option<String>,
     pub notes: Option<String>,
+    #[ts(type = "number | null")]
+    pub group_id: Option<i64>,
 }
 
 /// Editable deck fields. A `None` field is left unchanged.
@@ -71,7 +76,8 @@ fn from_row(r: &rusqlite::Row) -> rusqlite::Result<Deck> {
         notes: r.get(8)?,
         created_at: r.get(9)?,
         updated_at: r.get(10)?,
-        card_count: r.get(11)?,
+        group_id: r.get(11)?,
+        card_count: r.get(12)?,
     })
 }
 
@@ -81,8 +87,8 @@ pub fn create(conn: &Connection, new: &NewDeck) -> Result<i64> {
     conn.execute(
         "INSERT INTO decks \
            (name, description, format, owner, state, sleeve_color, \
-            storage_location, notes, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+            storage_location, notes, group_id, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?10, ?9, ?9)",
         params![
             new.name,
             new.description,
@@ -93,6 +99,7 @@ pub fn create(conn: &Connection, new: &NewDeck) -> Result<i64> {
             new.storage_location,
             new.notes,
             now,
+            new.group_id,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -149,7 +156,30 @@ pub fn update(conn: &Connection, id: i64, edit: &DeckEdit) -> Result<bool> {
 /// Delete a deck. Its cards are un-assigned (collection.deck_id is
 /// `ON DELETE SET NULL`), never deleted.
 pub fn delete(conn: &Connection, id: i64) -> Result<bool> {
+    // `movement_log` keeps the move but forgets the deck, or its FK would refuse the delete.
+    conn.execute(
+        "UPDATE movement_log SET from_deck_id = NULL WHERE from_deck_id = ?1",
+        [id],
+    )?;
+    conn.execute(
+        "UPDATE movement_log SET to_deck_id = NULL WHERE to_deck_id = ?1",
+        [id],
+    )?;
     Ok(conn.execute("DELETE FROM decks WHERE id = ?1", [id])? > 0)
+}
+
+/// Move a deck into a group, or out of any (`None`). Returns whether the deck exists.
+pub fn set_group(conn: &Connection, id: i64, group_id: Option<i64>) -> Result<bool> {
+    if let Some(g) = group_id
+        && crate::deck_groups::get(conn, g)?.is_none()
+    {
+        return Err(crate::DbError::NotFound(format!("deck group {g}")));
+    }
+    let n = conn.execute(
+        "UPDATE decks SET group_id = ?2, updated_at = ?3 WHERE id = ?1",
+        params![id, group_id, crate::clock::now_rfc3339()],
+    )?;
+    Ok(n > 0)
 }
 
 #[cfg(test)]

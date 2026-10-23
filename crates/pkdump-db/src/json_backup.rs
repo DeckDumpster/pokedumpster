@@ -463,10 +463,14 @@ mod tests {
              VALUES (1, 'Trade Binder', NULL, '#ff0000', 'zip', 9, 'shelf',
                      '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00');
 
+             INSERT INTO deck_groups (id, name, description, format, created_at, updated_at)
+             VALUES (1, 'Cube packs', NULL, 'cube', '2026-07-01T00:00:00+00:00',
+                     '2026-07-01T00:00:00+00:00');
+
              INSERT INTO decks (id, name, description, format, owner, state, sleeve_color,
-                                storage_location, notes, created_at, updated_at)
+                                storage_location, notes, group_id, created_at, updated_at)
              VALUES (1, 'Charizard ex', NULL, 'standard', 'Ryan', 'built', 'black', 'box',
-                     'goes brrr', '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00');
+                     'goes brrr', 1, '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00');
 
              INSERT INTO orders (id, order_number, source, seller_name, order_date, subtotal,
                                  shipping, tax, total, shipping_status, estimated_delivery,

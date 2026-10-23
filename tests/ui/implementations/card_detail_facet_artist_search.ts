@@ -20,7 +20,7 @@ export async function steps(h: ReplayHarness) {
   await h.page.waitForURL(/\/collection\?/, { timeout: 6000 });
   const url = h.page.url();
   if (!url.includes('q=artist')) throw new Error(`expected an artist: DSL query, got: ${url}`);
-  if (!url.includes('all=1')) throw new Error(`expected catalog-wide all=1, got: ${url}`);
+  if (url.includes('all=1')) throw new Error(`facet link must not carry all=1, got: ${url}`);
   // A bare name search for the artist returns 0; the artist facet returns the
   // artist's catalog. Venusaur (a different card by the same artist) proves it.
   await h.wait_for_visible('.cardtile[title^="Venusaur"]', 6000);

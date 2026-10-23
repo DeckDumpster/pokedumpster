@@ -221,8 +221,7 @@
 		const q = searchRaw.trim();
 		if (q) url.searchParams.set('q', q);
 		else url.searchParams.delete('q');
-		if (allCards) url.searchParams.set('all', '1');
-		else url.searchParams.delete('all');
+		url.searchParams.delete('all'); // retired: the query alone decides
 		if (url.href !== window.location.href) {
 			void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
 		}
@@ -251,7 +250,6 @@
 	// change triggers the resync.
 	$effect(() => {
 		const q = page.url.searchParams.get('q') ?? '';
-		const all = page.url.searchParams.get('all') === '1';
 		untrack(() => {
 			if (q !== searchRaw) {
 				clearTimeout(debounce);
@@ -260,28 +258,21 @@
 				// Close any open modal so the filtered list is visible.
 				selectedCard = null;
 			}
-			// The "All cards" param has to resync from the URL too. A
-			// client-side facet nav (e.g. a card-modal link carrying &all=1)
-			// updates the URL without remounting, so `initialAllCards` never
-			// re-runs — without this, the catalog stayed owned-only until a
-			// manual reload even though the URL already said all=1.
-			if (all !== allCards) {
-				allCards = all;
-			}
 		});
 	});
 
-	// "All cards" toggle widens the server search from owned-only to the whole
-	// catalog (include_unowned=1). Unowned printings come back with
-	// owned_count === 0 and render as dimmed "missing" tiles — the same visual
-	// treatment /browse/[set] uses for unowned binder slots.
-	const initialAllCards =
-		typeof window !== 'undefined' && page.url.searchParams.get('all') === '1';
-	let allCards = $state(initialAllCards);
+	// The "All cards" toggle only adds or removes `is:unowned` in the search box
+	// text; whether it is on is read back from the query, never held separately.
+	const UNOWNED_TERM = /(^|\s)is:(unowned|missing)(?=\s|$)/i;
+	const allCards = $derived(UNOWNED_TERM.test(searchRaw));
 	function toggleAllCards() {
-		allCards = !allCards;
-		// Widening owned-only to the whole catalog is a different result set,
-		// so it is read from the top.
+		const next = allCards
+			? searchRaw.replace(new RegExp(UNOWNED_TERM.source, 'gi'), ' ').replace(/\s+/g, ' ').trim()
+			: `${searchRaw.trim()} is:unowned`.trim();
+		clearTimeout(debounce);
+		searchRaw = next;
+		query = next;
+		// A different result set is read from the top.
 		forgetScroll();
 		syncUrl();
 	}
@@ -303,7 +294,7 @@
 			// chosen, so the order the control claims is the order you get —
 			// and it has to stay server-side, because a sort applied to a
 			// window would order what the window happens to hold.
-			const res = await api.collectionSearch(query, sortKey, sortDir, allCards, 'all');
+			const res = await api.collectionSearch(query, sortKey, sortDir, false, 'all');
 			searchRows = res.rows;
 			searchTotal = res.total;
 			searchTotalValue = res.total_value;
@@ -328,7 +319,6 @@
 	// puts where, and the client only ever draws them in that order.
 	$effect(() => {
 		void query;
-		void allCards;
 		void sortKey;
 		void sortDir;
 		runSearch();
@@ -965,7 +955,7 @@
 	// rows instead of where you were reading.
 
 	function scrollKey(): string {
-		return `collection.scroll:${view}|${query}|${sortKey}|${sortDir}|${allCards ? 1 : 0}`;
+		return `collection.scroll:${view}|${query}|${sortKey}|${sortDir}`;
 	}
 	let scrollSave: ReturnType<typeof setTimeout>;
 	function rememberScroll() {
@@ -1022,7 +1012,7 @@
 	function facetCell(e: MouseEvent, field: string, value: string | null | undefined) {
 		if (selectMode) return;
 		e.stopPropagation();
-		if (value) void goto(facetHref(field, value));
+		if (value) void goto(facetHref(field, value, query));
 	}
 
 	// Non-owned statuses surface as a small badge next to the card name —
@@ -1422,7 +1412,7 @@
 				title="No cards match “{query}”."
 				description={allCards
 					? 'Nothing in the whole catalog matches. Check the spelling, or narrow one keyword at a time.'
-					: 'Nothing you own matches. Turn on “All cards” to search the catalog instead of your collection.'}
+					: 'Nothing you own matches. Turn on “All cards” (or add is:unowned) to search the catalog instead of your collection.'}
 			>
 				{#snippet action()}
 					<Button variant="ghost" href="/search-help">Search syntax</Button>

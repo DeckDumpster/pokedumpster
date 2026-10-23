@@ -18,7 +18,7 @@ export async function steps(h: ReplayHarness) {
   await h.page.waitForURL(/\/collection\?/, { timeout: 6000 });
   const url = h.page.url();
   if (!url.includes('q=pokedex')) throw new Error(`expected a pokedex: DSL query, got: ${url}`);
-  if (!url.includes('all=1')) throw new Error(`expected catalog-wide all=1, got: ${url}`);
+  if (url.includes('all=1')) throw new Error(`facet link must not carry all=1, got: ${url}`);
   // The OTHER #151 card — proof it matched by dex number, not name.
   await h.wait_for_visible('.cardtile[title^="Mew ex"]', 6000);
   await h.screenshot('final_state');

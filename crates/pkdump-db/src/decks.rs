@@ -106,11 +106,14 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Deck>> {
         .optional()?)
 }
 
-/// List decks, alphabetically.
+/// List decks in natural name order.
 pub fn list(conn: &Connection) -> Result<Vec<Deck>> {
-    let mut stmt = conn.prepare(&format!("SELECT {COLS} FROM decks d ORDER BY d.name"))?;
+    let mut stmt = conn.prepare(&format!("SELECT {COLS} FROM decks d ORDER BY d.id"))?;
     let rows = stmt.query_map([], from_row)?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut all: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+    // Natural order ("Pack 2" before "Pack 10"); the stable sort keeps id order on ties.
+    all.sort_by(|a, b| pkdump_core::natural::natural_cmp(&a.name, &b.name));
+    Ok(all)
 }
 
 /// Update editable fields. Returns whether a row changed.
@@ -212,5 +215,31 @@ mod tests {
             err.is_err(),
             "the state CHECK constraint should reject this"
         );
+    }
+}
+
+#[cfg(test)]
+mod natural_order {
+    use super::*;
+    use crate::{connect_user, open_shared};
+
+    #[test]
+    fn decks_list_in_natural_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.sqlite");
+        open_shared(&shared).unwrap();
+        let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
+        for n in ["Pack 1", "Pack 10", "Pack 2"] {
+            create(
+                &conn,
+                &NewDeck {
+                    name: n.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let names: Vec<_> = list(&conn).unwrap().into_iter().map(|d| d.name).collect();
+        assert_eq!(names, ["Pack 1", "Pack 2", "Pack 10"]);
     }
 }

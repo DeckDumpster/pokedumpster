@@ -18,7 +18,7 @@ export async function steps(h: ReplayHarness) {
   await h.page.waitForURL(/\/collection\?/, { timeout: 6000 });
   const url = h.page.url();
   if (!url.includes('q=name')) throw new Error(`expected a name: DSL query, got: ${url}`);
-  if (!url.includes('all=1')) throw new Error(`expected catalog-wide all=1, got: ${url}`);
+  if (url.includes('all=1')) throw new Error(`facet link must not carry all=1, got: ${url}`);
   await h.wait_for_visible('.cardtile[title^="Pikachu"]', 6000);
   await h.screenshot('final_state');
 }

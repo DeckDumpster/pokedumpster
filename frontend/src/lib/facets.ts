@@ -20,11 +20,13 @@ export function facetClause(field: string, value: string): string {
 	return field ? `${field}:${v}` : v;
 }
 
-/** A `/collection` URL pre-filtered by one facet. Always catalog-wide
- *  (`all=1`) so unowned matches show too — clicking "Mitsuhiro Arita" or a
- *  Pokédex number is an exploration of the whole catalog, not just owned
- *  cards (pokedumpster-67l). */
-export function facetHref(field: string, value: string): string {
-	const params = new URLSearchParams({ q: facetClause(field, value), all: '1' });
+/** A `/collection` URL pre-filtered by one facet. The query alone decides the
+ *  results, so a click stays in-collection (owned) unless the query the user is
+ *  on already carries `is:unowned`, which is kept so a catalog-wide exploration
+ *  stays catalog-wide. `currentQuery` is that query (omit it from a card page). */
+export function facetHref(field: string, value: string, currentQuery = ''): string {
+	const clause = facetClause(field, value);
+	const keep = /(^|\s)is:(unowned|missing)(?=\s|$)/i.test(currentQuery);
+	const params = new URLSearchParams({ q: keep ? `is:unowned ${clause}` : clause });
 	return `/collection?${params.toString()}`;
 }

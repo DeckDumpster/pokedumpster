@@ -1,15 +1,9 @@
 // covers: UC-ui-085
 // tier: T3
 /**
- * Hand-written fail-first regression for the "all=1 ignored on client-side
- * facet nav" bug: clicking a facet link inside the card modal navigated to
- * /collection?q=...&all=1 but the page only resynced the `q` param from the
- * URL, not `all` — so the catalog stayed owned-only until a manual reload.
- *
- * Charizard (base1/4) is owned and shares Pokédex #6 with the unowned
- * Charizard ex (sv3pt5/199). Clicking the Pokédex #6 facet in the modal must
- * immediately surface that unowned card as a dimmed .cardtile.missing tile,
- * with no reload. Fails before the +page.svelte resync fix.
+ * Hand-written regression: a facet click inside the card modal stays
+ * in-collection. The query alone decides results, so the link carries no
+ * all=1 and the unowned dex-6 Charizard ex (sv3pt5/199) does NOT surface.
  */
 import type { ReplayHarness } from '../replay';
 
@@ -22,14 +16,16 @@ export async function steps(h: ReplayHarness) {
   await h.click_by_selector('.cardtile[title^="Charizard"]');
   await h.wait_for_visible('[role="dialog"]', 6000);
 
-  // Click the Pokédex #6 facet inside the modal — its href carries &all=1.
+  // Click the Pokédex #6 facet inside the modal — its href is an owned-only query.
   await h.wait_for_visible(DEX, 6000);
   await h.click_by_selector(DEX);
-  await h.page.waitForURL(/\/collection\?.*all=1/, { timeout: 6000 });
+  await h.page.waitForURL(/\/collection\?q=pokedex/, { timeout: 6000 });
+  if (h.page.url().includes('all=1')) throw new Error('facet nav must not carry all=1');
 
-  // The catalog must widen on this client-side nav (no reload): the unowned
-  // dex-6 Charizard ex appears as a dimmed missing tile.
-  await h.wait_for_visible('.cardtile.missing', 6000);
-  await h.assert_visible('.cardtile.missing');
+  // Stays owned-only: the owned Charizard is listed, no missing tile.
+  await h.wait_for_visible('.cardtile', 6000);
+  if ((await h.page.locator('.cardtile.missing').count()) > 0) {
+    throw new Error('owned-only facet nav surfaced an unowned card');
+  }
   await h.screenshot('final_state');
 }

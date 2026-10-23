@@ -13,10 +13,10 @@ export async function steps(h: ReplayHarness) {
   await h.wait_for_visible('[data-testid="search-input"]');
   // Grid view renders the dimmed .missing tiles for unowned printings.
   await h.click_by_test_id('view-grid');
-  // Widen the search to the whole catalog (include_unowned=1).
+  await h.fill_by_selector('[data-testid="search-input"]', 't:water');
+  // The toggle only adds is:unowned to the query text.
   await h.click_by_selector('.topbar button[aria-label="Menu"]');
   await h.click_by_test_id('all-cards-toggle');
-  await h.fill_by_selector('[data-testid="search-input"]', 't:water');
   // At least one unowned (missing) tile appears.
   await h.wait_for_visible('.cardtile.missing');
   await h.assert_visible('.cardtile.missing');

@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { count } from '$lib/format';
+	import { breadcrumbs } from '$lib/breadcrumbs.svelte';
 	import { Button, EmptyState } from '$lib/components/ui';
 	import type { DeckGroupDetail } from '$lib/types/DeckGroupDetail';
 
@@ -29,6 +30,13 @@
 	$effect(() => {
 		void page.params.id;
 		load();
+	});
+
+	$effect.pre(() => {
+		breadcrumbs.set([
+			{ label: 'Decks', href: '/decks' },
+			{ label: detail?.group.name ?? 'Deck group' }
+		]);
 	});
 
 	async function act(fn: () => Promise<unknown>) {

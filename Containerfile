@@ -18,6 +18,7 @@ WORKDIR /app
 # Workspace manifests, sources, and the embedded override data
 # (data/overrides/*.json is pulled in at compile time via include_str!).
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .cargo/ .cargo/
 COPY crates/ crates/
 COPY data/ data/
 
@@ -110,7 +111,7 @@ COPY data/ data/
 # online server disagreeing about the shape of a database; splitting the images
 # is a deployment change to make when the machines actually split, not before.
 ARG CARGO_TARGET_CACHE_SCOPE=unscoped
-ENV PKDUMP_SOURCES="Cargo.toml Cargo.lock rust-toolchain.toml crates data"
+ENV PKDUMP_SOURCES="Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates data"
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target,sharing=locked,id=pkdump-target-bookworm-${CARGO_TARGET_CACHE_SCOPE} \
     stamp="$(find ${PKDUMP_SOURCES} -type f -exec sha256sum {} + \

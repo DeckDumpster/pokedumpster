@@ -1790,8 +1790,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-derive"
-version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
+version = "0.1.4"
+source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
+checksum = "aea2e616661638f5aa0126647c80b19ae2e756d9323b8fee94446ad717180223"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1800,8 +1801,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-erase"
-version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
+version = "0.1.4"
+source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
+checksum = "bf941dee747d843be366d20b6f70cfe80a1f46ad7e81862a9691d0fd8c300d72"
 dependencies = [
  "dumpster-kit-keys",
  "dumpster-kit-lake",
@@ -1813,8 +1815,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-iceberg"
-version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
+version = "0.1.4"
+source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
+checksum = "69907548c30e7f7e981884f77affeeb784f8f2b4189752d58086d823263ba98f"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1834,8 +1837,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-keys"
-version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
+version = "0.1.4"
+source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
+checksum = "ee5f476ede6869bb1c36a89bc66051143246652a0909b4311b2a6f4bc2ef2845"
 dependencies = [
  "chrono",
  "dumpster-kit-tenancy",
@@ -1850,8 +1854,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-lake"
-version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
+version = "0.1.4"
+source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
+checksum = "ae5ed70cd8ec230aa949fa6558b91479493967c642242f8df3b637a830a70d85"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -1868,8 +1873,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-lakehouse"
-version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
+version = "0.1.4"
+source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
+checksum = "e2417ad5e6988650d8884f8ed8141732b9c38f2c1a9fb051b44b7817ac449857"
 dependencies = [
  "anyhow",
  "dumpster-kit-derive",
@@ -1880,8 +1886,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-oidc"
-version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
+version = "0.1.4"
+source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
+checksum = "2610766149b294d688c5e2a2e8445098736679c91de18a54f8559a3e1ef197a0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1900,8 +1907,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-ship"
-version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
+version = "0.1.4"
+source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
+checksum = "704dc8237bad59bce6dc44e91a1eb5b43dc0505731af70f608f034babe241c2c"
 dependencies = [
  "aes-gcm 0.11.0",
  "bytes",
@@ -1920,8 +1928,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-tcgcsv"
-version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
+version = "0.1.4"
+source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
+checksum = "0a1588c3d2f0dfd7084d485b681d550a97cac520d6c377e48d7ad8bb96a20359"
 dependencies = [
  "serde",
  "serde_json",
@@ -1930,8 +1939,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-tenancy"
-version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
+version = "0.1.4"
+source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
+checksum = "2e389402f13e509dd0c3bf15afb94dba2a4973c64e592631a97a49df5ca5ada7"
 dependencies = [
  "axum",
  "base64 0.22.1",

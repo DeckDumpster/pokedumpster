@@ -60,8 +60,10 @@ import type { CreateMissingVariant } from './types/CreateMissingVariant';
 import type { CreateMissingVariantResult } from './types/CreateMissingVariantResult';
 import type { BackupStatus } from './types/BackupStatus';
 import type { Session } from './types/Session';
+import { guardedFetch } from './session';
+
 async function getJson<T>(url: string): Promise<T> {
-	const res = await fetch(url);
+	const res = await guardedFetch(url);
 	if (!res.ok) {
 		throw new Error(`${res.status} ${res.statusText} — ${url}`);
 	}
@@ -70,7 +72,7 @@ async function getJson<T>(url: string): Promise<T> {
 
 /** POST/PUT/DELETE with an optional JSON body. 204 responses yield undefined. */
 async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
-	const res = await fetch(url, {
+	const res = await guardedFetch(url, {
 		method,
 		headers: body !== undefined ? { 'content-type': 'application/json' } : {},
 		body: body !== undefined ? JSON.stringify(body) : undefined
@@ -130,7 +132,7 @@ export const api = {
 		if (includeUnowned) params.set('include_unowned', '1');
 		if (limit !== undefined) params.set('limit', String(limit));
 		if (offset !== undefined) params.set('offset', String(offset));
-		const res = await fetch(`/api/collection/search?${params.toString()}`);
+		const res = await guardedFetch(`/api/collection/search?${params.toString()}`);
 		if (res.status === 400) {
 			const body = (await res.json()) as { error: string; position?: number };
 			// A query-syntax error carries the caret offset; a paging complaint

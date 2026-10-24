@@ -6,3 +6,8 @@
 # the repo root. Regenerate the TypeScript types with `cargo test`.
 [env]
 TS_RS_EXPORT_DIR = { value = "frontend/src/lib/types", relative = true }
+
+# The kit's manifests name `registry = "tailnet"` for their internal dependencies (sp-hswnij), so
+# cargo needs the index to resolve the kit's git revision. Path/git-resolved crates never query it.
+[registries.tailnet]
+index = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"

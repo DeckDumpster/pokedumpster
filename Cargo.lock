@@ -1791,7 +1791,7 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-derive"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1e7674f490b788a55c1b86592e0971663498a6b7#1e7674f490b788a55c1b86592e0971663498a6b7"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1801,7 +1801,7 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-erase"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1e7674f490b788a55c1b86592e0971663498a6b7#1e7674f490b788a55c1b86592e0971663498a6b7"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
 dependencies = [
  "dumpster-kit-keys",
  "dumpster-kit-lake",
@@ -1814,7 +1814,7 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-iceberg"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1e7674f490b788a55c1b86592e0971663498a6b7#1e7674f490b788a55c1b86592e0971663498a6b7"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1835,7 +1835,7 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-keys"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1e7674f490b788a55c1b86592e0971663498a6b7#1e7674f490b788a55c1b86592e0971663498a6b7"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
 dependencies = [
  "chrono",
  "dumpster-kit-tenancy",
@@ -1851,7 +1851,7 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-lake"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1e7674f490b788a55c1b86592e0971663498a6b7#1e7674f490b788a55c1b86592e0971663498a6b7"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -1869,7 +1869,7 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-lakehouse"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1e7674f490b788a55c1b86592e0971663498a6b7#1e7674f490b788a55c1b86592e0971663498a6b7"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
 dependencies = [
  "anyhow",
  "dumpster-kit-derive",
@@ -1881,7 +1881,7 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-oidc"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1e7674f490b788a55c1b86592e0971663498a6b7#1e7674f490b788a55c1b86592e0971663498a6b7"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1901,7 +1901,7 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-ship"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1e7674f490b788a55c1b86592e0971663498a6b7#1e7674f490b788a55c1b86592e0971663498a6b7"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
 dependencies = [
  "aes-gcm 0.11.0",
  "bytes",
@@ -1921,7 +1921,7 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-tcgcsv"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1e7674f490b788a55c1b86592e0971663498a6b7#1e7674f490b788a55c1b86592e0971663498a6b7"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
 dependencies = [
  "serde",
  "serde_json",
@@ -1931,7 +1931,7 @@ dependencies = [
 [[package]]
 name = "dumpster-kit-tenancy"
 version = "0.1.0"
-source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=1e7674f490b788a55c1b86592e0971663498a6b7#1e7674f490b788a55c1b86592e0971663498a6b7"
+source = "git+https://github.com/DeckDumpster/dumpster-kit?rev=e49305c055b18f8ce5dab0f70a07d0be93a08ac7#e49305c055b18f8ce5dab0f70a07d0be93a08ac7"
 dependencies = [
  "axum",
  "base64 0.22.1",

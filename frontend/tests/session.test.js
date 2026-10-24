@@ -18,27 +18,32 @@ test('a 401 and an unfollowed redirect are an expired session; a 500 is not', ()
 });
 
 test('guardedFetch navigates to login for an expired session and passes errors through', async () => {
+	/** @type {string[]} */
 	const assigned = [];
-	globalThis.location = { href: 'https://x.test/sets/base1', assign: (u) => assigned.push(u) };
+	/** @type {any} */ (globalThis).location = {
+		href: 'https://x.test/sets/base1',
+		assign: (/** @type {string} */ u) => assigned.push(u)
+	};
+	/** @type {RequestInit | undefined} */
 	let seen;
-	globalThis.fetch = async (_u, init) => {
+	/** @type {any} */ (globalThis).fetch = async (/** @type {unknown} */ _u, /** @type {RequestInit} */ init) => {
 		seen = init;
 		return { status: 0, type: 'opaqueredirect' };
 	};
 	void guardedFetch('/api/sets'); // never resolves: the page is leaving
 	await new Promise((r) => setTimeout(r, 5));
-	assert.equal(seen.redirect, 'manual');
+	assert.equal(seen?.redirect, 'manual');
 	assert.deepEqual(assigned, ['/auth/login?return_to=%2Fsets%2Fbase1']);
 
 	noteNavigation(new URL('https://x.test/card/abc'));
-	globalThis.fetch = async () => ({ status: 401, type: 'basic' });
+	/** @type {any} */ (globalThis).fetch = async () => ({ status: 401, type: 'basic' });
 	void guardedFetch('/api/x', { method: 'POST' });
 	await new Promise((r) => setTimeout(r, 5));
 	assert.equal(assigned[1], '/auth/login?return_to=%2Fcard%2Fabc');
 
 	noteNavigation(null);
 	const boom = { status: 500, type: 'basic' };
-	globalThis.fetch = async () => boom;
+	/** @type {any} */ (globalThis).fetch = async () => boom;
 	assert.equal(await guardedFetch('/api/x'), boom);
 	assert.equal(assigned.length, 2);
 });

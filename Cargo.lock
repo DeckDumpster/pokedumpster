@@ -1928,9 +1928,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-tcgcsv"
-version = "0.1.4"
+version = "0.1.6"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "0a1588c3d2f0dfd7084d485b681d550a97cac520d6c377e48d7ad8bb96a20359"
+checksum = "5763c06f34159304fd89d22a932dec32efaa1a20fd0b991a611a969b49b06691"
 dependencies = [
  "serde",
  "serde_json",

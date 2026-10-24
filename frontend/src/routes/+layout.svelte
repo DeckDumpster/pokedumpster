@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { beforeNavigate, afterNavigate } from '$app/navigation';
+	import { noteNavigation } from '$lib/session';
 	// The design-token layer — the single source of visual values for the whole
 	// app. Imported here and nowhere else; see the header of tokens.css.
 	import '$lib/styles/tokens.css';
@@ -8,6 +10,11 @@
 	import { api } from '$lib/api';
 
 	let { children } = $props();
+
+	// A link that loads in place calls the API before the address bar changes; if the session
+	// has lapsed, sign-in must return to where the link was going, not where the user was.
+	beforeNavigate(({ to }) => noteNavigation(to?.url ?? null));
+	afterNavigate(() => noteNavigation(null));
 
 	// Native sign-in (Pocket ID): offer "Sign out" only when the server signed this browser in.
 	let signedInAs = $state<string | null>(null);

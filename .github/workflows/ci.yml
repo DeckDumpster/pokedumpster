@@ -106,6 +106,7 @@ jobs:
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
           spill:              ec2-only
+          spill-market:       ${{ vars.SPILL_MARKET }}
           spill-after-seconds: '60'
           spill-max-instances: 2
           aws-role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}

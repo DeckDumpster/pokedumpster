@@ -909,6 +909,8 @@ if tier lint; then
     # Spill is ec2-only unconditionally; no allow_proxmox input.
     step "spill is ec2-only (tests/ci/spill_input_test.sh)"
     bash "$REPO_DIR/tests/ci/spill_input_test.sh"
+    step "provision passes spill-market (tests/ci/spill_market_test.sh)"
+    bash "$REPO_DIR/tests/ci/spill_market_test.sh"
 
     # A failed systemctl start used to exit silently, destroying the evidence
     # along with the ephemeral runner. dump_unit_diagnostics captures status

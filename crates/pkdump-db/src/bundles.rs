@@ -239,6 +239,7 @@ fn slot_from_product(row: BundleProductRow, tiers: &RarityLookup) -> BinderSlot 
             deprecated: row.deprecated_at.is_some(),
             owned_count: row.owned_count,
             market_price: row.market_price,
+            owned_value: None,
             foil: row.foil,
         });
     }
@@ -263,6 +264,7 @@ fn slot_from_product(row: BundleProductRow, tiers: &RarityLookup) -> BinderSlot 
         // already tells them which finish this is.
         image_large: row.card_image_large.or(row.product_image),
         section: "base".to_string(),
+        display_price: crate::binder::display_price(&printings),
         printings,
         external_set,
     }

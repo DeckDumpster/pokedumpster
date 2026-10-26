@@ -282,13 +282,6 @@
 		load();
 	});
 
-	// Best market price across a slot's printings — the one the Price sort uses.
-	function slotPrice(slot: BinderSlot): number | null {
-		const prices = slot.printings
-			.map((p) => p.market_price)
-			.filter((v): v is number => v !== null && v > 0);
-		return prices.length ? Math.max(...prices) : null;
-	}
 	// Shimmer only what the user actually holds in a foil treatment
 	// (`variants.foil`, data — not a list of codes here).
 	function ownedFoil(slot: BinderSlot): boolean {
@@ -659,7 +652,7 @@
 						number={slot.number}
 						rarity={(slot.rarity_grp ?? 'unranked') as TileRarity}
 						foil={ownedFoil(slot)}
-						price={slotPrice(slot) !== null ? `$${slotPrice(slot)?.toFixed(2)}` : null}
+						price={slot.display_price !== null ? `$${slot.display_price.toFixed(2)}` : null}
 						missing={!ownedAny(slot)}
 						pips={slot.printings
 							.filter((p) => !p.deprecated)

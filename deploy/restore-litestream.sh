@@ -322,8 +322,10 @@ for UNIT in "$SERVICE_NAME" "${SIDECAR}.service"; do
     # Units that are not installed on this box (a bare instance with no app, a
     # box with backups deliberately unconfigured) are not "down".
     systemctl --user cat "$UNIT" >/dev/null 2>&1 || continue
-    # A few seconds of grace: the app container pulls itself up behind systemd.
-    for _ in $(seq 10); do
+    # Grace for the app container to pull itself up behind systemd, and for one
+    # Restart=on-failure cycle of the sidecar (RestartSec=10): a start that fails
+    # once on a still-bare volume is healthy 10s later, which a 10s wait read as down.
+    for _ in $(seq 40); do
         [ "$(systemctl --user is-active "$UNIT")" = active ] && break
         sleep 1
     done

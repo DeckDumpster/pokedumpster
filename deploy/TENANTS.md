@@ -669,9 +669,8 @@ journalctl --user -u pkdump-${INSTANCE} -n 20 | grep 'pkdump: tenant'
 
 # BACKUPS — the step that matters, and the one the last migration skipped.
 # `is-active` and "snapshot complete" both said healthy while nothing replicated.
-# Watch txid.replica: zero on the first sync after a rename is expected, but it
-# must move off zero and converge on txid.db.
-journalctl --user -u pkdump-litestream-${INSTANCE} -n 50 | grep 'replica sync'
+# The replica must move off zero and converge on the local LTX position;
+# backup-check measures exactly that (the sidecar logs at INFO, no sync lines).
 bash deploy/backup-check.sh ${INSTANCE}
 ```
 

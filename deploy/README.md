@@ -997,22 +997,18 @@ S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
   nobody edited paged. Judged on `mtime` LAG (PR #51), the `.sqlite` mtime moves
   on checkpoint and on open, so it paged too. Both were proxies.
 
-  **Why tenants are read from the sidecar's journal.** The registry gets its
+  **How a tenant's position is measured (sp-ksml54).** The registry gets its
   local txid from `litestream status`, but that command cannot answer for a
-  tenant: tenants are one `dir:` + `pattern: "*.sqlite"` entry (so a new tenant
-  needs no config rewrite), and v0.5.16 does not expand it — `status -json
-  /data/tenants/<id>.sqlite` returns `[]`, and `status` with no path lists the
-  directory as `"database": "/"`, `"status": "not initialized"`. The *running*
-  sidecar publishes exactly the pair we need, once per second per database:
-
-  ```
-  msg="replica sync" db=<id>.sqlite replica=s3 txid.replica=…9 txid.db=…9
-  ```
-
-  `status` reads config; this reads behaviour. A tenant with no such line inside
-  `PKDUMP_BACKUP_SIDECAR_LOOKBACK` (6h) — or one whose newest line is older than
-  `PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS` (1800s, against a one-second cadence) —
-  is not being replicated, which is the loudest thing this checker can find.
+  tenant: tenants are one `dir:` + `pattern: "*.sqlite"` entry, and `status`
+  returns `[]` / `"not initialized"` for them. So the checker measures both sides
+  itself and reads no log: the replica's furthest TXID from `litestream ltx`
+  against S3, and the furthest TXID in Litestream's own local state,
+  `tenants/.<id>.sqlite-litestream/ltx/<level>/<min>-<max>.ltx` (the data volume
+  is mounted read-only). A tenant with no such directory — once the sidecar has
+  been up longer than `PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS` — has never been
+  picked up, which is the loudest thing this checker can find. The sidecar logs
+  at INFO: asking for DEBUG to read a log line once wrote ~2M syslog lines/day
+  and filled the root filesystem.
 
   S3 is still asked directly: the sidecar reporting a tenant fully replicated
   while its prefix holds no LTX files at all is a fault, because a check that only
@@ -1040,7 +1036,7 @@ S3, not just that the service is up. Defense in depth (pokedumpster-ivq):
   **One window, both legs.** One outage lags the tenants and the registry alike
   — same sidecar, same un-uploaded checkpoint — so both re-ask over it, each
   asking whichever component can answer for that database: the registry re-asks
-  S3, tenants re-ask the sidecar's `replica sync` pair. Only the registry had a
+  S3, tenants re-measure the replica and the local LTX directory. Only the registry had a
   window until pd-yglw, and the asymmetry read as a flaky gate rather than as a
   bug: §4b passed on an idle box and paged over the tenant beside the registry
   it had just waited out on a loaded one.

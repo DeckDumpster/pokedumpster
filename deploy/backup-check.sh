@@ -156,22 +156,11 @@ fi
 NOW="$(date +%s)"
 MAX_AGE_SECONDS=$(( MAX_AGE_HOURS * 3600 ))
 
-# How far back to look for the sidecar's own replication-position lines, and how
-# long a silence is a fault. Measured on prod 2026-08-15: the sidecar emits one
-# `replica sync` line per database PER SECOND, so 30 minutes of silence is not a
-# quiet period, it is a stopped process. The lookback is wider than the grace so
-# the check can tell "stopped 40 minutes ago" (reportable, with an age) apart from
-# "nothing here at all" (reportable, as a glob miss) instead of collapsing both.
-# A Go duration, because that is what `podman logs --since` parses — it rejects
-# "6 hours ago" outright, unlike journalctl.
-SIDECAR_LOOKBACK="${PKDUMP_BACKUP_SIDECAR_LOOKBACK:-6h}"
+# How long a freshly started sidecar is given to pick a database up before the
+# check says it is not replicating it. Measured on prod 2026-08-15: it names a
+# database within seconds of starting, so this is generous.
 SIDECAR_GRACE_SECONDS="${PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS:-1800}"
-# Which container to read them from. `podman logs`, not `journalctl`, because the
-# sidecar is a container in every deployment of it and only SOME of those are
-# systemd units: prod's is a Quadlet (so journald has it too), the alarming gate
-# runs a bare detached container (so journald does not). Reading the container
-# directly is one mechanism that covers both, and it drops the coupling between
-# this check and a unit-naming convention that has nothing to do with replication.
+# Which container is the sidecar (liveness only — nothing is read from its logs).
 SIDECAR_CTR="${PKDUMP_BACKUP_SIDECAR_CTR:-systemd-pkdump-litestream-${INSTANCE}}"
 
 # ltx_list <replica-url> <what> — every LTX file a replica holds, as litestream
@@ -315,61 +304,48 @@ local_position() {
 # checkpoint. The -shm is deliberately NOT considered: it is touched whenever the
 # database is merely OPENED, so including it would make every restart look like a
 # write and mask a genuinely lagging replica.
-# sidecar_position <db-basename> <what> — where the RUNNING Litestream stands on
-# one tenant: SIDE_REPLICA (what has reached S3) and SIDE_DB (what it has ingested
-# locally), both 16-hex TXIDs, plus SIDE_AGE seconds since it last said so.
+# sidecar_position <db-basename> <what> — where Litestream stands on one tenant:
+# SIDE_REPLICA (the furthest transaction S3 holds) and SIDE_DB (the furthest one
+# Litestream has ingested from the database), both 16-hex TXIDs. SIDE_AGE is
+# always empty: how recently anything moved is deliberately not judged (a
+# quiescent tenant in correspondence is a perfect backup).
 #
-# WHY THE JOURNAL AND NOT `litestream status`. Tenants are declared as ONE
-# `dir:` + `pattern: "*.sqlite"` entry (litestream.yml) — deliberately, so a new
-# tenant needs no config rewrite. The v0.5.16 CLI does not expand that entry:
-# `status -json /data/tenants/<id>.sqlite` returns `[]`, and `status` with no path
-# lists the dir as `"database": "/"`, `"status": "not initialized"`. Measured
-# 2026-08-15 against the shipped config, both inside the live sidecar and in a
-# throwaway container. So the CLI cannot answer this question for a tenant at all,
-# while the RUNNING process answers it once per second per database:
+# BOTH SIDES ARE MEASURED, NEITHER IS READ FROM A LOG. This used to parse the
+# sidecar's `msg="replica sync"` line, which 0.5.17 moved to DEBUG, so the check
+# forced the sidecar to DEBUG and ~2M lines/day filled the host's root filesystem
+# (sp-ksml54). The sidecar now logs at INFO and this asks the files instead:
 #
-#   msg="replica sync" db=<id>.sqlite replica=s3 txid.replica=…9 txid.db=…9
+#   replica: the highest max_txid in the tenant's bucket prefix (`litestream ltx`)
+#   db:      the highest txid in Litestream's own local LTX directory,
+#            <tenants>/.<db>-litestream/ltx/<level>/<min>-<max>.ltx — the
+#            replicating process's ingest position, which the 0.5 CLI cannot
+#            report for a `dir:` entry (`status` answers "not initialized").
 #
-# That is not a proxy and not an inference. It is the replicating process naming
-# its own two positions — the same pair pd-me6h judges the registry on, from the
-# component that would know first. `status` reads config; this reads behaviour.
-#
-# An empty result is NOT a pass. A tenant file that exists on disk while the
-# sidecar has never mentioned it means the glob did not pick it up and that
-# database is being backed up by nothing — the worst outcome this check exists to
-# find, and the one an age test scored as "fine, just quiet".
+# Returns 1 when the sidecar has no local state for the database (it has never
+# picked it up) — the glob-miss case judge_no_position names. A failure to read
+# S3 is a fault, not silence, and trips the switch.
 SIDE_REPLICA=""
 SIDE_DB=""
 SIDE_AGE=""
 sidecar_position() {
-    local base="$1" line ts_iso ts_epoch
+    local base="$1" what="$2" tenant url dir
     SIDE_REPLICA=""; SIDE_DB=""; SIDE_AGE=""
+    tenant="${base%.sqlite}"
 
-    # Bounded lookback so a rolled journal cannot resurrect a stale position, and
-    # so the query stays cheap at ~86k lines/day/db.
-    line="$(podman logs --since "${SIDECAR_LOOKBACK}" "$SIDECAR_CTR" 2>&1 \
-            | grep -F "msg=\"replica sync\"" | grep -F "db=${base}" \
-            | tail -n1 || true)"
-    [ -n "$line" ] || return 1
-
-    SIDE_REPLICA="$(printf '%s' "$line" | sed -n 's/.*txid\.replica=\([0-9a-fA-F]\{16\}\).*/\1/p' | tr 'A-F' 'a-f')"
-    SIDE_DB="$(printf '%s' "$line"      | sed -n 's/.*txid\.db=\([0-9a-fA-F]\{16\}\).*/\1/p'      | tr 'A-F' 'a-f')"
-    ts_iso="$(printf '%s' "$line" | sed -n 's/^time=\([^ ]*\).*/\1/p')"
-    if [ -n "$ts_iso" ]; then
-        ts_epoch="$(date -d "$ts_iso" +%s 2>/dev/null || true)"
-        # Clamp at zero. The sidecar's clock and this script's differ by a hair,
-        # and NOW is stamped at startup while the line is read seconds later, so
-        # a healthy check routinely computes a small negative age. Reporting
-        # "-1s ago" reads as a bug in the checker and invites someone to distrust
-        # a correct result.
-        if [ -n "$ts_epoch" ]; then
-            SIDE_AGE=$(( NOW - ts_epoch ))
-            # `if`, not `[ … ] && …`: this script runs under `set -e` and a bare
-            # false test has taken a run down here before (see judge_freshness).
-            if [ "$SIDE_AGE" -lt 0 ]; then SIDE_AGE=0; fi
-        fi
+    dir="${MOUNTPOINT}/tenants/.${base}-litestream/ltx"
+    if [ -d "$dir" ]; then
+        SIDE_DB="$(find "$dir" -type f -name '*.ltx' -printf '%f\n' \
+                   | grep -oE '[0-9a-fA-F]{16}' | tr 'A-F' 'a-f' \
+                   | LC_ALL=C sort | tail -n1 || true)"
     fi
-    [ -n "$SIDE_REPLICA" ] && [ -n "$SIDE_DB" ]
+    [ -n "$SIDE_DB" ] || return 1
+
+    url="$(tenant_replica_url "$tenant")" \
+        || stale "${what}: could not derive a replica URL (check litestream.env)"
+    SIDE_REPLICA="$(ltx_max_txid "$url" "$what")" \
+        || stale "${what}: could not read its replica at ${url%%\?*}"
+    [ -n "$SIDE_REPLICA" ] || SIDE_REPLICA="0000000000000000"
+    return 0
 }
 
 # sidecar_uptime — how many seconds the Litestream sidecar CONTAINER has been up,
@@ -427,7 +403,7 @@ sidecar_uptime() {
 await_sidecar_correspondence() {
     local base="$1" what="$2" waited=0
     echo "backup-check: ${what}: its replica reads behind the database" \
-         "(ingested ${SIDE_DB}, replica ${SIDE_REPLICA}) — re-asking the sidecar for up to" \
+         "(ingested ${SIDE_DB}, replica ${SIDE_REPLICA}) — re-measuring for up to" \
          "${CORRESPONDENCE_GRACE_SECONDS}s in case a sync is still in flight"
     while [ "$waited" -lt "$CORRESPONDENCE_GRACE_SECONDS" ]; do
         sleep "$CORRESPONDENCE_POLL_SECONDS"
@@ -451,7 +427,7 @@ await_sidecar_correspondence() {
 #
 #   1. Is the sidecar watching this database at all?  (a position, non-zero)
 #   2. Did bytes actually land off-box?               (the replica lists LTX files)
-#   3. Is it still speaking?                          (that position, recently)
+#   3. (retired: log silence — no log is read any more)
 #   4. Has everything it ingested reached S3?         (txid.replica >= txid.db,
 #      re-asked over the correspondence window before it counts)
 #   5. Is the process still alive right now?          (the container is running)
@@ -521,12 +497,6 @@ judge_correspondence() {
         stale "${what}: no replica data at ${url%%\?*} — it is NOT backed up. The sidecar reports it replicated up to txid ${SIDE_REPLICA}, but that prefix holds no LTX files at all."
     fi
 
-    # 3. IS THE SIDECAR STILL SPEAKING?  It reports about once a second per
-    # database, so a long silence is not a quiet period, it is a stopped process.
-    if [ -n "$SIDE_AGE" ] && [ "$SIDE_AGE" -gt "$SIDECAR_GRACE_SECONDS" ]; then
-        stale "${what}: the sidecar last reported on ${base} $(( SIDE_AGE / 60 ))m ago (it reports about once a second). Replication has stopped."
-    fi
-
     # 4. HAS EVERYTHING IT INGESTED REACHED S3?
     #
     # Behind is a VERDICT only after the re-ask, exactly as it is for the
@@ -546,10 +516,10 @@ judge_correspondence() {
     # a dead container's output just as well as a live one's. A sidecar that died
     # inside the grace window would otherwise pass on its own last words.
     if ! sidecar_uptime >/dev/null; then
-        stale "${what}: the Litestream sidecar container '${SIDECAR_CTR}' is NOT RUNNING — it last reported on ${base} ${SIDE_AGE:-?}s ago, but nothing is replicating this database now."
+        stale "${what}: the Litestream sidecar container '${SIDECAR_CTR}' is NOT RUNNING — it has local state for ${base}, but nothing is replicating this database now."
     fi
 
-    echo "backup-check: ${what} OK — replica in correspondence at txid ${SIDE_DB} (sidecar reported ${SIDE_AGE:-?}s ago)"
+    echo "backup-check: ${what} OK — replica in correspondence at txid ${SIDE_DB}"
 }
 
 # judge_no_position <what> <base> — the verdict when the sidecar has said nothing
@@ -581,11 +551,11 @@ judge_no_position() {
     fi
 
     if [ "$up" -lt "$SIDECAR_GRACE_SECONDS" ]; then
-        echo "backup-check: ${what}: the sidecar has only been up ${up}s (grace ${SIDECAR_GRACE_SECONDS}s) and has not reported on ${base} yet — not judged"
+        echo "backup-check: ${what}: the sidecar has only been up ${up}s (grace ${SIDECAR_GRACE_SECONDS}s) and has no local state for ${base} yet — not judged"
         return 0
     fi
 
-    stale "${what}: the Litestream sidecar has not reported a replication position for ${base} within the last ${SIDECAR_LOOKBACK}, and it has been up $(( up / 60 ))m (container '${SIDECAR_CTR}'). Its tenants glob is not matching this file — new writes are reaching NOTHING."
+    stale "${what}: the Litestream sidecar has not reported a replication position for ${base} and it has been up $(( up / 60 ))m (container '${SIDECAR_CTR}'). Its tenants glob is not matching this file — new writes are reaching NOTHING."
 }
 
 # Retained for the alarming gates, which drive it directly with synthetic

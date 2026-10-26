@@ -308,18 +308,15 @@ check "the early writes reached ${VICTIM}'s replica, so the marker has something
 # The remedy has two halves and this asserts the pair: the version is pinned
 # (deploy/litestream-lib.sh) and the level is asked for by name
 # (deploy/litestream.yml's `logging:` block). Either alone is not enough.
-log "3b. the sidecar emits the message deploy/backup-check.sh parses (pd-pfxf)"
-sync_line_emitted() { logs_match "$LS_CTR" 'msg="replica sync"'; }
-wait_until 60 1 sync_line_emitted || true
-check "the running sidecar logs msg=\"replica sync\" at the configured level" "yes" \
-	"$(sync_line_emitted && echo yes || echo no)"
-# ...carrying BOTH txids, in the shape sidecar_position seds them out of. A line
-# that survived a rename of either field would satisfy the grep above and leave
-# backup-check parsing empty strings, which it reads as "no position" — the same
-# silence, one field further in.
-check "and it carries txid.replica and txid.db, the pair correspondence is judged on" "yes" \
-	"$(logs_match "$LS_CTR" -E 'msg="replica sync".*txid\.replica=[0-9a-f]{16}.*txid\.db=[0-9a-f]{16}' \
-		&& echo yes || echo no)"
+log "3b. the sidecar logs at INFO and backup-check reads no log (sp-ksml54)"
+# At DEBUG the sidecar wrote ~2M lines/day and filled the host's root filesystem.
+# backup-check measures the replica itself (S3's LTX listing against the local LTX
+# directory), so nothing needs the level up. Asserted on the RUNNING process.
+debug_line_emitted() { logs_match "$LS_CTR" 'level=DEBUG'; }
+check "the running sidecar emits no DEBUG lines" "no" \
+	"$(debug_line_emitted && echo yes || echo no)"
+check "and no replica-sync message is needed by backup-check" "no" \
+	"$(grep -qF 'replica sync' <<<"$(grep -v '^[[:space:]]*#' "${REPO_DIR}/deploy/backup-check.sh")" && echo yes || echo no)"
 # And it is THIS image, not whatever `:latest` points at today. A gate that
 # pulled a moving tag would go red on a morning nobody changed anything.
 check "the pinned image is the one under test" "$PKDUMP_LITESTREAM_IMAGE" "$LITESTREAM_IMAGE"
@@ -845,17 +842,9 @@ check "and it is still charlie's data under its new name" "charlie" \
 # it caught exactly that first line (2026-08-08).
 ADVANCED=no
 replica_advanced() {
-	# `logs_match`, not `grep -q`: this is the pd-pfxf trap, and it survived the
-	# ratchet that exists to catch it only because the pipeline is split over
-	# two lines. Under DEBUG the sidecar's log is now big enough that grep -q
-	# closes the pipe well before `podman logs` is done writing — SIGPIPE, 141,
-	# pipefail, and a match reported as no-match, on the busy box and not on the
-	# quiet one. It also has to name the MESSAGE: at this level most lines
-	# carrying `db=<id>.sqlite` are `msg="s3 request"`, so matching the two
-	# fields anywhere in the stream could pair a TXID from one line with the
-	# database name from another.
-	if logs_match "$LS_CTR" -E \
-		"msg=\"replica sync\".*db=${MIGRATED_ID}\.sqlite.*txid\.replica=0*[1-9a-f]"; then
+	# The replica itself, asked of S3: it holds LTX data under the NEW prefix. A
+	# replica stuck at zero lists nothing there however much txid.db climbs.
+	if replica_holds_data ls_run "$(tenant_replica_url "$MIGRATED_ID")"; then
 		ADVANCED=yes
 		return 0
 	fi
@@ -868,12 +857,8 @@ replica_advanced() {
 wait_until 90 1 replica_advanced || true
 check "txid.replica advances on the new prefix, rather than sticking at 0" "yes" "$ADVANCED"
 if [ "$ADVANCED" != yes ]; then
-	echo "  --- replica sync lines for ${MIGRATED_ID}.sqlite ---"
-	# The sync lines, not every line naming the database: at DEBUG the latter is
-	# a wall of `msg="s3 request"` and the ten this prints would carry nothing
-	# anybody could diagnose the failure from.
-	podman logs "$LS_CTR" 2>&1 | grep -F 'msg="replica sync"' |
-		grep -F "db=${MIGRATED_ID}.sqlite" | tail -10 | sed 's/^/  /'
+	echo "  --- replica state for ${MIGRATED_ID}.sqlite ---"
+	replica_state ls_run "$(tenant_replica_url "$MIGRATED_ID")" | sed 's/^/  /'
 fi
 
 # The pre-cutover half of the recovery window: the old prefix stops advancing

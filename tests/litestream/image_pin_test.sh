@@ -126,28 +126,23 @@ none "every literal image reference names the pinned version" "$DISAGREE"
 check "the shipped sidecar unit names the pinned image" "1" \
 	"$(grep -cxF "Image=${PKDUMP_LITESTREAM_IMAGE}" "$UNIT")"
 
-log "3. the shipped config asks for a level that emits the message"
-# `logging.level` must be debug or trace: measured 2026-09-02, 0.5.17 emits
-# msg="replica sync" at DEBUG and nothing at INFO. 0.5.16 emits it at both, so
-# asking for it costs nothing on the older image and is what makes the newer one
-# work at all.
+log "3. the shipped config does not ask for a verbose level (sp-ksml54)"
+# Litestream 0.5.17 moved the sync message to DEBUG; asking for DEBUG to read it
+# produced ~2M syslog lines/day and filled the prod host's root filesystem.
+# backup-check now measures the replica (S3 listing vs the local LTX directory),
+# so the sidecar runs at info.
 LEVEL="$(sed -n '/^logging:/,/^[^ #]/p' "$YML" | sed -n 's/^[[:space:]]\+level:[[:space:]]*\([a-z]\+\).*/\1/p' | head -1)"
 check "deploy/litestream.yml sets logging.level" "yes" \
 	"$([[ -n "$LEVEL" ]] && echo yes || echo no)"
-check "…to a level at which msg=\"replica sync\" is emitted" "yes" \
-	"$(case "$LEVEL" in debug | trace) echo yes ;; *) echo no ;; esac)"
+check "…to info, warn or error — never debug or trace" "yes" \
+	"$(case "$LEVEL" in info | warn | error) echo yes ;; *) echo no ;; esac)"
 
-log "4. …and backup-check is still the thing that reads it"
-# The other end of the contract. A checker that stopped parsing this message
-# would make §3 a rule protecting nothing, and the log volume debug costs would
-# be paid for no reason.
-check "deploy/backup-check.sh parses msg=\"replica sync\"" "yes" \
-	"$(grep -qF 'msg=\"replica sync\"' "$CHECKER" && echo yes || echo no)"
-check "…for both txid.replica and txid.db" "yes" \
-	"$(grep -q 'txid\\.replica=' "$CHECKER" && grep -q 'txid\\.db=' "$CHECKER" && echo yes || echo no)"
+log "4. …and backup-check reads no log"
+check "deploy/backup-check.sh never reads the sidecar's logs" "no" \
+	"$(grep -qE 'podman logs|journalctl|replica sync' <<<"$(grep -v '^[[:space:]]*#' "$CHECKER")" && echo yes || echo no)"
 
 log "RESULT"
 echo "  ${pass} passed, ${fail} failed"
 [[ $fail -eq 0 ]] || exit 1
 echo "  PASS — litestream is pinned to ${PKDUMP_LITESTREAM_VERSION} everywhere, and the"
-echo "         shipped config asks for the log level backup-check reads."
+echo "         shipped config keeps the sidecar at a quiet log level."

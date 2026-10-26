@@ -316,7 +316,7 @@ debug_line_emitted() { logs_match "$LS_CTR" 'level=DEBUG'; }
 check "the running sidecar emits no DEBUG lines" "no" \
 	"$(debug_line_emitted && echo yes || echo no)"
 check "and no replica-sync message is needed by backup-check" "no" \
-	"$(grep -qF 'replica sync' "${REPO_DIR}/deploy/backup-check.sh" && echo yes || echo no)"
+	"$(grep -qF 'replica sync' <<<"$(grep -v '^[[:space:]]*#' "${REPO_DIR}/deploy/backup-check.sh")" && echo yes || echo no)"
 # And it is THIS image, not whatever `:latest` points at today. A gate that
 # pulled a moving tag would go red on a morning nobody changed anything.
 check "the pinned image is the one under test" "$PKDUMP_LITESTREAM_IMAGE" "$LITESTREAM_IMAGE"

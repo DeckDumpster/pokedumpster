@@ -165,24 +165,16 @@ tenants_on_volume() {
 # moved from 0.5.16 to 0.5.17. Nothing in the tree changed; three container
 # gates went red together the next morning and read as networking flakiness.
 #
-# WHAT ACTUALLY MOVED. 0.5.17 carries "fix(logging): downgrade replica sync
-# messages from INFO to DEBUG". deploy/backup-check.sh reads a tenant's two
-# TXIDs out of exactly that message (sidecar_position — see the long note there
-# for why the CLI cannot answer instead), so at the default level the line it
-# parses stopped existing: every tenant fell to "not judged" inside the grace
-# window and would have gone permanently STALE after it. Prod's own backup
-# verification would have stopped verifying and then started paging, and the
-# only warning anybody got was three test gates.
+# WHAT ACTUALLY MOVED. 0.5.17 downgraded the `replica sync` log message from
+# INFO to DEBUG. backup-check once parsed it, and asked for DEBUG to keep doing so;
+# that filled the host's root filesystem (sp-ksml54), so it now measures the
+# replica itself (sidecar_position) and the sidecar logs at INFO.
 #
 # So this is pd-pejn's rule — A MOVING TAG IS NOT A PIN — applied to the other
 # image this repo runs. The Containerfile's bases name their Debian release;
 # this names its Litestream version. Bumping it is a deliberate edit, and
 # tests/litestream/image_pin_test.sh is what makes forgetting one of the copies
 # a failure in under a second instead of a red container tier in twenty minutes.
-#
-# The message this pin protects is emitted at DEBUG from 0.5.17 on, which is why
-# deploy/litestream.yml carries a `logging:` block asking for it by name. Move
-# this version and re-read that block: the two are one contract.
 #
 # Callers may override for a one-off experiment (`LITESTREAM_IMAGE=… bash
 # tests/litestream/run.sh`); nothing under deploy/ or tests/ may HARDCODE

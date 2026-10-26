@@ -185,8 +185,7 @@ cleanup() {
 		"$INSTANCE_UNIT"
 	systemctl --user daemon-reload >/dev/null 2>&1
 	systemctl --user reset-failed "${P}-"'*' >/dev/null 2>&1
-	podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" "pkdump-${INSTANCE}-diverged" \
-		"pkdump-${INSTANCE}-silent" "pkdump-${INSTANCE}-catchup" >/dev/null 2>&1
+	podman rm -f --ignore "$LS_CTR" "$MINIO_CTR" "pkdump-${INSTANCE}-standin" >/dev/null 2>&1
 	podman volume rm -f "$VOLUME" >/dev/null 2>&1
 	podman secret rm "$SECRET_NAME" >/dev/null 2>&1
 	rm -rf "$CONF_DIR" "$WORK"
@@ -219,12 +218,10 @@ marker_epoch() { cat "${MP}/.backup-last-ok" 2>/dev/null || echo none; }
 # provoke divergences that are PERMANENT, and sitting through the production
 # window twice over would buy nothing. Where the window is the point — a lag
 # that resolves itself — the gate uses run_check_default_grace instead.
-# PKDUMP_BACKUP_SIDECAR_CTR: the tenant leg reads replication positions out of the
-# sidecar's own `replica sync` log lines, and this gate's replicator is the bare
-# detached container started in §2 rather than the deployed Quadlet. Without this
-# the tenant leg finds no position, treats every tenant as "too new to judge", and
-# the gate goes green having verified nothing about tenants — which is exactly how
-# it caught the first draft of that change.
+# PKDUMP_BACKUP_SIDECAR_CTR: the tenant leg measures the replica and Litestream's
+# local LTX directory (no log is read), but still asks whether the sidecar
+# container is RUNNING, and this gate's replicator is the bare detached container
+# started in §2 rather than the deployed Quadlet.
 run_check() { PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
 	PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS=1 \
 	PKDUMP_BACKUP_SIDECAR_CTR="$LS_CTR" \
@@ -483,12 +480,23 @@ registry_local_txid() {
 # correctly, and for a reason that was this gate's timing rather than the
 # checker's behaviour. Waiting for the condition §3 actually depends on removes
 # the race instead of sleeping at it.
+# Both sides measured the way deploy/backup-check.sh measures them — the replica
+# listing and Litestream's local LTX directory — never from the sidecar's log.
+tenant_local_txid() { # tenant_local_txid <db-basename>
+	find "${MP}/tenants/.${1}-litestream/ltx" -type f -name '*.ltx' -printf '%f\n' 2>/dev/null |
+		grep -oE '[0-9a-fA-F]{16}' | tr 'A-F' 'a-f' | LC_ALL=C sort | tail -n1
+}
+tenant_pair() { # -> "<replica> <db>" for $LAG_TENANT
+	local r d
+	r="$(replica_max_txid "$(tenant_replica_url "$LAG_TENANT")")"
+	d="$(tenant_local_txid "${LAG_TENANT}.sqlite")"
+	echo "${r:-0000000000000000} ${d:-0000000000000000}"
+}
 awaiting_correspondence() { # awaiting_correspondence <db-basename>
 	local base="$1" deadline=$(( SECONDS + 90 )) r d
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		read -r r d <<<"$(podman logs --since 120s "$LS_CTR" 2>&1 |
-			grep -F "db=${base}" | tail -n1 |
-			sed -n 's/.*txid\.replica=\([0-9a-f]\{16\}\).*txid\.db=\([0-9a-f]\{16\}\).*/\1 \2/p')"
+		r="$(replica_max_txid "$(tenant_replica_url "${base%.sqlite}")")"
+		d="$(tenant_local_txid "$base")"
 		if [ -n "${d:-}" ] && [ "${r:-}" = "${d:-}" ]; then return 0; fi
 		sleep 1
 	done
@@ -634,41 +642,20 @@ GREEN_MARKER="$(marker_epoch)"
 # so txid.db advances while txid.replica cannot, which is "writes are not
 # reaching S3" stated in the only terms that actually mean it.
 LAG_TENANT="$(ls "${MP}/tenants" | head -1)"; LAG_TENANT="${LAG_TENANT%.sqlite}"
+PRE_R="$(replica_max_txid "$(tenant_replica_url "$LAG_TENANT")")"
 podman stop -t 2 "$MINIO_CTR" >/dev/null 2>&1
 sqlite3 -cmd '.timeout 5000' "${MP}/tenants/${LAG_TENANT}.sqlite" \
 	"INSERT INTO collection (tenant) VALUES ('${LAG_TENANT}-unreplicated');" >/dev/null
-# Wait for the sidecar to publish a DIVERGED pair rather than sleeping a guess:
-# the two txids compared in the shell, because grep -E has no back-reference
-# negation and a regex that looked like it did would quietly always match.
-#
-# SELECT THE MESSAGE, NOT THE DATABASE. `db=<id>.sqlite` is on many of this
-# process's lines, and at the DEBUG level deploy/litestream.yml now asks for by
-# name (pd-pfxf) it is on most of them: with the object store stopped the
-# sidecar retries, and `msg="s3 request"` arrives several times a second while
-# `msg="replica sync"` does not. Taking the newest `db=` line therefore lands on
-# a request line that carries no TXIDs at all, and this reports
-# `caught-up(?/?)` — the two positions unreadable, rendered as agreement — on a
-# replica that really is behind. That is what failed run 33989216830 in this
-# very section, on a change that only turned the log level up.
-#
-# So: filter to the message first, exactly as deploy/backup-check.sh's
-# `sidecar_position` does, and `tail` the lines the pair was EXTRACTED from
-# rather than the ones that merely mention the database. The gate and the
-# production checker must not be able to reach different conclusions about one
-# sidecar.
-tenant_pair() { # -> "<replica> <db>" from the sidecar's newest replica-sync line
-	podman logs --since 120s "$LS_CTR" 2>&1 |
-		grep -F 'msg="replica sync"' | grep -F "db=${LAG_TENANT}.sqlite" |
-		sed -n 's/.*txid\.replica=\([0-9a-f]\{16\}\).*txid\.db=\([0-9a-f]\{16\}\).*/\1 \2/p' |
-		tail -n1
-}
+# Wait for the local side to move past the replica rather than sleeping a guess:
+# with the object store down the replica cannot be listed at all, so the
+# reference is the replica's position read just BEFORE it was stopped.
 for _ in $(seq 40); do
-	read -r _r _d <<<"$(tenant_pair)"
-	[ -n "${_d:-}" ] && [ "${_r:-}" != "${_d:-}" ] && break
+	_d="$(tenant_local_txid "${LAG_TENANT}.sqlite")"
+	[ -n "${_d:-}" ] && [ "${_d}" != "${PRE_R:-}" ] && break
 	sleep 1
 done
-check "the sidecar reports the tenant's replica behind its database" "behind" \
-	"$(read -r _r _d <<<"$(tenant_pair)"; [ -n "${_d:-}" ] && [ "${_r:-}" != "${_d:-}" ] && echo behind || echo "caught-up(${_r:-?}/${_d:-?})")"
+check "Litestream ingested the tenant's write locally; the replica cannot have it" "ahead" \
+	"$([ -n "${_d:-}" ] && [ "${_d}" != "${PRE_R:-}" ] && echo ahead || echo "stuck(${PRE_R:-?}/${_d:-?})")"
 OUT="$(run_check)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
 # Not asserted here: that the STALE line names the TENANT. With the object store
@@ -811,8 +798,8 @@ check "and it says the dead-man's switch is NOT armed" "1" \
 check "and nothing at all was sent" "0" "$(( $(sink_total) - BEFORE ))"
 
 # ── the tenant leg's own two faults, proved rather than assumed ─────────────
-# Tenants are judged on CORRESPONDENCE against the sidecar's `replica sync`
-# positions, so the two ways that can fail need to be seen failing. Both are
+# Tenants are judged on CORRESPONDENCE (replica listing against Litestream's local LTX state),
+# so the ways that can fail need to be seen failing. All are
 # driven deterministically, because the alternative — waiting for a real stall —
 # is a gate that takes hours and still proves nothing on a good day.
 #
@@ -840,177 +827,127 @@ OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
 	PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS=-1 \
 	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" 2>&1)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
-check "a sidecar reporting nothing fails the tenant leg" "1" "$RC"
-check "and it says no replication position was reported" "1" \
-	"$(printf '%s' "$OUT" | grep -c 'has not reported a replication position' || true)"
+check "a sidecar that is not running fails the tenant leg" "1" "$RC"
+check "and it says the sidecar is NOT RUNNING" "1" \
+	"$(printf '%s' "$OUT" | grep -c 'is NOT RUNNING' || true)"
 
-# 2. The sidecar is reporting, but its newest position is older than the grace —
-#    replication stopped while the process stayed up, the exact silent mode
-#    Layer 1 exists for. A negative grace makes every position too old, so the
-#    branch is exercised without needing a sidecar that has genuinely stalled.
-OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
-	PKDUMP_BACKUP_SIDECAR_CTR="$LS_CTR" PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS=-1 \
-	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" 2>&1)"; RC=$?
-check "a stalled sidecar position fails the tenant leg" "1" "$RC"
-check "and it says replication has stopped" "1" \
-	"$(printf '%s' "$OUT" | grep -c 'Replication has stopped' || true)"
+# The tenant leg's remaining faults are provoked on the REAL state: the replicator
+# is paused (so it cannot react to the edit), Litestream's local LTX directory is
+# edited, the checker is run, and the edit is undone. Nothing is read from a log.
+#
+# A stand-in container that merely RUNS supplies the one thing the checker still
+# asks the container: that it is up (`sleep infinity` keeps it alive; it is not a
+# delay).
+LS_STATE="${MP}/tenants/.${LAG_TENANT}.sqlite-litestream"
+FAKE_LTX="${LS_STATE}/ltx/0/0000000000000001-00000000000000ff.ltx"
+UP_CTR="pkdump-${INSTANCE}-standin"
+standin_conf() { # standin_conf <dir> — a conf dir naming the stand-in as the sidecar
+	mkdir -p "$1"
+	cp "${CONF_DIR}/litestream.env" "$1/"
+	cp -a "${CONF_DIR}/aws" "$1/" 2>/dev/null || true
+	sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=${UP_CTR}|" \
+		"${CONF_DIR}/alerts.env" >"$1/alerts.env"
+}
+ls_pause() {
+	podman rm -f --ignore "$UP_CTR" >/dev/null 2>&1
+	podman run -d --name "$UP_CTR" --entrypoint sleep "$MC_IMAGE" infinity >/dev/null 2>&1
+	podman stop -t 2 "$LS_CTR" >/dev/null 2>&1
+}
+ls_resume() {
+	rm -f "$FAKE_LTX"
+	podman rm -f --ignore "$UP_CTR" >/dev/null 2>&1
+	podman start "$LS_CTR" >/dev/null 2>&1
+}
 
-# 3. The sidecar is reporting, recently, and its two txids DISAGREE — the replica
-#    is behind the database. This is the fault the whole correspondence design is
+# 3. Litestream has INGESTED a transaction that S3 does not hold — the replica is
+#    behind the database. This is the fault the whole correspondence design is
 #    built around, and the §4c block above cannot isolate it: killing the object
 #    store fails the registry first, so the run ends before any tenant is judged.
-#
-#    So the position comes from a stand-in container that publishes exactly one
-#    line in the sidecar's format. That is not a mock of the thing under test —
-#    `judge_correspondence` and its txid comparison run for real, on real tenant
-#    files, against a live S3. Only the sidecar's ACCOUNT of where it stands is
-#    substituted, and §4c above is what proves litestream really does say this
-#    when writes cannot land.
-DIVERGED_CTR="pkdump-${INSTANCE}-diverged"
-DIVERGED_LINE="time=$(date -u +%Y-%m-%dT%H:%M:%S.000Z) level=INFO msg=\"replica sync\" system=store db=${LAG_TENANT}.sqlite replica=s3 txid.replica=0000000000000001 txid.db=00000000000000ff"
-#    `--entrypoint sh` on an image this gate already pulls, rather than adding
-#    alpine as a dependency for one echo. The mc image runs `mc` by default, so
-#    without the override the shell command arrives as mc arguments and the
-#    container logs a usage error instead of the line — which looks exactly like
-#    a sidecar that said nothing, and sends this gate down the wrong branch.
-#    It prints the line and EXITS. `podman logs` reads a stopped container's
-#    output just as well as a running one's, so there is nothing to keep alive —
-#    and keeping it alive would have meant a `sleep` long enough to trip the
-#    harness's own no-long-sleeps gate (pd-86er), which is right to object even
-#    though this one would have been inside the container rather than in the
-#    harness. `--rm` is deliberately absent: it would take the logs with it.
-podman rm -f --ignore "$DIVERGED_CTR" >/dev/null 2>&1
-podman run -d --name "$DIVERGED_CTR" --entrypoint sh "$MC_IMAGE" \
-	-c "echo '${DIVERGED_LINE}'" >/dev/null 2>&1
-# The line has to be on stdout before the checker reads it; a container that has
-# not been scheduled yet reads as a silent sidecar.
-for _ in $(seq 20); do
-	logs_match "$DIVERGED_CTR" -F 'replica sync' && break
-	sleep 1
-done
+#    Built for real: S3 is healthy, the tenant is in correspondence, and the local
+#    LTX directory is given a file ahead of the replica.
+REAL_R="$(replica_max_txid "$(tenant_replica_url "$LAG_TENANT")")"
+ls_pause
+mkdir -p "$(dirname "$FAKE_LTX")" && : >"$FAKE_LTX"
 DIV_CONF="${WORK}/conf-diverged"
-mkdir -p "$DIV_CONF"
-cp "${CONF_DIR}/litestream.env" "$DIV_CONF/"
-cp -a "${CONF_DIR}/aws" "$DIV_CONF/" 2>/dev/null || true
-sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=${DIVERGED_CTR}|" \
-	"${CONF_DIR}/alerts.env" >"${DIV_CONF}/alerts.env"
+standin_conf "$DIV_CONF"
 OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
 	PKDUMP_CONF_DIR="$DIV_CONF" \
 	PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS=1 \
 	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" 2>&1)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
-podman rm -f --ignore "$DIVERGED_CTR" >/dev/null 2>&1
 check "a replica BEHIND the local database fails the tenant leg" "1" "$RC"
 check "and the STALE line names the tenant, not the registry" "1" \
 	"$(printf '%s' "$OUT" | grep -c "STALE — tenant '" || true)"
 check "and it names both txids so the gap is legible" "1" \
-	"$(printf '%s' "$OUT" | grep -c 'S3 holds up to txid 0000000000000001, Litestream has ingested 00000000000000ff' || true)"
+	"$(printf '%s' "$OUT" | grep -c "S3 holds up to txid ${REAL_R}, Litestream has ingested 00000000000000ff" || true)"
+ls_resume
 
 # 4. The sidecar is UP, has been up for longer than the grace, and has simply
-#    never named this database. That is an orphan — its tenants glob is not
-#    matching the file, so every write to it reaches nothing — and it was SILENT
-#    (pd-30yy): the grace was computed from the tenant FILE's timestamp, so a
-#    database created recently was excused however long the sidecar had been
-#    watching. tests/litestream/drill.sh §6 covers the other half of the pair (a
-#    sidecar that is not running at all); this is the half nothing tested.
+#    never picked this database up: Litestream has no local state for it. That is
+#    an orphan — its tenants glob is not matching the file, so every write to it
+#    reaches nothing — and it was SILENT (pd-30yy): the grace was computed from the
+#    tenant FILE's timestamp, so a database created recently was excused however
+#    long the sidecar had been watching. tests/litestream/drill.sh §6 covers the
+#    other half of the pair (a sidecar that is not running at all).
 #
-#    The stand-in is a container that RUNS and says nothing, rather than the real
-#    sidecar and a new tenant file: the real one globs the tenants directory and
-#    would name a new file within a second, which is a race this assertion cannot
-#    afford. What is under test is the ABSENCE of a position for a database that
-#    is otherwise perfectly healthy — ${LAG_TENANT} is replicating, its replica
-#    holds LTX files, and its file is minutes old, so nothing else here is wrong.
-#    `--entrypoint sleep … infinity` is how a container is kept alive; it is not a
-#    delay (tests/lib/wait_test.sh §6 excludes it by name).
-SILENT_CTR="pkdump-${INSTANCE}-silent"
-podman rm -f --ignore "$SILENT_CTR" >/dev/null 2>&1
-podman run -d --name "$SILENT_CTR" --entrypoint sleep "$MC_IMAGE" infinity >/dev/null 2>&1
+#    Built by setting the tenant's state directory aside while the replicator is
+#    paused: ${LAG_TENANT} is otherwise perfectly healthy, its replica holds LTX
+#    files and its file is minutes old, so nothing else here is wrong.
+ls_pause
+mv "$LS_STATE" "${LS_STATE}.aside"
 SILENT_CONF="${WORK}/conf-silent"
-mkdir -p "$SILENT_CONF"
-cp "${CONF_DIR}/litestream.env" "$SILENT_CONF/"
-cp -a "${CONF_DIR}/aws" "$SILENT_CONF/" 2>/dev/null || true
-sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=${SILENT_CTR}|" \
-	"${CONF_DIR}/alerts.env" >"${SILENT_CONF}/alerts.env"
+standin_conf "$SILENT_CONF"
 # The grace is the sidecar's UPTIME, so the gate waits for the stand-in to pass
-# it rather than assuming it has. Four seconds against a three-second grace, asked
-# of podman rather than counted here, because the container's clock is the one the
-# checker reads.
+# it rather than assuming it has. Asked of podman, because the container's clock
+# is the one the checker reads.
 silent_ctr_uptime() {
 	local started
-	started="$(podman inspect -f '{{.State.StartedAt.Unix}}' "$SILENT_CTR" 2>/dev/null)" || return 1
+	started="$(podman inspect -f '{{.State.StartedAt.Unix}}' "$UP_CTR" 2>/dev/null)" || return 1
 	case "$started" in ''|*[!0-9]*) return 1 ;; esac
 	echo $(( $(date +%s) - started ))
 }
 silent_ctr_past_grace() { [ "$(silent_ctr_uptime || echo 0)" -ge 4 ]; }
 wait_until 30 1 silent_ctr_past_grace || true
-check "the silent stand-in sidecar is up and past the grace" "yes" \
+check "the stand-in sidecar is up and past the grace" "yes" \
 	"$(silent_ctr_past_grace && echo yes || echo no)"
 OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
 	PKDUMP_CONF_DIR="$SILENT_CONF" \
 	PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS=3 \
 	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" 2>&1)"; RC=$?
 printf '%s\n' "$OUT" | sed 's/^/    /'
-check "a running sidecar that never named a tenant fails the tenant leg" "1" "$RC"
+check "a running sidecar that never picked a tenant up fails the tenant leg" "1" "$RC"
 check "and it says no replication position was reported" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'has not reported a replication position' || true)"
 check "and it names how long the sidecar has been up, not how old the file is" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'it has been up' || true)"
 
-# The mutation, and the reason this is a test of the SIDECAR's uptime rather than
-# of nothing: same tenant, same untouched file, same silent container — only the
-# grace moves, and the verdict moves with it. A grace the stand-in cannot have
-# outlived is a sidecar that has genuinely not had a chance yet, which is the one
-# state that may pass.
+# The mutation: same tenant, same state, same stand-in — only the grace moves, and
+# the verdict moves with it. A grace the stand-in cannot have outlived is a
+# sidecar that has genuinely not had a chance yet, the one state that may pass.
 OUT="$(PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
 	PKDUMP_CONF_DIR="$SILENT_CONF" \
 	PKDUMP_BACKUP_SIDECAR_GRACE_SECONDS=86400 \
 	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" 2>&1)"; RC=$?
-check "a sidecar still inside its grace is not judged, on the same file" "0" "$RC"
+check "a sidecar still inside its grace is not judged, on the same state" "0" "$RC"
 check "and it says the grace is the sidecar's uptime" "1" \
 	"$(printf '%s' "$OUT" | grep -c 'the sidecar has only been up' || true)"
-podman rm -f --ignore "$SILENT_CTR" >/dev/null 2>&1
+mv "${LS_STATE}.aside" "$LS_STATE"
+ls_resume
 
 # 5. ...and the SAME pair, when it is a lag that resolves itself, must NOT page
 #    (pd-yglw). The registry has re-asked a behind-reading replica over a bounded
-#    window since pd-me6h — Litestream holds an un-uploaded checkpoint across a
-#    transient S3 error and clears it at the next compaction tick — and the
-#    tenant leg did not, so one outage produced two different verdicts about one
-#    sidecar. §4b is where that surfaced: it takes the object store away, gives
-#    it back and re-runs the checker, and on a loaded box (CI, 2026-08-16) the
-#    registry waited its lag out on the same run that paged over the tenant's.
+#    window since pd-me6h, and the tenant leg must too, so one outage cannot
+#    produce two verdicts about one sidecar.
 #
-#    Driven with the same stand-in, publishing the two readings in order: behind,
-#    then caught up. Nothing here is a mock of the thing under test — the tenant
-#    is a real file, the replica is real S3, judge_correspondence and its txid
-#    comparison run for real. Only the sidecar's ACCOUNT of where it stands is
-#    substituted, which is the one thing a gate cannot provoke on demand.
-#
-#    The catch-up must not land until the checker has actually READ the diverged
-#    pair, or the first reading is already the caught-up one and this arm proves
-#    nothing. So the second line is released by CONDITION rather than after a
-#    delay: the stand-in blocks until it is signalled, the harness signals it on
-#    seeing the checker announce its re-ask, and neither side waits on the clock
-#    (pd-86er — and a timed gap long enough to be safe on a loaded runner is
-#    exactly the fixed sleep tests/lib/wait_test.sh exists to keep out).
-CATCHUP_CTR="pkdump-${INSTANCE}-catchup"
-CATCHUP_STAMP="time=$(date -u +%Y-%m-%dT%H:%M:%S.000Z) level=INFO msg=\"replica sync\" system=store db=${LAG_TENANT}.sqlite replica=s3"
+#    Driven with the diverged local state of §3, which the gate removes once the
+#    checker has announced its re-measuring — i.e. the local position falls back
+#    to what the replica holds. The catch-up is released by CONDITION rather than
+#    after a delay (pd-86er).
 CATCHUP_OUT="${WORK}/catchup.out"
-podman rm -f --ignore "$CATCHUP_CTR" >/dev/null 2>&1
-podman run -d --name "$CATCHUP_CTR" --user 0 --entrypoint sh "$MC_IMAGE" -c \
-	"echo '${CATCHUP_STAMP} txid.replica=0000000000000001 txid.db=00000000000000ff'; \
-	 until [ -e /tmp/caught-up ]; do sleep 1; done; \
-	 echo '${CATCHUP_STAMP} txid.replica=00000000000000ff txid.db=00000000000000ff'; \
-	 sleep infinity" >/dev/null 2>&1
-for _ in $(seq 20); do
-	logs_match "$CATCHUP_CTR" -F 'replica sync' && break
-	sleep 1
-done
+ls_pause
+mkdir -p "$(dirname "$FAKE_LTX")" && : >"$FAKE_LTX"
 CATCHUP_CONF="${WORK}/conf-catchup"
-mkdir -p "$CATCHUP_CONF"
-cp "${CONF_DIR}/litestream.env" "$CATCHUP_CONF/"
-cp -a "${CONF_DIR}/aws" "$CATCHUP_CONF/" 2>/dev/null || true
-sed "s|^PKDUMP_BACKUP_SIDECAR_CTR=.*|PKDUMP_BACKUP_SIDECAR_CTR=${CATCHUP_CTR}|" \
-	"${CONF_DIR}/alerts.env" >"${CATCHUP_CONF}/alerts.env"
+standin_conf "$CATCHUP_CONF"
 BEFORE=$(sink_total)
 : >"$CATCHUP_OUT"
 PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
@@ -1018,23 +955,23 @@ PUSHOVER_API_URL="http://127.0.0.1:${SINK_PORT}${PUSH_PATH}" \
 	PKDUMP_BACKUP_CORRESPONDENCE_GRACE_SECONDS=30 \
 	bash "${REPO_DIR}/deploy/backup-check.sh" "$INSTANCE" "$LAG_TENANT" >"$CATCHUP_OUT" 2>&1 &
 CATCHUP_PID=$!
-#    Also stop waiting the moment the checker has EXITED: without the re-ask it
+#    Also stop waiting the moment the checker has EXITED: without the re-measure it
 #    fails in the first second, and this loop would otherwise sit out its whole
 #    deadline before reporting a failure it already knows about.
 CATCHUP_DEADLINE=$(( SECONDS + 60 ))
 while [ "$SECONDS" -lt "$CATCHUP_DEADLINE" ]; do
-	grep -qF 're-asking the sidecar for up to' "$CATCHUP_OUT" && break
+	grep -qF 're-measuring for up to' "$CATCHUP_OUT" && break
 	kill -0 "$CATCHUP_PID" 2>/dev/null || break
 	sleep 1
 done
-podman exec "$CATCHUP_CTR" sh -c ': >/tmp/caught-up' >/dev/null 2>&1 || true
+rm -f "$FAKE_LTX"
 wait "$CATCHUP_PID" && RC=0 || RC=$?
 OUT="$(cat "$CATCHUP_OUT")"
 printf '%s\n' "$OUT" | sed 's/^/    /'
-podman rm -f --ignore "$CATCHUP_CTR" >/dev/null 2>&1
+ls_resume
 check "a lag that clears itself does NOT fail the tenant leg" "0" "$RC"
-check "the checker said it was re-asking rather than judging the first reading" "1" \
-	"$(printf '%s' "$OUT" | grep -c "re-asking the sidecar for up to" || true)"
+check "the checker said it was re-measuring rather than judging the first reading" "1" \
+	"$(printf '%s' "$OUT" | grep -c "re-measuring for up to" || true)"
 check "and that the replica caught up" "1" \
 	"$(printf '%s' "$OUT" | grep -c "its replica caught up after" || true)"
 check "and nobody was paged over it" "0" "$(since_grep "$BEFORE" "$PUSH")"

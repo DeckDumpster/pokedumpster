@@ -331,6 +331,17 @@ check "access.env scaffold has PKDUMP_MULTITENANT commented out" "1" \
 # so value lines must carry no inline comments.
 check "access.env scaffold has no inline comments on value lines" "0" \
 	"$(grep -c '^PKDUMP_ACCESS_.*#' "${REPO_DIR}/deploy/config-lib.sh" || true)"
+# oidc.env (sp-eh0n7z): native Pocket ID sign-in is opt-in by ANY active PKDUMP_OIDC_* line and
+# an incomplete set refuses to start, so the scaffold must be fully commented out, the unit must
+# load it, setup and deploy must both write it, and no value line carries an inline comment.
+check "oidc.env scaffold has no active PKDUMP_OIDC_ line" "0" \
+	"$(sed -n '/^pkdump_scaffold_oidc_env/,/^}/p' "${REPO_DIR}/deploy/config-lib.sh" | grep -c '^PKDUMP_OIDC_' || true)"
+check "oidc.env scaffold names all six keys" "6" \
+	"$(sed -n '/^pkdump_scaffold_oidc_env/,/^}/p' "${REPO_DIR}/deploy/config-lib.sh" | grep -c '^#PKDUMP_OIDC_' || true)"
+check "the unit loads oidc.env" "1" \
+	"$(grep -c '^EnvironmentFile=%h/.config/pkdump/{{INSTANCE}}/oidc.env$' "${REPO_DIR}/deploy/pkdump.container" || true)"
+check "setup.sh and deploy.sh both scaffold oidc.env" "2" \
+	"$(grep -c 'pkdump_scaffold_oidc_env "\$INSTANCE"' "${REPO_DIR}/deploy/setup.sh" "${REPO_DIR}/deploy/deploy.sh" | awk -F: '{s+=$2} END {print s}')"
 # Quadlet does not implement the systemd 'EnvironmentFile=-...' optional-file
 # prefix — it treats the whole string as a literal path, producing a path like
 # .../systemd/-/home/... that can never exist. The file must always exist

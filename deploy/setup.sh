@@ -331,6 +331,7 @@ fi
 # Per-instance Cloudflare Access + multi-tenant config (db-g6ku: extracted into
 # config-lib.sh so deploy.sh can scaffold it for existing instances too).
 pkdump_scaffold_access_env "$INSTANCE" "$LS_CONF_DIR"
+pkdump_scaffold_oidc_env "$INSTANCE" "$LS_CONF_DIR"
 
 systemctl --user daemon-reload
 

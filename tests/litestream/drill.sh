@@ -288,7 +288,15 @@ sidecar_stop() {
 # removes the race rather than winning it on a fast box. No log is read.
 sidecar_ready() {
 	sidecar_running || return 0
-	local f mp
+	local f mp up
+	# Up long enough to have finished starting. The LTX directories outlive a stop,
+	# so on a restart they are already there and "they exist" alone is true at once:
+	# the drill then stopped a sidecar that was still initialising, and the next
+	# start (restore-litestream.sh's) found it failed. The old log-line wait gave
+	# this settling for free; ask for it by name.
+	up="$(podman inspect -f '{{.State.StartedAt}}' "$SIDECAR_CTR" 2>/dev/null)" || return 1
+	up="$(date -d "$up" +%s 2>/dev/null)" || return 1
+	[ $(( $(date +%s) - up )) -ge 8 ] || return 1
 	mp="$(mount_point)" || return 1
 	for f in "$mp"/tenants/*.sqlite; do
 		[ -e "$f" ] || continue

@@ -16,6 +16,12 @@ rarity_grp: string | null, image_large: string | null,
  */
 section: string, printings: Array<SlotPrinting>, 
 /**
+ * The price the tile shows: the best condition-adjusted owned copy when
+ * any is owned, else the LOWEST priced printing (the dearest variants are
+ * chase/limited ones). `None` when nothing is priced.
+ */
+display_price: number | null, 
+/**
  * Home set of the slot's card when different from the container —
  * bundle slots use this to surface "lives in Obsidian Flames" and
  * to route the card-detail link. `None` for regular set slots.

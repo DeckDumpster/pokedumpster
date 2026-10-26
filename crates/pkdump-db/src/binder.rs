@@ -41,6 +41,10 @@ pub struct SlotPrinting {
     #[ts(type = "number")]
     pub owned_count: i64,
     pub market_price: Option<f64>,
+    /// What the dearest owned copy of this printing is worth: `market_price`
+    /// times the best owned copy's condition multiplier (the rule
+    /// `search::OWNED_VALUE_SUBQ` spends). `None` when nothing is owned.
+    pub owned_value: Option<f64>,
     /// The variant is a foil treatment (`variants.foil`).
     pub foil: bool,
 }
@@ -71,6 +75,10 @@ pub struct BinderSlot {
     /// every slot since they have no rarity-tier sections.
     pub section: String,
     pub printings: Vec<SlotPrinting>,
+    /// The price the tile shows: the best condition-adjusted owned copy when
+    /// any is owned, else the LOWEST priced printing (the dearest variants are
+    /// chase/limited ones). `None` when nothing is priced.
+    pub display_price: Option<f64>,
     /// Home set of the slot's card when different from the container —
     /// bundle slots use this to surface "lives in Obsidian Flames" and
     /// to route the card-detail link. `None` for regular set slots.
@@ -240,13 +248,27 @@ fn rarity_rank(rarity: &Option<String>) -> i64 {
     }
 }
 
-/// A slot's price for sorting — the dearest market price across its
-/// printings; slots with no priced printing sort as 0.
-fn slot_price(slot: &BinderSlot) -> f64 {
-    slot.printings
+/// The price a slot's tile shows, and the Price sort orders by. Owned: the
+/// most valuable owned copy at its condition (`SlotPrinting::owned_value`,
+/// the same market price x condition multiplier the search/collection value
+/// uses). Unowned: the lowest positive market price across its printings.
+pub fn display_price(printings: &[SlotPrinting]) -> Option<f64> {
+    let owned = printings
         .iter()
-        .filter_map(|p| p.market_price)
-        .fold(0.0_f64, f64::max)
+        .filter_map(|p| p.owned_value)
+        .max_by(f64::total_cmp);
+    owned.or_else(|| {
+        printings
+            .iter()
+            .filter_map(|p| p.market_price)
+            .filter(|v| *v > 0.0)
+            .min_by(f64::total_cmp)
+    })
+}
+
+/// A slot's price for sorting; slots with no price sort as 0.
+fn slot_price(slot: &BinderSlot) -> f64 {
+    slot.display_price.unwrap_or(0.0)
 }
 
 /// Assemble a binder page for `set_code`. `None` if the set is unknown.
@@ -302,7 +324,14 @@ pub fn get_binder_page(
                     (SELECT count(*) FROM collection c WHERE c.printing_id = p.printing_id), \
                     ",
             crate::market_price_expr!(),
-            ", COALESCE((SELECT v.foil FROM variants v WHERE v.code = p.variant), 0) \
+            ", CASE WHEN EXISTS (SELECT 1 FROM collection c WHERE c.printing_id = p.printing_id \
+                                 AND c.status = 'owned') \
+                    THEN (",
+            crate::market_price_expr!(),
+            ") * (SELECT MAX(COALESCE(cond.multiplier, 1.0)) FROM collection c \
+                   LEFT JOIN conditions cond ON cond.name = c.condition \
+                  WHERE c.printing_id = p.printing_id AND c.status = 'owned') END, \
+             COALESCE((SELECT v.foil FROM variants v WHERE v.code = p.variant), 0) \
              FROM ( \
                 SELECT card_id, printing_id, variant, deprecated_at, \
                        tcgplayer_product_id, sub_type_name FROM printings \
@@ -324,7 +353,8 @@ pub fn get_binder_page(
                     deprecated: r.get::<_, Option<String>>(3)?.is_some(),
                     owned_count: r.get(4)?,
                     market_price: r.get(5)?,
-                    foil: r.get(6)?,
+                    owned_value: r.get(6)?,
+                    foil: r.get(7)?,
                 },
             ))
         })?;
@@ -359,6 +389,7 @@ pub fn get_binder_page(
                 rarity: card.rarity,
                 image_large: card.image_large,
                 section: section.to_string(),
+                display_price: display_price(&slot_printings),
                 printings: slot_printings,
                 external_set: None,
             })
@@ -579,6 +610,58 @@ mod tests {
         }
         let conn = connect_user(&dir.path().join("collection.sqlite"), &shared).unwrap();
         (dir, conn)
+    }
+
+    fn price_printing(dir: &tempfile::TempDir, printing: &str, price: f64) {
+        let c = open_shared(&dir.path().join("shared.sqlite")).unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO printings (printing_id, card_id, variant) \
+             SELECT ?1, card_id, 'holo' FROM printings WHERE printing_id = 'sv3pt5-' || ?2 || '-normal'",
+            rusqlite::params![printing, printing.split('-').nth(1).unwrap()],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT OR REPLACE INTO catalog_price_overrides (printing_id, price, observed_at) \
+             VALUES (?1, ?2, '2026-01-01')",
+            rusqlite::params![printing, price],
+        )
+        .unwrap();
+    }
+
+    // Set browse tiles: an owned card shows its best owned copy at that
+    // copy's condition (market x multiplier, the search/collection value rule),
+    // not the dearest variant; an unowned card shows its LOWEST priced printing.
+    #[test]
+    fn tile_price_is_the_owned_copy_adjusted_else_the_lowest_printing() {
+        let (d, mut conn) = binder_conn();
+        price_printing(&d, "sv3pt5-1-normal", 100.0);
+        price_printing(&d, "sv3pt5-1-holo", 10_000.0);
+        price_printing(&d, "sv3pt5-2-normal", 5.0);
+        price_printing(&d, "sv3pt5-2-holo", 10_000.0);
+        collection::add(
+            &mut conn,
+            &NewCopy {
+                printing_id: "sv3pt5-1-normal".into(),
+                condition: Some("Lightly Played".into()),
+                source: "manual_id".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let page = get_binder_page(&conn, "sv3pt5", &BinderQuery::default())
+            .unwrap()
+            .unwrap();
+        let price = |id: &str| {
+            page.slots
+                .iter()
+                .find(|s| s.card_id == id)
+                .unwrap()
+                .display_price
+        };
+        assert_eq!(price("sv3pt5-1"), Some(85.0));
+        assert_eq!(price("sv3pt5-2"), Some(5.0));
+        assert_eq!(price("sv3pt5-3"), None);
     }
 
     // Regression for pokedumpster-3s2: a card owned only

@@ -41,3 +41,29 @@ EOF
         echo "    See deploy/TENANTS.md §\"Configuring Access for a deployment\" for instructions."
     fi
 }
+
+# Write the Pocket ID sign-in file for <instance> into <conf_dir> if it does not exist, every
+# key commented out: unconfigured, the server signs nobody in itself (sp-eh0n7z). Any active
+# PKDUMP_OIDC_* line turns native sign-in on and an incomplete set refuses to start, so the
+# fill is deploy/oidc-config.sh, which writes all of them at once.
+#
+# Usage: pkdump_scaffold_oidc_env <instance> <conf_dir>
+pkdump_scaffold_oidc_env() {
+    local instance="$1" conf_dir="$2"
+    if [ ! -f "${conf_dir}/oidc.env" ]; then
+        mkdir -p "$conf_dir"
+        cat > "${conf_dir}/oidc.env" <<EOF2
+# Pocket ID sign-in for instance '${instance}'. Fill it with: bash deploy/oidc-config.sh ${instance}
+# Put comments on their own lines: systemd EnvironmentFile keeps a trailing # comment as part
+# of the value.
+#PKDUMP_OIDC_ISSUER=CHANGE_ME
+#PKDUMP_OIDC_CLIENT_ID=CHANGE_ME
+#PKDUMP_OIDC_CLIENT_SECRET=CHANGE_ME
+#PKDUMP_OIDC_REDIRECT_URL=CHANGE_ME
+#PKDUMP_OIDC_REQUIRED_GROUP=poke-users
+#PKDUMP_OIDC_COOKIE_KEY=CHANGE_ME
+EOF2
+        chmod 600 "${conf_dir}/oidc.env"
+        echo "    Wrote ${conf_dir}/oidc.env — commented out; bash deploy/oidc-config.sh ${instance} fills it."
+    fi
+}

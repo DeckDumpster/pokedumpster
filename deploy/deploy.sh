@@ -80,6 +80,7 @@ else
     # shellcheck source=deploy/config-lib.sh
     . "$SCRIPT_DIR/config-lib.sh"
     pkdump_scaffold_access_env "$INSTANCE" "${HOME}/.config/pkdump/${INSTANCE}"
+    pkdump_scaffold_oidc_env "$INSTANCE" "${HOME}/.config/pkdump/${INSTANCE}"
 fi
 
 echo "==> Reloading systemd and restarting ${SERVICE_NAME}..."

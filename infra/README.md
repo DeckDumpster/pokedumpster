@@ -16,3 +16,16 @@ bash ../deploy/nessie-backup.sh prod backup && bash ../deploy/nessie-backup.sh p
 
 The `pkdump` prefix must be in the terraform-deploy role's managed-prefix list
 (ephemeral-ci `TerraformBootstrap`) for the apply to be allowed to create these names.
+
+## infra/oidc/ — native sign-in for poke.dumpster.cards (sp-eh0n7z)
+
+Own state (`pokedumpster/oidc/terraform.tfstate`). Makes the Pocket ID client `pokedumpster-prod`
+(callback `https://poke.dumpster.cards/auth/callback`, PKCE, limited to `poke-users`) and stores its
+id and secret in Secrets Manager `pkdump/prod/oidc`; no output carries a secret. Needs
+`POCKETID_API_TOKEN` in the environment and `pocketid_group_ids` = the id of `poke-users`.
+
+```bash
+cd infra/oidc && terraform init -backend-config=... && terraform apply -var deploy_role_arn=... -var 'pocketid_group_ids=["<id>"]'
+bash deploy/oidc-config.sh prod     # writes ~/.config/pkdump/prod/oidc.env (600), keeps its cookie key
+bash deploy/deploy.sh prod          # native sign-in on
+```

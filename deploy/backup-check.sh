@@ -311,7 +311,7 @@ local_position() {
 # quiescent tenant in correspondence is a perfect backup).
 #
 # BOTH SIDES ARE MEASURED, NEITHER IS READ FROM A LOG. This used to parse the
-# sidecar's `msg="replica sync"` line, which 0.5.17 moved to DEBUG, so the check
+# sidecar's per-replica sync log line, which 0.5.17 moved to DEBUG, so the check
 # forced the sidecar to DEBUG and ~2M lines/day filled the host's root filesystem
 # (sp-ksml54). The sidecar now logs at INFO and this asks the files instead:
 #
@@ -388,7 +388,7 @@ sidecar_uptime() {
 # compaction tick. A replica that has genuinely stopped never catches up, so the
 # window costs nothing on the path that matters.
 #
-# It re-asks the SIDECAR rather than S3, because the sidecar's own `replica sync`
+# It re-asks the SIDECAR rather than S3, because the sidecar's own position
 # pair is where a tenant's positions come from at all — the registry's leg reads
 # `litestream status` and can therefore re-query S3 directly, and this one cannot
 # (see the note on sidecar_position above). Same question, same window, asked of

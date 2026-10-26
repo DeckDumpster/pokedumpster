@@ -5,6 +5,12 @@
  */
 export type SlotPrinting = { printing_id: string, variant: string, deprecated: boolean, owned_count: number, market_price: number | null, 
 /**
+ * What the dearest owned copy of this printing is worth: `market_price`
+ * times the best owned copy's condition multiplier (the rule
+ * `search::OWNED_VALUE_SUBQ` spends). `None` when nothing is owned.
+ */
+owned_value: number | null, 
+/**
  * The variant is a foil treatment (`variants.foil`).
  */
 foil: boolean, };

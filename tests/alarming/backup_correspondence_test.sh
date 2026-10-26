@@ -160,12 +160,6 @@ case_ "the sidecar claims correspondence, S3 holds nothing" stale \
   "$(judge_correspondence "tenant 'x'" x.sqlite "" "$TMP/s3empty.sqlite" s3://x 2>&1)" \
   "NOT backed up"
 
-mk stalled.sqlite $(( 72*3600 ))
-POSITION="00000000000000ff 00000000000000ff 7200" UPTIME=86400
-case_ "a position older than the grace — replication stopped" stale \
-  "$(judge_correspondence "tenant 'x'" x.sqlite "$NEWEST" "$TMP/stalled.sqlite" s3://x 2>&1)" \
-  "Replication has stopped"
-
 mk behind.sqlite $(( 72*3600 ))
 POSITION="0000000000000001 00000000000000ff 1" UPTIME=86400
 case_ "a replica BEHIND the local database" stale \

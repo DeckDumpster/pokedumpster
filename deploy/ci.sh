@@ -768,6 +768,9 @@ if tier lint; then
     step "Backup correspondence (tests/alarming/backup_correspondence_test.sh)"
     bash "$REPO_DIR/tests/alarming/backup_correspondence_test.sh"
 
+    step "Sidecar position, measured not logged (tests/alarming/sidecar_position_test.sh)"
+    bash "$REPO_DIR/tests/alarming/sidecar_position_test.sh"
+
     step "Alert gate (deploy/alert-gate.sh --self-test)"
     bash "$REPO_DIR/deploy/alert-gate.sh" --self-test
 

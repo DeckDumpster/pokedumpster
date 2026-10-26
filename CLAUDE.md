@@ -530,6 +530,13 @@ is the half no grep can make: the RUNNING sidecar emits `msg="replica sync"`
 carrying both TXIDs, stated FIRST and by name so the next such change fails in
 one legible line instead of three unrelated-looking ones.
 
+**Superseded by sp-ksml54: the DEBUG level is gone.** Reading that line cost ~2M syslog
+lines/day and filled the prod host's root filesystem. `backup-check.sh::sidecar_position`
+now measures both sides itself (S3's LTX listing against Litestream's local
+`tenants/.<db>-litestream/ltx/` directory) and reads no log; `deploy/litestream.yml` is at
+`info`. The version pin stands. `tests/alarming/sidecar_position_test.sh` is the log-free
+red/green check; `image_pin_test.sh` §3-§4 now forbid debug/trace and any log read.
+
 **The same bead found a second, unrelated way a gate lies about a container**:
 `podman logs "$c" | grep -q PATTERN` returns **141** under `set -o pipefail`
 *when the pattern is found* — `grep -q` exits on the first match, the pipe

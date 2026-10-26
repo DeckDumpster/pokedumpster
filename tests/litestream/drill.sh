@@ -280,17 +280,20 @@ sidecar_stop() {
 # it says so in its own log. A sidecar that is not running gets no wait — the
 # caller's own check is what should report that, not a stall here.
 #
-# READY MEANS "HAS REPORTED A REPLICA POSITION", not "has named a file" (pd-pfxf).
+# READY MEANS "HAS PICKED EVERY TENANT UP", not "has named a file" (pd-pfxf).
 # Every caller restarts this sidecar in order to ask deploy/backup-check.sh
-# something, and that script's only source of a tenant's position is the
-# `msg="replica sync"` line — which arrives seconds AFTER the `initialized db`
-# line that a bare `.sqlite` match was satisfied by. §6 therefore ran against a
-# sidecar that had been up one second, every tenant came back "not judged", and
-# the drill reported 0 of 4 checked. Waiting for the condition the caller
-# actually depends on removes the race rather than winning it on a fast box.
+# something, and that script's source of a tenant's position is Litestream's local
+# LTX directory (`tenants/.<db>-litestream/ltx/`), which appears seconds AFTER the
+# `initialized db` line. Waiting for the condition the caller actually depends on
+# removes the race rather than winning it on a fast box. No log is read.
 sidecar_ready() {
 	sidecar_running || return 0
-	logs_match "$SIDECAR_CTR" 'msg="replica sync"'
+	local f mp
+	mp="$(mount_point)" || return 1
+	for f in "$mp"/tenants/*.sqlite; do
+		[ -e "$f" ] || continue
+		[ -n "$(find "$mp/tenants/.$(basename "$f")-litestream/ltx" -name '*.ltx' 2>/dev/null | head -n1)" ] || return 1
+	done
 }
 sidecar_start() {
 	systemctl --user reset-failed "${SIDECAR}.service" 2>/dev/null || true

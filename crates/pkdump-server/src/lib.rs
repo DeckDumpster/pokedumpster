@@ -188,6 +188,7 @@ fn app(
     static_dir: PathBuf,
     data_dir: PathBuf,
     oidc: Option<Arc<dumpster_kit_oidc::Oidc>>,
+    machine: Option<Arc<oidc::Machine>>,
 ) -> Router {
     let index_html = std::fs::read_to_string(static_dir.join("index.html")).unwrap_or_else(|_| {
         "<!doctype html><title>PokeDumpster</title><body>\
@@ -252,12 +253,18 @@ fn app(
     // (and `/auth/*`, which the module mounts). Wrapped around everything above, the SPA and
     // its assets included, so a signed-out browser never sees the app — only the redirect.
     let router = match oidc {
-        Some(o) => router
-            .layer(middleware::from_fn_with_state(
+        Some(o) => {
+            let router = router.layer(middleware::from_fn_with_state(
                 o.clone(),
                 dumpster_kit_oidc::Oidc::layer,
-            ))
-            .merge(o.router()),
+            ));
+            // Outside the session layer: it decides bearer tokens and the closed `/health`.
+            let router = match machine {
+                Some(m) => router.layer(middleware::from_fn_with_state(m, oidc::Machine::layer)),
+                None => router,
+            };
+            router.merge(o.router())
+        }
         None => router,
     };
     // Outermost, so it sees the final response of every route above.
@@ -293,6 +300,8 @@ pub struct ServeConfig {
     /// `access`: both may be on (the app keeps working behind its Access app until that is
     /// removed). See `oidc::config_if_configured`.
     pub oidc: Option<dumpster_kit_oidc::OidcConfig>,
+    /// Bearer tokens and the closed `/health` (sp-8pjx8m). Read only when `oidc` is on.
+    pub machine: oidc::MachineConfig,
 }
 
 /// Refuse multi-tenant mode when Cloudflare Access is not configured.
@@ -367,8 +376,11 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
             None
         }
     };
+    let mut machine = None;
     let oidc = match cfg.oidc {
         Some(c) => {
+            machine =
+                Some(oidc::Machine::connect(cfg.machine, &c.issuer, &c.required_group).await?);
             println!(
                 "pkdump: OIDC sign-in is ON — group {} required",
                 c.required_group
@@ -399,7 +411,12 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
     let addr = SocketAddr::new(cfg.host, cfg.port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("pkdump serving on http://{addr}");
-    axum::serve(listener, app(state, cfg.static_dir, cfg.data_dir, oidc)).await?;
+    axum::serve(
+        listener,
+        app(state, cfg.static_dir, cfg.data_dir, oidc, machine)
+            .into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -462,6 +479,17 @@ mod tests {
         access: Option<Arc<access::AccessState>>,
         oidc: Option<Arc<dumpster_kit_oidc::Oidc>>,
     ) -> Router {
+        router_with_machine(dir, shared, tenants, access, oidc, None)
+    }
+
+    fn router_with_machine(
+        dir: &std::path::Path,
+        shared: &std::path::Path,
+        tenants: Tenants,
+        access: Option<Arc<access::AccessState>>,
+        oidc: Option<Arc<dumpster_kit_oidc::Oidc>>,
+        machine: Option<Arc<oidc::Machine>>,
+    ) -> Router {
         let registry = {
             let c = pkdump_db::open_shared(shared).unwrap();
             Arc::new(pkdump_db::search_meta::load_registry(&c).unwrap())
@@ -478,7 +506,7 @@ mod tests {
             data_dir: Arc::new(data_dir.clone()),
             access,
         };
-        app(state, dir.join("static"), data_dir, oidc)
+        app(state, dir.join("static"), data_dir, oidc, machine)
     }
 
     /// A single-tenant test router — the production shape.
@@ -1887,5 +1915,198 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         let (_, all) = call(&router, &tok, "GET", "/api/collection", None).await;
         assert!(!all.to_string().is_empty());
+    }
+
+    // ---- bearer tokens and the closed /health (sp-8pjx8m) ----------------------------------
+
+    mod machine {
+        use super::*;
+        use axum::extract::ConnectInfo;
+        use dumpster_kit_oidc::testing::{FakeProvider, unix_now};
+        use std::net::SocketAddr;
+        use tower::ServiceExt;
+
+        const AUD: &str = "poke-machine";
+
+        struct Site {
+            app: Router,
+            p: FakeProvider,
+            _dir: tempfile::TempDir,
+        }
+
+        impl Site {
+            async fn new(health_requires_auth: bool) -> Self {
+                let p = FakeProvider::start().await;
+                let mut cfg = p.config();
+                cfg.bypass_paths = oidc::MACHINE_PATHS
+                    .iter()
+                    .filter(|x| !(health_requires_auth && **x == "/health"))
+                    .map(|s| s.to_string())
+                    .collect();
+                let o = oidc::connect(cfg).await.unwrap();
+                let m = oidc::Machine::connect(
+                    oidc::MachineConfig {
+                        health_requires_auth,
+                        client_ids: vec!["edge-probe".into()],
+                        audience: Some(AUD.into()),
+                    },
+                    &p.issuer,
+                    dumpster_kit_oidc::testing::GROUP,
+                )
+                .await
+                .unwrap();
+                let dir = tempfile::tempdir().unwrap();
+                let shared = seed(dir.path());
+                let tenants = Tenants::single(
+                    "collection",
+                    dir.path().join("tenants").join("collection.sqlite"),
+                    shared.clone(),
+                )
+                .unwrap();
+                let app = router_with_machine(dir.path(), &shared, tenants, None, Some(o), Some(m));
+                Site { app, p, _dir: dir }
+            }
+
+            fn token(&self, client: &str, aud: &str) -> String {
+                self.p.mint_jwt(
+                    serde_json::json!({
+                        "iss": self.p.issuer, "aud": aud, "sub": client,
+                        "iat": unix_now(), "exp": unix_now() + 300,
+                    }),
+                    None,
+                )
+            }
+
+            async fn get(
+                &self,
+                uri: &str,
+                peer: &str,
+                bearer: Option<&str>,
+                extra: Option<(&str, &str)>,
+            ) -> StatusCode {
+                let mut rb = Request::get(uri);
+                if let Some(t) = bearer {
+                    rb = rb.header(header::AUTHORIZATION, format!("Bearer {t}"));
+                }
+                if let Some((k, v)) = extra {
+                    rb = rb.header(k, v);
+                }
+                let mut req = rb.body(Body::empty()).unwrap();
+                let addr: SocketAddr = peer.parse().unwrap();
+                req.extensions_mut().insert(ConnectInfo(addr));
+                self.app.clone().oneshot(req).await.unwrap().status()
+            }
+        }
+
+        const REMOTE: &str = "203.0.113.9:4000";
+        const LOCAL: &str = "127.0.0.1:4000";
+
+        #[tokio::test]
+        async fn health_with_no_credentials_from_a_remote_address_is_401() {
+            let s = Site::new(true).await;
+            assert_eq!(
+                s.get("/health", REMOTE, None, None).await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+
+        #[tokio::test]
+        async fn an_allow_listed_bearer_reaches_health() {
+            let s = Site::new(true).await;
+            let t = s.token("edge-probe", AUD);
+            assert_eq!(
+                s.get("/health", REMOTE, Some(&t), None).await,
+                StatusCode::OK
+            );
+        }
+
+        #[tokio::test]
+        async fn a_bearer_that_is_not_listed_or_is_for_another_audience_is_401() {
+            let s = Site::new(true).await;
+            let other = s.token("someone-else", AUD);
+            assert_eq!(
+                s.get("/health", REMOTE, Some(&other), None).await,
+                StatusCode::UNAUTHORIZED
+            );
+            let wrong_aud = s.token("edge-probe", "another-api");
+            assert_eq!(
+                s.get("/health", REMOTE, Some(&wrong_aud), None).await,
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(
+                s.get("/health", REMOTE, Some("not.a.jwt"), None).await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+
+        #[tokio::test]
+        async fn an_expired_bearer_is_401() {
+            let s = Site::new(true).await;
+            let t = s.p.mint_jwt(
+                serde_json::json!({
+                    "iss": s.p.issuer, "aud": AUD, "sub": "edge-probe",
+                    "iat": unix_now() - 900, "exp": unix_now() - 600,
+                }),
+                None,
+            );
+            assert_eq!(
+                s.get("/health", REMOTE, Some(&t), None).await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+
+        #[tokio::test]
+        async fn loopback_reaches_health_but_a_proxied_loopback_does_not() {
+            let s = Site::new(true).await;
+            assert_eq!(s.get("/health", LOCAL, None, None).await, StatusCode::OK);
+            // cloudflared connects from loopback: the forwarding header says who is really there.
+            assert_eq!(
+                s.get(
+                    "/health",
+                    LOCAL,
+                    None,
+                    Some(("cf-connecting-ip", "198.51.100.7"))
+                )
+                .await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+
+        #[tokio::test]
+        async fn a_valid_bearer_on_a_user_route_is_401() {
+            let s = Site::new(true).await;
+            let t = s.token("edge-probe", AUD);
+            for uri in ["/api/conditions", "/", "/api/backup-status"] {
+                assert_eq!(
+                    s.get(uri, REMOTE, Some(&t), None).await,
+                    StatusCode::UNAUTHORIZED,
+                    "{uri}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn with_the_flag_off_health_stays_open() {
+            let s = Site::new(false).await;
+            assert_eq!(s.get("/health", REMOTE, None, None).await, StatusCode::OK);
+        }
+
+        #[test]
+        fn the_flag_defaults_to_off_and_a_typo_is_an_error() {
+            let none = oidc::machine_config_from(|_| None).unwrap();
+            assert!(!none.health_requires_auth);
+            assert!(
+                oidc::machine_config_from(|k| {
+                    (k == "PKDUMP_HEALTH_REQUIRE_AUTH").then(|| "yes".to_string())
+                })
+                .is_err()
+            );
+            assert!(
+                oidc::machine_config_from(|k| {
+                    (k == "PKDUMP_OIDC_BEARER_CLIENT_IDS").then(|| "a".to_string())
+                })
+                .is_err()
+            );
+        }
     }
 }

@@ -36,3 +36,9 @@ resource "aws_secretsmanager_secret_version" "oidc" {
     }
   }
 }
+
+# Machine callers (sp-8pjx8m): none, so no client_credentials client is declared. The only caller
+# of poke's /health is deploy/heartbeat.sh, which probes the host-local listener, and the app
+# admits loopback. If the heartbeat ever probes the public URL, add a confidential
+# pocketid_client for it here, put its secret under pkdump/prod/*, and list its client id in
+# PKDUMP_OIDC_BEARER_CLIENT_IDS (with PKDUMP_OIDC_BEARER_AUDIENCE) on the host.

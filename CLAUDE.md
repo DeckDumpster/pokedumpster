@@ -1304,6 +1304,14 @@ here uses a Cloudflare service token, so there is no narrow Access app or bearer
 layout when `/api/session` reports a signed-in user. Gate: `tests/signin` in `pkdump-server`'s lib
 tests, against the kit's fake provider.
 
+**Closing `/health` (sp-8pjx8m).** `PKDUMP_HEALTH_REQUIRE_AUTH=1` (default `0`) takes `/health` out of
+`MACHINE_PATHS`: it then needs a session, a Pocket ID `client_credentials` bearer whose client id is in
+`PKDUMP_OIDC_BEARER_CLIENT_IDS` (audience `PKDUMP_OIDC_BEARER_AUDIENCE`, required with the list), or a
+loopback peer carrying no forwarding header (cloudflared connects from loopback, so the peer alone is not
+proof). A bearer on any other path is a 401. Poke has no public machine caller, so `infra/oidc` declares no
+client; `deploy/heartbeat.sh` sends a token only if `PKDUMP_HEARTBEAT_{CLIENT_ID,CLIENT_SECRET,TOKEN_URL}` are set.
+Tests: `tests::machine` in `pkdump-server`.
+
 ## Conventions & Patterns
 
 ### The data model IS the product

@@ -813,6 +813,11 @@ if tier lint; then
     step "A container that never resolved its peer (tests/lib/netrun_test.sh)"
     bash "$REPO_DIR/tests/lib/netrun_test.sh"
 
+    # Host-local /health probes carry a machine token; the app has no loopback exemption
+    # (sp-396d3g). Hermetic: a stub of the app's rule and the token endpoint.
+    step "The host health probe carries a machine token (tests/deploy/health_probe_test.sh)"
+    bash "$REPO_DIR/tests/deploy/health_probe_test.sh"
+
     # And the question those polls ask. `litestream ltx` prints a column header
     # for a replica that holds NOTHING and prints nothing at all when it cannot
     # reach S3, so `ltx … | grep -q .` reads an empty replica as full and an

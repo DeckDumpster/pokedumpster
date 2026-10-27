@@ -37,8 +37,35 @@ resource "aws_secretsmanager_secret_version" "oidc" {
   }
 }
 
-# Machine callers (sp-8pjx8m): none, so no client_credentials client is declared. The only caller
-# of poke's /health is deploy/heartbeat.sh, which probes the host-local listener, and the app
-# admits loopback. If the heartbeat ever probes the public URL, add a confidential
-# pocketid_client for it here, put its secret under pkdump/prod/*, and list its client id in
-# PKDUMP_OIDC_BEARER_CLIENT_IDS (with PKDUMP_OIDC_BEARER_AUDIENCE) on the host.
+# Machine caller (sp-396d3g): the host's own probes of /health. client_credentials only, so no
+# redirect URIs. There is no loopback exemption in the app, so deploy/heartbeat.sh (and anything
+# else on the host that curls /health) authenticates as this client. Its id goes on
+# PKDUMP_OIDC_BEARER_CLIENT_IDS; deploy/oidc-config.sh writes both halves on the host.
+resource "pocketid_client" "health_probe" {
+  name          = "pokedumpster-health-probe-prod"
+  callback_urls = []
+  is_public     = false
+  pkce_enabled  = false
+}
+
+resource "aws_secretsmanager_secret" "health_probe" {
+  name = var.probe_secret_name
+}
+
+resource "aws_secretsmanager_secret_version" "health_probe" {
+  secret_id = aws_secretsmanager_secret.health_probe.id
+  secret_string = jsonencode({
+    PKDUMP_PROBE_CLIENT_ID     = pocketid_client.health_probe.id
+    PKDUMP_PROBE_CLIENT_SECRET = pocketid_client.health_probe.client_secret
+  })
+
+  lifecycle {
+    precondition {
+      condition = alltrue([for v in [
+        pocketid_client.health_probe.id,
+        pocketid_client.health_probe.client_secret,
+      ] : v != null && v != ""])
+      error_message = "the health-probe secret would carry an empty client id or client secret"
+    }
+  }
+}

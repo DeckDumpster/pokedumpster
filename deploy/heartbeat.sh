@@ -52,31 +52,14 @@ fi
 # problem still prints a reason. No retry on purpose: a retry here would paper over
 # exactly the intermittent unavailability a visitor would experience.
 #
-# When the site closes /health to anonymous callers (PKDUMP_HEALTH_REQUIRE_AUTH=1) a probe of
-# its PUBLIC URL must carry a Pocket ID client_credentials token. Set all three of
-# PKDUMP_HEARTBEAT_CLIENT_ID / _CLIENT_SECRET / _TOKEN_URL in alerts.env and it is sent;
-# leave them unset and nothing changes. A probe of the host-local listener needs none: the
-# app admits loopback. A token that cannot be obtained is a failed probe, never a skipped one.
-auth=()
-if [ -n "${PKDUMP_HEARTBEAT_CLIENT_ID:-}" ] || [ -n "${PKDUMP_HEARTBEAT_CLIENT_SECRET:-}" ] \
-    || [ -n "${PKDUMP_HEARTBEAT_TOKEN_URL:-}" ]; then
-    tok="$(curl -sS --max-time "$TIMEOUT" -X POST "${PKDUMP_HEARTBEAT_TOKEN_URL:-}" \
-        --data-urlencode grant_type=client_credentials \
-        --data-urlencode "client_id=${PKDUMP_HEARTBEAT_CLIENT_ID:-}" \
-        --data-urlencode "client_secret=${PKDUMP_HEARTBEAT_CLIENT_SECRET:-}" \
-        ${PKDUMP_HEARTBEAT_AUDIENCE:+--data-urlencode "audience=$PKDUMP_HEARTBEAT_AUDIENCE"} 2>/dev/null \
-        | sed -n 's/.*"access_token" *: *"\([^"]*\)".*/\1/p')" || tok=""
-    if [ -n "$tok" ]; then
-        auth=(-H "Authorization: Bearer $tok")
-    else
-        echo "heartbeat: could not obtain a bearer token — probe fails" >&2
-        code="000"
-    fi
-fi
-
-if [ "${code:-}" != "000" ]; then
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$TIMEOUT" ${auth[@]+"${auth[@]}"} "$URL" 2>&1)" || code="000"
-fi
+# When the site closes /health (PKDUMP_HEALTH_REQUIRE_AUTH=1) this probe must carry a Pocket ID
+# client_credentials token, and so must every other host-local probe: there is no loopback
+# exemption (sp-396d3g). health-probe-lib.sh is the one implementation; the credentials are in
+# <conf>/probe.env.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$CONF_DIR/probe.env" ] && . "$CONF_DIR/probe.env"
+. "$HERE/health-probe-lib.sh"
+code="$(pkdump_health_probe "$URL" "$TIMEOUT")"
 
 if [ "$code" = "200" ]; then
     if [ -n "$PING" ]; then

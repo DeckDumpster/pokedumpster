@@ -818,6 +818,11 @@ if tier lint; then
     step "The host health probe carries a machine token (tests/deploy/health_probe_test.sh)"
     bash "$REPO_DIR/tests/deploy/health_probe_test.sh"
 
+    # deploy/oidc-config.sh runs on the operator box and writes the host's files over ssh
+    # (sp-v5f004). Hermetic: fake terraform/aws/ssh on PATH.
+    step "oidc-config pushes to the host over ssh (tests/deploy/oidc_config_test.sh)"
+    bash "$REPO_DIR/tests/deploy/oidc_config_test.sh"
+
     # And the question those polls ask. `litestream ltx` prints a column header
     # for a replica that holds NOTHING and prints nothing at all when it cannot
     # reach S3, so `ltx … | grep -q .` reads an empty replica as full and an

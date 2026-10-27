@@ -26,7 +26,8 @@ id and secret in Secrets Manager `pkdump/prod/oidc`; no output carries a secret.
 
 ```bash
 cd infra/oidc && terraform init -backend-config=... && terraform apply -var deploy_role_arn=... -var 'pocketid_group_ids=["<id>"]'
-bash deploy/oidc-config.sh prod     # writes ~/.config/pkdump/prod/oidc.env (600), keeps its cookie key,
+bash deploy/oidc-config.sh prod <ssh-host>   # run HERE (state + deploy role), not on the prod host:
+                                    # writes <host>:~/.config/pkdump/prod/oidc.env (600), keeps its cookie key,
                                     # and probe.env (600): the host health-probe machine client (sp-396d3g)
-bash deploy/deploy.sh prod          # native sign-in on
+ssh <ssh-host> 'cd ~/pokedumpster && bash deploy/deploy.sh prod'   # native sign-in on
 ```

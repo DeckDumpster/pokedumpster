@@ -42,9 +42,8 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use dumpster_kit_oidc::jwks::JwksCache;
 use dumpster_kit_oidc::{Oidc, OidcConfig};
-use jsonwebtoken::{Algorithm, Validation};
+use dumpster_kit_tenancy::machine::{MachineConfig as KitMachineConfig, MachineVerifier};
 use serde::Deserialize;
 
 pub use dumpster_kit_oidc::SessionUser;
@@ -131,21 +130,13 @@ pub(crate) fn machine_config_from(
 /// Verifier for `client_credentials` access tokens, and the `/health` gate built on it.
 pub struct Machine {
     cfg: MachineConfig,
-    issuer: String,
     required_group: String,
-    jwks: Option<JwksCache>,
+    verifier: Option<Arc<MachineVerifier>>,
 }
 
 #[derive(Deserialize)]
 struct Discovery {
     jwks_uri: String,
-}
-
-#[derive(Deserialize)]
-struct TokenClaims {
-    azp: Option<String>,
-    client_id: Option<String>,
-    sub: Option<String>,
 }
 
 impl Machine {
@@ -157,7 +148,7 @@ impl Machine {
         required_group: &str,
     ) -> anyhow::Result<Arc<Machine>> {
         let issuer = issuer.trim_end_matches('/').to_string();
-        let jwks = if cfg.client_ids.is_empty() {
+        let verifier = if cfg.client_ids.is_empty() {
             None
         } else {
             let http = reqwest::Client::builder()
@@ -172,34 +163,30 @@ impl Machine {
                 .and_then(|r| r.error_for_status())?
                 .json()
                 .await?;
-            let cache = JwksCache::new(disc.jwks_uri, http, Duration::from_secs(60));
-            cache.prime().await?;
-            Some(cache)
+            let audience = cfg.audience.clone().unwrap_or_default();
+            Some(
+                MachineVerifier::new(KitMachineConfig {
+                    issuer: issuer.clone(),
+                    audience,
+                    jwks_url: disc.jwks_uri,
+                    allowed_clients: cfg.client_ids.clone(),
+                })
+                .await?,
+            )
         };
         Ok(Arc::new(Machine {
             cfg,
-            issuer,
             required_group: required_group.to_string(),
-            jwks,
+            verifier,
         }))
     }
 
     /// The client id of a valid, unexpired token for our audience and issuer, if allow-listed.
+    /// The client id of a token the kit's verifier admits: signature, issuer, expiry, audience
+    /// and the allow-list. Every refusal is the same answer here.
     async fn admit(&self, token: &str) -> Option<String> {
-        let jwks = self.jwks.as_ref()?;
-        let audience = self.cfg.audience.as_deref()?;
-        let kid = jsonwebtoken::decode_header(token).ok()?.kid?;
-        let key = jwks.get(&kid).await?;
-        let mut v = Validation::new(Algorithm::RS256);
-        v.set_audience(&[audience]);
-        v.set_issuer(&[self.issuer.as_str()]);
-        v.set_required_spec_claims(&["exp", "aud", "iss"]);
-        v.leeway = 60;
-        let c = jsonwebtoken::decode::<TokenClaims>(token, &key, &v)
-            .ok()?
-            .claims;
-        let id = c.azp.or(c.client_id).or(c.sub)?;
-        self.cfg.client_ids.contains(&id).then_some(id)
+        let id = self.verifier.as_ref()?.verify(token).await.ok()?;
+        Some(id.client_id().to_string())
     }
 
     fn synthetic_user(&self, id: String) -> dumpster_kit_oidc::SessionUser {

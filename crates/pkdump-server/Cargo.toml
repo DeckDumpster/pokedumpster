@@ -18,7 +18,6 @@ tower-http.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-jsonwebtoken.workspace = true
 reqwest.workspace = true
 ts-rs.workspace = true
 

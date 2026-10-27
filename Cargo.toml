@@ -84,7 +84,6 @@ sha2 = "0.10"
 # Cloudflare Access JWT validation (pkdump-server). RS256 verification with
 # JWK Set support. Uses the `ring` crypto backend (already in the tree via
 # reqwest → rustls), so no new native-code dependency is added.
-jsonwebtoken = "9"
 
 [profile.release]
 strip = true

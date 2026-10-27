@@ -25,6 +25,13 @@ CLIENT_ID="$(jq -er .PKDUMP_OIDC_CLIENT_ID <<<"$SECRET")" || die "${SECRET_ID} h
 CLIENT_SECRET="$(jq -er .PKDUMP_OIDC_CLIENT_SECRET <<<"$SECRET")" || die "${SECRET_ID} has no client secret"
 [ -n "$CLIENT_ID" ] && [ -n "$CLIENT_SECRET" ] || die "${SECRET_ID} carries an empty value"
 
+PROBE_SECRET_ID="${PKDUMP_PROBE_SECRET_NAME:-$(terraform -chdir="$INFRA" output -raw probe_secret_name)}"
+PROBE="$(aws secretsmanager get-secret-value --secret-id "$PROBE_SECRET_ID" --query SecretString --output text)"
+PROBE_ID="$(jq -er .PKDUMP_PROBE_CLIENT_ID <<<"$PROBE")" || die "${PROBE_SECRET_ID} has no client id"
+PROBE_SECRET="$(jq -er .PKDUMP_PROBE_CLIENT_SECRET <<<"$PROBE")" || die "${PROBE_SECRET_ID} has no client secret"
+[ -n "$PROBE_ID" ] && [ -n "$PROBE_SECRET" ] || die "${PROBE_SECRET_ID} carries an empty value"
+PROBE_FILE="${CONF_DIR}/probe.env"
+
 COOKIE_KEY=""
 if [ -f "$ENV_FILE" ]; then
     COOKIE_KEY="$(sed -n 's/^PKDUMP_OIDC_COOKIE_KEY=//p' "$ENV_FILE" | head -n1)"
@@ -42,7 +49,24 @@ umask 077
     echo "PKDUMP_OIDC_REDIRECT_URL=${REDIRECT}"
     echo "PKDUMP_OIDC_REQUIRED_GROUP=${GROUP}"
     echo "PKDUMP_OIDC_COOKIE_KEY=${COOKIE_KEY}"
+    # The host's probe client may reach /health with a bearer, and nothing else (sp-396d3g).
+    echo "PKDUMP_OIDC_BEARER_CLIENT_IDS=${PROBE_ID}"
+    echo "PKDUMP_OIDC_BEARER_AUDIENCE=${PROBE_ID}"
 } >"$tmp"
 chmod 600 "$tmp"
 mv "$tmp" "$ENV_FILE"
+
+# The probe's own credentials live in a separate 0600 file: oidc.env is loaded into the app
+# container, and the app must never hold the secret that proves it is up.
+ptmp="$(mktemp "${PROBE_FILE}.XXXXXX")"
+{
+    echo "# Host health-probe client for instance '${INSTANCE}', written by deploy/oidc-config.sh."
+    echo "PKDUMP_PROBE_CLIENT_ID=${PROBE_ID}"
+    echo "PKDUMP_PROBE_CLIENT_SECRET=${PROBE_SECRET}"
+    echo "PKDUMP_PROBE_TOKEN_URL=${ISSUER}/api/oidc/token"
+    echo "PKDUMP_PROBE_AUDIENCE=${PROBE_ID}"
+} >"$ptmp"
+chmod 600 "$ptmp"
+mv "$ptmp" "$PROBE_FILE"
+echo "oidc-config: ${PROBE_FILE} written (probe client ${PROBE_ID})"
 echo "oidc-config: ${ENV_FILE} written (client ${CLIENT_ID}); deploy to turn sign-in on: bash deploy/deploy.sh ${INSTANCE}"

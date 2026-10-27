@@ -2056,10 +2056,12 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn loopback_reaches_health_but_a_proxied_loopback_does_not() {
+        async fn loopback_gets_no_exemption_with_or_without_a_forwarding_header() {
             let s = Site::new(true).await;
-            assert_eq!(s.get("/health", LOCAL, None, None).await, StatusCode::OK);
-            // cloudflared connects from loopback: the forwarding header says who is really there.
+            assert_eq!(
+                s.get("/health", LOCAL, None, None).await,
+                StatusCode::UNAUTHORIZED
+            );
             assert_eq!(
                 s.get(
                     "/health",
@@ -2069,6 +2071,11 @@ mod tests {
                 )
                 .await,
                 StatusCode::UNAUTHORIZED
+            );
+            let t = s.token("edge-probe", AUD);
+            assert_eq!(
+                s.get("/health", LOCAL, Some(&t), None).await,
+                StatusCode::OK
             );
         }
 

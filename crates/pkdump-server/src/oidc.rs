@@ -25,20 +25,21 @@
 //! # Closing `/health` (sp-8pjx8m)
 //!
 //! With `PKDUMP_HEALTH_REQUIRE_AUTH=1` (default `0`) `/health` leaves [`MACHINE_PATHS`] and needs
-//! one of: a session in the required group; a Pocket ID `client_credentials` bearer token whose
-//! client id is on `PKDUMP_OIDC_BEARER_CLIENT_IDS` (see [`Machine`]); or a loopback peer, for the
-//! host-local deploy check. A bearer token reaches `/health` and nothing else: on any other path
-//! it is a 401, so a machine credential can never read user data.
+//! one of: a session in the required group, or a Pocket ID `client_credentials` bearer token whose
+//! client id is on `PKDUMP_OIDC_BEARER_CLIENT_IDS` (see [`Machine`]). A bearer token reaches
+//! `/health` and nothing else: on any other path it is a 401, so a machine credential can never
+//! read user data.
 //!
-//! Loopback means the TCP peer is loopback **and** the request carries no forwarding header.
-//! cloudflared connects from the host's loopback, so the peer address alone would admit the
-//! whole internet.
+//! There is no loopback exemption, because it cannot hold: behind the rootless podman publish
+//! (`127.0.0.1:8090:8080`) the container never sees a loopback peer, and the tunnel arrives from
+//! the same host port, so an address cannot tell a host probe from the internet. Every host-local
+//! probe (`deploy/heartbeat.sh`) carries a token from the host's machine client, through
+//! `deploy/health-probe-lib.sh`.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -225,11 +226,6 @@ impl Machine {
             };
         }
         if is_health && m.cfg.health_requires_auth {
-            if is_loopback(&req) {
-                req.extensions_mut()
-                    .insert(m.synthetic_user("loopback".into()));
-                return next.run(req).await;
-            }
             let r = next.run(req).await;
             // The session layer answers a signed-out GET with a redirect to sign-in; a probe
             // has no browser to send there.
@@ -241,25 +237,6 @@ impl Machine {
         }
         next.run(req).await
     }
-}
-
-const FORWARDING_HEADERS: [&str; 5] = [
-    "cf-connecting-ip",
-    "cf-ray",
-    "x-forwarded-for",
-    "x-real-ip",
-    "forwarded",
-];
-
-/// A loopback peer with no sign of a proxy. No peer address (a test harness, a future listener)
-/// is not loopback.
-fn is_loopback(req: &Request) -> bool {
-    req.extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .is_some_and(|c| c.0.ip().is_loopback())
-        && !FORWARDING_HEADERS
-            .iter()
-            .any(|h| req.headers().contains_key(*h))
 }
 
 /// Fetch discovery and prime the JWKS. A failure is a failed startup.

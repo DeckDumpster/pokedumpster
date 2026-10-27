@@ -10,3 +10,7 @@ output "secret_name" {
 output "redirect_url" {
   value = "https://${var.hostname}/auth/callback"
 }
+
+output "probe_secret_name" {
+  value = aws_secretsmanager_secret.health_probe.name
+}

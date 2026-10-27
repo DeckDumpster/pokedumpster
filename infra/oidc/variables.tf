@@ -32,3 +32,8 @@ variable "secret_name" {
   type    = string
   default = "pkdump/prod/oidc"
 }
+
+variable "probe_secret_name" {
+  type    = string
+  default = "pkdump/prod/health-probe"
+}

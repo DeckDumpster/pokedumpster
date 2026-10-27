@@ -31,3 +31,16 @@ run "no_group_is_refused" {
   }
   expect_failures = [var.pocketid_group_ids]
 }
+
+run "the_health_probe_is_a_machine_client" {
+  command = plan
+
+  assert {
+    condition     = pocketid_client.health_probe.callback_urls == tolist([])
+    error_message = "a client_credentials client has no redirect URIs"
+  }
+  assert {
+    condition     = !pocketid_client.health_probe.pkce_enabled && !pocketid_client.health_probe.is_public
+    error_message = "the probe is a confidential client without PKCE"
+  }
+}

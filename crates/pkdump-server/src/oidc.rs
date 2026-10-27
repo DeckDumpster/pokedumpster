@@ -21,10 +21,30 @@
 //!
 //! The heartbeat (`deploy/heartbeat.sh`) probes `PKDUMP_HEARTBEAT_URL` and wants a 200; `/` now
 //! answers a redirect to sign-in, so that host setting should name `/health`.
+//!
+//! # Closing `/health` (sp-8pjx8m)
+//!
+//! With `PKDUMP_HEALTH_REQUIRE_AUTH=1` (default `0`) `/health` leaves [`MACHINE_PATHS`] and needs
+//! one of: a session in the required group; a Pocket ID `client_credentials` bearer token whose
+//! client id is on `PKDUMP_OIDC_BEARER_CLIENT_IDS` (see [`Machine`]); or a loopback peer, for the
+//! host-local deploy check. A bearer token reaches `/health` and nothing else: on any other path
+//! it is a 401, so a machine credential can never read user data.
+//!
+//! Loopback means the TCP peer is loopback **and** the request carries no forwarding header.
+//! cloudflared connects from the host's loopback, so the peer address alone would admit the
+//! whole internet.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use axum::extract::{ConnectInfo, Request, State};
+use axum::http::{StatusCode, header};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use dumpster_kit_oidc::{Oidc, OidcConfig};
+use dumpster_kit_tenancy::machine::{MachineConfig as KitMachineConfig, MachineVerifier};
+use serde::Deserialize;
 
 pub use dumpster_kit_oidc::SessionUser;
 
@@ -46,13 +66,200 @@ fn config_from(
     if !names.into_iter().any(|n| n.starts_with(&marker)) {
         return Ok(None);
     }
+    let health_closed = flag_from(&get, HEALTH_FLAG)?;
     let mut cfg = OidcConfig::from_lookup(PREFIX, get)?;
     for p in MACHINE_PATHS {
+        if health_closed && p == "/health" {
+            continue;
+        }
         if !cfg.bypass_paths.iter().any(|b| b == p) {
             cfg.bypass_paths.push(p.to_string());
         }
     }
     Ok(Some(cfg))
+}
+
+const HEALTH_FLAG: &str = "PKDUMP_HEALTH_REQUIRE_AUTH";
+const BEARER_IDS: &str = "PKDUMP_OIDC_BEARER_CLIENT_IDS";
+const BEARER_AUDIENCE: &str = "PKDUMP_OIDC_BEARER_AUDIENCE";
+
+/// `0` or `1`; unset is `0`. Anything else is a startup error, because a typo on a switch that
+/// opens or closes a route must not be read as either.
+fn flag_from(get: &impl Fn(&str) -> Option<String>, name: &str) -> anyhow::Result<bool> {
+    match get(name).as_deref().map(str::trim) {
+        None | Some("") | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(v) => anyhow::bail!("{name} must be 0 or 1, got {v:?}"),
+    }
+}
+
+/// Machine-caller settings: whether `/health` is closed, and which Pocket ID clients may reach it.
+#[derive(Clone, Debug, Default)]
+pub struct MachineConfig {
+    pub health_requires_auth: bool,
+    pub client_ids: Vec<String>,
+    pub audience: Option<String>,
+}
+
+pub fn machine_config() -> anyhow::Result<MachineConfig> {
+    machine_config_from(|k| std::env::var(k).ok())
+}
+
+pub(crate) fn machine_config_from(
+    get: impl Fn(&str) -> Option<String>,
+) -> anyhow::Result<MachineConfig> {
+    let client_ids: Vec<String> = get(BEARER_IDS)
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let audience = get(BEARER_AUDIENCE)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if !client_ids.is_empty() && audience.is_none() {
+        anyhow::bail!("{BEARER_IDS} is set, so {BEARER_AUDIENCE} is required");
+    }
+    Ok(MachineConfig {
+        health_requires_auth: flag_from(&get, HEALTH_FLAG)?,
+        client_ids,
+        audience,
+    })
+}
+
+/// Verifier for `client_credentials` access tokens, and the `/health` gate built on it.
+pub struct Machine {
+    cfg: MachineConfig,
+    required_group: String,
+    verifier: Option<Arc<MachineVerifier>>,
+}
+
+#[derive(Deserialize)]
+struct Discovery {
+    jwks_uri: String,
+}
+
+impl Machine {
+    /// Fetch discovery and prime the JWKS when any client is allow-listed. A failure is a
+    /// failed startup.
+    pub async fn connect(
+        cfg: MachineConfig,
+        issuer: &str,
+        required_group: &str,
+    ) -> anyhow::Result<Arc<Machine>> {
+        let issuer = issuer.trim_end_matches('/').to_string();
+        let verifier = if cfg.client_ids.is_empty() {
+            None
+        } else {
+            let http = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?;
+            let url = format!("{issuer}/.well-known/openid-configuration");
+            let disc: Discovery = http
+                .get(&url)
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())?
+                .json()
+                .await?;
+            let audience = cfg.audience.clone().unwrap_or_default();
+            Some(
+                MachineVerifier::new(KitMachineConfig {
+                    issuer: issuer.clone(),
+                    audience,
+                    jwks_url: disc.jwks_uri,
+                    allowed_clients: cfg.client_ids.clone(),
+                })
+                .await?,
+            )
+        };
+        Ok(Arc::new(Machine {
+            cfg,
+            required_group: required_group.to_string(),
+            verifier,
+        }))
+    }
+
+    /// The client id of a valid, unexpired token for our audience and issuer, if allow-listed.
+    /// The client id of a token the kit's verifier admits: signature, issuer, expiry, audience
+    /// and the allow-list. Every refusal is the same answer here.
+    async fn admit(&self, token: &str) -> Option<String> {
+        let id = self.verifier.as_ref()?.verify(token).await.ok()?;
+        Some(id.client_id().to_string())
+    }
+
+    fn synthetic_user(&self, id: String) -> dumpster_kit_oidc::SessionUser {
+        dumpster_kit_oidc::SessionUser {
+            sub: id.clone(),
+            email: String::new(),
+            name: id,
+            groups: vec![self.required_group.clone()],
+            exp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0)
+                + 60,
+        }
+    }
+
+    /// Outermost auth layer, wrapped around [`Oidc::layer`]. See the module docs.
+    pub async fn layer(State(m): State<Arc<Machine>>, mut req: Request, next: Next) -> Response {
+        let is_health = req.uri().path() == "/health";
+        let bearer = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::to_string);
+        if let Some(token) = bearer {
+            if !is_health {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            return match m.admit(&token).await {
+                Some(id) => {
+                    req.extensions_mut().insert(m.synthetic_user(id));
+                    next.run(req).await
+                }
+                None => StatusCode::UNAUTHORIZED.into_response(),
+            };
+        }
+        if is_health && m.cfg.health_requires_auth {
+            if is_loopback(&req) {
+                req.extensions_mut()
+                    .insert(m.synthetic_user("loopback".into()));
+                return next.run(req).await;
+            }
+            let r = next.run(req).await;
+            // The session layer answers a signed-out GET with a redirect to sign-in; a probe
+            // has no browser to send there.
+            return if r.status().is_redirection() {
+                StatusCode::UNAUTHORIZED.into_response()
+            } else {
+                r
+            };
+        }
+        next.run(req).await
+    }
+}
+
+const FORWARDING_HEADERS: [&str; 5] = [
+    "cf-connecting-ip",
+    "cf-ray",
+    "x-forwarded-for",
+    "x-real-ip",
+    "forwarded",
+];
+
+/// A loopback peer with no sign of a proxy. No peer address (a test harness, a future listener)
+/// is not loopback.
+fn is_loopback(req: &Request) -> bool {
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|c| c.0.ip().is_loopback())
+        && !FORWARDING_HEADERS
+            .iter()
+            .any(|h| req.headers().contains_key(*h))
 }
 
 /// Fetch discovery and prime the JWKS. A failure is a failed startup.

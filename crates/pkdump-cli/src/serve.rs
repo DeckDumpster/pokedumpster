@@ -69,6 +69,7 @@ pub fn run(args: ServeArgs) -> anyhow::Result<()> {
         multi_tenant: args.multi_tenant || env_opt_in(MULTITENANT_ENV),
         access: pkdump_server::access::config_if_configured()?,
         oidc: pkdump_server::oidc::config_if_configured()?,
+        machine: pkdump_server::oidc::machine_config()?,
     };
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(pkdump_server::serve(cfg))

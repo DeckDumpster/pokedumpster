@@ -3,6 +3,11 @@
 //!
 //! # Resolution is driven by a verified identity
 //!
+//! With native sign-in (OIDC) configured, the identity is the signed-in session instead:
+//! [`session_layer`] resolves the session's email through the same registry
+//! ([`Tenants::resolve_session`]), and the Access layer is not mounted at all (sp-xnr4k9). The
+//! rest of this section describes the Access path, used only when OIDC is off.
+//!
 //! In multi-tenant mode, [`Tenants::resolve`] takes a [`crate::access::VerifiedIdentity`]
 //! — a proof-carrying type whose constructor is private to `access`. The only
 //! source is [`crate::access::layer`], which verified a Cloudflare Access JWT.
@@ -50,6 +55,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Request, State};
+use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
 use dumpster_kit_tenancy::tenant as kit;
@@ -58,6 +64,7 @@ use rusqlite::Connection;
 use pkdump_db::{DbError, validate_tenant_name};
 
 use crate::access::VerifiedIdentity;
+use crate::oidc::SessionUser;
 use crate::{AppError, AppState};
 
 impl From<dumpster_kit_tenancy::HttpError> for AppError {
@@ -184,6 +191,17 @@ impl Tenants {
         }
     }
 
+    /// The tenant an OIDC-signed-in user is served as — the session's email resolved through the
+    /// registry exactly as [`Tenants::resolve`] resolves a verified Access identity, mirroring
+    /// dumpstar's `session_tenant`. Single-tenant mode ignores the session, as it ignores the
+    /// identity.
+    pub(crate) fn resolve_session(&self, user: &SessionUser) -> Result<TenantId, AppError> {
+        match &self.mode {
+            Mode::Single { id, .. } => Ok(id.clone()),
+            Mode::Multi(kernel) => Ok(TenantId(Id::Multi(kernel.resolve_session(user)?))),
+        }
+    }
+
     /// The open connection for `id`, opening it if this is its first request.
     pub(crate) fn connection(&self, id: &TenantId) -> Result<Arc<Mutex<Connection>>, DbError> {
         let (only, db) = match (&self.mode, &id.0) {
@@ -251,6 +269,25 @@ pub(crate) async fn layer(
         Mode::Single { id, .. } => id.clone(),
         Mode::Multi(_) => state.tenants.resolve(&crate::access::current()?)?,
     };
+    Ok(CURRENT.scope(id, next.run(request)).await)
+}
+
+/// Middleware: with native sign-in on, resolve the tenant from the signed-in session the OIDC
+/// layer put in the request, then run the rest of the request with it in scope. Mounted on `/api`
+/// in place of [`layer`] and the Access layer whenever OIDC is configured (sp-xnr4k9), mirroring
+/// dumpstar's `session_tenant`. No session is a 401 and no tenant; there is no fallback to an
+/// Access token.
+pub(crate) async fn session_layer(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    let user = request
+        .extensions()
+        .get::<SessionUser>()
+        .cloned()
+        .ok_or_else(|| AppError(StatusCode::UNAUTHORIZED, "not signed in".into()))?;
+    let id = state.tenants.resolve_session(&user)?;
     Ok(CURRENT.scope(id, next.run(request)).await)
 }
 

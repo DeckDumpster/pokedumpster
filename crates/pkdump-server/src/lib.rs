@@ -204,16 +204,26 @@ fn app(
     // and an unmatched `/api/...` path still falls through to the SPA
     // fallback exactly as it did before.
     //
-    // Layer ordering: the outermost `route_layer` runs first. The access
-    // layer (outermost) verifies the JWT before the tenant layer (inner)
-    // reads the tenant header.
+    // The identity source decides the tenant layers (sp-xnr4k9). With native sign-in on, the
+    // tenant resolves from the signed-in session the OIDC layer (wrapped around everything
+    // below) put in the request, as dumpstar's `session_tenant` does, and the Cloudflare Access
+    // layer is NOT mounted: Access is no longer in front of the site, so requiring its token
+    // refused every signed-in call. With sign-in off, the Access layer (outermost `route_layer`,
+    // so it runs first) verifies the JWT before the tenant layer reads the identity it scoped.
     //
     // Public `/api` routes (see `routes::public_api_router`) are mounted
     // separately, without the auth layers, so they remain reachable from
     // plain localhost — e.g. `alarm-status.sh` reading `/api/backup-status`.
-    let authenticated_api = routes::authenticated_api_router()
-        .route_layer(middleware::from_fn_with_state(state.clone(), tenant::layer))
-        .route_layer(middleware::from_fn_with_state(state.clone(), access::layer));
+    let authenticated_api = if oidc.is_some() {
+        routes::authenticated_api_router().route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            tenant::session_layer,
+        ))
+    } else {
+        routes::authenticated_api_router()
+            .route_layer(middleware::from_fn_with_state(state.clone(), tenant::layer))
+            .route_layer(middleware::from_fn_with_state(state.clone(), access::layer))
+    };
     let public_api = routes::public_api_router();
     let router = Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -254,10 +264,7 @@ fn app(
     // its assets included, so a signed-out browser never sees the app — only the redirect.
     let router = match oidc {
         Some(o) => {
-            let router = router.layer(middleware::from_fn_with_state(
-                o.clone(),
-                dumpster_kit_oidc::Oidc::layer,
-            ));
+            let router = router.layer(middleware::from_fn_with_state(o.clone(), sign_in_gate));
             // Outside the session layer: it decides bearer tokens and the closed `/health`.
             let router = match machine {
                 Some(m) => router.layer(middleware::from_fn_with_state(m, oidc::Machine::layer)),
@@ -269,6 +276,23 @@ fn app(
     };
     // Outermost, so it sees the final response of every route above.
     router.layer(compression())
+}
+
+/// Require an OIDC session on every path but the bypass list and `/auth/*` (the kit's layer). An
+/// `/api` call without a session is a 401, never the kit's redirect to sign-in, as in dumpstar's
+/// `sign_in_gate`: the SPA's `fetch` cannot follow a cross-origin sign-in page, and a 401 is the
+/// one answer that means "no session, no tenant".
+async fn sign_in_gate(
+    axum::extract::State(oidc): axum::extract::State<Arc<dumpster_kit_oidc::Oidc>>,
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    let is_api = req.uri().path() == "/api" || req.uri().path().starts_with("/api/");
+    let resp = dumpster_kit_oidc::Oidc::layer(axum::extract::State(oidc), req, next).await;
+    if is_api && resp.status().is_redirection() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    resp
 }
 
 /// Everything `pkdump serve` needs to stand the HTTP app up.
@@ -296,36 +320,41 @@ pub struct ServeConfig {
     /// When `Some`, all three fields are required and a JWKS fetch failure is a
     /// startup failure. See `access::config_if_configured`.
     pub access: Option<access::AccessConfig>,
-    /// Pocket ID sign-in. `None` when no `PKDUMP_OIDC_*` variable is set. Independent of
-    /// `access`: both may be on (the app keeps working behind its Access app until that is
-    /// removed). See `oidc::config_if_configured`.
+    /// Pocket ID sign-in. `None` when no `PKDUMP_OIDC_*` variable is set. When `Some`, it is
+    /// the identity source: `/api` resolves the tenant from the session and `access` is ignored
+    /// (sp-xnr4k9). See `oidc::config_if_configured`.
     pub oidc: Option<dumpster_kit_oidc::OidcConfig>,
     /// Bearer tokens and the closed `/health` (sp-8pjx8m). Read only when `oidc` is on.
     pub machine: oidc::MachineConfig,
 }
 
-/// Refuse multi-tenant mode when Cloudflare Access is not configured.
+/// Refuse multi-tenant mode when no identity source is configured.
 ///
-/// Multi-tenant resolution now requires Cloudflare Access: every request must
-/// carry a valid JWT and the verified email must be bound to a tenant in the
-/// registry. Without an Access configuration the JWT layer accepts nothing, so
-/// multi-tenant mode would refuse every request rather than serving any tenant.
+/// Multi-tenant resolution needs a verified email to look up in the registry. It comes from
+/// one of two sources: an OIDC (Pocket ID) session when native sign-in is configured, which
+/// takes precedence, or else a Cloudflare Access JWT. With neither, nothing can name a tenant,
+/// so multi-tenant mode would refuse every request; it refuses to start instead. No fallback.
 ///
 /// Single-tenant mode is unaffected — the tenant is fixed at startup and no
-/// JWT is required.
-fn check_multitenant_access(multi_tenant: bool, access_configured: bool) -> anyhow::Result<()> {
-    if !multi_tenant || access_configured {
+/// identity is required.
+fn check_multitenant_access(
+    multi_tenant: bool,
+    access_configured: bool,
+    oidc_configured: bool,
+) -> anyhow::Result<()> {
+    if !multi_tenant || access_configured || oidc_configured {
         return Ok(());
     }
     anyhow::bail!(
-        "refusing to start: multi-tenant resolution is on but Cloudflare Access is not \
+        "refusing to start: multi-tenant resolution is on but no identity source is \
          configured.\n\
          \n\
-         In multi-tenant mode every request must carry a valid Cloudflare Access JWT; the \
-         verified email in the JWT determines which tenant's collection is served. Without \
-         Access configured the JWT layer will reject every request.\n\
+         In multi-tenant mode the signed-in email determines which tenant's collection is \
+         served. It comes from native sign-in (PKDUMP_OIDC_*) or, with sign-in off, from a \
+         Cloudflare Access JWT. With neither configured every request would be refused.\n\
          \n\
-         Set {} and {} (and optionally {}), or drop --multi-tenant / PKDUMP_MULTITENANT.",
+         Configure PKDUMP_OIDC_*, or set {} and {} (and optionally {}), or drop \
+         --multi-tenant / PKDUMP_MULTITENANT.",
         access::TEAM_DOMAIN_ENV,
         access::AUD_ENV,
         access::JWKS_URL_ENV,
@@ -337,7 +366,7 @@ fn check_multitenant_access(multi_tenant: bool, access_configured: bool) -> anyh
 /// startup rather than on the first request.
 pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
     // Access config must be present when multi-tenant is on.
-    check_multitenant_access(cfg.multi_tenant, cfg.access.is_some())?;
+    check_multitenant_access(cfg.multi_tenant, cfg.access.is_some(), cfg.oidc.is_some())?;
     // Idempotent shared-catalog convergence on startup. `pkdump setup` and
     // the nightly `pkdump-lake-derive shared` normally own shared schema —
     // the refresh used to be on that list and is not since pd-lunn, because
@@ -369,7 +398,18 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
     // three Access env vars are set, primes the JWKS cache; a failed fetch is a
     // startup failure. When not configured, `None` here makes the layer a
     // passthrough and the server starts without authentication.
+    //
+    // With native sign-in on, the session is the identity source and the Access layer is not
+    // mounted (sp-xnr4k9), so its configuration is ignored: no JWKS fetch that could fail a
+    // start for a layer that will never run.
     let access = match cfg.access {
+        Some(_) if cfg.oidc.is_some() => {
+            println!(
+                "pkdump: Cloudflare Access is configured but IGNORED — OIDC sign-in is the \
+                 identity source"
+            );
+            None
+        }
         Some(cfg) => Some(access::AccessState::new(cfg).await?),
         None => {
             println!("pkdump: Cloudflare Access is NOT configured — /api is unauthenticated");
@@ -394,8 +434,13 @@ pub async fn serve(cfg: ServeConfig) -> anyhow::Result<()> {
     };
     let tenants = if cfg.multi_tenant {
         println!(
-            "pkdump: MULTI-TENANT resolution is ON — every request must carry a valid \
-             Cloudflare Access JWT and the verified email must be bound to a tenant."
+            "pkdump: MULTI-TENANT resolution is ON — every /api request is served as the tenant \
+             its {} is bound to.",
+            if oidc.is_some() {
+                "signed-in session's email"
+            } else {
+                "verified Cloudflare Access JWT's email"
+            }
         );
         Tenants::multi(cfg.tenants_dir, cfg.shared_db, &cfg.registry_db)?
     } else {
@@ -1408,21 +1453,28 @@ mod tests {
 
     #[test]
     fn multi_tenant_without_access_refuses() {
-        let err = check_multitenant_access(true, false).unwrap_err();
+        let err = check_multitenant_access(true, false, false).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains(access::TEAM_DOMAIN_ENV), "{msg}");
         assert!(msg.contains(access::AUD_ENV), "{msg}");
+        assert!(msg.contains("PKDUMP_OIDC_"), "{msg}");
     }
 
     #[test]
     fn multi_tenant_with_access_configured_starts() {
-        check_multitenant_access(true, true).unwrap();
+        check_multitenant_access(true, true, false).unwrap();
+    }
+
+    /// sp-xnr4k9: native sign-in is an identity source on its own; Access is not required.
+    #[test]
+    fn multi_tenant_with_only_oidc_configured_starts() {
+        check_multitenant_access(true, false, true).unwrap();
     }
 
     #[test]
     fn single_tenant_is_unaffected_by_access_config() {
-        check_multitenant_access(false, false).unwrap();
-        check_multitenant_access(false, true).unwrap();
+        check_multitenant_access(false, false, false).unwrap();
+        check_multitenant_access(false, true, false).unwrap();
     }
 
     /// Single-tenant mode without Access configured is the production shape.
@@ -1509,10 +1561,69 @@ mod tests {
             jar: Vec<(String, String)>,
             p: FakeProvider,
             _dir: tempfile::TempDir,
+            _fx: Option<TestAccessFixture>,
         }
 
         impl Browser {
             async fn new() -> Self {
+                Self::with_tenants(|dir, shared| {
+                    (
+                        Tenants::single(
+                            "collection",
+                            dir.join("tenants").join("collection.sqlite"),
+                            shared.to_path_buf(),
+                        )
+                        .unwrap(),
+                        None,
+                    )
+                })
+                .await
+            }
+
+            /// Multi-tenant, as production runs (PKDUMP_MULTITENANT=1), with the Access
+            /// variables still set the way prod's access.env sets them — but no Access app in
+            /// front, so no request carries its token. `handles` are provisioned with bindings
+            /// `<handle>@example.com`.
+            async fn multi(handles: &[&str]) -> Self {
+                let fx = TestAccessFixture::new().await;
+                let handles: Vec<String> = handles.iter().map(|h| h.to_string()).collect();
+                let access = fx.access.clone();
+                let mut b = Self::with_tenants(move |dir, shared| {
+                    let tenants_dir = dir.join("tenants");
+                    std::fs::create_dir_all(&tenants_dir).unwrap();
+                    let registry_db = dir.join("registry.sqlite");
+                    let registry = pkdump_db::open_registry(&registry_db).unwrap();
+                    for handle in &handles {
+                        let user = pkdump_db::registry::insert(&registry, handle).unwrap();
+                        pkdump_db::open_user(
+                            &pkdump_db::tenant_db_file(&tenants_dir, &user.database_id).unwrap(),
+                        )
+                        .unwrap();
+                        pkdump_db::registry::identity_add(
+                            &registry,
+                            &user.database_id,
+                            &format!("{handle}@example.com"),
+                            None,
+                            None,
+                        )
+                        .unwrap();
+                    }
+                    (
+                        Tenants::multi(tenants_dir, shared.to_path_buf(), &registry_db).unwrap(),
+                        Some(access),
+                    )
+                })
+                .await;
+                b._fx = Some(fx);
+                b
+            }
+
+            async fn with_tenants(
+                build: impl FnOnce(
+                    &std::path::Path,
+                    &std::path::Path,
+                ) -> (Tenants, Option<Arc<access::AccessState>>),
+            ) -> Self {
                 let p = FakeProvider::start().await;
                 let mut cfg = p.config();
                 cfg.required_group = dumpster_kit_oidc::testing::GROUP.into();
@@ -1521,34 +1632,40 @@ mod tests {
                 let o = oidc::connect(cfg).await.unwrap();
                 let dir = tempfile::tempdir().unwrap();
                 let shared = seed(dir.path());
-                let tenants = Tenants::single(
-                    "collection",
-                    dir.path().join("tenants").join("collection.sqlite"),
-                    shared.clone(),
-                )
-                .unwrap();
-                let app = router_with(dir.path(), &shared, tenants, None, Some(o));
+                let (tenants, access) = build(dir.path(), &shared);
+                let app = router_with(dir.path(), &shared, tenants, access, Some(o));
                 Browser {
                     app,
                     jar: vec![],
                     p,
                     _dir: dir,
+                    _fx: None,
                 }
             }
 
             async fn get(&mut self, uri: &str) -> axum::response::Response {
+                self.send("GET", uri, None).await
+            }
+
+            async fn send(
+                &mut self,
+                method: &str,
+                uri: &str,
+                body: Option<&str>,
+            ) -> axum::response::Response {
                 let cookies: Vec<String> =
                     self.jar.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                let mut rb = Request::get(uri);
+                let mut rb = Request::builder().method(method).uri(uri);
                 if !cookies.is_empty() {
                     rb = rb.header(header::COOKIE, cookies.join("; "));
                 }
-                let r = self
-                    .app
-                    .clone()
-                    .oneshot(rb.body(Body::empty()).unwrap())
-                    .await
-                    .unwrap();
+                let req = match body {
+                    Some(json) => rb
+                        .header("content-type", "application/json")
+                        .body(Body::from(json.to_string())),
+                    None => rb.body(Body::empty()),
+                };
+                let r = self.app.clone().oneshot(req.unwrap()).await.unwrap();
                 for sc in r.headers().get_all(header::SET_COOKIE) {
                     let (nv, _) = sc.to_str().unwrap().split_once(';').unwrap();
                     let (n, v) = nv.split_once('=').unwrap();
@@ -1585,11 +1702,16 @@ mod tests {
         #[tokio::test]
         async fn a_signed_out_browser_is_sent_to_sign_in_and_never_sees_the_app() {
             let mut b = Browser::new().await;
-            for path in ["/", "/collection", "/api/conditions"] {
+            for path in ["/", "/collection"] {
                 let r = b.get(path).await;
                 assert_eq!(r.status(), StatusCode::SEE_OTHER, "{path}");
                 assert!(location(&r).starts_with("/auth/login"), "{path}");
             }
+            // An API call is a 401, never the redirect a `fetch` cannot follow (as dumpstar).
+            assert_eq!(
+                b.get("/api/conditions").await.status(),
+                StatusCode::UNAUTHORIZED
+            );
         }
 
         #[tokio::test]
@@ -1628,7 +1750,7 @@ mod tests {
                 .await;
             assert_eq!(r.status(), StatusCode::FORBIDDEN);
             let r = b.get("/api/conditions").await;
-            assert_eq!(r.status(), StatusCode::SEE_OTHER, "still signed out");
+            assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "still signed out");
         }
 
         #[tokio::test]
@@ -1647,7 +1769,61 @@ mod tests {
             assert_eq!(r.status(), StatusCode::SEE_OTHER);
             assert_eq!(
                 b.get("/api/conditions").await.status(),
-                StatusCode::SEE_OTHER
+                StatusCode::UNAUTHORIZED
+            );
+        }
+
+        /// sp-xnr4k9, the production shape: multi-tenant, OIDC on, Access variables set but no
+        /// Access app in front. A signed-in session with no Access token reaches /api, served
+        /// as the tenant its email is bound to — and only that tenant.
+        #[tokio::test]
+        async fn multi_tenant_a_signed_in_session_with_no_access_token_is_served_its_own_tenant() {
+            let mut b = Browser::multi(&["alice", "bob"]).await;
+            b.sign_in(TokenSpec::default()).await; // Alice@Example.com
+            let r = b.send("POST", "/api/collection", Some(ADD_CARD)).await;
+            assert_eq!(r.status(), StatusCode::CREATED, "{}", body_string(r).await);
+            let r = b.get("/api/collection").await;
+            assert_eq!(r.status(), StatusCode::OK);
+            assert!(body_string(r).await.contains("sv3pt5-1-normal"));
+
+            b.get("/auth/logout").await;
+            b.sign_in(TokenSpec {
+                sub: "user-2".into(),
+                email: "bob@example.com".into(),
+                ..Default::default()
+            })
+            .await;
+            let r = b.get("/api/collection").await;
+            assert_eq!(r.status(), StatusCode::OK);
+            let body = body_string(r).await;
+            assert_eq!(
+                body.trim(),
+                "[]",
+                "bob was served alice's collection: {body}"
+            );
+        }
+
+        /// sp-xnr4k9: no session is a 401 and no tenant — nothing is read or written.
+        #[tokio::test]
+        async fn multi_tenant_a_request_with_no_session_is_401_and_reaches_no_tenant() {
+            let mut b = Browser::multi(&["alice"]).await;
+            assert_eq!(
+                b.get("/api/collection").await.status(),
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(
+                b.send("POST", "/api/collection", Some(ADD_CARD))
+                    .await
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+            b.sign_in(TokenSpec::default()).await;
+            let r = b.get("/api/collection").await;
+            assert_eq!(r.status(), StatusCode::OK);
+            assert_eq!(
+                body_string(r).await.trim(),
+                "[]",
+                "the signed-out POST landed"
             );
         }
     }

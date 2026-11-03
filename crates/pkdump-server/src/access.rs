@@ -62,9 +62,11 @@ pub(crate) fn current() -> Result<VerifiedIdentity, AppError> {
 /// Middleware: verify the Cloudflare Access JWT, then run the rest of the request with the
 /// identity in scope. Applied to `/api` as a `route_layer`.
 ///
-/// When `state.access` is `None` (Access not configured, single-tenant mode only —
-/// `check_multitenant_access` refuses multi-tenant without Access) the request passes through
-/// and no identity is in scope: single-tenant resolution never asks for one.
+/// Mounted only when OIDC sign-in is off; with it on, the session is the identity source and
+/// this layer is not on the router at all (sp-xnr4k9). When `state.access` is `None` (Access not
+/// configured, single-tenant mode only — `check_multitenant_access` refuses multi-tenant with
+/// no identity source) the request passes through and no identity is in scope: single-tenant
+/// resolution never asks for one.
 ///
 /// When the layer IS active it is the kernel's, and completely fail-closed — no token means 401.
 pub(crate) async fn layer(

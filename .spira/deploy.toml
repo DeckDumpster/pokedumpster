@@ -1,0 +1,1 @@
+after_landing = "the deploy.yml run for the landed commit on origin/master succeeds"

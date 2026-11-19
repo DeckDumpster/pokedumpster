@@ -1261,3 +1261,12 @@ podman port systemd-pkdump-<name> 8080/tcp
 podman exec -it systemd-pkdump-<name> sh
 podman volume inspect pkdump-<name>-data
 ```
+
+## Sign-in sessions (Pocket ID)
+
+`pkdump serve` signs users in itself (`PKDUMP_OIDC_*`, see `deploy/oidc-config.sh`).
+Leave `PKDUMP_OIDC_SESSION_TTL_SECS` **unset**: dumpster-kit-oidc 0.1.9's default is a
+30-day sliding session, renewed by any request made more than a day after the last renewal,
+and ending 90 days after sign-in however active. The cookie key is kept across re-runs of
+`oidc-config.sh`, so a redeploy keeps sessions. A sign-in started from `http://` is redirected
+to the https origin before it begins, so it completes.

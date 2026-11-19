@@ -1291,7 +1291,9 @@ What stays here, because the kernel has no such mode: single-tenant serving
 code + PKCE against Pocket ID, `groups` claim, signed session cookie), in `pkdump-server/src/oidc.rs`.
 **Opt-in by configuration**, like Access: any `PKDUMP_OIDC_*` variable enables it and an incomplete
 set refuses to start (`ISSUER`, `CLIENT_ID`, `CLIENT_SECRET`, `REDIRECT_URL`, `REQUIRED_GROUP` =
-`poke-users`, `COOKIE_KEY`, optional `SESSION_TTL_SECS`) — supplied from the 0600 env file on the
+`poke-users`, `COOKIE_KEY`, optional `SESSION_TTL_SECS`, left UNSET: the kit's default is a 30-day
+sliding session, renewed on use, capped at 90 days after sign-in; a sign-in begun on `http://` is
+sent to the https origin and completes) — supplied from the 0600 env file on the
 prod host, never git. It is independent of Cloudflare Access, so the app keeps working behind its
 Access app until that is removed. Unconfigured, nothing changes (CI, tests, local).
 

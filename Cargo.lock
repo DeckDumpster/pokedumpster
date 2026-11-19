@@ -1790,9 +1790,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-derive"
-version = "0.1.7"
+version = "0.1.9"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "99e4f63e096f4c2a988269905d2b4022b8eda16fbe938bfbf198cbf38aa11152"
+checksum = "136c0d8c58914b5955cce5581f7150e983482bf1d81b79de649088bc9c5ce6d4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1801,9 +1801,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-erase"
-version = "0.1.7"
+version = "0.1.9"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "04864df248fcb0a7ede12aa2710a12c60595f13acf0dc9856d26b5a5f01bc669"
+checksum = "fe91e58d971eb684ad073807ce06f88e87e86ea20e3c159685823a24da7f7f4f"
 dependencies = [
  "dumpster-kit-keys",
  "dumpster-kit-lake",
@@ -1815,9 +1815,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-iceberg"
-version = "0.1.7"
+version = "0.1.9"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "62e893ef1df86c1017ad5054d1063c89c341690a54feeb72f524fda6b369cd1a"
+checksum = "f16d784440fd54daf96f9a454837dbb181c88dab3d5b80e882bd3c77c6dccba2"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -1837,9 +1837,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-keys"
-version = "0.1.7"
+version = "0.1.9"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "791fae1ef04179c7dc33ed38f8e283cdea216cd7aaa299cf875563ef44981aba"
+checksum = "b069ed95004d6de1da2d59e5d254b9c45154da5ad8c4276f65d47744c29e3866"
 dependencies = [
  "chrono",
  "dumpster-kit-tenancy",
@@ -1854,9 +1854,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-lake"
-version = "0.1.7"
+version = "0.1.9"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "4e0013ec6a00b577ee4547f950513303976cfb3c0801c06cca1939cd488c1b74"
+checksum = "948f4ff84b75b18eba6330fa61d8234d66f776b7924aa0283ca317d534f7c3d8"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
@@ -1873,9 +1873,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-lakehouse"
-version = "0.1.7"
+version = "0.1.9"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "4f35a3257ee585de9bf83738a6fbfbfdc9551160ac871c3e538d3984875e7214"
+checksum = "78c8122f466f16c58fb06cbd96a80644697ff55787f5a4b3196e2eb29c51ad90"
 dependencies = [
  "anyhow",
  "dumpster-kit-derive",
@@ -1886,9 +1886,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-oidc"
-version = "0.1.7"
+version = "0.1.9"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "20a03ee94a0abb7303014c42f07abfa27fc5f804820097a7fb0c06d8301446b5"
+checksum = "5516beb907a66f5670e3957f6fe87b6ce4984df4512a9c99cb38250e3c4c733f"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1907,9 +1907,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-ship"
-version = "0.1.7"
+version = "0.1.9"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "ad12691dbfca3f1b7b60896e65fb0e424c38097963dab5098e6412850c788e8f"
+checksum = "33aeae0edfa45099c15f4bcbe341626c4e923e55fbfd69df3b2c814f02f99eca"
 dependencies = [
  "aes-gcm 0.11.0",
  "bytes",
@@ -1928,9 +1928,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-tcgcsv"
-version = "0.1.8"
+version = "0.1.9"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "dbe48e1976e04480f4be127e10f5bd3cded7de8b7fe363f3b334c13323657dcf"
+checksum = "70499957b2eb822c5edd355c5d082a8f92d9b9beae39c10ef286248b5167dc2b"
 dependencies = [
  "serde",
  "serde_json",
@@ -1939,9 +1939,9 @@ dependencies = [
 
 [[package]]
 name = "dumpster-kit-tenancy"
-version = "0.1.7"
+version = "0.1.9"
 source = "sparse+http://ubuntu-mini-0.tailb4a728.ts.net:3000/api/packages/rgantt/cargo/"
-checksum = "60e0c6a5a0fb09c74b09b19228cf829567d13082f3774203c49f964a25195dbe"
+checksum = "6b13d35a03d5326e2d6cdc949cd661a89b1c5c0542f388358c7a55b7688cfea5"
 dependencies = [
  "axum",
  "base64 0.22.1",

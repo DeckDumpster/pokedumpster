@@ -59,7 +59,7 @@ pub fn config_if_configured() -> anyhow::Result<Option<OidcConfig>> {
     config_from(|k| std::env::var(k).ok(), std::env::vars().map(|(k, _)| k))
 }
 
-fn config_from(
+pub(crate) fn config_from(
     get: impl Fn(&str) -> Option<String>,
     names: impl Iterator<Item = String>,
 ) -> anyhow::Result<Option<OidcConfig>> {
@@ -191,16 +191,18 @@ impl Machine {
     }
 
     fn synthetic_user(&self, id: String) -> dumpster_kit_oidc::SessionUser {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
         dumpster_kit_oidc::SessionUser {
             sub: id.clone(),
             email: String::new(),
             name: id,
             groups: vec![self.required_group.clone()],
-            exp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0)
-                + 60,
+            exp: now + 60,
+            // Never sealed into a cookie, so nothing renews it: its life is the 60s above.
+            signed_in: now,
         }
     }
 

@@ -1560,6 +1560,8 @@ mod tests {
             app: Router,
             jar: Vec<(String, String)>,
             p: FakeProvider,
+            /// Seconds the sign-in layer's clock is ahead of the real one.
+            ahead: Arc<std::sync::atomic::AtomicI64>,
             _dir: tempfile::TempDir,
             _fx: Option<TestAccessFixture>,
         }
@@ -1624,12 +1626,53 @@ mod tests {
                     &std::path::Path,
                 ) -> (Tenants, Option<Arc<access::AccessState>>),
             ) -> Self {
-                let p = FakeProvider::start().await;
+                Self::with_redirect(dumpster_kit_oidc::testing::REDIRECT_URL, build).await
+            }
+
+            async fn with_redirect(
+                redirect_url: &str,
+                build: impl FnOnce(
+                    &std::path::Path,
+                    &std::path::Path,
+                ) -> (Tenants, Option<Arc<access::AccessState>>),
+            ) -> Self {
+                let p = FakeProvider::start_with_redirect(redirect_url).await;
                 let mut cfg = p.config();
                 cfg.required_group = dumpster_kit_oidc::testing::GROUP.into();
                 // The same machine paths production adds.
                 cfg.bypass_paths = oidc::MACHINE_PATHS.iter().map(|s| s.to_string()).collect();
-                let o = oidc::connect(cfg).await.unwrap();
+                // The lifetime production resolves with PKDUMP_OIDC_SESSION_TTL_SECS unset,
+                // through the same function the server reads its environment with.
+                let env = |k: &str| {
+                    Some(match k {
+                        "PKDUMP_OIDC_ISSUER" => "https://id.test".to_string(),
+                        "PKDUMP_OIDC_CLIENT_ID" => "c".into(),
+                        "PKDUMP_OIDC_CLIENT_SECRET" => "s".into(),
+                        "PKDUMP_OIDC_REDIRECT_URL" => "https://app.test/auth/callback".into(),
+                        "PKDUMP_OIDC_REQUIRED_GROUP" => "poke-users".into(),
+                        "PKDUMP_OIDC_COOKIE_KEY" => "k".repeat(64),
+                        _ => return None,
+                    })
+                };
+                let prod = oidc::config_from(env, ["PKDUMP_OIDC_ISSUER".to_string()].into_iter())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    prod.session_ttl,
+                    std::time::Duration::from_secs(30 * 86_400)
+                );
+                cfg.session_ttl = prod.session_ttl;
+                let ahead = Arc::new(std::sync::atomic::AtomicI64::new(0));
+                let clock = ahead.clone();
+                let o = dumpster_kit_oidc::Oidc::discover_with_clock(
+                    cfg,
+                    Box::new(move || {
+                        dumpster_kit_oidc::testing::unix_now()
+                            + clock.load(std::sync::atomic::Ordering::SeqCst)
+                    }),
+                )
+                .await
+                .unwrap();
                 let dir = tempfile::tempdir().unwrap();
                 let shared = seed(dir.path());
                 let (tenants, access) = build(dir.path(), &shared);
@@ -1637,6 +1680,7 @@ mod tests {
                 Browser {
                     app,
                     jar: vec![],
+                    ahead,
                     p,
                     _dir: dir,
                     _fx: None,
@@ -1653,9 +1697,27 @@ mod tests {
                 uri: &str,
                 body: Option<&str>,
             ) -> axum::response::Response {
+                self.send_with(method, uri, &[], body).await
+            }
+
+            fn advance(&self, secs: i64) {
+                self.ahead
+                    .fetch_add(secs, std::sync::atomic::Ordering::SeqCst);
+            }
+
+            async fn send_with(
+                &mut self,
+                method: &str,
+                uri: &str,
+                headers: &[(&str, &str)],
+                body: Option<&str>,
+            ) -> axum::response::Response {
                 let cookies: Vec<String> =
                     self.jar.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 let mut rb = Request::builder().method(method).uri(uri);
+                for (k, v) in headers {
+                    rb = rb.header(*k, *v);
+                }
                 if !cookies.is_empty() {
                     rb = rb.header(header::COOKIE, cookies.join("; "));
                 }
@@ -1678,7 +1740,17 @@ mod tests {
             }
 
             async fn sign_in(&mut self, spec: TokenSpec) -> axum::response::Response {
-                let r = self.get("/auth/login?return_to=/").await;
+                self.sign_in_via(&[], spec).await
+            }
+
+            async fn sign_in_via(
+                &mut self,
+                headers: &[(&str, &str)],
+                spec: TokenSpec,
+            ) -> axum::response::Response {
+                let r = self
+                    .send_with("GET", "/auth/login?return_to=/", headers, None)
+                    .await;
                 assert_eq!(r.status(), StatusCode::SEE_OTHER);
                 let loc = r.headers()[header::LOCATION].to_str().unwrap().to_string();
                 let state = loc
@@ -1690,8 +1762,13 @@ mod tests {
                     .unwrap()
                     .to_string();
                 let code = self.p.authorize(&loc, spec);
-                self.get(&format!("/auth/callback?code={code}&state={state}"))
-                    .await
+                self.send_with(
+                    "GET",
+                    &format!("/auth/callback?code={code}&state={state}"),
+                    headers,
+                    None,
+                )
+                .await
             }
         }
 
@@ -1737,6 +1814,80 @@ mod tests {
             )
             .unwrap();
             assert_eq!(v["signed_in_as"], "alice@example.com");
+        }
+
+        /// sp-07ohji: 30-day sliding sessions (kit 0.1.9, production default ttl).
+        #[tokio::test]
+        async fn a_session_lasts_past_eight_hours_and_is_renewed_on_use() {
+            let mut b = Browser::new().await;
+            assert_eq!(
+                b.sign_in(TokenSpec::default()).await.status(),
+                StatusCode::SEE_OTHER
+            );
+            b.advance(9 * 3600);
+            let r = b.get("/").await;
+            assert_eq!(r.status(), StatusCode::OK, "signed out after 9h");
+            let r = b.get("/").await;
+            assert!(
+                r.headers()
+                    .get_all(header::SET_COOKIE)
+                    .iter()
+                    .next()
+                    .is_none(),
+                "reissued on every request, not renewed on use"
+            );
+            b.advance(2 * 86_400 - 9 * 3600);
+            let r = b.get("/").await;
+            assert_eq!(r.status(), StatusCode::OK);
+            assert!(
+                r.headers()
+                    .get_all(header::SET_COOKIE)
+                    .iter()
+                    .any(|c| c.to_str().unwrap().starts_with("dk_session=")),
+                "no renewed dk_session at +2d"
+            );
+            // Renewal carried it past the original 30 days; the 90-day cap still ends it.
+            b.advance(29 * 86_400);
+            assert_eq!(
+                b.get("/").await.status(),
+                StatusCode::OK,
+                "lapsed at +31d, past the original 30"
+            );
+            b.advance(60 * 86_400);
+            assert_eq!(b.get("/").await.status(), StatusCode::SEE_OTHER, "past 90d");
+        }
+
+        /// sp-07ohji: a sign-in begun on http:// is sent to the https origin and completes.
+        #[tokio::test]
+        async fn a_sign_in_started_over_http_completes() {
+            // Production's registered redirect is https; the visitor typed http://.
+            let mut b = Browser::with_redirect("https://app.test/auth/callback", |dir, shared| {
+                (
+                    Tenants::single(
+                        "collection",
+                        dir.join("tenants").join("collection.sqlite"),
+                        shared.to_path_buf(),
+                    )
+                    .unwrap(),
+                    None,
+                )
+            })
+            .await;
+            let http = [("host", "app.test"), ("x-forwarded-proto", "http")];
+            let r = b
+                .send_with("GET", "/auth/login?return_to=/", &http, None)
+                .await;
+            assert_eq!(r.status(), StatusCode::SEE_OTHER);
+            assert!(
+                location(&r).starts_with("https://app.test/auth/login"),
+                "{}",
+                location(&r)
+            );
+            let https = [("host", "app.test"), ("x-forwarded-proto", "https")];
+            let r = b.sign_in_via(&https, TokenSpec::default()).await;
+            assert_eq!(r.status(), StatusCode::SEE_OTHER);
+            assert_eq!(location(&r), "/");
+            assert_eq!(b.get("/").await.status(), StatusCode::OK);
         }
 
         #[tokio::test]

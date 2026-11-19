@@ -59,7 +59,7 @@ pub fn config_if_configured() -> anyhow::Result<Option<OidcConfig>> {
     config_from(|k| std::env::var(k).ok(), std::env::vars().map(|(k, _)| k))
 }
 
-fn config_from(
+pub(crate) fn config_from(
     get: impl Fn(&str) -> Option<String>,
     names: impl Iterator<Item = String>,
 ) -> anyhow::Result<Option<OidcConfig>> {

@@ -1641,8 +1641,27 @@ mod tests {
                 cfg.required_group = dumpster_kit_oidc::testing::GROUP.into();
                 // The same machine paths production adds.
                 cfg.bypass_paths = oidc::MACHINE_PATHS.iter().map(|s| s.to_string()).collect();
-                // The session lifetime production runs with: PKDUMP_OIDC_SESSION_TTL_SECS unset.
-                cfg.session_ttl = std::time::Duration::from_secs(30 * 86_400);
+                // The lifetime production resolves with PKDUMP_OIDC_SESSION_TTL_SECS unset,
+                // through the same function the server reads its environment with.
+                let env = |k: &str| {
+                    Some(match k {
+                        "PKDUMP_OIDC_ISSUER" => "https://id.test".to_string(),
+                        "PKDUMP_OIDC_CLIENT_ID" => "c".into(),
+                        "PKDUMP_OIDC_CLIENT_SECRET" => "s".into(),
+                        "PKDUMP_OIDC_REDIRECT_URL" => "https://app.test/auth/callback".into(),
+                        "PKDUMP_OIDC_REQUIRED_GROUP" => "poke-users".into(),
+                        "PKDUMP_OIDC_COOKIE_KEY" => "k".repeat(64),
+                        _ => return None,
+                    })
+                };
+                let prod = oidc::config_from(env, ["PKDUMP_OIDC_ISSUER".to_string()].into_iter())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    prod.session_ttl,
+                    std::time::Duration::from_secs(30 * 86_400)
+                );
+                cfg.session_ttl = prod.session_ttl;
                 let ahead = Arc::new(std::sync::atomic::AtomicI64::new(0));
                 let clock = ahead.clone();
                 let o = dumpster_kit_oidc::Oidc::discover_with_clock(
@@ -1808,6 +1827,15 @@ mod tests {
             b.advance(9 * 3600);
             let r = b.get("/").await;
             assert_eq!(r.status(), StatusCode::OK, "signed out after 9h");
+            let r = b.get("/").await;
+            assert!(
+                r.headers()
+                    .get_all(header::SET_COOKIE)
+                    .iter()
+                    .next()
+                    .is_none(),
+                "reissued on every request, not renewed on use"
+            );
             b.advance(2 * 86_400 - 9 * 3600);
             let r = b.get("/").await;
             assert_eq!(r.status(), StatusCode::OK);
@@ -1818,6 +1846,15 @@ mod tests {
                     .any(|c| c.to_str().unwrap().starts_with("dk_session=")),
                 "no renewed dk_session at +2d"
             );
+            // Renewal carried it past the original 30 days; the 90-day cap still ends it.
+            b.advance(29 * 86_400);
+            assert_eq!(
+                b.get("/").await.status(),
+                StatusCode::OK,
+                "lapsed at +31d, past the original 30"
+            );
+            b.advance(60 * 86_400);
+            assert_eq!(b.get("/").await.status(), StatusCode::SEE_OTHER, "past 90d");
         }
 
         /// sp-07ohji: a sign-in begun on http:// is sent to the https origin and completes.
